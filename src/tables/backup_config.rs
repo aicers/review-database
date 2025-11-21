@@ -341,4 +341,32 @@ mod tests {
         };
         assert!(table.save(&invalid_config).is_err());
     }
+
+    #[test]
+    fn test_update_config_invalid_new_config() {
+        let db_dir = tempfile::tempdir().unwrap();
+        let backup_dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(Store::new(db_dir.path(), backup_dir.path()).unwrap());
+        let table = store.backup_config_map();
+
+        // Save a valid initial config
+        let old_config = BackupConfig::new(7, "02:00:00".to_string(), 10).unwrap();
+        assert!(table.save(&old_config).is_ok());
+
+        // Try to update with an invalid new config (backup_duration = 0)
+        let invalid_new_config = BackupConfig {
+            backup_duration: 0,
+            backup_time: "03:30:00".to_string(),
+            num_of_backups_to_keep: 15,
+        };
+        assert!(
+            table
+                .update_config(&old_config, &invalid_new_config)
+                .is_err()
+        );
+
+        // Verify the original config remains unchanged
+        let read_config = table.read().unwrap();
+        assert_eq!(read_config, old_config);
+    }
 }
