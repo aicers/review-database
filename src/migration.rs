@@ -140,18 +140,11 @@ pub fn migrate_data_dir<P: AsRef<Path>>(data_dir: P, backup_dir: P) -> Result<()
     //   to "to version". The function name should be in the form of "migrate_A_to_B" where A is
     //   the first version (major.minor) in the "version requirement" and B is the "to version"
     //   (major.minor). (NOTE: Once we release 1.0.0, A and B will contain the major version only.)
-    let migration: Vec<Migration> = vec![
-        (
-            VersionReq::parse(">=0.41.0,<0.42.0-alpha.5")?,
-            Version::parse("0.42.0-alpha.5")?,
-            migrate_0_41_to_0_42,
-        ),
-        (
-            VersionReq::parse(">=0.42.0-alpha.5,<0.43.0-alpha.1")?,
-            Version::parse("0.43.0-alpha.1")?,
-            migrate_0_42_to_0_43,
-        ),
-    ];
+    let migration: Vec<Migration> = vec![(
+        VersionReq::parse(">=0.42.0-alpha.5,<0.43.0-alpha.1")?,
+        Version::parse("0.43.0-alpha.1")?,
+        migrate_0_42_to_0_43,
+    )];
 
     while let Some((_req, to, m)) = migration
         .iter()
@@ -209,28 +202,91 @@ const MAP_NAMES_V0_42: [&str; 36] = [
     "trusted user agents",
 ];
 
-fn migrate_0_41_to_0_42(data_dir: &Path, backup_dir: &Path) -> Result<()> {
-    let store = super::Store::new(data_dir, backup_dir)?;
-    migrate_0_41_events(&store)?;
-    migrate_account_policy(&store)?;
-    migrate_0_42_filter(&store)?;
-    Ok(())
-}
-
 fn migrate_0_42_to_0_43(data_dir: &Path, backup_dir: &Path) -> Result<()> {
-    // Open the database with the old column family list (including "account policy")
     let db_path = data_dir.join("states.db");
     let backup_path = backup_dir.join("states.db");
 
-    info!("Opening database with legacy column families to drop 'account policy'");
+    info!("Opening database with legacy column families");
 
-    // Open the database with the old column family names
+    // Open the database with the old column family names (including "account policy")
     let mut opts = rocksdb::Options::default();
     opts.create_if_missing(false);
     opts.create_missing_column_families(false);
 
-    let db = rocksdb::OptimisticTransactionDB::open_cf(&opts, &db_path, MAP_NAMES_V0_42)
-        .context("Failed to open database with legacy column families")?;
+    let mut db: rocksdb::OptimisticTransactionDB =
+        rocksdb::OptimisticTransactionDB::open_cf(&opts, &db_path, MAP_NAMES_V0_42)
+            .context("Failed to open database with legacy column families")?;
+
+    // Perform data migrations for TriagePolicy and Tidb
+    info!("Migrating TriagePolicy and Tidb data");
+
+    // Get column family handles
+    let triage_policy_cf: &rocksdb::ColumnFamily = match db.cf_handle("triage policy") {
+        Some(cf) => cf,
+        None => anyhow::bail!("Failed to find triage policy column family"),
+    };
+    let tidb_cf: &rocksdb::ColumnFamily = match db.cf_handle("TI database") {
+        Some(cf) => cf,
+        None => anyhow::bail!("Failed to find TI database column family"),
+    };
+
+    // Migrate TriagePolicy
+    {
+        use bincode::Options;
+
+        use self::migration_structures::TriagePolicyV0_42;
+        use crate::TriagePolicy;
+
+        let mut updates = Vec::new();
+        let iter = db.iterator_cf(triage_policy_cf, rocksdb::IteratorMode::Start);
+        for item in iter {
+            let (key, value) = item.context("Failed to read from database")?;
+
+            let old_policy: TriagePolicyV0_42 = bincode::DefaultOptions::new()
+                .deserialize(value.as_ref())
+                .context("Failed to deserialize old triage policy")?;
+
+            let new_policy = TriagePolicy::from(old_policy);
+            let new_value = bincode::DefaultOptions::new()
+                .serialize(&new_policy)
+                .context("Failed to serialize new triage policy")?;
+
+            updates.push((key.to_vec(), new_value));
+        }
+
+        for (key, value) in updates {
+            db.put_cf(triage_policy_cf, &key, &value)?;
+        }
+    }
+
+    // Migrate Tidb
+    {
+        use bincode::Options;
+
+        use self::migration_structures::TidbV0_42;
+        use crate::Tidb;
+
+        let mut updates = Vec::new();
+        let iter = db.iterator_cf(tidb_cf, rocksdb::IteratorMode::Start);
+        for item in iter {
+            let (key, value) = item.context("Failed to read from database")?;
+
+            let old_tidb: TidbV0_42 = bincode::DefaultOptions::new()
+                .deserialize(value.as_ref())
+                .context("Failed to deserialize old tidb")?;
+
+            let new_tidb = Tidb::from(old_tidb);
+            let new_value = bincode::DefaultOptions::new()
+                .serialize(&new_tidb)
+                .context("Failed to serialize new tidb")?;
+
+            updates.push((key.to_vec(), new_value));
+        }
+
+        for (key, value) in updates {
+            db.put_cf(tidb_cf, &key, &value)?;
+        }
+    }
 
     // Drop the "account policy" column family
     info!("Dropping 'account policy' column family");
@@ -240,9 +296,78 @@ fn migrate_0_42_to_0_43(data_dir: &Path, backup_dir: &Path) -> Result<()> {
     // Close the database by dropping it
     drop(db);
 
-    // Also drop from backup database
-    let backup_db = rocksdb::OptimisticTransactionDB::open_cf(&opts, &backup_path, MAP_NAMES_V0_42)
-        .context("Failed to open backup database with legacy column families")?;
+    // Also perform migration on backup database
+    let mut backup_db: rocksdb::OptimisticTransactionDB =
+        rocksdb::OptimisticTransactionDB::open_cf(&opts, &backup_path, MAP_NAMES_V0_42)
+            .context("Failed to open backup database with legacy column families")?;
+
+    let backup_triage_policy_cf: &rocksdb::ColumnFamily = match backup_db.cf_handle("triage policy")
+    {
+        Some(cf) => cf,
+        None => anyhow::bail!("Failed to find triage policy column family in backup"),
+    };
+    let backup_tidb_cf: &rocksdb::ColumnFamily = match backup_db.cf_handle("TI database") {
+        Some(cf) => cf,
+        None => anyhow::bail!("Failed to find TI database column family in backup"),
+    };
+
+    // Migrate TriagePolicy in backup
+    {
+        use bincode::Options;
+
+        use self::migration_structures::TriagePolicyV0_42;
+        use crate::TriagePolicy;
+
+        let mut updates = Vec::new();
+        let iter = backup_db.iterator_cf(backup_triage_policy_cf, rocksdb::IteratorMode::Start);
+        for item in iter {
+            let (key, value) = item.context("Failed to read from backup database")?;
+
+            let old_policy: TriagePolicyV0_42 = bincode::DefaultOptions::new()
+                .deserialize(value.as_ref())
+                .context("Failed to deserialize old triage policy from backup")?;
+
+            let new_policy = TriagePolicy::from(old_policy);
+            let new_value = bincode::DefaultOptions::new()
+                .serialize(&new_policy)
+                .context("Failed to serialize new triage policy for backup")?;
+
+            updates.push((key.to_vec(), new_value));
+        }
+
+        for (key, value) in updates {
+            backup_db.put_cf(backup_triage_policy_cf, &key, &value)?;
+        }
+    }
+
+    // Migrate Tidb in backup
+    {
+        use bincode::Options;
+
+        use self::migration_structures::TidbV0_42;
+        use crate::Tidb;
+
+        let mut updates = Vec::new();
+        let iter = backup_db.iterator_cf(backup_tidb_cf, rocksdb::IteratorMode::Start);
+        for item in iter {
+            let (key, value) = item.context("Failed to read from backup database")?;
+
+            let old_tidb: TidbV0_42 = bincode::DefaultOptions::new()
+                .deserialize(value.as_ref())
+                .context("Failed to deserialize old tidb from backup")?;
+
+            let new_tidb = Tidb::from(old_tidb);
+            let new_value = bincode::DefaultOptions::new()
+                .serialize(&new_tidb)
+                .context("Failed to serialize new tidb for backup")?;
+
+            updates.push((key.to_vec(), new_value));
+        }
+
+        for (key, value) in updates {
+            backup_db.put_cf(backup_tidb_cf, &key, &value)?;
+        }
+    }
 
     info!("Dropping 'account policy' column family from backup");
     backup_db
@@ -252,83 +377,6 @@ fn migrate_0_42_to_0_43(data_dir: &Path, backup_dir: &Path) -> Result<()> {
     drop(backup_db);
 
     info!("Successfully removed 'account policy' column family");
-    Ok(())
-}
-
-fn migrate_0_43_triage_policy(store: &super::Store) -> Result<()> {
-    use bincode::Options;
-
-    use self::migration_structures::TriagePolicyV0_42;
-    use crate::TriagePolicy;
-    use crate::collections::Indexed;
-
-    let map = store.triage_policy_map();
-    let raw_map = map.raw_indexed_map();
-
-    // Collect all entries to migrate
-    let mut updates = Vec::new();
-    let iter = raw_map
-        .db()
-        .iterator_cf(raw_map.cf(), rocksdb::IteratorMode::Start);
-    for item in iter {
-        let (key, value) = item.context("Failed to read from database")?;
-
-        // Try to deserialize as old format
-        let old_policy: TriagePolicyV0_42 = bincode::DefaultOptions::new()
-            .deserialize(value.as_ref())
-            .context("Failed to deserialize old triage policy")?;
-
-        // Convert to new format
-        let new_policy = TriagePolicy::from(old_policy);
-        let new_value = bincode::DefaultOptions::new()
-            .serialize(&new_policy)
-            .context("Failed to serialize new triage policy")?;
-
-        updates.push((key.to_vec(), new_value));
-    }
-
-    // Apply updates
-    for (key, value) in updates {
-        raw_map.db().put_cf(raw_map.cf(), &key, &value)?;
-    }
-
-    Ok(())
-}
-
-fn migrate_0_43_tidb(store: &super::Store) -> Result<()> {
-    use bincode::Options;
-
-    use self::migration_structures::TidbV0_42;
-    use crate::Tidb;
-
-    let map = store.tidb_map();
-    let raw = map.raw();
-
-    // Collect all entries to migrate
-    let mut updates = Vec::new();
-    let iter = raw.db.iterator_cf(raw.cf, rocksdb::IteratorMode::Start);
-    for item in iter {
-        let (key, value) = item.context("Failed to read from database")?;
-
-        // Try to deserialize as old format
-        let old_tidb: TidbV0_42 = bincode::DefaultOptions::new()
-            .deserialize(value.as_ref())
-            .context("Failed to deserialize old tidb")?;
-
-        // Convert to new format
-        let new_tidb = Tidb::from(old_tidb);
-        let new_value = bincode::DefaultOptions::new()
-            .serialize(&new_tidb)
-            .context("Failed to serialize new tidb")?;
-
-        updates.push((key.to_vec(), new_value));
-    }
-
-    // Apply updates
-    for (key, value) in updates {
-        raw.db.put_cf(raw.cf, &key, &value)?;
-    }
-
     Ok(())
 }
 
@@ -425,635 +473,6 @@ mod tests {
         #[allow(dead_code)]
         fn close(self) -> (tempfile::TempDir, tempfile::TempDir) {
             (self.db_dir, self.backup_dir)
-        }
-    }
-
-    #[test]
-    fn migrate_0_41_to_0_42_events() {
-        use std::net::IpAddr;
-
-        use chrono::{DateTime, Duration};
-
-        use crate::event::{
-            BlocklistBootpFieldsV0_41, BlocklistConnFieldsV0_41, BlocklistDnsFieldsV0_41,
-            DnsEventFieldsV0_41, HttpEventFieldsV0_41, HttpThreatFieldsV0_41,
-        };
-        use crate::types::{EventCategoryV0_41, EventCategoryV0_42};
-
-        let schema = TestSchema::new();
-        let event_db = schema.store.events();
-        let mut time = DateTime::UNIX_EPOCH;
-
-        // Test BlocklistBootp migration with non-Unknown category
-        time += Duration::minutes(1);
-        let bootp_value = BlocklistBootpFieldsV0_41 {
-            sensor: "test-sensor".to_string(),
-            src_addr: "192.168.1.1".parse::<IpAddr>().unwrap(),
-            src_port: 8080,
-            dst_addr: "10.0.0.1".parse::<IpAddr>().unwrap(),
-            dst_port: 80,
-            proto: 6,
-            end_time: (time + Duration::seconds(1)).timestamp_nanos_opt().unwrap(),
-            op: 1,
-            htype: 1,
-            hops: 1,
-            xid: 1,
-            ciaddr: "192.168.1.1".parse::<IpAddr>().unwrap(),
-            yiaddr: "10.0.0.1".parse::<IpAddr>().unwrap(),
-            siaddr: "192.168.1.1".parse::<IpAddr>().unwrap(),
-            giaddr: "10.0.0.1".parse::<IpAddr>().unwrap(),
-            chaddr: vec![1, 2, 3, 4, 5, 6],
-            sname: "test-sname".to_string(),
-            file: "test-file".to_string(),
-            confidence: 0.5,
-            category: EventCategoryV0_41::Reconnaissance,
-        };
-        let msg = EventMessage {
-            time,
-            kind: EventKind::BlocklistBootp,
-            fields: bincode::serialize(&bootp_value).unwrap(),
-        };
-        event_db.put(&msg).unwrap();
-
-        // Test BlocklistBootp migration with Unknown category
-        time += Duration::minutes(1);
-        let bootp_value_unknown = BlocklistBootpFieldsV0_41 {
-            sensor: "test-sensor".to_string(),
-            src_addr: "192.168.1.2".parse::<IpAddr>().unwrap(),
-            src_port: 8080,
-            dst_addr: "10.0.0.2".parse::<IpAddr>().unwrap(),
-            dst_port: 80,
-            proto: 6,
-            end_time: (time + Duration::seconds(1)).timestamp_nanos_opt().unwrap(),
-            op: 1,
-            htype: 1,
-            hops: 1,
-            xid: 1,
-            ciaddr: "192.168.1.2".parse::<IpAddr>().unwrap(),
-            yiaddr: "10.0.0.2".parse::<IpAddr>().unwrap(),
-            siaddr: "192.168.1.2".parse::<IpAddr>().unwrap(),
-            giaddr: "10.0.0.2".parse::<IpAddr>().unwrap(),
-            chaddr: vec![1, 2, 3, 4, 5, 6],
-            sname: "test-sname".to_string(),
-            file: "test-file".to_string(),
-            confidence: 0.5,
-            category: EventCategoryV0_41::Unknown,
-        };
-        let msg = EventMessage {
-            time,
-            kind: EventKind::BlocklistBootp,
-            fields: bincode::serialize(&bootp_value_unknown).unwrap(),
-        };
-        event_db.put(&msg).unwrap();
-
-        // Test BlocklistConn migration with non-Unknown category
-        time += Duration::minutes(1);
-        let mut conn_value = BlocklistConnFieldsV0_41 {
-            sensor: "test-sensor".to_string(),
-            src_addr: "192.168.1.3".parse::<IpAddr>().unwrap(),
-            src_port: 443,
-            dst_addr: "10.0.0.3".parse::<IpAddr>().unwrap(),
-            dst_port: 443,
-            proto: 6,
-            conn_state: "SF".to_string(),
-            end_time: (time + Duration::seconds(1)).timestamp_nanos_opt().unwrap(),
-            service: "https".to_string(),
-            orig_bytes: 1024,
-            resp_bytes: 2048,
-            orig_pkts: 10,
-            resp_pkts: 15,
-            orig_l2_bytes: 1100,
-            resp_l2_bytes: 2200,
-            confidence: 0.7,
-            category: EventCategoryV0_41::CommandAndControl,
-        };
-        let msg = EventMessage {
-            time,
-            kind: EventKind::BlocklistConn,
-            fields: bincode::serialize(&conn_value).unwrap(),
-        };
-        event_db.put(&msg).unwrap();
-
-        // Test TorConnectionConn migration with non-Unknown category
-        time += Duration::minutes(1);
-        conn_value.category = EventCategoryV0_41::InitialAccess;
-        let msg = EventMessage {
-            time,
-            kind: EventKind::TorConnectionConn,
-            fields: bincode::serialize(&conn_value).unwrap(),
-        };
-        event_db.put(&msg).unwrap();
-
-        // Test BlocklistConn migration with Unknown category
-        time += Duration::minutes(1);
-        let conn_value_unknown = BlocklistConnFieldsV0_41 {
-            sensor: "test-sensor".to_string(),
-            src_addr: "192.168.1.4".parse::<IpAddr>().unwrap(),
-            src_port: 80,
-            dst_addr: "10.0.0.4".parse::<IpAddr>().unwrap(),
-            dst_port: 80,
-            proto: 6,
-            conn_state: "S0".to_string(),
-            end_time: (time + Duration::seconds(1)).timestamp_nanos_opt().unwrap(),
-            service: "http".to_string(),
-            orig_bytes: 0,
-            resp_bytes: 0,
-            orig_pkts: 1,
-            resp_pkts: 0,
-            orig_l2_bytes: 60,
-            resp_l2_bytes: 0,
-            confidence: 0.5,
-            category: EventCategoryV0_41::Unknown,
-        };
-        let msg = EventMessage {
-            time,
-            kind: EventKind::BlocklistConn,
-            fields: bincode::serialize(&conn_value_unknown).unwrap(),
-        };
-        event_db.put(&msg).unwrap();
-
-        // Test BlocklistDns migration
-        time += Duration::minutes(1);
-        let dns_value = BlocklistDnsFieldsV0_41 {
-            sensor: "test-sensor".to_string(),
-            src_addr: "192.168.1.5".parse::<IpAddr>().unwrap(),
-            src_port: 53,
-            dst_addr: "8.8.8.8".parse::<IpAddr>().unwrap(),
-            dst_port: 53,
-            proto: 17,
-            end_time: (time + Duration::seconds(1)).timestamp_nanos_opt().unwrap(),
-            query: "example.com".to_string(),
-            answer: vec!["93.184.216.34".to_string()],
-            trans_id: 1234,
-            rtt: 100,
-            qclass: 1,
-            qtype: 1,
-            rcode: 0,
-            aa_flag: false,
-            tc_flag: false,
-            rd_flag: true,
-            ra_flag: true,
-            ttl: vec![3600],
-            confidence: 0.9,
-            category: EventCategoryV0_41::CommandAndControl,
-        };
-        let msg = EventMessage {
-            time,
-            kind: EventKind::BlocklistDns,
-            fields: bincode::serialize(&dns_value).unwrap(),
-        };
-        event_db.put(&msg).unwrap();
-
-        // Test TorConnection migration with Unknown category
-        time += Duration::minutes(1);
-        let mut tor_conn = HttpEventFieldsV0_41 {
-            sensor: "test-sensor".to_string(),
-            end_time: 0,
-            src_addr: "192.168.1.1".parse::<IpAddr>().unwrap(),
-            src_port: 8080,
-            dst_addr: "10.0.0.1".parse::<IpAddr>().unwrap(),
-            dst_port: 80,
-            proto: 6,
-            method: "GET".to_string(),
-            host: "example.com".to_string(),
-            uri: "/test".to_string(),
-            referer: "https://referer.com".to_string(),
-            version: "1.1".to_string(),
-            user_agent: "test-agent".to_string(),
-            request_len: 100,
-            response_len: 200,
-            status_code: 200,
-            status_msg: "OK".to_string(),
-            username: "testuser".to_string(),
-            password: "testpass".to_string(),
-            cookie: "session=123".to_string(),
-            content_encoding: "gzip".to_string(),
-            content_type: "text/html".to_string(),
-            cache_control: "no-cache".to_string(),
-            filenames: vec!["file1.txt".to_string(), "file2.txt".to_string()],
-            mime_types: vec!["text/plain".to_string(), "application/json".to_string()],
-            body: b"test body content".to_vec(),
-            state: "active".to_string(),
-            confidence: 1.0,
-            category: EventCategoryV0_41::Unknown,
-        };
-        let msg = EventMessage {
-            time,
-            kind: EventKind::TorConnection,
-            fields: bincode::serialize(&tor_conn).unwrap(),
-        };
-        event_db.put(&msg).unwrap();
-
-        // Test NonBrowser migration
-        time += Duration::minutes(1);
-        tor_conn.category = EventCategoryV0_41::InitialAccess;
-        let msg = EventMessage {
-            time,
-            kind: EventKind::NonBrowser,
-            fields: bincode::serialize(&tor_conn).unwrap(),
-        };
-        event_db.put(&msg).unwrap();
-
-        // Test HttpThreat migration with Unknown category
-        time += Duration::minutes(1);
-        let http_threat = HttpThreatFieldsV0_41 {
-            time,
-            sensor: "test-sensor".to_string(),
-            src_addr: "192.168.1.6".parse::<IpAddr>().unwrap(),
-            src_port: 12345,
-            dst_addr: "10.0.0.6".parse::<IpAddr>().unwrap(),
-            dst_port: 80,
-            proto: 6,
-            end_time: (time + Duration::seconds(1)).timestamp_nanos_opt().unwrap(),
-            method: "GET".to_string(),
-            host: "malicious.com".to_string(),
-            uri: "/malware.exe".to_string(),
-            referer: String::new(),
-            version: "HTTP/1.1".to_string(),
-            user_agent: "Mozilla/5.0".to_string(),
-            request_len: 200,
-            response_len: 1200,
-            status_code: 200,
-            status_msg: "OK".to_string(),
-            username: String::new(),
-            password: String::new(),
-            cookie: String::new(),
-            content_encoding: String::new(),
-            content_type: "application/octet-stream".to_string(),
-            cache_control: String::new(),
-            filenames: vec![],
-            mime_types: vec![],
-            body: vec![],
-            state: "closed".to_string(),
-            db_name: String::new(),
-            rule_id: 1001,
-            matched_to: "uri".to_string(),
-            cluster_id: Some(1),
-            attack_kind: "malware".to_string(),
-            confidence: 0.95,
-            category: EventCategoryV0_41::Unknown,
-        };
-        let msg = EventMessage {
-            time,
-            kind: EventKind::HttpThreat,
-            fields: bincode::serialize(&http_threat).unwrap(),
-        };
-        event_db.put(&msg).unwrap();
-
-        // Test DnsCovertChannel migration
-        time += Duration::minutes(1);
-        let mut dns_covert = DnsEventFieldsV0_41 {
-            sensor: "test-sensor".to_string(),
-            end_time: (time + Duration::seconds(1))
-                .timestamp_nanos_opt()
-                .unwrap_or_default(),
-            src_addr: "192.168.1.7".parse::<IpAddr>().unwrap(),
-            src_port: 54321,
-            dst_addr: "8.8.4.4".parse::<IpAddr>().unwrap(),
-            dst_port: 53,
-            proto: 17,
-            query: "suspicious-domain.com".to_string(),
-            answer: vec!["1.2.3.4".to_string()],
-            trans_id: 5678,
-            rtt: 50,
-            qclass: 1,
-            qtype: 1,
-            rcode: 0,
-            aa_flag: false,
-            tc_flag: false,
-            rd_flag: true,
-            ra_flag: true,
-            ttl: vec![300],
-            confidence: 0.8,
-            category: EventCategoryV0_41::Exfiltration,
-        };
-        let msg = EventMessage {
-            time,
-            kind: EventKind::DnsCovertChannel,
-            fields: bincode::serialize(&dns_covert).unwrap(),
-        };
-
-        // Test LockyRansomware migration
-        time += Duration::minutes(1);
-        dns_covert.category = EventCategoryV0_41::Impact;
-        event_db.put(&msg).unwrap();
-        let msg = EventMessage {
-            time,
-            kind: EventKind::LockyRansomware,
-            fields: bincode::serialize(&dns_covert).unwrap(),
-        };
-        event_db.put(&msg).unwrap();
-
-        // Run migration
-        super::migrate_0_41_events(&schema.store).unwrap();
-
-        // Verify migrations
-        let mut iter = event_db.iter_forward();
-
-        // Verify BlocklistBootp with non-Unknown category
-        let (_, event) = iter.next().unwrap().unwrap();
-        let Event::Blocklist(RecordType::Bootp(event)) = event else {
-            panic!("expected BlocklistBootp event");
-        };
-        assert_eq!(event.category, Some(EventCategoryV0_42::Reconnaissance));
-
-        // Verify BlocklistBootp with Unknown -> None
-        let (_, event) = iter.next().unwrap().unwrap();
-        let Event::Blocklist(RecordType::Bootp(event)) = event else {
-            panic!("expected BlocklistBootp event");
-        };
-        assert_eq!(event.category, None);
-
-        // Verify BlocklistConn with non-Unknown category
-        let (_, event) = iter.next().unwrap().unwrap();
-        let Event::Blocklist(RecordType::Conn(event)) = event else {
-            panic!("expected BlocklistConn event");
-        };
-        assert_eq!(event.category, Some(EventCategoryV0_42::CommandAndControl));
-
-        // Verify TorConnectionConn
-        let (_, event) = iter.next().unwrap().unwrap();
-        let Event::TorConnectionConn(event) = event else {
-            panic!("expected TorConnectionConn event");
-        };
-        assert_eq!(event.category, Some(EventCategoryV0_42::InitialAccess));
-
-        // Verify BlocklistConn with Unknown -> None
-        let (_, event) = iter.next().unwrap().unwrap();
-        let Event::Blocklist(RecordType::Conn(event)) = event else {
-            panic!("expected BlocklistConn event");
-        };
-        assert_eq!(event.category, None);
-
-        // Verify BlocklistDns with non-Unknown category
-        let (_, event) = iter.next().unwrap().unwrap();
-        let Event::Blocklist(RecordType::Dns(event)) = event else {
-            panic!("expected BlocklistDns event");
-        };
-        assert_eq!(event.category, Some(EventCategoryV0_42::CommandAndControl));
-
-        // Verify TorConnection with Unknown -> None
-        let (_, event) = iter.next().unwrap().unwrap();
-        let Event::TorConnection(event) = event else {
-            panic!("expected TorConnection event");
-        };
-        assert_eq!(event.category, None);
-
-        // Verify NonBrowser with Unknown -> None
-        let (_, event) = iter.next().unwrap().unwrap();
-        let Event::NonBrowser(event) = event else {
-            panic!("expected NonBrowser event");
-        };
-        assert_eq!(event.category, Some(EventCategoryV0_42::InitialAccess));
-
-        // Verify HttpThreat with Unknown -> None
-        let (_, event) = iter.next().unwrap().unwrap();
-        let Event::HttpThreat(event) = event else {
-            panic!("expected HttpThreat event");
-        };
-        assert_eq!(event.category, None);
-
-        // Verify DnsCovertChannel with non-Unknown category
-        let (_, event) = iter.next().unwrap().unwrap();
-        let Event::DnsCovertChannel(event) = event else {
-            panic!("expected DnsCovertChannel event");
-        };
-        assert_eq!(event.category, Some(EventCategoryV0_42::Exfiltration));
-
-        // Verify LockyRansomware with non-Unknown category
-        let (_, event) = iter.next().unwrap().unwrap();
-        let Event::LockyRansomware(event) = event else {
-            panic!("expected LockyRansomware event");
-        };
-        assert_eq!(event.category, Some(EventCategoryV0_42::Impact));
-    }
-
-    #[test]
-    fn migrate_0_42_filter_with_column_family() {
-        use bincode::Options;
-
-        use crate::migration::migration_structures::FilterValueV0_41;
-        use crate::{FilterValue, PeriodForSearch};
-
-        let schema = TestSchema::new();
-        let filter_map = schema.store.filter_map();
-
-        // Create an old filter with the V0_41 structure
-        let old_filter = FilterValueV0_41 {
-            directions: None,
-            keywords: Some(vec!["test".to_string()]),
-            network_tags: None,
-            customers: None,
-            endpoints: None,
-            sensors: Some(vec!["sensor1".to_string()]),
-            os: None,
-            devices: None,
-            hostnames: None,
-            user_ids: None,
-            user_names: None,
-            user_departments: None,
-            countries: None,
-            categories: None,
-            levels: None,
-            kinds: Some(vec!["DnsCovertChannel".to_string()]),
-            learning_methods: None,
-            confidence: Some(0.5),
-            period: PeriodForSearch::Recent("1d".to_string()),
-        };
-
-        // Serialize and store it using the old format
-        let key = b"test_user3\x00test_filter3";
-        let old_value = bincode::DefaultOptions::new()
-            .serialize(&old_filter)
-            .unwrap();
-        filter_map.raw().put(key, &old_value).unwrap();
-
-        // Also add another filter to ensure we iterate correctly
-        let old_filter2 = FilterValueV0_41 {
-            directions: None,
-            keywords: Some(vec!["another".to_string()]),
-            network_tags: None,
-            customers: None,
-            endpoints: None,
-            sensors: Some(vec!["sensor2".to_string()]),
-            os: None,
-            devices: None,
-            hostnames: None,
-            user_ids: None,
-            user_names: None,
-            user_departments: None,
-            countries: None,
-            categories: None,
-            levels: None,
-            kinds: None,
-            learning_methods: None,
-            confidence: Some(0.8),
-            period: PeriodForSearch::Recent("7d".to_string()),
-        };
-
-        let key2 = b"test_user2\x00another_filter2";
-        let old_value2 = bincode::DefaultOptions::new()
-            .serialize(&old_filter2)
-            .unwrap();
-        filter_map.raw().put(key2, &old_value2).unwrap();
-
-        // Run the migration
-        super::migrate_0_42_filter(&schema.store).unwrap();
-
-        // Verify the migration was successful
-        let raw = filter_map.raw();
-        let mut iter = raw.db.iterator_cf(raw.cf, rocksdb::IteratorMode::Start);
-
-        let item1 = iter.next().unwrap();
-        let (key, value) = item1.unwrap();
-        let new_filter: FilterValue = bincode::DefaultOptions::new()
-            .deserialize(value.as_ref())
-            .unwrap();
-        assert_eq!(key.as_ref(), b"test_user2\x00another_filter2");
-        assert_eq!(new_filter.confidence_min, Some(0.8));
-        assert_eq!(new_filter.confidence_max, None);
-        assert_eq!(new_filter.keywords, Some(vec!["another".to_string()]));
-
-        let item2 = iter.next().unwrap();
-        let (key, value) = item2.unwrap();
-        let new_filter: FilterValue = bincode::DefaultOptions::new()
-            .deserialize(value.as_ref())
-            .unwrap();
-        assert_eq!(key.as_ref(), b"test_user3\x00test_filter3");
-        assert_eq!(new_filter.confidence_min, Some(0.5));
-        assert_eq!(new_filter.confidence_max, None);
-        assert_eq!(new_filter.keywords, Some(vec!["test".to_string()]));
-        assert_eq!(new_filter.kinds, Some(vec!["DnsCovertChannel".to_string()]));
-
-        // Verify that we migrated exactly 2 filters
-        let count = raw
-            .db
-            .iterator_cf(raw.cf, rocksdb::IteratorMode::Start)
-            .count();
-        assert_eq!(count, 2);
-    }
-
-    #[test]
-    fn migrate_0_43_triage_policy_test() {
-        use bincode::Options;
-        use chrono::Utc;
-
-        use crate::TriagePolicy;
-        use crate::collections::Indexed;
-        use crate::migration::migration_structures::TriagePolicyV0_42;
-
-        let schema = TestSchema::new();
-        let map = schema.store.triage_policy_map();
-        let raw_map = map.raw_indexed_map();
-
-        // Create old triage policy entries without customer_ids
-        let old_policy1 = TriagePolicyV0_42 {
-            id: 1,
-            name: "policy1".to_string(),
-            ti_db: vec![],
-            packet_attr: vec![],
-            confidence: vec![],
-            response: vec![],
-            creation_time: Utc::now(),
-        };
-
-        let old_policy2 = TriagePolicyV0_42 {
-            id: 2,
-            name: "policy2".to_string(),
-            ti_db: vec![],
-            packet_attr: vec![],
-            confidence: vec![],
-            response: vec![],
-            creation_time: Utc::now(),
-        };
-
-        // Serialize and store using old format
-        let key1 = b"policy1";
-        let value1 = bincode::DefaultOptions::new()
-            .serialize(&old_policy1)
-            .unwrap();
-        raw_map.db().put_cf(raw_map.cf(), key1, &value1).unwrap();
-
-        let key2 = b"policy2";
-        let value2 = bincode::DefaultOptions::new()
-            .serialize(&old_policy2)
-            .unwrap();
-        raw_map.db().put_cf(raw_map.cf(), key2, &value2).unwrap();
-
-        // Run migration
-        super::migrate_0_43_triage_policy(&schema.store).unwrap();
-
-        // Verify migration
-        let iter = raw_map
-            .db()
-            .iterator_cf(raw_map.cf(), rocksdb::IteratorMode::Start);
-        for item in iter {
-            let (_key, value) = item.unwrap();
-            let new_policy: TriagePolicy = bincode::DefaultOptions::new()
-                .deserialize(value.as_ref())
-                .unwrap();
-            // Verify customer_ids is set to None
-            assert_eq!(new_policy.customer_ids, None);
-        }
-    }
-
-    #[test]
-    fn migrate_0_43_tidb_test() {
-        use bincode::Options;
-
-        use crate::migration::migration_structures::TidbV0_42;
-        use crate::{EventCategory, Tidb, TidbKind};
-
-        let schema = TestSchema::new();
-        let map = schema.store.tidb_map();
-        let raw = map.raw();
-
-        // Create old tidb entries without customer_ids
-        let old_tidb1 = TidbV0_42 {
-            id: 1,
-            name: "tidb1".to_string(),
-            description: Some("Test TI database 1".to_string()),
-            kind: TidbKind::Regex,
-            category: EventCategory::Reconnaissance,
-            version: "1.0".to_string(),
-            patterns: vec![],
-        };
-
-        let old_tidb2 = TidbV0_42 {
-            id: 2,
-            name: "tidb2".to_string(),
-            description: Some("Test TI database 2".to_string()),
-            kind: TidbKind::Ip,
-            category: EventCategory::CommandAndControl,
-            version: "2.0".to_string(),
-            patterns: vec![],
-        };
-
-        // Serialize and store using old format
-        let key1 = b"tidb1";
-        let value1 = bincode::DefaultOptions::new()
-            .serialize(&old_tidb1)
-            .unwrap();
-        raw.db.put_cf(raw.cf, key1, &value1).unwrap();
-
-        let key2 = b"tidb2";
-        let value2 = bincode::DefaultOptions::new()
-            .serialize(&old_tidb2)
-            .unwrap();
-        raw.db.put_cf(raw.cf, key2, &value2).unwrap();
-
-        // Run migration
-        super::migrate_0_43_tidb(&schema.store).unwrap();
-
-        // Verify migration
-        let iter = raw.db.iterator_cf(raw.cf, rocksdb::IteratorMode::Start);
-        for item in iter {
-            let (_key, value) = item.unwrap();
-            let new_tidb: Tidb = bincode::DefaultOptions::new()
-                .deserialize(value.as_ref())
-                .unwrap();
-            // Verify customer_ids is set to None
-            assert_eq!(new_tidb.customer_ids, None);
         }
     }
 
