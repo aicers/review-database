@@ -7,6 +7,15 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- Added `BackupConfig` entity to configure RocksDB backup settings (interval,
+  execution time, retention). The configuration can be saved, updated, and
+  read from persistent storage, with default values applied if none exist.
+  Fields include `backup_duration` (backup interval in days),
+  `backup_time` (execution time in HH:MM:SS UTC format), and
+  `num_of_backups_to_keep` (maximum backup snapshots to retain).
+
 ### Changed
 
 - Migrations from versions earlier than 0.42.0 are no longer supported.

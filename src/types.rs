@@ -30,6 +30,7 @@ mod private {
     impl Sealed for types::Account {}
     impl Sealed for tables::Agent {}
     impl Sealed for tables::AllowNetwork {}
+    impl Sealed for tables::BackupConfig {}
     impl Sealed for crate::BatchInfo {}
     impl Sealed for tables::BlockNetwork {}
     impl Sealed for crate::Category {}

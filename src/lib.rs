@@ -42,8 +42,8 @@ pub use self::scores::Scores;
 use self::tables::StateDb;
 pub use self::tables::{
     AccessToken, Agent, AgentConfig, AgentKind, AgentStatus, AllowNetwork, AllowNetworkUpdate,
-    AttrCmpKind, BlockNetwork, BlockNetworkUpdate, Cluster, ClusterTimeSeries, ColumnStats,
-    ColumnTimeSeries, Confidence, CsvColumnExtra as CsvColumnExtraConfig, Customer,
+    AttrCmpKind, BackupConfig, BlockNetwork, BlockNetworkUpdate, Cluster, ClusterTimeSeries,
+    ColumnStats, ColumnTimeSeries, Confidence, CsvColumnExtra as CsvColumnExtraConfig, Customer,
     CustomerNetwork, CustomerUpdate, DataSource, DataSourceUpdate, DataType, ExternalService,
     ExternalServiceConfig, ExternalServiceKind, ExternalServiceStatus, Filter, FilterValue, Host,
     IndexedTable, Iterable, Model as ModelDigest, ModelIndicator, Network, NetworkFilter,
@@ -164,6 +164,12 @@ impl Store {
     #[allow(clippy::missing_panics_doc)]
     pub fn config_map(&self) -> Table<'_, String> {
         self.states.configs()
+    }
+
+    #[must_use]
+    #[allow(clippy::missing_panics_doc)]
+    pub fn backup_config_map(&self) -> Table<'_, BackupConfig> {
+        self.states.backup_configs()
     }
 
     #[must_use]

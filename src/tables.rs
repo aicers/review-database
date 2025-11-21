@@ -2,6 +2,7 @@ mod access_token;
 mod accounts;
 mod agent;
 mod allow_network;
+mod backup_config;
 mod batch_info;
 mod block_network;
 mod category;
@@ -42,6 +43,7 @@ use serde::{Deserialize, Serialize};
 pub use self::access_token::AccessToken;
 pub use self::agent::{Agent, AgentKind};
 pub use self::allow_network::{AllowNetwork, Update as AllowNetworkUpdate};
+pub use self::backup_config::BackupConfig;
 pub use self::block_network::{BlockNetwork, Update as BlockNetworkUpdate};
 pub use self::cluster::Cluster;
 pub use self::column_stats::{ColumnStats, TopColumnsOfCluster, TopMultimaps};
@@ -388,6 +390,12 @@ impl StateDb {
     pub(crate) fn configs(&self) -> Table<'_, String> {
         let inner = self.inner.as_ref().expect("database must be open");
         Table::<String>::open(inner).expect("{CONFIGS} table must be present")
+    }
+
+    #[must_use]
+    pub(crate) fn backup_configs(&self) -> Table<'_, BackupConfig> {
+        let inner = self.inner.as_ref().expect("database must be open");
+        Table::<BackupConfig>::open(inner).expect("{CONFIGS} table must be present")
     }
 
     #[must_use]
