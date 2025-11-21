@@ -19,6 +19,7 @@ pub struct Tidb {
     pub category: EventCategory,
     pub version: String,
     pub patterns: Vec<Rule>,
+    pub customer_ids: Option<Vec<u32>>,
 }
 
 impl Tidb {
@@ -306,6 +307,7 @@ mod tests {
             category: crate::EventCategory::Reconnaissance,
             version: "1".to_string(),
             patterns: vec![],
+            customer_ids: None,
         }
     }
 }

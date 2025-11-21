@@ -731,6 +731,12 @@ impl<'d, R> IndexedTable<'d, R> {
         }
     }
 
+    /// Returns a reference to the underlying `IndexedMap` for migration purposes.
+    #[must_use]
+    pub(crate) fn raw_indexed_map(&self) -> &IndexedMap<'d> {
+        &self.indexed_map
+    }
+
     /// Returns the number of entries.
     ///
     /// # Errors

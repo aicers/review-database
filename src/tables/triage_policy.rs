@@ -34,6 +34,7 @@ pub struct TriagePolicy {
     pub confidence: Vec<Confidence>,
     pub response: Vec<Response>,
     pub creation_time: DateTime<Utc>,
+    pub customer_ids: Option<Vec<u32>>,
 }
 
 impl FromKeyValue for TriagePolicy {
@@ -427,6 +428,7 @@ pub struct Update {
     pub packet_attr: Vec<PacketAttr>,
     pub confidence: Vec<Confidence>,
     pub response: Vec<Response>,
+    pub customer_ids: Option<Vec<u32>>,
 }
 
 impl IndexedMapUpdate for Update {
@@ -454,6 +456,11 @@ impl IndexedMapUpdate for Update {
         let mut response = self.response.clone();
         response.sort_unstable();
         value.response = response;
+
+        value.customer_ids = self.customer_ids.clone().map(|mut ids| {
+            ids.sort_unstable();
+            ids
+        });
 
         Ok(value)
     }
@@ -484,6 +491,15 @@ impl IndexedMapUpdate for Update {
         if response != value.response {
             return false;
         }
+
+        let customer_ids = self.customer_ids.clone().map(|mut ids| {
+            ids.sort_unstable();
+            ids
+        });
+        if customer_ids != value.customer_ids {
+            return false;
+        }
+
         true
     }
 }
@@ -598,6 +614,7 @@ mod test {
             response: vec![],
             confidence: vec![],
             creation_time: Utc::now(),
+            customer_ids: None,
         }
     }
 
@@ -608,6 +625,7 @@ mod test {
             packet_attr: vec![],
             confidence: vec![],
             response: vec![],
+            customer_ids: None,
         }
     }
 }

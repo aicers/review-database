@@ -4,10 +4,14 @@
 //! and must not be modified. They are used to migrate data from
 //! old formats to new formats.
 
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use crate::PeriodForSearch;
 use crate::event::{FilterEndpoint, FlowKind, LearningMethod};
+use crate::{
+    Confidence, EventCategory, PacketAttr, PeriodForSearch, Response, TidbKind, TidbRule,
+    TriageExclusionReason,
+};
 
 /// Filter value structure from version 0.41.x
 ///
@@ -60,6 +64,66 @@ impl From<FilterValueV0_41> for crate::FilterValue {
             confidence_min: old.confidence,
             confidence_max: None,
             period: old.period,
+        }
+    }
+}
+
+/// `TriagePolicy` structure from version 0.42.x
+///
+/// This structure represents the triage policy schema before the addition
+/// of the `customer_ids` field.
+#[derive(Clone, Deserialize, Serialize)]
+pub(crate) struct TriagePolicyV0_42 {
+    pub(crate) id: u32,
+    pub(crate) name: String,
+    pub(crate) ti_db: Vec<TriageExclusionReason>,
+    pub(crate) packet_attr: Vec<PacketAttr>,
+    pub(crate) confidence: Vec<Confidence>,
+    pub(crate) response: Vec<Response>,
+    pub(crate) creation_time: DateTime<Utc>,
+}
+
+impl From<TriagePolicyV0_42> for crate::TriagePolicy {
+    fn from(old: TriagePolicyV0_42) -> Self {
+        Self {
+            id: old.id,
+            name: old.name,
+            ti_db: old.ti_db,
+            packet_attr: old.packet_attr,
+            confidence: old.confidence,
+            response: old.response,
+            creation_time: old.creation_time,
+            customer_ids: None,
+        }
+    }
+}
+
+/// `Tidb` structure from version 0.42.x
+///
+/// This structure represents the TI database schema before the addition
+/// of the `customer_ids` field.
+#[derive(Clone, Deserialize, Serialize)]
+pub(crate) struct TidbV0_42 {
+    pub(crate) id: u32,
+    pub(crate) name: String,
+    pub(crate) description: Option<String>,
+    pub(crate) kind: TidbKind,
+    pub(crate) category: EventCategory,
+    pub(crate) version: String,
+    pub(crate) patterns: Vec<TidbRule>,
+}
+
+impl From<TidbV0_42> for crate::Tidb {
+    fn from(old: TidbV0_42) -> Self {
+        Self {
+            id: old.id,
+            name: old.name,
+            description: old.description,
+            kind: old.kind,
+            category: old.category,
+            version: old.version,
+            patterns: old.patterns,
+            customer_ids: None,
         }
     }
 }

@@ -15,6 +15,13 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   Fields include `backup_duration` (backup interval in days),
   `backup_time` (execution time in HH:MM:SS UTC format), and
   `num_of_backups_to_keep` (maximum backup snapshots to retain).
+||||||| parent of 7a48e49 (Add optional customer IDs to TriagePolicy and Tidb)
+- Added `customer_ids` field to `TriagePolicy` and `Tidb` structs to support
+  multi-customer association. This optional field (`Option<Vec<u32>>`) allows
+  triage policies and TI databases to be associated with multiple customers
+  or remain internal (`None`) for system administrators. During migration, all
+  existing entries are initialized with `customer_ids: None` as they have not
+  yet been deployed in customer environments.
 
 ### Changed
 
