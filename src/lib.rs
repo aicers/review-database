@@ -173,6 +173,97 @@ impl Store {
         self.states.backup_configs()
     }
 
+    /// Initializes account policy settings in the config table.
+    ///
+    /// This function sets the initial values for all account policy fields:
+    /// - `expiry_period_in_secs`: Password/session expiry period
+    /// - `lockout_threshold`: Number of failed sign-in attempts before lockout
+    /// - `lockout_duration_in_secs`: Duration of temporary lockout
+    /// - `suspension_threshold`: Number of failed attempts before suspension
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any of the config values have already been
+    /// initialized or if database operation fails.
+    pub fn init_account_policy(
+        &self,
+        expiry_period_in_secs: u32,
+        lockout_threshold: u32,
+        lockout_duration_in_secs: u32,
+        suspension_threshold: u32,
+    ) -> Result<()> {
+        let config = self.config_map();
+        config.init("expiry_period_in_secs", &expiry_period_in_secs.to_string())?;
+        config.init("lockout_threshold", &lockout_threshold.to_string())?;
+        config.init(
+            "lockout_duration_in_secs",
+            &lockout_duration_in_secs.to_string(),
+        )?;
+        config.init("suspension_threshold", &suspension_threshold.to_string())?;
+        Ok(())
+    }
+
+    /// Updates account policy settings in the config table.
+    ///
+    /// This function updates account policy fields using compare-and-swap
+    /// semantics. Both old and new values must be provided for each field to
+    /// ensure no concurrent modifications have occurred. If a new value is
+    /// `None`, the field will not be updated.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any old value does not match the current value in
+    /// the database (indicating concurrent modification), if the key does not
+    /// exist, or if database operation fails.
+    #[allow(clippy::too_many_arguments)]
+    pub fn update_account_policy(
+        &self,
+        old_expiry_period_in_secs: u32,
+        old_lockout_threshold: u32,
+        old_lockout_duration_in_secs: u32,
+        old_suspension_threshold: u32,
+        new_expiry_period_in_secs: Option<u32>,
+        new_lockout_threshold: Option<u32>,
+        new_lockout_duration_in_secs: Option<u32>,
+        new_suspension_threshold: Option<u32>,
+    ) -> Result<()> {
+        let config = self.config_map();
+
+        if let Some(new_val) = new_expiry_period_in_secs {
+            config.update_compare(
+                "expiry_period_in_secs",
+                &old_expiry_period_in_secs.to_string(),
+                &new_val.to_string(),
+            )?;
+        }
+
+        if let Some(new_val) = new_lockout_threshold {
+            config.update_compare(
+                "lockout_threshold",
+                &old_lockout_threshold.to_string(),
+                &new_val.to_string(),
+            )?;
+        }
+
+        if let Some(new_val) = new_lockout_duration_in_secs {
+            config.update_compare(
+                "lockout_duration_in_secs",
+                &old_lockout_duration_in_secs.to_string(),
+                &new_val.to_string(),
+            )?;
+        }
+
+        if let Some(new_val) = new_suspension_threshold {
+            config.update_compare(
+                "suspension_threshold",
+                &old_suspension_threshold.to_string(),
+                &new_val.to_string(),
+            )?;
+        }
+
+        Ok(())
+    }
+
     #[must_use]
     #[allow(clippy::missing_panics_doc)]
     pub fn csv_column_extra_map(&self) -> IndexedTable<'_, CsvColumnExtraConfig> {
