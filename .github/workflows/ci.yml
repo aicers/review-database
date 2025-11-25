@@ -19,7 +19,7 @@ jobs:
       - name: Clippy
         run: cargo clippy --bins --tests --all-features -- -D warnings
       - name: markdownlint
-        uses: articulate/actions-markdownlint@v1
+        uses: DavidAnson/markdownlint-cli2-action@v18
 
   test:
     runs-on: ${{ matrix.os }}
