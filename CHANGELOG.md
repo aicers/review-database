@@ -15,6 +15,13 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   Fields include `backup_duration` (backup interval in days),
   `backup_time` (execution time in HH:MM:SS UTC format), and
   `num_of_backups_to_keep` (maximum backup snapshots to retain).
+- Added `init_account_policy` and `update_account_policy` functions to `Store`
+  for managing account policy settings in the config table. The new settings
+  include `lockout_threshold` (number of failed sign-in attempts before
+  lockout), `lockout_duration_in_secs` (duration of temporary lockout), and
+  `suspension_threshold` (number of failed attempts before suspension). The
+  update function uses compare-and-swap semantics to prevent concurrent
+  modifications.
 
 ### Changed
 
