@@ -93,7 +93,7 @@ use tracing::info;
 /// // release that involves database format change) to 3.5.0, including
 /// // all alpha changes finalized in 3.5.0.
 /// ```
-const COMPATIBLE_VERSION_REQ: &str = ">=0.43.0-alpha.1,<0.43.0-alpha.2";
+const COMPATIBLE_VERSION_REQ: &str = ">=0.43.0-alpha.2,<0.43.0-alpha.3";
 
 /// Migrates the data directory to the up-to-date format if necessary.
 ///
@@ -140,11 +140,18 @@ pub fn migrate_data_dir<P: AsRef<Path>>(data_dir: P, backup_dir: P) -> Result<()
     //   to "to version". The function name should be in the form of "migrate_A_to_B" where A is
     //   the first version (major.minor) in the "version requirement" and B is the "to version"
     //   (major.minor). (NOTE: Once we release 1.0.0, A and B will contain the major version only.)
-    let migration: Vec<Migration> = vec![(
-        VersionReq::parse(">=0.42.0-alpha.5,<0.43.0-alpha.1")?,
-        Version::parse("0.43.0-alpha.1")?,
-        migrate_0_42_to_0_43,
-    )];
+    let migration: Vec<Migration> = vec![
+        (
+            VersionReq::parse(">=0.42.0-alpha.5,<0.43.0-alpha.1")?,
+            Version::parse("0.43.0-alpha.1")?,
+            migrate_0_42_to_0_43,
+        ),
+        (
+            VersionReq::parse(">=0.43.0-alpha.1,<0.43.0-alpha.2")?,
+            Version::parse("0.43.0-alpha.2")?,
+            migrate_0_43_alpha_1_to_0_43_alpha_2,
+        ),
+    ];
 
     while let Some((_req, to, m)) = migration
         .iter()
@@ -237,6 +244,238 @@ fn migrate_0_42_to_0_43(data_dir: &Path, backup_dir: &Path) -> Result<()> {
     drop(backup_db);
 
     info!("Successfully removed 'account policy' column family");
+    Ok(())
+}
+
+fn migrate_0_43_alpha_1_to_0_43_alpha_2(data_dir: &Path, backup_dir: &Path) -> Result<()> {
+    let db_path = data_dir.join("states.db");
+    let backup_path = backup_dir.join("states.db");
+
+    info!("Migrating AllowNetwork and BlockNetwork to customer-specific format");
+
+    // Open the database
+    let mut opts = rocksdb::Options::default();
+    opts.create_if_missing(false);
+    opts.create_missing_column_families(false);
+
+    let db = rocksdb::OptimisticTransactionDB::open_cf(&opts, &db_path, crate::tables::MAP_NAMES)
+        .context("Failed to open database")?;
+
+    migrate_allow_networks(&db)?;
+    migrate_block_networks(&db)?;
+
+    drop(db);
+
+    // Also migrate backup database
+    let backup_db =
+        rocksdb::OptimisticTransactionDB::open_cf(&opts, &backup_path, crate::tables::MAP_NAMES)
+            .context("Failed to open backup database")?;
+
+    migrate_allow_networks(&backup_db)?;
+    migrate_block_networks(&backup_db)?;
+
+    drop(backup_db);
+
+    info!("Successfully migrated AllowNetwork and BlockNetwork to customer-specific format");
+    Ok(())
+}
+
+/// The new value struct for allow/block networks after migration.
+#[derive(serde::Serialize)]
+struct NetworkValue {
+    id: u32,
+    networks: crate::HostNetworkGroup,
+    description: String,
+}
+
+fn migrate_allow_networks(db: &rocksdb::OptimisticTransactionDB) -> Result<()> {
+    use bincode::Options;
+    use migration_structures::AllowNetworkV0_42;
+
+    let cf = db
+        .cf_handle("allow networks")
+        .ok_or_else(|| anyhow!("allow networks column family not found"))?;
+
+    // Read the index first (stored at empty key)
+    let index_data = db.get_cf(cf, [])?;
+    if index_data.is_none() {
+        // No data to migrate
+        return Ok(());
+    }
+
+    // Collect all entries to migrate (skip the empty key which is the index)
+    let mut entries_to_migrate = Vec::new();
+    let iter = db.iterator_cf(cf, rocksdb::IteratorMode::Start);
+    for item in iter {
+        let (key, value) = item?;
+        if key.is_empty() {
+            continue; // Skip the index
+        }
+        entries_to_migrate.push((key.to_vec(), value.to_vec()));
+    }
+
+    if entries_to_migrate.is_empty() {
+        return Ok(());
+    }
+
+    // The old struct stored the full AllowNetwork in value, with key being just name.
+    // The new format:
+    // - Key: customer_id (4 bytes big-endian) + name
+    // - Value: Value struct { id, networks, description }
+    // For migration, we set customer_id to 0 for all existing entries.
+
+    let txn = db.transaction();
+
+    // Delete old entries and insert new ones
+    for (old_key, old_value) in &entries_to_migrate {
+        let old_entry: AllowNetworkV0_42 = bincode::DefaultOptions::new()
+            .deserialize(old_value)
+            .context("failed to deserialize old AllowNetwork")?;
+
+        // Create the new key: customer_id (0) + name
+        let mut new_key = Vec::with_capacity(4 + old_entry.name.len());
+        new_key.extend_from_slice(&0u32.to_be_bytes()); // customer_id = 0
+        new_key.extend_from_slice(old_entry.name.as_bytes());
+
+        // Create the new value
+        let new_value = NetworkValue {
+            id: old_entry.id,
+            networks: old_entry.networks,
+            description: old_entry.description,
+        };
+        let new_value_bytes = bincode::DefaultOptions::new()
+            .serialize(&new_value)
+            .context("failed to serialize new AllowNetwork value")?;
+
+        // Delete the old entry
+        txn.delete_cf(cf, old_key)?;
+
+        // Insert the new entry
+        txn.put_cf(cf, &new_key, &new_value_bytes)?;
+    }
+
+    // Rebuild the index with new keys
+    let mut new_index = crate::collections::KeyIndex::default();
+    for (_old_key, old_value) in &entries_to_migrate {
+        let old_entry: AllowNetworkV0_42 = bincode::DefaultOptions::new()
+            .deserialize(old_value)
+            .context("failed to deserialize old AllowNetwork for index")?;
+
+        let mut new_key = Vec::with_capacity(4 + old_entry.name.len());
+        new_key.extend_from_slice(&0u32.to_be_bytes());
+        new_key.extend_from_slice(old_entry.name.as_bytes());
+
+        // Insert at the same id
+        while new_index.count() < old_entry.id as usize {
+            // Fill gaps with placeholder insertions that we'll remove
+            let _ = new_index.insert(&[]);
+        }
+        if new_index.count() == old_entry.id as usize {
+            let _ = new_index.insert(&new_key);
+        }
+    }
+
+    // Serialize and store the updated index
+    let index_bytes = bincode::DefaultOptions::new()
+        .serialize(&new_index)
+        .context("failed to serialize index")?;
+    txn.put_cf(cf, [], &index_bytes)?;
+
+    txn.commit().context("failed to commit migration")?;
+
+    info!("Migrated {} AllowNetwork entries", entries_to_migrate.len());
+    Ok(())
+}
+
+fn migrate_block_networks(db: &rocksdb::OptimisticTransactionDB) -> Result<()> {
+    use bincode::Options;
+    use migration_structures::BlockNetworkV0_42;
+
+    let cf = db
+        .cf_handle("block networks")
+        .ok_or_else(|| anyhow!("block networks column family not found"))?;
+
+    // Read the index first (stored at empty key)
+    let index_data = db.get_cf(cf, [])?;
+    if index_data.is_none() {
+        // No data to migrate
+        return Ok(());
+    }
+
+    // Collect all entries to migrate (skip the empty key which is the index)
+    let mut entries_to_migrate = Vec::new();
+    let iter = db.iterator_cf(cf, rocksdb::IteratorMode::Start);
+    for item in iter {
+        let (key, value) = item?;
+        if key.is_empty() {
+            continue; // Skip the index
+        }
+        entries_to_migrate.push((key.to_vec(), value.to_vec()));
+    }
+
+    if entries_to_migrate.is_empty() {
+        return Ok(());
+    }
+
+    let txn = db.transaction();
+
+    // Delete old entries and insert new ones
+    for (old_key, old_value) in &entries_to_migrate {
+        let old_entry: BlockNetworkV0_42 = bincode::DefaultOptions::new()
+            .deserialize(old_value)
+            .context("failed to deserialize old BlockNetwork")?;
+
+        // Create the new key: customer_id (0) + name
+        let mut new_key = Vec::with_capacity(4 + old_entry.name.len());
+        new_key.extend_from_slice(&0u32.to_be_bytes()); // customer_id = 0
+        new_key.extend_from_slice(old_entry.name.as_bytes());
+
+        // Create the new value
+        let new_value = NetworkValue {
+            id: old_entry.id,
+            networks: old_entry.networks,
+            description: old_entry.description,
+        };
+        let new_value_bytes = bincode::DefaultOptions::new()
+            .serialize(&new_value)
+            .context("failed to serialize new BlockNetwork value")?;
+
+        // Delete the old entry
+        txn.delete_cf(cf, old_key)?;
+
+        // Insert the new entry
+        txn.put_cf(cf, &new_key, &new_value_bytes)?;
+    }
+
+    // Rebuild the index with new keys
+    let mut new_index = crate::collections::KeyIndex::default();
+    for (_old_key, old_value) in &entries_to_migrate {
+        let old_entry: BlockNetworkV0_42 = bincode::DefaultOptions::new()
+            .deserialize(old_value)
+            .context("failed to deserialize old BlockNetwork for index")?;
+
+        let mut new_key = Vec::with_capacity(4 + old_entry.name.len());
+        new_key.extend_from_slice(&0u32.to_be_bytes());
+        new_key.extend_from_slice(old_entry.name.as_bytes());
+
+        // Insert at the same id
+        while new_index.count() < old_entry.id as usize {
+            let _ = new_index.insert(&[]);
+        }
+        if new_index.count() == old_entry.id as usize {
+            let _ = new_index.insert(&new_key);
+        }
+    }
+
+    // Serialize and store the updated index
+    let index_bytes = bincode::DefaultOptions::new()
+        .serialize(&new_index)
+        .context("failed to serialize index")?;
+    txn.put_cf(cf, [], &index_bytes)?;
+
+    txn.commit().context("failed to commit migration")?;
+
+    info!("Migrated {} BlockNetwork entries", entries_to_migrate.len());
     Ok(())
 }
 
