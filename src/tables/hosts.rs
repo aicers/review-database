@@ -12,7 +12,8 @@ use rocksdb::{Direction, OptimisticTransactionDB};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    Iterable, Map, Table, TidbRuleKind, UniqueKey, tables::Value as ValueTrait, types::FromKeyValue,
+    Iterable, LabelDbRuleKind, Map, Table, UniqueKey, tables::Value as ValueTrait,
+    types::FromKeyValue,
 };
 
 // IpAddr: (port, proto), used count
@@ -22,7 +23,7 @@ type OpenedPorts = HashMap<IpAddr, HashMap<(u16, u8), u32>>;
 pub struct UserAgent {
     pub name: String,
     pub header: String,
-    pub kind: TidbRuleKind,
+    pub kind: LabelDbRuleKind,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -348,12 +349,12 @@ mod tests {
         let os_agents_entry1 = vec![
             UserAgent {
                 name: "Firefox".to_string(),
-                kind: TidbRuleKind::AgentSoftware,
+                kind: LabelDbRuleKind::AgentSoftware,
                 header: "Mozilla/5.0 (Firefox)".to_string(),
             },
             UserAgent {
                 name: "Chrome".to_string(),
-                kind: TidbRuleKind::AgentSoftware,
+                kind: LabelDbRuleKind::AgentSoftware,
                 header: "Mozilla/5.0 (Chrome)".to_string(),
             },
         ];
@@ -386,12 +387,12 @@ mod tests {
         let os_agents_entry2 = vec![
             UserAgent {
                 name: "Firefox".to_string(),
-                kind: TidbRuleKind::AgentSoftware,
+                kind: LabelDbRuleKind::AgentSoftware,
                 header: "Mozilla/5.0 (Firefox Updated)".to_string(), // Updated user agent
             },
             UserAgent {
                 name: "Edge".to_string(),
-                kind: TidbRuleKind::AgentSoftware,
+                kind: LabelDbRuleKind::AgentSoftware,
                 header: "Mozilla/5.0 (Edge)".to_string(), // New agent
             },
         ];

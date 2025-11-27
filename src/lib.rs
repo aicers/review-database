@@ -46,16 +46,16 @@ pub use self::tables::{
     ColumnStats, ColumnTimeSeries, Confidence, CsvColumnExtra as CsvColumnExtraConfig, Customer,
     CustomerNetwork, CustomerUpdate, DataSource, DataSourceUpdate, DataType, ExclusionReason,
     ExternalService, ExternalServiceConfig, ExternalServiceKind, ExternalServiceStatus, Filter,
-    FilterValue, Host, IndexedTable, Iterable, Model as ModelDigest, ModelIndicator, Network,
-    NetworkFilter, NetworkUpdate, Node, NodeProfile, NodeTable, NodeUpdate, OutlierInfo,
-    OutlierInfoKey, OutlierInfoValue, PacketAttr, PeriodForSearch, ProtocolPorts, Response,
-    ResponseKind, SamplingInterval, SamplingKind, SamplingPeriod, SamplingPolicy,
-    SamplingPolicyUpdate, Structured, StructuredClusteringAlgorithm, Table, Template, Tidb,
-    TidbKind, TidbRule, TidbRuleKind, TimeSeries, TopColumnsOfCluster, TopMultimaps, TorExitNode,
-    TrafficFilter, TriageExclusion, TriageExclusionReason, TriageExclusionReasonUpdate,
-    TriagePolicy, TriagePolicyInput, TriagePolicyUpdate, TriageResponse, TriageResponseUpdate,
-    TrustedDomain, TrustedUserAgent, UniqueKey, Unstructured, UnstructuredClusteringAlgorithm,
-    UserAgent, ValueKind,
+    FilterValue, Host, IndexedTable, Iterable, LabelDb, LabelDbKind, LabelDbRule, LabelDbRuleKind,
+    Model as ModelDigest, ModelIndicator, Network, NetworkFilter, NetworkUpdate, Node, NodeProfile,
+    NodeTable, NodeUpdate, OutlierInfo, OutlierInfoKey, OutlierInfoValue, PacketAttr,
+    PeriodForSearch, ProtocolPorts, Response, ResponseKind, SamplingInterval, SamplingKind,
+    SamplingPeriod, SamplingPolicy, SamplingPolicyUpdate, Structured,
+    StructuredClusteringAlgorithm, Table, Template, TimeSeries, TopColumnsOfCluster, TopMultimaps,
+    TorExitNode, TrafficFilter, TriageExclusion, TriageExclusionReason,
+    TriageExclusionReasonUpdate, TriagePolicy, TriagePolicyInput, TriagePolicyUpdate,
+    TriageResponse, TriageResponseUpdate, TrustedDomain, TrustedUserAgent, UniqueKey, Unstructured,
+    UnstructuredClusteringAlgorithm, UserAgent, ValueKind,
 };
 pub use self::top_n::*;
 #[allow(deprecated)]
@@ -437,8 +437,8 @@ impl Store {
 
     #[must_use]
     #[allow(clippy::missing_panics_doc)]
-    pub fn tidb_map(&self) -> Table<'_, Tidb> {
-        self.states.tidbs()
+    pub fn label_db_map(&self) -> Table<'_, LabelDb> {
+        self.states.label_dbs()
     }
 
     #[must_use]

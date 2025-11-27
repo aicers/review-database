@@ -15,6 +15,7 @@ mod data_source;
 mod external_service;
 mod filter;
 mod hosts;
+mod label_db;
 mod model;
 mod model_indicator;
 mod network;
@@ -25,7 +26,6 @@ mod sampling_policy;
 mod scores;
 mod status;
 mod template;
-mod tidb;
 mod time_series;
 mod tor_exit_node;
 mod traffic_filter;
@@ -56,6 +56,9 @@ pub use self::data_source::{DataSource, DataType, Update as DataSourceUpdate};
 pub use self::external_service::{ExternalService, ExternalServiceKind};
 pub use self::filter::{Filter, PeriodForSearch, Value as FilterValue};
 pub use self::hosts::{Host, UserAgent};
+pub use self::label_db::{
+    Kind as LabelDbKind, LabelDb, Rule as LabelDbRule, RuleKind as LabelDbRuleKind,
+};
 pub use self::model::Model;
 pub use self::model_indicator::ModelIndicator;
 pub use self::network::{Network, Update as NetworkUpdate};
@@ -74,7 +77,6 @@ pub use self::template::{
     Structured, StructuredClusteringAlgorithm, Template, Unstructured,
     UnstructuredClusteringAlgorithm,
 };
-pub use self::tidb::{Kind as TidbKind, Rule as TidbRule, RuleKind as TidbRuleKind, Tidb};
 pub use self::time_series::{Cluster as ClusterTimeSeries, Column as ColumnTimeSeries, TimeSeries};
 pub use self::tor_exit_node::TorExitNode;
 pub use self::traffic_filter::{ProtocolPorts, TrafficFilter};
@@ -124,7 +126,7 @@ pub(super) const SAMPLING_POLICY: &str = "sampling policy";
 pub(super) const SCORES: &str = "scores";
 pub(super) const STATUSES: &str = "statuses";
 pub(super) const TEMPLATES: &str = "templates";
-pub(super) const TIDB: &str = "TI database";
+pub(super) const LABEL_DB: &str = "label database";
 pub(super) const TIME_SERIES: &str = "time series";
 pub(super) const TOR_EXIT_NODES: &str = "Tor exit nodes";
 pub(super) const TRAFFIC_FILTER_RULES: &str = "traffic filter rules";
@@ -162,7 +164,7 @@ pub(crate) const MAP_NAMES: [&str; 36] = [
     SCORES,
     STATUSES,
     TEMPLATES,
-    TIDB,
+    LABEL_DB,
     TIME_SERIES,
     TOR_EXIT_NODES,
     TRAFFIC_FILTER_RULES,
@@ -342,9 +344,9 @@ impl StateDb {
     }
 
     #[must_use]
-    pub(crate) fn tidbs(&self) -> Table<'_, Tidb> {
+    pub(crate) fn label_dbs(&self) -> Table<'_, LabelDb> {
         let inner = self.inner.as_ref().expect("database must be open");
-        Table::<Tidb>::open(inner).expect("{TIDB} table must be present")
+        Table::<LabelDb>::open(inner).expect("{LABEL_DB} table must be present")
     }
 
     #[must_use]
