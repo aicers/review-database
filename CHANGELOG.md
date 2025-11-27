@@ -18,6 +18,14 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **BREAKING**: `AllowNetwork` and `BlockNetwork` now include a `customer_id`
+  field to support customer-specific blocklist and allowlist management.
+  The database storage key has changed from `name` to `customer_id + name`,
+  allowing multiple customers to have entries with the same name.
+  Existing entries are automatically migrated with `customer_id` set to `0`.
+- **BREAKING**: `AllowNetworkUpdate` and `BlockNetworkUpdate` now include a
+  `customer_id` field. Both `customer_id` and `name` must be provided when
+  updating to change the key.
 - Migrations from versions earlier than 0.42.0 are no longer supported.
 
 ### Removed

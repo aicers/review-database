@@ -35,7 +35,7 @@ impl KeyIndex {
     }
 
     /// Returns the number of entries containing `Key`.
-    fn count(&self) -> usize {
+    pub(crate) fn count(&self) -> usize {
         self.keys
             .iter()
             .filter(|entry| matches!(entry, KeyIndexEntry::Key(_)))
@@ -88,7 +88,7 @@ impl KeyIndex {
     }
 
     /// Inserts a new key and returns its index.
-    fn insert(&mut self, key: &[u8]) -> Result<u32> {
+    pub(crate) fn insert(&mut self, key: &[u8]) -> Result<u32> {
         let id = self.available;
         match u32::try_from(self.keys.len())
             .context("corrupt index")?
