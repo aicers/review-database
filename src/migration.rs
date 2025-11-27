@@ -9,8 +9,14 @@ use std::{
 };
 
 use anyhow::{Context, Result, anyhow};
+use bincode::Options;
 use semver::{Version, VersionReq};
 use tracing::info;
+
+use crate::{
+    AllowNetwork, BlockNetwork, Customer,
+    migration::migration_structures::{AllowNetworkV0_42, BlockNetworkV0_42},
+};
 
 /// The range of versions that use the current database format.
 ///
@@ -93,7 +99,7 @@ use tracing::info;
 /// // release that involves database format change) to 3.5.0, including
 /// // all alpha changes finalized in 3.5.0.
 /// ```
-const COMPATIBLE_VERSION_REQ: &str = ">=0.43.0-alpha.1,<0.43.0-alpha.2";
+const COMPATIBLE_VERSION_REQ: &str = ">=0.43.0-alpha.2,<0.43.0-alpha.3";
 
 /// Migrates the data directory to the up-to-date format if necessary.
 ///
@@ -141,8 +147,8 @@ pub fn migrate_data_dir<P: AsRef<Path>>(data_dir: P, backup_dir: P) -> Result<()
     //   the first version (major.minor) in the "version requirement" and B is the "to version"
     //   (major.minor). (NOTE: Once we release 1.0.0, A and B will contain the major version only.)
     let migration: Vec<Migration> = vec![(
-        VersionReq::parse(">=0.42.0-alpha.5,<0.43.0-alpha.1")?,
-        Version::parse("0.43.0-alpha.1")?,
+        VersionReq::parse(">=0.42.0,<0.43.0-alpha.2")?,
+        Version::parse("0.43.0-alpha.2")?,
         migrate_0_42_to_0_43,
     )];
 
@@ -202,7 +208,7 @@ const MAP_NAMES_V0_42: [&str; 36] = [
     "trusted user agents",
 ];
 
-fn migrate_0_42_to_0_43(data_dir: &Path, backup_dir: &Path) -> Result<()> {
+fn migrate_drop_account_policy(data_dir: &Path, backup_dir: &Path) -> Result<()> {
     // Open the database with the old column family list (including "account policy")
     let db_path = data_dir.join("states.db");
     let backup_path = backup_dir.join("states.db");
@@ -237,6 +243,173 @@ fn migrate_0_42_to_0_43(data_dir: &Path, backup_dir: &Path) -> Result<()> {
     drop(backup_db);
 
     info!("Successfully removed 'account policy' column family");
+    Ok(())
+}
+
+fn migrate_0_42_to_0_43(data_dir: &Path, backup_dir: &Path) -> Result<()> {
+    migrate_drop_account_policy(data_dir, backup_dir)?;
+    migrate_customer_specific_networks(data_dir, backup_dir)
+}
+
+/// A trait for creating a new, customer-specific network structure from an old one.
+trait CustomerSpecificNetwork<T>: crate::Indexable + Sized {
+    /// Creates a new instance from a version 0.42 object and a customer ID.
+    fn from_v0_42(old: T, customer_id: u32) -> Self;
+}
+
+impl CustomerSpecificNetwork<AllowNetworkV0_42> for AllowNetwork {
+    fn from_v0_42(old: AllowNetworkV0_42, customer_id: u32) -> Self {
+        Self {
+            id: u32::MAX, // A temporary ID that will be replaced.
+            name: old.name,
+            networks: old.networks,
+            description: old.description,
+            customer_id,
+        }
+    }
+}
+
+impl CustomerSpecificNetwork<BlockNetworkV0_42> for BlockNetwork {
+    fn from_v0_42(old: BlockNetworkV0_42, customer_id: u32) -> Self {
+        Self {
+            id: u32::MAX, // A temporary ID that will be replaced.
+            name: old.name,
+            networks: old.networks,
+            description: old.description,
+            customer_id,
+        }
+    }
+}
+
+/// A generic function to migrate a list of items in a column family.
+fn migrate_list<T, K>(
+    db: &rocksdb::OptimisticTransactionDB,
+    txn: &rocksdb::Transaction<rocksdb::OptimisticTransactionDB>,
+    customer_ids: &[u32],
+    cf_name: &str,
+) -> Result<()>
+where
+    T: CustomerSpecificNetwork<K> + std::fmt::Debug,
+    K: serde::de::DeserializeOwned + Clone,
+{
+    use crate::collections::KeyIndex;
+
+    let cf = db
+        .cf_handle(cf_name)
+        .ok_or_else(|| anyhow!("'{cf_name}' column family not found"))?;
+
+    let entries_to_migrate = db
+        .iterator_cf(cf, rocksdb::IteratorMode::Start)
+        .filter_map(|item| match item {
+            // The empty key is reserved for the `KeyIndex`, so we process only entries
+            // with non-empty keys.
+            Ok((key, value)) if !key.is_empty() => Some(Ok((key.to_vec(), value.to_vec()))),
+            Ok(_) => None, // Skip the index entry.
+            Err(e) => Some(Err(e)),
+        })
+        .collect::<Result<Vec<(Vec<u8>, Vec<u8>)>, _>>()?;
+
+    if entries_to_migrate.is_empty() {
+        info!("No entries to migrate in '{cf_name}', skipping.");
+        return Ok(());
+    }
+
+    let mut new_index = KeyIndex::default();
+    for (old_key, old_value) in &entries_to_migrate {
+        txn.delete_cf(cf, old_key)?;
+
+        let old_entry: K = bincode::DefaultOptions::new()
+            .deserialize(old_value)
+            .with_context(|| format!("failed to deserialize old entry for '{cf_name}'"))?;
+
+        for &customer_id in customer_ids {
+            let mut new_entry = T::from_v0_42(old_entry.clone(), customer_id);
+            let new_id = new_index.insert(&new_entry.key())?;
+            new_entry.set_index(new_id);
+            txn.put_cf(cf, new_entry.indexed_key(), new_entry.value())?;
+        }
+    }
+
+    let index_bytes = bincode::DefaultOptions::new()
+        .serialize(&new_index)
+        .context("failed to serialize index")?;
+    txn.put_cf(cf, [], &index_bytes)?;
+
+    info!(
+        "Migrated {} entries for '{cf_name}'.",
+        entries_to_migrate.len(),
+    );
+
+    Ok(())
+}
+
+/// The main migration function to convert `AllowNetwork` and `BlockNetwork` to a
+/// customer-specific format. This function manages transactions and calls the generic
+/// migration function.
+fn migrate_customer_specific_networks(data_dir: &Path, backup_dir: &Path) -> Result<()> {
+    use crate::{AllowNetwork, BlockNetwork};
+
+    // A closure to run the common migration logic on a given database path.
+    let migrate_db = |db_path: &Path| -> Result<()> {
+        let mut opts = rocksdb::Options::default();
+        opts.create_if_missing(false);
+        opts.create_missing_column_families(false);
+        let db: rocksdb::OptimisticTransactionDB<rocksdb::SingleThreaded> =
+            rocksdb::OptimisticTransactionDB::open_cf(&opts, db_path, crate::tables::MAP_NAMES)
+                .context("Failed to open database")?;
+
+        // Fetches all customer IDs once.
+        let customer_ids = {
+            let cf = db
+                .cf_handle("customers")
+                .ok_or_else(|| anyhow!("customers column family not found"))?;
+            db.iterator_cf(cf, rocksdb::IteratorMode::Start)
+                .map(|item| {
+                    let (key, value) = item?;
+                    // The empty key is reserved for the `KeyIndex`, so we skip it to process
+                    // only the actual customer data.
+                    if key.is_empty() {
+                        return Ok(None);
+                    }
+                    let customer: Customer = bincode::DefaultOptions::new().deserialize(&value)?;
+                    Ok(Some(customer.id))
+                })
+                .filter_map(Result::transpose)
+                .collect::<Result<Vec<u32>>>()
+                .context("failed to deserialize customer")?
+        };
+        info!("Found {} customer(s) for migration.", customer_ids.len());
+
+        // Starts a single transaction.
+        let txn = db.transaction();
+
+        // Calls the generic function for each type.
+        migrate_list::<AllowNetwork, AllowNetworkV0_42>(
+            &db,
+            &txn,
+            &customer_ids,
+            "allow networks",
+        )?;
+        migrate_list::<BlockNetwork, BlockNetworkV0_42>(
+            &db,
+            &txn,
+            &customer_ids,
+            "block networks",
+        )?;
+
+        // Commits the transaction once after all operations are done.
+        txn.commit().context("failed to commit migration")?;
+
+        Ok(())
+    };
+
+    info!("Migrating AllowNetwork and BlockNetwork to customer-specific format");
+    migrate_db(&data_dir.join("states.db")).context("Failed to migrate main database")?;
+
+    info!("Migrating backup AllowNetwork and BlockNetwork to customer-specific format");
+    migrate_db(&backup_dir.join("states.db")).context("Failed to migrate backup database")?;
+
+    info!("Successfully migrated AllowNetwork and BlockNetwork");
     Ok(())
 }
 
@@ -298,7 +471,7 @@ mod tests {
     use semver::{Version, VersionReq};
 
     use super::COMPATIBLE_VERSION_REQ;
-    use crate::Store;
+    use crate::{Indexable, Store};
 
     #[allow(dead_code)]
     struct TestSchema {
@@ -442,5 +615,200 @@ mod tests {
             )
             .unwrap();
         assert!(backup_db.cf_handle("account policy").is_none());
+    }
+
+    #[test]
+    fn test_migrate_customer_specific_networks() {
+        use std::fs;
+        use std::io::Write;
+
+        use bincode::Options;
+
+        use super::{
+            migrate_customer_specific_networks,
+            migration_structures::{AllowNetworkV0_42, BlockNetworkV0_42},
+        };
+        use crate::{Customer, HostNetworkGroup, Iterable, collections::KeyIndex};
+
+        // 1. Setup: Create database, customers, and old-format data
+        let db_dir = tempfile::tempdir().unwrap();
+        let backup_dir = tempfile::tempdir().unwrap();
+
+        for dir in [&db_dir, &backup_dir] {
+            let mut version_file = fs::File::create(dir.path().join("VERSION")).unwrap();
+            version_file.write_all(b"0.43.0-alpha.1").unwrap();
+        }
+
+        let mut opts = rocksdb::Options::default();
+        opts.create_if_missing(true);
+        opts.create_missing_column_families(true);
+
+        for db_path in [
+            db_dir.path().join("states.db"),
+            backup_dir.path().join("states.db"),
+        ] {
+            let db: rocksdb::OptimisticTransactionDB<rocksdb::SingleThreaded> =
+                rocksdb::OptimisticTransactionDB::open_cf(
+                    &opts,
+                    &db_path,
+                    crate::tables::MAP_NAMES,
+                )
+                .unwrap();
+            let txn = db.transaction();
+
+            // Insert two customers
+            let customers_cf = db.cf_handle("customers").unwrap();
+            let customers = [
+                Customer {
+                    id: u32::MAX,
+                    name: "Customer A".to_string(),
+                    description: String::new(),
+                    networks: Vec::new(),
+                    creation_time: chrono::Utc::now(),
+                },
+                Customer {
+                    id: u32::MAX,
+                    name: "Customer B".to_string(),
+                    description: String::new(),
+                    networks: Vec::new(),
+                    creation_time: chrono::Utc::now(),
+                },
+            ];
+            let mut customer_index = KeyIndex::default();
+            for mut customer in customers {
+                let id = customer_index.insert(customer.key().as_ref()).unwrap();
+                customer.set_index(id);
+                txn.put_cf(customers_cf, customer.indexed_key(), customer.value())
+                    .unwrap();
+            }
+            let customer_index_bytes = bincode::DefaultOptions::new()
+                .serialize(&customer_index)
+                .unwrap();
+            txn.put_cf(customers_cf, [], &customer_index_bytes).unwrap();
+
+            // Insert one old AllowNetwork
+            let allow_cf = db.cf_handle("allow networks").unwrap();
+            let old_allow = AllowNetworkV0_42 {
+                id: u32::MAX,
+                name: "Old Allow".to_string(),
+                networks: HostNetworkGroup::default(),
+                description: "Old Allow Description".to_string(),
+            };
+            let allow_value = bincode::DefaultOptions::new()
+                .serialize(&old_allow)
+                .unwrap();
+            txn.put_cf(allow_cf, old_allow.name.as_bytes(), &allow_value)
+                .unwrap();
+
+            // Insert one old BlockNetwork
+            let block_cf = db.cf_handle("block networks").unwrap();
+            let old_block = BlockNetworkV0_42 {
+                id: u32::MAX,
+                name: "Old Block".to_string(),
+                networks: HostNetworkGroup::default(),
+                description: "Old Block Description".to_string(),
+            };
+            let block_value = bincode::DefaultOptions::new()
+                .serialize(&old_block)
+                .unwrap();
+            txn.put_cf(block_cf, old_block.name.as_bytes(), &block_value)
+                .unwrap();
+
+            txn.commit().unwrap();
+        }
+
+        // 2. Run the migration
+        migrate_customer_specific_networks(db_dir.path(), backup_dir.path()).unwrap();
+
+        // 3. Verification
+        let store = Store::new(db_dir.path(), backup_dir.path()).unwrap();
+
+        let customers = store
+            .customer_map()
+            .iter(rocksdb::Direction::Forward, None)
+            .filter_map(Result::ok)
+            .map(|s| s.id)
+            .collect::<Vec<_>>();
+        assert_eq!(customers.len(), 2, "Should have 2 customer entries");
+
+        // Verify AllowNetwork
+        let all_allows = store
+            .allow_network_map()
+            .iter(rocksdb::Direction::Forward, None)
+            .filter_map(Result::ok)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            all_allows.len(),
+            2,
+            "Should have 2 AllowNetwork entries after migration"
+        );
+
+        let customer_one_allows: Vec<_> = store
+            .allow_network_map()
+            .prefix_iter(
+                rocksdb::Direction::Forward,
+                None,
+                &customers[0].to_be_bytes(),
+            )
+            .filter_map(Result::ok)
+            .collect::<Vec<_>>();
+        assert_eq!(customer_one_allows.len(), 1);
+        assert_eq!(customer_one_allows[0].customer_id, 0);
+        assert_eq!(customer_one_allows[0].name, "Old Allow");
+        assert_eq!(customer_one_allows[0].description, "Old Allow Description");
+
+        let customer_two_allows: Vec<_> = store
+            .allow_network_map()
+            .prefix_iter(
+                rocksdb::Direction::Forward,
+                None,
+                &customers[1].to_be_bytes(),
+            )
+            .filter_map(Result::ok)
+            .collect::<Vec<_>>();
+        assert_eq!(customer_two_allows.len(), 1);
+        assert_eq!(customer_two_allows[0].customer_id, 1);
+        assert_eq!(customer_two_allows[0].name, "Old Allow");
+        assert_eq!(customer_two_allows[0].description, "Old Allow Description");
+
+        // Verify BlockNetwork
+        let all_blocks = store
+            .block_network_map()
+            .iter(rocksdb::Direction::Forward, None)
+            .filter_map(Result::ok)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            all_blocks.len(),
+            2,
+            "Should have 2 AllowNetwork entries after migration"
+        );
+
+        let customer_one_blocks: Vec<_> = store
+            .block_network_map()
+            .prefix_iter(
+                rocksdb::Direction::Forward,
+                None,
+                &customers[0].to_be_bytes(),
+            )
+            .filter_map(Result::ok)
+            .collect::<Vec<_>>();
+        assert_eq!(customer_one_blocks.len(), 1);
+        assert_eq!(customer_one_blocks[0].customer_id, 0);
+        assert_eq!(customer_one_blocks[0].name, "Old Block");
+        assert_eq!(customer_one_blocks[0].description, "Old Block Description");
+
+        let customer_two_blocks: Vec<_> = store
+            .block_network_map()
+            .prefix_iter(
+                rocksdb::Direction::Forward,
+                None,
+                &customers[1].to_be_bytes(),
+            )
+            .filter_map(Result::ok)
+            .collect::<Vec<_>>();
+        assert_eq!(customer_two_blocks.len(), 1);
+        assert_eq!(customer_two_blocks[0].customer_id, 1);
+        assert_eq!(customer_two_blocks[0].name, "Old Block");
+        assert_eq!(customer_two_blocks[0].description, "Old Block Description");
     }
 }

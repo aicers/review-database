@@ -6,6 +6,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::HostNetworkGroup;
 use crate::PeriodForSearch;
 use crate::event::{FilterEndpoint, FlowKind, LearningMethod};
 
@@ -62,4 +63,28 @@ impl From<FilterValueV0_41> for crate::FilterValue {
             period: old.period,
         }
     }
+}
+
+/// `AllowNetwork` structure from version 0.42.x (before `customer_id` was added)
+///
+/// In version 0.42.x, `AllowNetwork` used only name as the key.
+/// From 0.43.x, `customer_id` was added and the key became `customer_id` + name.
+#[derive(Clone, Deserialize, Serialize)]
+pub(crate) struct AllowNetworkV0_42 {
+    pub(crate) id: u32,
+    pub(crate) name: String,
+    pub(crate) networks: HostNetworkGroup,
+    pub(crate) description: String,
+}
+
+/// `BlockNetwork` structure from version 0.42.x (before `customer_id` was added)
+///
+/// In version 0.42.x, `BlockNetwork` used only name as the key.
+/// From 0.43.x, `customer_id` was added and the key became `customer_id` + name.
+#[derive(Clone, Deserialize, Serialize)]
+pub(crate) struct BlockNetworkV0_42 {
+    pub(crate) id: u32,
+    pub(crate) name: String,
+    pub(crate) networks: HostNetworkGroup,
+    pub(crate) description: String,
 }
