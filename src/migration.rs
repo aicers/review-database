@@ -141,7 +141,7 @@ pub fn migrate_data_dir<P: AsRef<Path>>(data_dir: P, backup_dir: P) -> Result<()
     //   the first version (major.minor) in the "version requirement" and B is the "to version"
     //   (major.minor). (NOTE: Once we release 1.0.0, A and B will contain the major version only.)
     let migration: Vec<Migration> = vec![(
-        VersionReq::parse(">=0.42.0-alpha.5,<0.43.0-alpha.2")?,
+        VersionReq::parse(">=0.42.0,<0.43.0-alpha.2")?,
         Version::parse("0.43.0-alpha.2")?,
         migrate_0_42_to_0_43,
     )];
@@ -202,44 +202,14 @@ const MAP_NAMES_V0_42: [&str; 36] = [
     "trusted user agents",
 ];
 
-/// Column family names for version 0.43.0-alpha.1 (with "TI database" before rename)
-const MAP_NAMES_V0_43_ALPHA_1: [&str; 35] = [
-    "access_tokens",
-    "accounts",
-    "agents",
-    "allow networks",
-    "batch_info",
-    "block networks",
-    "category",
-    "cluster",
-    "column stats",
-    "configs",
-    "csv column extras",
-    "customers",
-    "data sources",
-    "filters",
-    "hosts",
-    "models",
-    "model indicators",
-    "meta",
-    "networks",
-    "nodes",
-    "outliers",
-    "qualifiers",
-    "external services",
-    "sampling policy",
-    "scores",
-    "statuses",
-    "templates",
-    "TI database",
-    "time series",
-    "Tor exit nodes",
-    "traffic filter rules",
-    "triage policy",
-    "triage response",
-    "trusted DNS servers",
-    "trusted user agents",
-];
+/// Returns column family names from 0.42 without "account policy".
+fn map_names_v0_42_without_account_policy() -> Vec<&'static str> {
+    MAP_NAMES_V0_42
+        .iter()
+        .copied()
+        .filter(|name| *name != "account policy")
+        .collect()
+}
 
 fn migrate_0_42_to_0_43(data_dir: &Path, backup_dir: &Path) -> Result<()> {
     let db_path = data_dir.join("states.db");
@@ -303,10 +273,12 @@ fn migrate_rename_tidb_to_label_db(db_path: &Path, backup_path: &Path) -> Result
 
 /// Renames the "TI database" column family to "label database" in a single database.
 fn rename_tidb_cf_in_db(db_path: &Path, opts: &rocksdb::Options) -> Result<()> {
+    let cf_names = map_names_v0_42_without_account_policy();
+
     // First, read all data from "TI database" into memory
     let data = {
         let db: rocksdb::OptimisticTransactionDB<rocksdb::SingleThreaded> =
-            rocksdb::OptimisticTransactionDB::open_cf(opts, db_path, MAP_NAMES_V0_43_ALPHA_1)
+            rocksdb::OptimisticTransactionDB::open_cf(opts, db_path, &cf_names)
                 .context("Failed to open database for TI database read")?;
 
         // Check if "TI database" column family exists
@@ -332,7 +304,7 @@ fn rename_tidb_cf_in_db(db_path: &Path, opts: &rocksdb::Options) -> Result<()> {
 
     // Now reopen, create new CF, write data, and drop old CF
     let mut db: rocksdb::OptimisticTransactionDB<rocksdb::SingleThreaded> =
-        rocksdb::OptimisticTransactionDB::open_cf(opts, db_path, MAP_NAMES_V0_43_ALPHA_1)
+        rocksdb::OptimisticTransactionDB::open_cf(opts, db_path, &cf_names)
             .context("Failed to reopen database for TI database rename")?;
 
     info!("Renaming 'TI database' column family to 'label database'");
@@ -598,74 +570,6 @@ mod tests {
                 .unwrap()
                 .as_deref(),
             Some(b"test_value_2".as_slice())
-        );
-    }
-
-    #[test]
-    fn migrate_0_43_alpha_1_renames_tidb() {
-        use std::fs;
-        use std::io::Write;
-
-        // Test migration from 0.43.0-alpha.1 (no account policy, but has TI database)
-        let db_dir = tempfile::tempdir().unwrap();
-        let backup_dir = tempfile::tempdir().unwrap();
-
-        let db_path = db_dir.path().join("states.db");
-        let backup_path = backup_dir.path().join("states.db");
-
-        let mut opts = rocksdb::Options::default();
-        opts.create_if_missing(true);
-        opts.create_missing_column_families(true);
-
-        // Create database with V0_43_ALPHA_1 schema (no account policy)
-        let db: rocksdb::OptimisticTransactionDB = rocksdb::OptimisticTransactionDB::open_cf(
-            &opts,
-            &db_path,
-            super::MAP_NAMES_V0_43_ALPHA_1,
-        )
-        .unwrap();
-
-        // Add test data to "TI database"
-        let ti_cf = db.cf_handle("TI database").unwrap();
-        db.put_cf(ti_cf, b"alpha_key", b"alpha_value").unwrap();
-        drop(db);
-
-        let backup_db: rocksdb::OptimisticTransactionDB =
-            rocksdb::OptimisticTransactionDB::open_cf(
-                &opts,
-                &backup_path,
-                super::MAP_NAMES_V0_43_ALPHA_1,
-            )
-            .unwrap();
-        let ti_cf = backup_db.cf_handle("TI database").unwrap();
-        backup_db
-            .put_cf(ti_cf, b"alpha_key", b"alpha_value")
-            .unwrap();
-        drop(backup_db);
-
-        // Create VERSION files with 0.43.0-alpha.1
-        let mut version_file = fs::File::create(db_dir.path().join("VERSION")).unwrap();
-        version_file.write_all(b"0.43.0-alpha.1").unwrap();
-        drop(version_file);
-
-        let mut backup_version_file = fs::File::create(backup_dir.path().join("VERSION")).unwrap();
-        backup_version_file.write_all(b"0.43.0-alpha.1").unwrap();
-        drop(backup_version_file);
-
-        // Run the migration
-        super::migrate_0_42_to_0_43(db_dir.path(), backup_dir.path()).unwrap();
-
-        // Verify the migration
-        let db: rocksdb::OptimisticTransactionDB =
-            rocksdb::OptimisticTransactionDB::open_cf(&opts, &db_path, crate::tables::MAP_NAMES)
-                .unwrap();
-
-        assert!(db.cf_handle("TI database").is_none());
-
-        let label_cf = db.cf_handle("label database").unwrap();
-        assert_eq!(
-            db.get_cf(label_cf, b"alpha_key").unwrap().as_deref(),
-            Some(b"alpha_value".as_slice())
         );
     }
 }
