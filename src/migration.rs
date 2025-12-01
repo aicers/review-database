@@ -470,9 +470,6 @@ mod tests {
 
     #[test]
     fn migrate_0_42_to_0_43_drops_account_policy_and_renames_tidb() {
-        use std::fs;
-        use std::io::Write;
-
         // Create test directories
         let db_dir = tempfile::tempdir().unwrap();
         let backup_dir = tempfile::tempdir().unwrap();
@@ -508,15 +505,6 @@ mod tests {
             .put_cf(ti_cf, b"test_key_2", b"test_value_2")
             .unwrap();
         drop(backup_db);
-
-        // Create VERSION files with 0.42.0-alpha.5
-        let mut version_file = fs::File::create(db_dir.path().join("VERSION")).unwrap();
-        version_file.write_all(b"0.42.0-alpha.5").unwrap();
-        drop(version_file);
-
-        let mut backup_version_file = fs::File::create(backup_dir.path().join("VERSION")).unwrap();
-        backup_version_file.write_all(b"0.42.0-alpha.5").unwrap();
-        drop(backup_version_file);
 
         // Run the migration
         super::migrate_0_42_to_0_43(db_dir.path(), backup_dir.path()).unwrap();
