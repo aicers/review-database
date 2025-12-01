@@ -18,6 +18,7 @@ pub struct UnusualDestinationPatternFields {
     pub std_deviation: f64,
     pub z_score: f64,
     pub confidence: f32,
+    pub threat_level: u8,
     pub category: Option<EventCategory>,
 }
 
@@ -27,7 +28,7 @@ impl UnusualDestinationPatternFields {
         let start_time_dt = DateTime::from_timestamp_nanos(self.start_time);
         let end_time_dt = DateTime::from_timestamp_nanos(self.end_time);
         format!(
-            "category={:?} sensor={:?} start_time={:?} end_time={:?} destination_ips={:?} count={:?} expected_mean={:?} std_deviation={:?} z_score={:?} confidence={:?}",
+            "category={:?} sensor={:?} start_time={:?} end_time={:?} destination_ips={:?} count={:?} expected_mean={:?} std_deviation={:?} z_score={:?} confidence={:?} threat_level={:?}",
             self.category.as_ref().map_or_else(
                 || "Unspecified".to_string(),
                 std::string::ToString::to_string
@@ -41,6 +42,7 @@ impl UnusualDestinationPatternFields {
             self.std_deviation.to_string(),
             self.z_score.to_string(),
             self.confidence.to_string(),
+            self.threat_level.to_string(),
         )
     }
 }
@@ -64,6 +66,7 @@ pub struct UnusualDestinationPattern {
     pub std_deviation: f64,
     pub z_score: f64,
     pub confidence: f32,
+    pub threat_level: u8,
     pub category: Option<EventCategory>,
     pub triage_scores: Option<Vec<TriageScore>>,
 }
@@ -72,7 +75,7 @@ impl fmt::Display for UnusualDestinationPattern {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "sensor={:?} start_time={:?} end_time={:?} destination_ips={:?} count={:?} expected_mean={:?} std_deviation={:?} z_score={:?} triage_scores={:?}",
+            "sensor={:?} start_time={:?} end_time={:?} destination_ips={:?} count={:?} expected_mean={:?} std_deviation={:?} z_score={:?} confidence={:?} threat_level={:?} triage_scores={:?}",
             self.sensor,
             self.start_time.to_rfc3339(),
             self.end_time.to_rfc3339(),
@@ -81,6 +84,8 @@ impl fmt::Display for UnusualDestinationPattern {
             self.expected_mean.to_string(),
             self.std_deviation.to_string(),
             self.z_score.to_string(),
+            self.confidence.to_string(),
+            self.threat_level.to_string(),
             triage_scores_to_string(self.triage_scores.as_ref()),
         )
     }
@@ -99,6 +104,7 @@ impl UnusualDestinationPattern {
             std_deviation: fields.std_deviation,
             z_score: fields.z_score,
             confidence: fields.confidence,
+            threat_level: fields.threat_level,
             category: fields.category,
             triage_scores: None,
         }
@@ -131,7 +137,7 @@ impl Match for UnusualDestinationPattern {
     }
 
     fn level(&self) -> NonZeroU8 {
-        MEDIUM
+        NonZeroU8::new(self.threat_level).unwrap_or(MEDIUM)
     }
 
     fn kind(&self) -> &'static str {

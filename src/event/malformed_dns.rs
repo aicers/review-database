@@ -58,6 +58,7 @@ pub struct BlocklistMalformedDnsFields {
     pub query_body: Vec<Vec<u8>>,
     pub resp_body: Vec<Vec<u8>>,
     pub confidence: f32,
+    pub threat_level: u8,
     pub category: Option<EventCategory>,
 }
 
@@ -66,7 +67,7 @@ impl BlocklistMalformedDnsFields {
     pub fn syslog_rfc5424(&self) -> String {
         let start_time_dt = DateTime::from_timestamp_nanos(self.start_time);
         format!(
-            "category={:?} sensor={:?} orig_addr={:?} orig_port={:?} resp_addr={:?} resp_port={:?} proto={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} trans_id={:?} flags={:?} question_count={:?} answer_count={:?} authority_count={:?} additional_count={:?} query_count={:?} resp_count={:?} query_bytes={:?} resp_bytes={:?} query_body={:?} resp_body={:?} confidence={:?}",
+            "category={:?} sensor={:?} orig_addr={:?} orig_port={:?} resp_addr={:?} resp_port={:?} proto={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} trans_id={:?} flags={:?} question_count={:?} answer_count={:?} authority_count={:?} additional_count={:?} query_count={:?} resp_count={:?} query_bytes={:?} resp_bytes={:?} query_body={:?} resp_body={:?} confidence={:?} threat_level={:?}",
             self.category.as_ref().map_or_else(
                 || "Unspecified".to_string(),
                 std::string::ToString::to_string
@@ -96,6 +97,7 @@ impl BlocklistMalformedDnsFields {
             format_vec_vec_u8(&self.query_body),
             format_vec_vec_u8(&self.resp_body),
             self.confidence.to_string(),
+            self.threat_level.to_string(),
         )
     }
 }
@@ -135,6 +137,7 @@ pub struct BlocklistMalformedDns {
     pub query_body: Vec<Vec<u8>>,
     pub resp_body: Vec<Vec<u8>>,
     pub confidence: f32,
+    pub threat_level: u8,
     pub category: Option<EventCategory>,
     pub triage_scores: Option<Vec<TriageScore>>,
 }
@@ -145,7 +148,7 @@ impl fmt::Display for BlocklistMalformedDns {
 
         write!(
             f,
-            "sensor={:?} orig_addr={:?} orig_port={:?} resp_addr={:?} resp_port={:?} proto={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} trans_id={:?} flags={:?} question_count={:?} answer_count={:?} authority_count={:?} additional_count={:?} query_count={:?} resp_count={:?} query_bytes={:?} resp_bytes={:?} query_body={:?} resp_body={:?} triage_scores={:?}",
+            "sensor={:?} orig_addr={:?} orig_port={:?} resp_addr={:?} resp_port={:?} proto={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} trans_id={:?} flags={:?} question_count={:?} answer_count={:?} authority_count={:?} additional_count={:?} query_count={:?} resp_count={:?} query_bytes={:?} resp_bytes={:?} query_body={:?} resp_body={:?} confidence={:?} threat_level={:?} triage_scores={:?}",
             self.sensor,
             self.orig_addr.to_string(),
             self.orig_port.to_string(),
@@ -170,6 +173,8 @@ impl fmt::Display for BlocklistMalformedDns {
             self.resp_bytes.to_string(),
             format_vec_vec_u8(&self.query_body),
             format_vec_vec_u8(&self.resp_body),
+            self.confidence.to_string(),
+            self.threat_level.to_string(),
             triage_scores_to_string(self.triage_scores.as_ref()),
         )
     }
@@ -204,6 +209,7 @@ impl BlocklistMalformedDns {
             query_body: fields.query_body,
             resp_body: fields.resp_body,
             confidence: fields.confidence,
+            threat_level: fields.threat_level,
             category: fields.category,
             triage_scores: None,
         }
@@ -236,7 +242,7 @@ impl Match for BlocklistMalformedDns {
     }
 
     fn level(&self) -> NonZeroU8 {
-        MEDIUM
+        NonZeroU8::new(self.threat_level).unwrap_or(MEDIUM)
     }
 
     fn kind(&self) -> &'static str {

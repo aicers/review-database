@@ -982,6 +982,7 @@ fn migrate_http_threat_fields(value: &[u8]) -> Option<Vec<u8>> {
         cluster_id: old.cluster_id.and_then(|v| u32::try_from(v).ok()),
         attack_kind: old.attack_kind,
         confidence: old.confidence,
+        threat_level: 0,
         category: old.category,
     };
 

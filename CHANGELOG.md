@@ -9,6 +9,13 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- Added `threat_level` field to all detection event structures. The field is
+  stored as a `u8` value and allows the threat level to be dynamically assigned
+  by the Unsupervised and Supervised engines, rather than using predefined
+  values for each event type. The `Match::level()` method now returns the
+  `threat_level` field value (falling back to the previous default if zero).
+  This affects all Fields structs (e.g., `DnsEventFields`, `HttpThreatFields`,
+  `BlocklistConnFields`) and their corresponding event structs.
 - Added `init_backup_config`, `update_backup_config`, and `backup_config`
   methods to `Store` for managing backup configuration in the config table.
   This aligns with the `AccountPolicy` pattern where configuration is stored
@@ -89,7 +96,6 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 ## [0.43.0] - 2025-12-18
 
 ### Added
-
 - Added `BackupConfig` entity to configure RocksDB backup settings (interval,
   execution time, retention). The configuration can be saved, updated, and
   read from persistent storage, with default values applied if none exist.
