@@ -15,10 +15,29 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   Fields include `backup_duration` (backup interval in days),
   `backup_time` (execution time in HH:MM:SS UTC format), and
   `num_of_backups_to_keep` (maximum backup snapshots to retain).
+- Added `customer_id: Option<u32>` field to `TriagePolicy` to support
+  per-customer triage rules. `Some(id)` indicates the policy applies to a
+  specific customer, while `None` indicates it applies to all customers.
+- Added new `TriageExclusionReason` struct with `id`, `name`, `description`,
+  and `exclusion_reason: ExclusionReason` fields.
+- Added `triage_exclusion_reason_map` RocksDB indexed map to store
+  `TriageExclusionReason` entries separately, using the `name` field as key.
+- Added `TriagePolicy::into_input_with_exclusion_reason` method for converting
+  `TriagePolicy` into `TriagePolicyInput` with externally-fetched exclusion
+  reasons.
 
 ### Changed
 
 - Migrations from versions earlier than 0.42.0 are no longer supported.
+- **BREAKING**: Renamed the `TriageExclusionReason` enum to `ExclusionReason`.
+- **BREAKING**: Changed `TriagePolicy::ti_db` to `triage_exclusion_id: Vec<u32>`
+  to store IDs referencing the new `triage_exclusion_reason_map`.
+- **BREAKING**: Changed `TriagePolicyUpdate::ti_db` to `triage_exclusion_id`.
+- **BREAKING**: Changed `TriagePolicyInput::ti_db` to `triage_exclusion`.
+- **BREAKING**: Changed `EventFilter::new` to accept
+  `Option<Vec<TriagePolicyInput>>` directly. Applications must now manually
+  convert `TriagePolicy` to `TriagePolicyInput` using
+  `into_input_with_exclusion_reason`.
 
 ### Removed
 

@@ -244,7 +244,7 @@ pub(super) trait Match {
             let triage_scores = triage_policies
                 .iter()
                 .filter_map(|triage| {
-                    let score = self.score_by_ti_db(&triage.ti_db)
+                    let score = self.score_by_triage_exclusion(&triage.triage_exclusion)
                         + self.score_by_attr(&triage.packet_attr)
                         + self.score_by_confidence(&triage.confidence);
                     if triage.response.iter().any(|r| score >= r.minimum_score) {
@@ -266,8 +266,8 @@ pub(super) trait Match {
         Ok((true, None))
     }
 
-    fn score_by_ti_db(&self, ti_db: &[TriageExclusion]) -> f64 {
-        let matched = ti_db.iter().any(|ti| {
+    fn score_by_triage_exclusion(&self, triage_exclusion: &[TriageExclusion]) -> f64 {
+        let matched = triage_exclusion.iter().any(|ti| {
             if let TriageExclusion::IpAddress(filter) = ti {
                 self.src_addrs().iter().any(|&addr| filter.contains(addr))
                     || self.dst_addrs().iter().any(|&addr| filter.contains(addr))

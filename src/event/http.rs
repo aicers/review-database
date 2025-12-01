@@ -630,8 +630,8 @@ impl Match for HttpThreat {
         true
     }
 
-    fn score_by_ti_db(&self, ti_db: &[TriageExclusion]) -> f64 {
-        let matched = ti_db.iter().any(|ti| match ti {
+    fn score_by_triage_exclusion(&self, triage_exclusion: &[TriageExclusion]) -> f64 {
+        let matched = triage_exclusion.iter().any(|ti| match ti {
             TriageExclusion::IpAddress(filter) => self
                 .src_addrs()
                 .iter()
@@ -909,8 +909,8 @@ impl Match for DomainGenerationAlgorithm {
         find_http_attr_by_kind!(self, raw_event_attr)
     }
 
-    fn score_by_ti_db(&self, ti_db: &[TriageExclusion]) -> f64 {
-        let matched = ti_db.iter().any(|ti| match ti {
+    fn score_by_triage_exclusion(&self, triage_exclusion: &[TriageExclusion]) -> f64 {
+        let matched = triage_exclusion.iter().any(|ti| match ti {
             TriageExclusion::IpAddress(filter) => self
                 .src_addrs()
                 .iter()
@@ -1099,8 +1099,8 @@ impl Match for NonBrowser {
         find_http_attr_by_kind!(self, raw_event_attr)
     }
 
-    fn score_by_ti_db(&self, ti_db: &[TriageExclusion]) -> f64 {
-        let matched = ti_db.iter().any(|ti| match ti {
+    fn score_by_triage_exclusion(&self, triage_exclusion: &[TriageExclusion]) -> f64 {
+        let matched = triage_exclusion.iter().any(|ti| match ti {
             TriageExclusion::IpAddress(filter) => self
                 .src_addrs()
                 .iter()
@@ -1293,8 +1293,8 @@ impl Match for BlocklistHttp {
         find_http_attr_by_kind!(self, raw_event_attr)
     }
 
-    fn score_by_ti_db(&self, ti_db: &[TriageExclusion]) -> f64 {
-        let matched = ti_db.iter().any(|ti| match ti {
+    fn score_by_triage_exclusion(&self, triage_exclusion: &[TriageExclusion]) -> f64 {
+        let matched = triage_exclusion.iter().any(|ti| match ti {
             TriageExclusion::IpAddress(filter) => self
                 .src_addrs()
                 .iter()
