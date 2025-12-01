@@ -18,6 +18,13 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **BREAKING**: Renamed `Tidb` struct to `LabelDb` to better reflect its
+  purpose as a labeling database used during the clustering process. Related
+  types are also renamed: `TidbKind` to `LabelDbKind`, `TidbRule` to
+  `LabelDbRule`, `TidbRuleKind` to `LabelDbRuleKind`. The `Store::tidb_map`
+  method is renamed to `Store::label_db_map`. The RocksDB column family is
+  renamed from "TI database" to "label database" with automatic data
+  migration.
 - Migrations from versions earlier than 0.42.0 are no longer supported.
 
 ### Removed

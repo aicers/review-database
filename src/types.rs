@@ -50,7 +50,7 @@ mod private {
     impl Sealed for tables::SamplingPolicy {}
     impl Sealed for types::Status {}
     impl Sealed for tables::Template {}
-    impl Sealed for tables::Tidb {}
+    impl Sealed for tables::LabelDb {}
     impl Sealed for tables::TimeSeries {}
     impl Sealed for tables::TorExitNode {}
     impl Sealed for tables::TrafficFilter {}
