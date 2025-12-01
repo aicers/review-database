@@ -167,7 +167,7 @@ impl FtpBruteForceFields {
         let start_time_dt = DateTime::from_timestamp_nanos(self.start_time);
         let end_time_dt = DateTime::from_timestamp_nanos(self.end_time);
         format!(
-            "category={:?} sensor={:?} orig_addr={:?} resp_addr={:?} resp_port={:?} proto={:?} user_list={:?} start_time={:?} end_time={:?} is_internal={:?} confidence={:?}",
+            "category={:?} sensor={:?} orig_addr={:?} resp_addr={:?} resp_port={:?} proto={:?} user_list={:?} start_time={:?} end_time={:?} is_internal={:?} confidence={:?} threat_level={:?}",
             self.category.as_ref().map_or_else(
                 || "Unspecified".to_string(),
                 std::string::ToString::to_string
@@ -181,7 +181,8 @@ impl FtpBruteForceFields {
             start_time_dt.to_rfc3339(),
             end_time_dt.to_rfc3339(),
             self.is_internal.to_string(),
-            self.confidence.to_string()
+            self.confidence.to_string(),
+            self.threat_level.to_string()
         )
     }
 }
@@ -200,6 +201,7 @@ pub struct FtpBruteForceFieldsV0_42 {
     pub end_time: i64,
     pub is_internal: bool,
     pub confidence: f32,
+    pub threat_level: u8,
     pub category: Option<EventCategory>,
 }
 
@@ -216,6 +218,7 @@ impl From<FtpBruteForceFieldsV0_41> for FtpBruteForceFieldsV0_42 {
             end_time: value.end_time.timestamp_nanos_opt().unwrap_or_default(),
             is_internal: value.is_internal,
             confidence: value.confidence,
+            threat_level: 0,
             category: value.category.into(),
         }
     }
@@ -248,6 +251,7 @@ pub struct FtpBruteForce {
     pub end_time: DateTime<Utc>,
     pub is_internal: bool,
     pub confidence: f32,
+    pub threat_level: u8,
     pub category: Option<EventCategory>,
     pub triage_scores: Option<Vec<TriageScore>>,
 }
@@ -256,7 +260,7 @@ impl fmt::Display for FtpBruteForce {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "orig_addr={:?} resp_addr={:?} resp_port={:?} proto={:?} user_list={:?} start_time={:?} end_time={:?} is_internal={:?} triage_scores={:?}",
+            "orig_addr={:?} resp_addr={:?} resp_port={:?} proto={:?} user_list={:?} start_time={:?} end_time={:?} is_internal={:?} confidence={:?} threat_level={:?} triage_scores={:?}",
             self.orig_addr.to_string(),
             self.resp_addr.to_string(),
             self.resp_port.to_string(),
@@ -265,6 +269,8 @@ impl fmt::Display for FtpBruteForce {
             self.start_time.to_rfc3339(),
             self.end_time.to_rfc3339(),
             self.is_internal.to_string(),
+            self.confidence.to_string(),
+            self.threat_level.to_string(),
             triage_scores_to_string(self.triage_scores.as_ref()),
         )
     }
@@ -284,6 +290,7 @@ impl FtpBruteForce {
             end_time: DateTime::from_timestamp_nanos(fields.end_time),
             is_internal: fields.is_internal,
             confidence: fields.confidence,
+            threat_level: fields.threat_level,
             category: fields.category,
             triage_scores: None,
         }
@@ -316,7 +323,7 @@ impl Match for FtpBruteForce {
     }
 
     fn level(&self) -> NonZeroU8 {
-        MEDIUM
+        NonZeroU8::new(self.threat_level).unwrap_or(MEDIUM)
     }
 
     fn kind(&self) -> &'static str {
@@ -367,7 +374,7 @@ impl FtpEventFields {
             .join(";");
 
         format!(
-            "category={:?} sensor={:?} orig_addr={:?} orig_port={:?} resp_addr={:?} resp_port={:?} proto={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} user={:?} password={:?} commands={:?} confidence={:?}",
+            "category={:?} sensor={:?} orig_addr={:?} orig_port={:?} resp_addr={:?} resp_port={:?} proto={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} user={:?} password={:?} commands={:?} confidence={:?} threat_level={:?}",
             self.category.as_ref().map_or_else(
                 || "Unspecified".to_string(),
                 std::string::ToString::to_string
@@ -387,7 +394,8 @@ impl FtpEventFields {
             self.user,
             self.password,
             commands_str,
-            self.confidence.to_string()
+            self.confidence.to_string(),
+            self.threat_level.to_string()
         )
     }
 }
@@ -411,6 +419,7 @@ pub struct FtpEventFieldsV0_42 {
     pub password: String,
     pub commands: Vec<FtpCommand>,
     pub confidence: f32,
+    pub threat_level: u8,
     pub category: Option<EventCategory>,
 }
 
@@ -433,6 +442,7 @@ pub struct FtpPlainText {
     pub password: String,
     pub commands: Vec<FtpCommand>,
     pub confidence: f32,
+    pub threat_level: u8,
     pub category: Option<EventCategory>,
     pub triage_scores: Option<Vec<TriageScore>>,
 }
@@ -448,7 +458,7 @@ impl fmt::Display for FtpPlainText {
 
         write!(
             f,
-            "sensor={:?} orig_addr={:?} orig_port={:?} resp_addr={:?} resp_port={:?} proto={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} user={:?} password={:?} commands={:?} triage_scores={:?}",
+            "sensor={:?} orig_addr={:?} orig_port={:?} resp_addr={:?} resp_port={:?} proto={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} user={:?} password={:?} commands={:?} confidence={:?} threat_level={:?} triage_scores={:?}",
             self.sensor,
             self.orig_addr.to_string(),
             self.orig_port.to_string(),
@@ -464,6 +474,8 @@ impl fmt::Display for FtpPlainText {
             self.user,
             self.password,
             commands_str,
+            self.confidence.to_string(),
+            self.threat_level.to_string(),
             triage_scores_to_string(self.triage_scores.as_ref()),
         )
     }
@@ -489,6 +501,7 @@ impl FtpPlainText {
             password: fields.password,
             commands: fields.commands,
             confidence: fields.confidence,
+            threat_level: fields.threat_level,
             category: fields.category,
             triage_scores: None,
         }
@@ -521,7 +534,7 @@ impl Match for FtpPlainText {
     }
 
     fn level(&self) -> NonZeroU8 {
-        MEDIUM
+        NonZeroU8::new(self.threat_level).unwrap_or(MEDIUM)
     }
 
     fn kind(&self) -> &'static str {
@@ -564,6 +577,7 @@ pub struct BlocklistFtp {
     pub password: String,
     pub commands: Vec<FtpCommand>,
     pub confidence: f32,
+    pub threat_level: u8,
     pub category: Option<EventCategory>,
     pub triage_scores: Option<Vec<TriageScore>>,
 }
@@ -579,7 +593,7 @@ impl fmt::Display for BlocklistFtp {
 
         write!(
             f,
-            "sensor={:?} orig_addr={:?} orig_port={:?} resp_addr={:?} resp_port={:?} proto={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} user={:?} password={:?} commands={:?} triage_scores={:?}",
+            "sensor={:?} orig_addr={:?} orig_port={:?} resp_addr={:?} resp_port={:?} proto={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} user={:?} password={:?} commands={:?} confidence={:?} threat_level={:?} triage_scores={:?}",
             self.sensor,
             self.orig_addr.to_string(),
             self.orig_port.to_string(),
@@ -595,6 +609,8 @@ impl fmt::Display for BlocklistFtp {
             self.user,
             self.password,
             commands_str,
+            self.confidence.to_string(),
+            self.threat_level.to_string(),
             triage_scores_to_string(self.triage_scores.as_ref()),
         )
     }
@@ -620,6 +636,7 @@ impl BlocklistFtp {
             password: fields.password,
             commands: fields.commands,
             confidence: fields.confidence,
+            threat_level: fields.threat_level,
             category: fields.category,
             triage_scores: None,
         }
@@ -652,7 +669,7 @@ impl Match for BlocklistFtp {
     }
 
     fn level(&self) -> NonZeroU8 {
-        MEDIUM
+        NonZeroU8::new(self.threat_level).unwrap_or(MEDIUM)
     }
 
     fn kind(&self) -> &'static str {

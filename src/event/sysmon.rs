@@ -53,6 +53,7 @@ pub struct WindowsThreat {
     pub cluster_id: Option<usize>,
     pub attack_kind: String,
     pub confidence: f32,
+    pub threat_level: u8,
     pub category: Option<EventCategory>,
     pub triage_scores: Option<Vec<TriageScore>>,
 }
@@ -62,7 +63,7 @@ impl WindowsThreat {
     #[must_use]
     pub fn syslog_rfc5424(&self) -> String {
         format!(
-            "category={:?} sensor={:?} service={:?} agent_name={:?} agent_id={:?} process_guid={:?} process_id={:?} image=\"{}\" user=\"{}\" content=\"{}\" db_name={:?} rule_id={:?} matched_to={:?} cluster_id={:?} attack_kind={:?} confidence={:?}",
+            "category={:?} sensor={:?} service={:?} agent_name={:?} agent_id={:?} process_guid={:?} process_id={:?} image=\"{}\" user=\"{}\" content=\"{}\" db_name={:?} rule_id={:?} matched_to={:?} cluster_id={:?} attack_kind={:?} confidence={:?} threat_level={:?}",
             self.category.as_ref().map_or_else(
                 || "Unspecified".to_string(),
                 std::string::ToString::to_string
@@ -81,7 +82,8 @@ impl WindowsThreat {
             self.matched_to,
             self.cluster_id.map_or("-".to_string(), |s| s.to_string()),
             self.attack_kind,
-            self.confidence.to_string()
+            self.confidence.to_string(),
+            self.threat_level.to_string()
         )
     }
 }
@@ -90,7 +92,7 @@ impl fmt::Display for WindowsThreat {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "sensor={:?} service={:?} agent_name={:?} agent_id={:?} process_guid={:?} process_id={:?} image=\"{}\" user=\"{}\" content=\"{}\" db_name={:?} rule_id={:?} matched_to={:?} cluster_id={:?} attack_kind={:?} confidence={:?} triage_scores={:?}",
+            "sensor={:?} service={:?} agent_name={:?} agent_id={:?} process_guid={:?} process_id={:?} image=\"{}\" user=\"{}\" content=\"{}\" db_name={:?} rule_id={:?} matched_to={:?} cluster_id={:?} attack_kind={:?} confidence={:?} threat_level={:?} triage_scores={:?}",
             self.sensor,
             self.service,
             self.agent_name,
@@ -106,6 +108,7 @@ impl fmt::Display for WindowsThreat {
             self.cluster_id.map_or("-".to_string(), |s| s.to_string()),
             self.attack_kind,
             self.confidence.to_string(),
+            self.threat_level.to_string(),
             triage_scores_to_string(self.triage_scores.as_ref())
         )
     }
@@ -142,7 +145,7 @@ impl Match for WindowsThreat {
     }
 
     fn level(&self) -> NonZeroU8 {
-        MEDIUM
+        NonZeroU8::new(self.threat_level).unwrap_or(MEDIUM)
     }
 
     fn kind(&self) -> &'static str {

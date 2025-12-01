@@ -137,6 +137,7 @@ mod tests {
             ra_flag: false,
             ttl: vec![1; 5],
             confidence: 0.8,
+            threat_level: 3,
             category: Some(crate::EventCategory::CommandAndControl),
         };
         EventMessage {
