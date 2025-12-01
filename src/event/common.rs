@@ -1403,6 +1403,7 @@ mod tests {
             sname: "server_name".to_string(),
             file: "boot_file_name".to_string(),
             confidence: 1.0,
+            threat_level: 3,
             category: Some(EventCategory::InitialAccess),
         }
     }
@@ -1430,6 +1431,7 @@ mod tests {
             orig_l2_bytes: 122,
             resp_l2_bytes: 122,
             confidence: 1.0,
+            threat_level: 3,
             category: Some(EventCategory::InitialAccess),
         }
     }
@@ -1457,6 +1459,7 @@ mod tests {
             endpoint: "epmapper".to_string(),
             operation: "bind".to_string(),
             confidence: 1.0,
+            threat_level: 3,
             category: Some(EventCategory::InitialAccess),
         }
     }
@@ -1499,6 +1502,7 @@ mod tests {
             client_id_type: 1,
             client_id: vec![7, 8, 9],
             confidence: 1.0,
+            threat_level: 3,
             category: Some(EventCategory::InitialAccess),
         }
     }
@@ -1534,6 +1538,7 @@ mod tests {
             ra_flag: true,
             ttl: vec![120; 5],
             confidence: 1.0,
+            threat_level: 3,
             category: Some(EventCategory::InitialAccess),
         }
     }
@@ -1577,6 +1582,7 @@ mod tests {
             body: "12345678901234567890".to_string().into_bytes(),
             state: String::new(),
             confidence: 1.0,
+            threat_level: 3,
             category: Some(EventCategory::InitialAccess),
         }
     }
@@ -1609,6 +1615,7 @@ mod tests {
             sname_type: 1,
             service_name: vec!["krbtgt/EXAMPLE.COM".to_string()],
             confidence: 1.0,
+            threat_level: 3,
             category: Some(EventCategory::InitialAccess),
         }
     }
@@ -1638,6 +1645,7 @@ mod tests {
             subscribe: vec!["topic".to_string()],
             suback_reason: "error".to_string().into_bytes(),
             confidence: 1.0,
+            threat_level: 3,
             category: Some(EventCategory::InitialAccess),
         }
     }
@@ -1663,6 +1671,7 @@ mod tests {
             read_files: vec!["/etc/passwd".to_string()],
             write_files: vec!["/etc/shadow".to_string()],
             confidence: 1.0,
+            threat_level: 3,
             category: Some(EventCategory::InitialAccess),
         }
     }
@@ -1691,6 +1700,7 @@ mod tests {
             domainname: "domain1".to_string(),
             success: "true".to_string(),
             confidence: 1.0,
+            threat_level: 3,
             category: Some(EventCategory::InitialAccess),
         }
     }
@@ -1715,6 +1725,7 @@ mod tests {
             resp_l2_bytes: 0,
             cookie: "cookie".to_string(),
             confidence: 1.0,
+            threat_level: 3,
             category: Some(EventCategory::InitialAccess),
         }
     }
@@ -1749,6 +1760,7 @@ mod tests {
             write_time: 300,
             change_time: 400,
             confidence: 1.0,
+            threat_level: 3,
             category: Some(EventCategory::InitialAccess),
         }
     }
@@ -1779,6 +1791,7 @@ mod tests {
             agent: "agent".to_string(),
             state: "state".to_string(),
             confidence: 1.0,
+            threat_level: 3,
             category: Some(EventCategory::InitialAccess),
         }
     }
@@ -1815,6 +1828,7 @@ mod tests {
             client_shka: "client_shka".to_string(),
             server_shka: "server_shka".to_string(),
             confidence: 1.0,
+            threat_level: 3,
             category: Some(EventCategory::InitialAccess),
         }
     }
@@ -1859,6 +1873,7 @@ mod tests {
             issuer_common_name: "common".to_string(),
             last_alert: 1,
             confidence: 0.6,
+            threat_level: 3,
             category: Some(EventCategory::InitialAccess),
         }
     }
@@ -1889,6 +1904,7 @@ mod tests {
             object: vec!["object".to_string()],
             argument: vec!["argument".to_string()],
             confidence: 1.0,
+            threat_level: 3,
             category: Some(EventCategory::LateralMovement),
         }
     }
@@ -1930,6 +1946,7 @@ mod tests {
             password: "password".to_string(),
             commands: vec![command],
             confidence: 1.0,
+            threat_level: 3,
             category: Some(EventCategory::LateralMovement),
         }
     }
@@ -1952,6 +1969,7 @@ mod tests {
                 .unwrap(),
             proto: 6,
             confidence: 0.3,
+            threat_level: 3,
             category: Some(EventCategory::Reconnaissance),
         }
     }
@@ -1977,6 +1995,7 @@ mod tests {
                 .unwrap(),
             proto: 6,
             confidence: 0.3,
+            threat_level: 3,
             category: Some(EventCategory::Reconnaissance),
         }
     }
@@ -2001,6 +2020,7 @@ mod tests {
                 .unwrap(),
             proto: 6,
             confidence: 0.3,
+            threat_level: 3,
             category: Some(EventCategory::Impact),
         }
     }
@@ -2037,6 +2057,7 @@ mod tests {
             ttl: vec![120; 5],
             coins: vec!["bitcoin".to_string(), "monero".to_string()],
             confidence: 1.0,
+            threat_level: 3,
             category: Some(EventCategory::CommandAndControl),
         }
     }
@@ -2061,6 +2082,7 @@ mod tests {
                 .unwrap(),
             is_internal: true,
             confidence: 0.3,
+            threat_level: 3,
             category: Some(EventCategory::CredentialAccess),
         }
     }
@@ -2077,6 +2099,7 @@ mod tests {
             start_time: now,
             end_time: now,
             confidence: 0.3,
+            threat_level: 3,
             category: Some(EventCategory::Exfiltration),
         }
     }
@@ -2120,6 +2143,7 @@ mod tests {
             body: "12345678901234567890".to_string().into_bytes(),
             state: String::new(),
             confidence: 0.8,
+            threat_level: 3,
             category: Some(EventCategory::CommandAndControl),
         }
     }
@@ -2163,6 +2187,7 @@ mod tests {
             body: "12345678901234567890".to_string().into_bytes(),
             state: String::new(),
             confidence: 1.0,
+            threat_level: 3,
             category: Some(EventCategory::CommandAndControl),
         }
     }
@@ -2189,6 +2214,7 @@ mod tests {
                 .timestamp_nanos_opt()
                 .unwrap(),
             confidence: 0.3,
+            threat_level: 3,
             category: Some(EventCategory::CredentialAccess),
         }
     }
@@ -2213,6 +2239,7 @@ mod tests {
                 .unwrap(),
             proto: 6,
             confidence: 0.3,
+            threat_level: 3,
             category: Some(EventCategory::Discovery),
         }
     }
@@ -2248,6 +2275,7 @@ mod tests {
             ra_flag: false,
             ttl: vec![1, 3, 5, 7],
             confidence: 0.8,
+            threat_level: 3,
             category: Some(EventCategory::CommandAndControl),
         }
     }
@@ -2275,6 +2303,7 @@ mod tests {
             cluster_id: Some(1),
             attack_kind: "attack_kind".to_string(),
             confidence: 0.9,
+            threat_level: 5,
             triage_scores: None,
             category: Some(EventCategory::Reconnaissance),
         }
@@ -2292,6 +2321,7 @@ mod tests {
             cluster_id: Some(1),
             attack_kind: "attack_kind".to_string(),
             confidence: 0.9,
+            threat_level: 3,
             category: Some(EventCategory::Reconnaissance),
             triage_scores: None,
         }
@@ -2315,6 +2345,7 @@ mod tests {
             cluster_id: Some(900),
             attack_kind: "Ransomware_Alcatraz".to_string(),
             confidence: 0.9,
+            threat_level: 3,
             triage_scores: None,
             category: Some(EventCategory::Impact),
         }
@@ -2365,6 +2396,7 @@ mod tests {
             matched_to: "match".to_string(),
             attack_kind: "attack".to_string(),
             confidence: 0.8,
+            threat_level: 3,
             category: Some(EventCategory::Reconnaissance),
         }
     }
