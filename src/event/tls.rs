@@ -102,6 +102,7 @@ pub struct BlocklistTlsFieldsV0_42 {
     pub issuer_common_name: String,
     pub last_alert: u8,
     pub confidence: f32,
+    pub threat_level: u8,
     pub category: Option<EventCategory>,
 }
 
@@ -110,7 +111,7 @@ impl BlocklistTlsFields {
     pub fn syslog_rfc5424(&self) -> String {
         let start_time_dt = DateTime::from_timestamp_nanos(self.start_time);
         format!(
-            "category={:?} sensor={:?} src_addr={:?} src_port={:?} dst_addr={:?} dst_port={:?} proto={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} server_name={:?} alpn_protocol={:?} ja3={:?} version={:?} client_cipher_suites={:?} client_extensions={:?} cipher={:?} extensions={:?} ja3s={:?} serial={:?} subject_country={:?} subject_org_name={:?} subject_common_name={:?} validity_not_before={:?} validity_not_after={:?} subject_alt_name={:?} issuer_country={:?} issuer_org_name={:?} issuer_org_unit_name={:?} issuer_common_name={:?} last_alert={:?} confidence={:?}",
+            "category={:?} sensor={:?} src_addr={:?} src_port={:?} dst_addr={:?} dst_port={:?} proto={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} server_name={:?} alpn_protocol={:?} ja3={:?} version={:?} client_cipher_suites={:?} client_extensions={:?} cipher={:?} extensions={:?} ja3s={:?} serial={:?} subject_country={:?} subject_org_name={:?} subject_common_name={:?} validity_not_before={:?} validity_not_after={:?} subject_alt_name={:?} issuer_country={:?} issuer_org_name={:?} issuer_org_unit_name={:?} issuer_common_name={:?} last_alert={:?} confidence={:?} threat_level={:?}",
             self.category.as_ref().map_or_else(
                 || "Unspecified".to_string(),
                 std::string::ToString::to_string
@@ -149,6 +150,7 @@ impl BlocklistTlsFields {
             self.issuer_common_name,
             self.last_alert.to_string(),
             self.confidence.to_string(),
+            self.threat_level.to_string(),
         )
     }
 }
@@ -190,6 +192,7 @@ pub struct BlocklistTls {
     pub issuer_common_name: String,
     pub last_alert: u8,
     pub confidence: f32,
+    pub threat_level: u8,
     pub category: Option<EventCategory>,
     pub triage_scores: Option<Vec<TriageScore>>,
 }
@@ -198,7 +201,7 @@ impl fmt::Display for BlocklistTls {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "sensor={:?} src_addr={:?} src_port={:?} dst_addr={:?} dst_port={:?} proto={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} server_name={:?} alpn_protocol={:?} ja3={:?} version={:?} client_cipher_suites={:?} client_extensions={:?} cipher={:?} extensions={:?} ja3s={:?} serial={:?} subject_country={:?} subject_org_name={:?} subject_common_name={:?} validity_not_before={:?} validity_not_after={:?} subject_alt_name={:?} issuer_country={:?} issuer_org_name={:?} issuer_org_unit_name={:?} issuer_common_name={:?} last_alert={:?} confidence={:?} triage_scores={:?}",
+            "sensor={:?} src_addr={:?} src_port={:?} dst_addr={:?} dst_port={:?} proto={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} server_name={:?} alpn_protocol={:?} ja3={:?} version={:?} client_cipher_suites={:?} client_extensions={:?} cipher={:?} extensions={:?} ja3s={:?} serial={:?} subject_country={:?} subject_org_name={:?} subject_common_name={:?} validity_not_before={:?} validity_not_after={:?} subject_alt_name={:?} issuer_country={:?} issuer_org_name={:?} issuer_org_unit_name={:?} issuer_common_name={:?} last_alert={:?} confidence={:?} threat_level={:?} triage_scores={:?}",
             self.sensor,
             self.src_addr.to_string(),
             self.src_port.to_string(),
@@ -233,6 +236,7 @@ impl fmt::Display for BlocklistTls {
             self.issuer_common_name,
             self.last_alert.to_string(),
             self.confidence.to_string(),
+            self.threat_level.to_string(),
             triage_scores_to_string(self.triage_scores.as_ref())
         )
     }
@@ -276,6 +280,7 @@ impl BlocklistTls {
             issuer_common_name: fields.issuer_common_name,
             last_alert: fields.last_alert,
             confidence: fields.confidence,
+            threat_level: fields.threat_level,
             category: fields.category,
             triage_scores: None,
         }
@@ -308,7 +313,7 @@ impl Match for BlocklistTls {
     }
 
     fn level(&self) -> NonZeroU8 {
-        MEDIUM
+        NonZeroU8::new(self.threat_level).unwrap_or(MEDIUM)
     }
 
     fn kind(&self) -> &'static str {
@@ -368,6 +373,7 @@ pub struct SuspiciousTlsTraffic {
     pub issuer_common_name: String,
     pub last_alert: u8,
     pub confidence: f32,
+    pub threat_level: u8,
     pub category: Option<EventCategory>,
     pub triage_scores: Option<Vec<TriageScore>>,
 }
@@ -376,7 +382,7 @@ impl fmt::Display for SuspiciousTlsTraffic {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "sensor={:?} src_addr={:?} src_port={:?} dst_addr={:?} dst_port={:?} proto={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} server_name={:?} alpn_protocol={:?} ja3={:?} version={:?} client_cipher_suites={:?} client_extensions={:?} cipher={:?} extensions={:?} ja3s={:?} serial={:?} subject_country={:?} subject_org_name={:?} subject_common_name={:?} validity_not_before={:?} validity_not_after={:?} subject_alt_name={:?} issuer_country={:?} issuer_org_name={:?} issuer_org_unit_name={:?} issuer_common_name={:?} last_alert={:?} confidence={:?} triage_scores={:?}",
+            "sensor={:?} src_addr={:?} src_port={:?} dst_addr={:?} dst_port={:?} proto={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} server_name={:?} alpn_protocol={:?} ja3={:?} version={:?} client_cipher_suites={:?} client_extensions={:?} cipher={:?} extensions={:?} ja3s={:?} serial={:?} subject_country={:?} subject_org_name={:?} subject_common_name={:?} validity_not_before={:?} validity_not_after={:?} subject_alt_name={:?} issuer_country={:?} issuer_org_name={:?} issuer_org_unit_name={:?} issuer_common_name={:?} last_alert={:?} confidence={:?} threat_level={:?} triage_scores={:?}",
             self.sensor,
             self.src_addr.to_string(),
             self.src_port.to_string(),
@@ -411,6 +417,7 @@ impl fmt::Display for SuspiciousTlsTraffic {
             self.issuer_common_name,
             self.last_alert.to_string(),
             self.confidence.to_string(),
+            self.threat_level.to_string(),
             triage_scores_to_string(self.triage_scores.as_ref())
         )
     }
@@ -454,6 +461,7 @@ impl SuspiciousTlsTraffic {
             issuer_common_name: fields.issuer_common_name,
             last_alert: fields.last_alert,
             confidence: fields.confidence,
+            threat_level: fields.threat_level,
             category: fields.category,
             triage_scores: None,
         }
@@ -486,7 +494,7 @@ impl Match for SuspiciousTlsTraffic {
     }
 
     fn level(&self) -> NonZeroU8 {
-        MEDIUM
+        NonZeroU8::new(self.threat_level).unwrap_or(MEDIUM)
     }
 
     fn kind(&self) -> &'static str {

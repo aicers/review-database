@@ -90,6 +90,7 @@ pub struct HttpEventFieldsV0_42 {
     pub body: Vec<u8>,
     pub state: String,
     pub confidence: f32,
+    pub threat_level: u8,
     pub category: Option<EventCategory>,
 }
 
@@ -98,7 +99,7 @@ impl HttpEventFields {
     pub fn syslog_rfc5424(&self) -> String {
         let start_time_dt = DateTime::from_timestamp_nanos(self.start_time);
         format!(
-            "category={:?} sensor={:?} src_addr={:?} src_port={:?} dst_addr={:?} dst_port={:?} proto={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} method={:?} host={:?} uri={:?} referer={:?} version={:?} user_agent={:?} request_len={:?} response_len={:?} status_code={:?} status_msg={:?} username={:?} password={:?} cookie={:?} content_encoding={:?} content_type={:?} cache_control={:?} filenames={:?} mime_types={:?} body={:?} state={:?} confidence={:?}",
+            "category={:?} sensor={:?} src_addr={:?} src_port={:?} dst_addr={:?} dst_port={:?} proto={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} method={:?} host={:?} uri={:?} referer={:?} version={:?} user_agent={:?} request_len={:?} response_len={:?} status_code={:?} status_msg={:?} username={:?} password={:?} cookie={:?} content_encoding={:?} content_type={:?} cache_control={:?} filenames={:?} mime_types={:?} body={:?} state={:?} confidence={:?} threat_level={:?}",
             self.category.as_ref().map_or_else(
                 || "Unspecified".to_string(),
                 std::string::ToString::to_string
@@ -135,7 +136,8 @@ impl HttpEventFields {
             self.mime_types.join(","),
             get_post_body(&self.body),
             self.state,
-            self.confidence.to_string()
+            self.confidence.to_string(),
+            self.threat_level.to_string()
         )
     }
 }
@@ -155,6 +157,7 @@ pub struct RepeatedHttpSessionsFieldsV0_42 {
     /// Timestamp in nanoseconds since the Unix epoch (UTC).
     pub end_time: i64,
     pub confidence: f32,
+    pub threat_level: u8,
     pub category: Option<EventCategory>,
 }
 
@@ -164,7 +167,7 @@ impl RepeatedHttpSessionsFields {
         let start_time_dt = DateTime::from_timestamp_nanos(self.start_time);
         let end_time_dt = DateTime::from_timestamp_nanos(self.end_time);
         format!(
-            "category={:?} sensor={:?} src_addr={:?} src_port={:?} dst_addr={:?} dst_port={:?} proto={:?} start_time={:?} end_time={:?} confidence={:?}",
+            "category={:?} sensor={:?} src_addr={:?} src_port={:?} dst_addr={:?} dst_port={:?} proto={:?} start_time={:?} end_time={:?} confidence={:?} threat_level={:?}",
             self.category.as_ref().map_or_else(
                 || "Unspecified".to_string(),
                 std::string::ToString::to_string
@@ -177,7 +180,8 @@ impl RepeatedHttpSessionsFields {
             self.proto.to_string(),
             start_time_dt.to_rfc3339(),
             end_time_dt.to_rfc3339(),
-            self.confidence.to_string()
+            self.confidence.to_string(),
+            self.threat_level.to_string()
         )
     }
 }
@@ -194,6 +198,7 @@ pub struct RepeatedHttpSessions {
     pub start_time: DateTime<Utc>,
     pub end_time: DateTime<Utc>,
     pub confidence: f32,
+    pub threat_level: u8,
     pub category: Option<EventCategory>,
     pub triage_scores: Option<Vec<TriageScore>>,
 }
@@ -202,7 +207,7 @@ impl fmt::Display for RepeatedHttpSessions {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "sensor={:?} src_addr={:?} src_port={:?} dst_addr={:?} dst_port={:?} proto={:?} start_time={:?} end_time={:?} triage_scores={:?}",
+            "sensor={:?} src_addr={:?} src_port={:?} dst_addr={:?} dst_port={:?} proto={:?} start_time={:?} end_time={:?} threat_level={:?} triage_scores={:?}",
             self.sensor,
             self.src_addr.to_string(),
             self.src_port.to_string(),
@@ -211,6 +216,7 @@ impl fmt::Display for RepeatedHttpSessions {
             self.proto.to_string(),
             self.start_time.to_rfc3339(),
             self.end_time.to_rfc3339(),
+            self.threat_level.to_string(),
             triage_scores_to_string(self.triage_scores.as_ref())
         )
     }
@@ -229,6 +235,7 @@ impl RepeatedHttpSessions {
             start_time: DateTime::from_timestamp_nanos(fields.start_time),
             end_time: DateTime::from_timestamp_nanos(fields.end_time),
             confidence: fields.confidence,
+            threat_level: fields.threat_level,
             category: fields.category,
             triage_scores: None,
         }
@@ -261,7 +268,7 @@ impl Match for RepeatedHttpSessions {
     }
 
     fn level(&self) -> std::num::NonZeroU8 {
-        MEDIUM
+        NonZeroU8::new(self.threat_level).unwrap_or(MEDIUM)
     }
 
     fn kind(&self) -> &'static str {
@@ -342,6 +349,7 @@ pub struct HttpThreatFieldsV0_42 {
     pub cluster_id: Option<usize>,
     pub attack_kind: String,
     pub confidence: f32,
+    pub threat_level: u8,
     pub category: Option<EventCategory>,
 }
 
@@ -350,7 +358,7 @@ impl HttpThreatFields {
     pub fn syslog_rfc5424(&self) -> String {
         let start_time_dt = DateTime::from_timestamp_nanos(self.start_time);
         format!(
-            "category={:?} sensor={:?} src_addr={:?} src_port={:?} dst_addr={:?} dst_port={:?} proto={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} method={:?} host={:?} uri={:?} referer={:?} version={:?} user_agent={:?} request_len={:?} response_len={:?} status_code={:?} status_msg={:?} username={:?} password={:?} cookie={:?} content_encoding={:?} content_type={:?} cache_control={:?} filenames={:?} mime_types={:?} body={:?} state={:?} db_name={:?} rule_id={:?} matched_to={:?} cluster_id={:?} attack_kind={:?} confidence={:?}",
+            "category={:?} sensor={:?} src_addr={:?} src_port={:?} dst_addr={:?} dst_port={:?} proto={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} method={:?} host={:?} uri={:?} referer={:?} version={:?} user_agent={:?} request_len={:?} response_len={:?} status_code={:?} status_msg={:?} username={:?} password={:?} cookie={:?} content_encoding={:?} content_type={:?} cache_control={:?} filenames={:?} mime_types={:?} body={:?} state={:?} db_name={:?} rule_id={:?} matched_to={:?} cluster_id={:?} attack_kind={:?} confidence={:?} threat_level={:?}",
             self.category.as_ref().map_or_else(
                 || "Unspecified".to_string(),
                 std::string::ToString::to_string
@@ -393,6 +401,7 @@ impl HttpThreatFields {
             self.cluster_id.map_or("-".to_string(), |s| s.to_string()),
             self.attack_kind,
             self.confidence.to_string(),
+            self.threat_level.to_string()
         )
     }
 }
@@ -455,6 +464,7 @@ pub struct HttpThreat {
     pub cluster_id: Option<usize>,
     pub attack_kind: String,
     pub confidence: f32,
+    pub threat_level: u8,
     pub category: Option<EventCategory>,
     pub triage_scores: Option<Vec<TriageScore>>,
 }
@@ -463,7 +473,7 @@ impl fmt::Display for HttpThreat {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "sensor={:?} src_addr={:?} src_port={:?} dst_addr={:?} dst_port={:?} proto={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} method={:?} host={:?} uri={:?} referer={:?} version={:?} user_agent={:?} request_len={:?} response_len={:?} status_code={:?} status_msg={:?} username={:?} password={:?} cookie={:?} content_encoding={:?} content_type={:?} cache_control={:?} filenames={:?} mime_types={:?} body={:?} state={:?} db_name={:?} rule_id={:?} matched_to={:?} cluster_id={:?} attack_kind={:?} confidence={:?} triage_scores={:?}",
+            "sensor={:?} src_addr={:?} src_port={:?} dst_addr={:?} dst_port={:?} proto={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} method={:?} host={:?} uri={:?} referer={:?} version={:?} user_agent={:?} request_len={:?} response_len={:?} status_code={:?} status_msg={:?} username={:?} password={:?} cookie={:?} content_encoding={:?} content_type={:?} cache_control={:?} filenames={:?} mime_types={:?} body={:?} state={:?} db_name={:?} rule_id={:?} matched_to={:?} cluster_id={:?} attack_kind={:?} confidence={:?} threat_level={:?} triage_scores={:?}",
             self.sensor,
             self.src_addr.to_string(),
             self.src_port.to_string(),
@@ -502,6 +512,7 @@ impl fmt::Display for HttpThreat {
             self.cluster_id.map_or("-".to_string(), |s| s.to_string()),
             self.attack_kind,
             self.confidence.to_string(),
+            self.threat_level.to_string(),
             triage_scores_to_string(self.triage_scores.as_ref()),
         )
     }
@@ -549,6 +560,7 @@ impl HttpThreat {
             cluster_id: fields.cluster_id,
             attack_kind: fields.attack_kind,
             confidence: fields.confidence,
+            threat_level: fields.threat_level,
             category: fields.category,
             triage_scores: None,
         }
@@ -581,7 +593,7 @@ impl Match for HttpThreat {
     }
 
     fn level(&self) -> NonZeroU8 {
-        LOW
+        NonZeroU8::new(self.threat_level).unwrap_or(LOW)
     }
 
     fn kind(&self) -> &'static str {
@@ -683,6 +695,7 @@ pub struct DgaFieldsV0_42 {
     pub body: Vec<u8>,
     pub state: String,
     pub confidence: f32,
+    pub threat_level: u8,
     pub category: Option<EventCategory>,
 }
 
@@ -691,7 +704,7 @@ impl DgaFields {
     pub fn syslog_rfc5424(&self) -> String {
         let start_time_dt = DateTime::from_timestamp_nanos(self.start_time);
         format!(
-            "category={:?} sensor={:?} src_addr={:?} src_port={:?} dst_addr={:?} dst_port={:?} proto={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} method={:?} host={:?} uri={:?} referer={:?} version={:?} user_agent={:?} request_len={:?} response_len={:?} status_code={:?} status_msg={:?} username={:?} password={:?} cookie={:?} content_encoding={:?} content_type={:?} cache_control={:?} filenames={:?} mime_types={:?} body={:?} state={:?} confidence={:?}",
+            "category={:?} sensor={:?} src_addr={:?} src_port={:?} dst_addr={:?} dst_port={:?} proto={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} method={:?} host={:?} uri={:?} referer={:?} version={:?} user_agent={:?} request_len={:?} response_len={:?} status_code={:?} status_msg={:?} username={:?} password={:?} cookie={:?} content_encoding={:?} content_type={:?} cache_control={:?} filenames={:?} mime_types={:?} body={:?} state={:?} confidence={:?} threat_level={:?}",
             self.category.as_ref().map_or_else(
                 || "Unspecified".to_string(),
                 std::string::ToString::to_string
@@ -728,7 +741,8 @@ impl DgaFields {
             self.mime_types.join(","),
             get_post_body(&self.body),
             self.state,
-            self.confidence.to_string()
+            self.confidence.to_string(),
+            self.threat_level.to_string()
         )
     }
 }
@@ -770,6 +784,7 @@ pub struct DomainGenerationAlgorithm {
     pub body: Vec<u8>,
     pub state: String,
     pub confidence: f32,
+    pub threat_level: u8,
     pub category: Option<EventCategory>,
     pub triage_scores: Option<Vec<TriageScore>>,
 }
@@ -778,7 +793,7 @@ impl fmt::Display for DomainGenerationAlgorithm {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "sensor={:?} src_addr={:?} src_port={:?} dst_addr={:?} dst_port={:?} proto={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} method={:?} host={:?} uri={:?} referer={:?} version={:?} user_agent={:?} request_len={:?} response_len={:?} status_code={:?} status_msg={:?} username={:?} password={:?} cookie={:?} content_encoding={:?} content_type={:?} cache_control={:?} filenames={:?} mime_types={:?} body={:?} state={:?} confidence={:?} triage_scores={:?}",
+            "sensor={:?} src_addr={:?} src_port={:?} dst_addr={:?} dst_port={:?} proto={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} method={:?} host={:?} uri={:?} referer={:?} version={:?} user_agent={:?} request_len={:?} response_len={:?} status_code={:?} status_msg={:?} username={:?} password={:?} cookie={:?} content_encoding={:?} content_type={:?} cache_control={:?} filenames={:?} mime_types={:?} body={:?} state={:?} confidence={:?} threat_level={:?} triage_scores={:?}",
             self.sensor,
             self.src_addr.to_string(),
             self.src_port.to_string(),
@@ -812,6 +827,7 @@ impl fmt::Display for DomainGenerationAlgorithm {
             get_post_body(&self.body),
             self.state,
             self.confidence.to_string(),
+            self.threat_level.to_string(),
             triage_scores_to_string(self.triage_scores.as_ref()),
         )
     }
@@ -854,6 +870,7 @@ impl DomainGenerationAlgorithm {
             body: fields.body,
             state: fields.state,
             confidence: fields.confidence,
+            threat_level: fields.threat_level,
             category: fields.category,
             triage_scores: None,
         }
@@ -886,7 +903,7 @@ impl Match for DomainGenerationAlgorithm {
     }
 
     fn level(&self) -> NonZeroU8 {
-        LOW
+        NonZeroU8::new(self.threat_level).unwrap_or(LOW)
     }
 
     fn kind(&self) -> &'static str {
@@ -961,6 +978,7 @@ pub struct NonBrowser {
     pub body: Vec<u8>,
     pub state: String,
     pub confidence: f32,
+    pub threat_level: u8,
     pub category: Option<EventCategory>,
     pub triage_scores: Option<Vec<TriageScore>>,
 }
@@ -969,7 +987,7 @@ impl fmt::Display for NonBrowser {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "sensor={:?} src_addr={:?} src_port={:?} dst_addr={:?} dst_port={:?} proto={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} method={:?} host={:?} uri={:?} referer={:?} version={:?} user_agent={:?} request_len={:?} response_len={:?} status_code={:?} status_msg={:?} username={:?} password={:?} cookie={:?} content_encoding={:?} content_type={:?} cache_control={:?} filenames={:?} mime_types={:?} body={:?} state={:?} triage_scores={:?}",
+            "sensor={:?} src_addr={:?} src_port={:?} dst_addr={:?} dst_port={:?} proto={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} method={:?} host={:?} uri={:?} referer={:?} version={:?} user_agent={:?} request_len={:?} response_len={:?} status_code={:?} status_msg={:?} username={:?} password={:?} cookie={:?} content_encoding={:?} content_type={:?} cache_control={:?} filenames={:?} mime_types={:?} body={:?} state={:?} threat_level={:?} triage_scores={:?}",
             self.sensor,
             self.src_addr.to_string(),
             self.src_port.to_string(),
@@ -1002,6 +1020,7 @@ impl fmt::Display for NonBrowser {
             self.mime_types.join(","),
             get_post_body(&self.body),
             self.state,
+            self.threat_level.to_string(),
             triage_scores_to_string(self.triage_scores.as_ref()),
         )
     }
@@ -1044,6 +1063,7 @@ impl NonBrowser {
             body: fields.body.clone(),
             state: fields.state.clone(),
             confidence: fields.confidence,
+            threat_level: fields.threat_level,
             category: fields.category,
             triage_scores: None,
         }
@@ -1076,7 +1096,7 @@ impl Match for NonBrowser {
     }
 
     fn level(&self) -> NonZeroU8 {
-        MEDIUM
+        NonZeroU8::new(self.threat_level).unwrap_or(MEDIUM)
     }
 
     fn kind(&self) -> &'static str {
@@ -1155,6 +1175,7 @@ pub struct BlocklistHttp {
     pub body: Vec<u8>,
     pub state: String,
     pub confidence: f32,
+    pub threat_level: u8,
     pub category: Option<EventCategory>,
     pub triage_scores: Option<Vec<TriageScore>>,
 }
@@ -1163,7 +1184,7 @@ impl fmt::Display for BlocklistHttp {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "sensor={:?} src_addr={:?} src_port={:?} dst_addr={:?} dst_port={:?} proto={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} method={:?} host={:?} uri={:?} referer={:?} version={:?} user_agent={:?} request_len={:?} response_len={:?} status_code={:?} status_msg={:?} username={:?} password={:?} cookie={:?} content_encoding={:?} content_type={:?} cache_control={:?} filenames={:?} mime_types={:?} body={:?} state={:?} triage_scores={:?}",
+            "sensor={:?} src_addr={:?} src_port={:?} dst_addr={:?} dst_port={:?} proto={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} method={:?} host={:?} uri={:?} referer={:?} version={:?} user_agent={:?} request_len={:?} response_len={:?} status_code={:?} status_msg={:?} username={:?} password={:?} cookie={:?} content_encoding={:?} content_type={:?} cache_control={:?} filenames={:?} mime_types={:?} body={:?} state={:?} threat_level={:?} triage_scores={:?}",
             self.sensor,
             self.src_addr.to_string(),
             self.src_port.to_string(),
@@ -1196,6 +1217,7 @@ impl fmt::Display for BlocklistHttp {
             self.mime_types.join(","),
             get_post_body(&self.body),
             self.state,
+            self.threat_level.to_string(),
             triage_scores_to_string(self.triage_scores.as_ref()),
         )
     }
@@ -1238,6 +1260,7 @@ impl BlocklistHttp {
             body: fields.body.clone(),
             state: fields.state.clone(),
             confidence: fields.confidence,
+            threat_level: fields.threat_level,
             category: fields.category,
             triage_scores: None,
         }
@@ -1270,7 +1293,7 @@ impl Match for BlocklistHttp {
     }
 
     fn level(&self) -> NonZeroU8 {
-        MEDIUM
+        NonZeroU8::new(self.threat_level).unwrap_or(MEDIUM)
     }
 
     fn kind(&self) -> &'static str {

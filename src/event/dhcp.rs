@@ -87,6 +87,7 @@ pub struct BlocklistDhcpFieldsV0_42 {
     pub client_id_type: u8,
     pub client_id: Vec<u8>,
     pub confidence: f32,
+    pub threat_level: u8,
     pub category: Option<EventCategory>,
 }
 
@@ -100,7 +101,7 @@ impl BlocklistDhcpFields {
     pub fn syslog_rfc5424(&self) -> String {
         let start_time_dt = DateTime::from_timestamp_nanos(self.start_time);
         format!(
-            "category={:?} sensor={:?} src_addr={:?} src_port={:?} dst_addr={:?} dst_port={:?} proto={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} msg_type={:?} ciaddr={:?} yiaddr={:?} siaddr={:?} giaddr={:?} subnet_mask={:?} router={:?} domain_name_server={:?} req_ip_addr={:?} lease_time={:?} server_id={:?} param_req_list={:?} message={:?} renewal_time={:?} rebinding_time={:?} class_id={:?} client_id_type={:?} client_id={:?} confidence={:?}",
+            "category={:?} sensor={:?} src_addr={:?} src_port={:?} dst_addr={:?} dst_port={:?} proto={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} msg_type={:?} ciaddr={:?} yiaddr={:?} siaddr={:?} giaddr={:?} subnet_mask={:?} router={:?} domain_name_server={:?} req_ip_addr={:?} lease_time={:?} server_id={:?} param_req_list={:?} message={:?} renewal_time={:?} rebinding_time={:?} class_id={:?} client_id_type={:?} client_id={:?} confidence={:?} threat_level={:?}",
             self.category.as_ref().map_or_else(
                 || "Unspecified".to_string(),
                 std::string::ToString::to_string
@@ -138,6 +139,7 @@ impl BlocklistDhcpFields {
             self.client_id_type.to_string(),
             to_hardware_address(&self.client_id),
             self.confidence.to_string(),
+            self.threat_level.to_string(),
         )
     }
 }
@@ -176,6 +178,7 @@ pub struct BlocklistDhcp {
     pub client_id_type: u8,
     pub client_id: Vec<u8>,
     pub confidence: f32,
+    pub threat_level: u8,
     pub category: Option<EventCategory>,
     pub triage_scores: Option<Vec<TriageScore>>,
 }
@@ -183,7 +186,7 @@ impl fmt::Display for BlocklistDhcp {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "sensor={:?} src_addr={:?} src_port={:?} dst_addr={:?} dst_port={:?} proto={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} msg_type={:?} ciaddr={:?} yiaddr={:?} siaddr={:?} giaddr={:?} subnet_mask={:?} router={:?} domain_name_server={:?} req_ip_addr={:?} lease_time={:?} server_id={:?} param_req_list={:?} message={:?} renewal_time={:?} rebinding_time={:?} class_id={:?} client_id_type={:?} client_id={:?} triage_scores={:?}",
+            "sensor={:?} src_addr={:?} src_port={:?} dst_addr={:?} dst_port={:?} proto={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} msg_type={:?} ciaddr={:?} yiaddr={:?} siaddr={:?} giaddr={:?} subnet_mask={:?} router={:?} domain_name_server={:?} req_ip_addr={:?} lease_time={:?} server_id={:?} param_req_list={:?} message={:?} renewal_time={:?} rebinding_time={:?} class_id={:?} client_id_type={:?} client_id={:?} threat_level={:?} triage_scores={:?}",
             self.sensor,
             self.src_addr.to_string(),
             self.src_port.to_string(),
@@ -216,6 +219,7 @@ impl fmt::Display for BlocklistDhcp {
                 .to_string(),
             self.client_id_type.to_string(),
             to_hardware_address(&self.client_id),
+            self.threat_level.to_string(),
             triage_scores_to_string(self.triage_scores.as_ref())
         )
     }
@@ -256,6 +260,7 @@ impl BlocklistDhcp {
             client_id_type: fields.client_id_type,
             client_id: fields.client_id,
             confidence: fields.confidence,
+            threat_level: fields.threat_level,
             category: fields.category,
             triage_scores: None,
         }
@@ -288,7 +293,7 @@ impl Match for BlocklistDhcp {
     }
 
     fn level(&self) -> NonZeroU8 {
-        MEDIUM
+        NonZeroU8::new(self.threat_level).unwrap_or(MEDIUM)
     }
 
     fn kind(&self) -> &'static str {

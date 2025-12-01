@@ -60,6 +60,7 @@ pub struct BlocklistMqttFieldsV0_42 {
     pub subscribe: Vec<String>,
     pub suback_reason: Vec<u8>,
     pub confidence: f32,
+    pub threat_level: u8,
     pub category: Option<EventCategory>,
 }
 
@@ -69,7 +70,7 @@ impl BlocklistMqttFields {
         let start_time_dt = DateTime::from_timestamp_nanos(self.start_time);
 
         format!(
-            "category={:?} sensor={:?} src_addr={:?} src_port={:?} dst_addr={:?} dst_port={:?} proto={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} protocol={:?} version={:?} client_id={:?} connack_reason={:?} subscribe={:?} suback_reason={:?} confidence={:?}",
+            "category={:?} sensor={:?} src_addr={:?} src_port={:?} dst_addr={:?} dst_port={:?} proto={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} protocol={:?} version={:?} client_id={:?} connack_reason={:?} subscribe={:?} suback_reason={:?} confidence={:?} threat_level={:?}",
             self.category.as_ref().map_or_else(
                 || "Unspecified".to_string(),
                 std::string::ToString::to_string
@@ -93,6 +94,7 @@ impl BlocklistMqttFields {
             self.subscribe.join(","),
             String::from_utf8_lossy(&self.suback_reason),
             self.confidence.to_string(),
+            self.threat_level.to_string(),
         )
     }
 }
@@ -119,6 +121,7 @@ pub struct BlocklistMqtt {
     pub subscribe: Vec<String>,
     pub suback_reason: Vec<u8>,
     pub confidence: f32,
+    pub threat_level: u8,
     pub category: Option<EventCategory>,
     pub triage_scores: Option<Vec<TriageScore>>,
 }
@@ -127,7 +130,7 @@ impl fmt::Display for BlocklistMqtt {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "sensor={:?} src_addr={:?} src_port={:?} dst_addr={:?} dst_port={:?} proto={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} protocol={:?} version={:?} client_id={:?} connack_reason={:?} subscribe={:?} suback_reason={:?} triage_scores={:?}",
+            "sensor={:?} src_addr={:?} src_port={:?} dst_addr={:?} dst_port={:?} proto={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} protocol={:?} version={:?} client_id={:?} connack_reason={:?} subscribe={:?} suback_reason={:?} confidence={:?} threat_level={:?} triage_scores={:?}",
             self.sensor,
             self.src_addr.to_string(),
             self.src_port.to_string(),
@@ -146,6 +149,8 @@ impl fmt::Display for BlocklistMqtt {
             self.connack_reason.to_string(),
             self.subscribe.join(","),
             String::from_utf8_lossy(&self.suback_reason),
+            self.confidence.to_string(),
+            self.threat_level.to_string(),
             triage_scores_to_string(self.triage_scores.as_ref())
         )
     }
@@ -174,6 +179,7 @@ impl BlocklistMqtt {
             subscribe: fields.subscribe,
             suback_reason: fields.suback_reason,
             confidence: fields.confidence,
+            threat_level: fields.threat_level,
             category: fields.category,
             triage_scores: None,
         }
@@ -206,7 +212,7 @@ impl Match for BlocklistMqtt {
     }
 
     fn level(&self) -> NonZeroU8 {
-        MEDIUM
+        NonZeroU8::new(self.threat_level).unwrap_or(MEDIUM)
     }
 
     fn kind(&self) -> &'static str {
