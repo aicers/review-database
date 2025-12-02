@@ -99,6 +99,7 @@ mod tests {
     use bincode::Options;
     use chrono::{TimeZone, Utc};
 
+    use crate::test::acquire_db_permit;
     use crate::{
         Store,
         event::{DnsEventFields, EventKind, EventMessage},
@@ -151,6 +152,7 @@ mod tests {
 
         use crate::backup::list;
 
+        let _permit = acquire_db_permit();
         let db_dir = tempfile::tempdir().unwrap();
         let backup_dir = tempfile::tempdir().unwrap();
 

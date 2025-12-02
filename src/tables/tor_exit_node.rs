@@ -74,13 +74,20 @@ mod tests {
     use chrono::Utc;
     use rocksdb::Direction;
 
+    use crate::test::{DbGuard, acquire_db_permit};
     use crate::{Iterable, Store, TorExitNode};
 
-    #[test]
-    fn operations() {
+    fn setup_store() -> (DbGuard<'static>, Arc<Store>) {
+        let permit = acquire_db_permit();
         let db_dir = tempfile::tempdir().unwrap();
         let backup_dir = tempfile::tempdir().unwrap();
         let store = Arc::new(Store::new(db_dir.path(), backup_dir.path()).unwrap());
+        (permit, store)
+    }
+
+    #[test]
+    fn operations() {
+        let (_permit, store) = setup_store();
         let table = store.tor_exit_node_map();
 
         let t1 = Utc::now();

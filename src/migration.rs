@@ -299,9 +299,11 @@ mod tests {
 
     use super::COMPATIBLE_VERSION_REQ;
     use crate::Store;
+    use crate::test::{DbGuard, acquire_db_permit};
 
     #[allow(dead_code)]
     struct TestSchema {
+        permit: DbGuard<'static>,
         db_dir: tempfile::TempDir,
         backup_dir: tempfile::TempDir,
         store: Store,
@@ -310,10 +312,12 @@ mod tests {
     impl TestSchema {
         #[allow(dead_code)]
         fn new() -> Self {
+            let permit = acquire_db_permit();
             let db_dir = tempfile::tempdir().unwrap();
             let backup_dir = tempfile::tempdir().unwrap();
             let store = Store::new(db_dir.path(), backup_dir.path()).unwrap();
             TestSchema {
+                permit,
                 db_dir,
                 backup_dir,
                 store,
@@ -321,9 +325,14 @@ mod tests {
         }
 
         #[allow(dead_code)]
-        fn new_with_dir(db_dir: tempfile::TempDir, backup_dir: tempfile::TempDir) -> Self {
+        fn new_with_dir(
+            permit: DbGuard<'static>,
+            db_dir: tempfile::TempDir,
+            backup_dir: tempfile::TempDir,
+        ) -> Self {
             let store = Store::new(db_dir.path(), backup_dir.path()).unwrap();
             TestSchema {
+                permit,
                 db_dir,
                 backup_dir,
                 store,
@@ -331,8 +340,8 @@ mod tests {
         }
 
         #[allow(dead_code)]
-        fn close(self) -> (tempfile::TempDir, tempfile::TempDir) {
-            (self.db_dir, self.backup_dir)
+        fn close(self) -> (DbGuard<'static>, tempfile::TempDir, tempfile::TempDir) {
+            (self.permit, self.db_dir, self.backup_dir)
         }
     }
 

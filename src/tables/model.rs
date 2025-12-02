@@ -286,11 +286,14 @@ mod tests {
 
     use super::*;
     use crate::Store;
+    use crate::test::{DbGuard, acquire_db_permit};
 
-    fn setup_store() -> Arc<Store> {
+    fn setup_store() -> (DbGuard<'static>, Arc<Store>) {
+        let permit = acquire_db_permit();
         let db_dir = tempfile::tempdir().unwrap();
         let backup_dir = tempfile::tempdir().unwrap();
-        Arc::new(Store::new(db_dir.path(), backup_dir.path()).unwrap())
+        let store = Arc::new(Store::new(db_dir.path(), backup_dir.path()).unwrap());
+        (permit, store)
     }
 
     fn make_model(name: &str, version: i32) -> Model {
@@ -307,7 +310,7 @@ mod tests {
 
     #[test]
     fn test_add_and_load_model() {
-        let store = setup_store();
+        let (_permit, store) = setup_store();
         let table = store.model_map();
         let model = make_model("alpha", 1);
 
@@ -324,7 +327,7 @@ mod tests {
 
     #[test]
     fn test_count_models() {
-        let store = setup_store();
+        let (_permit, store) = setup_store();
         let table = store.model_map();
         let m1 = make_model("m1", 1);
         let m2 = make_model("m2", 2);
@@ -338,7 +341,7 @@ mod tests {
 
     #[test]
     fn test_delete_model() {
-        let store = setup_store();
+        let (_permit, store) = setup_store();
         let table = store.model_map();
         let m = make_model("to-delete", 1);
         let id = table.add_model(m).unwrap();
@@ -352,7 +355,7 @@ mod tests {
 
     #[test]
     fn test_update_model() {
-        let store = setup_store();
+        let (_permit, store) = setup_store();
         let mut table = store.model_map();
         let mut m = make_model("beta", 1);
         let id = table.add_model(m.clone()).unwrap();
@@ -372,7 +375,7 @@ mod tests {
 
     #[test]
     fn test_load_models_with_pagination() {
-        let store = setup_store();
+        let (_permit, store) = setup_store();
         let table = store.model_map();
 
         let m1 = make_model("a", 1);

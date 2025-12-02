@@ -261,16 +261,19 @@ mod tests {
 
     use super::*;
     use crate::Store;
+    use crate::test::{DbGuard, acquire_db_permit};
 
-    fn setup_store() -> Arc<Store> {
+    fn setup_store() -> (DbGuard<'static>, Arc<Store>) {
+        let permit = acquire_db_permit();
         let db_dir = tempfile::tempdir().unwrap();
         let backup_dir = tempfile::tempdir().unwrap();
-        Arc::new(Store::new(db_dir.path(), backup_dir.path()).unwrap())
+        let store = Arc::new(Store::new(db_dir.path(), backup_dir.path()).unwrap());
+        (permit, store)
     }
 
     #[test]
     fn test_update_opened_ports() {
-        let store = setup_store();
+        let (_permit, store) = setup_store();
         let hosts_table = store.hosts_map();
 
         let customer_id = 1;
@@ -334,7 +337,7 @@ mod tests {
 
     #[test]
     fn test_update_os_agents() {
-        let store = setup_store();
+        let (_permit, store) = setup_store();
         let hosts_table = store.hosts_map();
 
         let customer_id = 1;
@@ -444,7 +447,7 @@ mod tests {
 
     #[test]
     fn test_remove_by_customer_id() {
-        let store = setup_store();
+        let (_permit, store) = setup_store();
         let hosts_table = store.hosts_map();
 
         let customer_id1 = 1;
@@ -500,7 +503,7 @@ mod tests {
 
     #[test]
     fn test_remove_by_customer_id_and_ip() {
-        let store = setup_store();
+        let (_permit, store) = setup_store();
         let hosts_table = store.hosts_map();
 
         let customer_id1 = 1;

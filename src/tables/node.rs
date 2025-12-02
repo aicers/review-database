@@ -819,6 +819,7 @@ mod test {
     use num_traits::ToPrimitive;
 
     use super::*;
+    use crate::test::{DbGuard, acquire_db_permit};
     use crate::{AgentKind, ExternalServiceKind, Store};
 
     type PortNumber = u16;
@@ -859,10 +860,12 @@ mod test {
         pub ti_container_graphql_addr: SocketAddr,
     }
 
-    fn setup_store() -> Arc<Store> {
+    fn setup_store() -> (DbGuard<'static>, Arc<Store>) {
+        let permit = acquire_db_permit();
         let db_dir = tempfile::tempdir().unwrap();
         let backup_dir = tempfile::tempdir().unwrap();
-        Arc::new(Store::new(db_dir.path(), backup_dir.path()).unwrap())
+        let store = Arc::new(Store::new(db_dir.path(), backup_dir.path()).unwrap());
+        (permit, store)
     }
 
     fn create_node(
@@ -1032,7 +1035,7 @@ mod test {
 
     #[test]
     fn put_and_get() {
-        let store = setup_store();
+        let (_permit, store) = setup_store();
 
         let agent_kinds = vec![
             AgentKind::Unsupervised,
@@ -1084,7 +1087,7 @@ mod test {
 
     #[test]
     fn remove() {
-        let store = setup_store();
+        let (_permit, store) = setup_store();
 
         let agent_kinds = vec![
             AgentKind::Unsupervised,
@@ -1160,7 +1163,7 @@ mod test {
 
     #[test]
     fn update() {
-        let store = setup_store();
+        let (_permit, store) = setup_store();
 
         let agent_kinds = vec![
             AgentKind::Unsupervised,
@@ -1233,7 +1236,7 @@ mod test {
 
     #[test]
     fn update_agents_drafts_only() {
-        let store: Arc<Store> = setup_store();
+        let (_permit, store) = setup_store();
 
         let agent_kinds = vec![AgentKind::Unsupervised, AgentKind::SemiSupervised];
         let agent_configs1: Vec<_> = create_agent_configs(&agent_kinds);
@@ -1312,7 +1315,7 @@ mod test {
 
     #[test]
     fn update_agent_status_by_hostname() {
-        let store = setup_store();
+        let (_permit, store) = setup_store();
         let kinds = vec![AgentKind::Sensor, AgentKind::SemiSupervised];
         let configs: Vec<_> = create_agent_configs(&kinds);
 
@@ -1367,7 +1370,7 @@ mod test {
 
     #[test]
     fn hostname_uniqueness_on_put() {
-        let store = setup_store();
+        let (_permit, store) = setup_store();
         let node_table = store.node_map();
 
         let profile1 = Profile {
@@ -1402,7 +1405,7 @@ mod test {
 
     #[test]
     fn hostname_uniqueness_on_put_with_draft() {
-        let store = setup_store();
+        let (_permit, store) = setup_store();
         let node_table = store.node_map();
 
         let profile = Profile {
@@ -1437,7 +1440,7 @@ mod test {
 
     #[test]
     fn hostname_uniqueness_on_update() {
-        let store = setup_store();
+        let (_permit, store) = setup_store();
         let mut node_table = store.node_map();
 
         let profile1 = Profile {
@@ -1506,7 +1509,7 @@ mod test {
 
     #[test]
     fn hostname_uniqueness_allows_same_node_update() {
-        let store = setup_store();
+        let (_permit, store) = setup_store();
         let mut node_table = store.node_map();
 
         let profile = Profile {
@@ -1552,7 +1555,7 @@ mod test {
 
     #[test]
     fn hostname_uniqueness_different_hostnames_allowed() {
-        let store = setup_store();
+        let (_permit, store) = setup_store();
         let node_table = store.node_map();
 
         let profile1 = Profile {
@@ -1580,7 +1583,7 @@ mod test {
 
     #[test]
     fn update_external_services_draft() {
-        let store: Arc<Store> = setup_store();
+        let (_permit, store) = setup_store();
 
         let agent_kinds = vec![AgentKind::Unsupervised, AgentKind::SemiSupervised];
         let agent_configs1: Vec<_> = create_agent_configs(&agent_kinds);
