@@ -74,12 +74,13 @@ mod test {
 
     use rocksdb::Direction;
 
+    use crate::test::{DbGuard, acquire_db_permit};
     use crate::types::FromKeyValue;
     use crate::{Iterable, Store, TrustedDomain};
 
     #[test]
     fn operations() {
-        let store = setup_store();
+        let (_permit, store) = setup_store();
         let table = store.trusted_domain_map();
 
         let a = create_entry("a");
@@ -96,7 +97,7 @@ mod test {
 
     #[test]
     fn update_test() {
-        let store = setup_store();
+        let (_permit, store) = setup_store();
         let table = store.trusted_domain_map();
         let origin = create_entry("origin");
         assert!(table.put(&origin).is_ok());
@@ -117,10 +118,12 @@ mod test {
         assert_eq!(updated, update_in_table);
     }
 
-    fn setup_store() -> Arc<Store> {
+    fn setup_store() -> (DbGuard<'static>, Arc<Store>) {
+        let permit = acquire_db_permit();
         let db_dir = tempfile::tempdir().unwrap();
         let backup_dir = tempfile::tempdir().unwrap();
-        Arc::new(Store::new(db_dir.path(), backup_dir.path()).unwrap())
+        let store = Arc::new(Store::new(db_dir.path(), backup_dir.path()).unwrap());
+        (permit, store)
     }
 
     fn create_entry(name: &str) -> TrustedDomain {

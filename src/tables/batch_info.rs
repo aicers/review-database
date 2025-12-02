@@ -95,7 +95,16 @@ impl<'d> Table<'d, crate::batch_info::BatchInfo> {
 mod tests {
     use std::sync::Arc;
 
+    use crate::test::{DbGuard, acquire_db_permit};
     use crate::{Store, batch_info::BatchInfo, types::ModelBatchInfo};
+
+    fn setup_store() -> (DbGuard<'static>, Arc<Store>) {
+        let permit = acquire_db_permit();
+        let db_dir = tempfile::tempdir().unwrap();
+        let backup_dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(Store::new(db_dir.path(), backup_dir.path()).unwrap());
+        (permit, store)
+    }
 
     fn entries() -> Vec<BatchInfo> {
         let entry1 = BatchInfo::new(
@@ -133,9 +142,7 @@ mod tests {
 
     #[test]
     fn put_delete() {
-        let db_dir = tempfile::tempdir().unwrap();
-        let backup_dir = tempfile::tempdir().unwrap();
-        let store = Arc::new(Store::new(db_dir.path(), backup_dir.path()).unwrap());
+        let (_permit, store) = setup_store();
         let table = store.batch_info_map();
 
         assert_eq!(table.get_all_for(1).unwrap().len(), 0);
@@ -168,9 +175,7 @@ mod tests {
 
     #[test]
     fn get() {
-        let db_dir = tempfile::tempdir().unwrap();
-        let backup_dir = tempfile::tempdir().unwrap();
-        let store = Arc::new(Store::new(db_dir.path(), backup_dir.path()).unwrap());
+        let (_permit, store) = setup_store();
         let table = store.batch_info_map();
 
         assert_eq!(table.get_all_for(1).unwrap().len(), 0);

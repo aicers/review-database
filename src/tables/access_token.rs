@@ -91,10 +91,11 @@ mod tests {
     use std::sync::Arc;
 
     use crate::Store;
+    use crate::test::{DbGuard, acquire_db_permit};
 
     #[test]
     fn operations() {
-        let store = setup_store();
+        let (_permit, store) = setup_store();
         let table = store.access_token_map();
         let names = &["abc", "abcd", "def"];
 
@@ -114,9 +115,11 @@ mod tests {
         }
     }
 
-    fn setup_store() -> Arc<Store> {
+    fn setup_store() -> (DbGuard<'static>, Arc<Store>) {
+        let permit = acquire_db_permit();
         let db_dir = tempfile::tempdir().unwrap();
         let backup_dir = tempfile::tempdir().unwrap();
-        Arc::new(Store::new(db_dir.path(), backup_dir.path()).unwrap())
+        let store = Arc::new(Store::new(db_dir.path(), backup_dir.path()).unwrap());
+        (permit, store)
     }
 }

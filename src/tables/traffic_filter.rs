@@ -303,11 +303,12 @@ mod test {
 
     use rocksdb::Direction;
 
+    use crate::test::{DbGuard, acquire_db_permit};
     use crate::{Iterable, Store, TrafficFilter};
 
     #[test]
     fn insert_get_remove() {
-        let store = setup_store();
+        let (_permit, store) = setup_store();
         let table = store.traffic_filter_map();
 
         assert_eq!(table.iter(Direction::Forward, None).count(), 0);
@@ -346,7 +347,7 @@ mod test {
 
     #[test]
     fn check_duplicate_update() {
-        let store = setup_store();
+        let (_permit, store) = setup_store();
         let table = store.traffic_filter_map();
 
         assert!(table.get("unknown_host").unwrap().is_none());
@@ -395,10 +396,12 @@ mod test {
         }
     }
 
-    fn setup_store() -> Arc<Store> {
+    fn setup_store() -> (DbGuard<'static>, Arc<Store>) {
+        let permit = acquire_db_permit();
         let db_dir = tempfile::tempdir().unwrap();
         let backup_dir = tempfile::tempdir().unwrap();
-        Arc::new(Store::new(db_dir.path(), backup_dir.path()).unwrap())
+        let store = Arc::new(Store::new(db_dir.path(), backup_dir.path()).unwrap());
+        (permit, store)
     }
 
     fn create_entry(name: &str, network: &str, tcp_ports: Option<Vec<u16>>) -> TrafficFilter {

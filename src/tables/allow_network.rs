@@ -131,11 +131,12 @@ mod test {
 
     use rocksdb::Direction;
 
+    use crate::test::{DbGuard, acquire_db_permit};
     use crate::{AllowNetwork, HostNetworkGroup, Iterable, Store};
 
     #[test]
     fn put_and_get() {
-        let store = setup_store();
+        let (_permit, store) = setup_store();
         let table = store.allow_network_map();
 
         let a = create_allow_network("a", "TestDescription");
@@ -155,7 +156,7 @@ mod test {
 
     #[test]
     fn update() {
-        let store = setup_store();
+        let (_permit, store) = setup_store();
         let mut table = store.allow_network_map();
 
         let allow_network = create_allow_network("AllowNetwork1", "Description1");
@@ -182,7 +183,7 @@ mod test {
 
     #[test]
     fn update_key() {
-        let store = setup_store();
+        let (_permit, store) = setup_store();
         let mut table = store.allow_network_map();
 
         let mut a = create_allow_network("a", "a");
@@ -220,10 +221,12 @@ mod test {
 
     // Helper functions
 
-    fn setup_store() -> Arc<Store> {
+    fn setup_store() -> (DbGuard<'static>, Arc<Store>) {
+        let permit = acquire_db_permit();
         let db_dir = tempfile::tempdir().unwrap();
         let backup_dir = tempfile::tempdir().unwrap();
-        Arc::new(Store::new(db_dir.path(), backup_dir.path()).unwrap())
+        let store = Arc::new(Store::new(db_dir.path(), backup_dir.path()).unwrap());
+        (permit, store)
     }
 
     fn create_allow_network(name: &str, description: &str) -> AllowNetwork {
