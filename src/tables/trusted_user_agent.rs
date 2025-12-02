@@ -87,11 +87,12 @@ mod test {
     use chrono::Utc;
     use rocksdb::Direction;
 
+    use crate::test::{DbGuard, acquire_db_permit};
     use crate::{Iterable, Store, TrustedUserAgent};
 
     #[test]
     fn operations() {
-        let store = setup_store();
+        let (_permit, store) = setup_store();
         let table = store.trusted_user_agent_map();
 
         let a = create_entry("a");
@@ -122,10 +123,12 @@ mod test {
         assert_eq!(table.iter(Direction::Forward, None).count(), 0);
     }
 
-    fn setup_store() -> Arc<Store> {
+    fn setup_store() -> (DbGuard<'static>, Arc<Store>) {
+        let permit = acquire_db_permit();
         let db_dir = tempfile::tempdir().unwrap();
         let backup_dir = tempfile::tempdir().unwrap();
-        Arc::new(Store::new(db_dir.path(), backup_dir.path()).unwrap())
+        let store = Arc::new(Store::new(db_dir.path(), backup_dir.path()).unwrap());
+        (permit, store)
     }
 
     fn create_entry(name: &str) -> TrustedUserAgent {

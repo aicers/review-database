@@ -234,7 +234,16 @@ impl<'d> Table<'d, Tidb> {
 mod tests {
     use std::sync::Arc;
 
+    use crate::test::{DbGuard, acquire_db_permit};
     use crate::{Store, Tidb};
+
+    fn setup_store() -> (DbGuard<'static>, Arc<Store>) {
+        let permit = acquire_db_permit();
+        let db_dir = tempfile::tempdir().unwrap();
+        let backup_dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(Store::new(db_dir.path(), backup_dir.path()).unwrap());
+        (permit, store)
+    }
 
     #[test]
     fn serde() {
@@ -264,9 +273,7 @@ mod tests {
     #[test]
     fn operations() {
         use crate::Iterable;
-        let db_dir = tempfile::tempdir().unwrap();
-        let backup_dir = tempfile::tempdir().unwrap();
-        let store = Arc::new(Store::new(db_dir.path(), backup_dir.path()).unwrap());
+        let (_permit, store) = setup_store();
         let table = store.tidb_map();
 
         let tester = &["1", "2", "3"];

@@ -306,11 +306,12 @@ mod test {
 
     use rocksdb::Direction;
 
+    use crate::test::{DbGuard, acquire_db_permit};
     use crate::{Iterable, Network, Store, types::HostNetworkGroup};
 
     #[test]
     fn insert_and_get() {
-        let store = setup_store();
+        let (_permit, store) = setup_store();
         let table = store.network_map();
 
         let mut network = create_network("TestNetwork", "TestDescription", vec![1, 2], vec![1, 2]);
@@ -330,7 +331,7 @@ mod test {
 
     #[test]
     fn remove() {
-        let store = setup_store();
+        let (_permit, store) = setup_store();
         let table = store.network_map();
 
         let mut network1 = create_network("Network1", "Description1", vec![1], vec![1, 2]);
@@ -359,7 +360,7 @@ mod test {
 
     #[test]
     fn remove_tag() {
-        let store = setup_store();
+        let (_permit, store) = setup_store();
         let table = store.network_map();
 
         let mut network1 = create_network("Network1", "Description1", vec![1], vec![1, 2]);
@@ -388,7 +389,7 @@ mod test {
 
     #[test]
     fn remove_customer() {
-        let store = setup_store();
+        let (_permit, store) = setup_store();
         let table = store.network_map();
 
         let mut network1 = create_network("Network1", "Description1", vec![3, 1], vec![1, 2]);
@@ -417,7 +418,7 @@ mod test {
 
     #[test]
     fn update() {
-        let store = setup_store();
+        let (_permit, store) = setup_store();
         let mut table = store.network_map();
 
         let mut network = create_network("Network1", "Description1", vec![1], vec![1, 2]);
@@ -450,10 +451,12 @@ mod test {
         assert_eq!(iter.count(), 1);
     }
 
-    fn setup_store() -> Arc<Store> {
+    fn setup_store() -> (DbGuard<'static>, Arc<Store>) {
+        let permit = acquire_db_permit();
         let db_dir = tempfile::tempdir().unwrap();
         let backup_dir = tempfile::tempdir().unwrap();
-        Arc::new(Store::new(db_dir.path(), backup_dir.path()).unwrap())
+        let store = Arc::new(Store::new(db_dir.path(), backup_dir.path()).unwrap());
+        (permit, store)
     }
 
     fn create_network(

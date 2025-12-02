@@ -244,13 +244,20 @@ impl<'d> Table<'d, Filter> {
 mod tests {
     use std::sync::Arc;
 
+    use crate::test::{DbGuard, acquire_db_permit};
     use crate::{Filter, Store};
 
-    #[test]
-    fn operations() {
+    fn setup_store() -> (DbGuard<'static>, Arc<Store>) {
+        let permit = acquire_db_permit();
         let db_dir = tempfile::tempdir().unwrap();
         let backup_dir = tempfile::tempdir().unwrap();
         let store = Arc::new(Store::new(db_dir.path(), backup_dir.path()).unwrap());
+        (permit, store)
+    }
+
+    #[test]
+    fn operations() {
+        let (_permit, store) = setup_store();
         let table = store.filter_map();
 
         let tester = &[("bbb", "f2"), ("aaa", "f1"), ("bb", "f1"), ("aaaa", "f2")];

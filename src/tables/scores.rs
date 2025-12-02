@@ -43,13 +43,20 @@ impl<'d> Table<'d, Scores> {
 mod tests {
     use std::sync::Arc;
 
+    use crate::test::{DbGuard, acquire_db_permit};
     use crate::{Store, scores::Scores, types::ModelScores};
 
-    #[test]
-    fn put_delete() {
+    fn setup_store() -> (DbGuard<'static>, Arc<Store>) {
+        let permit = acquire_db_permit();
         let db_dir = tempfile::tempdir().unwrap();
         let backup_dir = tempfile::tempdir().unwrap();
         let store = Arc::new(Store::new(db_dir.path(), backup_dir.path()).unwrap());
+        (permit, store)
+    }
+
+    #[test]
+    fn put_delete() {
+        let (_permit, store) = setup_store();
         let table = store.scores_map();
 
         let entry1 = Scores::new(1, ModelScores::default());

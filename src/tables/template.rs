@@ -119,14 +119,21 @@ impl<'d> Table<'d, Template> {
 mod tests {
     use std::sync::Arc;
 
+    use crate::test::{DbGuard, acquire_db_permit};
     use crate::{Store, Structured, Template, Unstructured};
+
+    fn setup_store() -> (DbGuard<'static>, Arc<Store>) {
+        let permit = acquire_db_permit();
+        let db_dir = tempfile::tempdir().unwrap();
+        let backup_dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(Store::new(db_dir.path(), backup_dir.path()).unwrap());
+        (permit, store)
+    }
 
     #[test]
     fn operations() {
         use crate::Iterable;
-        let db_dir = tempfile::tempdir().unwrap();
-        let backup_dir = tempfile::tempdir().unwrap();
-        let store = Arc::new(Store::new(db_dir.path(), backup_dir.path()).unwrap());
+        let (_permit, store) = setup_store();
         let table = store.template_map();
 
         let structured = Structured {

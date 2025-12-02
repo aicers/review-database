@@ -884,11 +884,12 @@ mod tests {
 
     use super::*;
     use crate::Store;
+    use crate::test::{DbGuard, acquire_db_permit};
 
     #[test]
     fn test_column_stats() {
         use structured::{Description, NLargestCount};
-        let store = setup_store();
+        let (_permit, store) = setup_store();
         let table = store.column_stats_map();
 
         let stats = super::ColumnStats {
@@ -909,7 +910,7 @@ mod tests {
         use chrono::NaiveDate;
         use structured::{ColumnStatistics, Description, Element, NLargestCount};
 
-        let store = setup_store();
+        let (_permit, store) = setup_store();
         let table = store.column_stats_map();
 
         let cluster_id = 1;
@@ -960,7 +961,7 @@ mod tests {
         use chrono::NaiveDate;
         use structured::{ColumnStatistics, Description, Element, NLargestCount};
 
-        let store = setup_store();
+        let (_permit, store) = setup_store();
         let table = store.column_stats_map();
 
         let cluster_id = 11;
@@ -1016,7 +1017,7 @@ mod tests {
         use chrono::NaiveDate;
         use structured::{ColumnStatistics, Description, Element, NLargestCount};
 
-        let store = setup_store();
+        let (_permit, store) = setup_store();
         let table = store.column_stats_map();
 
         let cluster_id = 123;
@@ -1064,7 +1065,7 @@ mod tests {
         use chrono::NaiveDate;
         use structured::{ColumnStatistics, Description, Element, NLargestCount};
 
-        let store = setup_store();
+        let (_permit, store) = setup_store();
         let table = store.column_stats_map();
 
         let model_id = 101;
@@ -1233,7 +1234,7 @@ mod tests {
         use chrono::NaiveDate;
         use structured::{ColumnStatistics, Description, Element, ElementCount, NLargestCount};
 
-        let store = setup_store();
+        let (_permit, store) = setup_store();
         let table = store.column_stats_map();
 
         let model_id = 10;
@@ -1295,9 +1296,11 @@ mod tests {
         assert_eq!(counts, vec![30, 20]);
     }
 
-    fn setup_store() -> Arc<Store> {
+    fn setup_store() -> (DbGuard<'static>, Arc<Store>) {
+        let permit = acquire_db_permit();
         let db_dir = tempfile::tempdir().unwrap();
         let backup_dir = tempfile::tempdir().unwrap();
-        Arc::new(Store::new(db_dir.path(), backup_dir.path()).unwrap())
+        let store = Arc::new(Store::new(db_dir.path(), backup_dir.path()).unwrap());
+        (permit, store)
     }
 }

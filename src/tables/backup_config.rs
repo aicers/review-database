@@ -195,6 +195,15 @@ mod tests {
 
     use super::*;
     use crate::Store;
+    use crate::test::{DbGuard, acquire_db_permit};
+
+    fn setup_store() -> (DbGuard<'static>, Arc<Store>) {
+        let permit = acquire_db_permit();
+        let db_dir = tempfile::tempdir().unwrap();
+        let backup_dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(Store::new(db_dir.path(), backup_dir.path()).unwrap());
+        (permit, store)
+    }
 
     #[test]
     fn test_default_backup_config() {
@@ -288,9 +297,7 @@ mod tests {
 
     #[test]
     fn test_save_and_read() {
-        let db_dir = tempfile::tempdir().unwrap();
-        let backup_dir = tempfile::tempdir().unwrap();
-        let store = Arc::new(Store::new(db_dir.path(), backup_dir.path()).unwrap());
+        let (_permit, store) = setup_store();
         let table = store.backup_config_map();
 
         // Read should return default when no config exists
@@ -308,9 +315,7 @@ mod tests {
 
     #[test]
     fn test_update_config() {
-        let db_dir = tempfile::tempdir().unwrap();
-        let backup_dir = tempfile::tempdir().unwrap();
-        let store = Arc::new(Store::new(db_dir.path(), backup_dir.path()).unwrap());
+        let (_permit, store) = setup_store();
         let table = store.backup_config_map();
 
         // Save initial config
@@ -328,9 +333,7 @@ mod tests {
 
     #[test]
     fn test_save_invalid_config() {
-        let db_dir = tempfile::tempdir().unwrap();
-        let backup_dir = tempfile::tempdir().unwrap();
-        let store = Arc::new(Store::new(db_dir.path(), backup_dir.path()).unwrap());
+        let (_permit, store) = setup_store();
         let table = store.backup_config_map();
 
         // Try to save an invalid config
@@ -344,9 +347,7 @@ mod tests {
 
     #[test]
     fn test_update_config_invalid_new_config() {
-        let db_dir = tempfile::tempdir().unwrap();
-        let backup_dir = tempfile::tempdir().unwrap();
-        let store = Arc::new(Store::new(db_dir.path(), backup_dir.path()).unwrap());
+        let (_permit, store) = setup_store();
         let table = store.backup_config_map();
 
         // Save a valid initial config

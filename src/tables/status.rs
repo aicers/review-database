@@ -154,9 +154,11 @@ mod tests {
     use std::sync::Arc;
 
     use super::DEFAULT_ENTRIES;
+    use crate::test::{DbGuard, acquire_db_permit};
     use crate::{Store, types::Status};
 
-    fn set_up_db() -> (Arc<Store>, Vec<Status>) {
+    fn set_up_db() -> (DbGuard<'static>, Arc<Store>, Vec<Status>) {
+        let permit = acquire_db_permit();
         let db_dir = tempfile::tempdir().unwrap();
         let backup_dir = tempfile::tempdir().unwrap();
         let store = Arc::new(Store::new(db_dir.path(), backup_dir.path()).unwrap());
@@ -182,12 +184,12 @@ mod tests {
 
         entries.sort_unstable_by_key(|v| v.description.clone());
 
-        (store, entries)
+        (permit, store, entries)
     }
 
     #[test]
     fn add() {
-        let (store, entries) = set_up_db();
+        let (_permit, store, entries) = set_up_db();
         let table = store.status_map();
 
         assert_eq!(table.count().unwrap(), entries.len());
@@ -195,7 +197,7 @@ mod tests {
 
     #[test]
     fn get() {
-        let (store, entries) = set_up_db();
+        let (_permit, store, entries) = set_up_db();
         let table = store.status_map();
 
         for entry in entries {
@@ -205,7 +207,7 @@ mod tests {
 
     #[test]
     fn update_for_new_existing_key() {
-        let (store, entries) = set_up_db();
+        let (_permit, store, entries) = set_up_db();
         let mut table = store.status_map();
 
         assert!(
