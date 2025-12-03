@@ -5,7 +5,16 @@ file is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), and
 this project adheres to [Semantic
 Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.42.0] - 2025-11-20
+## [0.42.1] - 2025-12-03
+
+### Fixed
+
+- Fixed migration from 0.41.x to 0.42.x failing to update the VERSION file.
+  The migration incorrectly set the target version to `0.42.0-alpha.5` instead
+  of `0.42.0`, causing `COMPATIBLE_VERSION_REQ` to not recognize the migrated
+  database as up-to-date, leaving the VERSION file unchanged at `0.41.0`.
+
+## [0.42.0] - 2025-11-20 [YANKED]
 
 ### Added
 
@@ -1177,8 +1186,9 @@ AsRef<[u8]>`). This change accommodates scenarios where the information stored
 - Modified `FtpBruteForce` by adding an `is_internal` field which is a boolean
   indicating whether it is internal or not.
 
-[0.42.0]: https://github.com/petabi/review-database/compare/0.41.0...0.42.0
-[0.41.0]: https://github.com/petabi/review-database/compare/0.40.0...0.41.0
+[0.42.1]: https://github.com/aicers/review-database/compare/0.42.0...0.42.1
+[0.42.0]: https://github.com/aicers/review-database/compare/0.41.0...0.42.0
+[0.41.0]: https://github.com/aicers/review-database/compare/0.40.0...0.41.0
 [0.40.0]: https://github.com/petabi/review-database/compare/0.39.0...0.40.0
 [0.39.0]: https://github.com/petabi/review-database/compare/0.38.0...0.39.0
 [0.38.0]: https://github.com/petabi/review-database/compare/0.37.0...0.38.0
