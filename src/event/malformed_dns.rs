@@ -1,10 +1,35 @@
 use std::{fmt, net::IpAddr, num::NonZeroU8};
 
+use attrievent::attribute::{DnsAttr, RawEventAttrKind};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use super::{EventCategory, LearningMethod, MEDIUM, TriageScore, common::Match};
 use crate::event::common::{AttrValue, triage_scores_to_string};
+
+macro_rules! find_malformed_dns_attr_by_kind {
+    ($event: expr, $raw_event_attr: expr) => {{
+        if let RawEventAttrKind::Dns(attr) = $raw_event_attr {
+            let target_value = match attr {
+                DnsAttr::SrcAddr => AttrValue::Addr($event.orig_addr),
+                DnsAttr::SrcPort => AttrValue::UInt($event.orig_port.into()),
+                DnsAttr::DstAddr => AttrValue::Addr($event.resp_addr),
+                DnsAttr::DstPort => AttrValue::UInt($event.resp_port.into()),
+                DnsAttr::Proto => AttrValue::UInt($event.proto.into()),
+                DnsAttr::Duration => AttrValue::SInt($event.duration),
+                DnsAttr::OrigPkts => AttrValue::UInt($event.orig_pkts),
+                DnsAttr::RespPkts => AttrValue::UInt($event.resp_pkts),
+                DnsAttr::OrigL2Bytes => AttrValue::UInt($event.orig_l2_bytes),
+                DnsAttr::RespL2Bytes => AttrValue::UInt($event.resp_l2_bytes),
+                DnsAttr::TransId => AttrValue::UInt($event.trans_id.into()),
+                _ => return None,
+            };
+            Some(target_value)
+        } else {
+            None
+        }
+    }};
+}
 
 #[derive(Serialize, Deserialize)]
 pub struct BlocklistMalformedDnsFields {
@@ -232,9 +257,8 @@ impl Match for BlocklistMalformedDns {
 
     fn find_attr_by_kind(
         &self,
-        _raw_event_attr: attrievent::attribute::RawEventAttrKind,
+        raw_event_attr: attrievent::attribute::RawEventAttrKind,
     ) -> Option<AttrValue<'_>> {
-        // TODO: Implement when RawEventAttrKind::MalformedDns is available
-        None
+        find_malformed_dns_attr_by_kind!(self, raw_event_attr)
     }
 }

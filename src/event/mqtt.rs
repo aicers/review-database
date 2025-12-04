@@ -16,11 +16,16 @@ macro_rules! find_mqtt_attr_by_kind {
                 MqttAttr::DstAddr => AttrValue::Addr($event.dst_addr),
                 MqttAttr::DstPort => AttrValue::UInt($event.dst_port.into()),
                 MqttAttr::Proto => AttrValue::UInt($event.proto.into()),
+                MqttAttr::Duration => AttrValue::SInt($event.duration),
+                MqttAttr::OrigPkts => AttrValue::UInt($event.orig_pkts),
+                MqttAttr::RespPkts => AttrValue::UInt($event.resp_pkts),
+                MqttAttr::OrigL2Bytes => AttrValue::UInt($event.orig_l2_bytes),
+                MqttAttr::RespL2Bytes => AttrValue::UInt($event.resp_l2_bytes),
                 MqttAttr::Protocol => AttrValue::String(&$event.protocol),
                 MqttAttr::Version => AttrValue::UInt($event.version.into()),
                 MqttAttr::ClientId => AttrValue::String(&$event.client_id),
                 MqttAttr::ConnackReason => AttrValue::UInt($event.connack_reason.into()),
-                MqttAttr::Subscribe => AttrValue::VecString(&$event.subscribe),
+                MqttAttr::Subscribe => AttrValue::VecString($event.subscribe.clone()),
                 MqttAttr::SubackReason => AttrValue::VecUInt(
                     $event
                         .suback_reason

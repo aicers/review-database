@@ -355,12 +355,13 @@ pub enum AttrValue<'a> {
     SInt(i64),
     UInt(u64),
     String(&'a str),
-    VecAddr(&'a [IpAddr]),
+    VecAddr(Vec<IpAddr>),
+    VecBool(Vec<bool>),
     #[allow(dead_code)]
     VecFloat(Vec<f64>),
     VecSInt(Vec<i64>),
     VecUInt(Vec<u64>),
-    VecString(&'a [String]),
+    VecString(Vec<String>),
     VecRaw(&'a [u8]),
 }
 
@@ -384,7 +385,14 @@ fn is_attr_matched(target_value: AttrValue, attr: &PacketAttr) -> bool {
         AttrValue::SInt(signed_int_val) => matches_number_attr::<_, i64>(&signed_int_val, attr),
         AttrValue::UInt(unsigned_int_val) => matches_number_attr::<_, u64>(&unsigned_int_val, attr),
         AttrValue::String(str_val) => matches_string_attr(str_val, attr),
-        AttrValue::VecAddr(vec_addr_val) => is_matching_list(vec_addr_val, attr, matches_addr_attr),
+        AttrValue::VecAddr(vec_addr_val) => {
+            is_matching_list(&vec_addr_val, attr, matches_addr_attr)
+        }
+        AttrValue::VecBool(vec_bool_val) => {
+            is_matching_list(&vec_bool_val, attr, |val: &bool, attr| {
+                matches_bool_attr(*val, attr)
+            })
+        }
         AttrValue::VecFloat(vec_float_val) => {
             is_matching_list(&vec_float_val, attr, matches_number_attr::<_, f64>)
         }
@@ -394,9 +402,11 @@ fn is_attr_matched(target_value: AttrValue, attr: &PacketAttr) -> bool {
         AttrValue::VecUInt(vec_uint_val) => {
             is_matching_list(&vec_uint_val, attr, matches_number_attr::<_, u64>)
         }
-        AttrValue::VecString(vec_str_val) => is_matching_list(vec_str_val, attr, |val, attr| {
-            matches_string_attr(val.as_str(), attr)
-        }),
+        AttrValue::VecString(vec_str_val) => {
+            is_matching_list(&vec_str_val, attr, |val: &String, attr| {
+                matches_string_attr(val.as_str(), attr)
+            })
+        }
         AttrValue::VecRaw(vec_raw_val) => matches_vec_raw_attr(vec_raw_val, attr),
     }
 }
@@ -551,7 +561,7 @@ mod tests {
         net::{IpAddr, Ipv4Addr},
     };
 
-    use attrievent::attribute::{DhcpAttr, DnsAttr, HttpAttr, RawEventKind};
+    use attrievent::attribute::{DhcpAttr, DnsAttr, FtpAttr, HttpAttr, RawEventKind};
     use bincode::Options;
     use chrono::{TimeZone, Utc};
     use serde::Serialize;
@@ -1227,7 +1237,7 @@ mod tests {
             },
             PacketAttr {
                 raw_event_kind: RawEventKind::Http,
-                attr_name: HttpAttr::RespMimeTypes.to_string(),
+                attr_name: HttpAttr::MimeTypes.to_string(),
                 value_kind: ValueKind::String,
                 cmp_kind: AttrCmpKind::NotContain,
                 first_value: serialize(&"b1").unwrap(),
@@ -1311,6 +1321,97 @@ mod tests {
         }];
         let score_result = dhcp_event.score_by_attr(&fail_packet_attr);
         assert_eq!(score_result.partial_cmp(&0.0), Some(Ordering::Equal));
+
+        // Compare `VecBool` type for FtpAttr::DataPassive
+        let ftp_passive_event = FtpPlainText::new(time, {
+            use crate::event::ftp::FtpCommand;
+            let commands = vec![
+                FtpCommand {
+                    command: "USER".to_string(),
+                    reply_code: "331".to_string(),
+                    reply_msg: "Username okay, need password.".to_string(),
+                    data_passive: true, // This will be true
+                    data_orig_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 3)),
+                    data_resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 4)),
+                    data_resp_port: 10001,
+                    file: String::new(),
+                    file_size: 0,
+                    file_id: String::new(),
+                },
+                FtpCommand {
+                    command: "PASS".to_string(),
+                    reply_code: "230".to_string(),
+                    reply_msg: "User logged in, proceed.".to_string(),
+                    data_passive: false, // This will be false
+                    data_orig_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 3)),
+                    data_resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 4)),
+                    data_resp_port: 10001,
+                    file: String::new(),
+                    file_id: String::new(),
+                    file_size: 0,
+                },
+                FtpCommand {
+                    command: "LIST".to_string(),
+                    reply_code: "150".to_string(),
+                    reply_msg: "Opening ASCII mode data connection for file list".to_string(),
+                    data_passive: true, // This will be true
+                    data_orig_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 3)),
+                    data_resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 4)),
+                    data_resp_port: 10001,
+                    file: "list.txt".to_string(),
+                    file_size: 100,
+                    file_id: "xyz".to_string(),
+                },
+            ];
+
+            let mut fields = ftp_event_fields();
+            fields.commands = commands;
+            fields
+        });
+
+        // For Vec<Bool>, AttrCmpKind::Equal means score if at least one 'true' is found.
+        let success_packet_attr_vec_bool_true = vec![PacketAttr {
+            raw_event_kind: RawEventKind::Ftp,
+            attr_name: FtpAttr::DataPassive.to_string(),
+            value_kind: ValueKind::Bool,
+            cmp_kind: AttrCmpKind::Equal,
+            first_value: serialize(&true).unwrap(),
+            second_value: None,
+            weight: Some(0.6),
+        }];
+        let score_result_true = ftp_passive_event.score_by_attr(&success_packet_attr_vec_bool_true);
+        assert_eq!(score_result_true.partial_cmp(&0.6), Some(Ordering::Equal));
+
+        // For Vec<Bool>, AttrCmpKind::Equal means score if at least one 'false' is found.
+        let success_packet_attr_vec_bool_false = vec![PacketAttr {
+            raw_event_kind: RawEventKind::Ftp,
+            attr_name: FtpAttr::DataPassive.to_string(),
+            value_kind: ValueKind::Bool,
+            cmp_kind: AttrCmpKind::Equal,
+            first_value: serialize(&false).unwrap(),
+            second_value: None,
+            weight: Some(0.3),
+        }];
+        let score_result_false =
+            ftp_passive_event.score_by_attr(&success_packet_attr_vec_bool_false);
+        assert_eq!(score_result_false.partial_cmp(&0.3), Some(Ordering::Equal));
+
+        // For Vec<Bool>, AttrCmpKind::NotEqual means score if NONE of the 'true' are found.
+        let fail_packet_attr_vec_bool_not_true = vec![PacketAttr {
+            raw_event_kind: RawEventKind::Ftp,
+            attr_name: FtpAttr::DataPassive.to_string(),
+            value_kind: ValueKind::Bool,
+            cmp_kind: AttrCmpKind::NotEqual,
+            first_value: serialize(&true).unwrap(),
+            second_value: None,
+            weight: Some(0.5),
+        }];
+        let score_result_not_true =
+            ftp_passive_event.score_by_attr(&fail_packet_attr_vec_bool_not_true);
+        assert_eq!(
+            score_result_not_true.partial_cmp(&0.0),
+            Some(Ordering::Equal)
+        );
     }
 
     fn serialize<T>(v: &T) -> Option<Vec<u8>>
