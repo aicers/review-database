@@ -21,6 +21,11 @@ macro_rules! find_rdp_attr_by_kind {
                 RdpAttr::DstAddr => AttrValue::Addr($event.dst_addr),
                 RdpAttr::DstPort => AttrValue::UInt($event.dst_port.into()),
                 RdpAttr::Proto => AttrValue::UInt($event.proto.into()),
+                RdpAttr::Duration => AttrValue::SInt($event.duration),
+                RdpAttr::OrigPkts => AttrValue::UInt($event.orig_pkts),
+                RdpAttr::RespPkts => AttrValue::UInt($event.resp_pkts),
+                RdpAttr::OrigL2Bytes => AttrValue::UInt($event.orig_l2_bytes),
+                RdpAttr::RespL2Bytes => AttrValue::UInt($event.resp_l2_bytes),
                 RdpAttr::Cookie => AttrValue::String(&$event.cookie),
             };
             Some(target_value)
@@ -163,7 +168,7 @@ impl Match for RdpBruteForce {
         if let RawEventAttrKind::Rdp(attr) = raw_event_attr {
             match attr {
                 RdpAttr::SrcAddr => Some(AttrValue::Addr(self.src_addr)),
-                RdpAttr::DstAddr => Some(AttrValue::VecAddr(&self.dst_addrs)),
+                RdpAttr::DstAddr => Some(AttrValue::VecAddr(self.dst_addrs.clone())),
                 RdpAttr::Proto => Some(AttrValue::UInt(self.proto.into())),
                 _ => None,
             }
