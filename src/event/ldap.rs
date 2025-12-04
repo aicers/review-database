@@ -17,13 +17,20 @@ macro_rules! find_ldap_attr_by_kind {
                 LdapAttr::DstAddr => AttrValue::Addr($event.dst_addr),
                 LdapAttr::DstPort => AttrValue::UInt($event.dst_port.into()),
                 LdapAttr::Proto => AttrValue::UInt($event.proto.into()),
+                LdapAttr::Duration => AttrValue::SInt($event.duration),
+                LdapAttr::OrigPkts => AttrValue::UInt($event.orig_pkts),
+                LdapAttr::RespPkts => AttrValue::UInt($event.resp_pkts),
+                LdapAttr::OrigL2Bytes => AttrValue::UInt($event.orig_l2_bytes),
+                LdapAttr::RespL2Bytes => AttrValue::UInt($event.resp_l2_bytes),
                 LdapAttr::MessageId => AttrValue::UInt($event.message_id.into()),
                 LdapAttr::Version => AttrValue::UInt($event.version.into()),
-                LdapAttr::Opcode => AttrValue::VecString(&$event.opcode),
-                LdapAttr::Result => AttrValue::VecString(&$event.result),
-                LdapAttr::DiagnosticMessage => AttrValue::VecString(&$event.diagnostic_message),
-                LdapAttr::Object => AttrValue::VecString(&$event.object),
-                LdapAttr::Argument => AttrValue::VecString(&$event.argument),
+                LdapAttr::Opcode => AttrValue::VecString($event.opcode.clone()),
+                LdapAttr::Result => AttrValue::VecString($event.result.clone()),
+                LdapAttr::DiagnosticMessage => {
+                    AttrValue::VecString($event.diagnostic_message.clone())
+                }
+                LdapAttr::Object => AttrValue::VecString($event.object.clone()),
+                LdapAttr::Argument => AttrValue::VecString($event.argument.clone()),
             };
             Some(target_value)
         } else {

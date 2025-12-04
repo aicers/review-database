@@ -16,15 +16,20 @@ macro_rules! find_kerberos_attr_by_kind {
                 KerberosAttr::DstAddr => AttrValue::Addr($event.dst_addr),
                 KerberosAttr::DstPort => AttrValue::UInt($event.dst_port.into()),
                 KerberosAttr::Proto => AttrValue::UInt($event.proto.into()),
+                KerberosAttr::Duration => AttrValue::SInt($event.duration),
+                KerberosAttr::OrigPkts => AttrValue::UInt($event.orig_pkts),
+                KerberosAttr::RespPkts => AttrValue::UInt($event.resp_pkts),
+                KerberosAttr::OrigL2Bytes => AttrValue::UInt($event.orig_l2_bytes),
+                KerberosAttr::RespL2Bytes => AttrValue::UInt($event.resp_l2_bytes),
                 KerberosAttr::ClientTime => AttrValue::SInt($event.client_time),
                 KerberosAttr::ServerTime => AttrValue::SInt($event.server_time),
                 KerberosAttr::ErrorCode => AttrValue::UInt($event.error_code.into()),
                 KerberosAttr::ClientRealm => AttrValue::String(&$event.client_realm),
                 KerberosAttr::CnameType => AttrValue::UInt($event.cname_type.into()),
-                KerberosAttr::ClientName => AttrValue::VecString(&$event.client_name),
+                KerberosAttr::ClientName => AttrValue::VecString($event.client_name.clone()),
                 KerberosAttr::Realm => AttrValue::String(&$event.realm),
                 KerberosAttr::SnameType => AttrValue::UInt($event.sname_type.into()),
-                KerberosAttr::ServiceName => AttrValue::VecString(&$event.service_name),
+                KerberosAttr::ServiceName => AttrValue::VecString($event.service_name.clone()),
             };
             Some(target_value)
         } else {

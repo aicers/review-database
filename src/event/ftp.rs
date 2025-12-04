@@ -34,77 +34,122 @@ macro_rules! find_ftp_attr_by_kind {
                 FtpAttr::DstAddr => AttrValue::Addr($event.dst_addr),
                 FtpAttr::DstPort => AttrValue::UInt($event.dst_port.into()),
                 FtpAttr::Proto => AttrValue::UInt($event.proto.into()),
+                FtpAttr::Duration => AttrValue::SInt($event.duration),
+                FtpAttr::OrigPkts => AttrValue::UInt($event.orig_pkts),
+                FtpAttr::RespPkts => AttrValue::UInt($event.resp_pkts),
+                FtpAttr::OrigL2Bytes => AttrValue::UInt($event.orig_l2_bytes),
+                FtpAttr::RespL2Bytes => AttrValue::UInt($event.resp_l2_bytes),
                 FtpAttr::User => AttrValue::String(&$event.user),
                 FtpAttr::Password => AttrValue::String(&$event.password),
                 FtpAttr::Command => {
-                    if let Some(first_cmd) = $event.commands.first() {
-                        AttrValue::String(&first_cmd.command)
-                    } else {
+                    let values = $event
+                        .commands
+                        .iter()
+                        .map(|c| c.command.clone())
+                        .collect::<Vec<_>>();
+                    if values.is_empty() {
                         return None;
                     }
+                    AttrValue::VecString(values)
                 }
                 FtpAttr::ReplyCode => {
-                    if let Some(first_cmd) = $event.commands.first() {
-                        AttrValue::String(&first_cmd.reply_code)
-                    } else {
+                    let values = $event
+                        .commands
+                        .iter()
+                        .map(|c| c.reply_code.clone())
+                        .collect::<Vec<_>>();
+                    if values.is_empty() {
                         return None;
                     }
+                    AttrValue::VecString(values)
                 }
                 FtpAttr::ReplyMsg => {
-                    if let Some(first_cmd) = $event.commands.first() {
-                        AttrValue::String(&first_cmd.reply_msg)
-                    } else {
+                    let values = $event
+                        .commands
+                        .iter()
+                        .map(|c| c.reply_msg.clone())
+                        .collect::<Vec<_>>();
+                    if values.is_empty() {
                         return None;
                     }
+                    AttrValue::VecString(values)
                 }
                 FtpAttr::DataPassive => {
-                    if let Some(first_cmd) = $event.commands.first() {
-                        AttrValue::Bool(first_cmd.data_passive)
-                    } else {
+                    let values = $event
+                        .commands
+                        .iter()
+                        .map(|c| c.data_passive)
+                        .collect::<Vec<_>>();
+                    if values.is_empty() {
                         return None;
                     }
+                    AttrValue::VecBool(values)
                 }
                 FtpAttr::DataOrigAddr => {
-                    if let Some(first_cmd) = $event.commands.first() {
-                        AttrValue::Addr(first_cmd.data_orig_addr)
-                    } else {
+                    let values = $event
+                        .commands
+                        .iter()
+                        .map(|c| c.data_orig_addr)
+                        .collect::<Vec<_>>();
+                    if values.is_empty() {
                         return None;
                     }
+                    AttrValue::VecAddr(values)
                 }
                 FtpAttr::DataRespAddr => {
-                    if let Some(first_cmd) = $event.commands.first() {
-                        AttrValue::Addr(first_cmd.data_resp_addr)
-                    } else {
+                    let values = $event
+                        .commands
+                        .iter()
+                        .map(|c| c.data_resp_addr)
+                        .collect::<Vec<_>>();
+                    if values.is_empty() {
                         return None;
                     }
+                    AttrValue::VecAddr(values)
                 }
                 FtpAttr::DataRespPort => {
-                    if let Some(first_cmd) = $event.commands.first() {
-                        AttrValue::UInt(first_cmd.data_resp_port.into())
-                    } else {
+                    let values = $event
+                        .commands
+                        .iter()
+                        .map(|c| u64::from(c.data_resp_port))
+                        .collect::<Vec<_>>();
+                    if values.is_empty() {
                         return None;
                     }
+                    AttrValue::VecUInt(values)
                 }
                 FtpAttr::File => {
-                    if let Some(first_cmd) = $event.commands.first() {
-                        AttrValue::String(&first_cmd.file)
-                    } else {
+                    let values = $event
+                        .commands
+                        .iter()
+                        .map(|c| c.file.clone())
+                        .collect::<Vec<_>>();
+                    if values.is_empty() {
                         return None;
                     }
+                    AttrValue::VecString(values)
                 }
                 FtpAttr::FileSize => {
-                    if let Some(first_cmd) = $event.commands.first() {
-                        AttrValue::UInt(first_cmd.file_size)
-                    } else {
+                    let values = $event
+                        .commands
+                        .iter()
+                        .map(|c| c.file_size)
+                        .collect::<Vec<_>>();
+                    if values.is_empty() {
                         return None;
                     }
+                    AttrValue::VecUInt(values)
                 }
                 FtpAttr::FileId => {
-                    if let Some(first_cmd) = $event.commands.first() {
-                        AttrValue::String(&first_cmd.file_id)
-                    } else {
+                    let values = $event
+                        .commands
+                        .iter()
+                        .map(|c| c.file_id.clone())
+                        .collect::<Vec<_>>();
+                    if values.is_empty() {
                         return None;
                     }
+                    AttrValue::VecString(values)
                 }
             };
             Some(target_value)
@@ -297,7 +342,7 @@ impl Match for FtpBruteForce {
                 FtpAttr::DstAddr => Some(AttrValue::Addr(self.dst_addr)),
                 FtpAttr::DstPort => Some(AttrValue::UInt(self.dst_port.into())),
                 FtpAttr::Proto => Some(AttrValue::UInt(self.proto.into())),
-                FtpAttr::User => Some(AttrValue::VecString(&self.user_list)),
+                FtpAttr::User => Some(AttrValue::VecString(self.user_list.clone())),
                 _ => None,
             }
         } else {

@@ -1,10 +1,47 @@
 use std::{fmt, net::IpAddr, num::NonZeroU8};
 
+use attrievent::attribute::{RadiusAttr, RawEventAttrKind};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use super::{EventCategory, LearningMethod, MEDIUM, TriageScore, common::Match};
 use crate::event::common::{AttrValue, triage_scores_to_string};
+
+macro_rules! find_radius_attr_by_kind {
+    ($event: expr, $raw_event_attr: expr) => {{
+        if let RawEventAttrKind::Radius(attr) = $raw_event_attr {
+            let target_value = match attr {
+                RadiusAttr::SrcAddr => AttrValue::Addr($event.src_addr),
+                RadiusAttr::SrcPort => AttrValue::UInt($event.src_port.into()),
+                RadiusAttr::DstAddr => AttrValue::Addr($event.dst_addr),
+                RadiusAttr::DstPort => AttrValue::UInt($event.dst_port.into()),
+                RadiusAttr::Proto => AttrValue::UInt($event.proto.into()),
+                RadiusAttr::Duration => AttrValue::SInt($event.duration),
+                RadiusAttr::OrigPkts => AttrValue::UInt($event.orig_pkts),
+                RadiusAttr::RespPkts => AttrValue::UInt($event.resp_pkts),
+                RadiusAttr::OrigL2Bytes => AttrValue::UInt($event.orig_l2_bytes),
+                RadiusAttr::RespL2Bytes => AttrValue::UInt($event.resp_l2_bytes),
+                RadiusAttr::Id => AttrValue::UInt($event.id.into()),
+                RadiusAttr::Code => AttrValue::UInt($event.code.into()),
+                RadiusAttr::RespCode => AttrValue::UInt($event.resp_code.into()),
+                RadiusAttr::Auth => AttrValue::String(&$event.auth),
+                RadiusAttr::RespAuth => AttrValue::String(&$event.resp_auth),
+                RadiusAttr::UserName => AttrValue::VecRaw(&$event.user_name),
+                RadiusAttr::UserPasswd => AttrValue::VecRaw(&$event.user_passwd),
+                RadiusAttr::ChapPasswd => AttrValue::VecRaw(&$event.chap_passwd),
+                RadiusAttr::NasIp => AttrValue::Addr($event.nas_ip),
+                RadiusAttr::NasPort => AttrValue::UInt($event.nas_port.into()),
+                RadiusAttr::State => AttrValue::VecRaw(&$event.state),
+                RadiusAttr::NasId => AttrValue::VecRaw(&$event.nas_id),
+                RadiusAttr::NasPortType => AttrValue::UInt($event.nas_port_type.into()),
+                RadiusAttr::Message => AttrValue::String(&$event.message),
+            };
+            Some(target_value)
+        } else {
+            None
+        }
+    }};
+}
 
 #[derive(Serialize, Deserialize)]
 pub struct BlocklistRadiusFields {
@@ -234,9 +271,8 @@ impl Match for BlocklistRadius {
 
     fn find_attr_by_kind(
         &self,
-        _raw_event_attr: attrievent::attribute::RawEventAttrKind,
+        raw_event_attr: attrievent::attribute::RawEventAttrKind,
     ) -> Option<AttrValue<'_>> {
-        // TODO: Implement when RawEventAttrKind::Radius is available
-        None
+        find_radius_attr_by_kind!(self, raw_event_attr)
     }
 }

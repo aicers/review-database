@@ -1,5 +1,6 @@
 use std::{fmt, net::IpAddr, num::NonZeroU8};
 
+use attrievent::attribute::{ConnAttr, RawEventAttrKind};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
@@ -149,10 +150,13 @@ impl Match for UnusualDestinationPattern {
         LearningMethod::SemiSupervised
     }
 
-    fn find_attr_by_kind(
-        &self,
-        _raw_event_attr: attrievent::attribute::RawEventAttrKind,
-    ) -> Option<AttrValue<'_>> {
-        None
+    fn find_attr_by_kind(&self, raw_event_attr: RawEventAttrKind) -> Option<AttrValue<'_>> {
+        if let RawEventAttrKind::Conn(attr) = raw_event_attr
+            && attr == ConnAttr::DstAddr
+        {
+            Some(AttrValue::VecAddr(self.destination_ips.clone()))
+        } else {
+            None
+        }
     }
 }
