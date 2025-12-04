@@ -19,6 +19,28 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 ### Changed
 
 - Migrations from versions earlier than 0.42.0 are no longer supported.
+- **BREAKING**: Unified address/port field naming in session-level detection
+  event structures to align with Hog terminology. Renamed fields:
+  - `src_addr` → `orig_addr`
+  - `src_addrs` → `orig_addrs`
+  - `src_port` → `orig_port`
+  - `dst_addr` → `resp_addr`
+  - `dst_addrs` → `resp_addrs`
+  - `dst_port` → `resp_port`
+  - `dst_ports` → `resp_ports`
+
+  Affected structures include: `BlocklistBootpFields`, `BlocklistConnFields`,
+  `BlocklistDceRpcFields`, `BlocklistDhcpFields`, `BlocklistDnsFields`,
+  `BlocklistFtpFields`, `BlocklistHttpFields`, `BlocklistKerberosFields`,
+  `BlocklistLdapFields`, `BlocklistMqttFields`, `BlocklistNfsFields`,
+  `BlocklistNtlmFields`, `BlocklistRadiusFields`, `BlocklistRdpFields`,
+  `BlocklistSmbFields`, `BlocklistSmtpFields`, `BlocklistSshFields`,
+  `BlocklistTlsFields`, `CryptocurrencyMiningPoolFields`, `DgaFields`,
+  `DnsEventFields`, `ExternalDdosFields`, `FtpBruteForceFields`,
+  `FtpPlainTextFields`, `HttpEventFields`, `HttpThreatFields`,
+  `LdapBruteForceFields`, `LdapPlainTextFields`, `MultiHostPortScanFields`,
+  `PortScanFields`, `RdpBruteForceFields`, `RepeatedHttpSessionsFields`,
+  `TorConnection`, and `TorConnectionConn`.
 
 ### Removed
 
