@@ -43,6 +43,32 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   method is renamed to `Store::label_db_map`. The RocksDB column family is
   renamed from "TI database" to "label database" with automatic data
   migration.
+- Updated `attrievent` dependency to rev `a360cd9`, adding support for new
+  attribute variants and updated field names.
+  - Updated HTTP attribute triage mappings: `OrigFilenames`/`RespFilenames`
+    merged to `Filenames`, `OrigMimeTypes`/`RespMimeTypes` merged to `MimeTypes`,
+    and `PostBody` renamed to `Body`.
+  - Added session-related attribute mappings (`Duration`, `OrigPkts`, `RespPkts`,
+    `OrigL2Bytes`, `RespL2Bytes`) to all protocol detection event attribute
+    triage macros (HTTP, DNS, FTP, SSH, TLS, SMTP, DHCP, BOOTP, SMB, NFS, RDP,
+    MQTT, LDAP, Kerberos, NTLM, Network).
+  - Implemented `RadiusAttr` triage support for `BlocklistRadius` events.
+  - Implemented `DnsAttr` triage support for `BlocklistMalformedDns` events,
+    mapping available fields including `orig_addr`, `orig_port`, `resp_addr`,
+    `resp_port`, `proto`, `duration`, `orig_pkts`, `resp_pkts`, `orig_l2_bytes`,
+    `resp_l2_bytes`, and `trans_id`.
+  - Implemented `ConnAttr::DstAddr` triage support for `UnusualDestinationPattern`
+    events, mapping to the `destination_ips` field.
+  - FTP protocol event attribute handling was enhanced to process all commands
+    within the `commands: Vec<FtpCommand>` field. Previously, only the first
+    command's fields were considered for comparison; now, relevant fields (e.g.,
+    `command`, `reply_code`, `reply_msg`, `data_passive`, `data_orig_addr`,
+    `data_resp_addr`, `data_resp_port`, `file`, `file_size`, `file_id`) are
+    aggregated into vectors for comprehensive comparison. This change
+    necessitated updating `AttrValue` enum variants `VecString` and `VecAddr` to
+    own their respective `Vec<String>` and `Vec<IpAddr>` data, and the addition
+    of a new `AttrValue::VecBool(Vec<bool>)` variant for vector-based boolean
+    attribute comparisons.
 - Migrations from versions earlier than 0.42.0 are no longer supported.
 - **BREAKING**: Renamed the `TriageExclusionReason` enum to `ExclusionReason`.
 - **BREAKING**: Changed `TriagePolicy::ti_db` to `triage_exclusion_id: Vec<u32>`

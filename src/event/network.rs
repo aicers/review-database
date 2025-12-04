@@ -19,6 +19,11 @@ macro_rules! find_network_attr_by_kind {
                 NetworkAttr::DstAddr => AttrValue::Addr($event.resp_addr),
                 NetworkAttr::DstPort => AttrValue::UInt($event.resp_port.into()),
                 NetworkAttr::Proto => AttrValue::UInt($event.proto.into()),
+                NetworkAttr::Duration => AttrValue::SInt($event.duration),
+                NetworkAttr::OrigPkts => AttrValue::UInt($event.orig_pkts),
+                NetworkAttr::RespPkts => AttrValue::UInt($event.resp_pkts),
+                NetworkAttr::OrigL2Bytes => AttrValue::UInt($event.orig_l2_bytes),
+                NetworkAttr::RespL2Bytes => AttrValue::UInt($event.resp_l2_bytes),
                 NetworkAttr::Content => AttrValue::String(&$event.content),
             };
             Some(target_value)

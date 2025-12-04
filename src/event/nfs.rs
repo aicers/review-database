@@ -16,8 +16,13 @@ macro_rules! find_nfs_attr_by_kind {
                 NfsAttr::DstAddr => AttrValue::Addr($event.dst_addr),
                 NfsAttr::DstPort => AttrValue::UInt($event.dst_port.into()),
                 NfsAttr::Proto => AttrValue::UInt($event.proto.into()),
-                NfsAttr::ReadFiles => AttrValue::VecString(&$event.read_files),
-                NfsAttr::WriteFiles => AttrValue::VecString(&$event.write_files),
+                NfsAttr::Duration => AttrValue::SInt($event.duration),
+                NfsAttr::OrigPkts => AttrValue::UInt($event.orig_pkts),
+                NfsAttr::RespPkts => AttrValue::UInt($event.resp_pkts),
+                NfsAttr::OrigL2Bytes => AttrValue::UInt($event.orig_l2_bytes),
+                NfsAttr::RespL2Bytes => AttrValue::UInt($event.resp_l2_bytes),
+                NfsAttr::ReadFiles => AttrValue::VecString($event.read_files.clone()),
+                NfsAttr::WriteFiles => AttrValue::VecString($event.write_files.clone()),
             };
             Some(target_value)
         } else {
