@@ -92,6 +92,17 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   This composite key allows multiple customers to have policies with the same
   name. The key format is 4 bytes of `customer_id` (big-endian, using `u32::MAX`
   for `None`) followed by the name bytes.
+- **BREAKING**: Unified address/port field naming in session-level detection
+  event structures. Renamed fields:
+  - `src_addr` → `orig_addr`
+  - `src_addrs` → `orig_addrs`
+  - `src_port` → `orig_port`
+  - `dst_addr` → `resp_addr`
+  - `dst_addrs` → `resp_addrs`
+  - `dst_port` → `resp_port`
+  - `dst_ports` → `resp_ports`
+
+  All event structures containing these fields are affected.
 
 ### Removed
 
