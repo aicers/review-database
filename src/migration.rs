@@ -199,8 +199,8 @@ pub fn migrate_data_dir<P: AsRef<Path>>(data_dir: P, backup_dir: P) -> Result<()
     //   the first version (major.minor) in the "version requirement" and B is the "to version"
     //   (major.minor). (NOTE: Once we release 1.0.0, A and B will contain the major version only.)
     let migration: Vec<Migration> = vec![(
-        VersionReq::parse(">=0.41.0,<0.42.0-alpha.5")?,
-        Version::parse("0.42.0-alpha.5")?,
+        VersionReq::parse(">=0.41.0,<0.42.0")?,
+        Version::parse("0.42.0")?,
         migrate_0_41_to_0_42,
     )];
 
