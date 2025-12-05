@@ -38,6 +38,10 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   `Option<Vec<TriagePolicyInput>>` directly. Applications must now manually
   convert `TriagePolicy` to `TriagePolicyInput` using
   `into_input_with_exclusion_reason`.
+- **BREAKING**: Changed `TriagePolicy` key from `name` to `customer_id` + `name`.
+  This composite key allows multiple customers to have policies with the same
+  name. The key format is 4 bytes of `customer_id` (big-endian, using `u32::MAX`
+  for `None`) followed by the name bytes.
 
 ### Removed
 

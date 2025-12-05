@@ -37,6 +37,19 @@ pub struct TriagePolicy {
     pub customer_id: Option<u32>,
 }
 
+/// Creates a composite key from `customer_id` and `name` for `TriagePolicy`.
+///
+/// The key format is: `customer_id` (4 bytes, big-endian) + `name` (UTF-8 bytes).
+/// - If `customer_id` is `Some(id)`, the `id` value is used.
+/// - If `customer_id` is `None` (applies to all customers), `u32::MAX` is used.
+fn triage_policy_key(customer_id: Option<u32>, name: &str) -> Vec<u8> {
+    let customer_id_value = customer_id.unwrap_or(u32::MAX);
+    let mut key = Vec::with_capacity(4 + name.len());
+    key.extend_from_slice(&customer_id_value.to_be_bytes());
+    key.extend_from_slice(name.as_bytes());
+    key
+}
+
 impl FromKeyValue for TriagePolicy {
     fn from_key_value(_key: &[u8], value: &[u8]) -> Result<Self> {
         super::deserialize(value)
@@ -44,16 +57,16 @@ impl FromKeyValue for TriagePolicy {
 }
 
 impl UniqueKey for TriagePolicy {
-    type AsBytes<'a> = &'a [u8];
+    type AsBytes<'a> = Vec<u8>;
 
-    fn unique_key(&self) -> &[u8] {
-        self.name.as_bytes()
+    fn unique_key(&self) -> Vec<u8> {
+        triage_policy_key(self.customer_id, &self.name)
     }
 }
 
 impl Indexable for TriagePolicy {
     fn key(&self) -> Cow<'_, [u8]> {
-        Cow::Borrowed(self.name.as_bytes())
+        Cow::Owned(triage_policy_key(self.customer_id, &self.name))
     }
     fn index(&self) -> u32 {
         self.id
@@ -572,7 +585,7 @@ impl IndexedMapUpdate for Update {
     type Entry = TriagePolicy;
 
     fn key(&self) -> Option<Cow<'_, [u8]>> {
-        Some(Cow::Borrowed(self.name.as_bytes()))
+        Some(Cow::Owned(triage_policy_key(self.customer_id, &self.name)))
     }
 
     fn apply(&self, mut value: Self::Entry) -> Result<Self::Entry, anyhow::Error> {
@@ -718,17 +731,51 @@ mod test {
         let store = setup_store();
         let mut table = store.triage_policy_map();
 
-        let entry = create_entry("a");
+        let entry = create_entry("a", None);
         let id = table.put(entry.clone()).unwrap();
 
-        let old = create_update("a");
+        let old = create_update("a", None);
 
-        let update = create_update("b");
+        let update = create_update("b", None);
 
         assert!(table.update(id, &old, &update).is_ok());
         assert_eq!(table.count().unwrap(), 1);
         let entry = table.get_by_id(id).unwrap();
         assert_eq!(entry.map(|e| e.name), Some("b".to_string()));
+    }
+
+    #[test]
+    fn same_name_different_customer() {
+        let store = setup_store();
+        let table = store.triage_policy_map();
+
+        // Create a policy for customer 1
+        let entry1 = create_entry("policy", Some(1));
+        let id1 = table.put(entry1).unwrap();
+
+        // Create a policy with the same name for customer 2
+        let entry2 = create_entry("policy", Some(2));
+        let id2 = table.put(entry2).unwrap();
+
+        // Create a policy with the same name for all customers (customer_id = None)
+        let entry3 = create_entry("policy", None);
+        let id3 = table.put(entry3).unwrap();
+
+        // All three should coexist
+        assert_eq!(table.count().unwrap(), 3);
+
+        // Verify each entry exists and has correct customer_id
+        let retrieved1 = table.get_by_id(id1).unwrap().unwrap();
+        assert_eq!(retrieved1.name, "policy");
+        assert_eq!(retrieved1.customer_id, Some(1));
+
+        let retrieved2 = table.get_by_id(id2).unwrap().unwrap();
+        assert_eq!(retrieved2.name, "policy");
+        assert_eq!(retrieved2.customer_id, Some(2));
+
+        let retrieved3 = table.get_by_id(id3).unwrap().unwrap();
+        assert_eq!(retrieved3.name, "policy");
+        assert_eq!(retrieved3.customer_id, None);
     }
 
     #[test]
@@ -755,7 +802,7 @@ mod test {
         Arc::new(Store::new(db_dir.path(), backup_dir.path()).unwrap())
     }
 
-    fn create_entry(name: &str) -> TriagePolicy {
+    fn create_entry(name: &str, customer_id: Option<u32>) -> TriagePolicy {
         TriagePolicy {
             id: u32::MAX,
             name: name.to_string(),
@@ -764,18 +811,18 @@ mod test {
             response: vec![],
             confidence: vec![],
             creation_time: Utc::now(),
-            customer_id: None,
+            customer_id,
         }
     }
 
-    fn create_update(name: &str) -> TriagePolicyUpdate {
+    fn create_update(name: &str, customer_id: Option<u32>) -> TriagePolicyUpdate {
         TriagePolicyUpdate {
             name: name.to_string(),
             triage_exclusion_id: vec![],
             packet_attr: vec![],
             confidence: vec![],
             response: vec![],
-            customer_id: None,
+            customer_id,
         }
     }
 
