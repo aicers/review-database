@@ -185,9 +185,10 @@ async fn update_cluster_id_in_column_stats(
         .map(|(id, cid)| Ok((u32::try_from(id)?, u32::try_from(cid)?)))
         .collect::<Result<_, anyhow::Error>>()?;
     let map = store.column_stats_map();
+    let raw = map.raw();
     let mut updated = vec![];
-    let iter = map.raw().db.iterator(rocksdb::IteratorMode::Start);
-    let txn = map.raw().db.transaction();
+    let iter = raw.db.iterator_cf(raw.cf, rocksdb::IteratorMode::Start);
+    let txn = raw.db.transaction();
     for item in iter {
         let (old_key, old_value) = item?;
         let mut old_k: ColumnStatsKeyV41 = bincode::deserialize(&old_key)?;
@@ -198,7 +199,7 @@ async fn update_cluster_id_in_column_stats(
         let old_v: ColumnStatsValueV41 = bincode::deserialize(&old_value)?;
         let new: crate::ColumnStats = (old_k, old_v).try_into()?;
         updated.push(new);
-        map.raw().delete_with_transaction(&old_key, &txn)?;
+        raw.delete_with_transaction(&old_key, &txn)?;
     }
     txn.commit()?;
 
