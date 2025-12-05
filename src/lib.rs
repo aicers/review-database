@@ -44,17 +44,18 @@ pub use self::tables::{
     AccessToken, Agent, AgentConfig, AgentKind, AgentStatus, AllowNetwork, AllowNetworkUpdate,
     AttrCmpKind, BackupConfig, BlockNetwork, BlockNetworkUpdate, Cluster, ClusterTimeSeries,
     ColumnStats, ColumnTimeSeries, Confidence, CsvColumnExtra as CsvColumnExtraConfig, Customer,
-    CustomerNetwork, CustomerUpdate, DataSource, DataSourceUpdate, DataType, ExternalService,
-    ExternalServiceConfig, ExternalServiceKind, ExternalServiceStatus, Filter, FilterValue, Host,
-    IndexedTable, Iterable, Model as ModelDigest, ModelIndicator, Network, NetworkFilter,
-    NetworkUpdate, Node, NodeProfile, NodeTable, NodeUpdate, OutlierInfo, OutlierInfoKey,
-    OutlierInfoValue, PacketAttr, PeriodForSearch, ProtocolPorts, Response, ResponseKind,
-    SamplingInterval, SamplingKind, SamplingPeriod, SamplingPolicy, SamplingPolicyUpdate,
-    Structured, StructuredClusteringAlgorithm, Table, Template, Tidb, TidbKind, TidbRule,
-    TidbRuleKind, TimeSeries, TopColumnsOfCluster, TopMultimaps, TorExitNode, TrafficFilter,
-    TriageExclusion, TriageExclusionReason, TriagePolicy, TriagePolicyInput, TriagePolicyUpdate,
-    TriageResponse, TriageResponseUpdate, TrustedDomain, TrustedUserAgent, UniqueKey, Unstructured,
-    UnstructuredClusteringAlgorithm, UserAgent, ValueKind,
+    CustomerNetwork, CustomerUpdate, DataSource, DataSourceUpdate, DataType, ExclusionReason,
+    ExternalService, ExternalServiceConfig, ExternalServiceKind, ExternalServiceStatus, Filter,
+    FilterValue, Host, IndexedTable, Iterable, Model as ModelDigest, ModelIndicator, Network,
+    NetworkFilter, NetworkUpdate, Node, NodeProfile, NodeTable, NodeUpdate, OutlierInfo,
+    OutlierInfoKey, OutlierInfoValue, PacketAttr, PeriodForSearch, ProtocolPorts, Response,
+    ResponseKind, SamplingInterval, SamplingKind, SamplingPeriod, SamplingPolicy,
+    SamplingPolicyUpdate, Structured, StructuredClusteringAlgorithm, Table, Template, Tidb,
+    TidbKind, TidbRule, TidbRuleKind, TimeSeries, TopColumnsOfCluster, TopMultimaps, TorExitNode,
+    TrafficFilter, TriageExclusion, TriageExclusionReason, TriageExclusionReasonUpdate,
+    TriagePolicy, TriagePolicyInput, TriagePolicyUpdate, TriageResponse, TriageResponseUpdate,
+    TrustedDomain, TrustedUserAgent, UniqueKey, Unstructured, UnstructuredClusteringAlgorithm,
+    UserAgent, ValueKind,
 };
 pub use self::top_n::*;
 #[allow(deprecated)]
@@ -306,6 +307,12 @@ impl Store {
     #[allow(clippy::missing_panics_doc)]
     pub fn tor_exit_node_map(&self) -> Table<'_, TorExitNode> {
         self.states.tor_exit_nodes()
+    }
+
+    #[must_use]
+    #[allow(clippy::missing_panics_doc)]
+    pub fn triage_exclusion_reason_map(&self) -> IndexedTable<'_, TriageExclusionReason> {
+        self.states.triage_exclusion_reasons()
     }
 
     #[must_use]

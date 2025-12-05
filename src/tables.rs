@@ -76,9 +76,9 @@ pub use self::time_series::{Cluster as ClusterTimeSeries, Column as ColumnTimeSe
 pub use self::tor_exit_node::TorExitNode;
 pub use self::traffic_filter::{ProtocolPorts, TrafficFilter};
 pub use self::triage_policy::{
-    AttrCmpKind, Confidence, NetworkFilter, PacketAttr, Response, ResponseKind, TriageExclusion,
-    TriageExclusionReason, TriagePolicy, TriagePolicyInput, Update as TriagePolicyUpdate,
-    ValueKind,
+    AttrCmpKind, Confidence, ExclusionReason, NetworkFilter, PacketAttr, Response, ResponseKind,
+    TriageExclusion, TriageExclusionReason, TriageExclusionReasonUpdate, TriagePolicy,
+    TriagePolicyInput, Update as TriagePolicyUpdate, ValueKind,
 };
 pub use self::triage_response::{TriageResponse, Update as TriageResponseUpdate};
 pub use self::trusted_domain::TrustedDomain;
@@ -125,12 +125,13 @@ pub(super) const TIDB: &str = "TI database";
 pub(super) const TIME_SERIES: &str = "time series";
 pub(super) const TOR_EXIT_NODES: &str = "Tor exit nodes";
 pub(super) const TRAFFIC_FILTER_RULES: &str = "traffic filter rules";
+pub(super) const TRIAGE_EXCLUSION_REASON: &str = "triage exclusion reason";
 pub(super) const TRIAGE_POLICY: &str = "triage policy";
 pub(super) const TRIAGE_RESPONSE: &str = "triage response";
 pub(super) const TRUSTED_DNS_SERVERS: &str = "trusted DNS servers";
 pub(super) const TRUSTED_USER_AGENTS: &str = "trusted user agents";
 
-pub(crate) const MAP_NAMES: [&str; 35] = [
+pub(crate) const MAP_NAMES: [&str; 36] = [
     ACCESS_TOKENS,
     ACCOUNTS,
     AGENTS,
@@ -162,6 +163,7 @@ pub(crate) const MAP_NAMES: [&str; 35] = [
     TIME_SERIES,
     TOR_EXIT_NODES,
     TRAFFIC_FILTER_RULES,
+    TRIAGE_EXCLUSION_REASON,
     TRIAGE_POLICY,
     TRIAGE_RESPONSE,
     TRUSTED_DNS_SERVERS,
@@ -321,6 +323,13 @@ impl StateDb {
     pub(crate) fn nodes(&self) -> NodeTable<'_> {
         let inner = self.inner.as_ref().expect("database must be open");
         NodeTable::open(inner).expect("{NETWORKS} table must be present")
+    }
+
+    #[must_use]
+    pub(crate) fn triage_exclusion_reasons(&self) -> IndexedTable<'_, TriageExclusionReason> {
+        let inner = self.inner.as_ref().expect("database must be open");
+        IndexedTable::<TriageExclusionReason>::open(inner)
+            .expect("{TRIAGE_EXCLUSION_REASON} table must be present")
     }
 
     #[must_use]

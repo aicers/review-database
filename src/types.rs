@@ -54,6 +54,7 @@ mod private {
     impl Sealed for tables::TimeSeries {}
     impl Sealed for tables::TorExitNode {}
     impl Sealed for tables::TrafficFilter {}
+    impl Sealed for tables::TriageExclusionReason {}
     impl Sealed for tables::TriagePolicy {}
     impl Sealed for tables::TriageResponse {}
     impl Sealed for tables::TrustedDomain {}

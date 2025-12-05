@@ -83,7 +83,7 @@ pub use self::{
     unusual_destination_pattern::{UnusualDestinationPattern, UnusualDestinationPatternFields},
 };
 use super::{
-    Customer, EventCategory, Network, TriagePolicy, TriagePolicyInput,
+    Customer, EventCategory, Network, TriagePolicyInput,
     types::{Endpoint, HostNetworkGroup},
 };
 
@@ -2026,10 +2026,6 @@ pub struct EventFilter {
 
 impl EventFilter {
     /// Creates a new `EventFilter`.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the domain patterns in triage policies cannot be compiled into valid regex patterns.
     #[allow(clippy::too_many_arguments)]
     #[must_use]
     pub fn new(
@@ -2046,24 +2042,8 @@ impl EventFilter {
         sensors: Option<Vec<String>>,
         confidence_min: Option<f32>,
         confidence_max: Option<f32>,
-        triage_policies: Option<Vec<TriagePolicy>>,
+        triage_policies: Option<Vec<TriagePolicyInput>>,
     ) -> Self {
-        // Convert TriagePolicy to TriagePolicyInput
-        let triage_policies = triage_policies.map(|policies| {
-            policies
-                .into_iter()
-                .map(|policy| TriagePolicyInput {
-                    id: policy.id,
-                    name: policy.name,
-                    creation_time: policy.creation_time,
-                    ti_db: policy.ti_db.into_iter().map(Into::into).collect(),
-                    packet_attr: policy.packet_attr,
-                    confidence: policy.confidence,
-                    response: policy.response,
-                })
-                .collect()
-        });
-
         Self {
             customers,
             endpoints,
