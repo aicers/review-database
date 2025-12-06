@@ -5,7 +5,7 @@ file is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), and
 this project adheres to [Semantic
 Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.42.2] - 2025-12-08
 
 ### Fixed
 
@@ -14,7 +14,7 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   caused deserialization failures when encountering unrelated data during
   migration from 0.41.x to 0.42.x.
 
-## [0.42.1] - 2025-12-03
+## [0.42.1] - 2025-12-03 [YANKED]
 
 ### Fixed
 
@@ -1195,7 +1195,7 @@ AsRef<[u8]>`). This change accommodates scenarios where the information stored
 - Modified `FtpBruteForce` by adding an `is_internal` field which is a boolean
   indicating whether it is internal or not.
 
-[Unreleased]: https://github.com/aicers/review-database/compare/0.42.1...main
+[0.42.2]: https://github.com/aicers/review-database/compare/0.42.1...0.42.2
 [0.42.1]: https://github.com/aicers/review-database/compare/0.42.0...0.42.1
 [0.42.0]: https://github.com/aicers/review-database/compare/0.41.0...0.42.0
 [0.41.0]: https://github.com/aicers/review-database/compare/0.40.0...0.41.0
