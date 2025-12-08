@@ -29,9 +29,10 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   for managing account policy settings in the config table. The new settings
   include `lockout_threshold` (number of failed sign-in attempts before
   lockout), `lockout_duration_in_secs` (duration of temporary lockout), and
-  `suspension_threshold` (number of failed attempts before suspension). The
-  update function uses compare-and-swap semantics to prevent concurrent
-  modifications.
+  `suspension_threshold` (number of failed attempts before suspension). Both
+  initialization and update functions utilize atomic batch operations (via newly
+  added `init_multi` and `update_compare_multi`) to ensure consistency across
+  all policy fields, preventing partial updates or race conditions.
 
 ### Changed
 

@@ -193,13 +193,18 @@ impl Store {
         suspension_threshold: u32,
     ) -> Result<()> {
         let config = self.config_map();
-        config.init("expiry_period_in_secs", &expiry_period_in_secs.to_string())?;
-        config.init("lockout_threshold", &lockout_threshold.to_string())?;
-        config.init(
-            "lockout_duration_in_secs",
-            &lockout_duration_in_secs.to_string(),
-        )?;
-        config.init("suspension_threshold", &suspension_threshold.to_string())?;
+        let expiry = expiry_period_in_secs.to_string();
+        let lockout = lockout_threshold.to_string();
+        let duration = lockout_duration_in_secs.to_string();
+        let suspension = suspension_threshold.to_string();
+
+        let updates = vec![
+            ("expiry_period_in_secs", expiry.as_str()),
+            ("lockout_threshold", lockout.as_str()),
+            ("lockout_duration_in_secs", duration.as_str()),
+            ("suspension_threshold", suspension.as_str()),
+        ];
+        config.init_multi(&updates)?;
         Ok(())
     }
 
@@ -228,37 +233,54 @@ impl Store {
         new_suspension_threshold: Option<u32>,
     ) -> Result<()> {
         let config = self.config_map();
+        let mut updates = Vec::new();
 
+        let old_expiry_str = old_expiry_period_in_secs.to_string();
+        let new_expiry_str;
         if let Some(new_val) = new_expiry_period_in_secs {
-            config.update_compare(
+            new_expiry_str = new_val.to_string();
+            updates.push((
                 "expiry_period_in_secs",
-                &old_expiry_period_in_secs.to_string(),
-                &new_val.to_string(),
-            )?;
+                old_expiry_str.as_str(),
+                new_expiry_str.as_str(),
+            ));
         }
 
+        let old_lockout_threshold_str = old_lockout_threshold.to_string();
+        let new_lockout_threshold_str;
         if let Some(new_val) = new_lockout_threshold {
-            config.update_compare(
+            new_lockout_threshold_str = new_val.to_string();
+            updates.push((
                 "lockout_threshold",
-                &old_lockout_threshold.to_string(),
-                &new_val.to_string(),
-            )?;
+                old_lockout_threshold_str.as_str(),
+                new_lockout_threshold_str.as_str(),
+            ));
         }
 
+        let old_lockout_duration_str = old_lockout_duration_in_secs.to_string();
+        let new_lockout_duration_str;
         if let Some(new_val) = new_lockout_duration_in_secs {
-            config.update_compare(
+            new_lockout_duration_str = new_val.to_string();
+            updates.push((
                 "lockout_duration_in_secs",
-                &old_lockout_duration_in_secs.to_string(),
-                &new_val.to_string(),
-            )?;
+                old_lockout_duration_str.as_str(),
+                new_lockout_duration_str.as_str(),
+            ));
         }
 
+        let old_suspension_threshold_str = old_suspension_threshold.to_string();
+        let new_suspension_threshold_str;
         if let Some(new_val) = new_suspension_threshold {
-            config.update_compare(
+            new_suspension_threshold_str = new_val.to_string();
+            updates.push((
                 "suspension_threshold",
-                &old_suspension_threshold.to_string(),
-                &new_val.to_string(),
-            )?;
+                old_suspension_threshold_str.as_str(),
+                new_suspension_threshold_str.as_str(),
+            ));
+        }
+
+        if !updates.is_empty() {
+            config.update_compare_multi(&updates)?;
         }
 
         Ok(())

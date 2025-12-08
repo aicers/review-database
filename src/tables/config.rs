@@ -24,6 +24,20 @@ impl<'d> Table<'d, String> {
         self.map.insert(key.as_bytes(), value.as_bytes())
     }
 
+    /// Initializes multiple config values atomically.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any parameter already exists or
+    /// if database operation fails.
+    pub fn init_multi(&self, updates: &[(&str, &str)]) -> Result<()> {
+        let updates: Vec<_> = updates
+            .iter()
+            .map(|(k, v)| (k.as_bytes(), v.as_bytes()))
+            .collect();
+        self.map.insert_multi(&updates)
+    }
+
     /// Updates or initializes the account policy expiry period.
     ///
     /// # Errors
@@ -54,6 +68,20 @@ impl<'d> Table<'d, String> {
             (key.as_bytes(), old_value.as_bytes()),
             (key.as_bytes(), new_value.as_bytes()),
         )
+    }
+
+    /// Updates multiple config values with compare-and-swap semantics atomically.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any old value does not match, any key does not exist,
+    /// or database operation fails.
+    pub fn update_compare_multi(&self, updates: &[(&str, &str, &str)]) -> Result<()> {
+        let updates: Vec<_> = updates
+            .iter()
+            .map(|(k, o, n)| (k.as_bytes(), o.as_bytes(), n.as_bytes()))
+            .collect();
+        self.map.update_compare_multi(&updates)
     }
 
     /// Returns the current account policy expiry period,
@@ -324,6 +352,79 @@ mod tests {
         assert_eq!(
             config.current("lockout_threshold").unwrap(),
             Some("5".to_string())
+        );
+    }
+
+    #[test]
+    fn update_account_policy_atomicity() {
+        let db_dir = tempfile::tempdir().unwrap();
+        let backup_dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(Store::new(db_dir.path(), backup_dir.path()).unwrap());
+
+        // Initialize account policy
+        assert!(store.init_account_policy(3600, 5, 1800, 10).is_ok());
+
+        // Try to update with mixed valid/invalid old values
+        // expiry_period: valid old value (3600) -> new value (7200)
+        // lockout_threshold: invalid old value (999) -> new value (3)
+        assert!(
+            store
+                .update_account_policy(
+                    3600, // correct
+                    999,  // incorrect
+                    1800,
+                    10,
+                    Some(7200),
+                    Some(3),
+                    None,
+                    None,
+                )
+                .is_err()
+        );
+
+        // Verify NO values were updated (atomicity)
+        let config = store.config_map();
+        assert_eq!(
+            config.current("expiry_period_in_secs").unwrap(),
+            Some("3600".to_string()) // Should NOT be 7200
+        );
+        assert_eq!(
+            config.current("lockout_threshold").unwrap(),
+            Some("5".to_string())
+        );
+    }
+
+    #[test]
+    fn init_account_policy_atomicity() {
+        let db_dir = tempfile::tempdir().unwrap();
+        let backup_dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(Store::new(db_dir.path(), backup_dir.path()).unwrap());
+
+        // Pre-create ONE of the keys (simulating partial state or conflict)
+        store
+            .config_map()
+            .init("expiry_period_in_secs", "3600")
+            .unwrap();
+
+        // 2. Try to initialize policy (should fail because one key exists)
+        assert!(store.init_account_policy(7200, 5, 1800, 10).is_err());
+
+        // 3. Verify ALL other keys were NOT created (atomicity check)
+        // If it wasn't atomic, "lockout_threshold" might have been created before failure
+        let config = store.config_map();
+        assert!(config.current("lockout_threshold").unwrap().is_none());
+        assert!(
+            config
+                .current("lockout_duration_in_secs")
+                .unwrap()
+                .is_none()
+        );
+        assert!(config.current("suspension_threshold").unwrap().is_none());
+
+        // Verify existing key was NOT overwritten
+        assert_eq!(
+            config.current("expiry_period_in_secs").unwrap(),
+            Some("3600".to_string())
         );
     }
 }
