@@ -142,6 +142,55 @@ impl Account {
     }
 }
 
+/// The account security policy.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct AccountPolicy {
+    pub expiry_period_in_secs: u32,
+    pub lockout_threshold: u32,
+    pub lockout_duration_in_secs: u32,
+    pub suspension_threshold: u32,
+}
+
+impl AccountPolicy {
+    /// Validates the account policy values.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any threshold is zero or if `lockout_threshold`
+    /// exceeds `suspension_threshold`.
+    pub fn validate(&self) -> Result<()> {
+        use anyhow::anyhow;
+
+        if self.expiry_period_in_secs == 0 {
+            return Err(anyhow!("expiry period must be greater than 0"));
+        }
+        if self.lockout_threshold == 0 {
+            return Err(anyhow!("lockout threshold must be greater than 0"));
+        }
+        if self.lockout_duration_in_secs == 0 {
+            return Err(anyhow!("lockout duration must be greater than 0"));
+        }
+        if self.suspension_threshold == 0 {
+            return Err(anyhow!("suspension threshold must be greater than 0"));
+        }
+        if self.lockout_threshold > self.suspension_threshold {
+            return Err(anyhow!(
+                "lockout threshold cannot be greater than suspension threshold"
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// Helper struct for updating account policy.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+pub struct AccountPolicyUpdate {
+    pub expiry_period_in_secs: Option<u32>,
+    pub lockout_threshold: Option<u32>,
+    pub lockout_duration_in_secs: Option<u32>,
+    pub suspension_threshold: Option<u32>,
+}
+
 impl UniqueKey for Account {
     type AsBytes<'a> = &'a [u8];
 

@@ -5,6 +5,11 @@ use rocksdb::OptimisticTransactionDB;
 
 use crate::{Map, Table};
 
+pub const KEY_EXPIRY_PERIOD: &str = "expiry_period_in_secs";
+pub const KEY_LOCKOUT_THRESHOLD: &str = "lockout_threshold";
+pub const KEY_LOCKOUT_DURATION: &str = "lockout_duration_in_secs";
+pub const KEY_SUSPENSION_THRESHOLD: &str = "suspension_threshold";
+
 /// Functions for the `configs` map.
 impl<'d> Table<'d, String> {
     /// Opens the  `configs` map in the database.
@@ -104,7 +109,10 @@ impl<'d> Table<'d, String> {
 mod tests {
     use std::sync::Arc;
 
-    use crate::Store;
+    use crate::tables::config::{
+        KEY_EXPIRY_PERIOD, KEY_LOCKOUT_DURATION, KEY_LOCKOUT_THRESHOLD, KEY_SUSPENSION_THRESHOLD,
+    };
+    use crate::{AccountPolicy, AccountPolicyUpdate, Store};
 
     #[test]
     fn operations() {
@@ -181,30 +189,37 @@ mod tests {
     }
 
     #[test]
-    fn init_account_policy() {
+    fn init_account_policy_test() {
         let db_dir = tempfile::tempdir().unwrap();
         let backup_dir = tempfile::tempdir().unwrap();
         let store = Arc::new(Store::new(db_dir.path(), backup_dir.path()).unwrap());
 
+        let policy = AccountPolicy {
+            expiry_period_in_secs: 3600,
+            lockout_threshold: 5,
+            lockout_duration_in_secs: 1800,
+            suspension_threshold: 10,
+        };
+
         // Initialize account policy with default values
-        assert!(store.init_account_policy(3600, 5, 1800, 10).is_ok());
+        assert!(store.init_account_policy(&policy).is_ok());
 
         // Verify all values were stored correctly
         let config = store.config_map();
         assert_eq!(
-            config.current("expiry_period_in_secs").unwrap(),
+            config.current(KEY_EXPIRY_PERIOD).unwrap(),
             Some("3600".to_string())
         );
         assert_eq!(
-            config.current("lockout_threshold").unwrap(),
+            config.current(KEY_LOCKOUT_THRESHOLD).unwrap(),
             Some("5".to_string())
         );
         assert_eq!(
-            config.current("lockout_duration_in_secs").unwrap(),
+            config.current(KEY_LOCKOUT_DURATION).unwrap(),
             Some("1800".to_string())
         );
         assert_eq!(
-            config.current("suspension_threshold").unwrap(),
+            config.current(KEY_SUSPENSION_THRESHOLD).unwrap(),
             Some("10".to_string())
         );
     }
@@ -215,11 +230,25 @@ mod tests {
         let backup_dir = tempfile::tempdir().unwrap();
         let store = Arc::new(Store::new(db_dir.path(), backup_dir.path()).unwrap());
 
+        let policy = AccountPolicy {
+            expiry_period_in_secs: 3600,
+            lockout_threshold: 5,
+            lockout_duration_in_secs: 1800,
+            suspension_threshold: 10,
+        };
+
         // Initialize account policy
-        assert!(store.init_account_policy(3600, 5, 1800, 10).is_ok());
+        assert!(store.init_account_policy(&policy).is_ok());
+
+        let new_policy = AccountPolicy {
+            expiry_period_in_secs: 7200,
+            lockout_threshold: 3,
+            lockout_duration_in_secs: 900,
+            suspension_threshold: 5,
+        };
 
         // Try to initialize again - should fail
-        assert!(store.init_account_policy(7200, 3, 900, 5).is_err());
+        assert!(store.init_account_policy(&new_policy).is_err());
     }
 
     #[test]
@@ -228,32 +257,42 @@ mod tests {
         let backup_dir = tempfile::tempdir().unwrap();
         let store = Arc::new(Store::new(db_dir.path(), backup_dir.path()).unwrap());
 
+        let policy = AccountPolicy {
+            expiry_period_in_secs: 3600,
+            lockout_threshold: 5,
+            lockout_duration_in_secs: 1800,
+            suspension_threshold: 10,
+        };
+
         // Initialize account policy
-        assert!(store.init_account_policy(3600, 5, 1800, 10).is_ok());
+        assert!(store.init_account_policy(&policy).is_ok());
+
+        let update = AccountPolicyUpdate {
+            expiry_period_in_secs: Some(7200),
+            lockout_threshold: Some(3),
+            lockout_duration_in_secs: Some(900),
+            suspension_threshold: Some(5),
+        };
 
         // Update all fields
-        assert!(
-            store
-                .update_account_policy(3600, 5, 1800, 10, Some(7200), Some(3), Some(900), Some(5),)
-                .is_ok()
-        );
+        assert!(store.update_account_policy(&policy, &update).is_ok());
 
         // Verify all values were updated
         let config = store.config_map();
         assert_eq!(
-            config.current("expiry_period_in_secs").unwrap(),
+            config.current(KEY_EXPIRY_PERIOD).unwrap(),
             Some("7200".to_string())
         );
         assert_eq!(
-            config.current("lockout_threshold").unwrap(),
+            config.current(KEY_LOCKOUT_THRESHOLD).unwrap(),
             Some("3".to_string())
         );
         assert_eq!(
-            config.current("lockout_duration_in_secs").unwrap(),
+            config.current(KEY_LOCKOUT_DURATION).unwrap(),
             Some("900".to_string())
         );
         assert_eq!(
-            config.current("suspension_threshold").unwrap(),
+            config.current(KEY_SUSPENSION_THRESHOLD).unwrap(),
             Some("5".to_string())
         );
     }
@@ -264,32 +303,41 @@ mod tests {
         let backup_dir = tempfile::tempdir().unwrap();
         let store = Arc::new(Store::new(db_dir.path(), backup_dir.path()).unwrap());
 
+        let policy = AccountPolicy {
+            expiry_period_in_secs: 3600,
+            lockout_threshold: 5,
+            lockout_duration_in_secs: 1800,
+            suspension_threshold: 10,
+        };
+
         // Initialize account policy
-        assert!(store.init_account_policy(3600, 5, 1800, 10).is_ok());
+        assert!(store.init_account_policy(&policy).is_ok());
+
+        let update = AccountPolicyUpdate {
+            expiry_period_in_secs: Some(7200),
+            lockout_threshold: Some(3),
+            ..Default::default()
+        };
 
         // Update only some fields (expiry_period and lockout_threshold)
-        assert!(
-            store
-                .update_account_policy(3600, 5, 1800, 10, Some(7200), Some(3), None, None,)
-                .is_ok()
-        );
+        assert!(store.update_account_policy(&policy, &update).is_ok());
 
         // Verify updated values changed and others remained the same
         let config = store.config_map();
         assert_eq!(
-            config.current("expiry_period_in_secs").unwrap(),
+            config.current(KEY_EXPIRY_PERIOD).unwrap(),
             Some("7200".to_string())
         );
         assert_eq!(
-            config.current("lockout_threshold").unwrap(),
+            config.current(KEY_LOCKOUT_THRESHOLD).unwrap(),
             Some("3".to_string())
         );
         assert_eq!(
-            config.current("lockout_duration_in_secs").unwrap(),
+            config.current(KEY_LOCKOUT_DURATION).unwrap(),
             Some("1800".to_string())
         );
         assert_eq!(
-            config.current("suspension_threshold").unwrap(),
+            config.current(KEY_SUSPENSION_THRESHOLD).unwrap(),
             Some("10".to_string())
         );
     }
@@ -300,29 +348,33 @@ mod tests {
         let backup_dir = tempfile::tempdir().unwrap();
         let store = Arc::new(Store::new(db_dir.path(), backup_dir.path()).unwrap());
 
+        let policy = AccountPolicy {
+            expiry_period_in_secs: 3600,
+            lockout_threshold: 5,
+            lockout_duration_in_secs: 1800,
+            suspension_threshold: 10,
+        };
+
         // Initialize account policy
-        assert!(store.init_account_policy(3600, 5, 1800, 10).is_ok());
+        assert!(store.init_account_policy(&policy).is_ok());
+
+        let wrong_policy = AccountPolicy {
+            expiry_period_in_secs: 9999, // wrong old value
+            ..policy
+        };
+
+        let update = AccountPolicyUpdate {
+            expiry_period_in_secs: Some(7200),
+            ..Default::default()
+        };
 
         // Try to update with wrong old values - should fail
-        assert!(
-            store
-                .update_account_policy(
-                    9999, // wrong old value
-                    5,
-                    1800,
-                    10,
-                    Some(7200),
-                    None,
-                    None,
-                    None,
-                )
-                .is_err()
-        );
+        assert!(store.update_account_policy(&wrong_policy, &update).is_err());
 
         // Verify values remained unchanged
         let config = store.config_map();
         assert_eq!(
-            config.current("expiry_period_in_secs").unwrap(),
+            config.current(KEY_EXPIRY_PERIOD).unwrap(),
             Some("3600".to_string())
         );
     }
@@ -333,24 +385,29 @@ mod tests {
         let backup_dir = tempfile::tempdir().unwrap();
         let store = Arc::new(Store::new(db_dir.path(), backup_dir.path()).unwrap());
 
+        let policy = AccountPolicy {
+            expiry_period_in_secs: 3600,
+            lockout_threshold: 5,
+            lockout_duration_in_secs: 1800,
+            suspension_threshold: 10,
+        };
+
         // Initialize account policy
-        assert!(store.init_account_policy(3600, 5, 1800, 10).is_ok());
+        assert!(store.init_account_policy(&policy).is_ok());
+
+        let update = AccountPolicyUpdate::default();
 
         // Update with no changes (all None)
-        assert!(
-            store
-                .update_account_policy(3600, 5, 1800, 10, None, None, None, None,)
-                .is_ok()
-        );
+        assert!(store.update_account_policy(&policy, &update).is_ok());
 
         // Verify values remained unchanged
         let config = store.config_map();
         assert_eq!(
-            config.current("expiry_period_in_secs").unwrap(),
+            config.current(KEY_EXPIRY_PERIOD).unwrap(),
             Some("3600".to_string())
         );
         assert_eq!(
-            config.current("lockout_threshold").unwrap(),
+            config.current(KEY_LOCKOUT_THRESHOLD).unwrap(),
             Some("5".to_string())
         );
     }
@@ -361,35 +418,40 @@ mod tests {
         let backup_dir = tempfile::tempdir().unwrap();
         let store = Arc::new(Store::new(db_dir.path(), backup_dir.path()).unwrap());
 
+        let policy = AccountPolicy {
+            expiry_period_in_secs: 3600,
+            lockout_threshold: 5,
+            lockout_duration_in_secs: 1800,
+            suspension_threshold: 10,
+        };
+
         // Initialize account policy
-        assert!(store.init_account_policy(3600, 5, 1800, 10).is_ok());
+        assert!(store.init_account_policy(&policy).is_ok());
 
         // Try to update with mixed valid/invalid old values
         // expiry_period: valid old value (3600) -> new value (7200)
         // lockout_threshold: invalid old value (999) -> new value (3)
-        assert!(
-            store
-                .update_account_policy(
-                    3600, // correct
-                    999,  // incorrect
-                    1800,
-                    10,
-                    Some(7200),
-                    Some(3),
-                    None,
-                    None,
-                )
-                .is_err()
-        );
+        let mixed_policy = AccountPolicy {
+            lockout_threshold: 999, // incorrect
+            ..policy
+        };
+
+        let update = AccountPolicyUpdate {
+            expiry_period_in_secs: Some(7200),
+            lockout_threshold: Some(3),
+            ..Default::default()
+        };
+
+        assert!(store.update_account_policy(&mixed_policy, &update).is_err());
 
         // Verify NO values were updated (atomicity)
         let config = store.config_map();
         assert_eq!(
-            config.current("expiry_period_in_secs").unwrap(),
+            config.current(KEY_EXPIRY_PERIOD).unwrap(),
             Some("3600".to_string()) // Should NOT be 7200
         );
         assert_eq!(
-            config.current("lockout_threshold").unwrap(),
+            config.current(KEY_LOCKOUT_THRESHOLD).unwrap(),
             Some("5".to_string())
         );
     }
@@ -401,30 +463,81 @@ mod tests {
         let store = Arc::new(Store::new(db_dir.path(), backup_dir.path()).unwrap());
 
         // Pre-create ONE of the keys (simulating partial state or conflict)
-        store
-            .config_map()
-            .init("expiry_period_in_secs", "3600")
-            .unwrap();
+        store.config_map().init(KEY_EXPIRY_PERIOD, "3600").unwrap();
+
+        let policy = AccountPolicy {
+            expiry_period_in_secs: 7200,
+            lockout_threshold: 5,
+            lockout_duration_in_secs: 1800,
+            suspension_threshold: 10,
+        };
 
         // 2. Try to initialize policy (should fail because one key exists)
-        assert!(store.init_account_policy(7200, 5, 1800, 10).is_err());
+        assert!(store.init_account_policy(&policy).is_err());
 
         // 3. Verify ALL other keys were NOT created (atomicity check)
         // If it wasn't atomic, "lockout_threshold" might have been created before failure
         let config = store.config_map();
-        assert!(config.current("lockout_threshold").unwrap().is_none());
-        assert!(
-            config
-                .current("lockout_duration_in_secs")
-                .unwrap()
-                .is_none()
-        );
-        assert!(config.current("suspension_threshold").unwrap().is_none());
+        assert!(config.current(KEY_LOCKOUT_THRESHOLD).unwrap().is_none());
+        assert!(config.current(KEY_LOCKOUT_DURATION).unwrap().is_none());
+        assert!(config.current(KEY_SUSPENSION_THRESHOLD).unwrap().is_none());
 
         // Verify existing key was NOT overwritten
         assert_eq!(
-            config.current("expiry_period_in_secs").unwrap(),
+            config.current(KEY_EXPIRY_PERIOD).unwrap(),
             Some("3600".to_string())
+        );
+    }
+
+    #[test]
+    fn init_account_policy_validation_failure() {
+        let db_dir = tempfile::tempdir().unwrap();
+        let backup_dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(Store::new(db_dir.path(), backup_dir.path()).unwrap());
+
+        // Invalid policy: lockout_threshold (10) > suspension_threshold (5)
+        let policy = AccountPolicy {
+            expiry_period_in_secs: 3600,
+            lockout_threshold: 10,
+            lockout_duration_in_secs: 1800,
+            suspension_threshold: 5,
+        };
+
+        // Should return error due to validation
+        assert!(store.init_account_policy(&policy).is_err());
+
+        // Verify nothing was written
+        let config = store.config_map();
+        assert!(config.current(KEY_EXPIRY_PERIOD).unwrap().is_none());
+    }
+
+    #[test]
+    fn update_account_policy_validation_failure() {
+        let db_dir = tempfile::tempdir().unwrap();
+        let backup_dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(Store::new(db_dir.path(), backup_dir.path()).unwrap());
+
+        let policy = AccountPolicy {
+            expiry_period_in_secs: 3600,
+            lockout_threshold: 5,
+            lockout_duration_in_secs: 1800,
+            suspension_threshold: 10,
+        };
+        store.init_account_policy(&policy).unwrap();
+
+        // Try to update to an invalid state: lockout(15) > suspension(10)
+        let update = AccountPolicyUpdate {
+            lockout_threshold: Some(15),
+            ..Default::default()
+        };
+
+        assert!(store.update_account_policy(&policy, &update).is_err());
+
+        // Verify values remained unchanged
+        let config = store.config_map();
+        assert_eq!(
+            config.current(KEY_LOCKOUT_THRESHOLD).unwrap(),
+            Some("5".to_string())
         );
     }
 }
