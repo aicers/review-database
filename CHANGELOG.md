@@ -5,6 +5,15 @@ file is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), and
 this project adheres to [Semantic
 Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- Changed `Store::network_tag_set` signature to require a `customer_id: u32`
+  parameter and now returns `CustomerTagSet` instead of `TagSet<NetworkTagId>`.
+  Existing network tags are automatically migrated to be associated with the
+  smallest customer ID found in the database.
+
 ## [0.43.0] - 2025-12-18
 
 ### Added

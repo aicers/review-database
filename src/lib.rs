@@ -24,7 +24,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Result, anyhow};
 pub use attrievent::attribute::RawEventKind;
 pub use rocksdb::backup::BackupEngineInfo;
-pub use tags::TagSet;
+pub use tags::{CustomerTagSet, TagSet};
 use tags::{EventTagId, NetworkTagId, WorkflowTagId};
 use thiserror::Error;
 
@@ -373,18 +373,22 @@ impl Store {
         self.states.networks()
     }
 
-    /// Returns the tag set for network.
+    /// Returns the customer-scoped tag set for network tags.
+    ///
+    /// Network tags are now scoped per customer. Each customer has their own
+    /// isolated set of network tags, allowing multiple customers to have tags
+    /// with the same name without conflicts.
     ///
     /// # Errors
     ///
     /// Returns an error if database operation fails or the data is invalid.
     #[allow(clippy::missing_panics_doc)]
-    pub fn network_tag_set(&self) -> Result<TagSet<'_, NetworkTagId>> {
+    pub fn network_tag_set(&self, customer_id: u32) -> Result<CustomerTagSet<'_, NetworkTagId>> {
         let set = self
             .states
             .indexed_set(tables::NETWORK_TAGS)
             .expect("always available");
-        TagSet::new(set)
+        CustomerTagSet::new(set, customer_id)
     }
 
     #[must_use]
