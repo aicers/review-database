@@ -20,7 +20,7 @@ enum KeyIndexEntry {
 }
 
 #[derive(Default, Deserialize, Serialize)]
-pub struct KeyIndex {
+pub(crate) struct KeyIndex {
     keys: Vec<KeyIndexEntry>,
     available: u32,
     inactive: Option<u32>,
@@ -28,7 +28,7 @@ pub struct KeyIndex {
 
 impl KeyIndex {
     /// Deserializes a `KeyIndex` from a byte slice.
-    pub fn from_bytes(bytes: impl AsRef<[u8]>) -> Result<Self> {
+    pub(crate) fn from_bytes(bytes: impl AsRef<[u8]>) -> Result<Self> {
         bincode::DefaultOptions::new()
             .deserialize_from(bytes.as_ref())
             .context("invalid serialized form")
@@ -51,7 +51,7 @@ impl KeyIndex {
         })
     }
 
-    pub fn iter(&self) -> KeyIndexIterator<'_> {
+    pub(crate) fn iter(&self) -> KeyIndexIterator<'_> {
         KeyIndexIterator {
             entries: &self.keys,
             i: 0,
@@ -133,7 +133,7 @@ impl KeyIndex {
     }
 
     /// Updates a key for the given index to a new one.
-    fn update(&mut self, id: u32, key: &[u8]) -> Result<Vec<u8>> {
+    pub(crate) fn update(&mut self, id: u32, key: &[u8]) -> Result<Vec<u8>> {
         let i = usize::try_from(id).context("index out of range")?;
         let key = match self.keys.get_mut(i) {
             Some(KeyIndexEntry::Key(old_key)) => mem::replace(old_key, key.to_vec()),

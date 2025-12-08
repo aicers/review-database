@@ -79,6 +79,10 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   `customer_id` field. Both `customer_id` and `name` must be provided when
   updating to change the key.
 - Migrations from versions earlier than 0.42.0 are no longer supported.
+- Changed `Store::network_tag_set` signature to require a `customer_id: u32`
+  parameter and now returns `CustomerTagSet<NetworkTagId>` instead of
+  `TagSet<NetworkTagId>`. Existing network tags are automatically migrated to be
+  associated with the smallest customer ID found in the database.
 - **BREAKING**: Renamed the `TriageExclusionReason` enum to `ExclusionReason`.
 - **BREAKING**: Changed `TriagePolicy::ti_db` to `triage_exclusion_id: Vec<u32>`
   to store IDs referencing the new `triage_exclusion_reason_map`.
