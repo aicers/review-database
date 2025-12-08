@@ -28,7 +28,7 @@ pub use tags::TagSet;
 use tags::{EventTagId, NetworkTagId, WorkflowTagId};
 use thiserror::Error;
 
-pub use self::account::Role;
+pub use self::account::{AccountPolicy, AccountPolicyUpdate, Role};
 pub use self::batch_info::BatchInfo;
 pub use self::category::Category;
 pub use self::cluster::*;
@@ -175,34 +175,24 @@ impl Store {
 
     /// Initializes account policy settings in the config table.
     ///
-    /// This function sets the initial values for all account policy fields:
-    /// - `expiry_period_in_secs`: Password/session expiry period
-    /// - `lockout_threshold`: Number of failed sign-in attempts before lockout
-    /// - `lockout_duration_in_secs`: Duration of temporary lockout
-    /// - `suspension_threshold`: Number of failed attempts before suspension
-    ///
     /// # Errors
     ///
-    /// Returns an error if any of the config values have already been
-    /// initialized or if database operation fails.
-    pub fn init_account_policy(
-        &self,
-        expiry_period_in_secs: u32,
-        lockout_threshold: u32,
-        lockout_duration_in_secs: u32,
-        suspension_threshold: u32,
-    ) -> Result<()> {
+    /// Returns an error if policy invalid, any of the config values have already
+    /// been initialized or if database operation fails.
+    pub fn init_account_policy(&self, policy: &AccountPolicy) -> Result<()> {
+        policy.validate()?;
+
         let config = self.config_map();
-        let expiry = expiry_period_in_secs.to_string();
-        let lockout = lockout_threshold.to_string();
-        let duration = lockout_duration_in_secs.to_string();
-        let suspension = suspension_threshold.to_string();
+        let expiry = policy.expiry_period_in_secs.to_string();
+        let lockout = policy.lockout_threshold.to_string();
+        let duration = policy.lockout_duration_in_secs.to_string();
+        let suspension = policy.suspension_threshold.to_string();
 
         let updates = vec![
-            ("expiry_period_in_secs", expiry.as_str()),
-            ("lockout_threshold", lockout.as_str()),
-            ("lockout_duration_in_secs", duration.as_str()),
-            ("suspension_threshold", suspension.as_str()),
+            (tables::KEY_EXPIRY_PERIOD, expiry.as_str()),
+            (tables::KEY_LOCKOUT_THRESHOLD, lockout.as_str()),
+            (tables::KEY_LOCKOUT_DURATION, duration.as_str()),
+            (tables::KEY_SUSPENSION_THRESHOLD, suspension.as_str()),
         ];
         config.init_multi(&updates)?;
         Ok(())
@@ -211,79 +201,120 @@ impl Store {
     /// Updates account policy settings in the config table.
     ///
     /// This function updates account policy fields using compare-and-swap
-    /// semantics. Both old and new values must be provided for each field to
-    /// ensure no concurrent modifications have occurred. If a new value is
-    /// `None`, the field will not be updated.
+    /// semantics. Both old policy (for verification) and new policy update must
+    /// be provided to ensure no concurrent modifications have occurred.
     ///
     /// # Errors
     ///
-    /// Returns an error if any old value does not match the current value in
-    /// the database (indicating concurrent modification), if the key does not
-    /// exist, or if database operation fails.
-    #[allow(clippy::too_many_arguments)]
+    /// Returns an error if the new policy is invalid, if any old value does not
+    /// match the current value in the database (indicating concurrent modification),
+    /// if the key does not exist, or if the database operation fails.
     pub fn update_account_policy(
         &self,
-        old_expiry_period_in_secs: u32,
-        old_lockout_threshold: u32,
-        old_lockout_duration_in_secs: u32,
-        old_suspension_threshold: u32,
-        new_expiry_period_in_secs: Option<u32>,
-        new_lockout_threshold: Option<u32>,
-        new_lockout_duration_in_secs: Option<u32>,
-        new_suspension_threshold: Option<u32>,
+        old_policy: &AccountPolicy,
+        update: &AccountPolicyUpdate,
     ) -> Result<()> {
         let config = self.config_map();
         let mut updates = Vec::new();
 
-        let old_expiry_str = old_expiry_period_in_secs.to_string();
+        let old_expiry_str = old_policy.expiry_period_in_secs.to_string();
         let new_expiry_str;
-        if let Some(new_val) = new_expiry_period_in_secs {
+        if let Some(new_val) = update.expiry_period_in_secs {
             new_expiry_str = new_val.to_string();
             updates.push((
-                "expiry_period_in_secs",
+                tables::KEY_EXPIRY_PERIOD,
                 old_expiry_str.as_str(),
                 new_expiry_str.as_str(),
             ));
         }
 
-        let old_lockout_threshold_str = old_lockout_threshold.to_string();
+        let old_lockout_threshold_str = old_policy.lockout_threshold.to_string();
         let new_lockout_threshold_str;
-        if let Some(new_val) = new_lockout_threshold {
+        if let Some(new_val) = update.lockout_threshold {
             new_lockout_threshold_str = new_val.to_string();
             updates.push((
-                "lockout_threshold",
+                tables::KEY_LOCKOUT_THRESHOLD,
                 old_lockout_threshold_str.as_str(),
                 new_lockout_threshold_str.as_str(),
             ));
         }
 
-        let old_lockout_duration_str = old_lockout_duration_in_secs.to_string();
+        let old_lockout_duration_str = old_policy.lockout_duration_in_secs.to_string();
         let new_lockout_duration_str;
-        if let Some(new_val) = new_lockout_duration_in_secs {
+        if let Some(new_val) = update.lockout_duration_in_secs {
             new_lockout_duration_str = new_val.to_string();
             updates.push((
-                "lockout_duration_in_secs",
+                tables::KEY_LOCKOUT_DURATION,
                 old_lockout_duration_str.as_str(),
                 new_lockout_duration_str.as_str(),
             ));
         }
 
-        let old_suspension_threshold_str = old_suspension_threshold.to_string();
+        let old_suspension_threshold_str = old_policy.suspension_threshold.to_string();
         let new_suspension_threshold_str;
-        if let Some(new_val) = new_suspension_threshold {
+        if let Some(new_val) = update.suspension_threshold {
             new_suspension_threshold_str = new_val.to_string();
             updates.push((
-                "suspension_threshold",
+                tables::KEY_SUSPENSION_THRESHOLD,
                 old_suspension_threshold_str.as_str(),
                 new_suspension_threshold_str.as_str(),
             ));
         }
+
+        // Validate the NEW resulting policy
+        let resulting_policy = AccountPolicy {
+            expiry_period_in_secs: update
+                .expiry_period_in_secs
+                .unwrap_or(old_policy.expiry_period_in_secs),
+            lockout_threshold: update
+                .lockout_threshold
+                .unwrap_or(old_policy.lockout_threshold),
+            lockout_duration_in_secs: update
+                .lockout_duration_in_secs
+                .unwrap_or(old_policy.lockout_duration_in_secs),
+            suspension_threshold: update
+                .suspension_threshold
+                .unwrap_or(old_policy.suspension_threshold),
+        };
+        resulting_policy.validate()?;
 
         if !updates.is_empty() {
             config.update_compare_multi(&updates)?;
         }
 
         Ok(())
+    }
+
+    /// Returns the current account policy settings from the config table.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any policy value is missing or invalid.
+    pub fn account_policy(&self) -> Result<AccountPolicy> {
+        let config = self.config_map();
+        let expiry = config
+            .current(tables::KEY_EXPIRY_PERIOD)?
+            .ok_or_else(|| anyhow!("missing expiry period"))?
+            .parse()?;
+        let lockout = config
+            .current(tables::KEY_LOCKOUT_THRESHOLD)?
+            .ok_or_else(|| anyhow!("missing lockout threshold"))?
+            .parse()?;
+        let duration = config
+            .current(tables::KEY_LOCKOUT_DURATION)?
+            .ok_or_else(|| anyhow!("missing lockout duration"))?
+            .parse()?;
+        let suspension = config
+            .current(tables::KEY_SUSPENSION_THRESHOLD)?
+            .ok_or_else(|| anyhow!("missing suspension threshold"))?
+            .parse()?;
+
+        Ok(AccountPolicy {
+            expiry_period_in_secs: expiry,
+            lockout_threshold: lockout,
+            lockout_duration_in_secs: duration,
+            suspension_threshold: suspension,
+        })
     }
 
     #[must_use]

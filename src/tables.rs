@@ -47,6 +47,9 @@ pub use self::backup_config::BackupConfig;
 pub use self::block_network::{BlockNetwork, Update as BlockNetworkUpdate};
 pub use self::cluster::Cluster;
 pub use self::column_stats::{ColumnStats, TopColumnsOfCluster, TopMultimaps};
+pub use self::config::{
+    KEY_EXPIRY_PERIOD, KEY_LOCKOUT_DURATION, KEY_LOCKOUT_THRESHOLD, KEY_SUSPENSION_THRESHOLD,
+};
 pub use self::csv_column_extra::CsvColumnExtra;
 pub use self::customer::{Customer, Network as CustomerNetwork, Update as CustomerUpdate};
 pub use self::data_source::{DataSource, DataType, Update as DataSourceUpdate};
