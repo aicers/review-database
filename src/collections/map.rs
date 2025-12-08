@@ -243,6 +243,78 @@ impl<'a> Map<'a> {
             .context("failed to write new entry")
     }
 
+    /// Updates multiple key-value pairs atomically with compare-and-swap semantics.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any old value does not match, any key does not exist,
+    /// or database operation fails.
+    pub fn update_compare_multi(&self, updates: &[(&[u8], &[u8], &[u8])]) -> Result<()> {
+        loop {
+            let txn = self.db.transaction();
+
+            for (key, old_val, new_val) in updates {
+                if let Some(current_val) = txn
+                    .get_for_update_cf(self.cf, key, EXCLUSIVE)
+                    .context("cannot read old entry")?
+                {
+                    if current_val.as_slice() != *old_val {
+                        bail!("old value mismatch");
+                    }
+                } else {
+                    bail!("no such entry");
+                }
+
+                txn.put_cf(self.cf, key, new_val)
+                    .context("failed to write new entry")?;
+            }
+
+            match txn.commit() {
+                Ok(()) => break,
+                Err(e) => {
+                    if !e.as_ref().starts_with("Resource busy:") {
+                        return Err(e).context("failed to update entries");
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Inserts multiple key-value pairs atomically.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any key already exists or database operation fails.
+    pub fn insert_multi(&self, updates: &[(&[u8], &[u8])]) -> Result<()> {
+        loop {
+            let txn = self.db.transaction();
+
+            for (key, val) in updates {
+                if txn
+                    .get_for_update_cf(self.cf, key, EXCLUSIVE)
+                    .context("database read error")?
+                    .is_some()
+                {
+                    bail!("key already exists: {:?}", String::from_utf8_lossy(key));
+                }
+
+                txn.put_cf(self.cf, key, val)
+                    .context("failed to write new entry")?;
+            }
+
+            match txn.commit() {
+                Ok(()) => break,
+                Err(e) => {
+                    if !e.as_ref().starts_with("Resource busy:") {
+                        return Err(e).context("failed to insert entries");
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn inner_iterator(&self, mode: IteratorMode) -> MapIterator<'_> {
         let iter = self.db.iterator_cf(self.cf, mode);
 
