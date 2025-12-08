@@ -106,7 +106,7 @@ const COMPATIBLE_VERSION_REQ: &str = ">=0.43.0-alpha.2,<0.43.0-alpha.3";
 /// or if the data directory exists but is in the format incompatible with the
 /// current version.
 pub fn migrate_data_dir<P: AsRef<Path>>(data_dir: P, backup_dir: P) -> Result<()> {
-    type Migration = (VersionReq, Version, fn(&Path, &Path) -> anyhow::Result<()>);
+    type Migration = (VersionReq, Version, fn(&Path) -> anyhow::Result<()>);
 
     let data_dir = data_dir.as_ref();
     let backup_dir = backup_dir.as_ref();
@@ -151,7 +151,7 @@ pub fn migrate_data_dir<P: AsRef<Path>>(data_dir: P, backup_dir: P) -> Result<()
         .find(|(req, _to, _m)| req.matches(&version))
     {
         info!("Migrating database to {to}");
-        m(data_dir, backup_dir)?;
+        m(data_dir)?;
         version = to.clone();
         if compatible.matches(&version) {
             create_version_file(&backup).context("failed to update VERSION")?;
@@ -211,24 +211,23 @@ fn map_names_v0_42_without_account_policy() -> Vec<&'static str> {
         .collect()
 }
 
-fn migrate_0_42_to_0_43(data_dir: &Path, backup_dir: &Path) -> Result<()> {
+fn migrate_0_42_to_0_43(data_dir: &Path) -> Result<()> {
     let db_path = data_dir.join("states.db");
-    let backup_path = backup_dir.join("states.db");
 
     // Step 1: Drop "account policy" column family if it exists (from 0.42)
-    migrate_drop_account_policy(&db_path, &backup_path)?;
+    migrate_drop_account_policy(&db_path)?;
 
     // Step 2: Rename "TI database" to "label database"
-    migrate_rename_tidb_to_label_db(&db_path, &backup_path)?;
+    migrate_rename_tidb_to_label_db(&db_path)?;
 
     Ok(())
 }
 
-/// Drops the "account policy" column family from the database.
+/// Drops the "account policy" column family from the main database only.
 ///
 /// This function handles both the case where the column family exists (0.42.x)
 /// and where it has already been dropped (0.43.0-alpha.1).
-fn migrate_drop_account_policy(db_path: &Path, backup_path: &Path) -> Result<()> {
+fn migrate_drop_account_policy(db_path: &Path) -> Result<()> {
     let mut opts = rocksdb::Options::default();
     opts.create_if_missing(false);
     opts.create_missing_column_families(false);
@@ -239,46 +238,25 @@ fn migrate_drop_account_policy(db_path: &Path, backup_path: &Path) -> Result<()>
         db.drop_cf("account policy")
             .context("Failed to drop 'account policy' column family")?;
         drop(db);
-
-        // Also drop from backup database
-        if let Ok(backup_db) =
-            rocksdb::OptimisticTransactionDB::open_cf(&opts, backup_path, MAP_NAMES_V0_42)
-        {
-            info!("Dropping 'account policy' column family from backup");
-            backup_db
-                .drop_cf("account policy")
-                .context("Failed to drop 'account policy' column family from backup")?;
-            drop(backup_db);
-        }
     }
     // If the database doesn't have "account policy", it's already been dropped
 
     Ok(())
 }
 
-/// Renames the "TI database" column family to "label database".
-fn migrate_rename_tidb_to_label_db(db_path: &Path, backup_path: &Path) -> Result<()> {
+/// Renames the "TI database" column family to "label database" in the main database only
+fn migrate_rename_tidb_to_label_db(db_path: &Path) -> Result<()> {
     let mut opts = rocksdb::Options::default();
     opts.create_if_missing(false);
     opts.create_missing_column_families(false);
 
-    // Process main database
-    rename_tidb_cf_in_db(db_path, &opts)?;
-
-    // Process backup database
-    rename_tidb_cf_in_db(backup_path, &opts)?;
-
-    Ok(())
-}
-
-/// Renames the "TI database" column family to "label database" in a single database.
-fn rename_tidb_cf_in_db(db_path: &Path, opts: &rocksdb::Options) -> Result<()> {
+    // Process main database (without "account policy" which was already dropped)
     let cf_names = map_names_v0_42_without_account_policy();
 
     // First, read all data from "TI database" into memory
     let data = {
         let db: rocksdb::OptimisticTransactionDB<rocksdb::SingleThreaded> =
-            rocksdb::OptimisticTransactionDB::open_cf(opts, db_path, &cf_names)
+            rocksdb::OptimisticTransactionDB::open_cf(&opts, db_path, &cf_names)
                 .context("Failed to open database for TI database read")?;
 
         // Check if "TI database" column family exists
@@ -304,7 +282,7 @@ fn rename_tidb_cf_in_db(db_path: &Path, opts: &rocksdb::Options) -> Result<()> {
 
     // Now reopen, create new CF, write data, and drop old CF
     let mut db: rocksdb::OptimisticTransactionDB<rocksdb::SingleThreaded> =
-        rocksdb::OptimisticTransactionDB::open_cf(opts, db_path, &cf_names)
+        rocksdb::OptimisticTransactionDB::open_cf(&opts, db_path, &cf_names)
             .context("Failed to reopen database for TI database rename")?;
 
     info!("Renaming 'TI database' column family to 'label database'");
@@ -472,10 +450,7 @@ mod tests {
     fn migrate_0_42_to_0_43_drops_account_policy_and_renames_tidb() {
         // Create test directories
         let db_dir = tempfile::tempdir().unwrap();
-        let backup_dir = tempfile::tempdir().unwrap();
-
         let db_path = db_dir.path().join("states.db");
-        let backup_path = backup_dir.path().join("states.db");
 
         // Create a database with the old column family list (including "account policy")
         let mut opts = rocksdb::Options::default();
@@ -493,21 +468,8 @@ mod tests {
         db.put_cf(ti_cf, b"test_key_2", b"test_value_2").unwrap();
         drop(db);
 
-        let backup_db: rocksdb::OptimisticTransactionDB =
-            rocksdb::OptimisticTransactionDB::open_cf(&opts, &backup_path, super::MAP_NAMES_V0_42)
-                .unwrap();
-        // Add same test data to backup
-        let ti_cf = backup_db.cf_handle("TI database").unwrap();
-        backup_db
-            .put_cf(ti_cf, b"test_key_1", b"test_value_1")
-            .unwrap();
-        backup_db
-            .put_cf(ti_cf, b"test_key_2", b"test_value_2")
-            .unwrap();
-        drop(backup_db);
-
         // Run the migration
-        super::migrate_0_42_to_0_43(db_dir.path(), backup_dir.path()).unwrap();
+        super::migrate_0_42_to_0_43(db_dir.path()).unwrap();
 
         // Verify the column family has been dropped and renamed by opening with new list
         let db: rocksdb::OptimisticTransactionDB =
@@ -531,33 +493,5 @@ mod tests {
             Some(b"test_value_2".as_slice())
         );
         drop(db);
-
-        // Verify backup database too
-        let backup_db: rocksdb::OptimisticTransactionDB =
-            rocksdb::OptimisticTransactionDB::open_cf(
-                &opts,
-                &backup_path,
-                crate::tables::MAP_NAMES,
-            )
-            .unwrap();
-        assert!(backup_db.cf_handle("account policy").is_none());
-        assert!(backup_db.cf_handle("TI database").is_none());
-
-        // Verify data was migrated in backup too
-        let label_cf = backup_db.cf_handle("label database").unwrap();
-        assert_eq!(
-            backup_db
-                .get_cf(label_cf, b"test_key_1")
-                .unwrap()
-                .as_deref(),
-            Some(b"test_value_1".as_slice())
-        );
-        assert_eq!(
-            backup_db
-                .get_cf(label_cf, b"test_key_2")
-                .unwrap()
-                .as_deref(),
-            Some(b"test_value_2".as_slice())
-        );
     }
 }
