@@ -29,11 +29,25 @@ const IP_V6_MAX_PREFIX_LEN: u8 = 128;
 pub struct TriagePolicy {
     pub id: u32,
     pub name: String,
-    pub ti_db: Vec<TriageExclusionReason>,
+    pub triage_exclusion_id: Vec<u32>,
     pub packet_attr: Vec<PacketAttr>,
     pub confidence: Vec<Confidence>,
     pub response: Vec<Response>,
     pub creation_time: DateTime<Utc>,
+    pub customer_id: Option<u32>,
+}
+
+/// Creates a composite key from `customer_id` and `name` for `TriagePolicy`.
+///
+/// The key format is: `customer_id` (4 bytes, big-endian) + `name` (UTF-8 bytes).
+/// - If `customer_id` is `Some(id)`, the `id` value is used.
+/// - If `customer_id` is `None` (applies to all customers), `u32::MAX` is used.
+fn triage_policy_key(customer_id: Option<u32>, name: &str) -> Vec<u8> {
+    let customer_id_value = customer_id.unwrap_or(u32::MAX);
+    let mut key = Vec::with_capacity(4 + name.len());
+    key.extend_from_slice(&customer_id_value.to_be_bytes());
+    key.extend_from_slice(name.as_bytes());
+    key
 }
 
 impl FromKeyValue for TriagePolicy {
@@ -43,16 +57,16 @@ impl FromKeyValue for TriagePolicy {
 }
 
 impl UniqueKey for TriagePolicy {
-    type AsBytes<'a> = &'a [u8];
+    type AsBytes<'a> = Vec<u8>;
 
-    fn unique_key(&self) -> &[u8] {
-        self.name.as_bytes()
+    fn unique_key(&self) -> Vec<u8> {
+        triage_policy_key(self.customer_id, &self.name)
     }
 }
 
 impl Indexable for TriagePolicy {
     fn key(&self) -> Cow<'_, [u8]> {
-        Cow::Borrowed(self.name.as_bytes())
+        Cow::Owned(triage_policy_key(self.customer_id, &self.name))
     }
     fn index(&self) -> u32 {
         self.id
@@ -66,6 +80,29 @@ impl Indexable for TriagePolicy {
 
     fn set_index(&mut self, index: u32) {
         self.id = index;
+    }
+}
+
+impl TriagePolicy {
+    /// Converts `TriagePolicy` into `TriagePolicyInput` with the given exclusion reasons.
+    ///
+    /// Applications using `review-database` must fetch `ExclusionReason` values from the
+    /// `triage_exclusion_map` using the `triage_exclusion_id`s stored in `TriagePolicy`
+    /// and pass them to this method.
+    #[must_use]
+    pub fn into_input_with_exclusion_reason(
+        self,
+        exclusion_reason: Vec<ExclusionReason>,
+    ) -> TriagePolicyInput {
+        TriagePolicyInput {
+            id: self.id,
+            name: self.name,
+            creation_time: self.creation_time,
+            triage_exclusion: exclusion_reason.into_iter().map(Into::into).collect(),
+            packet_attr: self.packet_attr,
+            confidence: self.confidence,
+            response: self.response,
+        }
     }
 }
 
@@ -107,15 +144,86 @@ pub enum ResponseKind {
     Whitelist,
 }
 
-#[derive(Clone, PartialEq, Deserialize, Serialize)]
-pub enum TriageExclusionReason {
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
+pub enum ExclusionReason {
     IpAddress(HostNetworkGroup),
     Domain(Vec<String>),
     Hostname(Vec<String>),
     Uri(Vec<String>),
 }
 
+impl Eq for ExclusionReason {}
+
+/// A triage exclusion reason stored in the `triage_exclusion_map`.
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
+pub struct TriageExclusionReason {
+    pub id: u32,
+    pub name: String,
+    pub exclusion_reason: ExclusionReason,
+    pub description: String,
+}
+
 impl Eq for TriageExclusionReason {}
+
+impl FromKeyValue for TriageExclusionReason {
+    fn from_key_value(_key: &[u8], value: &[u8]) -> Result<Self> {
+        super::deserialize(value)
+    }
+}
+
+impl UniqueKey for TriageExclusionReason {
+    type AsBytes<'a> = &'a [u8];
+
+    fn unique_key(&self) -> &[u8] {
+        self.name.as_bytes()
+    }
+}
+
+impl Indexable for TriageExclusionReason {
+    fn key(&self) -> Cow<'_, [u8]> {
+        Cow::Borrowed(self.name.as_bytes())
+    }
+    fn index(&self) -> u32 {
+        self.id
+    }
+    fn make_indexed_key(key: Cow<[u8]>, _index: u32) -> Cow<[u8]> {
+        key
+    }
+    fn value(&self) -> Vec<u8> {
+        super::serialize(self).expect("serializable")
+    }
+
+    fn set_index(&mut self, index: u32) {
+        self.id = index;
+    }
+}
+
+impl PartialOrd for ExclusionReason {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+#[allow(clippy::match_same_arms)]
+impl Ord for ExclusionReason {
+    fn cmp(&self, other: &Self) -> Ordering {
+        match (self, other) {
+            (ExclusionReason::IpAddress(a), ExclusionReason::IpAddress(b)) => a.cmp(b),
+            (ExclusionReason::Domain(a), ExclusionReason::Domain(b)) => a.cmp(b),
+            (ExclusionReason::Hostname(a), ExclusionReason::Hostname(b)) => a.cmp(b),
+            (ExclusionReason::Uri(a), ExclusionReason::Uri(b)) => a.cmp(b),
+            (ExclusionReason::IpAddress(_), _) => Ordering::Less,
+            (ExclusionReason::Domain(_), ExclusionReason::IpAddress(_)) => Ordering::Greater,
+            (ExclusionReason::Domain(_), _) => Ordering::Less,
+            (
+                ExclusionReason::Hostname(_),
+                ExclusionReason::IpAddress(_) | ExclusionReason::Domain(_),
+            ) => Ordering::Greater,
+            (ExclusionReason::Hostname(_), _) => Ordering::Less,
+            (ExclusionReason::Uri(_), _) => Ordering::Greater,
+        }
+    }
+}
 
 impl PartialOrd for TriageExclusionReason {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
@@ -123,26 +231,43 @@ impl PartialOrd for TriageExclusionReason {
     }
 }
 
-#[allow(clippy::match_same_arms)]
 impl Ord for TriageExclusionReason {
     fn cmp(&self, other: &Self) -> Ordering {
-        match (self, other) {
-            (TriageExclusionReason::IpAddress(a), TriageExclusionReason::IpAddress(b)) => a.cmp(b),
-            (TriageExclusionReason::Domain(a), TriageExclusionReason::Domain(b)) => a.cmp(b),
-            (TriageExclusionReason::Hostname(a), TriageExclusionReason::Hostname(b)) => a.cmp(b),
-            (TriageExclusionReason::Uri(a), TriageExclusionReason::Uri(b)) => a.cmp(b),
-            (TriageExclusionReason::IpAddress(_), _) => Ordering::Less,
-            (TriageExclusionReason::Domain(_), TriageExclusionReason::IpAddress(_)) => {
-                Ordering::Greater
-            }
-            (TriageExclusionReason::Domain(_), _) => Ordering::Less,
-            (
-                TriageExclusionReason::Hostname(_),
-                TriageExclusionReason::IpAddress(_) | TriageExclusionReason::Domain(_),
-            ) => Ordering::Greater,
-            (TriageExclusionReason::Hostname(_), _) => Ordering::Less,
-            (TriageExclusionReason::Uri(_), _) => Ordering::Greater,
+        let ord = self.name.cmp(&other.name);
+        match ord {
+            Ordering::Equal => self.id.cmp(&other.id),
+            _ => ord,
         }
+    }
+}
+
+#[derive(Clone)]
+pub struct TriageExclusionReasonUpdate {
+    pub name: String,
+    pub exclusion_reason: ExclusionReason,
+    pub description: String,
+}
+
+impl IndexedMapUpdate for TriageExclusionReasonUpdate {
+    type Entry = TriageExclusionReason;
+
+    fn key(&self) -> Option<Cow<'_, [u8]>> {
+        Some(Cow::Borrowed(self.name.as_bytes()))
+    }
+
+    fn apply(&self, mut value: Self::Entry) -> Result<Self::Entry, anyhow::Error> {
+        value.name.clear();
+        value.name.push_str(&self.name);
+        value.exclusion_reason = self.exclusion_reason.clone();
+        value.description.clear();
+        value.description.push_str(&self.description);
+        Ok(value)
+    }
+
+    fn verify(&self, value: &Self::Entry) -> bool {
+        self.name == value.name
+            && self.exclusion_reason == value.exclusion_reason
+            && self.description == value.description
     }
 }
 
@@ -243,13 +368,13 @@ pub enum TriageExclusion {
     Uri(Vec<String>),
 }
 
-impl From<TriageExclusionReason> for TriageExclusion {
-    fn from(reason: TriageExclusionReason) -> Self {
+impl From<ExclusionReason> for TriageExclusion {
+    fn from(reason: ExclusionReason) -> Self {
         match reason {
-            TriageExclusionReason::IpAddress(mut group) => {
+            ExclusionReason::IpAddress(mut group) => {
                 TriageExclusion::IpAddress(NetworkFilter::new(&mut group).unwrap_or_default())
             }
-            TriageExclusionReason::Domain(domains) => {
+            ExclusionReason::Domain(domains) => {
                 // Create regex patterns for domain matching
                 // Supports both exact domain matches and subdomain matches
                 let patterns: Vec<String> = if domains.is_empty() {
@@ -269,8 +394,8 @@ impl From<TriageExclusionReason> for TriageExclusion {
                     regex::RegexSet::new(&patterns).expect("Valid regex patterns for domains");
                 TriageExclusion::Domain(regex_set)
             }
-            TriageExclusionReason::Hostname(hostnames) => TriageExclusion::Hostname(hostnames),
-            TriageExclusionReason::Uri(uris) => TriageExclusion::Uri(uris),
+            ExclusionReason::Hostname(hostnames) => TriageExclusion::Hostname(hostnames),
+            ExclusionReason::Uri(uris) => TriageExclusion::Uri(uris),
         }
     }
 }
@@ -280,7 +405,7 @@ pub struct TriagePolicyInput {
     pub id: u32,
     pub name: String,
     pub creation_time: DateTime<Utc>,
-    pub ti_db: Vec<TriageExclusion>,
+    pub triage_exclusion: Vec<TriageExclusion>,
     pub packet_attr: Vec<PacketAttr>,
     pub confidence: Vec<Confidence>,
     pub response: Vec<Response>,
@@ -420,28 +545,55 @@ impl<'d> IndexedTable<'d, TriagePolicy> {
     }
 }
 
+/// Functions for the `triage_exclusion_reason` indexed map.
+impl<'d> IndexedTable<'d, TriageExclusionReason> {
+    /// Opens the `triage_exclusion_reason` table in the database.
+    ///
+    /// Returns `None` if the table does not exist.
+    pub(super) fn open(db: &'d OptimisticTransactionDB) -> Option<Self> {
+        IndexedMap::new(db, super::TRIAGE_EXCLUSION_REASON)
+            .map(IndexedTable::new)
+            .ok()
+    }
+
+    /// Updates the `TriageExclusionReason` from `old` to `new`, given `id`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the `id` is invalid or the database operation fails.
+    pub fn update(
+        &mut self,
+        id: u32,
+        old: &TriageExclusionReasonUpdate,
+        new: &TriageExclusionReasonUpdate,
+    ) -> Result<()> {
+        self.indexed_map.update(id, old, new)
+    }
+}
+
 #[derive(Clone)]
 pub struct Update {
     pub name: String,
-    pub ti_db: Vec<TriageExclusionReason>,
+    pub triage_exclusion_id: Vec<u32>,
     pub packet_attr: Vec<PacketAttr>,
     pub confidence: Vec<Confidence>,
     pub response: Vec<Response>,
+    pub customer_id: Option<u32>,
 }
 
 impl IndexedMapUpdate for Update {
     type Entry = TriagePolicy;
 
     fn key(&self) -> Option<Cow<'_, [u8]>> {
-        Some(Cow::Borrowed(self.name.as_bytes()))
+        Some(Cow::Owned(triage_policy_key(self.customer_id, &self.name)))
     }
 
     fn apply(&self, mut value: Self::Entry) -> Result<Self::Entry, anyhow::Error> {
         value.name.clear();
         value.name.push_str(&self.name);
-        let mut ti_db = self.ti_db.clone();
-        ti_db.sort_unstable();
-        value.ti_db = ti_db;
+        let mut triage_exclusion_id = self.triage_exclusion_id.clone();
+        triage_exclusion_id.sort_unstable();
+        value.triage_exclusion_id = triage_exclusion_id;
 
         let mut packet_attr: Vec<PacketAttr> = self.packet_attr.clone();
         packet_attr.sort_unstable();
@@ -455,6 +607,8 @@ impl IndexedMapUpdate for Update {
         response.sort_unstable();
         value.response = response;
 
+        value.customer_id = self.customer_id;
+
         Ok(value)
     }
 
@@ -462,9 +616,9 @@ impl IndexedMapUpdate for Update {
         if self.name != value.name {
             return false;
         }
-        let mut ti_db = self.ti_db.clone();
-        ti_db.sort_unstable();
-        if ti_db != value.ti_db {
+        let mut triage_exclusion_id = self.triage_exclusion_id.clone();
+        triage_exclusion_id.sort_unstable();
+        if triage_exclusion_id != value.triage_exclusion_id {
             return false;
         }
         let mut packet_attr = self.packet_attr.clone();
@@ -482,6 +636,10 @@ impl IndexedMapUpdate for Update {
         let mut response = self.response.clone();
         response.sort_unstable();
         if response != value.response {
+            return false;
+        }
+
+        if self.customer_id != value.customer_id {
             return false;
         }
         true
@@ -563,24 +721,79 @@ mod test {
 
     use chrono::Utc;
 
-    use crate::{Store, TriagePolicy, TriagePolicyUpdate};
+    use crate::{
+        ExclusionReason, Store, TriageExclusionReason, TriageExclusionReasonUpdate, TriagePolicy,
+        TriagePolicyUpdate,
+    };
 
     #[test]
     fn update() {
         let store = setup_store();
         let mut table = store.triage_policy_map();
 
-        let entry = create_entry("a");
+        let entry = create_entry("a", None);
         let id = table.put(entry.clone()).unwrap();
 
-        let old = create_update("a");
+        let old = create_update("a", None);
 
-        let update = create_update("b");
+        let update = create_update("b", None);
 
         assert!(table.update(id, &old, &update).is_ok());
         assert_eq!(table.count().unwrap(), 1);
         let entry = table.get_by_id(id).unwrap();
         assert_eq!(entry.map(|e| e.name), Some("b".to_string()));
+    }
+
+    #[test]
+    fn same_name_different_customer() {
+        let store = setup_store();
+        let table = store.triage_policy_map();
+
+        // Create a policy for customer 1
+        let entry1 = create_entry("policy", Some(1));
+        let id1 = table.put(entry1).unwrap();
+
+        // Create a policy with the same name for customer 2
+        let entry2 = create_entry("policy", Some(2));
+        let id2 = table.put(entry2).unwrap();
+
+        // Create a policy with the same name for all customers (customer_id = None)
+        let entry3 = create_entry("policy", None);
+        let id3 = table.put(entry3).unwrap();
+
+        // All three should coexist
+        assert_eq!(table.count().unwrap(), 3);
+
+        // Verify each entry exists and has correct customer_id
+        let retrieved1 = table.get_by_id(id1).unwrap().unwrap();
+        assert_eq!(retrieved1.name, "policy");
+        assert_eq!(retrieved1.customer_id, Some(1));
+
+        let retrieved2 = table.get_by_id(id2).unwrap().unwrap();
+        assert_eq!(retrieved2.name, "policy");
+        assert_eq!(retrieved2.customer_id, Some(2));
+
+        let retrieved3 = table.get_by_id(id3).unwrap().unwrap();
+        assert_eq!(retrieved3.name, "policy");
+        assert_eq!(retrieved3.customer_id, None);
+    }
+
+    #[test]
+    fn update_exclusion_reason() {
+        let store = setup_store();
+        let mut table = store.triage_exclusion_reason_map();
+
+        let entry = create_exclusion_reason_entry("a");
+        let id = table.put(entry).unwrap();
+
+        let old = create_exclusion_reason_update("a", "test description");
+        let new = create_exclusion_reason_update("b", "new description");
+
+        assert!(table.update(id, &old, &new).is_ok());
+        assert_eq!(table.count().unwrap(), 1);
+        let entry = table.get_by_id(id).unwrap().unwrap();
+        assert_eq!(entry.name, "b");
+        assert_eq!(entry.description, "new description");
     }
 
     fn setup_store() -> Arc<Store> {
@@ -589,25 +802,47 @@ mod test {
         Arc::new(Store::new(db_dir.path(), backup_dir.path()).unwrap())
     }
 
-    fn create_entry(name: &str) -> TriagePolicy {
+    fn create_entry(name: &str, customer_id: Option<u32>) -> TriagePolicy {
         TriagePolicy {
             id: u32::MAX,
             name: name.to_string(),
-            ti_db: vec![],
+            triage_exclusion_id: vec![],
             packet_attr: vec![],
             response: vec![],
             confidence: vec![],
             creation_time: Utc::now(),
+            customer_id,
         }
     }
 
-    fn create_update(name: &str) -> TriagePolicyUpdate {
+    fn create_update(name: &str, customer_id: Option<u32>) -> TriagePolicyUpdate {
         TriagePolicyUpdate {
             name: name.to_string(),
-            ti_db: vec![],
+            triage_exclusion_id: vec![],
             packet_attr: vec![],
             confidence: vec![],
             response: vec![],
+            customer_id,
+        }
+    }
+
+    fn create_exclusion_reason_entry(name: &str) -> TriageExclusionReason {
+        TriageExclusionReason {
+            id: u32::MAX,
+            name: name.to_string(),
+            exclusion_reason: ExclusionReason::Domain(vec!["example.com".to_string()]),
+            description: "test description".to_string(),
+        }
+    }
+
+    fn create_exclusion_reason_update(
+        name: &str,
+        description: &str,
+    ) -> TriageExclusionReasonUpdate {
+        TriageExclusionReasonUpdate {
+            name: name.to_string(),
+            exclusion_reason: ExclusionReason::Domain(vec!["example.com".to_string()]),
+            description: description.to_string(),
         }
     }
 }
