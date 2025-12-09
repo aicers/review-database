@@ -165,11 +165,16 @@ mod test {
 
     use super::*;
     use crate::Store;
+    use crate::test::{DbGuard, acquire_db_permit};
+
     const VALID_TOML: &str = r#"test = "true""#;
-    fn setup_store() -> Arc<Store> {
+
+    fn setup_store() -> (DbGuard<'static>, Arc<Store>) {
+        let permit = acquire_db_permit();
         let db_dir = tempfile::tempdir().unwrap();
         let backup_dir = tempfile::tempdir().unwrap();
-        Arc::new(Store::new(db_dir.path(), backup_dir.path()).unwrap())
+        let store = Arc::new(Store::new(db_dir.path(), backup_dir.path()).unwrap());
+        (permit, store)
     }
 
     fn create_external_service(
@@ -239,7 +244,7 @@ mod test {
 
     #[test]
     fn operations() {
-        let store = setup_store();
+        let (_permit, store) = setup_store();
         let table = store.external_service_map();
 
         let external_service =

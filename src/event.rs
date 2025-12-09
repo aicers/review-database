@@ -2924,6 +2924,7 @@ mod tests {
 
     use chrono::{TimeZone, Utc};
 
+    use crate::test::{DbGuard, acquire_db_permit};
     use crate::{
         Store,
         event::{
@@ -2948,6 +2949,14 @@ mod tests {
         },
         types::EventCategory,
     };
+
+    fn setup_store() -> (DbGuard<'static>, Arc<Store>) {
+        let permit = acquire_db_permit();
+        let db_dir = tempfile::tempdir().unwrap();
+        let backup_dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(Store::new(db_dir.path(), backup_dir.path()).unwrap());
+        (permit, store)
+    }
 
     fn example_message(kind: EventKind, category: EventCategory) -> EventMessage {
         let fields = DnsEventFields {
@@ -2991,10 +3000,7 @@ mod tests {
 
     #[test]
     fn event_db_put() {
-        let db_dir = tempfile::tempdir().unwrap();
-        let backup_dir = tempfile::tempdir().unwrap();
-
-        let store = Arc::new(Store::new(db_dir.path(), backup_dir.path()).unwrap());
+        let (_permit, store) = setup_store();
         let db = store.events();
         assert!(db.iter_forward().next().is_none());
 
@@ -3016,10 +3022,7 @@ mod tests {
 
     #[test]
     fn event_message() {
-        let db_dir = tempfile::tempdir().unwrap();
-        let backup_dir = tempfile::tempdir().unwrap();
-
-        let store = Arc::new(Store::new(db_dir.path(), backup_dir.path()).unwrap());
+        let (_permit, store) = setup_store();
         let db = store.events();
         let msg = example_message(EventKind::LockyRansomware, EventCategory::Impact);
         db.put(&msg).unwrap();
@@ -3142,6 +3145,7 @@ mod tests {
 
         use rocksdb::backup::{BackupEngine, BackupEngineOptions, RestoreOptions};
 
+        let _permit = acquire_db_permit();
         let db_dir = tempfile::tempdir().unwrap();
         let backup_dir = tempfile::tempdir().unwrap();
 
@@ -3697,8 +3701,7 @@ mod tests {
     fn event_blocklist_bootp() {
         use super::{BLOCKLIST, MEDIUM};
 
-        let db_dir = tempfile::tempdir().unwrap();
-        let backup_dir = tempfile::tempdir().unwrap();
+        let (_permit, store) = setup_store();
 
         let fields = blocklist_bootp_fields();
         let message = EventMessage {
@@ -3706,7 +3709,6 @@ mod tests {
             kind: EventKind::BlocklistBootp,
             fields: bincode::serialize(&fields).expect("serializable"),
         };
-        let store = Arc::new(Store::new(db_dir.path(), backup_dir.path()).unwrap());
         let db = store.events();
         db.put(&message).unwrap();
         let mut iter = db.iter_forward();
@@ -3940,8 +3942,7 @@ mod tests {
     fn event_blocklist_dhcp() {
         use super::{BLOCKLIST, MEDIUM};
 
-        let db_dir = tempfile::tempdir().unwrap();
-        let backup_dir = tempfile::tempdir().unwrap();
+        let (_permit, store) = setup_store();
 
         let fields = blocklist_dhcp_fields();
         let message = EventMessage {
@@ -3949,7 +3950,6 @@ mod tests {
             kind: EventKind::BlocklistDhcp,
             fields: bincode::serialize(&fields).expect("serializable"),
         };
-        let store = Arc::new(Store::new(db_dir.path(), backup_dir.path()).unwrap());
         let db = store.events();
         db.put(&message).unwrap();
         let mut iter = db.iter_forward();
@@ -4383,8 +4383,7 @@ mod tests {
     fn event_blocklist_ftp() {
         use super::{BLOCKLIST, MEDIUM};
 
-        let db_dir = tempfile::tempdir().unwrap();
-        let backup_dir = tempfile::tempdir().unwrap();
+        let (_permit, store) = setup_store();
 
         let fields = ftpeventfields();
         let message = EventMessage {
@@ -4392,7 +4391,6 @@ mod tests {
             kind: EventKind::BlocklistFtp,
             fields: bincode::serialize(&fields).expect("serializable"),
         };
-        let store = Arc::new(Store::new(db_dir.path(), backup_dir.path()).unwrap());
         let db = store.events();
         db.put(&message).unwrap();
         let mut iter = db.iter_forward();
@@ -4722,8 +4720,7 @@ mod tests {
     fn event_blocklist_ldap() {
         use super::{BLOCKLIST, MEDIUM};
 
-        let db_dir = tempfile::tempdir().unwrap();
-        let backup_dir = tempfile::tempdir().unwrap();
+        let (_permit, store) = setup_store();
 
         let fields = ldapeventfields();
         let message = EventMessage {
@@ -4731,7 +4728,6 @@ mod tests {
             kind: EventKind::BlocklistLdap,
             fields: bincode::serialize(&fields).expect("serializable"),
         };
-        let store = Arc::new(Store::new(db_dir.path(), backup_dir.path()).unwrap());
         let db = store.events();
         db.put(&message).unwrap();
         let mut iter = db.iter_forward();
@@ -4824,8 +4820,7 @@ mod tests {
     fn event_blocklist_radius() {
         use super::{BLOCKLIST, MEDIUM};
 
-        let db_dir = tempfile::tempdir().unwrap();
-        let backup_dir = tempfile::tempdir().unwrap();
+        let (_permit, store) = setup_store();
 
         let fields = blocklist_radius_fields();
         let message = EventMessage {
@@ -4833,7 +4828,6 @@ mod tests {
             kind: EventKind::BlocklistRadius,
             fields: bincode::serialize(&fields).expect("serializable"),
         };
-        let store = Arc::new(Store::new(db_dir.path(), backup_dir.path()).unwrap());
         let db = store.events();
         db.put(&message).unwrap();
         let mut iter = db.iter_forward();
@@ -5193,8 +5187,7 @@ mod tests {
     fn event_blocklist_malformed_dns() {
         use super::{BLOCKLIST, MEDIUM};
 
-        let db_dir = tempfile::tempdir().unwrap();
-        let backup_dir = tempfile::tempdir().unwrap();
+        let (_permit, store) = setup_store();
 
         let fields = blocklist_malformed_dns_fields();
         let message = EventMessage {
@@ -5202,7 +5195,6 @@ mod tests {
             kind: EventKind::BlocklistMalformedDns,
             fields: bincode::serialize(&fields).expect("serializable"),
         };
-        let store = Arc::new(Store::new(db_dir.path(), backup_dir.path()).unwrap());
         let db = store.events();
         db.put(&message).unwrap();
         let mut iter = db.iter_forward();
@@ -5766,8 +5758,7 @@ mod tests {
     fn event_torconnection() {
         use super::{MEDIUM, TOR_CONNECTION};
 
-        let db_dir = tempfile::tempdir().unwrap();
-        let backup_dir = tempfile::tempdir().unwrap();
+        let (_permit, store) = setup_store();
 
         let fields = httpeventfields();
         let message = EventMessage {
@@ -5775,7 +5766,6 @@ mod tests {
             kind: EventKind::TorConnection,
             fields: bincode::serialize(&fields).expect("serializable"),
         };
-        let store = Arc::new(Store::new(db_dir.path(), backup_dir.path()).unwrap());
         let db = store.events();
         db.put(&message).unwrap();
         let mut iter = db.iter_forward();
@@ -5924,8 +5914,7 @@ mod tests {
     fn event_suspicious_tls_traffic() {
         use super::{MEDIUM, SUSPICIOUS_TLS_TRAFFIC};
 
-        let db_dir = tempfile::tempdir().unwrap();
-        let backup_dir = tempfile::tempdir().unwrap();
+        let (_permit, store) = setup_store();
 
         let mut fields = blocklist_tls_fields();
         fields.category = None;
@@ -5934,7 +5923,6 @@ mod tests {
             kind: EventKind::SuspiciousTlsTraffic,
             fields: bincode::serialize(&fields).expect("serializable"),
         };
-        let store = Arc::new(Store::new(db_dir.path(), backup_dir.path()).unwrap());
         let db = store.events();
         db.put(&message).unwrap();
         let mut iter = db.iter_forward();
@@ -6016,10 +6004,7 @@ mod tests {
 
     #[test]
     fn event_categories_method() {
-        let db_dir = tempfile::tempdir().unwrap();
-        let backup_dir = tempfile::tempdir().unwrap();
-
-        let store = Arc::new(Store::new(db_dir.path(), backup_dir.path()).unwrap());
+        let (_permit, store) = setup_store();
         let db = store.events();
 
         // Create and store a DnsCovertChannel event

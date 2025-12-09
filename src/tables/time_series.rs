@@ -400,11 +400,14 @@ mod tests {
 
     use super::*;
     use crate::Store;
+    use crate::test::{DbGuard, acquire_db_permit};
 
-    fn setup_store() -> Arc<Store> {
+    fn setup_store() -> (DbGuard<'static>, Arc<Store>) {
+        let permit = acquire_db_permit();
         let db_dir = tempfile::tempdir().unwrap();
         let backup_dir = tempfile::tempdir().unwrap();
-        Arc::new(Store::new(db_dir.path(), backup_dir.path()).unwrap())
+        let store = Arc::new(Store::new(db_dir.path(), backup_dir.path()).unwrap());
+        (permit, store)
     }
 
     fn create_test_column(count_index: i32, time_counts: Vec<(i64, usize)>) -> Column {
@@ -416,7 +419,7 @@ mod tests {
 
     #[test]
     fn test_add_time_series() {
-        let store = setup_store();
+        let (_permit, store) = setup_store();
         let table = store.time_series_map();
 
         let model_id = 1;
@@ -445,7 +448,7 @@ mod tests {
 
     #[test]
     fn test_add_time_series_with_invalid_timestamp() {
-        let store = setup_store();
+        let (_permit, store) = setup_store();
         let table = store.time_series_map();
 
         let model_id = 1;
@@ -461,7 +464,7 @@ mod tests {
 
     #[test]
     fn test_get_time_range_of_model() {
-        let store = setup_store();
+        let (_permit, store) = setup_store();
         let table = store.time_series_map();
 
         let model_id = 1;
@@ -488,7 +491,7 @@ mod tests {
 
     #[test]
     fn test_get_time_range_of_empty_model() {
-        let store = setup_store();
+        let (_permit, store) = setup_store();
         let table = store.time_series_map();
 
         let model_id = 999; // Non-existent model
@@ -498,7 +501,7 @@ mod tests {
 
     #[test]
     fn test_get_top_time_series_of_cluster() {
-        let store = setup_store();
+        let (_permit, store) = setup_store();
         let table = store.time_series_map();
 
         let model_id = 1;
@@ -528,7 +531,7 @@ mod tests {
 
     #[test]
     fn test_get_top_time_series_of_cluster_with_time_range() {
-        let store = setup_store();
+        let (_permit, store) = setup_store();
         let table = store.time_series_map();
 
         let model_id = 1;
@@ -561,7 +564,7 @@ mod tests {
 
     #[test]
     fn test_get_top_time_series_of_model() {
-        let store = setup_store();
+        let (_permit, store) = setup_store();
         let table = store.time_series_map();
 
         let model_id = 1;
@@ -598,7 +601,7 @@ mod tests {
 
     #[test]
     fn test_get_top_time_series_of_model_with_specific_time() {
-        let store = setup_store();
+        let (_permit, store) = setup_store();
         let table = store.time_series_map();
 
         let model_id = 1;
@@ -623,7 +626,7 @@ mod tests {
 
     #[test]
     fn test_time_series_of_model() {
-        let store = setup_store();
+        let (_permit, store) = setup_store();
         let table = store.time_series_map();
 
         let model_id = 1;
@@ -758,7 +761,7 @@ mod tests {
 
     #[test]
     fn test_insert_and_retrieve_time_series() {
-        let store = setup_store();
+        let (_permit, store) = setup_store();
         let table = store.time_series_map();
 
         let ts = TimeSeries {
@@ -785,7 +788,7 @@ mod tests {
 
     #[test]
     fn test_insert_duplicate_time_series() {
-        let store = setup_store();
+        let (_permit, store) = setup_store();
         let table = store.time_series_map();
 
         let ts = TimeSeries {
@@ -807,7 +810,7 @@ mod tests {
 
     #[test]
     fn test_multiple_time_series_same_model() {
-        let store = setup_store();
+        let (_permit, store) = setup_store();
         let table = store.time_series_map();
 
         let model_id = 1;
@@ -852,7 +855,7 @@ mod tests {
 
     #[test]
     fn test_time_series_with_different_count_indices() {
-        let store = setup_store();
+        let (_permit, store) = setup_store();
         let table = store.time_series_map();
 
         let model_id = 1;

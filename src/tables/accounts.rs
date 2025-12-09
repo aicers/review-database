@@ -371,13 +371,20 @@ impl<'d> Table<'d, Account> {
 mod tests {
     use std::sync::Arc;
 
+    use crate::test::{DbGuard, acquire_db_permit};
     use crate::{Role, Store, tables::Direction, types::Account};
 
-    #[test]
-    fn put_delete() {
+    fn setup_store() -> (DbGuard<'static>, Arc<Store>) {
+        let permit = acquire_db_permit();
         let db_dir = tempfile::tempdir().unwrap();
         let backup_dir = tempfile::tempdir().unwrap();
         let store = Arc::new(Store::new(db_dir.path(), backup_dir.path()).unwrap());
+        (permit, store)
+    }
+
+    #[test]
+    fn put_delete() {
+        let (_permit, store) = setup_store();
         let table = store.account_map();
 
         assert!(!table.contains("user1").unwrap());
@@ -421,9 +428,7 @@ mod tests {
     fn iter() {
         use crate::Iterable;
 
-        let db_dir = tempfile::tempdir().unwrap();
-        let backup_dir = tempfile::tempdir().unwrap();
-        let store = Arc::new(Store::new(db_dir.path(), backup_dir.path()).unwrap());
+        let (_permit, store) = setup_store();
         let table = store.account_map();
 
         let mut iter = table.iter(Direction::Forward, None);
@@ -481,9 +486,7 @@ mod tests {
     fn put_duplicate_key() {
         use crate::Iterable;
 
-        let db_dir = tempfile::tempdir().unwrap();
-        let backup_dir = tempfile::tempdir().unwrap();
-        let store = Arc::new(Store::new(db_dir.path(), backup_dir.path()).unwrap());
+        let (_permit, store) = setup_store();
         let table = store.account_map();
 
         // Insert first account
@@ -545,9 +548,7 @@ mod tests {
 
     #[test]
     fn test_failed_login_attempts() {
-        let db_dir = tempfile::tempdir().unwrap();
-        let backup_dir = tempfile::tempdir().unwrap();
-        let store = Arc::new(Store::new(db_dir.path(), backup_dir.path()).unwrap());
+        let (_permit, store) = setup_store();
         let table = store.account_map();
 
         let account = Account::new(
@@ -590,9 +591,7 @@ mod tests {
 
     #[test]
     fn test_account_suspension() {
-        let db_dir = tempfile::tempdir().unwrap();
-        let backup_dir = tempfile::tempdir().unwrap();
-        let store = Arc::new(Store::new(db_dir.path(), backup_dir.path()).unwrap());
+        let (_permit, store) = setup_store();
         let table = store.account_map();
 
         let account = Account::new(
@@ -624,9 +623,7 @@ mod tests {
 
     #[test]
     fn test_get_accounts_with_security_status() {
-        let db_dir = tempfile::tempdir().unwrap();
-        let backup_dir = tempfile::tempdir().unwrap();
-        let store = Arc::new(Store::new(db_dir.path(), backup_dir.path()).unwrap());
+        let (_permit, store) = setup_store();
         let table = store.account_map();
 
         let account1 = Account::new(
@@ -684,9 +681,7 @@ mod tests {
     fn test_lockout_expiration() {
         use std::{thread, time::Duration};
 
-        let db_dir = tempfile::tempdir().unwrap();
-        let backup_dir = tempfile::tempdir().unwrap();
-        let store = Arc::new(Store::new(db_dir.path(), backup_dir.path()).unwrap());
+        let (_permit, store) = setup_store();
         let table = store.account_map();
 
         let mut account = Account::new(

@@ -112,13 +112,20 @@ mod tests {
     use crate::tables::config::{
         KEY_EXPIRY_PERIOD, KEY_LOCKOUT_DURATION, KEY_LOCKOUT_THRESHOLD, KEY_SUSPENSION_THRESHOLD,
     };
+    use crate::test::{DbGuard, acquire_db_permit};
     use crate::{AccountPolicy, AccountPolicyUpdate, Store};
 
-    #[test]
-    fn operations() {
+    fn setup_store() -> (DbGuard<'static>, Arc<Store>) {
+        let permit = acquire_db_permit();
         let db_dir = tempfile::tempdir().unwrap();
         let backup_dir = tempfile::tempdir().unwrap();
         let store = Arc::new(Store::new(db_dir.path(), backup_dir.path()).unwrap());
+        (permit, store)
+    }
+
+    #[test]
+    fn operations() {
+        let (_permit, store) = setup_store();
         let table = store.config_map();
 
         assert!(table.update("test", "10").is_ok());
@@ -129,9 +136,7 @@ mod tests {
 
     #[test]
     fn update_compare_success() {
-        let db_dir = tempfile::tempdir().unwrap();
-        let backup_dir = tempfile::tempdir().unwrap();
-        let store = Arc::new(Store::new(db_dir.path(), backup_dir.path()).unwrap());
+        let (_permit, store) = setup_store();
         let table = store.config_map();
 
         // Initialize with a value
@@ -155,9 +160,7 @@ mod tests {
 
     #[test]
     fn update_compare_wrong_old_value() {
-        let db_dir = tempfile::tempdir().unwrap();
-        let backup_dir = tempfile::tempdir().unwrap();
-        let store = Arc::new(Store::new(db_dir.path(), backup_dir.path()).unwrap());
+        let (_permit, store) = setup_store();
         let table = store.config_map();
 
         // Initialize with a value
@@ -179,9 +182,7 @@ mod tests {
 
     #[test]
     fn update_compare_nonexistent_key() {
-        let db_dir = tempfile::tempdir().unwrap();
-        let backup_dir = tempfile::tempdir().unwrap();
-        let store = Arc::new(Store::new(db_dir.path(), backup_dir.path()).unwrap());
+        let (_permit, store) = setup_store();
         let table = store.config_map();
 
         // Try to update a key that doesn't exist - should fail
@@ -190,9 +191,7 @@ mod tests {
 
     #[test]
     fn init_account_policy_test() {
-        let db_dir = tempfile::tempdir().unwrap();
-        let backup_dir = tempfile::tempdir().unwrap();
-        let store = Arc::new(Store::new(db_dir.path(), backup_dir.path()).unwrap());
+        let (_permit, store) = setup_store();
 
         let policy = AccountPolicy {
             expiry_period_in_secs: 3600,
@@ -226,9 +225,7 @@ mod tests {
 
     #[test]
     fn init_account_policy_already_exists() {
-        let db_dir = tempfile::tempdir().unwrap();
-        let backup_dir = tempfile::tempdir().unwrap();
-        let store = Arc::new(Store::new(db_dir.path(), backup_dir.path()).unwrap());
+        let (_permit, store) = setup_store();
 
         let policy = AccountPolicy {
             expiry_period_in_secs: 3600,
@@ -253,9 +250,7 @@ mod tests {
 
     #[test]
     fn update_account_policy_all_fields() {
-        let db_dir = tempfile::tempdir().unwrap();
-        let backup_dir = tempfile::tempdir().unwrap();
-        let store = Arc::new(Store::new(db_dir.path(), backup_dir.path()).unwrap());
+        let (_permit, store) = setup_store();
 
         let policy = AccountPolicy {
             expiry_period_in_secs: 3600,
@@ -299,9 +294,7 @@ mod tests {
 
     #[test]
     fn update_account_policy_partial() {
-        let db_dir = tempfile::tempdir().unwrap();
-        let backup_dir = tempfile::tempdir().unwrap();
-        let store = Arc::new(Store::new(db_dir.path(), backup_dir.path()).unwrap());
+        let (_permit, store) = setup_store();
 
         let policy = AccountPolicy {
             expiry_period_in_secs: 3600,
@@ -344,9 +337,7 @@ mod tests {
 
     #[test]
     fn update_account_policy_wrong_old_value() {
-        let db_dir = tempfile::tempdir().unwrap();
-        let backup_dir = tempfile::tempdir().unwrap();
-        let store = Arc::new(Store::new(db_dir.path(), backup_dir.path()).unwrap());
+        let (_permit, store) = setup_store();
 
         let policy = AccountPolicy {
             expiry_period_in_secs: 3600,
@@ -381,9 +372,7 @@ mod tests {
 
     #[test]
     fn update_account_policy_no_changes() {
-        let db_dir = tempfile::tempdir().unwrap();
-        let backup_dir = tempfile::tempdir().unwrap();
-        let store = Arc::new(Store::new(db_dir.path(), backup_dir.path()).unwrap());
+        let (_permit, store) = setup_store();
 
         let policy = AccountPolicy {
             expiry_period_in_secs: 3600,
@@ -414,9 +403,7 @@ mod tests {
 
     #[test]
     fn update_account_policy_atomicity() {
-        let db_dir = tempfile::tempdir().unwrap();
-        let backup_dir = tempfile::tempdir().unwrap();
-        let store = Arc::new(Store::new(db_dir.path(), backup_dir.path()).unwrap());
+        let (_permit, store) = setup_store();
 
         let policy = AccountPolicy {
             expiry_period_in_secs: 3600,
@@ -458,9 +445,7 @@ mod tests {
 
     #[test]
     fn init_account_policy_atomicity() {
-        let db_dir = tempfile::tempdir().unwrap();
-        let backup_dir = tempfile::tempdir().unwrap();
-        let store = Arc::new(Store::new(db_dir.path(), backup_dir.path()).unwrap());
+        let (_permit, store) = setup_store();
 
         // Pre-create ONE of the keys (simulating partial state or conflict)
         store.config_map().init(KEY_EXPIRY_PERIOD, "3600").unwrap();
@@ -491,9 +476,7 @@ mod tests {
 
     #[test]
     fn init_account_policy_validation_failure() {
-        let db_dir = tempfile::tempdir().unwrap();
-        let backup_dir = tempfile::tempdir().unwrap();
-        let store = Arc::new(Store::new(db_dir.path(), backup_dir.path()).unwrap());
+        let (_permit, store) = setup_store();
 
         // Invalid policy: lockout_threshold (10) > suspension_threshold (5)
         let policy = AccountPolicy {
@@ -513,9 +496,7 @@ mod tests {
 
     #[test]
     fn update_account_policy_validation_failure() {
-        let db_dir = tempfile::tempdir().unwrap();
-        let backup_dir = tempfile::tempdir().unwrap();
-        let store = Arc::new(Store::new(db_dir.path(), backup_dir.path()).unwrap());
+        let (_permit, store) = setup_store();
 
         let policy = AccountPolicy {
             expiry_period_in_secs: 3600,

@@ -368,6 +368,7 @@ mod tests {
 
     use super::*;
     use crate::Store;
+    use crate::test::{DbGuard, acquire_db_permit};
 
     #[test]
     fn test_key_bytes_roundtrip() {
@@ -497,7 +498,7 @@ mod tests {
 
     #[test]
     fn test_insert_and_count_clusters() {
-        let store = setup_store();
+        let (_permit, store) = setup_store();
         let table = store.cluster_map();
 
         // Insert 3 clusters
@@ -521,7 +522,7 @@ mod tests {
 
     #[test]
     fn test_update_cluster_fields() {
-        let store = setup_store();
+        let (_permit, store) = setup_store();
         let table = store.cluster_map();
 
         let mut c1 = make_cluster(1, 42);
@@ -546,7 +547,7 @@ mod tests {
 
     #[test]
     fn test_update_clusters_insert_and_merge() {
-        let store = setup_store();
+        let (_permit, store) = setup_store();
         let table = store.cluster_map();
 
         // Case 1: cluster doesn’t exist → should insert
@@ -597,7 +598,7 @@ mod tests {
 
     #[test]
     fn test_load_clusters_pagination() {
-        let store = setup_store();
+        let (_permit, store) = setup_store();
         let table = store.cluster_map();
 
         for i in 0..5 {
@@ -640,9 +641,11 @@ mod tests {
         }
     }
 
-    fn setup_store() -> Arc<Store> {
+    fn setup_store() -> (DbGuard<'static>, Arc<Store>) {
+        let permit = acquire_db_permit();
         let db_dir = tempfile::tempdir().unwrap();
         let backup_dir = tempfile::tempdir().unwrap();
-        Arc::new(Store::new(db_dir.path(), backup_dir.path()).unwrap())
+        let store = Arc::new(Store::new(db_dir.path(), backup_dir.path()).unwrap());
+        (permit, store)
     }
 }

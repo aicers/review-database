@@ -159,11 +159,12 @@ impl<'d> IndexedTable<'d, Customer> {
 mod test {
     use std::sync::Arc;
 
+    use crate::test::{DbGuard, acquire_db_permit};
     use crate::{Customer, CustomerUpdate, Store};
 
     #[test]
     fn update() {
-        let store = setup_store();
+        let (_permit, store) = setup_store();
         let mut table = store.customer_map();
 
         let entry = create_entry("a");
@@ -187,10 +188,12 @@ mod test {
         assert_eq!(entry.map(|e| e.name), Some("b".to_string()));
     }
 
-    fn setup_store() -> Arc<Store> {
+    fn setup_store() -> (DbGuard<'static>, Arc<Store>) {
+        let permit = acquire_db_permit();
         let db_dir = tempfile::tempdir().unwrap();
         let backup_dir = tempfile::tempdir().unwrap();
-        Arc::new(Store::new(db_dir.path(), backup_dir.path()).unwrap())
+        let store = Arc::new(Store::new(db_dir.path(), backup_dir.path()).unwrap());
+        (permit, store)
     }
 
     fn create_entry(name: &str) -> Customer {

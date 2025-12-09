@@ -721,6 +721,7 @@ mod test {
 
     use chrono::Utc;
 
+    use crate::test::{DbGuard, acquire_db_permit};
     use crate::{
         ExclusionReason, Store, TriageExclusionReason, TriageExclusionReasonUpdate, TriagePolicy,
         TriagePolicyUpdate,
@@ -728,7 +729,7 @@ mod test {
 
     #[test]
     fn update() {
-        let store = setup_store();
+        let (_permit, store) = setup_store();
         let mut table = store.triage_policy_map();
 
         let entry = create_entry("a", None);
@@ -746,7 +747,7 @@ mod test {
 
     #[test]
     fn same_name_different_customer() {
-        let store = setup_store();
+        let (_permit, store) = setup_store();
         let table = store.triage_policy_map();
 
         // Create a policy for customer 1
@@ -780,7 +781,7 @@ mod test {
 
     #[test]
     fn update_exclusion_reason() {
-        let store = setup_store();
+        let (_permit, store) = setup_store();
         let mut table = store.triage_exclusion_reason_map();
 
         let entry = create_exclusion_reason_entry("a");
@@ -796,10 +797,12 @@ mod test {
         assert_eq!(entry.description, "new description");
     }
 
-    fn setup_store() -> Arc<Store> {
+    fn setup_store() -> (DbGuard<'static>, Arc<Store>) {
+        let permit = acquire_db_permit();
         let db_dir = tempfile::tempdir().unwrap();
         let backup_dir = tempfile::tempdir().unwrap();
-        Arc::new(Store::new(db_dir.path(), backup_dir.path()).unwrap())
+        let store = Arc::new(Store::new(db_dir.path(), backup_dir.path()).unwrap());
+        (permit, store)
     }
 
     fn create_entry(name: &str, customer_id: Option<u32>) -> TriagePolicy {

@@ -97,9 +97,11 @@ impl<'d> IndexedTable<'d, Category> {
 mod tests {
     use std::sync::Arc;
 
+    use crate::test::{DbGuard, acquire_db_permit};
     use crate::{Store, category::Category, tables::category::DEFAULT_ENTRIES};
 
-    fn set_up_db() -> (Arc<Store>, Vec<Category>) {
+    fn set_up_db() -> (DbGuard<'static>, Arc<Store>, Vec<Category>) {
+        let permit = acquire_db_permit();
         let db_dir = tempfile::tempdir().unwrap();
         let backup_dir = tempfile::tempdir().unwrap();
         let store = Arc::new(Store::new(db_dir.path(), backup_dir.path()).unwrap());
@@ -128,12 +130,12 @@ mod tests {
             let added = table.insert(&e.name).unwrap();
             e.id = added as u32;
         }
-        (store, entries)
+        (permit, store, entries)
     }
 
     #[test]
     fn add() {
-        let (store, entries) = set_up_db();
+        let (_permit, store, entries) = set_up_db();
         let table = store.category_map();
 
         assert_eq!(
@@ -144,7 +146,7 @@ mod tests {
 
     #[test]
     fn get() {
-        let (store, entries) = set_up_db();
+        let (_permit, store, entries) = set_up_db();
         let table = store.category_map();
 
         for (id, entry) in entries.iter().enumerate() {
@@ -156,7 +158,7 @@ mod tests {
 
     #[test]
     fn update_for_new_existing_key() {
-        let (store, entries) = set_up_db();
+        let (_permit, store, entries) = set_up_db();
         let mut table = store.category_map();
 
         assert!(
