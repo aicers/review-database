@@ -5,6 +5,19 @@ file is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), and
 this project adheres to [Semantic
 Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- Fixed migration failure caused by incorrect reconstruction of `column_stats`
+  keys and values. Migration code now reconstructs `ColumnStatsKeyV41` and
+  `ColumnStatsValueV41` using the original serialization format (key uses the
+  original `to_be_bytes` ordering, and values are handled using the same
+  `DefaultOptions`-based serialization).
+- Fixed integer conversion error in `load_clusters` where using `usize::MAX`
+  caused an overflow during conversion to `i64`, preventing clusters from being
+  loaded during migration.
+
 ## [0.42.2] - 2025-12-08
 
 ### Fixed
@@ -1195,6 +1208,7 @@ AsRef<[u8]>`). This change accommodates scenarios where the information stored
 - Modified `FtpBruteForce` by adding an `is_internal` field which is a boolean
   indicating whether it is internal or not.
 
+[Unreleased]: https://github.com/aicers/review-database/compare/0.42.2...main
 [0.42.2]: https://github.com/aicers/review-database/compare/0.42.1...0.42.2
 [0.42.1]: https://github.com/aicers/review-database/compare/0.42.0...0.42.1
 [0.42.0]: https://github.com/aicers/review-database/compare/0.41.0...0.42.0

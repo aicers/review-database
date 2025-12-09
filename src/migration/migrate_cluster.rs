@@ -144,6 +144,36 @@ struct ColumnStatsKeyV41 {
     pub model_id: i32,
 }
 
+impl ColumnStatsKeyV41 {
+    pub fn from_be_bytes(buf: &[u8]) -> Self {
+        let (val, rest) = buf.split_at(size_of::<u32>());
+        let mut buf = [0; size_of::<u32>()];
+        buf.copy_from_slice(val);
+        let cluster_id = u32::from_be_bytes(buf);
+
+        let (val, rest) = rest.split_at(size_of::<i64>());
+        let mut buf = [0; size_of::<i64>()];
+        buf.copy_from_slice(val);
+        let batch_ts = i64::from_be_bytes(buf);
+
+        let (val, rest) = rest.split_at(size_of::<u32>());
+        let mut buf = [0; size_of::<u32>()];
+        buf.copy_from_slice(val);
+        let column_index = u32::from_be_bytes(buf);
+
+        let mut buf = [0; size_of::<i32>()];
+        buf.copy_from_slice(rest);
+        let model_id = i32::from_be_bytes(buf);
+
+        Self {
+            cluster_id,
+            batch_ts,
+            column_index,
+            model_id,
+        }
+    }
+}
+
 #[derive(Deserialize)]
 struct ColumnStatsValueV41 {
     description: DescriptonV41,
@@ -170,6 +200,7 @@ async fn update_cluster_id_in_column_stats(
     database: &Database,
     store: &crate::Store,
 ) -> Result<()> {
+    use bincode::Options;
     use diesel_async::RunQueryDsl;
 
     use crate::diesel::QueryDsl;
@@ -191,12 +222,12 @@ async fn update_cluster_id_in_column_stats(
     let txn = raw.db.transaction();
     for item in iter {
         let (old_key, old_value) = item?;
-        let mut old_k: ColumnStatsKeyV41 = bincode::deserialize(&old_key)?;
+        let mut old_k = ColumnStatsKeyV41::from_be_bytes(&old_key);
         old_k.cluster_id = cluster_ids
             .get(&old_k.cluster_id)
             .copied()
             .ok_or(anyhow::anyhow!("Unable to find Cluster id"))?;
-        let old_v: ColumnStatsValueV41 = bincode::deserialize(&old_value)?;
+        let old_v: ColumnStatsValueV41 = bincode::DefaultOptions::new().deserialize(&old_value)?;
         let new: crate::ColumnStats = (old_k, old_v).try_into()?;
         updated.push(new);
         raw.delete_with_transaction(&old_key, &txn)?;
@@ -243,7 +274,7 @@ async fn retrieve_cluster_to_migrate(
             &None,
             &None,
             false,
-            usize::MAX,
+            i64::MAX,
         )
         .await?
         .into_iter()
