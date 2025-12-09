@@ -25,14 +25,16 @@ macro_rules! find_mqtt_attr_by_kind {
                 MqttAttr::Version => AttrValue::UInt($event.version.into()),
                 MqttAttr::ClientId => AttrValue::String(&$event.client_id),
                 MqttAttr::ConnackReason => AttrValue::UInt($event.connack_reason.into()),
-                MqttAttr::Subscribe => AttrValue::VecString($event.subscribe.clone()),
-                MqttAttr::SubackReason => AttrValue::VecUInt(
+                MqttAttr::Subscribe => {
+                    AttrValue::VecString(std::borrow::Cow::Borrowed(&$event.subscribe))
+                }
+                MqttAttr::SubackReason => AttrValue::VecUInt(std::borrow::Cow::Owned(
                     $event
                         .suback_reason
                         .iter()
                         .map(|val| u64::from(*val))
                         .collect(),
-                ),
+                )),
             };
             Some(target_value)
         } else {

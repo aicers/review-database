@@ -21,8 +21,12 @@ macro_rules! find_nfs_attr_by_kind {
                 NfsAttr::RespPkts => AttrValue::UInt($event.resp_pkts),
                 NfsAttr::OrigL2Bytes => AttrValue::UInt($event.orig_l2_bytes),
                 NfsAttr::RespL2Bytes => AttrValue::UInt($event.resp_l2_bytes),
-                NfsAttr::ReadFiles => AttrValue::VecString($event.read_files.clone()),
-                NfsAttr::WriteFiles => AttrValue::VecString($event.write_files.clone()),
+                NfsAttr::ReadFiles => {
+                    AttrValue::VecString(std::borrow::Cow::Borrowed(&$event.read_files))
+                }
+                NfsAttr::WriteFiles => {
+                    AttrValue::VecString(std::borrow::Cow::Borrowed(&$event.write_files))
+                }
             };
             Some(target_value)
         } else {

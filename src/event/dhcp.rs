@@ -30,18 +30,20 @@ macro_rules! find_dhcp_attr_by_kind {
                 DhcpAttr::SiAddr => AttrValue::Addr($event.siaddr),
                 DhcpAttr::GiAddr => AttrValue::Addr($event.giaddr),
                 DhcpAttr::SubNetMask => AttrValue::Addr($event.subnet_mask),
-                DhcpAttr::Router => AttrValue::VecAddr($event.router.clone()),
-                DhcpAttr::DomainNameServer => AttrValue::VecAddr($event.domain_name_server.clone()),
+                DhcpAttr::Router => AttrValue::VecAddr(std::borrow::Cow::Borrowed(&$event.router)),
+                DhcpAttr::DomainNameServer => {
+                    AttrValue::VecAddr(std::borrow::Cow::Borrowed(&$event.domain_name_server))
+                }
                 DhcpAttr::ReqIpAddr => AttrValue::Addr($event.req_ip_addr),
                 DhcpAttr::LeaseTime => AttrValue::UInt($event.lease_time.into()),
                 DhcpAttr::ServerId => AttrValue::Addr($event.server_id),
-                DhcpAttr::ParamReqList => AttrValue::VecUInt(
+                DhcpAttr::ParamReqList => AttrValue::VecUInt(std::borrow::Cow::Owned(
                     $event
                         .param_req_list
                         .iter()
                         .map(|val| u64::from(*val))
                         .collect(),
-                ),
+                )),
                 DhcpAttr::Message => AttrValue::String(&$event.message),
                 DhcpAttr::RenewalTime => AttrValue::UInt($event.renewal_time.into()),
                 DhcpAttr::RebindingTime => AttrValue::UInt($event.rebinding_time.into()),

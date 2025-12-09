@@ -26,10 +26,14 @@ macro_rules! find_kerberos_attr_by_kind {
                 KerberosAttr::ErrorCode => AttrValue::UInt($event.error_code.into()),
                 KerberosAttr::ClientRealm => AttrValue::String(&$event.client_realm),
                 KerberosAttr::CnameType => AttrValue::UInt($event.cname_type.into()),
-                KerberosAttr::ClientName => AttrValue::VecString($event.client_name.clone()),
+                KerberosAttr::ClientName => {
+                    AttrValue::VecString(std::borrow::Cow::Borrowed(&$event.client_name))
+                }
                 KerberosAttr::Realm => AttrValue::String(&$event.realm),
                 KerberosAttr::SnameType => AttrValue::UInt($event.sname_type.into()),
-                KerberosAttr::ServiceName => AttrValue::VecString($event.service_name.clone()),
+                KerberosAttr::ServiceName => {
+                    AttrValue::VecString(std::borrow::Cow::Borrowed(&$event.service_name))
+                }
             };
             Some(target_value)
         } else {

@@ -43,8 +43,12 @@ macro_rules! find_http_attr_by_kind {
                 HttpAttr::ContentEncoding => Some(AttrValue::String(&$event.content_encoding)),
                 HttpAttr::ContentType => Some(AttrValue::String(&$event.content_type)),
                 HttpAttr::CacheControl => Some(AttrValue::String(&$event.cache_control)),
-                HttpAttr::Filenames => Some(AttrValue::VecString($event.filenames.clone())),
-                HttpAttr::MimeTypes => Some(AttrValue::VecString($event.mime_types.clone())),
+                HttpAttr::Filenames => Some(AttrValue::VecString(std::borrow::Cow::Borrowed(
+                    &$event.filenames,
+                ))),
+                HttpAttr::MimeTypes => Some(AttrValue::VecString(std::borrow::Cow::Borrowed(
+                    &$event.mime_types,
+                ))),
                 HttpAttr::Body => Some(AttrValue::VecRaw(&$event.body)),
                 HttpAttr::State => Some(AttrValue::String(&$event.state)),
             }

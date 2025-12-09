@@ -1,4 +1,5 @@
 use std::{
+    borrow::Cow,
     fmt::{self, Formatter, Write},
     net::IpAddr,
     num::NonZeroU8,
@@ -355,19 +356,19 @@ pub enum AttrValue<'a> {
     SInt(i64),
     UInt(u64),
     String(&'a str),
-    VecAddr(Vec<IpAddr>),
-    VecBool(Vec<bool>),
+    VecAddr(Cow<'a, [IpAddr]>),
+    VecBool(Cow<'a, [bool]>),
     #[allow(dead_code)]
-    VecFloat(Vec<f64>),
-    VecSInt(Vec<i64>),
-    VecUInt(Vec<u64>),
-    VecString(Vec<String>),
+    VecFloat(Cow<'a, [f64]>),
+    VecSInt(Cow<'a, [i64]>),
+    VecUInt(Cow<'a, [u64]>),
+    VecString(Cow<'a, [String]>),
     VecRaw(&'a [u8]),
 }
 
-fn is_matching_list<'a, T, F>(attr_val: &'a [T], packet_attr: &'a PacketAttr, compare_fn: F) -> bool
+fn is_matching_list<T, F>(attr_val: &[T], packet_attr: &PacketAttr, compare_fn: F) -> bool
 where
-    F: Fn(&'a T, &'a PacketAttr) -> bool,
+    F: Fn(&T, &PacketAttr) -> bool,
 {
     match packet_attr.cmp_kind {
         AttrCmpKind::NotEqual | AttrCmpKind::NotContain => {
@@ -386,24 +387,24 @@ fn is_attr_matched(target_value: AttrValue, attr: &PacketAttr) -> bool {
         AttrValue::UInt(unsigned_int_val) => matches_number_attr::<_, u64>(&unsigned_int_val, attr),
         AttrValue::String(str_val) => matches_string_attr(str_val, attr),
         AttrValue::VecAddr(vec_addr_val) => {
-            is_matching_list(&vec_addr_val, attr, matches_addr_attr)
+            is_matching_list(vec_addr_val.as_ref(), attr, matches_addr_attr)
         }
         AttrValue::VecBool(vec_bool_val) => {
-            is_matching_list(&vec_bool_val, attr, |val: &bool, attr| {
+            is_matching_list(vec_bool_val.as_ref(), attr, |val: &bool, attr| {
                 matches_bool_attr(*val, attr)
             })
         }
         AttrValue::VecFloat(vec_float_val) => {
-            is_matching_list(&vec_float_val, attr, matches_number_attr::<_, f64>)
+            is_matching_list(vec_float_val.as_ref(), attr, matches_number_attr::<_, f64>)
         }
         AttrValue::VecSInt(vec_sint_val) => {
-            is_matching_list(&vec_sint_val, attr, matches_number_attr::<_, i64>)
+            is_matching_list(vec_sint_val.as_ref(), attr, matches_number_attr::<_, i64>)
         }
         AttrValue::VecUInt(vec_uint_val) => {
-            is_matching_list(&vec_uint_val, attr, matches_number_attr::<_, u64>)
+            is_matching_list(vec_uint_val.as_ref(), attr, matches_number_attr::<_, u64>)
         }
         AttrValue::VecString(vec_str_val) => {
-            is_matching_list(&vec_str_val, attr, |val: &String, attr| {
+            is_matching_list(vec_str_val.as_ref(), attr, |val: &String, attr| {
                 matches_string_attr(val.as_str(), attr)
             })
         }
@@ -516,10 +517,10 @@ fn matches_addr_attr(attr_val: &IpAddr, packet_attr: &PacketAttr) -> bool {
     false
 }
 
-fn matches_number_attr<'de, T, K>(attr_val: &T, packet_attr: &'de PacketAttr) -> bool
+fn matches_number_attr<T, K>(attr_val: &T, packet_attr: &PacketAttr) -> bool
 where
     T: TryFrom<K> + PartialOrd,
-    K: Deserialize<'de>,
+    K: for<'de> Deserialize<'de>,
 {
     if let Some(first_val) = deserialize::<K>(&packet_attr.first_value)
         && let Ok(first_val) = T::try_from(first_val)
@@ -568,7 +569,7 @@ mod tests {
     use chrono::{TimeZone, Utc};
     use serde::Serialize;
 
-    use super::Match;
+    use super::{AttrValue, Match, is_attr_matched};
     use crate::{
         AttrCmpKind, Customer, CustomerNetwork, EventCategory, HostNetworkGroup, PacketAttr,
         ValueKind,
@@ -1415,6 +1416,69 @@ mod tests {
             score_result_not_true.partial_cmp(&0.0),
             Some(Ordering::Equal)
         );
+    }
+
+    #[test]
+    fn vec_attr_cow_matching() {
+        // Borrowed VecString should match Contain/NotContain logic without allocation.
+        let borrowed_strings = vec!["alpha".to_string(), "beta".to_string()];
+        let contain_attr = PacketAttr {
+            raw_event_kind: RawEventKind::Http,
+            attr_name: "mime_types".to_string(),
+            value_kind: ValueKind::String,
+            cmp_kind: AttrCmpKind::Contain,
+            first_value: serialize(&"beta").unwrap(),
+            second_value: None,
+            weight: None,
+        };
+        assert!(is_attr_matched(
+            AttrValue::VecString(std::borrow::Cow::Borrowed(&borrowed_strings)),
+            &contain_attr
+        ));
+
+        let not_contain_attr = PacketAttr {
+            raw_event_kind: RawEventKind::Http,
+            attr_name: "mime_types".to_string(),
+            value_kind: ValueKind::String,
+            cmp_kind: AttrCmpKind::NotContain,
+            first_value: serialize(&"gamma").unwrap(),
+            second_value: None,
+            weight: None,
+        };
+        assert!(is_attr_matched(
+            AttrValue::VecString(std::borrow::Cow::Borrowed(&borrowed_strings)),
+            &not_contain_attr
+        ));
+
+        // Owned VecUInt should match numeric comparisons.
+        let owned_ports = vec![100_u64, 200_u64];
+        let equal_attr = PacketAttr {
+            raw_event_kind: RawEventKind::Conn,
+            attr_name: "dst_port".to_string(),
+            value_kind: ValueKind::UInteger,
+            cmp_kind: AttrCmpKind::Equal,
+            first_value: serialize(&200_u64).unwrap(),
+            second_value: None,
+            weight: None,
+        };
+        assert!(is_attr_matched(
+            AttrValue::VecUInt(std::borrow::Cow::Owned(owned_ports.clone())),
+            &equal_attr
+        ));
+
+        let not_equal_attr = PacketAttr {
+            raw_event_kind: RawEventKind::Conn,
+            attr_name: "dst_port".to_string(),
+            value_kind: ValueKind::UInteger,
+            cmp_kind: AttrCmpKind::NotEqual,
+            first_value: serialize(&300_u64).unwrap(),
+            second_value: None,
+            weight: None,
+        };
+        assert!(is_attr_matched(
+            AttrValue::VecUInt(std::borrow::Cow::Owned(owned_ports)),
+            &not_equal_attr
+        ));
     }
 
     #[test]

@@ -50,7 +50,7 @@ macro_rules! find_ftp_attr_by_kind {
                     if values.is_empty() {
                         return None;
                     }
-                    AttrValue::VecString(values)
+                    AttrValue::VecString(std::borrow::Cow::Owned(values))
                 }
                 FtpAttr::ReplyCode => {
                     let values = $event
@@ -61,7 +61,7 @@ macro_rules! find_ftp_attr_by_kind {
                     if values.is_empty() {
                         return None;
                     }
-                    AttrValue::VecString(values)
+                    AttrValue::VecString(std::borrow::Cow::Owned(values))
                 }
                 FtpAttr::ReplyMsg => {
                     let values = $event
@@ -72,7 +72,7 @@ macro_rules! find_ftp_attr_by_kind {
                     if values.is_empty() {
                         return None;
                     }
-                    AttrValue::VecString(values)
+                    AttrValue::VecString(std::borrow::Cow::Owned(values))
                 }
                 FtpAttr::DataPassive => {
                     let values = $event
@@ -83,7 +83,7 @@ macro_rules! find_ftp_attr_by_kind {
                     if values.is_empty() {
                         return None;
                     }
-                    AttrValue::VecBool(values)
+                    AttrValue::VecBool(std::borrow::Cow::Owned(values))
                 }
                 FtpAttr::DataOrigAddr => {
                     let values = $event
@@ -94,7 +94,7 @@ macro_rules! find_ftp_attr_by_kind {
                     if values.is_empty() {
                         return None;
                     }
-                    AttrValue::VecAddr(values)
+                    AttrValue::VecAddr(std::borrow::Cow::Owned(values))
                 }
                 FtpAttr::DataRespAddr => {
                     let values = $event
@@ -105,7 +105,7 @@ macro_rules! find_ftp_attr_by_kind {
                     if values.is_empty() {
                         return None;
                     }
-                    AttrValue::VecAddr(values)
+                    AttrValue::VecAddr(std::borrow::Cow::Owned(values))
                 }
                 FtpAttr::DataRespPort => {
                     let values = $event
@@ -116,7 +116,7 @@ macro_rules! find_ftp_attr_by_kind {
                     if values.is_empty() {
                         return None;
                     }
-                    AttrValue::VecUInt(values)
+                    AttrValue::VecUInt(std::borrow::Cow::Owned(values))
                 }
                 FtpAttr::File => {
                     let values = $event
@@ -127,7 +127,7 @@ macro_rules! find_ftp_attr_by_kind {
                     if values.is_empty() {
                         return None;
                     }
-                    AttrValue::VecString(values)
+                    AttrValue::VecString(std::borrow::Cow::Owned(values))
                 }
                 FtpAttr::FileSize => {
                     let values = $event
@@ -138,7 +138,7 @@ macro_rules! find_ftp_attr_by_kind {
                     if values.is_empty() {
                         return None;
                     }
-                    AttrValue::VecUInt(values)
+                    AttrValue::VecUInt(std::borrow::Cow::Owned(values))
                 }
                 FtpAttr::FileId => {
                     let values = $event
@@ -149,7 +149,7 @@ macro_rules! find_ftp_attr_by_kind {
                     if values.is_empty() {
                         return None;
                     }
-                    AttrValue::VecString(values)
+                    AttrValue::VecString(std::borrow::Cow::Owned(values))
                 }
             };
             Some(target_value)
@@ -342,7 +342,9 @@ impl Match for FtpBruteForce {
                 FtpAttr::DstAddr => Some(AttrValue::Addr(self.dst_addr)),
                 FtpAttr::DstPort => Some(AttrValue::UInt(self.dst_port.into())),
                 FtpAttr::Proto => Some(AttrValue::UInt(self.proto.into())),
-                FtpAttr::User => Some(AttrValue::VecString(self.user_list.clone())),
+                FtpAttr::User => Some(AttrValue::VecString(std::borrow::Cow::Borrowed(
+                    &self.user_list,
+                ))),
                 _ => None,
             }
         } else {
