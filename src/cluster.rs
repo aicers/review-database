@@ -118,9 +118,8 @@ impl Database {
         after: &Option<(i32, i64)>,
         before: &Option<(i32, i64)>,
         is_first: bool,
-        limit: usize,
+        limit: i64,
     ) -> Result<Vec<Cluster>, Error> {
-        let limit = i64::try_from(limit).map_err(|_| Error::InvalidInput("limit".into()))? + 1;
         let mut query = dsl::cluster
             .select((
                 dsl::id,
