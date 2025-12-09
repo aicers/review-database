@@ -24,13 +24,21 @@ macro_rules! find_ldap_attr_by_kind {
                 LdapAttr::RespL2Bytes => AttrValue::UInt($event.resp_l2_bytes),
                 LdapAttr::MessageId => AttrValue::UInt($event.message_id.into()),
                 LdapAttr::Version => AttrValue::UInt($event.version.into()),
-                LdapAttr::Opcode => AttrValue::VecString($event.opcode.clone()),
-                LdapAttr::Result => AttrValue::VecString($event.result.clone()),
-                LdapAttr::DiagnosticMessage => {
-                    AttrValue::VecString($event.diagnostic_message.clone())
+                LdapAttr::Opcode => {
+                    AttrValue::VecString(std::borrow::Cow::Borrowed(&$event.opcode))
                 }
-                LdapAttr::Object => AttrValue::VecString($event.object.clone()),
-                LdapAttr::Argument => AttrValue::VecString($event.argument.clone()),
+                LdapAttr::Result => {
+                    AttrValue::VecString(std::borrow::Cow::Borrowed(&$event.result))
+                }
+                LdapAttr::DiagnosticMessage => {
+                    AttrValue::VecString(std::borrow::Cow::Borrowed(&$event.diagnostic_message))
+                }
+                LdapAttr::Object => {
+                    AttrValue::VecString(std::borrow::Cow::Borrowed(&$event.object))
+                }
+                LdapAttr::Argument => {
+                    AttrValue::VecString(std::borrow::Cow::Borrowed(&$event.argument))
+                }
             };
             Some(target_value)
         } else {

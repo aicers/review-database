@@ -26,7 +26,7 @@ macro_rules! find_dns_attr_by_kind {
                 DnsAttr::OrigL2Bytes => AttrValue::UInt($event.orig_l2_bytes),
                 DnsAttr::RespL2Bytes => AttrValue::UInt($event.resp_l2_bytes),
                 DnsAttr::Query => AttrValue::String(&$event.query),
-                DnsAttr::Answer => AttrValue::VecString($event.answer.clone()),
+                DnsAttr::Answer => AttrValue::VecString(std::borrow::Cow::Borrowed(&$event.answer)),
                 DnsAttr::TransId => AttrValue::UInt($event.trans_id.into()),
                 DnsAttr::Rtt => AttrValue::SInt($event.rtt),
                 DnsAttr::QClass => AttrValue::UInt($event.qclass.into()),
@@ -36,9 +36,9 @@ macro_rules! find_dns_attr_by_kind {
                 DnsAttr::TC => AttrValue::Bool($event.tc_flag),
                 DnsAttr::RD => AttrValue::Bool($event.rd_flag),
                 DnsAttr::RA => AttrValue::Bool($event.ra_flag),
-                DnsAttr::Ttl => {
-                    AttrValue::VecSInt($event.ttl.iter().map(|val| i64::from(*val)).collect())
-                }
+                DnsAttr::Ttl => AttrValue::VecSInt(std::borrow::Cow::Owned(
+                    $event.ttl.iter().map(|val| i64::from(*val)).collect(),
+                )),
             };
             Some(target_value)
         } else {

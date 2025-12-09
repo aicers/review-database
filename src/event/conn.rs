@@ -174,9 +174,9 @@ impl Match for PortScan {
             match attr {
                 ConnAttr::SrcAddr => Some(AttrValue::Addr(self.src_addr)),
                 ConnAttr::DstAddr => Some(AttrValue::Addr(self.dst_addr)),
-                ConnAttr::DstPort => Some(AttrValue::VecUInt(
+                ConnAttr::DstPort => Some(AttrValue::VecUInt(std::borrow::Cow::Owned(
                     self.dst_ports.iter().map(|val| u64::from(*val)).collect(),
-                )),
+                ))),
                 ConnAttr::Proto => Some(AttrValue::UInt(self.proto.into())),
                 _ => None,
             }
@@ -326,7 +326,9 @@ impl Match for MultiHostPortScan {
             match attr {
                 ConnAttr::SrcAddr => Some(AttrValue::Addr(self.src_addr)),
                 ConnAttr::DstPort => Some(AttrValue::UInt(self.dst_port.into())),
-                ConnAttr::DstAddr => Some(AttrValue::VecAddr(self.dst_addrs.clone())),
+                ConnAttr::DstAddr => Some(AttrValue::VecAddr(std::borrow::Cow::Borrowed(
+                    &self.dst_addrs,
+                ))),
                 ConnAttr::Proto => Some(AttrValue::UInt(self.proto.into())),
                 _ => None,
             }
@@ -469,7 +471,9 @@ impl Match for ExternalDdos {
     fn find_attr_by_kind(&self, raw_event_attr: RawEventAttrKind) -> Option<AttrValue<'_>> {
         if let RawEventAttrKind::Conn(attr) = raw_event_attr {
             match attr {
-                ConnAttr::SrcAddr => Some(AttrValue::VecAddr(self.src_addrs.clone())),
+                ConnAttr::SrcAddr => Some(AttrValue::VecAddr(std::borrow::Cow::Borrowed(
+                    &self.src_addrs,
+                ))),
                 ConnAttr::DstAddr => Some(AttrValue::Addr(self.dst_addr)),
                 ConnAttr::Proto => Some(AttrValue::UInt(self.proto.into())),
                 _ => None,

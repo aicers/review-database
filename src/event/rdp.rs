@@ -168,7 +168,9 @@ impl Match for RdpBruteForce {
         if let RawEventAttrKind::Rdp(attr) = raw_event_attr {
             match attr {
                 RdpAttr::SrcAddr => Some(AttrValue::Addr(self.src_addr)),
-                RdpAttr::DstAddr => Some(AttrValue::VecAddr(self.dst_addrs.clone())),
+                RdpAttr::DstAddr => Some(AttrValue::VecAddr(std::borrow::Cow::Borrowed(
+                    &self.dst_addrs,
+                ))),
                 RdpAttr::Proto => Some(AttrValue::UInt(self.proto.into())),
                 _ => None,
             }

@@ -25,28 +25,28 @@ macro_rules! find_tls_attr_by_kind {
                 TlsAttr::AlpnProtocol => AttrValue::String(&$event.server_name),
                 TlsAttr::Ja3 => AttrValue::String(&$event.ja3),
                 TlsAttr::Version => AttrValue::String(&$event.version),
-                TlsAttr::ClientCipherSuites => AttrValue::VecUInt(
+                TlsAttr::ClientCipherSuites => AttrValue::VecUInt(std::borrow::Cow::Owned(
                     $event
                         .client_cipher_suites
                         .iter()
                         .map(|val| u64::from(*val))
                         .collect(),
-                ),
-                TlsAttr::ClientExtensions => AttrValue::VecUInt(
+                )),
+                TlsAttr::ClientExtensions => AttrValue::VecUInt(std::borrow::Cow::Owned(
                     $event
                         .client_extensions
                         .iter()
                         .map(|val| u64::from(*val))
                         .collect(),
-                ),
+                )),
                 TlsAttr::Cipher => AttrValue::UInt($event.cipher.into()),
-                TlsAttr::Extensions => AttrValue::VecUInt(
+                TlsAttr::Extensions => AttrValue::VecUInt(std::borrow::Cow::Owned(
                     $event
                         .extensions
                         .iter()
                         .map(|val| u64::from(*val))
                         .collect(),
-                ),
+                )),
                 TlsAttr::Ja3s => AttrValue::String(&$event.ja3s),
                 TlsAttr::Serial => AttrValue::String(&$event.serial),
                 TlsAttr::SubjectCountry => AttrValue::String(&$event.subject_country),

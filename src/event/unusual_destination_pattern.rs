@@ -154,7 +154,9 @@ impl Match for UnusualDestinationPattern {
         if let RawEventAttrKind::Conn(attr) = raw_event_attr
             && attr == ConnAttr::DstAddr
         {
-            Some(AttrValue::VecAddr(self.destination_ips.clone()))
+            Some(AttrValue::VecAddr(std::borrow::Cow::Borrowed(
+                &self.destination_ips,
+            )))
         } else {
             None
         }
