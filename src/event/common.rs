@@ -561,7 +561,9 @@ mod tests {
         net::{IpAddr, Ipv4Addr},
     };
 
-    use attrievent::attribute::{DhcpAttr, DnsAttr, FtpAttr, HttpAttr, RawEventKind};
+    use attrievent::attribute::{
+        ConnAttr, DhcpAttr, DnsAttr, FtpAttr, HttpAttr, RadiusAttr, RawEventKind,
+    };
     use bincode::Options;
     use chrono::{TimeZone, Utc};
     use serde::Serialize;
@@ -574,9 +576,10 @@ mod tests {
             BlocklistBootp, BlocklistBootpFields, BlocklistConn, BlocklistConnFields,
             BlocklistDceRpc, BlocklistDceRpcFields, BlocklistDhcp, BlocklistDhcpFields,
             BlocklistDns, BlocklistDnsFields, BlocklistFtp, BlocklistHttp, BlocklistHttpFields,
-            BlocklistKerberos, BlocklistKerberosFields, BlocklistLdap, BlocklistMqtt,
-            BlocklistMqttFields, BlocklistNfs, BlocklistNfsFields, BlocklistNtlm,
-            BlocklistNtlmFields, BlocklistRdp, BlocklistRdpFields, BlocklistSmb,
+            BlocklistKerberos, BlocklistKerberosFields, BlocklistLdap, BlocklistMalformedDns,
+            BlocklistMalformedDnsFields, BlocklistMqtt, BlocklistMqttFields, BlocklistNfs,
+            BlocklistNfsFields, BlocklistNtlm, BlocklistNtlmFields, BlocklistRadius,
+            BlocklistRadiusFields, BlocklistRdp, BlocklistRdpFields, BlocklistSmb,
             BlocklistSmbFields, BlocklistSmtp, BlocklistSmtpFields, BlocklistSsh,
             BlocklistSshFields, BlocklistTls, BlocklistTlsFields, CryptocurrencyMiningPool,
             CryptocurrencyMiningPoolFields, DgaFields, DnsCovertChannel, DnsEventFields,
@@ -587,7 +590,7 @@ mod tests {
             MultiHostPortScan, MultiHostPortScanFields, NetworkThreat, NetworkType, NonBrowser,
             PortScan, PortScanFields, RdpBruteForce, RdpBruteForceFields, RecordType,
             RepeatedHttpSessions, RepeatedHttpSessionsFields, SuspiciousTlsTraffic, TorConnection,
-            WindowsThreat,
+            UnusualDestinationPattern, UnusualDestinationPatternFields, WindowsThreat,
         },
         types::Endpoint,
     };
@@ -1410,6 +1413,66 @@ mod tests {
             ftp_passive_event.score_by_attr(&fail_packet_attr_vec_bool_not_true);
         assert_eq!(
             score_result_not_true.partial_cmp(&0.0),
+            Some(Ordering::Equal)
+        );
+    }
+
+    #[test]
+    fn compare_attribute_new_protocols() {
+        let time = Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap();
+
+        // 1. Radius
+        let radius_event = BlocklistRadius::new(time, blocklist_radius_fields());
+        let radius_attr = vec![PacketAttr {
+            raw_event_kind: RawEventKind::Radius,
+            attr_name: RadiusAttr::NasIp.to_string(),
+            value_kind: ValueKind::IpAddr,
+            cmp_kind: AttrCmpKind::Equal,
+            first_value: serialize(&IpAddr::V4(Ipv4Addr::LOCALHOST)).unwrap(),
+            second_value: None,
+            weight: Some(1.0),
+        }];
+        assert_eq!(
+            radius_event.score_by_attr(&radius_attr).partial_cmp(&1.0),
+            Some(Ordering::Equal)
+        );
+
+        // 2. Malformed DNS
+        let malformed_dns_event =
+            BlocklistMalformedDns::new(time, blocklist_malformed_dns_fields());
+        let dns_attr = vec![PacketAttr {
+            raw_event_kind: RawEventKind::Dns,
+            attr_name: DnsAttr::TransId.to_string(),
+            value_kind: ValueKind::UInteger,
+            cmp_kind: AttrCmpKind::Equal,
+            first_value: serialize(&12345_u64).unwrap(),
+            second_value: None,
+            weight: Some(1.0),
+        }];
+        assert_eq!(
+            malformed_dns_event
+                .score_by_attr(&dns_attr)
+                .partial_cmp(&1.0),
+            Some(Ordering::Equal)
+        );
+
+        // 3. Unusual Destination Pattern (Uses ConnAttr::DstAddr)
+        let unusual_dest_event =
+            UnusualDestinationPattern::new(time, unusual_destination_pattern_fields());
+        // UnusualDestinationPattern maps ConnAttr::DstAddr to its destination_ips vector
+        let conn_attr = vec![PacketAttr {
+            raw_event_kind: RawEventKind::Conn,
+            attr_name: ConnAttr::DstAddr.to_string(),
+            value_kind: ValueKind::IpAddr,
+            cmp_kind: AttrCmpKind::Equal, // Check if vector contains this IP
+            first_value: serialize(&IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1))).unwrap(),
+            second_value: None,
+            weight: Some(1.0),
+        }];
+        assert_eq!(
+            unusual_dest_event
+                .score_by_attr(&conn_attr)
+                .partial_cmp(&1.0),
             Some(Ordering::Equal)
         );
     }
@@ -2467,6 +2530,100 @@ mod tests {
             attack_kind: "attack".to_string(),
             confidence: 0.8,
             category: Some(EventCategory::Reconnaissance),
+        }
+    }
+    fn blocklist_radius_fields() -> BlocklistRadiusFields {
+        BlocklistRadiusFields {
+            sensor: "sensor".to_string(),
+            src_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
+            src_port: 10000,
+            dst_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
+            dst_port: 1812,
+            proto: 17,
+            start_time: Utc
+                .with_ymd_and_hms(1970, 1, 1, 0, 0, 0)
+                .unwrap()
+                .timestamp_nanos_opt()
+                .unwrap(),
+            duration: 0,
+            orig_pkts: 0,
+            resp_pkts: 0,
+            orig_l2_bytes: 0,
+            resp_l2_bytes: 0,
+            id: 1,
+            code: 1,
+            resp_code: 2,
+            auth: "auth".to_string(),
+            resp_auth: "resp_auth".to_string(),
+            user_name: vec![],
+            user_passwd: vec![],
+            chap_passwd: vec![],
+            nas_ip: IpAddr::V4(Ipv4Addr::LOCALHOST),
+            nas_port: 0,
+            state: vec![],
+            nas_id: vec![],
+            nas_port_type: 0,
+            message: "msg".to_string(),
+            confidence: 1.0,
+            category: Some(EventCategory::InitialAccess),
+        }
+    }
+
+    fn blocklist_malformed_dns_fields() -> BlocklistMalformedDnsFields {
+        BlocklistMalformedDnsFields {
+            sensor: "sensor".to_string(),
+            orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
+            orig_port: 10000,
+            resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
+            resp_port: 53,
+            proto: 17,
+            start_time: Utc
+                .with_ymd_and_hms(1970, 1, 1, 0, 0, 0)
+                .unwrap()
+                .timestamp_nanos_opt()
+                .unwrap(),
+            duration: 0,
+            orig_pkts: 0,
+            resp_pkts: 0,
+            orig_l2_bytes: 0,
+            resp_l2_bytes: 0,
+            trans_id: 12345,
+            flags: 0,
+            question_count: 0,
+            answer_count: 0,
+            authority_count: 0,
+            additional_count: 0,
+            query_count: 0,
+            resp_count: 0,
+            query_bytes: 0,
+            resp_bytes: 0,
+            query_body: vec![],
+            resp_body: vec![],
+            confidence: 1.0,
+            category: Some(EventCategory::InitialAccess),
+        }
+    }
+
+    fn unusual_destination_pattern_fields() -> UnusualDestinationPatternFields {
+        UnusualDestinationPatternFields {
+            sensor: "sensor".to_string(),
+            start_time: Utc
+                .with_ymd_and_hms(1970, 1, 1, 0, 0, 0)
+                .unwrap()
+                .timestamp_nanos_opt()
+                .unwrap(),
+            end_time: Utc
+                .with_ymd_and_hms(1970, 1, 1, 0, 0, 0)
+                .unwrap()
+                .timestamp_nanos_opt()
+                .unwrap(),
+            destination_ips: vec![IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1))],
+            count: 1,
+            expected_mean: 0.0,
+            std_deviation: 0.0,
+            z_score: 0.0,
+            confidence: 1.0,
+            category: Some(EventCategory::InitialAccess),
         }
     }
 }
