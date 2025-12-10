@@ -468,6 +468,7 @@ pub trait Indexed {
     /// # Errors
     ///
     /// Returns an error if the key doesn't exist.
+    #[allow(dead_code)]
     fn overwrite<T: Indexable>(&self, entry: &T) -> Result<()> {
         loop {
             let txn = self.db().transaction();

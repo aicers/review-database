@@ -92,11 +92,22 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   This composite key allows multiple customers to have policies with the same
   name. The key format is 4 bytes of `customer_id` (big-endian, using `u32::MAX`
   for `None`) followed by the name bytes.
+- **BREAKING**: Removed `customer_ids` field from `Network` struct. Networks are
+  now globally shared and managed by administrators, rather than being tied to
+  specific customers. The database key for networks is now based solely on the
+  name (enforcing global uniqueness) instead of name + id. The `id` is now
+  stored in the value. A migration automatically deduplicates networks by name,
+  keeping only the entry with the smallest id.
+- **BREAKING**: Updated `Network::new` to no longer accept a `customer_ids`
+  parameter.
+- **BREAKING**: Updated `NetworkUpdate::new` to no longer accept a `customer_ids`
+  parameter.
 
 ### Removed
 
 - The deprecated function, `Store::account_policy_map`, has been removed; use
   `Store::config_map` instead.
+- **BREAKING**: Removed `IndexedTable<Network>::remove_customer` method.
 
 ## [0.42.0] - 2025-11-20
 

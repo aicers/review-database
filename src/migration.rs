@@ -99,7 +99,7 @@ use crate::{
 /// // release that involves database format change) to 3.5.0, including
 /// // all alpha changes finalized in 3.5.0.
 /// ```
-const COMPATIBLE_VERSION_REQ: &str = ">=0.43.0-alpha.3,<0.43.0-alpha.4";
+const COMPATIBLE_VERSION_REQ: &str = ">=0.44.0-alpha.1,<0.44.0-alpha.2";
 
 /// Migrates the data directory to the up-to-date format if necessary.
 ///
@@ -146,11 +146,18 @@ pub fn migrate_data_dir<P: AsRef<Path>>(data_dir: P, backup_dir: P) -> Result<()
     //   to "to version". The function name should be in the form of "migrate_A_to_B" where A is
     //   the first version (major.minor) in the "version requirement" and B is the "to version"
     //   (major.minor). (NOTE: Once we release 1.0.0, A and B will contain the major version only.)
-    let migration: Vec<Migration> = vec![(
-        VersionReq::parse(">=0.42.0,<0.43.0-alpha.3")?,
-        Version::parse("0.43.0-alpha.3")?,
-        migrate_0_42_to_0_43,
-    )];
+    let migration: Vec<Migration> = vec![
+        (
+            VersionReq::parse(">=0.42.0,<0.43.0-alpha.3")?,
+            Version::parse("0.43.0-alpha.3")?,
+            migrate_0_42_to_0_43,
+        ),
+        (
+            VersionReq::parse(">=0.43.0-alpha.3,<0.44.0-alpha.1")?,
+            Version::parse("0.44.0-alpha.1")?,
+            migrate_0_43_to_0_44,
+        ),
+    ];
 
     while let Some((_req, to, m)) = migration
         .iter()
@@ -458,6 +465,213 @@ fn migrate_customer_specific_networks(db_path: &Path) -> Result<()> {
     // Commits the transaction once after all operations are done.
     txn.commit().context("failed to commit migration")?;
     info!("Successfully migrated AllowNetwork and BlockNetwork");
+    Ok(())
+}
+
+/// Migrates the Network table from 0.43 to 0.44.
+///
+/// This migration:
+/// 1. Reads all existing Network entries (old format: key = name + id, value without id)
+/// 2. Deduplicates by name, keeping only the entry with the smallest id
+/// 3. Clears the network column family
+/// 4. Re-inserts networks with new format: key = name only, value contains id (no `customer_ids`)
+fn migrate_0_43_to_0_44(data_dir: &Path) -> Result<()> {
+    use crate::tables::MAP_NAMES;
+
+    let db_path = data_dir.join("states.db");
+
+    info!("Migrating Network table to enforce global name uniqueness");
+
+    let mut opts = rocksdb::Options::default();
+    opts.create_if_missing(false);
+    opts.create_missing_column_families(false);
+
+    migrate_network_cf(&db_path, &opts, &MAP_NAMES)?;
+
+    info!("Successfully migrated Network table");
+    Ok(())
+}
+
+/// Migrates the network column family in a single database.
+#[allow(clippy::items_after_statements)]
+fn migrate_network_cf(db_path: &Path, opts: &rocksdb::Options, cf_names: &[&str]) -> Result<()> {
+    use std::collections::HashMap;
+    use std::mem::size_of;
+
+    use bincode::Options;
+    use serde::{Deserialize, Serialize};
+
+    use self::migration_structures::NetworkValueV0_43;
+
+    // New value format: id + description + networks + tag_ids + creation_time (no customer_ids)
+    #[derive(Serialize)]
+    struct NewNetworkValue {
+        id: u32,
+        description: String,
+        networks: crate::types::HostNetworkGroup,
+        tag_ids: Vec<u32>,
+        creation_time: chrono::DateTime<chrono::Utc>,
+    }
+
+    // Build a new index using the same structure as KeyIndex
+    // KeyIndex is a Vec<KeyIndexEntry> + available: u32 + inactive: Option<u32>
+    #[derive(Deserialize, Serialize)]
+    enum KeyIndexEntry {
+        Key(Vec<u8>),
+        Index(u32),
+        Inactive(Option<u32>),
+    }
+
+    #[derive(Default, Deserialize, Serialize)]
+    struct KeyIndex {
+        keys: Vec<KeyIndexEntry>,
+        available: u32,
+        inactive: Option<u32>,
+    }
+
+    let db: rocksdb::OptimisticTransactionDB<rocksdb::SingleThreaded> =
+        rocksdb::OptimisticTransactionDB::open_cf(opts, db_path, cf_names)
+            .context("Failed to open database for network migration")?;
+
+    let cf = db
+        .cf_handle("networks")
+        .ok_or_else(|| anyhow!("networks column family not found"))?;
+
+    // Step 1: Read all existing entries and collect by name
+    // Old key format: name bytes + id (4 bytes big-endian)
+    // Old value format: NetworkValueV0_43 (without id, with customer_ids)
+    let mut networks_by_name: HashMap<String, (u32, NetworkValueV0_43)> = HashMap::new();
+    let mut duplicate_count = 0usize;
+
+    let iter = db.iterator_cf(cf, rocksdb::IteratorMode::Start);
+    for item in iter {
+        let (key, value) = item.context("Failed to read network entry")?;
+
+        // Skip the index entry (empty key)
+        if key.is_empty() {
+            continue;
+        }
+
+        // Parse old key format: name + id (4 bytes)
+        if key.len() < size_of::<u32>() {
+            info!("Skipping malformed network key (too short)");
+            continue;
+        }
+
+        let (name_bytes, id_bytes) = key.split_at(key.len() - size_of::<u32>());
+        let name = match std::str::from_utf8(name_bytes) {
+            Ok(n) => n.to_owned(),
+            Err(e) => {
+                info!("Skipping network with invalid UTF-8 name: {e}");
+                continue;
+            }
+        };
+
+        let mut buf = [0u8; size_of::<u32>()];
+        buf.copy_from_slice(id_bytes);
+        let id = u32::from_be_bytes(buf);
+
+        let old_value: NetworkValueV0_43 = bincode::DefaultOptions::new()
+            .deserialize(&value)
+            .context("Failed to deserialize old network value")?;
+
+        // Keep entry with smallest id for each name
+        match networks_by_name.get(&name) {
+            Some((existing_id, _)) if *existing_id <= id => {
+                duplicate_count += 1;
+                info!(
+                    "Discarding duplicate network '{}' with id {} (keeping id {})",
+                    name, id, existing_id
+                );
+            }
+            Some((existing_id, _)) => {
+                duplicate_count += 1;
+                info!(
+                    "Replacing network '{}' id {} with smaller id {}",
+                    name, existing_id, id
+                );
+                networks_by_name.insert(name, (id, old_value));
+            }
+            None => {
+                networks_by_name.insert(name, (id, old_value));
+            }
+        }
+    }
+
+    info!(
+        "Found {} unique networks, discarded {} duplicates",
+        networks_by_name.len(),
+        duplicate_count
+    );
+
+    // Step 2: Clear the network column family
+    // We need to delete all keys
+    let txn = db.transaction();
+    let iter = db.iterator_cf(cf, rocksdb::IteratorMode::Start);
+    for item in iter {
+        let (key, _) = item.context("Failed to read key for deletion")?;
+        txn.delete_cf(cf, &key)
+            .context("Failed to delete old network entry")?;
+    }
+    txn.commit()
+        .context("Failed to commit deletion transaction")?;
+
+    // Step 3: Re-insert with new format
+    // New key format: name bytes only (for global uniqueness)
+
+    // Sort entries by id to maintain proper index order
+    let mut entries: Vec<_> = networks_by_name.into_iter().collect();
+    entries.sort_by_key(|(_, (id, _))| *id);
+
+    let mut key_index = KeyIndex::default();
+
+    let txn = db.transaction();
+    for (name, (id, old_value)) in &entries {
+        let new_value = NewNetworkValue {
+            id: *id,
+            description: old_value.description.clone(),
+            networks: old_value.networks.clone(),
+            tag_ids: old_value.tag_ids.clone(),
+            creation_time: old_value.creation_time,
+        };
+
+        let value_bytes = bincode::DefaultOptions::new()
+            .serialize(&new_value)
+            .context("Failed to serialize new network value")?;
+
+        // New key is just the name
+        let key = name.as_bytes();
+
+        txn.put_cf(cf, key, value_bytes)
+            .context("Failed to insert migrated network")?;
+
+        // Add to index - the index position corresponds to the id
+        // We need to fill in gaps if ids are not contiguous
+        while key_index.keys.len() < *id as usize {
+            key_index
+                .keys
+                .push(KeyIndexEntry::Index(key_index.available));
+            key_index.available =
+                u32::try_from(key_index.keys.len() - 1).context("Too many index entries")?;
+        }
+        key_index.keys.push(KeyIndexEntry::Key(key.to_vec()));
+    }
+
+    // Update available to point past the last entry
+    key_index.available = u32::try_from(key_index.keys.len()).context("Too many index entries")?;
+
+    // Store the index
+    let index_bytes = bincode::DefaultOptions::new()
+        .serialize(&key_index)
+        .context("Failed to serialize key index")?;
+    txn.put_cf(cf, [], index_bytes)
+        .context("Failed to store key index")?;
+
+    txn.commit()
+        .context("Failed to commit migration transaction")?;
+
+    drop(db);
+
     Ok(())
 }
 
