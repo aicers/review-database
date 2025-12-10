@@ -69,6 +69,15 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   `VecAddr`, `VecBool`, `VecFloat`, `VecSInt`, `VecUInt`, and `VecString` can
   borrow existing slices and only allocate when new data must be built (e.g.,
   FTP command aggregation).
+- **BREAKING**: `AllowNetwork` and `BlockNetwork` now include a `customer_id`
+  field to support customer-specific blocklist and allowlist management.
+  The database storage key has changed from `name` to `customer_id + name`,
+  allowing multiple customers to have entries with the same name.
+  Existing global entries are automatically migrated by creating a new
+  customer-specific copy for each existing customer in the database.
+- **BREAKING**: `AllowNetworkUpdate` and `BlockNetworkUpdate` now include a
+  `customer_id` field. Both `customer_id` and `name` must be provided when
+  updating to change the key.
 - Migrations from versions earlier than 0.42.0 are no longer supported.
 - **BREAKING**: Renamed the `TriageExclusionReason` enum to `ExclusionReason`.
 - **BREAKING**: Changed `TriagePolicy::ti_db` to `triage_exclusion_id: Vec<u32>`
