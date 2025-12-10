@@ -93,7 +93,7 @@ use tracing::info;
 /// // release that involves database format change) to 3.5.0, including
 /// // all alpha changes finalized in 3.5.0.
 /// ```
-const COMPATIBLE_VERSION_REQ: &str = ">=0.43.0-alpha.1,<0.43.0-alpha.2";
+const COMPATIBLE_VERSION_REQ: &str = ">=0.43.0-alpha.2,<0.43.0-alpha.3";
 
 /// Migrates the data directory to the up-to-date format if necessary.
 ///
@@ -106,7 +106,7 @@ const COMPATIBLE_VERSION_REQ: &str = ">=0.43.0-alpha.1,<0.43.0-alpha.2";
 /// or if the data directory exists but is in the format incompatible with the
 /// current version.
 pub fn migrate_data_dir<P: AsRef<Path>>(data_dir: P, backup_dir: P) -> Result<()> {
-    type Migration = (VersionReq, Version, fn(&Path, &Path) -> anyhow::Result<()>);
+    type Migration = (VersionReq, Version, fn(&Path) -> anyhow::Result<()>);
 
     let data_dir = data_dir.as_ref();
     let backup_dir = backup_dir.as_ref();
@@ -141,8 +141,8 @@ pub fn migrate_data_dir<P: AsRef<Path>>(data_dir: P, backup_dir: P) -> Result<()
     //   the first version (major.minor) in the "version requirement" and B is the "to version"
     //   (major.minor). (NOTE: Once we release 1.0.0, A and B will contain the major version only.)
     let migration: Vec<Migration> = vec![(
-        VersionReq::parse(">=0.42.0-alpha.5,<0.43.0-alpha.1")?,
-        Version::parse("0.43.0-alpha.1")?,
+        VersionReq::parse(">=0.42.0,<0.43.0-alpha.2")?,
+        Version::parse("0.43.0-alpha.2")?,
         migrate_0_42_to_0_43,
     )];
 
@@ -151,7 +151,7 @@ pub fn migrate_data_dir<P: AsRef<Path>>(data_dir: P, backup_dir: P) -> Result<()
         .find(|(req, _to, _m)| req.matches(&version))
     {
         info!("Migrating database to {to}");
-        m(data_dir, backup_dir)?;
+        m(data_dir)?;
         version = to.clone();
         if compatible.matches(&version) {
             create_version_file(&backup).context("failed to update VERSION")?;
@@ -202,41 +202,113 @@ const MAP_NAMES_V0_42: [&str; 36] = [
     "trusted user agents",
 ];
 
-fn migrate_0_42_to_0_43(data_dir: &Path, backup_dir: &Path) -> Result<()> {
-    // Open the database with the old column family list (including "account policy")
+/// Returns column family names from 0.42 without "account policy".
+fn map_names_v0_42_without_account_policy() -> Vec<&'static str> {
+    MAP_NAMES_V0_42
+        .iter()
+        .copied()
+        .filter(|name| *name != "account policy")
+        .collect()
+}
+
+fn migrate_0_42_to_0_43(data_dir: &Path) -> Result<()> {
     let db_path = data_dir.join("states.db");
-    let backup_path = backup_dir.join("states.db");
 
-    info!("Opening database with legacy column families to drop 'account policy'");
+    // Step 1: Drop "account policy" column family if it exists (from 0.42)
+    migrate_drop_account_policy(&db_path)?;
 
-    // Open the database with the old column family names
+    // Step 2: Rename "TI database" to "label database"
+    migrate_rename_tidb_to_label_db(&db_path)?;
+
+    Ok(())
+}
+
+/// Drops the "account policy" column family from the main database only.
+///
+/// This function handles both the case where the column family exists (0.42.x)
+/// and where it has already been dropped (0.43.0-alpha.1).
+fn migrate_drop_account_policy(db_path: &Path) -> Result<()> {
     let mut opts = rocksdb::Options::default();
     opts.create_if_missing(false);
     opts.create_missing_column_families(false);
 
-    let db = rocksdb::OptimisticTransactionDB::open_cf(&opts, &db_path, MAP_NAMES_V0_42)
-        .context("Failed to open database with legacy column families")?;
+    // Try to open with MAP_NAMES_V0_42 (which includes "account policy")
+    if let Ok(db) = rocksdb::OptimisticTransactionDB::open_cf(&opts, db_path, MAP_NAMES_V0_42) {
+        info!("Dropping 'account policy' column family");
+        db.drop_cf("account policy")
+            .context("Failed to drop 'account policy' column family")?;
+        drop(db);
+    }
+    // If the database doesn't have "account policy", it's already been dropped
 
-    // Drop the "account policy" column family
-    info!("Dropping 'account policy' column family");
-    db.drop_cf("account policy")
-        .context("Failed to drop 'account policy' column family")?;
+    Ok(())
+}
 
-    // Close the database by dropping it
+/// Renames the "TI database" column family to "label database" in the main database only
+fn migrate_rename_tidb_to_label_db(db_path: &Path) -> Result<()> {
+    let mut opts = rocksdb::Options::default();
+    opts.create_if_missing(false);
+    opts.create_missing_column_families(false);
+
+    // Process main database (without "account policy" which was already dropped)
+    let cf_names = map_names_v0_42_without_account_policy();
+
+    // First, read all data from "TI database" into memory
+    let data = {
+        let db: rocksdb::OptimisticTransactionDB<rocksdb::SingleThreaded> =
+            rocksdb::OptimisticTransactionDB::open_cf(&opts, db_path, &cf_names)
+                .context("Failed to open database for TI database read")?;
+
+        // Check if "TI database" column family exists
+        let Some(old_cf) = db.cf_handle("TI database") else {
+            // Column family already renamed or doesn't exist
+            return Ok(());
+        };
+
+        info!("Reading data from 'TI database' column family");
+
+        // Collect all key-value pairs
+        let iter = db.iterator_cf(old_cf, rocksdb::IteratorMode::Start);
+        let data: Vec<(Vec<u8>, Vec<u8>)> = iter
+            .map(|item| {
+                let (key, value) = item.expect("Failed to iterate 'TI database'");
+                (key.to_vec(), value.to_vec())
+            })
+            .collect();
+
+        data
+    };
+    // db is dropped here
+
+    // Now reopen, create new CF, write data, and drop old CF
+    let mut db: rocksdb::OptimisticTransactionDB<rocksdb::SingleThreaded> =
+        rocksdb::OptimisticTransactionDB::open_cf(&opts, db_path, &cf_names)
+            .context("Failed to reopen database for TI database rename")?;
+
+    info!("Renaming 'TI database' column family to 'label database'");
+
+    // Create the new "label database" column family
+    let cf_opts = rocksdb::Options::default();
+    db.create_cf("label database", &cf_opts)
+        .context("Failed to create 'label database' column family")?;
+
+    let new_cf = db
+        .cf_handle("label database")
+        .context("Failed to get 'label database' column family handle")?;
+
+    // Write all data to "label database"
+    for (key, value) in &data {
+        db.put_cf(new_cf, key, value)
+            .context("Failed to copy data to 'label database'")?;
+    }
+
+    // Drop the old "TI database" column family
+    db.drop_cf("TI database")
+        .context("Failed to drop 'TI database' column family")?;
+
     drop(db);
 
-    // Also drop from backup database
-    let backup_db = rocksdb::OptimisticTransactionDB::open_cf(&opts, &backup_path, MAP_NAMES_V0_42)
-        .context("Failed to open backup database with legacy column families")?;
-
-    info!("Dropping 'account policy' column family from backup");
-    backup_db
-        .drop_cf("account policy")
-        .context("Failed to drop 'account policy' column family from backup")?;
-
-    drop(backup_db);
-
-    info!("Successfully removed 'account policy' column family");
+    info!("Successfully renamed 'TI database' to 'label database'");
     Ok(())
 }
 
@@ -375,81 +447,51 @@ mod tests {
     }
 
     #[test]
-    fn migrate_0_42_to_0_43_drops_account_policy() {
-        use std::fs;
-        use std::io::Write;
-
+    fn migrate_0_42_to_0_43_drops_account_policy_and_renames_tidb() {
         // Create test directories
         let db_dir = tempfile::tempdir().unwrap();
-        let backup_dir = tempfile::tempdir().unwrap();
-
         let db_path = db_dir.path().join("states.db");
-        let backup_path = backup_dir.path().join("states.db");
 
         // Create a database with the old column family list (including "account policy")
         let mut opts = rocksdb::Options::default();
         opts.create_if_missing(true);
         opts.create_missing_column_families(true);
 
+        // Create database with V0_42 schema and add test data to "TI database"
         let db: rocksdb::OptimisticTransactionDB =
             rocksdb::OptimisticTransactionDB::open_cf(&opts, &db_path, super::MAP_NAMES_V0_42)
                 .unwrap();
+
+        // Add test data to "TI database" column family
+        let ti_cf = db.cf_handle("TI database").unwrap();
+        db.put_cf(ti_cf, b"test_key_1", b"test_value_1").unwrap();
+        db.put_cf(ti_cf, b"test_key_2", b"test_value_2").unwrap();
         drop(db);
-
-        let backup_db: rocksdb::OptimisticTransactionDB =
-            rocksdb::OptimisticTransactionDB::open_cf(&opts, &backup_path, super::MAP_NAMES_V0_42)
-                .unwrap();
-        drop(backup_db);
-
-        // Create VERSION files with 0.42.0-alpha.5
-        let mut version_file = fs::File::create(db_dir.path().join("VERSION")).unwrap();
-        version_file.write_all(b"0.42.0-alpha.5").unwrap();
-        drop(version_file);
-
-        let mut backup_version_file = fs::File::create(backup_dir.path().join("VERSION")).unwrap();
-        backup_version_file.write_all(b"0.42.0-alpha.5").unwrap();
-        drop(backup_version_file);
 
         // Run the migration
-        super::migrate_0_42_to_0_43(db_dir.path(), backup_dir.path()).unwrap();
+        super::migrate_0_42_to_0_43(db_dir.path()).unwrap();
 
-        // Verify the column family has been dropped by opening with the new list
+        // Verify the column family has been dropped and renamed by opening with new list
         let db: rocksdb::OptimisticTransactionDB =
             rocksdb::OptimisticTransactionDB::open_cf(&opts, &db_path, crate::tables::MAP_NAMES)
                 .unwrap();
 
-        // Try to access "account policy" - should fail since it was dropped
+        // Verify "account policy" is dropped
         assert!(db.cf_handle("account policy").is_none());
 
-        // Close and reopen to ensure it still works
+        // Verify "TI database" is dropped
+        assert!(db.cf_handle("TI database").is_none());
+
+        // Verify "label database" exists and contains the migrated data
+        let label_cf = db.cf_handle("label database").unwrap();
+        assert_eq!(
+            db.get_cf(label_cf, b"test_key_1").unwrap().as_deref(),
+            Some(b"test_value_1".as_slice())
+        );
+        assert_eq!(
+            db.get_cf(label_cf, b"test_key_2").unwrap().as_deref(),
+            Some(b"test_value_2".as_slice())
+        );
         drop(db);
-
-        let db: rocksdb::OptimisticTransactionDB =
-            rocksdb::OptimisticTransactionDB::open_cf(&opts, &db_path, crate::tables::MAP_NAMES)
-                .unwrap();
-        assert!(db.cf_handle("account policy").is_none());
-        drop(db);
-
-        // Verify backup database too
-        let backup_db: rocksdb::OptimisticTransactionDB =
-            rocksdb::OptimisticTransactionDB::open_cf(
-                &opts,
-                &backup_path,
-                crate::tables::MAP_NAMES,
-            )
-            .unwrap();
-        assert!(backup_db.cf_handle("account policy").is_none());
-
-        // Close and reopen backup database to ensure it still works
-        drop(backup_db);
-
-        let backup_db: rocksdb::OptimisticTransactionDB =
-            rocksdb::OptimisticTransactionDB::open_cf(
-                &opts,
-                &backup_path,
-                crate::tables::MAP_NAMES,
-            )
-            .unwrap();
-        assert!(backup_db.cf_handle("account policy").is_none());
     }
 }
