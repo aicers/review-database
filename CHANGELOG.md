@@ -64,11 +64,11 @@ Versioning](https://semver.org/spec/v2.0.0.html).
     command's fields were considered for comparison; now, relevant fields (e.g.,
     `command`, `reply_code`, `reply_msg`, `data_passive`, `data_orig_addr`,
     `data_resp_addr`, `data_resp_port`, `file`, `file_size`, `file_id`) are
-    aggregated into vectors for comprehensive comparison. This change
-    necessitated updating `AttrValue` enum variants `VecString` and `VecAddr` to
-    own their respective `Vec<String>` and `Vec<IpAddr>` data, and the addition
-    of a new `AttrValue::VecBool(Vec<bool>)` variant for vector-based boolean
-    attribute comparisons.
+    aggregated into vectors for comprehensive comparison.
+- `AttrValue` vector variants now use `Cow` to avoid cloning on lookups:
+  `VecAddr`, `VecBool`, `VecFloat`, `VecSInt`, `VecUInt`, and `VecString` can
+  borrow existing slices and only allocate when new data must be built (e.g.,
+  FTP command aggregation).
 - Migrations from versions earlier than 0.42.0 are no longer supported.
 - **BREAKING**: Renamed the `TriageExclusionReason` enum to `ExclusionReason`.
 - **BREAKING**: Changed `TriagePolicy::ti_db` to `triage_exclusion_id: Vec<u32>`
