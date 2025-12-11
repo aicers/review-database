@@ -7,6 +7,9 @@ use crate::tables::Model;
 
 pub(crate) async fn run(database: &Database, store: &crate::Store) -> Result<()> {
     let models = retrieve_models(database).await?;
+    if models.is_empty() {
+        return Ok(());
+    }
     insert_models(store, models)?;
     remove_all_models(database).await?;
     Ok(())

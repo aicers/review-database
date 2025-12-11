@@ -215,6 +215,9 @@ async fn update_cluster_id_in_column_stats(
         .into_iter()
         .map(|(id, cid)| Ok((u32::try_from(id)?, u32::try_from(cid)?)))
         .collect::<Result<_, anyhow::Error>>()?;
+    if cluster_ids.is_empty() {
+        return Ok(());
+    }
     let map = store.column_stats_map();
     let raw = map.raw();
     let mut updated = vec![];
