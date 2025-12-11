@@ -138,6 +138,8 @@ mod tests {
             ttl: vec![1; 5],
             confidence: 0.8,
             category: Some(crate::EventCategory::CommandAndControl),
+            src_country_code: None,
+            dst_country_code: None,
         };
         EventMessage {
             time: Utc::now(),

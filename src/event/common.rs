@@ -1632,6 +1632,8 @@ mod tests {
             file: "boot_file_name".to_string(),
             confidence: 1.0,
             category: Some(EventCategory::InitialAccess),
+            src_country_code: None,
+            dst_country_code: None,
         }
     }
 
@@ -1659,6 +1661,8 @@ mod tests {
             resp_l2_bytes: 122,
             confidence: 1.0,
             category: Some(EventCategory::InitialAccess),
+            src_country_code: None,
+            dst_country_code: None,
         }
     }
 
@@ -1686,6 +1690,8 @@ mod tests {
             operation: "bind".to_string(),
             confidence: 1.0,
             category: Some(EventCategory::InitialAccess),
+            src_country_code: None,
+            dst_country_code: None,
         }
     }
 
@@ -1728,6 +1734,8 @@ mod tests {
             client_id: vec![7, 8, 9],
             confidence: 1.0,
             category: Some(EventCategory::InitialAccess),
+            src_country_code: None,
+            dst_country_code: None,
         }
     }
 
@@ -1763,6 +1771,8 @@ mod tests {
             ttl: vec![120; 5],
             confidence: 1.0,
             category: Some(EventCategory::InitialAccess),
+            src_country_code: None,
+            dst_country_code: None,
         }
     }
 
@@ -1806,6 +1816,8 @@ mod tests {
             state: String::new(),
             confidence: 1.0,
             category: Some(EventCategory::InitialAccess),
+            src_country_code: None,
+            dst_country_code: None,
         }
     }
 
@@ -1838,6 +1850,8 @@ mod tests {
             service_name: vec!["krbtgt/EXAMPLE.COM".to_string()],
             confidence: 1.0,
             category: Some(EventCategory::InitialAccess),
+            src_country_code: None,
+            dst_country_code: None,
         }
     }
 
@@ -1867,6 +1881,8 @@ mod tests {
             suback_reason: "error".to_string().into_bytes(),
             confidence: 1.0,
             category: Some(EventCategory::InitialAccess),
+            src_country_code: None,
+            dst_country_code: None,
         }
     }
 
@@ -1892,6 +1908,8 @@ mod tests {
             write_files: vec!["/etc/shadow".to_string()],
             confidence: 1.0,
             category: Some(EventCategory::InitialAccess),
+            src_country_code: None,
+            dst_country_code: None,
         }
     }
 
@@ -1920,6 +1938,8 @@ mod tests {
             success: "true".to_string(),
             confidence: 1.0,
             category: Some(EventCategory::InitialAccess),
+            src_country_code: None,
+            dst_country_code: None,
         }
     }
 
@@ -1944,6 +1964,8 @@ mod tests {
             cookie: "cookie".to_string(),
             confidence: 1.0,
             category: Some(EventCategory::InitialAccess),
+            src_country_code: None,
+            dst_country_code: None,
         }
     }
 
@@ -1978,6 +2000,8 @@ mod tests {
             change_time: 400,
             confidence: 1.0,
             category: Some(EventCategory::InitialAccess),
+            src_country_code: None,
+            dst_country_code: None,
         }
     }
 
@@ -2008,6 +2032,8 @@ mod tests {
             state: "state".to_string(),
             confidence: 1.0,
             category: Some(EventCategory::InitialAccess),
+            src_country_code: None,
+            dst_country_code: None,
         }
     }
 
@@ -2044,6 +2070,8 @@ mod tests {
             server_shka: "server_shka".to_string(),
             confidence: 1.0,
             category: Some(EventCategory::InitialAccess),
+            src_country_code: None,
+            dst_country_code: None,
         }
     }
 
@@ -2088,6 +2116,8 @@ mod tests {
             last_alert: 1,
             confidence: 0.6,
             category: Some(EventCategory::InitialAccess),
+            src_country_code: None,
+            dst_country_code: None,
         }
     }
 
@@ -2118,6 +2148,8 @@ mod tests {
             argument: vec!["argument".to_string()],
             confidence: 1.0,
             category: Some(EventCategory::LateralMovement),
+            src_country_code: None,
+            dst_country_code: None,
         }
     }
 
@@ -2159,6 +2191,8 @@ mod tests {
             commands: vec![command],
             confidence: 1.0,
             category: Some(EventCategory::LateralMovement),
+            src_country_code: None,
+            dst_country_code: None,
         }
     }
 
@@ -2181,6 +2215,8 @@ mod tests {
             proto: 6,
             confidence: 0.3,
             category: Some(EventCategory::Reconnaissance),
+            src_country_code: None,
+            dst_country_code: None,
         }
     }
 
@@ -2206,6 +2242,8 @@ mod tests {
             proto: 6,
             confidence: 0.3,
             category: Some(EventCategory::Reconnaissance),
+            src_country_code: None,
+            dst_country_code: None,
         }
     }
 
@@ -2230,6 +2268,8 @@ mod tests {
             proto: 6,
             confidence: 0.3,
             category: Some(EventCategory::Impact),
+            src_country_code: None,
+            dst_country_code: None,
         }
     }
 
@@ -2266,6 +2306,8 @@ mod tests {
             coins: vec!["bitcoin".to_string(), "monero".to_string()],
             confidence: 1.0,
             category: Some(EventCategory::CommandAndControl),
+            src_country_code: None,
+            dst_country_code: None,
         }
     }
 
@@ -2290,6 +2332,8 @@ mod tests {
             is_internal: true,
             confidence: 0.3,
             category: Some(EventCategory::CredentialAccess),
+            src_country_code: None,
+            dst_country_code: None,
         }
     }
 
@@ -2306,6 +2350,8 @@ mod tests {
             end_time: now,
             confidence: 0.3,
             category: Some(EventCategory::Exfiltration),
+            src_country_code: None,
+            dst_country_code: None,
         }
     }
 
@@ -2349,6 +2395,8 @@ mod tests {
             state: String::new(),
             confidence: 0.8,
             category: Some(EventCategory::CommandAndControl),
+            src_country_code: None,
+            dst_country_code: None,
         }
     }
 
@@ -2392,6 +2440,8 @@ mod tests {
             state: String::new(),
             confidence: 1.0,
             category: Some(EventCategory::CommandAndControl),
+            src_country_code: None,
+            dst_country_code: None,
         }
     }
 
@@ -2418,6 +2468,8 @@ mod tests {
                 .unwrap(),
             confidence: 0.3,
             category: Some(EventCategory::CredentialAccess),
+            src_country_code: None,
+            dst_country_code: None,
         }
     }
 
@@ -2442,6 +2494,8 @@ mod tests {
             proto: 6,
             confidence: 0.3,
             category: Some(EventCategory::Discovery),
+            src_country_code: None,
+            dst_country_code: None,
         }
     }
 
@@ -2477,6 +2531,8 @@ mod tests {
             ttl: vec![1, 3, 5, 7],
             confidence: 0.8,
             category: Some(EventCategory::CommandAndControl),
+            src_country_code: None,
+            dst_country_code: None,
         }
     }
 
@@ -2594,6 +2650,8 @@ mod tests {
             attack_kind: "attack".to_string(),
             confidence: 0.8,
             category: Some(EventCategory::Reconnaissance),
+            src_country_code: None,
+            dst_country_code: None,
         }
     }
     fn blocklist_radius_fields() -> BlocklistRadiusFields {
@@ -2630,6 +2688,8 @@ mod tests {
             message: "msg".to_string(),
             confidence: 1.0,
             category: Some(EventCategory::InitialAccess),
+            src_country_code: None,
+            dst_country_code: None,
         }
     }
 
@@ -2665,6 +2725,8 @@ mod tests {
             resp_body: vec![],
             confidence: 1.0,
             category: Some(EventCategory::InitialAccess),
+            src_country_code: None,
+            dst_country_code: None,
         }
     }
 
@@ -2688,6 +2750,8 @@ mod tests {
             z_score: 0.0,
             confidence: 1.0,
             category: Some(EventCategory::InitialAccess),
+            src_country_code: None,
+            dst_country_code: None,
         }
     }
 }

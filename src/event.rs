@@ -2993,6 +2993,8 @@ mod tests {
             ttl: vec![1; 5],
             confidence: 0.8,
             category: Some(category),
+            src_country_code: None,
+            dst_country_code: None,
         };
         EventMessage {
             time: Utc::now(),
@@ -3116,6 +3118,8 @@ mod tests {
             state: String::new(),
             confidence: 0.8,
             category: Some(EventCategory::CommandAndControl),
+            src_country_code: None,
+            dst_country_code: None,
         };
         let message = EventMessage {
             time: Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap(),
@@ -3273,6 +3277,8 @@ mod tests {
             attack_kind: "attack".to_string(),
             confidence: 0.8,
             category: Some(EventCategory::Reconnaissance),
+            src_country_code: None,
+            dst_country_code: None,
         };
         let message = EventMessage {
             time: Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap(),
@@ -3339,6 +3345,8 @@ mod tests {
             state: String::new(),
             confidence: 1.0,
             category: Some(EventCategory::CommandAndControl),
+            src_country_code: None,
+            dst_country_code: None,
         };
 
         let message = EventMessage {
@@ -3405,6 +3413,8 @@ mod tests {
             state: String::new(),
             confidence: 1.0,
             category: Some(EventCategory::InitialAccess),
+            src_country_code: None,
+            dst_country_code: None,
         };
 
         let message = EventMessage {
@@ -3464,6 +3474,8 @@ mod tests {
             ttl: vec![120; 5],
             confidence: 0.8,
             category: Some(EventCategory::Impact),
+            src_country_code: None,
+            dst_country_code: None,
         };
 
         let message = EventMessage {
@@ -3512,6 +3524,8 @@ mod tests {
             proto: 6,
             confidence: 0.3,
             category: Some(EventCategory::Reconnaissance),
+            src_country_code: None,
+            dst_country_code: None,
         };
 
         let message = EventMessage {
@@ -3562,6 +3576,8 @@ mod tests {
             proto: 6,
             confidence: 0.3,
             category: Some(EventCategory::Reconnaissance),
+            src_country_code: None,
+            dst_country_code: None,
         };
 
         let message = EventMessage {
@@ -3611,6 +3627,8 @@ mod tests {
             proto: 6,
             confidence: 0.3,
             category: Some(EventCategory::Impact),
+            src_country_code: None,
+            dst_country_code: None,
         };
 
         let message = EventMessage {
@@ -3668,6 +3686,8 @@ mod tests {
             file: "boot_file_name".to_string(),
             confidence: 1.0,
             category: Some(EventCategory::InitialAccess),
+            src_country_code: None,
+            dst_country_code: None,
         }
     }
 
@@ -3792,6 +3812,8 @@ mod tests {
             resp_l2_bytes: 122,
             confidence: 1.0,
             category: Some(EventCategory::InitialAccess),
+            src_country_code: None,
+            dst_country_code: None,
         };
 
         let message = EventMessage {
@@ -3801,7 +3823,11 @@ mod tests {
         };
 
         let message = message.syslog_rfc5424();
-        assert!(message.is_ok());
+        assert!(
+            message.is_ok(),
+            "syslog_rfc5424 failed: {:?}",
+            message.err()
+        );
         let (_, _, syslog_message) = message.unwrap();
         assert_eq!(
             &syslog_message,
@@ -3844,6 +3870,8 @@ mod tests {
             operation: "bind".to_string(),
             confidence: 1.0,
             category: Some(EventCategory::InitialAccess),
+            src_country_code: None,
+            dst_country_code: None,
         };
 
         let message = EventMessage {
@@ -3909,6 +3937,8 @@ mod tests {
             client_id: vec![7, 8, 9],
             confidence: 1.0,
             category: Some(EventCategory::InitialAccess),
+            src_country_code: None,
+            dst_country_code: None,
         }
     }
 
@@ -4041,6 +4071,8 @@ mod tests {
             ttl: vec![120; 5],
             confidence: 0.9,
             category: Some(EventCategory::CommandAndControl),
+            src_country_code: None,
+            dst_country_code: None,
         };
 
         let message = EventMessage {
@@ -4108,6 +4140,8 @@ mod tests {
             coins: vec!["bitcoin".to_string(), "monero".to_string()],
             confidence: 1.0,
             category: Some(EventCategory::CommandAndControl),
+            src_country_code: None,
+            dst_country_code: None,
         };
 
         let message = EventMessage {
@@ -4169,6 +4203,8 @@ mod tests {
             ttl: vec![120; 5],
             confidence: 1.0,
             category: Some(EventCategory::InitialAccess),
+            src_country_code: None,
+            dst_country_code: None,
         };
 
         let message = EventMessage {
@@ -4217,6 +4253,8 @@ mod tests {
             is_internal: true,
             confidence: 0.3,
             category: Some(EventCategory::CredentialAccess),
+            src_country_code: None,
+            dst_country_code: None,
         };
 
         let message = EventMessage {
@@ -4284,6 +4322,8 @@ mod tests {
             commands: vec![command],
             confidence: 1.0,
             category: Some(EventCategory::LateralMovement),
+            src_country_code: None,
+            dst_country_code: None,
         };
 
         let message = EventMessage {
@@ -4349,6 +4389,8 @@ mod tests {
             sensor: "collector1".to_string(),
             confidence: 1.0,
             category: Some(EventCategory::InitialAccess),
+            src_country_code: None,
+            dst_country_code: None,
         }
     }
 
@@ -4467,6 +4509,8 @@ mod tests {
             end_time: now,
             confidence: 0.3,
             category: Some(EventCategory::Exfiltration),
+            src_country_code: None,
+            dst_country_code: None,
         };
 
         let message = EventMessage {
@@ -4523,6 +4567,8 @@ mod tests {
             service_name: vec!["krbtgt/EXAMPLE.COM".to_string()],
             confidence: 1.0,
             category: Some(EventCategory::InitialAccess),
+            src_country_code: None,
+            dst_country_code: None,
         };
 
         let message = EventMessage {
@@ -4575,6 +4621,8 @@ mod tests {
                 .unwrap(),
             confidence: 0.3,
             category: Some(EventCategory::CredentialAccess),
+            src_country_code: None,
+            dst_country_code: None,
         };
 
         let message = EventMessage {
@@ -4631,6 +4679,8 @@ mod tests {
             argument: vec!["argument".to_string()],
             confidence: 1.0,
             category: Some(EventCategory::LateralMovement),
+            src_country_code: None,
+            dst_country_code: None,
         };
 
         let message = EventMessage {
@@ -4686,6 +4736,8 @@ mod tests {
             argument: vec!["argument".to_string()],
             confidence: 1.0,
             category: Some(EventCategory::InitialAccess),
+            src_country_code: None,
+            dst_country_code: None,
         }
     }
 
@@ -4816,6 +4868,8 @@ mod tests {
             message: "RADIUS message".to_string(),
             confidence: 1.0,
             category: Some(EventCategory::InitialAccess),
+            src_country_code: None,
+            dst_country_code: None,
         }
     }
 
@@ -4945,6 +4999,8 @@ mod tests {
             suback_reason: "error".to_string().into_bytes(),
             confidence: 1.0,
             category: Some(EventCategory::InitialAccess),
+            src_country_code: None,
+            dst_country_code: None,
         };
 
         let message = EventMessage {
@@ -5039,6 +5095,8 @@ mod tests {
             write_files: vec!["/etc/shadow".to_string()],
             confidence: 1.0,
             category: Some(EventCategory::InitialAccess),
+            src_country_code: None,
+            dst_country_code: None,
         };
 
         let message = EventMessage {
@@ -5093,6 +5151,8 @@ mod tests {
             success: "true".to_string(),
             confidence: 1.0,
             category: Some(EventCategory::InitialAccess),
+            src_country_code: None,
+            dst_country_code: None,
         };
 
         let message = EventMessage {
@@ -5183,6 +5243,8 @@ mod tests {
             resp_body: vec![b"192.0.2.1".to_vec()],
             confidence: 0.95,
             category: Some(EventCategory::InitialAccess),
+            src_country_code: None,
+            dst_country_code: None,
         }
     }
 
@@ -5304,6 +5366,8 @@ mod tests {
             proto: 6,
             confidence: 0.3,
             category: Some(EventCategory::Discovery),
+            src_country_code: None,
+            dst_country_code: None,
         };
 
         let message = EventMessage {
@@ -5354,6 +5418,8 @@ mod tests {
             cookie: "cookie".to_string(),
             confidence: 1.0,
             category: Some(EventCategory::InitialAccess),
+            src_country_code: None,
+            dst_country_code: None,
         };
 
         let message = EventMessage {
@@ -5414,6 +5480,8 @@ mod tests {
             change_time: 400,
             confidence: 1.0,
             category: Some(EventCategory::InitialAccess),
+            src_country_code: None,
+            dst_country_code: None,
         };
 
         let message = EventMessage {
@@ -5470,6 +5538,8 @@ mod tests {
             state: "state".to_string(),
             confidence: 1.0,
             category: Some(EventCategory::InitialAccess),
+            src_country_code: None,
+            dst_country_code: None,
         };
 
         let message = EventMessage {
@@ -5532,6 +5602,8 @@ mod tests {
             server_shka: "server_shka".to_string(),
             confidence: 1.0,
             category: Some(EventCategory::InitialAccess),
+            src_country_code: None,
+            dst_country_code: None,
         };
 
         let message = EventMessage {
@@ -5656,6 +5728,8 @@ mod tests {
             last_alert: 1,
             confidence: 0.9,
             category: Some(EventCategory::InitialAccess),
+            src_country_code: None,
+            dst_country_code: None,
         };
 
         let message = EventMessage {
@@ -5724,6 +5798,8 @@ mod tests {
             state: "state".to_string(),
             confidence: 1.0,
             category: Some(EventCategory::CommandAndControl),
+            src_country_code: None,
+            dst_country_code: None,
         }
     }
 
@@ -5865,6 +5941,8 @@ mod tests {
             last_alert: 1,
             confidence: 0.9,
             category: Some(EventCategory::InitialAccess),
+            src_country_code: None,
+            dst_country_code: None,
         }
     }
 

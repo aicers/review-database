@@ -70,6 +70,10 @@ pub struct BlocklistKerberosFieldsV0_42 {
     pub service_name: Vec<String>,
     pub confidence: f32,
     pub category: Option<EventCategory>,
+    #[serde(default)]
+    pub src_country_code: Option<[u8; 2]>,
+    #[serde(default)]
+    pub dst_country_code: Option<[u8; 2]>,
 }
 
 impl BlocklistKerberosFields {

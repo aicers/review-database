@@ -59,6 +59,10 @@ pub struct BlocklistMalformedDnsFields {
     pub resp_body: Vec<Vec<u8>>,
     pub confidence: f32,
     pub category: Option<EventCategory>,
+    #[serde(default)]
+    pub src_country_code: Option<[u8; 2]>,
+    #[serde(default)]
+    pub dst_country_code: Option<[u8; 2]>,
 }
 
 impl BlocklistMalformedDnsFields {

@@ -366,6 +366,8 @@ mod tests {
             resp_l2_bytes: 2200,
             confidence: 0.95,
             category: Some(EventCategory::CommandAndControl),
+            src_country_code: None,
+            dst_country_code: None,
         }
     }
 

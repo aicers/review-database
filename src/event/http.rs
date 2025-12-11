@@ -98,6 +98,10 @@ pub struct HttpEventFieldsV0_42 {
     pub state: String,
     pub confidence: f32,
     pub category: Option<EventCategory>,
+    #[serde(default)]
+    pub src_country_code: Option<[u8; 2]>,
+    #[serde(default)]
+    pub dst_country_code: Option<[u8; 2]>,
 }
 
 impl HttpEventFields {
@@ -163,6 +167,10 @@ pub struct RepeatedHttpSessionsFieldsV0_42 {
     pub end_time: i64,
     pub confidence: f32,
     pub category: Option<EventCategory>,
+    #[serde(default)]
+    pub src_country_code: Option<[u8; 2]>,
+    #[serde(default)]
+    pub dst_country_code: Option<[u8; 2]>,
 }
 
 impl RepeatedHttpSessionsFields {
@@ -350,6 +358,10 @@ pub struct HttpThreatFieldsV0_42 {
     pub attack_kind: String,
     pub confidence: f32,
     pub category: Option<EventCategory>,
+    #[serde(default)]
+    pub src_country_code: Option<[u8; 2]>,
+    #[serde(default)]
+    pub dst_country_code: Option<[u8; 2]>,
 }
 
 impl HttpThreatFields {
@@ -691,6 +703,10 @@ pub struct DgaFieldsV0_42 {
     pub state: String,
     pub confidence: f32,
     pub category: Option<EventCategory>,
+    #[serde(default)]
+    pub src_country_code: Option<[u8; 2]>,
+    #[serde(default)]
+    pub dst_country_code: Option<[u8; 2]>,
 }
 
 impl DgaFields {
