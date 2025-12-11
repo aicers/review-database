@@ -109,10 +109,10 @@ mod tests {
         let codec = bincode::DefaultOptions::new();
         let fields = DnsEventFields {
             sensor: "collector1".to_string(),
-            src_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
-            src_port: 10000,
-            dst_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
-            dst_port: 53,
+            orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
+            orig_port: 10000,
+            resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
+            resp_port: 53,
             proto: 17,
             start_time: Utc
                 .with_ymd_and_hms(1970, 1, 1, 0, 1, 1)

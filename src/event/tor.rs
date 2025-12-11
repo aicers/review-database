@@ -17,10 +17,10 @@ use crate::event::{
 pub struct TorConnection {
     pub time: DateTime<Utc>,
     pub sensor: String,
-    pub src_addr: IpAddr,
-    pub src_port: u16,
-    pub dst_addr: IpAddr,
-    pub dst_port: u16,
+    pub orig_addr: IpAddr,
+    pub orig_port: u16,
+    pub resp_addr: IpAddr,
+    pub resp_port: u16,
     pub proto: u8,
     pub start_time: DateTime<Utc>,
     pub duration: i64,
@@ -57,12 +57,12 @@ impl fmt::Display for TorConnection {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "sensor={:?} src_addr={:?} src_port={:?} dst_addr={:?} dst_port={:?} proto={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} method={:?} host={:?} uri={:?} referer={:?} version={:?} user_agent={:?} request_len={:?} response_len={:?} status_code={:?} status_msg={:?} username={:?} password={:?} cookie={:?} content_encoding={:?} content_type={:?} cache_control={:?} filenames={:?} mime_types={:?} body={:?} state={:?} triage_scores={:?}",
+            "sensor={:?} orig_addr={:?} orig_port={:?} resp_addr={:?} resp_port={:?} proto={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} method={:?} host={:?} uri={:?} referer={:?} version={:?} user_agent={:?} request_len={:?} response_len={:?} status_code={:?} status_msg={:?} username={:?} password={:?} cookie={:?} content_encoding={:?} content_type={:?} cache_control={:?} filenames={:?} mime_types={:?} body={:?} state={:?} triage_scores={:?}",
             self.sensor,
-            self.src_addr.to_string(),
-            self.src_port.to_string(),
-            self.dst_addr.to_string(),
-            self.dst_port.to_string(),
+            self.orig_addr.to_string(),
+            self.orig_port.to_string(),
+            self.resp_addr.to_string(),
+            self.resp_port.to_string(),
             self.proto.to_string(),
             self.start_time.to_rfc3339(),
             self.duration.to_string(),
@@ -106,10 +106,10 @@ impl TorConnection {
             resp_pkts: fields.resp_pkts,
             orig_l2_bytes: fields.orig_l2_bytes,
             resp_l2_bytes: fields.resp_l2_bytes,
-            src_addr: fields.src_addr,
-            src_port: fields.src_port,
-            dst_addr: fields.dst_addr,
-            dst_port: fields.dst_port,
+            orig_addr: fields.orig_addr,
+            orig_port: fields.orig_port,
+            resp_addr: fields.resp_addr,
+            resp_port: fields.resp_port,
             proto: fields.proto,
             method: fields.method.clone(),
             host: fields.host.clone(),
@@ -140,19 +140,19 @@ impl TorConnection {
 
 impl Match for TorConnection {
     fn src_addrs(&self) -> &[IpAddr] {
-        std::slice::from_ref(&self.src_addr)
+        std::slice::from_ref(&self.orig_addr)
     }
 
     fn src_port(&self) -> u16 {
-        self.src_port
+        self.orig_port
     }
 
     fn dst_addrs(&self) -> &[IpAddr] {
-        std::slice::from_ref(&self.dst_addr)
+        std::slice::from_ref(&self.resp_addr)
     }
 
     fn dst_port(&self) -> u16 {
-        self.dst_port
+        self.resp_port
     }
 
     fn proto(&self) -> u8 {
@@ -206,10 +206,10 @@ impl Match for TorConnection {
 pub struct TorConnectionConn {
     pub sensor: String,
     pub time: DateTime<Utc>,
-    pub src_addr: IpAddr,
-    pub src_port: u16,
-    pub dst_addr: IpAddr,
-    pub dst_port: u16,
+    pub orig_addr: IpAddr,
+    pub orig_port: u16,
+    pub resp_addr: IpAddr,
+    pub resp_port: u16,
     pub proto: u8,
     pub start_time: DateTime<Utc>,
     pub duration: i64,
@@ -230,12 +230,12 @@ impl fmt::Display for TorConnectionConn {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(
             f,
-            "sensor={:?} src_addr={:?} src_port={:?} dst_addr={:?} dst_port={:?} proto={:?} conn_state={:?} start_time={:?} duration={:?} service={:?} orig_bytes={:?} resp_bytes={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} triage_scores={:?}",
+            "sensor={:?} orig_addr={:?} orig_port={:?} resp_addr={:?} resp_port={:?} proto={:?} conn_state={:?} start_time={:?} duration={:?} service={:?} orig_bytes={:?} resp_bytes={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} triage_scores={:?}",
             self.sensor,
-            self.src_addr.to_string(),
-            self.src_port.to_string(),
-            self.dst_addr.to_string(),
-            self.dst_port.to_string(),
+            self.orig_addr.to_string(),
+            self.orig_port.to_string(),
+            self.resp_addr.to_string(),
+            self.resp_port.to_string(),
             self.proto.to_string(),
             self.conn_state,
             self.start_time.to_rfc3339(),
@@ -258,10 +258,10 @@ impl TorConnectionConn {
             time,
             sensor: fields.sensor,
             start_time: DateTime::from_timestamp_nanos(fields.start_time),
-            src_addr: fields.src_addr,
-            src_port: fields.src_port,
-            dst_addr: fields.dst_addr,
-            dst_port: fields.dst_port,
+            orig_addr: fields.orig_addr,
+            orig_port: fields.orig_port,
+            resp_addr: fields.resp_addr,
+            resp_port: fields.resp_port,
             proto: fields.proto,
             conn_state: fields.conn_state,
             duration: fields.duration,
@@ -281,19 +281,19 @@ impl TorConnectionConn {
 
 impl Match for TorConnectionConn {
     fn src_addrs(&self) -> &[IpAddr] {
-        std::slice::from_ref(&self.src_addr)
+        std::slice::from_ref(&self.orig_addr)
     }
 
     fn src_port(&self) -> u16 {
-        self.src_port
+        self.orig_port
     }
 
     fn dst_addrs(&self) -> &[IpAddr] {
-        std::slice::from_ref(&self.dst_addr)
+        std::slice::from_ref(&self.resp_addr)
     }
 
     fn dst_port(&self) -> u16 {
-        self.dst_port
+        self.resp_port
     }
 
     fn proto(&self) -> u8 {
@@ -349,10 +349,10 @@ mod tests {
             .unwrap();
         BlocklistConnFields {
             sensor: "test-sensor".to_string(),
-            src_addr: "192.168.1.100".parse().unwrap(),
-            src_port: 12345,
-            dst_addr: "198.51.100.1".parse().unwrap(),
-            dst_port: 443,
+            orig_addr: "192.168.1.100".parse().unwrap(),
+            orig_port: 12345,
+            resp_addr: "198.51.100.1".parse().unwrap(),
+            resp_port: 443,
             proto: 6,
             conn_state: "SF".to_string(),
             start_time,
@@ -378,10 +378,10 @@ mod tests {
 
         assert_eq!(event.time, time);
         assert_eq!(event.sensor, "test-sensor");
-        assert_eq!(event.src_addr, "192.168.1.100".parse::<IpAddr>().unwrap());
-        assert_eq!(event.src_port, 12345);
-        assert_eq!(event.dst_addr, "198.51.100.1".parse::<IpAddr>().unwrap());
-        assert_eq!(event.dst_port, 443);
+        assert_eq!(event.orig_addr, "192.168.1.100".parse::<IpAddr>().unwrap());
+        assert_eq!(event.orig_port, 12345);
+        assert_eq!(event.resp_addr, "198.51.100.1".parse::<IpAddr>().unwrap());
+        assert_eq!(event.resp_port, 443);
         assert_eq!(event.proto, 6);
         assert_eq!(event.conn_state, "SF");
         assert_eq!(event.duration, 1_000_000_000);
@@ -404,8 +404,8 @@ mod tests {
 
         let display_output = format!("{event}");
         assert!(display_output.contains("sensor=\"test-sensor\""));
-        assert!(display_output.contains("src_addr=\"192.168.1.100\""));
-        assert!(display_output.contains("dst_addr=\"198.51.100.1\""));
+        assert!(display_output.contains("orig_addr=\"192.168.1.100\""));
+        assert!(display_output.contains("resp_addr=\"198.51.100.1\""));
         assert!(display_output.contains("conn_state=\"SF\""));
         assert!(display_output.contains("service=\"https\""));
     }
@@ -443,16 +443,16 @@ mod tests {
         let event = TorConnectionConn::new(time, tor_connection_conn_fields());
 
         // Test finding source address attribute
-        let src_addr_attr = RawEventAttrKind::Conn(ConnAttr::SrcAddr);
-        if let Some(AttrValue::Addr(addr)) = event.find_attr_by_kind(src_addr_attr) {
+        let orig_addr_attr = RawEventAttrKind::Conn(ConnAttr::SrcAddr);
+        if let Some(AttrValue::Addr(addr)) = event.find_attr_by_kind(orig_addr_attr) {
             assert_eq!(addr, "192.168.1.100".parse::<IpAddr>().unwrap());
         } else {
             panic!("Expected SrcAddr attribute");
         }
 
         // Test finding destination port attribute
-        let dst_port_attr = RawEventAttrKind::Conn(ConnAttr::DstPort);
-        if let Some(AttrValue::UInt(port)) = event.find_attr_by_kind(dst_port_attr) {
+        let resp_port_attr = RawEventAttrKind::Conn(ConnAttr::DstPort);
+        if let Some(AttrValue::UInt(port)) = event.find_attr_by_kind(resp_port_attr) {
             assert_eq!(port, 443);
         } else {
             panic!("Expected DstPort attribute");

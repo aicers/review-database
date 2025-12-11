@@ -29,10 +29,10 @@ macro_rules! find_ftp_attr_by_kind {
     ($event: expr, $raw_event_attr: expr) => {{
         if let RawEventAttrKind::Ftp(attr) = $raw_event_attr {
             let target_value = match attr {
-                FtpAttr::SrcAddr => AttrValue::Addr($event.src_addr),
-                FtpAttr::SrcPort => AttrValue::UInt($event.src_port.into()),
-                FtpAttr::DstAddr => AttrValue::Addr($event.dst_addr),
-                FtpAttr::DstPort => AttrValue::UInt($event.dst_port.into()),
+                FtpAttr::SrcAddr => AttrValue::Addr($event.orig_addr),
+                FtpAttr::SrcPort => AttrValue::UInt($event.orig_port.into()),
+                FtpAttr::DstAddr => AttrValue::Addr($event.resp_addr),
+                FtpAttr::DstPort => AttrValue::UInt($event.resp_port.into()),
                 FtpAttr::Proto => AttrValue::UInt($event.proto.into()),
                 FtpAttr::Duration => AttrValue::SInt($event.duration),
                 FtpAttr::OrigPkts => AttrValue::UInt($event.orig_pkts),
@@ -167,15 +167,15 @@ impl FtpBruteForceFields {
         let start_time_dt = DateTime::from_timestamp_nanos(self.start_time);
         let end_time_dt = DateTime::from_timestamp_nanos(self.end_time);
         format!(
-            "category={:?} sensor={:?} src_addr={:?} dst_addr={:?} dst_port={:?} proto={:?} user_list={:?} start_time={:?} end_time={:?} is_internal={:?} confidence={:?}",
+            "category={:?} sensor={:?} orig_addr={:?} resp_addr={:?} resp_port={:?} proto={:?} user_list={:?} start_time={:?} end_time={:?} is_internal={:?} confidence={:?}",
             self.category.as_ref().map_or_else(
                 || "Unspecified".to_string(),
                 std::string::ToString::to_string
             ),
             self.sensor,
-            self.src_addr.to_string(),
-            self.dst_addr.to_string(),
-            self.dst_port.to_string(),
+            self.orig_addr.to_string(),
+            self.resp_addr.to_string(),
+            self.resp_port.to_string(),
             self.proto.to_string(),
             self.user_list.join(","),
             start_time_dt.to_rfc3339(),
@@ -189,9 +189,9 @@ impl FtpBruteForceFields {
 #[derive(Serialize, Deserialize)]
 pub struct FtpBruteForceFieldsV0_42 {
     pub sensor: String,
-    pub src_addr: IpAddr,
-    pub dst_addr: IpAddr,
-    pub dst_port: u16,
+    pub orig_addr: IpAddr,
+    pub resp_addr: IpAddr,
+    pub resp_port: u16,
     pub proto: u8,
     pub user_list: Vec<String>,
     /// Timestamp in nanoseconds since the Unix epoch (UTC).
@@ -207,9 +207,9 @@ impl From<FtpBruteForceFieldsV0_41> for FtpBruteForceFieldsV0_42 {
     fn from(value: FtpBruteForceFieldsV0_41) -> Self {
         Self {
             sensor: String::new(),
-            src_addr: value.src_addr,
-            dst_addr: value.dst_addr,
-            dst_port: value.dst_port,
+            orig_addr: value.src_addr,
+            resp_addr: value.dst_addr,
+            resp_port: value.dst_port,
             proto: value.proto,
             user_list: value.user_list,
             start_time: value.start_time.timestamp_nanos_opt().unwrap_or_default(),
@@ -239,9 +239,9 @@ pub(crate) struct FtpBruteForceFieldsV0_41 {
 pub struct FtpBruteForce {
     pub sensor: String,
     pub time: DateTime<Utc>,
-    pub src_addr: IpAddr,
-    pub dst_addr: IpAddr,
-    pub dst_port: u16,
+    pub orig_addr: IpAddr,
+    pub resp_addr: IpAddr,
+    pub resp_port: u16,
     pub proto: u8,
     pub user_list: Vec<String>,
     pub start_time: DateTime<Utc>,
@@ -256,10 +256,10 @@ impl fmt::Display for FtpBruteForce {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "src_addr={:?} dst_addr={:?} dst_port={:?} proto={:?} user_list={:?} start_time={:?} end_time={:?} is_internal={:?} triage_scores={:?}",
-            self.src_addr.to_string(),
-            self.dst_addr.to_string(),
-            self.dst_port.to_string(),
+            "orig_addr={:?} resp_addr={:?} resp_port={:?} proto={:?} user_list={:?} start_time={:?} end_time={:?} is_internal={:?} triage_scores={:?}",
+            self.orig_addr.to_string(),
+            self.resp_addr.to_string(),
+            self.resp_port.to_string(),
             self.proto.to_string(),
             self.user_list.join(","),
             self.start_time.to_rfc3339(),
@@ -275,9 +275,9 @@ impl FtpBruteForce {
         FtpBruteForce {
             sensor: fields.sensor.clone(),
             time,
-            src_addr: fields.src_addr,
-            dst_addr: fields.dst_addr,
-            dst_port: fields.dst_port,
+            orig_addr: fields.orig_addr,
+            resp_addr: fields.resp_addr,
+            resp_port: fields.resp_port,
             proto: fields.proto,
             user_list: fields.user_list.clone(),
             start_time: DateTime::from_timestamp_nanos(fields.start_time),
@@ -292,7 +292,7 @@ impl FtpBruteForce {
 
 impl Match for FtpBruteForce {
     fn src_addrs(&self) -> &[IpAddr] {
-        std::slice::from_ref(&self.src_addr)
+        std::slice::from_ref(&self.orig_addr)
     }
 
     fn src_port(&self) -> u16 {
@@ -300,11 +300,11 @@ impl Match for FtpBruteForce {
     }
 
     fn dst_addrs(&self) -> &[IpAddr] {
-        std::slice::from_ref(&self.dst_addr)
+        std::slice::from_ref(&self.resp_addr)
     }
 
     fn dst_port(&self) -> u16 {
-        self.dst_port
+        self.resp_port
     }
 
     fn proto(&self) -> u8 {
@@ -338,9 +338,9 @@ impl Match for FtpBruteForce {
     fn find_attr_by_kind(&self, raw_event_attr: RawEventAttrKind) -> Option<AttrValue<'_>> {
         if let RawEventAttrKind::Ftp(attr) = raw_event_attr {
             match attr {
-                FtpAttr::SrcAddr => Some(AttrValue::Addr(self.src_addr)),
-                FtpAttr::DstAddr => Some(AttrValue::Addr(self.dst_addr)),
-                FtpAttr::DstPort => Some(AttrValue::UInt(self.dst_port.into())),
+                FtpAttr::SrcAddr => Some(AttrValue::Addr(self.orig_addr)),
+                FtpAttr::DstAddr => Some(AttrValue::Addr(self.resp_addr)),
+                FtpAttr::DstPort => Some(AttrValue::UInt(self.resp_port.into())),
                 FtpAttr::Proto => Some(AttrValue::UInt(self.proto.into())),
                 FtpAttr::User => Some(AttrValue::VecString(std::borrow::Cow::Borrowed(
                     &self.user_list,
@@ -367,16 +367,16 @@ impl FtpEventFields {
             .join(";");
 
         format!(
-            "category={:?} sensor={:?} src_addr={:?} src_port={:?} dst_addr={:?} dst_port={:?} proto={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} user={:?} password={:?} commands={:?} confidence={:?}",
+            "category={:?} sensor={:?} orig_addr={:?} orig_port={:?} resp_addr={:?} resp_port={:?} proto={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} user={:?} password={:?} commands={:?} confidence={:?}",
             self.category.as_ref().map_or_else(
                 || "Unspecified".to_string(),
                 std::string::ToString::to_string
             ),
             self.sensor,
-            self.src_addr.to_string(),
-            self.src_port.to_string(),
-            self.dst_addr.to_string(),
-            self.dst_port.to_string(),
+            self.orig_addr.to_string(),
+            self.orig_port.to_string(),
+            self.resp_addr.to_string(),
+            self.resp_port.to_string(),
             self.proto.to_string(),
             start_time_dt.to_rfc3339(),
             self.duration.to_string(),
@@ -395,10 +395,10 @@ impl FtpEventFields {
 #[derive(Debug, Deserialize, Serialize)]
 pub struct FtpEventFieldsV0_42 {
     pub sensor: String,
-    pub src_addr: IpAddr,
-    pub src_port: u16,
-    pub dst_addr: IpAddr,
-    pub dst_port: u16,
+    pub orig_addr: IpAddr,
+    pub orig_port: u16,
+    pub resp_addr: IpAddr,
+    pub resp_port: u16,
     pub proto: u8,
     /// Timestamp in nanoseconds since the Unix epoch (UTC).
     pub start_time: i64,
@@ -418,10 +418,10 @@ pub struct FtpEventFieldsV0_42 {
 pub struct FtpPlainText {
     pub time: DateTime<Utc>,
     pub sensor: String,
-    pub src_addr: IpAddr,
-    pub src_port: u16,
-    pub dst_addr: IpAddr,
-    pub dst_port: u16,
+    pub orig_addr: IpAddr,
+    pub orig_port: u16,
+    pub resp_addr: IpAddr,
+    pub resp_port: u16,
     pub proto: u8,
     pub start_time: DateTime<Utc>,
     pub duration: i64,
@@ -448,12 +448,12 @@ impl fmt::Display for FtpPlainText {
 
         write!(
             f,
-            "sensor={:?} src_addr={:?} src_port={:?} dst_addr={:?} dst_port={:?} proto={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} user={:?} password={:?} commands={:?} triage_scores={:?}",
+            "sensor={:?} orig_addr={:?} orig_port={:?} resp_addr={:?} resp_port={:?} proto={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} user={:?} password={:?} commands={:?} triage_scores={:?}",
             self.sensor,
-            self.src_addr.to_string(),
-            self.src_port.to_string(),
-            self.dst_addr.to_string(),
-            self.dst_port.to_string(),
+            self.orig_addr.to_string(),
+            self.orig_port.to_string(),
+            self.resp_addr.to_string(),
+            self.resp_port.to_string(),
             self.proto.to_string(),
             self.start_time.to_rfc3339(),
             self.duration.to_string(),
@@ -475,10 +475,10 @@ impl FtpPlainText {
             time,
             sensor: fields.sensor,
             start_time: DateTime::from_timestamp_nanos(fields.start_time),
-            src_addr: fields.src_addr,
-            src_port: fields.src_port,
-            dst_addr: fields.dst_addr,
-            dst_port: fields.dst_port,
+            orig_addr: fields.orig_addr,
+            orig_port: fields.orig_port,
+            resp_addr: fields.resp_addr,
+            resp_port: fields.resp_port,
             proto: fields.proto,
             duration: fields.duration,
             orig_pkts: fields.orig_pkts,
@@ -497,19 +497,19 @@ impl FtpPlainText {
 
 impl Match for FtpPlainText {
     fn src_addrs(&self) -> &[IpAddr] {
-        std::slice::from_ref(&self.src_addr)
+        std::slice::from_ref(&self.orig_addr)
     }
 
     fn src_port(&self) -> u16 {
-        self.src_port
+        self.orig_port
     }
 
     fn dst_addrs(&self) -> &[IpAddr] {
-        std::slice::from_ref(&self.dst_addr)
+        std::slice::from_ref(&self.resp_addr)
     }
 
     fn dst_port(&self) -> u16 {
-        self.dst_port
+        self.resp_port
     }
 
     fn proto(&self) -> u8 {
@@ -549,10 +549,10 @@ impl Match for FtpPlainText {
 pub struct BlocklistFtp {
     pub time: DateTime<Utc>,
     pub sensor: String,
-    pub src_addr: IpAddr,
-    pub src_port: u16,
-    pub dst_addr: IpAddr,
-    pub dst_port: u16,
+    pub orig_addr: IpAddr,
+    pub orig_port: u16,
+    pub resp_addr: IpAddr,
+    pub resp_port: u16,
     pub proto: u8,
     pub start_time: DateTime<Utc>,
     pub duration: i64,
@@ -579,12 +579,12 @@ impl fmt::Display for BlocklistFtp {
 
         write!(
             f,
-            "sensor={:?} src_addr={:?} src_port={:?} dst_addr={:?} dst_port={:?} proto={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} user={:?} password={:?} commands={:?} triage_scores={:?}",
+            "sensor={:?} orig_addr={:?} orig_port={:?} resp_addr={:?} resp_port={:?} proto={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} user={:?} password={:?} commands={:?} triage_scores={:?}",
             self.sensor,
-            self.src_addr.to_string(),
-            self.src_port.to_string(),
-            self.dst_addr.to_string(),
-            self.dst_port.to_string(),
+            self.orig_addr.to_string(),
+            self.orig_port.to_string(),
+            self.resp_addr.to_string(),
+            self.resp_port.to_string(),
             self.proto.to_string(),
             self.start_time.to_rfc3339(),
             self.duration.to_string(),
@@ -606,10 +606,10 @@ impl BlocklistFtp {
             time,
             sensor: fields.sensor,
             start_time: DateTime::from_timestamp_nanos(fields.start_time),
-            src_addr: fields.src_addr,
-            src_port: fields.src_port,
-            dst_addr: fields.dst_addr,
-            dst_port: fields.dst_port,
+            orig_addr: fields.orig_addr,
+            orig_port: fields.orig_port,
+            resp_addr: fields.resp_addr,
+            resp_port: fields.resp_port,
             proto: fields.proto,
             duration: fields.duration,
             orig_pkts: fields.orig_pkts,
@@ -628,19 +628,19 @@ impl BlocklistFtp {
 
 impl Match for BlocklistFtp {
     fn src_addrs(&self) -> &[IpAddr] {
-        std::slice::from_ref(&self.src_addr)
+        std::slice::from_ref(&self.orig_addr)
     }
 
     fn src_port(&self) -> u16 {
-        self.src_port
+        self.orig_port
     }
 
     fn dst_addrs(&self) -> &[IpAddr] {
-        std::slice::from_ref(&self.dst_addr)
+        std::slice::from_ref(&self.resp_addr)
     }
 
     fn dst_port(&self) -> u16 {
-        self.dst_port
+        self.resp_port
     }
 
     fn proto(&self) -> u8 {

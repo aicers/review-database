@@ -15,10 +15,10 @@ macro_rules! find_dns_attr_by_kind {
     ($event: expr, $raw_event_attr: expr) => {{
         if let RawEventAttrKind::Dns(attr) = $raw_event_attr {
             let target_value = match attr {
-                DnsAttr::SrcAddr => AttrValue::Addr($event.src_addr),
-                DnsAttr::SrcPort => AttrValue::UInt($event.src_port.into()),
-                DnsAttr::DstAddr => AttrValue::Addr($event.dst_addr),
-                DnsAttr::DstPort => AttrValue::UInt($event.dst_port.into()),
+                DnsAttr::SrcAddr => AttrValue::Addr($event.orig_addr),
+                DnsAttr::SrcPort => AttrValue::UInt($event.orig_port.into()),
+                DnsAttr::DstAddr => AttrValue::Addr($event.resp_addr),
+                DnsAttr::DstPort => AttrValue::UInt($event.resp_port.into()),
                 DnsAttr::Proto => AttrValue::UInt($event.proto.into()),
                 DnsAttr::Duration => AttrValue::SInt($event.duration),
                 DnsAttr::OrigPkts => AttrValue::UInt($event.orig_pkts),
@@ -52,10 +52,10 @@ pub type DnsEventFields = DnsEventFieldsV0_42;
 #[derive(Deserialize, Serialize)]
 pub struct DnsEventFieldsV0_42 {
     pub sensor: String,
-    pub src_addr: IpAddr,
-    pub src_port: u16,
-    pub dst_addr: IpAddr,
-    pub dst_port: u16,
+    pub orig_addr: IpAddr,
+    pub orig_port: u16,
+    pub resp_addr: IpAddr,
+    pub resp_port: u16,
     pub proto: u8,
     /// Timestamp in nanoseconds since the Unix epoch (UTC).
     pub start_time: i64,
@@ -85,16 +85,16 @@ impl DnsEventFields {
     pub fn syslog_rfc5424(&self) -> String {
         let start_time_dt = DateTime::from_timestamp_nanos(self.start_time);
         format!(
-            "category={:?} sensor={:?} src_addr={:?} src_port={:?} dst_addr={:?} dst_port={:?} proto={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} query={:?} answer={:?} trans_id={:?} rtt={:?} qclass={:?} qtype={:?} rcode={:?} aa_flag={:?} tc_flag={:?} rd_flag={:?} ra_flag={:?} ttl={:?} confidence={:?}",
+            "category={:?} sensor={:?} orig_addr={:?} orig_port={:?} resp_addr={:?} resp_port={:?} proto={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} query={:?} answer={:?} trans_id={:?} rtt={:?} qclass={:?} qtype={:?} rcode={:?} aa_flag={:?} tc_flag={:?} rd_flag={:?} ra_flag={:?} ttl={:?} confidence={:?}",
             self.category.as_ref().map_or_else(
                 || "Unspecified".to_string(),
                 std::string::ToString::to_string
             ),
             self.sensor,
-            self.src_addr.to_string(),
-            self.src_port.to_string(),
-            self.dst_addr.to_string(),
-            self.dst_port.to_string(),
+            self.orig_addr.to_string(),
+            self.orig_port.to_string(),
+            self.resp_addr.to_string(),
+            self.resp_port.to_string(),
             self.proto.to_string(),
             start_time_dt.to_rfc3339(),
             self.duration.to_string(),
@@ -123,10 +123,10 @@ impl DnsEventFields {
 pub struct DnsCovertChannel {
     pub time: DateTime<Utc>,
     pub sensor: String,
-    pub src_addr: IpAddr,
-    pub src_port: u16,
-    pub dst_addr: IpAddr,
-    pub dst_port: u16,
+    pub orig_addr: IpAddr,
+    pub orig_port: u16,
+    pub resp_addr: IpAddr,
+    pub resp_port: u16,
     pub proto: u8,
     pub start_time: DateTime<Utc>,
     pub duration: i64,
@@ -155,12 +155,12 @@ impl fmt::Display for DnsCovertChannel {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "sensor={:?} src_addr={:?} src_port={:?} dst_addr={:?} dst_port={:?} proto={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} query={:?} answer={:?} trans_id={:?} rtt={:?} qclass={:?} qtype={:?} rcode={:?} aa_flag={:?} tc_flag={:?} rd_flag={:?} ra_flag={:?} ttl={:?} confidence={:?} triage_scores={:?}",
+            "sensor={:?} orig_addr={:?} orig_port={:?} resp_addr={:?} resp_port={:?} proto={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} query={:?} answer={:?} trans_id={:?} rtt={:?} qclass={:?} qtype={:?} rcode={:?} aa_flag={:?} tc_flag={:?} rd_flag={:?} ra_flag={:?} ttl={:?} confidence={:?} triage_scores={:?}",
             self.sensor,
-            self.src_addr.to_string(),
-            self.src_port.to_string(),
-            self.dst_addr.to_string(),
-            self.dst_port.to_string(),
+            self.orig_addr.to_string(),
+            self.orig_port.to_string(),
+            self.resp_addr.to_string(),
+            self.resp_port.to_string(),
             self.proto.to_string(),
             self.start_time.to_rfc3339(),
             self.duration.to_string(),
@@ -197,10 +197,10 @@ impl DnsCovertChannel {
             resp_pkts: fields.resp_pkts,
             orig_l2_bytes: fields.orig_l2_bytes,
             resp_l2_bytes: fields.resp_l2_bytes,
-            src_addr: fields.src_addr,
-            src_port: fields.src_port,
-            dst_addr: fields.dst_addr,
-            dst_port: fields.dst_port,
+            orig_addr: fields.orig_addr,
+            orig_port: fields.orig_port,
+            resp_addr: fields.resp_addr,
+            resp_port: fields.resp_port,
             proto: fields.proto,
             query: fields.query,
             answer: fields.answer,
@@ -223,19 +223,19 @@ impl DnsCovertChannel {
 
 impl Match for DnsCovertChannel {
     fn src_addrs(&self) -> &[IpAddr] {
-        std::slice::from_ref(&self.src_addr)
+        std::slice::from_ref(&self.orig_addr)
     }
 
     fn src_port(&self) -> u16 {
-        self.src_port
+        self.orig_port
     }
 
     fn dst_addrs(&self) -> &[IpAddr] {
-        std::slice::from_ref(&self.dst_addr)
+        std::slice::from_ref(&self.resp_addr)
     }
 
     fn dst_port(&self) -> u16 {
-        self.dst_port
+        self.resp_port
     }
 
     fn proto(&self) -> u8 {
@@ -295,10 +295,10 @@ impl Match for DnsCovertChannel {
 pub struct LockyRansomware {
     pub time: DateTime<Utc>,
     pub sensor: String,
-    pub src_addr: IpAddr,
-    pub src_port: u16,
-    pub dst_addr: IpAddr,
-    pub dst_port: u16,
+    pub orig_addr: IpAddr,
+    pub orig_port: u16,
+    pub resp_addr: IpAddr,
+    pub resp_port: u16,
     pub proto: u8,
     pub start_time: DateTime<Utc>,
     pub duration: i64,
@@ -327,12 +327,12 @@ impl fmt::Display for LockyRansomware {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "sensor={:?} src_addr={:?} src_port={:?} dst_addr={:?} dst_port={:?} proto={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} query={:?} answer={:?} trans_id={:?} rtt={:?} qclass={:?} qtype={:?} rcode={:?} aa_flag={:?} tc_flag={:?} rd_flag={:?} ra_flag={:?} ttl={:?} confidence={:?} triage_scores={:?}",
+            "sensor={:?} orig_addr={:?} orig_port={:?} resp_addr={:?} resp_port={:?} proto={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} query={:?} answer={:?} trans_id={:?} rtt={:?} qclass={:?} qtype={:?} rcode={:?} aa_flag={:?} tc_flag={:?} rd_flag={:?} ra_flag={:?} ttl={:?} confidence={:?} triage_scores={:?}",
             self.sensor,
-            self.src_addr.to_string(),
-            self.src_port.to_string(),
-            self.dst_addr.to_string(),
-            self.dst_port.to_string(),
+            self.orig_addr.to_string(),
+            self.orig_port.to_string(),
+            self.resp_addr.to_string(),
+            self.resp_port.to_string(),
             self.proto.to_string(),
             self.start_time.to_rfc3339(),
             self.duration.to_string(),
@@ -369,10 +369,10 @@ impl LockyRansomware {
             resp_pkts: fields.resp_pkts,
             orig_l2_bytes: fields.orig_l2_bytes,
             resp_l2_bytes: fields.resp_l2_bytes,
-            src_addr: fields.src_addr,
-            src_port: fields.src_port,
-            dst_addr: fields.dst_addr,
-            dst_port: fields.dst_port,
+            orig_addr: fields.orig_addr,
+            orig_port: fields.orig_port,
+            resp_addr: fields.resp_addr,
+            resp_port: fields.resp_port,
             proto: fields.proto,
             query: fields.query,
             answer: fields.answer,
@@ -395,19 +395,19 @@ impl LockyRansomware {
 
 impl Match for LockyRansomware {
     fn src_addrs(&self) -> &[IpAddr] {
-        std::slice::from_ref(&self.src_addr)
+        std::slice::from_ref(&self.orig_addr)
     }
 
     fn src_port(&self) -> u16 {
-        self.src_port
+        self.orig_port
     }
 
     fn dst_addrs(&self) -> &[IpAddr] {
-        std::slice::from_ref(&self.dst_addr)
+        std::slice::from_ref(&self.resp_addr)
     }
 
     fn dst_port(&self) -> u16 {
-        self.dst_port
+        self.resp_port
     }
 
     fn proto(&self) -> u8 {
@@ -468,10 +468,10 @@ pub type CryptocurrencyMiningPoolFields = CryptocurrencyMiningPoolFieldsV0_42;
 #[derive(Deserialize, Serialize)]
 pub struct CryptocurrencyMiningPoolFieldsV0_42 {
     pub sensor: String,
-    pub src_addr: IpAddr,
-    pub src_port: u16,
-    pub dst_addr: IpAddr,
-    pub dst_port: u16,
+    pub orig_addr: IpAddr,
+    pub orig_port: u16,
+    pub resp_addr: IpAddr,
+    pub resp_port: u16,
     pub proto: u8,
     /// Timestamp in nanoseconds since the Unix epoch (UTC).
     pub start_time: i64,
@@ -502,16 +502,16 @@ impl CryptocurrencyMiningPoolFields {
     pub fn syslog_rfc5424(&self) -> String {
         let start_time_dt = DateTime::from_timestamp_nanos(self.start_time);
         format!(
-            "category={:?} sensor={:?} src_addr={:?} src_port={:?} dst_addr={:?} dst_port={:?} proto={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} query={:?} answer={:?} trans_id={:?} rtt={:?} qclass={:?} qtype={:?} rcode={:?} aa_flag={:?} tc_flag={:?} rd_flag={:?} ra_flag={:?} ttl={:?} coins={:?} confidence={:?}",
+            "category={:?} sensor={:?} orig_addr={:?} orig_port={:?} resp_addr={:?} resp_port={:?} proto={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} query={:?} answer={:?} trans_id={:?} rtt={:?} qclass={:?} qtype={:?} rcode={:?} aa_flag={:?} tc_flag={:?} rd_flag={:?} ra_flag={:?} ttl={:?} coins={:?} confidence={:?}",
             self.category.as_ref().map_or_else(
                 || "Unspecified".to_string(),
                 std::string::ToString::to_string
             ),
             self.sensor,
-            self.src_addr.to_string(),
-            self.src_port.to_string(),
-            self.dst_addr.to_string(),
-            self.dst_port.to_string(),
+            self.orig_addr.to_string(),
+            self.orig_port.to_string(),
+            self.resp_addr.to_string(),
+            self.resp_port.to_string(),
             self.proto.to_string(),
             start_time_dt.to_rfc3339(),
             self.duration.to_string(),
@@ -541,10 +541,10 @@ impl CryptocurrencyMiningPoolFields {
 pub struct CryptocurrencyMiningPool {
     pub time: DateTime<Utc>,
     pub sensor: String,
-    pub src_addr: IpAddr,
-    pub src_port: u16,
-    pub dst_addr: IpAddr,
-    pub dst_port: u16,
+    pub orig_addr: IpAddr,
+    pub orig_port: u16,
+    pub resp_addr: IpAddr,
+    pub resp_port: u16,
     pub proto: u8,
     pub start_time: DateTime<Utc>,
     pub duration: i64,
@@ -574,12 +574,12 @@ impl fmt::Display for CryptocurrencyMiningPool {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "sensor={:?} src_addr={:?} src_port={:?} dst_addr={:?} dst_port={:?} proto={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} query={:?} answer={:?} trans_id={:?} rtt={:?} qclass={:?} qtype={:?} rcode={:?} aa_flag={:?} tc_flag={:?} rd_flag={:?} ra_flag={:?} ttl={:?} coins={:?} triage_scores={:?}",
+            "sensor={:?} orig_addr={:?} orig_port={:?} resp_addr={:?} resp_port={:?} proto={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} query={:?} answer={:?} trans_id={:?} rtt={:?} qclass={:?} qtype={:?} rcode={:?} aa_flag={:?} tc_flag={:?} rd_flag={:?} ra_flag={:?} ttl={:?} coins={:?} triage_scores={:?}",
             self.sensor,
-            self.src_addr.to_string(),
-            self.src_port.to_string(),
-            self.dst_addr.to_string(),
-            self.dst_port.to_string(),
+            self.orig_addr.to_string(),
+            self.orig_port.to_string(),
+            self.resp_addr.to_string(),
+            self.resp_port.to_string(),
             self.proto.to_string(),
             self.start_time.to_rfc3339(),
             self.duration.to_string(),
@@ -616,10 +616,10 @@ impl CryptocurrencyMiningPool {
             resp_pkts: fields.resp_pkts,
             orig_l2_bytes: fields.orig_l2_bytes,
             resp_l2_bytes: fields.resp_l2_bytes,
-            src_addr: fields.src_addr,
-            src_port: fields.src_port,
-            dst_addr: fields.dst_addr,
-            dst_port: fields.dst_port,
+            orig_addr: fields.orig_addr,
+            orig_port: fields.orig_port,
+            resp_addr: fields.resp_addr,
+            resp_port: fields.resp_port,
             proto: fields.proto,
             query: fields.query,
             answer: fields.answer,
@@ -643,19 +643,19 @@ impl CryptocurrencyMiningPool {
 
 impl Match for CryptocurrencyMiningPool {
     fn src_addrs(&self) -> &[IpAddr] {
-        std::slice::from_ref(&self.src_addr)
+        std::slice::from_ref(&self.orig_addr)
     }
 
     fn src_port(&self) -> u16 {
-        self.src_port
+        self.orig_port
     }
 
     fn dst_addrs(&self) -> &[IpAddr] {
-        std::slice::from_ref(&self.dst_addr)
+        std::slice::from_ref(&self.resp_addr)
     }
 
     fn dst_port(&self) -> u16 {
-        self.dst_port
+        self.resp_port
     }
 
     fn proto(&self) -> u8 {
@@ -716,10 +716,10 @@ pub type BlocklistDnsFields = BlocklistDnsFieldsV0_42;
 #[derive(Deserialize, Serialize)]
 pub struct BlocklistDnsFieldsV0_42 {
     pub sensor: String,
-    pub src_addr: IpAddr,
-    pub src_port: u16,
-    pub dst_addr: IpAddr,
-    pub dst_port: u16,
+    pub orig_addr: IpAddr,
+    pub orig_port: u16,
+    pub resp_addr: IpAddr,
+    pub resp_port: u16,
     pub proto: u8,
     /// Timestamp in nanoseconds since the Unix epoch (UTC).
     pub start_time: i64,
@@ -749,16 +749,16 @@ impl BlocklistDnsFields {
     pub fn syslog_rfc5424(&self) -> String {
         let start_time_dt = DateTime::from_timestamp_nanos(self.start_time);
         format!(
-            "category={:?} sensor={:?} src_addr={:?} src_port={:?} dst_addr={:?} dst_port={:?} proto={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} query={:?} answer={:?} trans_id={:?} rtt={:?} qclass={:?} qtype={:?} rcode={:?} aa_flag={:?} tc_flag={:?} rd_flag={:?} ra_flag={:?} ttl={:?} confidence={:?}",
+            "category={:?} sensor={:?} orig_addr={:?} orig_port={:?} resp_addr={:?} resp_port={:?} proto={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} query={:?} answer={:?} trans_id={:?} rtt={:?} qclass={:?} qtype={:?} rcode={:?} aa_flag={:?} tc_flag={:?} rd_flag={:?} ra_flag={:?} ttl={:?} confidence={:?}",
             self.category.as_ref().map_or_else(
                 || "Unspecified".to_string(),
                 std::string::ToString::to_string
             ),
             self.sensor,
-            self.src_addr.to_string(),
-            self.src_port.to_string(),
-            self.dst_addr.to_string(),
-            self.dst_port.to_string(),
+            self.orig_addr.to_string(),
+            self.orig_port.to_string(),
+            self.resp_addr.to_string(),
+            self.resp_port.to_string(),
             self.proto.to_string(),
             start_time_dt.to_rfc3339(),
             self.duration.to_string(),
@@ -787,10 +787,10 @@ impl BlocklistDnsFields {
 pub struct BlocklistDns {
     pub time: DateTime<Utc>,
     pub sensor: String,
-    pub src_addr: IpAddr,
-    pub src_port: u16,
-    pub dst_addr: IpAddr,
-    pub dst_port: u16,
+    pub orig_addr: IpAddr,
+    pub orig_port: u16,
+    pub resp_addr: IpAddr,
+    pub resp_port: u16,
     pub proto: u8,
     pub start_time: DateTime<Utc>,
     pub duration: i64,
@@ -819,12 +819,12 @@ impl fmt::Display for BlocklistDns {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "sensor={:?} src_addr={:?} src_port={:?} dst_addr={:?} dst_port={:?} proto={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} query={:?} answer={:?} trans_id={:?} rtt={:?} qclass={:?} qtype={:?} rcode={:?} aa_flag={:?} tc_flag={:?} rd_flag={:?} ra_flag={:?} ttl={:?} triage_scores={:?}",
+            "sensor={:?} orig_addr={:?} orig_port={:?} resp_addr={:?} resp_port={:?} proto={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} query={:?} answer={:?} trans_id={:?} rtt={:?} qclass={:?} qtype={:?} rcode={:?} aa_flag={:?} tc_flag={:?} rd_flag={:?} ra_flag={:?} ttl={:?} triage_scores={:?}",
             self.sensor,
-            self.src_addr.to_string(),
-            self.src_port.to_string(),
-            self.dst_addr.to_string(),
-            self.dst_port.to_string(),
+            self.orig_addr.to_string(),
+            self.orig_port.to_string(),
+            self.resp_addr.to_string(),
+            self.resp_port.to_string(),
             self.proto.to_string(),
             self.start_time.to_rfc3339(),
             self.duration.to_string(),
@@ -855,10 +855,10 @@ impl BlocklistDns {
             time,
             sensor: fields.sensor,
             start_time: DateTime::from_timestamp_nanos(fields.start_time),
-            src_addr: fields.src_addr,
-            src_port: fields.src_port,
-            dst_addr: fields.dst_addr,
-            dst_port: fields.dst_port,
+            orig_addr: fields.orig_addr,
+            orig_port: fields.orig_port,
+            resp_addr: fields.resp_addr,
+            resp_port: fields.resp_port,
             proto: fields.proto,
             duration: fields.duration,
             orig_pkts: fields.orig_pkts,
@@ -886,19 +886,19 @@ impl BlocklistDns {
 
 impl Match for BlocklistDns {
     fn src_addrs(&self) -> &[IpAddr] {
-        std::slice::from_ref(&self.src_addr)
+        std::slice::from_ref(&self.orig_addr)
     }
 
     fn src_port(&self) -> u16 {
-        self.src_port
+        self.orig_port
     }
 
     fn dst_addrs(&self) -> &[IpAddr] {
-        std::slice::from_ref(&self.dst_addr)
+        std::slice::from_ref(&self.resp_addr)
     }
 
     fn dst_port(&self) -> u16 {
-        self.dst_port
+        self.resp_port
     }
 
     fn proto(&self) -> u8 {
