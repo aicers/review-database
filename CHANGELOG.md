@@ -621,8 +621,8 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   generating `rustls::ClientConfig`.
 - Changed the display message format of `EventMessage` and `Event` to RFC 5424.
   Modified messages will be sent to syslog.
-- Used `FromPrimitive` and `ToPrimitive` for converting `EventCategory` instead of
-  manually implementing `TryFrom`.
+- Used `FromPrimitive` and `ToPrimitive` for converting `EventCategory` instead
+  of manually implementing `TryFrom`.
 - `EventCategory` definition is moved to `review-protocol`.
 
 ### Removed
