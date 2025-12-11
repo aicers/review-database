@@ -49,6 +49,10 @@ pub struct RdpBruteForceFieldsV0_42 {
     pub proto: u8,
     pub confidence: f32,
     pub category: Option<EventCategory>,
+    #[serde(default)]
+    pub src_country_code: Option<[u8; 2]>,
+    #[serde(default)]
+    pub dst_country_code: Option<[u8; 2]>,
 }
 
 impl RdpBruteForceFields {
@@ -200,6 +204,10 @@ pub struct BlocklistRdpFieldsV0_42 {
     pub cookie: String,
     pub confidence: f32,
     pub category: Option<EventCategory>,
+    #[serde(default)]
+    pub src_country_code: Option<[u8; 2]>,
+    #[serde(default)]
+    pub dst_country_code: Option<[u8; 2]>,
 }
 
 impl BlocklistRdpFields {

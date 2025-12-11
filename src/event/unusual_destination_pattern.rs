@@ -19,6 +19,10 @@ pub struct UnusualDestinationPatternFields {
     pub z_score: f64,
     pub confidence: f32,
     pub category: Option<EventCategory>,
+    #[serde(default)]
+    pub src_country_code: Option<[u8; 2]>,
+    #[serde(default)]
+    pub dst_country_code: Option<[u8; 2]>,
 }
 
 impl UnusualDestinationPatternFields {

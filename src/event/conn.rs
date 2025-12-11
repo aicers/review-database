@@ -50,6 +50,10 @@ pub struct PortScanFieldsV0_42 {
     pub proto: u8,
     pub confidence: f32,
     pub category: Option<EventCategory>,
+    #[serde(default)]
+    pub src_country_code: Option<[u8; 2]>,
+    #[serde(default)]
+    pub dst_country_code: Option<[u8; 2]>,
 }
 
 impl PortScanFields {
@@ -201,6 +205,10 @@ pub struct MultiHostPortScanFieldsV0_42 {
     pub end_time: i64,
     pub confidence: f32,
     pub category: Option<EventCategory>,
+    #[serde(default)]
+    pub src_country_code: Option<[u8; 2]>,
+    #[serde(default)]
+    pub dst_country_code: Option<[u8; 2]>,
 }
 
 impl MultiHostPortScanFields {
@@ -352,6 +360,10 @@ pub struct ExternalDdosFieldsV0_42 {
     pub end_time: i64,
     pub confidence: f32,
     pub category: Option<EventCategory>,
+    #[serde(default)]
+    pub src_country_code: Option<[u8; 2]>,
+    #[serde(default)]
+    pub dst_country_code: Option<[u8; 2]>,
 }
 
 impl ExternalDdosFields {
@@ -507,6 +519,10 @@ pub struct BlocklistConnFieldsV0_42 {
     pub resp_l2_bytes: u64,
     pub confidence: f32,
     pub category: Option<EventCategory>,
+    #[serde(default)]
+    pub src_country_code: Option<[u8; 2]>,
+    #[serde(default)]
+    pub dst_country_code: Option<[u8; 2]>,
 }
 
 impl BlocklistConnFields {

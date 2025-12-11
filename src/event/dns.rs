@@ -78,6 +78,10 @@ pub struct DnsEventFieldsV0_42 {
     pub ttl: Vec<i32>,
     pub confidence: f32,
     pub category: Option<EventCategory>,
+    #[serde(default)]
+    pub src_country_code: Option<[u8; 2]>,
+    #[serde(default)]
+    pub dst_country_code: Option<[u8; 2]>,
 }
 
 impl DnsEventFields {
@@ -495,6 +499,10 @@ pub struct CryptocurrencyMiningPoolFieldsV0_42 {
     pub coins: Vec<String>,
     pub confidence: f32,
     pub category: Option<EventCategory>,
+    #[serde(default)]
+    pub src_country_code: Option<[u8; 2]>,
+    #[serde(default)]
+    pub dst_country_code: Option<[u8; 2]>,
 }
 
 impl CryptocurrencyMiningPoolFields {
@@ -742,6 +750,10 @@ pub struct BlocklistDnsFieldsV0_42 {
     pub ttl: Vec<i32>,
     pub confidence: f32,
     pub category: Option<EventCategory>,
+    #[serde(default)]
+    pub src_country_code: Option<[u8; 2]>,
+    #[serde(default)]
+    pub dst_country_code: Option<[u8; 2]>,
 }
 
 impl BlocklistDnsFields {

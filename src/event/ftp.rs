@@ -201,6 +201,10 @@ pub struct FtpBruteForceFieldsV0_42 {
     pub is_internal: bool,
     pub confidence: f32,
     pub category: Option<EventCategory>,
+    #[serde(default)]
+    pub src_country_code: Option<[u8; 2]>,
+    #[serde(default)]
+    pub dst_country_code: Option<[u8; 2]>,
 }
 
 impl From<FtpBruteForceFieldsV0_41> for FtpBruteForceFieldsV0_42 {
@@ -217,6 +221,8 @@ impl From<FtpBruteForceFieldsV0_41> for FtpBruteForceFieldsV0_42 {
             is_internal: value.is_internal,
             confidence: value.confidence,
             category: value.category.into(),
+            src_country_code: None,
+            dst_country_code: None,
         }
     }
 }
@@ -412,6 +418,10 @@ pub struct FtpEventFieldsV0_42 {
     pub commands: Vec<FtpCommand>,
     pub confidence: f32,
     pub category: Option<EventCategory>,
+    #[serde(default)]
+    pub src_country_code: Option<[u8; 2]>,
+    #[serde(default)]
+    pub dst_country_code: Option<[u8; 2]>,
 }
 
 #[derive(Deserialize, Serialize)]

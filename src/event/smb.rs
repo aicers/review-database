@@ -70,6 +70,10 @@ pub struct BlocklistSmbFieldsV0_42 {
     pub change_time: i64,
     pub confidence: f32,
     pub category: Option<EventCategory>,
+    #[serde(default)]
+    pub src_country_code: Option<[u8; 2]>,
+    #[serde(default)]
+    pub dst_country_code: Option<[u8; 2]>,
 }
 
 impl BlocklistSmbFields {
