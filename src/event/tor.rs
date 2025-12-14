@@ -349,8 +349,10 @@ mod tests {
             .unwrap();
         BlocklistConnFields {
             sensor: "test-sensor".to_string(),
+            src_country_code: None,
             orig_addr: "192.168.1.100".parse().unwrap(),
             orig_port: 12345,
+            dst_country_code: None,
             resp_addr: "198.51.100.1".parse().unwrap(),
             resp_port: 443,
             proto: 6,

@@ -7,12 +7,17 @@ use serde::{Deserialize, Serialize};
 use super::{EventCategory, LearningMethod, MEDIUM, TriageScore, common::Match};
 use crate::event::common::{AttrValue, triage_scores_to_string};
 
+pub type UnusualDestinationPatternFields = UnusualDestinationPatternFieldsV0_43;
+
 #[derive(Serialize, Deserialize)]
-pub struct UnusualDestinationPatternFields {
+pub struct UnusualDestinationPatternFieldsV0_43 {
     pub sensor: String,
+    /// Timestamp in nanoseconds since the Unix epoch (UTC).
     pub start_time: i64,
+    /// Timestamp in nanoseconds since the Unix epoch (UTC).
     pub end_time: i64,
     pub destination_ips: Vec<IpAddr>,
+    pub dst_country_codes: Vec<Option<[u8; 2]>>,
     pub count: usize,
     pub expected_mean: f64,
     pub std_deviation: f64,

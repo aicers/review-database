@@ -40,7 +40,7 @@ macro_rules! find_bootp_attr_by_kind {
     }};
 }
 
-pub type BlocklistBootpFields = BlocklistBootpFieldsV0_42;
+pub type BlocklistBootpFields = BlocklistBootpFieldsV0_43;
 
 impl BlocklistBootpFields {
     #[must_use]
@@ -81,11 +81,13 @@ impl BlocklistBootpFields {
 }
 
 #[derive(Serialize, Deserialize)]
-pub struct BlocklistBootpFieldsV0_42 {
+pub struct BlocklistBootpFieldsV0_43 {
     pub sensor: String,
+    pub src_country_code: Option<[u8; 2]>,
     pub orig_addr: IpAddr,
     pub orig_port: u16,
     pub resp_addr: IpAddr,
+    pub dst_country_code: Option<[u8; 2]>,
     pub resp_port: u16,
     pub proto: u8,
     /// Timestamp in nanoseconds since the Unix epoch (UTC).
