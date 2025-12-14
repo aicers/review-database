@@ -59,14 +59,16 @@ macro_rules! find_http_attr_by_kind {
 }
 pub(super) use find_http_attr_by_kind;
 
-pub type HttpEventFields = HttpEventFieldsV0_42;
+pub type HttpEventFields = HttpEventFieldsV0_43;
 
 #[derive(Deserialize, Serialize)]
-pub struct HttpEventFieldsV0_42 {
+pub struct HttpEventFieldsV0_43 {
     pub sensor: String,
+    pub src_country_code: Option<[u8; 2]>,
     pub orig_addr: IpAddr,
     pub orig_port: u16,
     pub resp_addr: IpAddr,
+    pub dst_country_code: Option<[u8; 2]>,
     pub resp_port: u16,
     pub proto: u8,
     /// Timestamp in nanoseconds since the Unix epoch (UTC).
@@ -147,14 +149,16 @@ impl HttpEventFields {
     }
 }
 
-pub type RepeatedHttpSessionsFields = RepeatedHttpSessionsFieldsV0_42;
+pub type RepeatedHttpSessionsFields = RepeatedHttpSessionsFieldsV0_43;
 
 #[derive(Serialize, Deserialize)]
-pub struct RepeatedHttpSessionsFieldsV0_42 {
+pub struct RepeatedHttpSessionsFieldsV0_43 {
     pub sensor: String,
+    pub src_country_code: Option<[u8; 2]>,
     pub orig_addr: IpAddr,
     pub orig_port: u16,
     pub resp_addr: IpAddr,
+    pub dst_country_code: Option<[u8; 2]>,
     pub resp_port: u16,
     pub proto: u8,
     /// Timestamp in nanoseconds since the Unix epoch (UTC).
@@ -303,17 +307,19 @@ impl Match for RepeatedHttpSessions {
     }
 }
 
-pub type HttpThreatFields = HttpThreatFieldsV0_42;
+pub type HttpThreatFields = HttpThreatFieldsV0_43;
 
 #[derive(Debug, Deserialize, Serialize)]
 #[allow(clippy::module_name_repetitions)]
-pub struct HttpThreatFieldsV0_42 {
+pub struct HttpThreatFieldsV0_43 {
     #[serde(with = "ts_nanoseconds")]
     pub time: DateTime<Utc>,
     pub sensor: String,
+    pub src_country_code: Option<[u8; 2]>,
     pub orig_addr: IpAddr,
     pub orig_port: u16,
     pub resp_addr: IpAddr,
+    pub dst_country_code: Option<[u8; 2]>,
     pub resp_port: u16,
     pub proto: u8,
     /// Timestamp in nanoseconds since the Unix epoch (UTC).
@@ -652,14 +658,16 @@ impl Match for HttpThreat {
     }
 }
 
-pub type DgaFields = DgaFieldsV0_42;
+pub type DgaFields = DgaFieldsV0_43;
 
 #[derive(Debug, Deserialize, Serialize)]
-pub struct DgaFieldsV0_42 {
+pub struct DgaFieldsV0_43 {
     pub sensor: String,
+    pub src_country_code: Option<[u8; 2]>,
     pub orig_addr: IpAddr,
     pub orig_port: u16,
     pub resp_addr: IpAddr,
+    pub dst_country_code: Option<[u8; 2]>,
     pub resp_port: u16,
     pub proto: u8,
     /// Timestamp in nanoseconds since the Unix epoch (UTC).

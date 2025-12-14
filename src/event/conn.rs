@@ -35,13 +35,15 @@ macro_rules! find_conn_attr_by_kind {
 }
 pub(crate) use find_conn_attr_by_kind;
 
-pub type PortScanFields = PortScanFieldsV0_42;
+pub type PortScanFields = PortScanFieldsV0_43;
 
 #[derive(Serialize, Deserialize)]
-pub struct PortScanFieldsV0_42 {
+pub struct PortScanFieldsV0_43 {
     pub sensor: String,
+    pub src_country_code: Option<[u8; 2]>,
     pub orig_addr: IpAddr,
     pub resp_addr: IpAddr,
+    pub dst_country_code: Option<[u8; 2]>,
     pub resp_ports: Vec<u16>,
     /// Timestamp in nanoseconds since the Unix epoch (UTC).
     pub start_time: i64,
@@ -186,14 +188,16 @@ impl Match for PortScan {
     }
 }
 
-pub type MultiHostPortScanFields = MultiHostPortScanFieldsV0_42;
+pub type MultiHostPortScanFields = MultiHostPortScanFieldsV0_43;
 
 #[derive(Serialize, Deserialize)]
-pub struct MultiHostPortScanFieldsV0_42 {
+pub struct MultiHostPortScanFieldsV0_43 {
     pub sensor: String,
+    pub src_country_code: Option<[u8; 2]>,
     pub orig_addr: IpAddr,
     pub resp_port: u16,
     pub resp_addrs: Vec<IpAddr>,
+    pub dst_country_codes: Vec<Option<[u8; 2]>>,
     pub proto: u8,
     /// Timestamp in nanoseconds since the Unix epoch (UTC).
     pub start_time: i64,
@@ -338,13 +342,15 @@ impl Match for MultiHostPortScan {
     }
 }
 
-pub type ExternalDdosFields = ExternalDdosFieldsV0_42;
+pub type ExternalDdosFields = ExternalDdosFieldsV0_43;
 
 #[derive(Serialize, Deserialize)]
-pub struct ExternalDdosFieldsV0_42 {
+pub struct ExternalDdosFieldsV0_43 {
     pub sensor: String,
     pub orig_addrs: Vec<IpAddr>,
+    pub src_country_codes: Vec<Option<[u8; 2]>>,
     pub resp_addr: IpAddr,
+    pub dst_country_code: Option<[u8; 2]>,
     pub proto: u8,
     /// Timestamp in nanoseconds since the Unix epoch (UTC).
     pub start_time: i64,
@@ -484,14 +490,16 @@ impl Match for ExternalDdos {
     }
 }
 
-pub type BlocklistConnFields = BlocklistConnFieldsV0_42;
+pub type BlocklistConnFields = BlocklistConnFieldsV0_43;
 
 #[derive(Deserialize, Serialize)]
-pub struct BlocklistConnFieldsV0_42 {
+pub struct BlocklistConnFieldsV0_43 {
     pub sensor: String,
+    pub src_country_code: Option<[u8; 2]>,
     pub orig_addr: IpAddr,
     pub orig_port: u16,
     pub resp_addr: IpAddr,
+    pub dst_country_code: Option<[u8; 2]>,
     pub resp_port: u16,
     pub proto: u8,
     pub conn_state: String,
