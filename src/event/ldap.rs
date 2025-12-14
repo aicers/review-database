@@ -47,13 +47,15 @@ macro_rules! find_ldap_attr_by_kind {
     }};
 }
 
-pub type LdapBruteForceFields = LdapBruteForceFieldsV0_42;
+pub type LdapBruteForceFields = LdapBruteForceFieldsV0_43;
 
 #[derive(Serialize, Deserialize)]
-pub struct LdapBruteForceFieldsV0_42 {
+pub struct LdapBruteForceFieldsV0_43 {
     pub sensor: String,
+    pub src_country_code: Option<[u8; 2]>,
     pub orig_addr: IpAddr,
     pub resp_addr: IpAddr,
+    pub dst_country_code: Option<[u8; 2]>,
     pub resp_port: u16,
     pub proto: u8,
     pub user_pw_list: Vec<(String, String)>,
@@ -213,14 +215,16 @@ impl Match for LdapBruteForce {
     }
 }
 
-pub type LdapEventFields = LdapEventFieldsV0_42;
+pub type LdapEventFields = LdapEventFieldsV0_43;
 
 #[derive(Serialize, Deserialize)]
-pub struct LdapEventFieldsV0_42 {
+pub struct LdapEventFieldsV0_43 {
     pub sensor: String,
+    pub src_country_code: Option<[u8; 2]>,
     pub orig_addr: IpAddr,
     pub orig_port: u16,
     pub resp_addr: IpAddr,
+    pub dst_country_code: Option<[u8; 2]>,
     pub resp_port: u16,
     pub proto: u8,
     /// Timestamp in nanoseconds since the Unix epoch (UTC).

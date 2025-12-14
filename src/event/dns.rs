@@ -47,14 +47,16 @@ macro_rules! find_dns_attr_by_kind {
     }};
 }
 
-pub type DnsEventFields = DnsEventFieldsV0_42;
+pub type DnsEventFields = DnsEventFieldsV0_43;
 
 #[derive(Deserialize, Serialize)]
-pub struct DnsEventFieldsV0_42 {
+pub struct DnsEventFieldsV0_43 {
     pub sensor: String,
+    pub src_country_code: Option<[u8; 2]>,
     pub orig_addr: IpAddr,
     pub orig_port: u16,
     pub resp_addr: IpAddr,
+    pub dst_country_code: Option<[u8; 2]>,
     pub resp_port: u16,
     pub proto: u8,
     /// Timestamp in nanoseconds since the Unix epoch (UTC).
@@ -463,14 +465,16 @@ impl Match for LockyRansomware {
     }
 }
 
-pub type CryptocurrencyMiningPoolFields = CryptocurrencyMiningPoolFieldsV0_42;
+pub type CryptocurrencyMiningPoolFields = CryptocurrencyMiningPoolFieldsV0_43;
 
 #[derive(Deserialize, Serialize)]
-pub struct CryptocurrencyMiningPoolFieldsV0_42 {
+pub struct CryptocurrencyMiningPoolFieldsV0_43 {
     pub sensor: String,
+    pub src_country_code: Option<[u8; 2]>,
     pub orig_addr: IpAddr,
     pub orig_port: u16,
     pub resp_addr: IpAddr,
+    pub dst_country_code: Option<[u8; 2]>,
     pub resp_port: u16,
     pub proto: u8,
     /// Timestamp in nanoseconds since the Unix epoch (UTC).
@@ -711,14 +715,16 @@ impl Match for CryptocurrencyMiningPool {
     }
 }
 
-pub type BlocklistDnsFields = BlocklistDnsFieldsV0_42;
+pub type BlocklistDnsFields = BlocklistDnsFieldsV0_43;
 
 #[derive(Deserialize, Serialize)]
-pub struct BlocklistDnsFieldsV0_42 {
+pub struct BlocklistDnsFieldsV0_43 {
     pub sensor: String,
+    pub src_country_code: Option<[u8; 2]>,
     pub orig_addr: IpAddr,
     pub orig_port: u16,
     pub resp_addr: IpAddr,
+    pub dst_country_code: Option<[u8; 2]>,
     pub resp_port: u16,
     pub proto: u8,
     /// Timestamp in nanoseconds since the Unix epoch (UTC).

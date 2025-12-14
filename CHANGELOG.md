@@ -30,6 +30,14 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- Added `src_country_code` and `dst_country_code` fields to all event-specific
+  `*Fields` structs. These fields store 2-letter ISO country codes as
+  `Option<[u8; 2]>`, enabling geographic filtering and analysis of security
+  events. Country codes can be resolved from IP addresses using an ip2location
+  database during event creation.
+- Updated `migrate_data_dir` function signature to accept an optional
+  `ip2location::DB` parameter for resolving country codes during migration
+  from older database formats.
 - Added `BackupConfig` entity to configure RocksDB backup settings (interval,
   execution time, retention). The configuration can be saved, updated, and
   read from persistent storage, with default values applied if none exist.

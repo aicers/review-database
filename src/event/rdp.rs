@@ -35,13 +35,15 @@ macro_rules! find_rdp_attr_by_kind {
     }};
 }
 
-pub type RdpBruteForceFields = RdpBruteForceFieldsV0_42;
+pub type RdpBruteForceFields = RdpBruteForceFieldsV0_43;
 
 #[derive(Serialize, Deserialize)]
-pub struct RdpBruteForceFieldsV0_42 {
+pub struct RdpBruteForceFieldsV0_43 {
     pub sensor: String,
+    pub src_country_code: Option<[u8; 2]>,
     pub orig_addr: IpAddr,
     pub resp_addrs: Vec<IpAddr>,
+    pub dst_country_codes: Vec<Option<[u8; 2]>>,
     /// Timestamp in nanoseconds since the Unix epoch (UTC).
     pub start_time: i64,
     /// Timestamp in nanoseconds since the Unix epoch (UTC).
@@ -180,14 +182,16 @@ impl Match for RdpBruteForce {
     }
 }
 
-pub type BlocklistRdpFields = BlocklistRdpFieldsV0_42;
+pub type BlocklistRdpFields = BlocklistRdpFieldsV0_43;
 
 #[derive(Serialize, Deserialize)]
-pub struct BlocklistRdpFieldsV0_42 {
+pub struct BlocklistRdpFieldsV0_43 {
     pub sensor: String,
+    pub src_country_code: Option<[u8; 2]>,
     pub orig_addr: IpAddr,
     pub orig_port: u16,
     pub resp_addr: IpAddr,
+    pub dst_country_code: Option<[u8; 2]>,
     pub resp_port: u16,
     pub proto: u8,
     /// Timestamp in nanoseconds since the Unix epoch (UTC).
