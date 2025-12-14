@@ -156,7 +156,7 @@ macro_rules! find_ftp_attr_by_kind {
     }};
 }
 
-pub type FtpBruteForceFields = FtpBruteForceFieldsV0_42;
+pub type FtpBruteForceFields = FtpBruteForceFieldsV0_43;
 
 impl FtpBruteForceFields {
     #[must_use]
@@ -184,10 +184,12 @@ impl FtpBruteForceFields {
 }
 
 #[derive(Serialize, Deserialize)]
-pub struct FtpBruteForceFieldsV0_42 {
+pub struct FtpBruteForceFieldsV0_43 {
     pub sensor: String,
+    pub src_country_code: Option<[u8; 2]>,
     pub orig_addr: IpAddr,
     pub resp_addr: IpAddr,
+    pub dst_country_code: Option<[u8; 2]>,
     pub resp_port: u16,
     pub proto: u8,
     pub user_list: Vec<String>,
@@ -318,7 +320,7 @@ impl Match for FtpBruteForce {
     }
 }
 
-pub type FtpEventFields = FtpEventFieldsV0_42;
+pub type FtpEventFields = FtpEventFieldsV0_43;
 
 impl FtpEventFields {
     #[must_use]
@@ -358,11 +360,13 @@ impl FtpEventFields {
 }
 
 #[derive(Debug, Deserialize, Serialize)]
-pub struct FtpEventFieldsV0_42 {
+pub struct FtpEventFieldsV0_43 {
     pub sensor: String,
+    pub src_country_code: Option<[u8; 2]>,
     pub orig_addr: IpAddr,
     pub orig_port: u16,
     pub resp_addr: IpAddr,
+    pub dst_country_code: Option<[u8; 2]>,
     pub resp_port: u16,
     pub proto: u8,
     /// Timestamp in nanoseconds since the Unix epoch (UTC).
