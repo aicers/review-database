@@ -11,7 +11,10 @@ fn main() -> Result<()> {
 
     println!("Starting migration process...");
     println!("Migrating data directory...");
-    migrate_data_dir(&config.data_dir, &config.backup_dir).context("migration failed")?;
+    // Note: Passing None for the ip2location::DB means country codes will be set to None
+    // during migration. To resolve country codes from IP addresses, load an ip2location
+    // database and pass Some(&db) instead.
+    migrate_data_dir(&config.data_dir, &config.backup_dir, None).context("migration failed")?;
     Ok(())
 }
 

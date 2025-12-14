@@ -38,8 +38,10 @@ pub(crate) use find_conn_attr_by_kind;
 #[derive(Serialize, Deserialize)]
 pub struct PortScanFields {
     pub sensor: String,
+    pub src_country_code: Option<[u8; 2]>,
     pub orig_addr: IpAddr,
     pub resp_addr: IpAddr,
+    pub dst_country_code: Option<[u8; 2]>,
     pub resp_ports: Vec<u16>,
     /// Timestamp in nanoseconds since the Unix epoch (UTC).
     pub start_time: i64,
@@ -225,9 +227,11 @@ impl Match for PortScan {
 #[derive(Serialize, Deserialize)]
 pub struct MultiHostPortScanFields {
     pub sensor: String,
+    pub src_country_code: Option<[u8; 2]>,
     pub orig_addr: IpAddr,
     pub resp_port: u16,
     pub resp_addrs: Vec<IpAddr>,
+    pub dst_country_codes: Vec<Option<[u8; 2]>>,
     pub proto: u8,
     /// Timestamp in nanoseconds since the Unix epoch (UTC).
     pub start_time: i64,
@@ -414,7 +418,9 @@ impl Match for MultiHostPortScan {
 pub struct ExternalDdosFields {
     pub sensor: String,
     pub orig_addrs: Vec<IpAddr>,
+    pub src_country_codes: Vec<Option<[u8; 2]>>,
     pub resp_addr: IpAddr,
+    pub dst_country_code: Option<[u8; 2]>,
     pub proto: u8,
     /// Timestamp in nanoseconds since the Unix epoch (UTC).
     pub start_time: i64,
@@ -593,9 +599,11 @@ impl Match for ExternalDdos {
 #[derive(Deserialize, Serialize)]
 pub struct BlocklistConnFields {
     pub sensor: String,
+    pub src_country_code: Option<[u8; 2]>,
     pub orig_addr: IpAddr,
     pub orig_port: u16,
     pub resp_addr: IpAddr,
+    pub dst_country_code: Option<[u8; 2]>,
     pub resp_port: u16,
     pub proto: u8,
     pub conn_state: String,

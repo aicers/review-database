@@ -50,8 +50,10 @@ macro_rules! find_ldap_attr_by_kind {
 #[derive(Serialize, Deserialize)]
 pub struct LdapBruteForceFields {
     pub sensor: String,
+    pub src_country_code: Option<[u8; 2]>,
     pub orig_addr: IpAddr,
     pub resp_addr: IpAddr,
+    pub dst_country_code: Option<[u8; 2]>,
     pub resp_port: u16,
     pub proto: u8,
     pub user_pw_list: Vec<(String, String)>,
@@ -254,9 +256,11 @@ impl Match for LdapBruteForce {
 #[derive(Serialize, Deserialize)]
 pub struct LdapEventFields {
     pub sensor: String,
+    pub src_country_code: Option<[u8; 2]>,
     pub orig_addr: IpAddr,
     pub orig_port: u16,
     pub resp_addr: IpAddr,
+    pub dst_country_code: Option<[u8; 2]>,
     pub resp_port: u16,
     pub proto: u8,
     /// Timestamp in nanoseconds since the Unix epoch (UTC).

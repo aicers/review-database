@@ -50,9 +50,11 @@ macro_rules! find_dns_attr_by_kind {
 #[derive(Deserialize, Serialize)]
 pub struct DnsEventFields {
     pub sensor: String,
+    pub src_country_code: Option<[u8; 2]>,
     pub orig_addr: IpAddr,
     pub orig_port: u16,
     pub resp_addr: IpAddr,
+    pub dst_country_code: Option<[u8; 2]>,
     pub resp_port: u16,
     pub proto: u8,
     /// Timestamp in nanoseconds since the Unix epoch (UTC).
@@ -543,9 +545,11 @@ impl Match for LockyRansomware {
 #[derive(Deserialize, Serialize)]
 pub struct CryptocurrencyMiningPoolFields {
     pub sensor: String,
+    pub src_country_code: Option<[u8; 2]>,
     pub orig_addr: IpAddr,
     pub orig_port: u16,
     pub resp_addr: IpAddr,
+    pub dst_country_code: Option<[u8; 2]>,
     pub resp_port: u16,
     pub proto: u8,
     /// Timestamp in nanoseconds since the Unix epoch (UTC).
@@ -863,9 +867,11 @@ impl Match for CryptocurrencyMiningPool {
 #[derive(Deserialize, Serialize)]
 pub struct BlocklistDnsFields {
     pub sensor: String,
+    pub src_country_code: Option<[u8; 2]>,
     pub orig_addr: IpAddr,
     pub orig_port: u16,
     pub resp_addr: IpAddr,
+    pub dst_country_code: Option<[u8; 2]>,
     pub resp_port: u16,
     pub proto: u8,
     /// Timestamp in nanoseconds since the Unix epoch (UTC).
