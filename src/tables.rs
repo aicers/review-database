@@ -46,7 +46,7 @@ pub use self::allow_network::{AllowNetwork, Update as AllowNetworkUpdate};
 pub use self::backup_config::BackupConfig;
 pub use self::block_network::{BlockNetwork, Update as BlockNetworkUpdate};
 pub use self::cluster::Cluster;
-pub use self::column_stats::{ColumnStats, TopColumnsOfCluster, TopMultimaps};
+pub use self::column_stats::{ColumnStats, RetentionResult, TopColumnsOfCluster, TopMultimaps};
 pub use self::config::{
     KEY_EXPIRY_PERIOD, KEY_LOCKOUT_DURATION, KEY_LOCKOUT_THRESHOLD, KEY_SUSPENSION_THRESHOLD,
 };

@@ -33,6 +33,14 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   initialization and update functions utilize atomic batch operations (via newly
   added `init_multi` and `update_compare_multi`) to ensure consistency across
   all policy fields, preventing partial updates or race conditions.
+- Added `retain` and `count_expired` methods to `Table<ColumnStats>` for
+  time-based retention of column statistics data. The `retain` method performs
+  batched deletes to remove entries older than a specified cutoff timestamp,
+  minimizing database pressure. The `count_expired` method provides a dry-run
+  mode that reports how many entries would be deleted without performing actual
+  deletions. This addresses the issue of accumulating old statistics data that
+  was previously only removed when models were deleted. Added `RetentionResult`
+  struct to report the number of deleted entries and batches processed.
 
 ### Changed
 

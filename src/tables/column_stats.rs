@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use chrono::NaiveDateTime;
 use num_traits::{FromPrimitive, ToPrimitive};
 use rocksdb::{Direction, OptimisticTransactionDB};
@@ -25,6 +25,15 @@ pub struct TopColumnsOfCluster {
 pub struct TopMultimaps {
     pub n_index: usize,
     pub selected: Vec<TopColumnsOfCluster>,
+}
+
+/// Result of a column statistics retention operation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RetentionResult {
+    /// Number of entries deleted.
+    pub deleted: u64,
+    /// Number of batches processed.
+    pub batches: u64,
 }
 
 impl<'d> Table<'d, ColumnStats> {
@@ -75,6 +84,97 @@ impl<'d> Table<'d, ColumnStats> {
         }
 
         Ok(())
+    }
+
+    /// Deletes column statistics entries older than the specified cutoff timestamp.
+    ///
+    /// This method performs batched deletes to avoid holding large transactions
+    /// and reduce database pressure. It iterates through all entries and removes
+    /// those with `batch_ts` older than the cutoff.
+    ///
+    /// # Arguments
+    ///
+    /// * `cutoff_ts` - Entries with `batch_ts` before this timestamp will be deleted.
+    ///   The timestamp is in nanoseconds since Unix epoch.
+    /// * `batch_size` - Maximum number of entries to delete in a single transaction.
+    ///   Recommended values are between 1,000 and 50,000.
+    ///
+    /// # Returns
+    ///
+    /// Returns a `RetentionResult` containing the number of entries deleted and
+    /// the number of batches processed.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database operation fails.
+    pub fn retain(&self, cutoff_ts: i64, batch_size: usize) -> Result<RetentionResult> {
+        let mut total_deleted = 0u64;
+        let mut batches_processed = 0u64;
+
+        loop {
+            let mut to_delete: Vec<Vec<u8>> = Vec::with_capacity(batch_size);
+
+            // Collect keys to delete in this batch
+            for result in self.iter(Direction::Forward, None) {
+                let stats = result.context("failed to read column stats entry")?;
+                if stats.batch_ts < cutoff_ts {
+                    to_delete.push(stats.unique_key());
+                    if to_delete.len() >= batch_size {
+                        break;
+                    }
+                }
+            }
+
+            if to_delete.is_empty() {
+                break;
+            }
+
+            // Delete the batch within a transaction
+            let txn = self.map.db.transaction();
+            for key in &to_delete {
+                txn.delete_cf(self.map.cf, key)
+                    .context("failed to delete column stats entry")?;
+            }
+            txn.commit().context("failed to commit retention batch")?;
+
+            total_deleted += to_delete.len() as u64;
+            batches_processed += 1;
+        }
+
+        Ok(RetentionResult {
+            deleted: total_deleted,
+            batches: batches_processed,
+        })
+    }
+
+    /// Counts the number of entries that would be deleted by a retention operation.
+    ///
+    /// This is a dry-run mode that reports how many entries would be deleted
+    /// without performing any actual deletions.
+    ///
+    /// # Arguments
+    ///
+    /// * `cutoff_ts` - Entries with `batch_ts` before this timestamp would be deleted.
+    ///   The timestamp is in nanoseconds since Unix epoch.
+    ///
+    /// # Returns
+    ///
+    /// Returns the number of entries that would be deleted.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database operation fails.
+    pub fn count_expired(&self, cutoff_ts: i64) -> Result<u64> {
+        let mut count = 0u64;
+
+        for result in self.iter(Direction::Forward, None) {
+            let stats = result.context("failed to read column stats entry")?;
+            if stats.batch_ts < cutoff_ts {
+                count += 1;
+            }
+        }
+
+        Ok(count)
     }
 
     /// Returns the column statistics for the given cluster and time.
@@ -1294,6 +1394,233 @@ mod tests {
 
         let counts: Vec<_> = column_result.counts.iter().map(|e| e.count).collect();
         assert_eq!(counts, vec![30, 20]);
+    }
+
+    #[test]
+    fn test_retain_deletes_old_entries() {
+        use structured::{ColumnStatistics, Description, Element, NLargestCount};
+
+        let (_permit, store) = setup_store();
+        let table = store.column_stats_map();
+
+        let model_id = 100;
+        let cluster_id = 1;
+
+        // Create entries with different timestamps
+        // Old entry (2020-01-01)
+        let old_batch = NaiveDate::from_ymd_opt(2020, 1, 1)
+            .unwrap()
+            .and_hms_opt(0, 0, 0)
+            .unwrap();
+
+        // Recent entry (2025-01-01)
+        let recent_batch = NaiveDate::from_ymd_opt(2025, 1, 1)
+            .unwrap()
+            .and_hms_opt(0, 0, 0)
+            .unwrap();
+
+        let stats = ColumnStatistics {
+            description: Description::default(),
+            n_largest_count: NLargestCount::new(
+                1,
+                vec![ElementCount {
+                    value: Element::Int(1),
+                    count: 10,
+                }],
+                Some(Element::Int(1)),
+            ),
+        };
+
+        // Insert old and recent entries
+        table
+            .insert_column_statistics(vec![(cluster_id, vec![stats.clone()])], model_id, old_batch)
+            .unwrap();
+        table
+            .insert_column_statistics(
+                vec![(cluster_id, vec![stats.clone()])],
+                model_id + 1,
+                recent_batch,
+            )
+            .unwrap();
+
+        // Cutoff at 2024-01-01 (should delete the 2020 entry but keep the 2025 entry)
+        let cutoff = NaiveDate::from_ymd_opt(2024, 1, 1)
+            .unwrap()
+            .and_hms_opt(0, 0, 0)
+            .unwrap();
+        let cutoff_ts = from_naive_utc(cutoff);
+
+        let result = table.retain(cutoff_ts, 100).unwrap();
+        assert_eq!(result.deleted, 1);
+        assert_eq!(result.batches, 1);
+
+        // Verify old entry was deleted
+        let old_ts = from_naive_utc(old_batch);
+        assert!(table.get(old_ts, model_id, cluster_id).next().is_none());
+
+        // Verify recent entry still exists
+        let recent_ts = from_naive_utc(recent_batch);
+        assert!(
+            table
+                .get(recent_ts, model_id + 1, cluster_id)
+                .next()
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn test_retain_batching() {
+        use structured::{ColumnStatistics, Description, Element, NLargestCount};
+
+        let (_permit, store) = setup_store();
+        let table = store.column_stats_map();
+
+        let cluster_id = 1;
+
+        // Create 10 old entries
+        let old_batch = NaiveDate::from_ymd_opt(2020, 1, 1)
+            .unwrap()
+            .and_hms_opt(0, 0, 0)
+            .unwrap();
+
+        let stats = ColumnStatistics {
+            description: Description::default(),
+            n_largest_count: NLargestCount::new(
+                1,
+                vec![ElementCount {
+                    value: Element::Int(1),
+                    count: 10,
+                }],
+                Some(Element::Int(1)),
+            ),
+        };
+
+        for model_id in 0..10u32 {
+            table
+                .insert_column_statistics(
+                    vec![(cluster_id, vec![stats.clone()])],
+                    model_id,
+                    old_batch,
+                )
+                .unwrap();
+        }
+
+        // Delete with batch size of 3 (should result in 4 batches: 3+3+3+1)
+        let cutoff = NaiveDate::from_ymd_opt(2024, 1, 1)
+            .unwrap()
+            .and_hms_opt(0, 0, 0)
+            .unwrap();
+        let cutoff_ts = from_naive_utc(cutoff);
+
+        let result = table.retain(cutoff_ts, 3).unwrap();
+        assert_eq!(result.deleted, 10);
+        assert_eq!(result.batches, 4);
+    }
+
+    #[test]
+    fn test_retain_no_entries_to_delete() {
+        use structured::{ColumnStatistics, Description, Element, NLargestCount};
+
+        let (_permit, store) = setup_store();
+        let table = store.column_stats_map();
+
+        let model_id = 100;
+        let cluster_id = 1;
+
+        // Create only recent entries
+        let recent_batch = NaiveDate::from_ymd_opt(2025, 1, 1)
+            .unwrap()
+            .and_hms_opt(0, 0, 0)
+            .unwrap();
+
+        let stats = ColumnStatistics {
+            description: Description::default(),
+            n_largest_count: NLargestCount::new(
+                1,
+                vec![ElementCount {
+                    value: Element::Int(1),
+                    count: 10,
+                }],
+                Some(Element::Int(1)),
+            ),
+        };
+
+        table
+            .insert_column_statistics(vec![(cluster_id, vec![stats])], model_id, recent_batch)
+            .unwrap();
+
+        // Cutoff at 2024-01-01 (no entries should be deleted)
+        let cutoff = NaiveDate::from_ymd_opt(2024, 1, 1)
+            .unwrap()
+            .and_hms_opt(0, 0, 0)
+            .unwrap();
+        let cutoff_ts = from_naive_utc(cutoff);
+
+        let result = table.retain(cutoff_ts, 100).unwrap();
+        assert_eq!(result.deleted, 0);
+        assert_eq!(result.batches, 0);
+    }
+
+    #[test]
+    fn test_count_expired() {
+        use structured::{ColumnStatistics, Description, Element, NLargestCount};
+
+        let (_permit, store) = setup_store();
+        let table = store.column_stats_map();
+
+        let cluster_id = 1;
+
+        // Create entries with different timestamps
+        let old_batch = NaiveDate::from_ymd_opt(2020, 1, 1)
+            .unwrap()
+            .and_hms_opt(0, 0, 0)
+            .unwrap();
+        let recent_batch = NaiveDate::from_ymd_opt(2025, 1, 1)
+            .unwrap()
+            .and_hms_opt(0, 0, 0)
+            .unwrap();
+
+        let stats = ColumnStatistics {
+            description: Description::default(),
+            n_largest_count: NLargestCount::new(
+                1,
+                vec![ElementCount {
+                    value: Element::Int(1),
+                    count: 10,
+                }],
+                Some(Element::Int(1)),
+            ),
+        };
+
+        // Insert 3 old and 2 recent entries
+        for model_id in 0..3u32 {
+            table
+                .insert_column_statistics(
+                    vec![(cluster_id, vec![stats.clone()])],
+                    model_id,
+                    old_batch,
+                )
+                .unwrap();
+        }
+        for model_id in 100..102u32 {
+            table
+                .insert_column_statistics(
+                    vec![(cluster_id, vec![stats.clone()])],
+                    model_id,
+                    recent_batch,
+                )
+                .unwrap();
+        }
+
+        let cutoff = NaiveDate::from_ymd_opt(2024, 1, 1)
+            .unwrap()
+            .and_hms_opt(0, 0, 0)
+            .unwrap();
+        let cutoff_ts = from_naive_utc(cutoff);
+
+        // Should count only the 3 old entries
+        let count = table.count_expired(cutoff_ts).unwrap();
+        assert_eq!(count, 3);
     }
 
     fn setup_store() -> (DbGuard<'static>, Arc<Store>) {
