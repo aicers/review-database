@@ -10,11 +10,19 @@ fn main() -> Result<()> {
     let config = Config::load_config(parse().as_deref())?;
 
     println!("Starting migration process...");
+
+    let locator = config
+        .ip2location
+        .as_ref()
+        .map(|path| {
+            println!("Loading ip2location database from {}...", path.display());
+            ip2location::DB::from_file(path).context("failed to load ip2location database")
+        })
+        .transpose()?;
+
     println!("Migrating data directory...");
-    // Note: Passing None for the ip2location::DB means country codes will be set to None
-    // during migration. To resolve country codes from IP addresses, load an ip2location
-    // database and pass Some(&db) instead.
-    migrate_data_dir(&config.data_dir, &config.backup_dir, None).context("migration failed")?;
+    migrate_data_dir(&config.data_dir, &config.backup_dir, locator.as_ref())
+        .context("migration failed")?;
     Ok(())
 }
 
@@ -60,6 +68,7 @@ fn bin() -> &'static str {
 pub struct Config {
     data_dir: PathBuf,
     backup_dir: PathBuf,
+    ip2location: Option<PathBuf>,
 }
 
 impl Config {
@@ -86,6 +95,7 @@ impl Config {
         Ok(Self {
             data_dir: config.data_dir,
             backup_dir: config.backup_dir,
+            ip2location: config.ip2location,
         })
     }
 }
@@ -94,4 +104,5 @@ impl Config {
 struct ConfigParser {
     data_dir: PathBuf,
     backup_dir: PathBuf,
+    ip2location: Option<PathBuf>,
 }
