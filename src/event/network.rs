@@ -38,9 +38,13 @@ pub struct NetworkThreat {
     #[serde(with = "ts_nanoseconds")]
     pub time: DateTime<Utc>,
     pub sensor: String,
+    #[serde(default)]
+    pub src_country_code: Option<[u8; 2]>,
     pub orig_addr: IpAddr,
     pub orig_port: u16,
     pub resp_addr: IpAddr,
+    #[serde(default)]
+    pub dst_country_code: Option<[u8; 2]>,
     pub resp_port: u16,
     pub proto: u8,
     pub service: String,

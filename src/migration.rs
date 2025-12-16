@@ -862,8 +862,8 @@ fn migrate_event_country_codes(db_path: &Path, locator: Option<&ip2location::DB>
         DnsEventFieldsV0_43, ExternalDdosFieldsV0_43, FtpBruteForceFieldsV0_43,
         FtpEventFieldsV0_43, HttpEventFieldsV0_43, HttpThreatFieldsV0_43,
         LdapBruteForceFieldsV0_43, LdapEventFieldsV0_43, MultiHostPortScanFieldsV0_43,
-        PortScanFieldsV0_43, RdpBruteForceFieldsV0_43, RepeatedHttpSessionsFieldsV0_43,
-        UnusualDestinationPatternFieldsV0_43,
+        NetworkThreatV0_43, PortScanFieldsV0_43, RdpBruteForceFieldsV0_43,
+        RepeatedHttpSessionsFieldsV0_43, UnusualDestinationPatternFieldsV0_43,
     };
 
     info!("Migrating event fields to add country codes");
@@ -1057,8 +1057,11 @@ fn migrate_event_country_codes(db_path: &Path, locator: Option<&ip2location::DB>
                 UnusualDestinationPatternFieldsV0_43,
                 UnusualDestinationPatternFields,
             >(&event_msg.fields, locator)?,
+            EventKind::NetworkThreat => {
+                migrate_fields::<NetworkThreatV0_43, NetworkThreat>(&event_msg.fields, locator)?
+            }
             // These event types don't have country code fields or use different structures
-            EventKind::WindowsThreat | EventKind::NetworkThreat | EventKind::ExtraThreat => {
+            EventKind::WindowsThreat | EventKind::ExtraThreat => {
                 // Skip migration for these types - they don't have the standard
                 // orig_addr/resp_addr fields or use different serialization
                 skipped_count += 1;
@@ -1122,7 +1125,7 @@ use crate::event::{
     BlocklistSmbFields, BlocklistSmtpFields, BlocklistSshFields, BlocklistTlsFields,
     CryptocurrencyMiningPoolFields, DgaFields, DnsEventFields, ExternalDdosFields,
     FtpBruteForceFields, FtpEventFields, HttpEventFields, HttpThreatFields, LdapBruteForceFields,
-    LdapEventFields, MultiHostPortScanFields, PortScanFields, RdpBruteForceFields,
+    LdapEventFields, MultiHostPortScanFields, NetworkThreat, PortScanFields, RdpBruteForceFields,
     RepeatedHttpSessionsFields, UnusualDestinationPatternFields,
 };
 
@@ -1355,6 +1358,13 @@ impl ResolveCountryCodes for UnusualDestinationPatternFields {
             .iter()
             .map(|addr| country_code_to_bytes(locator, *addr))
             .collect();
+    }
+}
+
+impl ResolveCountryCodes for NetworkThreat {
+    fn resolve_country_codes(&mut self, locator: &ip2location::DB) {
+        self.src_country_code = country_code_to_bytes(locator, self.orig_addr);
+        self.dst_country_code = country_code_to_bytes(locator, self.resp_addr);
     }
 }
 

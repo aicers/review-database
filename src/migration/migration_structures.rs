@@ -1893,3 +1893,67 @@ impl From<UnusualDestinationPatternFieldsV0_42> for UnusualDestinationPatternFie
         }
     }
 }
+
+/// Network threat from version 0.42.x (before country codes were added)
+#[derive(Deserialize, Serialize)]
+pub(crate) struct NetworkThreatV0_42 {
+    #[serde(with = "chrono::serde::ts_nanoseconds")]
+    pub time: DateTime<Utc>,
+    pub sensor: String,
+    pub orig_addr: IpAddr,
+    pub orig_port: u16,
+    pub resp_addr: IpAddr,
+    pub resp_port: u16,
+    pub proto: u8,
+    pub service: String,
+    #[serde(with = "chrono::serde::ts_nanoseconds")]
+    pub start_time: DateTime<Utc>,
+    pub duration: i64,
+    pub orig_pkts: u64,
+    pub resp_pkts: u64,
+    pub orig_l2_bytes: u64,
+    pub resp_l2_bytes: u64,
+    pub content: String,
+    pub db_name: String,
+    pub rule_id: u32,
+    pub matched_to: String,
+    pub cluster_id: Option<usize>,
+    pub attack_kind: String,
+    pub confidence: f32,
+    pub category: Option<EventCategory>,
+    pub triage_scores: Option<Vec<crate::event::TriageScore>>,
+}
+
+use crate::event::NetworkThreat;
+
+impl From<NetworkThreatV0_42> for NetworkThreat {
+    fn from(old: NetworkThreatV0_42) -> Self {
+        Self {
+            time: old.time,
+            sensor: old.sensor,
+            src_country_code: None,
+            orig_addr: old.orig_addr,
+            orig_port: old.orig_port,
+            resp_addr: old.resp_addr,
+            dst_country_code: None,
+            resp_port: old.resp_port,
+            proto: old.proto,
+            service: old.service,
+            start_time: old.start_time,
+            duration: old.duration,
+            orig_pkts: old.orig_pkts,
+            resp_pkts: old.resp_pkts,
+            orig_l2_bytes: old.orig_l2_bytes,
+            resp_l2_bytes: old.resp_l2_bytes,
+            content: old.content,
+            db_name: old.db_name,
+            rule_id: old.rule_id,
+            matched_to: old.matched_to,
+            cluster_id: old.cluster_id,
+            attack_kind: old.attack_kind,
+            confidence: old.confidence,
+            category: old.category,
+            triage_scores: old.triage_scores,
+        }
+    }
+}
