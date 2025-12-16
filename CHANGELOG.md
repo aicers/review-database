@@ -102,6 +102,12 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   - `dst_port` → `resp_port`
   - `dst_ports` → `resp_ports`
 
+### Fixed
+
+- Fixed `migrate_customer_specific_networks` to allow creating missing
+  column families during migration, enabling successful migration when new
+  column families are added to the database schema.
+
 ### Removed
 
 - The deprecated function, `Store::account_policy_map`, has been removed; use
