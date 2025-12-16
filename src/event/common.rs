@@ -2540,9 +2540,11 @@ mod tests {
         NetworkThreat {
             time: Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap(),
             sensor: "sensor".to_string(),
+            src_country_code: None,
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             orig_port: 10000,
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
+            dst_country_code: None,
             resp_port: 80,
             proto: 6,
             service: "http".to_string(),
