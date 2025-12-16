@@ -25,7 +25,9 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   database during event creation.
 - Updated `migrate_data_dir` function signature to accept an optional
   `ip2location::DB` parameter for resolving country codes during migration
-  from older database formats.
+  from older database formats. The migration binary now supports an optional
+  `ip2location` configuration field to specify the path to an ip2location
+  database file for country code resolution during migration.
 - Added `BackupConfig` entity to configure RocksDB backup settings (interval,
   execution time, retention). The configuration can be saved, updated, and
   read from persistent storage, with default values applied if none exist.
