@@ -1,0 +1,18 @@
+codecov:
+  require_ci_to_pass: true
+
+coverage:
+  status:
+    project:
+      default:
+        # Only fail if coverage drops by more than 1%
+        threshold: 1%
+    patch:
+      default:
+        # Only fail if patch coverage is below 50%
+        # This accommodates version constants and configuration changes
+        target: 50%
+
+ignore:
+  # Migration version constants are configuration, not testable logic
+  - "src/migrate.rs"
