@@ -99,7 +99,7 @@ use crate::{
 /// // release that involves database format change) to 3.5.0, including
 /// // all alpha changes finalized in 3.5.0.
 /// ```
-const COMPATIBLE_VERSION_REQ: &str = ">=0.43.0-alpha.3,<0.43.0-alpha.4";
+const COMPATIBLE_VERSION_REQ: &str = ">=0.43.0,<0.44.0";
 
 /// Migrates the data directory to the up-to-date format if necessary.
 ///
@@ -147,8 +147,8 @@ pub fn migrate_data_dir<P: AsRef<Path>>(data_dir: P, backup_dir: P) -> Result<()
     //   the first version (major.minor) in the "version requirement" and B is the "to version"
     //   (major.minor). (NOTE: Once we release 1.0.0, A and B will contain the major version only.)
     let migration: Vec<Migration> = vec![(
-        VersionReq::parse(">=0.42.0,<0.43.0-alpha.3")?,
-        Version::parse("0.43.0-alpha.3")?,
+        VersionReq::parse(">=0.42.0,<0.43.0")?,
+        Version::parse("0.43.0")?,
         migrate_0_42_to_0_43,
     )];
 
