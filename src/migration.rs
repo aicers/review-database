@@ -420,7 +420,7 @@ fn migrate_customer_specific_networks(db_path: &Path) -> Result<()> {
 
     let mut opts = rocksdb::Options::default();
     opts.create_if_missing(false);
-    opts.create_missing_column_families(false);
+    opts.create_missing_column_families(true);
 
     let db: rocksdb::OptimisticTransactionDB<rocksdb::SingleThreaded> =
         rocksdb::OptimisticTransactionDB::open_cf(&opts, db_path, crate::tables::MAP_NAMES)
