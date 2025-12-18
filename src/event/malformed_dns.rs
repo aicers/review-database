@@ -116,9 +116,11 @@ fn format_vec_vec_u8(data: &[Vec<u8>]) -> String {
 pub struct BlocklistMalformedDns {
     pub time: DateTime<Utc>,
     pub sensor: String,
+    pub src_country_code: Option<[u8; 2]>,
     pub orig_addr: IpAddr,
     pub orig_port: u16,
     pub resp_addr: IpAddr,
+    pub dst_country_code: Option<[u8; 2]>,
     pub resp_port: u16,
     pub proto: u8,
     pub start_time: DateTime<Utc>,
@@ -185,9 +187,11 @@ impl BlocklistMalformedDns {
         Self {
             time,
             sensor: fields.sensor,
+            src_country_code: fields.src_country_code,
             orig_addr: fields.orig_addr,
             orig_port: fields.orig_port,
             resp_addr: fields.resp_addr,
+            dst_country_code: fields.dst_country_code,
             resp_port: fields.resp_port,
             proto: fields.proto,
             start_time: DateTime::from_timestamp_nanos(fields.start_time),
