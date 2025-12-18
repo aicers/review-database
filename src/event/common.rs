@@ -2229,7 +2229,7 @@ mod tests {
                 IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
                 IpAddr::V4(Ipv4Addr::new(127, 0, 0, 3)),
             ],
-            dst_country_codes: vec![],
+            dst_country_codes: vec![None, None],
             resp_port: 80,
             start_time: Utc
                 .with_ymd_and_hms(1970, 1, 1, 0, 1, 1)
@@ -2254,7 +2254,7 @@ mod tests {
                 IpAddr::V4(Ipv4Addr::LOCALHOST),
                 IpAddr::V4(Ipv4Addr::new(127, 0, 0, 3)),
             ],
-            src_country_codes: vec![],
+            src_country_codes: vec![None, None],
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
             dst_country_code: None,
             start_time: Utc
@@ -2482,7 +2482,7 @@ mod tests {
                 IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
                 IpAddr::V4(Ipv4Addr::new(127, 0, 0, 3)),
             ],
-            dst_country_codes: vec![],
+            dst_country_codes: vec![None, None],
             start_time: Utc
                 .with_ymd_and_hms(1970, 1, 1, 0, 1, 1)
                 .unwrap()
@@ -2746,7 +2746,7 @@ mod tests {
                 .timestamp_nanos_opt()
                 .unwrap(),
             destination_ips: vec![IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1))],
-            dst_country_codes: vec![],
+            dst_country_codes: vec![None],
             count: 1,
             expected_mean: 0.0,
             std_deviation: 0.0,
