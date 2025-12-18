@@ -106,9 +106,11 @@ fn get_user_pw_list(user_pw_list: &[(String, String)]) -> String {
 #[derive(Serialize, Deserialize)]
 pub struct LdapBruteForce {
     pub sensor: String,
+    pub src_country_code: Option<[u8; 2]>,
     pub time: DateTime<Utc>,
     pub orig_addr: IpAddr,
     pub resp_addr: IpAddr,
+    pub dst_country_code: Option<[u8; 2]>,
     pub resp_port: u16,
     pub proto: u8,
     pub user_pw_list: Vec<(String, String)>,
@@ -140,9 +142,11 @@ impl LdapBruteForce {
     pub(super) fn new(time: DateTime<Utc>, fields: &LdapBruteForceFields) -> Self {
         LdapBruteForce {
             sensor: fields.sensor.clone(),
+            src_country_code: fields.src_country_code,
             time,
             orig_addr: fields.orig_addr,
             resp_addr: fields.resp_addr,
+            dst_country_code: fields.dst_country_code,
             resp_port: fields.resp_port,
             proto: fields.proto,
             user_pw_list: fields.user_pw_list.clone(),
@@ -283,9 +287,11 @@ impl LdapEventFields {
 pub struct LdapPlainText {
     pub time: DateTime<Utc>,
     pub sensor: String,
+    pub src_country_code: Option<[u8; 2]>,
     pub orig_addr: IpAddr,
     pub orig_port: u16,
     pub resp_addr: IpAddr,
+    pub dst_country_code: Option<[u8; 2]>,
     pub resp_port: u16,
     pub proto: u8,
     pub start_time: DateTime<Utc>,
@@ -340,10 +346,12 @@ impl LdapPlainText {
         Self {
             time,
             sensor: fields.sensor,
+            src_country_code: fields.src_country_code,
             start_time: DateTime::from_timestamp_nanos(fields.start_time),
             orig_addr: fields.orig_addr,
             orig_port: fields.orig_port,
             resp_addr: fields.resp_addr,
+            dst_country_code: fields.dst_country_code,
             resp_port: fields.resp_port,
             proto: fields.proto,
             duration: fields.duration,
@@ -419,9 +427,11 @@ impl Match for LdapPlainText {
 pub struct BlocklistLdap {
     pub time: DateTime<Utc>,
     pub sensor: String,
+    pub src_country_code: Option<[u8; 2]>,
     pub orig_addr: IpAddr,
     pub orig_port: u16,
     pub resp_addr: IpAddr,
+    pub dst_country_code: Option<[u8; 2]>,
     pub resp_port: u16,
     pub proto: u8,
     pub start_time: DateTime<Utc>,
@@ -476,10 +486,12 @@ impl BlocklistLdap {
         Self {
             time,
             sensor: fields.sensor,
+            src_country_code: fields.src_country_code,
             start_time: DateTime::from_timestamp_nanos(fields.start_time),
             orig_addr: fields.orig_addr,
             orig_port: fields.orig_port,
             resp_addr: fields.resp_addr,
+            dst_country_code: fields.dst_country_code,
             resp_port: fields.resp_port,
             proto: fields.proto,
             duration: fields.duration,
