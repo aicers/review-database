@@ -64,11 +64,11 @@ pub type HttpEventFields = HttpEventFieldsV0_43;
 #[derive(Deserialize, Serialize)]
 pub struct HttpEventFieldsV0_43 {
     pub sensor: String,
-    pub src_country_code: Option<[u8; 2]>,
+    pub src_country_code: [u8; 2],
     pub orig_addr: IpAddr,
     pub orig_port: u16,
     pub resp_addr: IpAddr,
-    pub dst_country_code: Option<[u8; 2]>,
+    pub dst_country_code: [u8; 2],
     pub resp_port: u16,
     pub proto: u8,
     /// Timestamp in nanoseconds since the Unix epoch (UTC).
@@ -154,11 +154,11 @@ pub type RepeatedHttpSessionsFields = RepeatedHttpSessionsFieldsV0_43;
 #[derive(Serialize, Deserialize)]
 pub struct RepeatedHttpSessionsFieldsV0_43 {
     pub sensor: String,
-    pub src_country_code: Option<[u8; 2]>,
+    pub src_country_code: [u8; 2],
     pub orig_addr: IpAddr,
     pub orig_port: u16,
     pub resp_addr: IpAddr,
-    pub dst_country_code: Option<[u8; 2]>,
+    pub dst_country_code: [u8; 2],
     pub resp_port: u16,
     pub proto: u8,
     /// Timestamp in nanoseconds since the Unix epoch (UTC).
@@ -197,11 +197,11 @@ impl RepeatedHttpSessionsFields {
 pub struct RepeatedHttpSessions {
     pub time: DateTime<Utc>,
     pub sensor: String,
-    pub src_country_code: Option<[u8; 2]>,
+    pub src_country_code: [u8; 2],
     pub orig_addr: IpAddr,
     pub orig_port: u16,
     pub resp_addr: IpAddr,
-    pub dst_country_code: Option<[u8; 2]>,
+    pub dst_country_code: [u8; 2],
     pub resp_port: u16,
     pub proto: u8,
     pub start_time: DateTime<Utc>,
@@ -326,11 +326,11 @@ pub struct HttpThreatFieldsV0_43 {
     #[serde(with = "ts_nanoseconds")]
     pub time: DateTime<Utc>,
     pub sensor: String,
-    pub src_country_code: Option<[u8; 2]>,
+    pub src_country_code: [u8; 2],
     pub orig_addr: IpAddr,
     pub orig_port: u16,
     pub resp_addr: IpAddr,
-    pub dst_country_code: Option<[u8; 2]>,
+    pub dst_country_code: [u8; 2],
     pub resp_port: u16,
     pub proto: u8,
     /// Timestamp in nanoseconds since the Unix epoch (UTC).
@@ -442,11 +442,11 @@ pub struct HttpThreat {
     #[serde(with = "ts_nanoseconds")]
     pub time: DateTime<Utc>,
     pub sensor: String,
-    pub src_country_code: Option<[u8; 2]>,
+    pub src_country_code: [u8; 2],
     pub orig_addr: IpAddr,
     pub orig_port: u16,
     pub resp_addr: IpAddr,
-    pub dst_country_code: Option<[u8; 2]>,
+    pub dst_country_code: [u8; 2],
     pub resp_port: u16,
     pub proto: u8,
     pub start_time: DateTime<Utc>,
@@ -685,11 +685,11 @@ pub type DgaFields = DgaFieldsV0_43;
 #[derive(Debug, Deserialize, Serialize)]
 pub struct DgaFieldsV0_43 {
     pub sensor: String,
-    pub src_country_code: Option<[u8; 2]>,
+    pub src_country_code: [u8; 2],
     pub orig_addr: IpAddr,
     pub orig_port: u16,
     pub resp_addr: IpAddr,
-    pub dst_country_code: Option<[u8; 2]>,
+    pub dst_country_code: [u8; 2],
     pub resp_port: u16,
     pub proto: u8,
     /// Timestamp in nanoseconds since the Unix epoch (UTC).
@@ -775,11 +775,11 @@ pub struct DomainGenerationAlgorithm {
     #[serde(with = "ts_nanoseconds")]
     pub time: DateTime<Utc>,
     pub sensor: String,
-    pub src_country_code: Option<[u8; 2]>,
+    pub src_country_code: [u8; 2],
     pub orig_addr: IpAddr,
     pub orig_port: u16,
     pub resp_addr: IpAddr,
-    pub dst_country_code: Option<[u8; 2]>,
+    pub dst_country_code: [u8; 2],
     pub resp_port: u16,
     pub proto: u8,
     pub start_time: DateTime<Utc>,
@@ -977,11 +977,11 @@ impl Match for DomainGenerationAlgorithm {
 pub struct NonBrowser {
     pub time: DateTime<Utc>,
     pub sensor: String,
-    pub src_country_code: Option<[u8; 2]>,
+    pub src_country_code: [u8; 2],
     pub orig_addr: IpAddr,
     pub orig_port: u16,
     pub resp_addr: IpAddr,
-    pub dst_country_code: Option<[u8; 2]>,
+    pub dst_country_code: [u8; 2],
     pub resp_port: u16,
     pub proto: u8,
     pub start_time: DateTime<Utc>,
@@ -1182,11 +1182,11 @@ pub type BlocklistHttpFields = DgaFields;
 pub struct BlocklistHttp {
     pub time: DateTime<Utc>,
     pub sensor: String,
-    pub src_country_code: Option<[u8; 2]>,
+    pub src_country_code: [u8; 2],
     pub orig_addr: IpAddr,
     pub orig_port: u16,
     pub resp_addr: IpAddr,
-    pub dst_country_code: Option<[u8; 2]>,
+    pub dst_country_code: [u8; 2],
     pub resp_port: u16,
     pub proto: u8,
     pub start_time: DateTime<Utc>,
