@@ -102,6 +102,16 @@ use crate::{
 /// ```
 const COMPATIBLE_VERSION_REQ: &str = ">=0.44.0-alpha.1,<0.44.0-alpha.2";
 
+/// A migration entry consisting of (version requirement, target version, migration function).
+///
+/// - The "version requirement" should include all the earlier, released versions that use the
+///   database format the migration function can handle, and exclude the first future version
+///   that uses a new database format.
+/// - The "to version" should be the first future version that uses a new database format.
+/// - The "migration function" should migrate the database from the version before "to version"
+///   to "to version".
+pub type Migration = (VersionReq, Version, fn(&Path) -> anyhow::Result<()>);
+
 /// Migrates the data directory to the up-to-date format if necessary.
 ///
 /// Migration is supported between released versions only. The prelease versions (alpha, beta,
@@ -112,9 +122,12 @@ const COMPATIBLE_VERSION_REQ: &str = ">=0.44.0-alpha.1,<0.44.0-alpha.2";
 /// Returns an error if the data directory doesn't exist and cannot be created,
 /// or if the data directory exists but is in the format incompatible with the
 /// current version.
+///
+/// # Panics
+///
+/// Panics if `COMPATIBLE_VERSION_REQ` or any migration version string is malformed.
+/// These are compile-time constants, so a panic here indicates a programmer error.
 pub fn migrate_data_dir<P: AsRef<Path>>(data_dir: P, backup_dir: P) -> Result<()> {
-    type Migration = (VersionReq, Version, fn(&Path) -> anyhow::Result<()>);
-
     let data_dir = data_dir.as_ref();
     let backup_dir = backup_dir.as_ref();
 
@@ -122,6 +135,54 @@ pub fn migrate_data_dir<P: AsRef<Path>>(data_dir: P, backup_dir: P) -> Result<()
         unreachable!("COMPATIBLE_VERSION_REQ must be valid")
     };
 
+    // A list of migrations where each item is a tuple of (version requirement, to version,
+    // migration function).
+    //
+    // * The "version requirement" should include all the earlier, released versions that use the
+    //   database format the migration function can handle, and exclude the first future version
+    //   that uses a new database format.
+    // * The "to version" should be the first future version that uses a new database format.
+    // * The "migration function" should migrate the database from the version before "to version"
+    //   to "to version". The function name should be in the form of "migrate_A_to_B" where A is
+    //   the first version (major.minor) in the "version requirement" and B is the "to version"
+    //   (major.minor). (NOTE: Once we release 1.0.0, A and B will contain the major version only.)
+    let migrations: Vec<Migration> = vec![
+        (
+            VersionReq::parse(">=0.42.0,<0.43.0")
+                .expect("valid version requirement for 0.42 to 0.43 migration"),
+            Version::parse("0.43.0").expect("valid version 0.43.0"),
+            migrate_0_42_to_0_43,
+        ),
+        (
+            VersionReq::parse(">=0.43.0,<0.44.0-alpha.1")
+                .expect("valid version requirement for 0.43 to 0.44 migration"),
+            Version::parse("0.44.0-alpha.1").expect("valid version 0.44.0-alpha.1"),
+            migrate_0_43_to_0_44,
+        ),
+    ];
+
+    migrate_data_dir_with(data_dir, backup_dir, &compatible, &migrations)
+}
+
+/// Internal helper that performs migration with an injected migration list.
+///
+/// This function is separated from `migrate_data_dir` to allow testing the migration selection
+/// logic with test-controlled migrations, without being coupled to the actual migration list.
+///
+/// # Errors
+///
+/// Returns an error if:
+/// - The data directory doesn't exist and cannot be created
+/// - The VERSION files cannot be read or written
+/// - The data and backup versions don't match
+/// - A migration function fails
+/// - No migration path exists from the current version to a compatible version
+fn migrate_data_dir_with(
+    data_dir: &Path,
+    backup_dir: &Path,
+    compatible: &VersionReq,
+    migrations: &[Migration],
+) -> Result<()> {
     let (data, data_ver) = retrieve_or_create_version(data_dir)?;
     let (backup, backup_ver) = retrieve_or_create_version(backup_dir)?;
 
@@ -136,31 +197,7 @@ pub fn migrate_data_dir<P: AsRef<Path>>(data_dir: P, backup_dir: P) -> Result<()
         return Ok(());
     }
 
-    // A list of migrations where each item is a tuple of (version requirement, to version,
-    // migration function).
-    //
-    // * The "version requirement" should include all the earlier, released versions that use the
-    //   database format the migration function can handle, and exclude the first future version
-    //   that uses a new database format.
-    // * The "to version" should be the first future version that uses a new database format.
-    // * The "migration function" should migrate the database from the version before "to version"
-    //   to "to version". The function name should be in the form of "migrate_A_to_B" where A is
-    //   the first version (major.minor) in the "version requirement" and B is the "to version"
-    //   (major.minor). (NOTE: Once we release 1.0.0, A and B will contain the major version only.)
-    let migration: Vec<Migration> = vec![
-        (
-            VersionReq::parse(">=0.42.0,<0.43.0")?,
-            Version::parse("0.43.0")?,
-            migrate_0_42_to_0_43,
-        ),
-        (
-            VersionReq::parse(">=0.43.0,<0.44.0-alpha.1")?,
-            Version::parse("0.44.0-alpha.1")?,
-            migrate_0_43_to_0_44,
-        ),
-    ];
-
-    while let Some((_req, to, m)) = migration
+    while let Some((_req, to, m)) = migrations
         .iter()
         .find(|(req, _to, _m)| req.matches(&version))
     {
@@ -638,13 +675,394 @@ fn read_version_file(path: &Path) -> Result<Version> {
 }
 
 #[cfg(test)]
+#[allow(clippy::items_after_statements)]
 mod tests {
+    use std::io::Write;
+    use std::path::Path;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
     use semver::{Version, VersionReq};
 
-    use super::COMPATIBLE_VERSION_REQ;
+    use super::{
+        COMPATIBLE_VERSION_REQ, Migration, create_version_file, migrate_data_dir_with,
+        read_version_file,
+    };
     use crate::tables::NETWORK_TAGS;
     use crate::test::{DbGuard, acquire_db_permit};
     use crate::{Indexable, Store};
+
+    /// Helper to write a specific version to a VERSION file.
+    fn write_version(path: &Path, version: &str) {
+        let version_file = path.join("VERSION");
+        let mut f = std::fs::File::create(&version_file).unwrap();
+        f.write_all(version.as_bytes()).unwrap();
+    }
+
+    // =========================================================================
+    // Tests for migrate_data_dir_with (non-brittle, uses test-controlled migrations)
+    //
+    // These tests intentionally use custom migration vectors to validate the
+    // migration selection logic without being coupled to the actual migration
+    // list. This ensures tests remain stable across version bumps.
+    // =========================================================================
+
+    /// Test that migration is skipped when the version is already compatible.
+    #[test]
+    fn migration_skipped_when_version_compatible() {
+        let data_dir = tempfile::tempdir().unwrap();
+        let backup_dir = tempfile::tempdir().unwrap();
+
+        // Write a compatible version (e.g., 1.0.0) to both directories
+        write_version(data_dir.path(), "1.0.0");
+        write_version(backup_dir.path(), "1.0.0");
+
+        // Create a compatible requirement that matches 1.0.0
+        let compatible = VersionReq::parse(">=1.0.0,<2.0.0").unwrap();
+
+        // Create a migration that should NOT be called (it would panic if called)
+        fn panic_migration(_: &Path) -> anyhow::Result<()> {
+            panic!("Migration should not be called when version is already compatible");
+        }
+
+        let migrations: Vec<Migration> = vec![(
+            VersionReq::parse(">=0.9.0,<1.0.0").unwrap(),
+            Version::parse("1.0.0").unwrap(),
+            panic_migration,
+        )];
+
+        // This should succeed without calling any migration
+        let result =
+            migrate_data_dir_with(data_dir.path(), backup_dir.path(), &compatible, &migrations);
+        assert!(result.is_ok());
+
+        // VERSION should remain unchanged
+        let version = read_version_file(&data_dir.path().join("VERSION")).unwrap();
+        assert_eq!(version, Version::parse("1.0.0").unwrap());
+    }
+
+    /// Test that migration is applied when version matches the requirement.
+    #[test]
+    fn migration_applied_when_version_matches_requirement() {
+        let data_dir = tempfile::tempdir().unwrap();
+        let backup_dir = tempfile::tempdir().unwrap();
+
+        // Write an older version that needs migration
+        write_version(data_dir.path(), "0.1.0");
+        write_version(backup_dir.path(), "0.1.0");
+
+        // Compatible with 0.2.0 and above
+        let compatible = VersionReq::parse(">=0.2.0,<0.3.0").unwrap();
+
+        // Create a migration that writes a sentinel file to verify it was called
+        fn sentinel_migration(data_dir: &Path) -> anyhow::Result<()> {
+            let sentinel = data_dir.join("migration_0_1_to_0_2_ran");
+            std::fs::File::create(sentinel)?;
+            Ok(())
+        }
+
+        let migrations: Vec<Migration> = vec![(
+            VersionReq::parse(">=0.1.0,<0.2.0").unwrap(),
+            Version::parse("0.2.0").unwrap(),
+            sentinel_migration,
+        )];
+
+        let result =
+            migrate_data_dir_with(data_dir.path(), backup_dir.path(), &compatible, &migrations);
+        assert!(result.is_ok());
+
+        // Verify migration was called by checking for sentinel file
+        assert!(data_dir.path().join("migration_0_1_to_0_2_ran").exists());
+
+        // VERSION should be updated to current package version after migration
+        let version = read_version_file(&data_dir.path().join("VERSION")).unwrap();
+        assert_eq!(version, Version::parse(env!("CARGO_PKG_VERSION")).unwrap());
+
+        // Backup VERSION should also be updated
+        let backup_version = read_version_file(&backup_dir.path().join("VERSION")).unwrap();
+        assert_eq!(
+            backup_version,
+            Version::parse(env!("CARGO_PKG_VERSION")).unwrap()
+        );
+    }
+
+    /// Test that multiple migrations are applied in sequence.
+    #[test]
+    fn multiple_migrations_applied_sequentially() {
+        // Use a static counter to track migration order
+        static COUNTER: AtomicUsize = AtomicUsize::new(0);
+
+        let data_dir = tempfile::tempdir().unwrap();
+        let backup_dir = tempfile::tempdir().unwrap();
+
+        // Start at version 0.1.0
+        write_version(data_dir.path(), "0.1.0");
+        write_version(backup_dir.path(), "0.1.0");
+
+        // Compatible with 0.3.0
+        let compatible = VersionReq::parse(">=0.3.0,<0.4.0").unwrap();
+
+        // Reset counter
+        COUNTER.store(0, Ordering::SeqCst);
+
+        // First migration: 0.1.0 -> 0.2.0
+        fn migration_1(data_dir: &Path) -> anyhow::Result<()> {
+            let count = COUNTER.fetch_add(1, Ordering::SeqCst);
+            let sentinel = data_dir.join(format!("migration_1_order_{count}"));
+            std::fs::File::create(sentinel)?;
+            Ok(())
+        }
+
+        // Second migration: 0.2.0 -> 0.3.0
+        fn migration_2(data_dir: &Path) -> anyhow::Result<()> {
+            let count = COUNTER.fetch_add(1, Ordering::SeqCst);
+            let sentinel = data_dir.join(format!("migration_2_order_{count}"));
+            std::fs::File::create(sentinel)?;
+            Ok(())
+        }
+
+        let migrations: Vec<Migration> = vec![
+            (
+                VersionReq::parse(">=0.1.0,<0.2.0").unwrap(),
+                Version::parse("0.2.0").unwrap(),
+                migration_1,
+            ),
+            (
+                VersionReq::parse(">=0.2.0,<0.3.0").unwrap(),
+                Version::parse("0.3.0").unwrap(),
+                migration_2,
+            ),
+        ];
+
+        let result =
+            migrate_data_dir_with(data_dir.path(), backup_dir.path(), &compatible, &migrations);
+        assert!(result.is_ok());
+
+        // Verify both migrations ran in correct order
+        assert!(data_dir.path().join("migration_1_order_0").exists());
+        assert!(data_dir.path().join("migration_2_order_1").exists());
+        assert_eq!(COUNTER.load(Ordering::SeqCst), 2);
+    }
+
+    /// Test that migration is not applied when version doesn't match any requirement.
+    #[test]
+    fn migration_not_applied_when_no_match() {
+        let data_dir = tempfile::tempdir().unwrap();
+        let backup_dir = tempfile::tempdir().unwrap();
+
+        // Version 0.5.0 doesn't match any migration requirement
+        write_version(data_dir.path(), "0.5.0");
+        write_version(backup_dir.path(), "0.5.0");
+
+        // Compatible with 1.0.0
+        let compatible = VersionReq::parse(">=1.0.0,<2.0.0").unwrap();
+
+        // Migration only handles 0.1.x versions
+        fn should_not_run(_: &Path) -> anyhow::Result<()> {
+            panic!("Migration should not run for version 0.5.0");
+        }
+
+        let migrations: Vec<Migration> = vec![(
+            VersionReq::parse(">=0.1.0,<0.2.0").unwrap(),
+            Version::parse("0.2.0").unwrap(),
+            should_not_run,
+        )];
+
+        let result =
+            migrate_data_dir_with(data_dir.path(), backup_dir.path(), &compatible, &migrations);
+
+        // Should fail with "migration not supported" error
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("migration from 0.5.0 is not supported"));
+    }
+
+    /// Test that error is returned when data and backup versions mismatch.
+    #[test]
+    fn error_on_version_mismatch() {
+        let data_dir = tempfile::tempdir().unwrap();
+        let backup_dir = tempfile::tempdir().unwrap();
+
+        // Different versions in data and backup
+        write_version(data_dir.path(), "0.1.0");
+        write_version(backup_dir.path(), "0.2.0");
+
+        let compatible = VersionReq::parse(">=0.2.0,<0.3.0").unwrap();
+        let migrations: Vec<Migration> = vec![];
+
+        let result =
+            migrate_data_dir_with(data_dir.path(), backup_dir.path(), &compatible, &migrations);
+
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("mismatched database version 0.1.0 and backup version 0.2.0"));
+    }
+
+    /// Test that VERSION file is created when directory is empty.
+    #[test]
+    fn version_file_created_for_empty_directory() {
+        let data_dir = tempfile::tempdir().unwrap();
+        let backup_dir = tempfile::tempdir().unwrap();
+
+        // Don't write any VERSION files - directories are empty
+
+        let compatible = VersionReq::parse(COMPATIBLE_VERSION_REQ).unwrap();
+        let migrations: Vec<Migration> = vec![];
+
+        let result =
+            migrate_data_dir_with(data_dir.path(), backup_dir.path(), &compatible, &migrations);
+
+        // Should succeed (empty dir gets current version)
+        assert!(result.is_ok());
+
+        // VERSION should be created with current package version
+        let version = read_version_file(&data_dir.path().join("VERSION")).unwrap();
+        assert_eq!(version, Version::parse(env!("CARGO_PKG_VERSION")).unwrap());
+    }
+
+    /// Test that error is returned when VERSION file contains invalid content.
+    #[test]
+    fn error_on_invalid_version_content() {
+        let data_dir = tempfile::tempdir().unwrap();
+        let backup_dir = tempfile::tempdir().unwrap();
+
+        // Write invalid version content
+        let version_file = data_dir.path().join("VERSION");
+        let mut f = std::fs::File::create(&version_file).unwrap();
+        f.write_all(b"not-a-valid-version").unwrap();
+
+        // Also need a file in backup to prevent it from being treated as empty
+        write_version(backup_dir.path(), "0.1.0");
+
+        let compatible = VersionReq::parse(">=0.1.0,<0.2.0").unwrap();
+        let migrations: Vec<Migration> = vec![];
+
+        let result =
+            migrate_data_dir_with(data_dir.path(), backup_dir.path(), &compatible, &migrations);
+
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("cannot parse VERSION"));
+    }
+
+    /// Test that migration function errors are propagated.
+    #[test]
+    fn migration_error_is_propagated() {
+        let data_dir = tempfile::tempdir().unwrap();
+        let backup_dir = tempfile::tempdir().unwrap();
+
+        write_version(data_dir.path(), "0.1.0");
+        write_version(backup_dir.path(), "0.1.0");
+
+        let compatible = VersionReq::parse(">=0.2.0,<0.3.0").unwrap();
+
+        fn failing_migration(_: &Path) -> anyhow::Result<()> {
+            anyhow::bail!("intentional migration failure")
+        }
+
+        let migrations: Vec<Migration> = vec![(
+            VersionReq::parse(">=0.1.0,<0.2.0").unwrap(),
+            Version::parse("0.2.0").unwrap(),
+            failing_migration,
+        )];
+
+        let result =
+            migrate_data_dir_with(data_dir.path(), backup_dir.path(), &compatible, &migrations);
+
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("intentional migration failure"));
+    }
+
+    /// Test that VERSION files are updated after successful migration.
+    #[test]
+    fn version_files_updated_after_migration() {
+        let data_dir = tempfile::tempdir().unwrap();
+        let backup_dir = tempfile::tempdir().unwrap();
+
+        write_version(data_dir.path(), "0.1.0");
+        write_version(backup_dir.path(), "0.1.0");
+
+        // Compatible with current package version
+        let compatible = VersionReq::parse(COMPATIBLE_VERSION_REQ).unwrap();
+
+        // Migration from 0.1.0 to current version (signature must match Migration type)
+        #[allow(clippy::unnecessary_wraps)]
+        fn noop_migration(_: &Path) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        let current_version = Version::parse(env!("CARGO_PKG_VERSION")).unwrap();
+        let migrations: Vec<Migration> = vec![(
+            VersionReq::parse(">=0.1.0,<0.43.0").unwrap(),
+            current_version.clone(),
+            noop_migration,
+        )];
+
+        let result =
+            migrate_data_dir_with(data_dir.path(), backup_dir.path(), &compatible, &migrations);
+        assert!(result.is_ok());
+
+        // Both VERSION files should now contain the current package version
+        let data_version = read_version_file(&data_dir.path().join("VERSION")).unwrap();
+        let backup_version = read_version_file(&backup_dir.path().join("VERSION")).unwrap();
+
+        assert_eq!(data_version, current_version);
+        assert_eq!(backup_version, current_version);
+    }
+
+    /// Test that non-existent data directory is created.
+    #[test]
+    fn non_existent_directory_is_created() {
+        let temp = tempfile::tempdir().unwrap();
+        let data_dir = temp.path().join("new_data_dir");
+        let backup_dir = temp.path().join("new_backup_dir");
+
+        // Directories don't exist yet
+        assert!(!data_dir.exists());
+        assert!(!backup_dir.exists());
+
+        let compatible = VersionReq::parse(COMPATIBLE_VERSION_REQ).unwrap();
+        let migrations: Vec<Migration> = vec![];
+
+        let result = migrate_data_dir_with(&data_dir, &backup_dir, &compatible, &migrations);
+
+        // Should succeed
+        assert!(result.is_ok());
+
+        // Directories should now exist
+        assert!(data_dir.exists());
+        assert!(backup_dir.exists());
+
+        // VERSION files should exist with current version
+        let version = read_version_file(&data_dir.join("VERSION")).unwrap();
+        assert_eq!(version, Version::parse(env!("CARGO_PKG_VERSION")).unwrap());
+    }
+
+    /// Test `read_version_file` and `create_version_file` helper functions.
+    #[test]
+    fn version_file_helpers() {
+        let temp = tempfile::tempdir().unwrap();
+        let version_path = temp.path().join("VERSION");
+
+        // Create a version file
+        create_version_file(&version_path).unwrap();
+
+        // Read it back
+        let version = read_version_file(&version_path).unwrap();
+        assert_eq!(version, Version::parse(env!("CARGO_PKG_VERSION")).unwrap());
+    }
+
+    /// Test that reading a non-existent VERSION file returns an error.
+    #[test]
+    fn read_nonexistent_version_file_error() {
+        let temp = tempfile::tempdir().unwrap();
+        let version_path = temp.path().join("NONEXISTENT_VERSION");
+
+        let result = read_version_file(&version_path);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("cannot open VERSION"));
+    }
 
     #[allow(dead_code)]
     struct TestSchema {
