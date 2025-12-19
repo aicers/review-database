@@ -17,7 +17,7 @@ pub struct UnusualDestinationPatternFieldsV0_43 {
     /// Timestamp in nanoseconds since the Unix epoch (UTC).
     pub end_time: i64,
     pub destination_ips: Vec<IpAddr>,
-    pub dst_country_codes: Vec<Option<[u8; 2]>>,
+    pub dst_country_codes: Vec<[u8; 2]>,
     pub count: usize,
     pub expected_mean: f64,
     pub std_deviation: f64,
@@ -64,7 +64,7 @@ pub struct UnusualDestinationPattern {
     pub start_time: DateTime<Utc>,
     pub end_time: DateTime<Utc>,
     pub destination_ips: Vec<IpAddr>,
-    pub dst_country_codes: Vec<Option<[u8; 2]>>,
+    pub dst_country_codes: Vec<[u8; 2]>,
     pub count: usize,
     pub expected_mean: f64,
     pub std_deviation: f64,

@@ -103,6 +103,21 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   `BlocklistDhcpFields` and `BlocklistDhcp` to support all
   DHCP option values. Existing records are migrated with an
   empty options list.
+- Added `src_country_code` and `dst_country_code` fields to all event-specific
+  `*Fields` structs and `NetworkThreat`. These fields store 2-letter ISO country
+  codes as `[u8; 2]`, enabling geographic filtering and analysis of
+  security events. Country codes can be resolved from IP addresses using an
+  ip2location database during event creation.
+- Updated `migrate_data_dir` function signature to accept an optional
+  `ip2location::DB` parameter for resolving country codes during migration
+  from older database formats.
+
+### Fixed
+
+- Fixed `CsvColumnExtra::get_by_model` to use big-endian byte encoding for the
+  `model_id` key lookup. Previously, `to_byte_slice` produced native-endian raw
+  bytes, which mismatched the table's big-endian key encoding on little-endian
+  architectures.
 
 ### Changed
 
@@ -190,16 +205,6 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
-- Added `src_country_code` and `dst_country_code` fields to all event-specific
-  `*Fields` structs and `NetworkThreat`. These fields store 2-letter ISO country
-  codes as `Option<[u8; 2]>`, enabling geographic filtering and analysis of
-  security events. Country codes can be resolved from IP addresses using an
-  ip2location database during event creation.
-- Updated `migrate_data_dir` function signature to accept an optional
-  `ip2location::DB` parameter for resolving country codes during migration
-  from older database formats. The migration binary now supports an optional
-  `ip2location` configuration field to specify the path to an ip2location
-  database file for country code resolution during migration.
 - Added `BackupConfig` entity to configure RocksDB backup settings (interval,
   execution time, retention). The configuration can be saved, updated, and
   read from persistent storage, with default values applied if none exist.
