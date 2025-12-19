@@ -1102,16 +1102,11 @@ trait ResolveCountryCodes {
     fn resolve_country_codes(&mut self, locator: &ip2location::DB);
 }
 
-/// Converts a country code string to a 2-byte array.
-/// Returns `None` if the lookup fails or returns "XX" (unknown).
-fn country_code_to_bytes(locator: &ip2location::DB, addr: IpAddr) -> Option<[u8; 2]> {
-    let code = crate::util::find_ip_country(locator, addr);
-    if code == "XX" || code.len() != 2 {
-        None
-    } else {
-        let bytes = code.as_bytes();
-        Some([bytes[0], bytes[1]])
-    }
+/// Converts an IP address to a country code using the ip2location database.
+/// Returns the 2-letter country code, or "XX" if the lookup fails or returns
+/// an invalid code.
+fn country_code_to_bytes(locator: &ip2location::DB, addr: IpAddr) -> [u8; 2] {
+    crate::util::find_ip_country(locator, addr)
 }
 
 // =============================================================================
