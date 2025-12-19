@@ -189,10 +189,10 @@ impl FtpBruteForceFields {
 #[derive(Serialize, Deserialize)]
 pub struct FtpBruteForceFieldsV0_43 {
     pub sensor: String,
-    pub src_country_code: Option<[u8; 2]>,
+    pub src_country_code: [u8; 2],
     pub orig_addr: IpAddr,
     pub resp_addr: IpAddr,
-    pub dst_country_code: Option<[u8; 2]>,
+    pub dst_country_code: [u8; 2],
     pub resp_port: u16,
     pub proto: u8,
     pub user_list: Vec<String>,
@@ -209,10 +209,10 @@ impl From<FtpBruteForceFieldsV0_41> for FtpBruteForceFieldsV0_43 {
     fn from(value: FtpBruteForceFieldsV0_41) -> Self {
         Self {
             sensor: String::new(),
-            src_country_code: None,
+            src_country_code: *b"XX",
             orig_addr: value.src_addr,
             resp_addr: value.dst_addr,
-            dst_country_code: None,
+            dst_country_code: *b"XX",
             resp_port: value.dst_port,
             proto: value.proto,
             user_list: value.user_list,
@@ -242,11 +242,11 @@ pub(crate) struct FtpBruteForceFieldsV0_41 {
 #[derive(Serialize, Deserialize)]
 pub struct FtpBruteForce {
     pub sensor: String,
-    pub src_country_code: Option<[u8; 2]>,
+    pub src_country_code: [u8; 2],
     pub time: DateTime<Utc>,
     pub orig_addr: IpAddr,
     pub resp_addr: IpAddr,
-    pub dst_country_code: Option<[u8; 2]>,
+    pub dst_country_code: [u8; 2],
     pub resp_port: u16,
     pub proto: u8,
     pub user_list: Vec<String>,
@@ -403,11 +403,11 @@ impl FtpEventFields {
 #[derive(Debug, Deserialize, Serialize)]
 pub struct FtpEventFieldsV0_43 {
     pub sensor: String,
-    pub src_country_code: Option<[u8; 2]>,
+    pub src_country_code: [u8; 2],
     pub orig_addr: IpAddr,
     pub orig_port: u16,
     pub resp_addr: IpAddr,
-    pub dst_country_code: Option<[u8; 2]>,
+    pub dst_country_code: [u8; 2],
     pub resp_port: u16,
     pub proto: u8,
     /// Timestamp in nanoseconds since the Unix epoch (UTC).
@@ -428,11 +428,11 @@ pub struct FtpEventFieldsV0_43 {
 pub struct FtpPlainText {
     pub time: DateTime<Utc>,
     pub sensor: String,
-    pub src_country_code: Option<[u8; 2]>,
+    pub src_country_code: [u8; 2],
     pub orig_addr: IpAddr,
     pub orig_port: u16,
     pub resp_addr: IpAddr,
-    pub dst_country_code: Option<[u8; 2]>,
+    pub dst_country_code: [u8; 2],
     pub resp_port: u16,
     pub proto: u8,
     pub start_time: DateTime<Utc>,
@@ -563,11 +563,11 @@ impl Match for FtpPlainText {
 pub struct BlocklistFtp {
     pub time: DateTime<Utc>,
     pub sensor: String,
-    pub src_country_code: Option<[u8; 2]>,
+    pub src_country_code: [u8; 2],
     pub orig_addr: IpAddr,
     pub orig_port: u16,
     pub resp_addr: IpAddr,
-    pub dst_country_code: Option<[u8; 2]>,
+    pub dst_country_code: [u8; 2],
     pub resp_port: u16,
     pub proto: u8,
     pub start_time: DateTime<Utc>,
