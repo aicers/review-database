@@ -38,10 +38,10 @@ pub(crate) use find_conn_attr_by_kind;
 #[derive(Serialize, Deserialize)]
 pub struct PortScanFields {
     pub sensor: String,
-    pub src_country_code: Option<[u8; 2]>,
+    pub src_country_code: [u8; 2],
     pub orig_addr: IpAddr,
     pub resp_addr: IpAddr,
-    pub dst_country_code: Option<[u8; 2]>,
+    pub dst_country_code: [u8; 2],
     pub resp_ports: Vec<u16>,
     /// Timestamp in nanoseconds since the Unix epoch (UTC).
     pub start_time: i64,
@@ -111,10 +111,10 @@ impl PortScanFields {
 pub struct PortScan {
     pub sensor: String,
     pub time: DateTime<Utc>,
-    pub src_country_code: Option<[u8; 2]>,
+    pub src_country_code: [u8; 2],
     pub orig_addr: IpAddr,
     pub resp_addr: IpAddr,
-    pub dst_country_code: Option<[u8; 2]>,
+    pub dst_country_code: [u8; 2],
     pub resp_ports: Vec<u16>,
     pub start_time: DateTime<Utc>,
     pub end_time: DateTime<Utc>,
@@ -231,11 +231,11 @@ impl Match for PortScan {
 #[derive(Serialize, Deserialize)]
 pub struct MultiHostPortScanFields {
     pub sensor: String,
-    pub src_country_code: Option<[u8; 2]>,
+    pub src_country_code: [u8; 2],
     pub orig_addr: IpAddr,
     pub resp_port: u16,
     pub resp_addrs: Vec<IpAddr>,
-    pub dst_country_codes: Vec<Option<[u8; 2]>>,
+    pub dst_country_codes: Vec<[u8; 2]>,
     pub proto: u8,
     /// Timestamp in nanoseconds since the Unix epoch (UTC).
     pub start_time: i64,
@@ -304,11 +304,11 @@ impl MultiHostPortScanFields {
 pub struct MultiHostPortScan {
     pub sensor: String,
     pub time: DateTime<Utc>,
-    pub src_country_code: Option<[u8; 2]>,
+    pub src_country_code: [u8; 2],
     pub orig_addr: IpAddr,
     pub resp_port: u16,
     pub resp_addrs: Vec<IpAddr>,
-    pub dst_country_codes: Vec<Option<[u8; 2]>>,
+    pub dst_country_codes: Vec<[u8; 2]>,
     pub proto: u8,
     pub start_time: DateTime<Utc>,
     pub end_time: DateTime<Utc>,
@@ -426,9 +426,9 @@ impl Match for MultiHostPortScan {
 pub struct ExternalDdosFields {
     pub sensor: String,
     pub orig_addrs: Vec<IpAddr>,
-    pub src_country_codes: Vec<Option<[u8; 2]>>,
+    pub src_country_codes: Vec<[u8; 2]>,
     pub resp_addr: IpAddr,
-    pub dst_country_code: Option<[u8; 2]>,
+    pub dst_country_code: [u8; 2],
     pub proto: u8,
     /// Timestamp in nanoseconds since the Unix epoch (UTC).
     pub start_time: i64,
@@ -495,9 +495,9 @@ pub struct ExternalDdos {
     pub sensor: String,
     pub time: DateTime<Utc>,
     pub orig_addrs: Vec<IpAddr>,
-    pub src_country_codes: Vec<Option<[u8; 2]>>,
+    pub src_country_codes: Vec<[u8; 2]>,
     pub resp_addr: IpAddr,
-    pub dst_country_code: Option<[u8; 2]>,
+    pub dst_country_code: [u8; 2],
     pub proto: u8,
     pub start_time: DateTime<Utc>,
     pub end_time: DateTime<Utc>,
@@ -611,11 +611,11 @@ impl Match for ExternalDdos {
 #[derive(Deserialize, Serialize)]
 pub struct BlocklistConnFields {
     pub sensor: String,
-    pub src_country_code: Option<[u8; 2]>,
+    pub src_country_code: [u8; 2],
     pub orig_addr: IpAddr,
     pub orig_port: u16,
     pub resp_addr: IpAddr,
-    pub dst_country_code: Option<[u8; 2]>,
+    pub dst_country_code: [u8; 2],
     pub resp_port: u16,
     pub proto: u8,
     pub conn_state: String,
@@ -718,11 +718,11 @@ impl BlocklistConnFields {
 pub struct BlocklistConn {
     pub sensor: String,
     pub time: DateTime<Utc>,
-    pub src_country_code: Option<[u8; 2]>,
+    pub src_country_code: [u8; 2],
     pub orig_addr: IpAddr,
     pub orig_port: u16,
     pub resp_addr: IpAddr,
-    pub dst_country_code: Option<[u8; 2]>,
+    pub dst_country_code: [u8; 2],
     pub resp_port: u16,
     pub proto: u8,
     pub conn_state: String,

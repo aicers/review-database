@@ -23,11 +23,11 @@ pub struct DceRpcContext {
 #[derive(Serialize, Deserialize)]
 pub struct BlocklistDceRpcFields {
     pub sensor: String,
-    pub src_country_code: Option<[u8; 2]>,
+    pub src_country_code: [u8; 2],
     pub orig_addr: IpAddr,
     pub orig_port: u16,
     pub resp_addr: IpAddr,
-    pub dst_country_code: Option<[u8; 2]>,
+    pub dst_country_code: [u8; 2],
     pub resp_port: u16,
     pub proto: u8,
     /// Timestamp in nanoseconds since the Unix epoch (UTC).
@@ -146,11 +146,11 @@ impl BlocklistDceRpcFields {
 pub struct BlocklistDceRpc {
     pub time: DateTime<Utc>,
     pub sensor: String,
-    pub src_country_code: Option<[u8; 2]>,
+    pub src_country_code: [u8; 2],
     pub orig_addr: IpAddr,
     pub orig_port: u16,
     pub resp_addr: IpAddr,
-    pub dst_country_code: Option<[u8; 2]>,
+    pub dst_country_code: [u8; 2],
     pub resp_port: u16,
     pub proto: u8,
     pub start_time: DateTime<Utc>,
@@ -221,11 +221,11 @@ impl BlocklistDceRpc {
         Self {
             time,
             sensor: fields.sensor,
-            src_country_code: fields.src_country_code,
+            src_country_code: *b"XX",
             orig_addr: fields.orig_addr,
             orig_port: fields.orig_port,
             resp_addr: fields.resp_addr,
-            dst_country_code: fields.dst_country_code,
+            dst_country_code: *b"XX",
             resp_port: fields.resp_port,
             proto: fields.proto,
             start_time: DateTime::from_timestamp_nanos(fields.start_time),
