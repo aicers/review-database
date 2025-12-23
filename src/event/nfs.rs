@@ -55,6 +55,7 @@ pub struct BlocklistNfsFieldsV0_42 {
     pub read_files: Vec<String>,
     pub write_files: Vec<String>,
     pub confidence: f32,
+    pub threat_level: u8,
     pub category: Option<EventCategory>,
 }
 
@@ -63,7 +64,7 @@ impl BlocklistNfsFields {
     pub fn syslog_rfc5424(&self) -> String {
         let start_time_dt = DateTime::from_timestamp_nanos(self.start_time);
         format!(
-            "category={:?} sensor={:?} orig_addr={:?} orig_port={:?} resp_addr={:?} resp_port={:?} proto={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} read_files={:?} write_files={:?} confidence={:?}",
+            "category={:?} sensor={:?} orig_addr={:?} orig_port={:?} resp_addr={:?} resp_port={:?} proto={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} read_files={:?} write_files={:?} confidence={:?} threat_level={:?}",
             self.category.as_ref().map_or_else(
                 || "Unspecified".to_string(),
                 std::string::ToString::to_string
@@ -82,7 +83,8 @@ impl BlocklistNfsFields {
             self.resp_l2_bytes.to_string(),
             self.read_files.join(","),
             self.write_files.join(","),
-            self.confidence.to_string()
+            self.confidence.to_string(),
+            self.threat_level.to_string()
         )
     }
 }
@@ -105,6 +107,7 @@ pub struct BlocklistNfs {
     pub read_files: Vec<String>,
     pub write_files: Vec<String>,
     pub confidence: f32,
+    pub threat_level: u8,
     pub category: Option<EventCategory>,
     pub triage_scores: Option<Vec<TriageScore>>,
 }
@@ -112,7 +115,7 @@ impl fmt::Display for BlocklistNfs {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "sensor={:?} orig_addr={:?} orig_port={:?} resp_addr={:?} resp_port={:?} proto={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} read_files={:?} write_files={:?} triage_scores={:?}",
+            "sensor={:?} orig_addr={:?} orig_port={:?} resp_addr={:?} resp_port={:?} proto={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} read_files={:?} write_files={:?} confidence={:?} threat_level={:?} triage_scores={:?}",
             self.sensor,
             self.orig_addr.to_string(),
             self.orig_port.to_string(),
@@ -127,6 +130,8 @@ impl fmt::Display for BlocklistNfs {
             self.resp_l2_bytes.to_string(),
             self.read_files.join(","),
             self.write_files.join(","),
+            self.confidence.to_string(),
+            self.threat_level.to_string(),
             triage_scores_to_string(self.triage_scores.as_ref())
         )
     }
@@ -151,6 +156,7 @@ impl BlocklistNfs {
             read_files: fields.read_files,
             write_files: fields.write_files,
             confidence: fields.confidence,
+            threat_level: fields.threat_level,
             category: fields.category,
             triage_scores: None,
         }
@@ -183,7 +189,7 @@ impl Match for BlocklistNfs {
     }
 
     fn level(&self) -> NonZeroU8 {
-        MEDIUM
+        NonZeroU8::new(self.threat_level).unwrap_or(MEDIUM)
     }
 
     fn kind(&self) -> &'static str {

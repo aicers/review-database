@@ -49,6 +49,7 @@ pub struct PortScanFieldsV0_42 {
     pub end_time: i64,
     pub proto: u8,
     pub confidence: f32,
+    pub threat_level: u8,
     pub category: Option<EventCategory>,
 }
 
@@ -58,7 +59,7 @@ impl PortScanFields {
         let start_time_dt = DateTime::from_timestamp_nanos(self.start_time);
         let end_time_dt = DateTime::from_timestamp_nanos(self.end_time);
         format!(
-            "category={:?} sensor={:?} orig_addr={:?} resp_addr={:?} resp_ports={:?} start_time={:?} end_time={:?} proto={:?} confidence={:?}",
+            "category={:?} sensor={:?} orig_addr={:?} resp_addr={:?} resp_ports={:?} start_time={:?} end_time={:?} proto={:?} confidence={:?} threat_level={:?}",
             self.category.as_ref().map_or_else(
                 || "Unspecified".to_string(),
                 std::string::ToString::to_string
@@ -70,7 +71,8 @@ impl PortScanFields {
             start_time_dt.to_rfc3339(),
             end_time_dt.to_rfc3339(),
             self.proto.to_string(),
-            self.confidence.to_string()
+            self.confidence.to_string(),
+            self.threat_level.to_string()
         )
     }
 }
@@ -87,6 +89,7 @@ pub struct PortScan {
     pub end_time: DateTime<Utc>,
     pub proto: u8,
     pub confidence: f32,
+    pub threat_level: u8,
     pub category: Option<EventCategory>,
     pub triage_scores: Option<Vec<TriageScore>>,
 }
@@ -95,13 +98,15 @@ impl fmt::Display for PortScan {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(
             f,
-            "orig_addr={:?} resp_addr={:?} resp_ports={:?} start_time={:?} end_time={:?} proto={:?} triage_scores={:?}",
+            "orig_addr={:?} resp_addr={:?} resp_ports={:?} start_time={:?} end_time={:?} proto={:?} confidence={:?} threat_level={:?} triage_scores={:?}",
             self.orig_addr.to_string(),
             self.resp_addr.to_string(),
             vector_to_string(&self.resp_ports),
             self.start_time.to_rfc3339(),
             self.end_time.to_rfc3339(),
             self.proto.to_string(),
+            self.confidence.to_string(),
+            self.threat_level.to_string(),
             triage_scores_to_string(self.triage_scores.as_ref())
         )
     }
@@ -119,6 +124,7 @@ impl PortScan {
             start_time: DateTime::from_timestamp_nanos(fields.start_time),
             end_time: DateTime::from_timestamp_nanos(fields.end_time),
             confidence: fields.confidence,
+            threat_level: fields.threat_level,
             category: fields.category,
             triage_scores: None,
         }
@@ -151,7 +157,7 @@ impl Match for PortScan {
     }
 
     fn level(&self) -> NonZeroU8 {
-        MEDIUM
+        NonZeroU8::new(self.threat_level).unwrap_or(MEDIUM)
     }
 
     fn kind(&self) -> &'static str {
@@ -200,6 +206,7 @@ pub struct MultiHostPortScanFieldsV0_42 {
     /// Timestamp in nanoseconds since the Unix epoch (UTC).
     pub end_time: i64,
     pub confidence: f32,
+    pub threat_level: u8,
     pub category: Option<EventCategory>,
 }
 
@@ -209,7 +216,7 @@ impl MultiHostPortScanFields {
         let start_time_dt = DateTime::from_timestamp_nanos(self.start_time);
         let end_time_dt = DateTime::from_timestamp_nanos(self.end_time);
         format!(
-            "category={:?} sensor={:?} orig_addr={:?} resp_addrs={:?} resp_port={:?} proto={:?} start_time={:?} end_time={:?} confidence={:?}",
+            "category={:?} sensor={:?} orig_addr={:?} resp_addrs={:?} resp_port={:?} proto={:?} start_time={:?} end_time={:?} confidence={:?} threat_level={:?}",
             self.category.as_ref().map_or_else(
                 || "Unspecified".to_string(),
                 std::string::ToString::to_string
@@ -221,7 +228,8 @@ impl MultiHostPortScanFields {
             self.proto.to_string(),
             start_time_dt.to_rfc3339(),
             end_time_dt.to_rfc3339(),
-            self.confidence.to_string()
+            self.confidence.to_string(),
+            self.threat_level.to_string()
         )
     }
 }
@@ -238,6 +246,7 @@ pub struct MultiHostPortScan {
     pub start_time: DateTime<Utc>,
     pub end_time: DateTime<Utc>,
     pub confidence: f32,
+    pub threat_level: u8,
     pub category: Option<EventCategory>,
     pub triage_scores: Option<Vec<TriageScore>>,
 }
@@ -246,13 +255,15 @@ impl fmt::Display for MultiHostPortScan {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(
             f,
-            "orig_addr={:?} resp_addrs={:?} resp_port={:?} proto={:?} start_time={:?} end_time={:?} triage_scores={:?}",
+            "orig_addr={:?} resp_addrs={:?} resp_port={:?} proto={:?} start_time={:?} end_time={:?} confidence={:?} threat_level={:?} triage_scores={:?}",
             self.orig_addr.to_string(),
             vector_to_string(&self.resp_addrs),
             self.resp_port.to_string(),
             self.proto.to_string(),
             self.start_time.to_rfc3339(),
             self.end_time.to_rfc3339(),
+            self.confidence.to_string(),
+            self.threat_level.to_string(),
             triage_scores_to_string(self.triage_scores.as_ref())
         )
     }
@@ -270,6 +281,7 @@ impl MultiHostPortScan {
             start_time: DateTime::from_timestamp_nanos(fields.start_time),
             end_time: DateTime::from_timestamp_nanos(fields.end_time),
             confidence: fields.confidence,
+            threat_level: fields.threat_level,
             category: fields.category,
             triage_scores: None,
         }
@@ -302,7 +314,7 @@ impl Match for MultiHostPortScan {
     }
 
     fn level(&self) -> NonZeroU8 {
-        MEDIUM
+        NonZeroU8::new(self.threat_level).unwrap_or(MEDIUM)
     }
 
     fn kind(&self) -> &'static str {
@@ -351,6 +363,7 @@ pub struct ExternalDdosFieldsV0_42 {
     /// Timestamp in nanoseconds since the Unix epoch (UTC).
     pub end_time: i64,
     pub confidence: f32,
+    pub threat_level: u8,
     pub category: Option<EventCategory>,
 }
 
@@ -360,7 +373,7 @@ impl ExternalDdosFields {
         let start_time_dt = DateTime::from_timestamp_nanos(self.start_time);
         let end_time_dt = DateTime::from_timestamp_nanos(self.end_time);
         format!(
-            "category={:?} sensor={:?} orig_addrs={:?} resp_addr={:?} proto={:?} start_time={:?} end_time={:?} confidence={:?}",
+            "category={:?} sensor={:?} orig_addrs={:?} resp_addr={:?} proto={:?} start_time={:?} end_time={:?} confidence={:?} threat_level={:?}",
             self.category.as_ref().map_or_else(
                 || "Unspecified".to_string(),
                 std::string::ToString::to_string
@@ -371,7 +384,8 @@ impl ExternalDdosFields {
             self.proto.to_string(),
             start_time_dt.to_rfc3339(),
             end_time_dt.to_rfc3339(),
-            self.confidence.to_string()
+            self.confidence.to_string(),
+            self.threat_level.to_string()
         )
     }
 }
@@ -387,6 +401,7 @@ pub struct ExternalDdos {
     pub start_time: DateTime<Utc>,
     pub end_time: DateTime<Utc>,
     pub confidence: f32,
+    pub threat_level: u8,
     pub category: Option<EventCategory>,
     pub triage_scores: Option<Vec<TriageScore>>,
 }
@@ -395,12 +410,14 @@ impl fmt::Display for ExternalDdos {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(
             f,
-            "orig_addrs={:?} resp_addr={:?} proto={:?} start_time={:?} end_time={:?} triage_scores={:?}",
+            "orig_addrs={:?} resp_addr={:?} proto={:?} start_time={:?} end_time={:?} confidence={:?} threat_level={:?} triage_scores={:?}",
             vector_to_string(&self.orig_addrs),
             self.resp_addr.to_string(),
             self.proto.to_string(),
             self.start_time.to_rfc3339(),
             self.end_time.to_rfc3339(),
+            self.confidence.to_string(),
+            self.threat_level.to_string(),
             triage_scores_to_string(self.triage_scores.as_ref())
         )
     }
@@ -417,6 +434,7 @@ impl ExternalDdos {
             start_time: DateTime::from_timestamp_nanos(fields.start_time),
             end_time: DateTime::from_timestamp_nanos(fields.end_time),
             confidence: fields.confidence,
+            threat_level: fields.threat_level,
             category: fields.category,
             triage_scores: None,
         }
@@ -449,7 +467,7 @@ impl Match for ExternalDdos {
     }
 
     fn level(&self) -> NonZeroU8 {
-        MEDIUM
+        NonZeroU8::new(self.threat_level).unwrap_or(MEDIUM)
     }
 
     fn kind(&self) -> &'static str {
@@ -506,6 +524,7 @@ pub struct BlocklistConnFieldsV0_42 {
     pub orig_l2_bytes: u64,
     pub resp_l2_bytes: u64,
     pub confidence: f32,
+    pub threat_level: u8,
     pub category: Option<EventCategory>,
 }
 
@@ -515,7 +534,7 @@ impl BlocklistConnFields {
         let start_time_dt = DateTime::from_timestamp_nanos(self.start_time);
 
         format!(
-            "category={:?} sensor={:?} orig_addr={:?} orig_port={:?} resp_addr={:?} resp_port={:?} proto={:?} conn_state={:?} start_time={:?} duration={:?} service={:?} orig_bytes={:?} resp_bytes={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} confidence={:?}",
+            "category={:?} sensor={:?} orig_addr={:?} orig_port={:?} resp_addr={:?} resp_port={:?} proto={:?} conn_state={:?} start_time={:?} duration={:?} service={:?} orig_bytes={:?} resp_bytes={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} confidence={:?} threat_level={:?}",
             self.category.as_ref().map_or_else(
                 || "Unspecified".to_string(),
                 std::string::ToString::to_string
@@ -537,6 +556,7 @@ impl BlocklistConnFields {
             self.orig_l2_bytes.to_string(),
             self.resp_l2_bytes.to_string(),
             self.confidence.to_string(),
+            self.threat_level.to_string(),
         )
     }
 }
@@ -561,6 +581,7 @@ pub struct BlocklistConn {
     pub orig_l2_bytes: u64,
     pub resp_l2_bytes: u64,
     pub confidence: f32,
+    pub threat_level: u8,
     pub category: Option<EventCategory>,
     pub triage_scores: Option<Vec<TriageScore>>,
 }
@@ -569,7 +590,7 @@ impl fmt::Display for BlocklistConn {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(
             f,
-            "sensor={:?} orig_addr={:?} orig_port={:?} resp_addr={:?} resp_port={:?} proto={:?} conn_state={:?} start_time={:?} duration={:?} service={:?} orig_bytes={:?} resp_bytes={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} triage_scores={:?}",
+            "sensor={:?} orig_addr={:?} orig_port={:?} resp_addr={:?} resp_port={:?} proto={:?} conn_state={:?} start_time={:?} duration={:?} service={:?} orig_bytes={:?} resp_bytes={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} confidence={:?} threat_level={:?} triage_scores={:?}",
             self.sensor,
             self.orig_addr.to_string(),
             self.orig_port.to_string(),
@@ -586,6 +607,8 @@ impl fmt::Display for BlocklistConn {
             self.resp_pkts.to_string(),
             self.orig_l2_bytes.to_string(),
             self.resp_l2_bytes.to_string(),
+            self.confidence.to_string(),
+            self.threat_level.to_string(),
             triage_scores_to_string(self.triage_scores.as_ref())
         )
     }
@@ -612,6 +635,7 @@ impl BlocklistConn {
             orig_l2_bytes: fields.orig_l2_bytes,
             resp_l2_bytes: fields.resp_l2_bytes,
             confidence: fields.confidence,
+            threat_level: fields.threat_level,
             category: fields.category,
             triage_scores: None,
         }
@@ -644,7 +668,7 @@ impl Match for BlocklistConn {
     }
 
     fn level(&self) -> NonZeroU8 {
-        MEDIUM
+        NonZeroU8::new(self.threat_level).unwrap_or(MEDIUM)
     }
 
     fn kind(&self) -> &'static str {
