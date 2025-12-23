@@ -5,6 +5,15 @@ file is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), and
 this project adheres to [Semantic
 Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- Changed `Store::network_tag_set` signature to require a `customer_id: u32`
+  parameter and now returns `CustomerTagSet` instead of `TagSet<NetworkTagId>`.
+  Existing network tags are automatically migrated to be associated with the
+  smallest customer ID found in the database.
+
 ## [0.43.0] - 2025-12-18
 
 ### Added
@@ -1279,6 +1288,7 @@ AsRef<[u8]>`). This change accommodates scenarios where the information stored
 - Modified `FtpBruteForce` by adding an `is_internal` field which is a boolean
   indicating whether it is internal or not.
 
+[Unreleased]: https://github.com/petabi/review-database/compare/0.43.0...main
 [0.43.0]: https://github.com/petabi/review-database/compare/0.42.0...0.43.0
 [0.42.0]: https://github.com/petabi/review-database/compare/0.41.0...0.42.0
 [0.41.0]: https://github.com/petabi/review-database/compare/0.40.0...0.41.0

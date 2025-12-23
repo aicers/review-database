@@ -16,6 +16,7 @@ use tracing::info;
 use crate::{
     AllowNetwork, BlockNetwork, Customer,
     migration::migration_structures::{AllowNetworkV0_42, BlockNetworkV0_42},
+    tables::NETWORK_TAGS,
 };
 
 /// The range of versions that use the current database format.
@@ -99,7 +100,7 @@ use crate::{
 /// // release that involves database format change) to 3.5.0, including
 /// // all alpha changes finalized in 3.5.0.
 /// ```
-const COMPATIBLE_VERSION_REQ: &str = ">=0.43.0,<0.44.0-alpha";
+const COMPATIBLE_VERSION_REQ: &str = ">=0.44.0-alpha.1,<0.44.0-alpha.2";
 
 /// Migrates the data directory to the up-to-date format if necessary.
 ///
@@ -146,11 +147,18 @@ pub fn migrate_data_dir<P: AsRef<Path>>(data_dir: P, backup_dir: P) -> Result<()
     //   to "to version". The function name should be in the form of "migrate_A_to_B" where A is
     //   the first version (major.minor) in the "version requirement" and B is the "to version"
     //   (major.minor). (NOTE: Once we release 1.0.0, A and B will contain the major version only.)
-    let migration: Vec<Migration> = vec![(
-        VersionReq::parse(">=0.42.0,<0.43.0")?,
-        Version::parse("0.43.0")?,
-        migrate_0_42_to_0_43,
-    )];
+    let migration: Vec<Migration> = vec![
+        (
+            VersionReq::parse(">=0.42.0,<0.43.0")?,
+            Version::parse("0.43.0")?,
+            migrate_0_42_to_0_43,
+        ),
+        (
+            VersionReq::parse(">=0.43.0,<0.44.0-alpha.1")?,
+            Version::parse("0.44.0-alpha.1")?,
+            migrate_0_43_to_0_44,
+        ),
+    ];
 
     while let Some((_req, to, m)) = migration
         .iter()
@@ -228,6 +236,14 @@ fn migrate_0_42_to_0_43(data_dir: &Path) -> Result<()> {
 
     // Step 3: Migrate AllowNetwork and BlockNetwork to customer-specific format
     migrate_customer_specific_networks(&db_path)?;
+
+    Ok(())
+}
+
+fn migrate_0_43_to_0_44(data_dir: &Path) -> Result<()> {
+    // Migrate network tags to customer-scoped format
+    migrate_network_tags_to_customer_scoped(data_dir)?;
+
     Ok(())
 }
 
@@ -461,6 +477,113 @@ fn migrate_customer_specific_networks(db_path: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Migrates network tags in a single database to customer-scoped format.
+fn migrate_network_tags_to_customer_scoped(dir: &Path) -> Result<()> {
+    use bincode::Options;
+
+    use crate::collections::KeyIndex;
+    use crate::tables::{CUSTOMERS, META};
+
+    let db_path = dir.join("states.db");
+
+    let mut opts = rocksdb::Options::default();
+    opts.create_if_missing(false);
+    opts.create_missing_column_families(false);
+
+    let db: rocksdb::OptimisticTransactionDB<rocksdb::SingleThreaded> =
+        rocksdb::OptimisticTransactionDB::open_cf(&opts, &db_path, crate::tables::MAP_NAMES)
+            .context("Failed to open database for network tag migration")?;
+
+    // Find the smallest customer ID from the customer_map
+    let smallest_customer_id = {
+        let cf = db
+            .cf_handle(CUSTOMERS)
+            .ok_or_else(|| anyhow!("customers column family not found"))?;
+
+        // Read the index to get all customer IDs
+        let Some(index_bytes) = db.get_cf(cf, []).context("failed to read customer index")? else {
+            info!("No customers found, skipping network tag migration");
+            return Ok(());
+        };
+
+        let index = KeyIndex::from_bytes(&index_bytes).context("invalid customer index")?;
+        let customer_ids: Vec<u32> = index.iter().map(|(id, _)| id).collect();
+
+        if customer_ids.is_empty() {
+            info!("No customers found, skipping network tag migration");
+            return Ok(());
+        }
+
+        *customer_ids.iter().min().expect("non-empty list")
+    };
+
+    info!(
+        "Migrating network tags to customer-scoped format with customer_id={}",
+        smallest_customer_id
+    );
+
+    // Get the meta column family which contains network tags
+    let meta_cf = db
+        .cf_handle(META)
+        .ok_or_else(|| anyhow!("meta column family not found"))?;
+
+    // Read the network tags index
+    let Some(index_bytes) = db
+        .get_cf(meta_cf, NETWORK_TAGS)
+        .context("failed to read network tags index")?
+    else {
+        info!("No network tags found, migration complete");
+        return Ok(());
+    };
+
+    let index = KeyIndex::from_bytes(&index_bytes).context("invalid network tags index")?;
+
+    let prefix = format!("{smallest_customer_id}\0");
+
+    // Collect tags that need migration
+    let mut tags_to_migrate: Vec<(u32, Vec<u8>)> = Vec::new();
+    for (id, key) in index.iter() {
+        if !key.contains(&0) {
+            // Not prefixed, needs migration
+            tags_to_migrate.push((id, key.to_vec()));
+        }
+    }
+
+    if tags_to_migrate.is_empty() {
+        info!("No unprefixed network tags found, migration complete");
+        return Ok(());
+    }
+
+    // Create new index with prefixed keys
+    let mut new_index = index;
+
+    for (id, old_key) in &tags_to_migrate {
+        // Create new prefixed key
+        let mut new_key = prefix.as_bytes().to_vec();
+        new_key.extend(old_key);
+
+        // Update the index entry
+        new_index
+            .update(*id, &new_key)
+            .with_context(|| format!("failed to update index for tag id {id}"))?;
+    }
+
+    // Write the updated index
+    let serialized_index = bincode::DefaultOptions::new()
+        .serialize(&new_index)
+        .context("failed to serialize updated network tags index")?;
+
+    db.put_cf(meta_cf, NETWORK_TAGS, &serialized_index)
+        .context("failed to write updated network tags index")?;
+
+    info!(
+        "Successfully migrated {} network tags to customer-scoped format",
+        tags_to_migrate.len()
+    );
+
+    Ok(())
+}
+
 /// Recursively creates `path` if not existed, creates the VERSION file
 /// under `path` if missing with current version number. Returns VERSION
 /// file path with VERSION number written on file.
@@ -519,6 +642,7 @@ mod tests {
     use semver::{Version, VersionReq};
 
     use super::COMPATIBLE_VERSION_REQ;
+    use crate::tables::NETWORK_TAGS;
     use crate::test::{DbGuard, acquire_db_permit};
     use crate::{Indexable, Store};
 
@@ -828,5 +952,331 @@ mod tests {
         assert_eq!(customer_two_blocks[0].customer_id, 1);
         assert_eq!(customer_two_blocks[0].name, "Old Block");
         assert_eq!(customer_two_blocks[0].description, "Old Block Description");
+    }
+
+    #[test]
+    fn migrate_network_tags_to_customer_scoped() {
+        use std::fs;
+        use std::io::Write;
+
+        use bincode::Options;
+
+        use crate::collections::KeyIndex;
+        use crate::tables::{CUSTOMERS, META};
+
+        // Create test directories
+        let db_dir = tempfile::tempdir().unwrap();
+        let backup_dir = tempfile::tempdir().unwrap();
+
+        let db_path = db_dir.path().join("states.db");
+        let backup_path = backup_dir.path().join("states.db");
+
+        // Create a database with the current column families
+        let mut opts = rocksdb::Options::default();
+        opts.create_if_missing(true);
+        opts.create_missing_column_families(true);
+
+        // Open and set up the main database
+        let db: rocksdb::OptimisticTransactionDB<rocksdb::SingleThreaded> =
+            rocksdb::OptimisticTransactionDB::open_cf(&opts, &db_path, crate::tables::MAP_NAMES)
+                .unwrap();
+
+        // Create a customer with ID 5
+        let customers_cf = db.cf_handle(CUSTOMERS).unwrap();
+        let mut customer_index = KeyIndex::default();
+        // Insert customer with name "test_customer" - this will get ID 0, not 5
+        // But we can't easily set a specific ID. Let's insert multiple to get ID 5
+        for _ in 0..5 {
+            customer_index
+                .insert(b"dummy")
+                .expect("insert should succeed");
+        }
+        // Now insert one more to have a valid customer
+        customer_index
+            .insert(b"test_customer")
+            .expect("insert should succeed");
+        let serialized_customer_index = bincode::DefaultOptions::new()
+            .serialize(&customer_index)
+            .unwrap();
+        db.put_cf(customers_cf, [], &serialized_customer_index)
+            .unwrap();
+
+        // Create network tags without prefix
+        let meta_cf = db.cf_handle(META).unwrap();
+        let mut network_tags_index = KeyIndex::default();
+        network_tags_index.insert(b"tag1").unwrap();
+        network_tags_index.insert(b"tag2").unwrap();
+        network_tags_index.insert(b"tag3").unwrap();
+        let serialized_tags = bincode::DefaultOptions::new()
+            .serialize(&network_tags_index)
+            .unwrap();
+        db.put_cf(meta_cf, NETWORK_TAGS, &serialized_tags).unwrap();
+
+        drop(db);
+
+        // Create backup database with the same structure
+        let backup_db: rocksdb::OptimisticTransactionDB<rocksdb::SingleThreaded> =
+            rocksdb::OptimisticTransactionDB::open_cf(
+                &opts,
+                &backup_path,
+                crate::tables::MAP_NAMES,
+            )
+            .unwrap();
+        let backup_customers_cf = backup_db.cf_handle(CUSTOMERS).unwrap();
+        backup_db
+            .put_cf(backup_customers_cf, [], &serialized_customer_index)
+            .unwrap();
+        let backup_meta_cf = backup_db.cf_handle(META).unwrap();
+        backup_db
+            .put_cf(backup_meta_cf, NETWORK_TAGS, &serialized_tags)
+            .unwrap();
+        drop(backup_db);
+
+        // Create VERSION files with 0.43.0-alpha.1
+        let mut version_file = fs::File::create(db_dir.path().join("VERSION")).unwrap();
+        version_file.write_all(b"0.43.0-alpha.1").unwrap();
+        drop(version_file);
+
+        let mut backup_version_file = fs::File::create(backup_dir.path().join("VERSION")).unwrap();
+        backup_version_file.write_all(b"0.43.0-alpha.1").unwrap();
+        drop(backup_version_file);
+
+        // Run the migration on both directories
+        super::migrate_network_tags_to_customer_scoped(db_dir.path()).unwrap();
+        super::migrate_network_tags_to_customer_scoped(backup_dir.path()).unwrap();
+
+        // Verify the tags have been prefixed in main database
+        let db: rocksdb::OptimisticTransactionDB<rocksdb::SingleThreaded> =
+            rocksdb::OptimisticTransactionDB::open_cf(&opts, &db_path, crate::tables::MAP_NAMES)
+                .unwrap();
+        let meta_cf = db.cf_handle(META).unwrap();
+        let index_bytes = db.get_cf(meta_cf, NETWORK_TAGS).unwrap().unwrap();
+        let index = KeyIndex::from_bytes(&index_bytes).unwrap();
+
+        // The smallest customer ID should be 0 (first inserted dummy customer)
+        let prefix = b"0\0";
+        for (_id, key) in index.iter() {
+            assert!(
+                key.starts_with(prefix),
+                "Tag key should be prefixed with '0\\0': {:?}",
+                String::from_utf8_lossy(key)
+            );
+            // Extract the actual tag name
+            let tag_name = &key[prefix.len()..];
+            assert!(
+                tag_name == b"tag1" || tag_name == b"tag2" || tag_name == b"tag3",
+                "Unexpected tag name: {:?}",
+                String::from_utf8_lossy(tag_name)
+            );
+        }
+        drop(db);
+
+        // Verify the tags have been prefixed in backup database
+        let backup_db: rocksdb::OptimisticTransactionDB<rocksdb::SingleThreaded> =
+            rocksdb::OptimisticTransactionDB::open_cf(
+                &opts,
+                &backup_path,
+                crate::tables::MAP_NAMES,
+            )
+            .unwrap();
+        let backup_meta_cf = backup_db.cf_handle(META).unwrap();
+        let backup_index_bytes = backup_db
+            .get_cf(backup_meta_cf, NETWORK_TAGS)
+            .unwrap()
+            .unwrap();
+        let backup_index = KeyIndex::from_bytes(&backup_index_bytes).unwrap();
+
+        for (_id, key) in backup_index.iter() {
+            assert!(
+                key.starts_with(prefix),
+                "Backup tag key should be prefixed: {:?}",
+                String::from_utf8_lossy(key)
+            );
+        }
+    }
+
+    #[test]
+    fn migrate_network_tags_no_customers_skips() {
+        use std::fs;
+        use std::io::Write;
+
+        use bincode::Options;
+
+        use crate::collections::KeyIndex;
+        use crate::tables::META;
+
+        // Create test directories
+        let db_dir = tempfile::tempdir().unwrap();
+        let backup_dir = tempfile::tempdir().unwrap();
+
+        let db_path = db_dir.path().join("states.db");
+        let backup_path = backup_dir.path().join("states.db");
+
+        // Create a database with the current column families
+        let mut opts = rocksdb::Options::default();
+        opts.create_if_missing(true);
+        opts.create_missing_column_families(true);
+
+        // Open and set up the main database - NO customers
+        let db: rocksdb::OptimisticTransactionDB<rocksdb::SingleThreaded> =
+            rocksdb::OptimisticTransactionDB::open_cf(&opts, &db_path, crate::tables::MAP_NAMES)
+                .unwrap();
+
+        // Create network tags without prefix
+        let meta_cf = db.cf_handle(META).unwrap();
+        let mut network_tags_index = KeyIndex::default();
+        network_tags_index.insert(b"tag1").unwrap();
+        network_tags_index.insert(b"tag2").unwrap();
+        let serialized_tags = bincode::DefaultOptions::new()
+            .serialize(&network_tags_index)
+            .unwrap();
+        db.put_cf(meta_cf, NETWORK_TAGS, &serialized_tags).unwrap();
+
+        drop(db);
+
+        // Create backup database with the same structure
+        let backup_db: rocksdb::OptimisticTransactionDB<rocksdb::SingleThreaded> =
+            rocksdb::OptimisticTransactionDB::open_cf(
+                &opts,
+                &backup_path,
+                crate::tables::MAP_NAMES,
+            )
+            .unwrap();
+        let backup_meta_cf = backup_db.cf_handle(META).unwrap();
+        backup_db
+            .put_cf(backup_meta_cf, NETWORK_TAGS, &serialized_tags)
+            .unwrap();
+        drop(backup_db);
+
+        // Create VERSION files with 0.43.0-alpha.1
+        let mut version_file = fs::File::create(db_dir.path().join("VERSION")).unwrap();
+        version_file.write_all(b"0.43.0-alpha.1").unwrap();
+        drop(version_file);
+
+        let mut backup_version_file = fs::File::create(backup_dir.path().join("VERSION")).unwrap();
+        backup_version_file.write_all(b"0.43.0-alpha.1").unwrap();
+        drop(backup_version_file);
+
+        // Run the migration - should not fail
+        super::migrate_network_tags_to_customer_scoped(db_dir.path()).unwrap();
+
+        // Verify the tags are NOT prefixed (migration was skipped)
+        let db: rocksdb::OptimisticTransactionDB<rocksdb::SingleThreaded> =
+            rocksdb::OptimisticTransactionDB::open_cf(&opts, &db_path, crate::tables::MAP_NAMES)
+                .unwrap();
+        let meta_cf = db.cf_handle(META).unwrap();
+        let index_bytes = db.get_cf(meta_cf, NETWORK_TAGS).unwrap().unwrap();
+        let index = KeyIndex::from_bytes(&index_bytes).unwrap();
+
+        for (_id, key) in index.iter() {
+            // Tags should NOT have a null byte (not prefixed)
+            assert!(
+                !key.contains(&0),
+                "Tag key should not be prefixed when no customers exist: {:?}",
+                String::from_utf8_lossy(key)
+            );
+        }
+    }
+
+    #[test]
+    fn migrate_network_tags_already_prefixed_skips() {
+        use std::fs;
+        use std::io::Write;
+
+        use bincode::Options;
+
+        use crate::collections::KeyIndex;
+        use crate::tables::{CUSTOMERS, META};
+
+        // Create test directories
+        let db_dir = tempfile::tempdir().unwrap();
+        let backup_dir = tempfile::tempdir().unwrap();
+
+        let db_path = db_dir.path().join("states.db");
+        let backup_path = backup_dir.path().join("states.db");
+
+        // Create a database with the current column families
+        let mut opts = rocksdb::Options::default();
+        opts.create_if_missing(true);
+        opts.create_missing_column_families(true);
+
+        // Open and set up the main database
+        let db: rocksdb::OptimisticTransactionDB<rocksdb::SingleThreaded> =
+            rocksdb::OptimisticTransactionDB::open_cf(&opts, &db_path, crate::tables::MAP_NAMES)
+                .unwrap();
+
+        // Create a customer
+        let customers_cf = db.cf_handle(CUSTOMERS).unwrap();
+        let mut customer_index = KeyIndex::default();
+        customer_index
+            .insert(b"test_customer")
+            .expect("insert should succeed");
+        let serialized_customer_index = bincode::DefaultOptions::new()
+            .serialize(&customer_index)
+            .unwrap();
+        db.put_cf(customers_cf, [], &serialized_customer_index)
+            .unwrap();
+
+        // Create network tags that are already prefixed
+        let meta_cf = db.cf_handle(META).unwrap();
+        let mut network_tags_index = KeyIndex::default();
+        network_tags_index.insert(b"0\0tag1").unwrap(); // Already prefixed
+        network_tags_index.insert(b"0\0tag2").unwrap(); // Already prefixed
+        let serialized_tags = bincode::DefaultOptions::new()
+            .serialize(&network_tags_index)
+            .unwrap();
+        db.put_cf(meta_cf, NETWORK_TAGS, &serialized_tags).unwrap();
+
+        drop(db);
+
+        // Create backup database with the same structure
+        let backup_db: rocksdb::OptimisticTransactionDB<rocksdb::SingleThreaded> =
+            rocksdb::OptimisticTransactionDB::open_cf(
+                &opts,
+                &backup_path,
+                crate::tables::MAP_NAMES,
+            )
+            .unwrap();
+        let backup_customers_cf = backup_db.cf_handle(CUSTOMERS).unwrap();
+        backup_db
+            .put_cf(backup_customers_cf, [], &serialized_customer_index)
+            .unwrap();
+        let backup_meta_cf = backup_db.cf_handle(META).unwrap();
+        backup_db
+            .put_cf(backup_meta_cf, NETWORK_TAGS, &serialized_tags)
+            .unwrap();
+        drop(backup_db);
+
+        // Create VERSION files with 0.43.0-alpha.1
+        let mut version_file = fs::File::create(db_dir.path().join("VERSION")).unwrap();
+        version_file.write_all(b"0.43.0-alpha.1").unwrap();
+        drop(version_file);
+
+        let mut backup_version_file = fs::File::create(backup_dir.path().join("VERSION")).unwrap();
+        backup_version_file.write_all(b"0.43.0-alpha.1").unwrap();
+        drop(backup_version_file);
+
+        // Run the migration - should skip since already prefixed
+        super::migrate_network_tags_to_customer_scoped(db_dir.path()).unwrap();
+
+        // Verify the tags remain the same (not double-prefixed)
+        let db: rocksdb::OptimisticTransactionDB<rocksdb::SingleThreaded> =
+            rocksdb::OptimisticTransactionDB::open_cf(&opts, &db_path, crate::tables::MAP_NAMES)
+                .unwrap();
+        let meta_cf = db.cf_handle(META).unwrap();
+        let index_bytes = db.get_cf(meta_cf, NETWORK_TAGS).unwrap().unwrap();
+        let index = KeyIndex::from_bytes(&index_bytes).unwrap();
+
+        let prefix = b"0\0";
+        for (_id, key) in index.iter() {
+            // Should still have the original prefix
+            assert!(key.starts_with(prefix));
+            // Should NOT be double-prefixed (e.g., "0\00\0tag1")
+            let after_prefix = &key[prefix.len()..];
+            assert!(
+                !after_prefix.starts_with(prefix),
+                "Tag should not be double-prefixed"
+            );
+        }
     }
 }
