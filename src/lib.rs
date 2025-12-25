@@ -63,7 +63,7 @@ pub use self::top_n::{
     ClusterTrend, ElementCount, LineSegment, Regression, StructuredColumnType, TopTrendsByColumn,
 };
 pub use self::types::{EventCategory, HostNetworkGroup, Qualifier, Status};
-pub use self::util::find_ip_country;
+pub use self::util::{country_code_to_bytes, find_ip_country};
 
 const DEFAULT_STATES: &str = "states.db";
 const EXCLUSIVE: bool = true;
