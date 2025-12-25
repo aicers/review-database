@@ -17,9 +17,11 @@ use crate::event::{
 pub struct TorConnection {
     pub time: DateTime<Utc>,
     pub sensor: String,
+    pub orig_country_code: [u8; 2],
     pub orig_addr: IpAddr,
     pub orig_port: u16,
     pub resp_addr: IpAddr,
+    pub resp_country_code: [u8; 2],
     pub resp_port: u16,
     pub proto: u8,
     pub start_time: DateTime<Utc>,
@@ -100,6 +102,7 @@ impl TorConnection {
         TorConnection {
             time,
             sensor: fields.sensor.clone(),
+            orig_country_code: fields.orig_country_code,
             start_time: DateTime::from_timestamp_nanos(fields.start_time),
             duration: fields.duration,
             orig_pkts: fields.orig_pkts,
@@ -109,6 +112,7 @@ impl TorConnection {
             orig_addr: fields.orig_addr,
             orig_port: fields.orig_port,
             resp_addr: fields.resp_addr,
+            resp_country_code: fields.resp_country_code,
             resp_port: fields.resp_port,
             proto: fields.proto,
             method: fields.method.clone(),
@@ -206,9 +210,11 @@ impl Match for TorConnection {
 pub struct TorConnectionConn {
     pub sensor: String,
     pub time: DateTime<Utc>,
+    pub orig_country_code: [u8; 2],
     pub orig_addr: IpAddr,
     pub orig_port: u16,
     pub resp_addr: IpAddr,
+    pub resp_country_code: [u8; 2],
     pub resp_port: u16,
     pub proto: u8,
     pub start_time: DateTime<Utc>,
@@ -257,10 +263,12 @@ impl TorConnectionConn {
         Self {
             time,
             sensor: fields.sensor,
+            orig_country_code: fields.orig_country_code,
             start_time: DateTime::from_timestamp_nanos(fields.start_time),
             orig_addr: fields.orig_addr,
             orig_port: fields.orig_port,
             resp_addr: fields.resp_addr,
+            resp_country_code: fields.resp_country_code,
             resp_port: fields.resp_port,
             proto: fields.proto,
             conn_state: fields.conn_state,
@@ -349,8 +357,10 @@ mod tests {
             .unwrap();
         BlocklistConnFields {
             sensor: "test-sensor".to_string(),
+            orig_country_code: *b"XX",
             orig_addr: "192.168.1.100".parse().unwrap(),
             orig_port: 12345,
+            resp_country_code: *b"XX",
             resp_addr: "198.51.100.1".parse().unwrap(),
             resp_port: 443,
             proto: 6,
