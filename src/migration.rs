@@ -1021,7 +1021,12 @@ mod tests {
             migrate_data_dir_with(data_dir.path(), backup_dir.path(), &compatible, &migrations);
 
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("intentional migration failure"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("intentional migration failure")
+        );
 
         // VERSION files should remain unchanged (still 1.0.0)
         let data_version = read_version_file(&data_dir.path().join("VERSION")).unwrap();
