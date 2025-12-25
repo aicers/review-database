@@ -35,15 +35,15 @@ macro_rules! find_rdp_attr_by_kind {
     }};
 }
 
-pub type RdpBruteForceFields = RdpBruteForceFieldsV0_43;
+pub type RdpBruteForceFields = RdpBruteForceFieldsV0_44;
 
 #[derive(Serialize, Deserialize)]
-pub struct RdpBruteForceFieldsV0_43 {
+pub struct RdpBruteForceFieldsV0_44 {
     pub sensor: String,
-    pub src_country_code: [u8; 2],
     pub orig_addr: IpAddr,
+    pub orig_country_code: [u8; 2],
     pub resp_addrs: Vec<IpAddr>,
-    pub dst_country_codes: Vec<[u8; 2]>,
+    pub resp_country_codes: Vec<[u8; 2]>,
     /// Timestamp in nanoseconds since the Unix epoch (UTC).
     pub start_time: i64,
     /// Timestamp in nanoseconds since the Unix epoch (UTC).
@@ -59,13 +59,14 @@ impl RdpBruteForceFields {
         let start_time_dt = DateTime::from_timestamp_nanos(self.start_time);
         let end_time_dt = DateTime::from_timestamp_nanos(self.end_time);
         format!(
-            "category={:?} sensor={:?} orig_addr={:?} resp_addrs={:?} start_time={:?} end_time={:?} proto={:?} confidence={:?}",
+            "category={:?} sensor={:?} orig_addr={:?} orig_country_code={:?} resp_addrs={:?} start_time={:?} end_time={:?} proto={:?} confidence={:?}",
             self.category.as_ref().map_or_else(
                 || "Unspecified".to_string(),
                 std::string::ToString::to_string
             ),
             self.sensor,
             self.orig_addr.to_string(),
+            std::str::from_utf8(&self.orig_country_code).unwrap_or("XX"),
             vector_to_string(&self.resp_addrs),
             start_time_dt.to_rfc3339(),
             end_time_dt.to_rfc3339(),
@@ -79,10 +80,10 @@ impl RdpBruteForceFields {
 pub struct RdpBruteForce {
     pub sensor: String,
     pub time: DateTime<Utc>,
-    pub src_country_code: [u8; 2],
+    pub orig_country_code: [u8; 2],
     pub orig_addr: IpAddr,
     pub resp_addrs: Vec<IpAddr>,
-    pub dst_country_codes: Vec<[u8; 2]>,
+    pub resp_country_codes: Vec<[u8; 2]>,
     pub start_time: DateTime<Utc>,
     pub end_time: DateTime<Utc>,
     pub proto: u8,
@@ -95,8 +96,9 @@ impl fmt::Display for RdpBruteForce {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "orig_addr={:?} resp_addrs={:?} start_time={:?} end_time={:?} proto={:?} triage_scores={:?}",
+            "orig_addr={:?} orig_country_code={:?} resp_addrs={:?} start_time={:?} end_time={:?} proto={:?} triage_scores={:?}",
             self.orig_addr.to_string(),
+            std::str::from_utf8(&self.orig_country_code).unwrap_or("XX"),
             vector_to_string(&self.resp_addrs),
             self.start_time.to_rfc3339(),
             self.end_time.to_rfc3339(),
@@ -111,10 +113,10 @@ impl RdpBruteForce {
         RdpBruteForce {
             sensor: fields.sensor.clone(),
             time,
-            src_country_code: fields.src_country_code,
+            orig_country_code: fields.orig_country_code,
             orig_addr: fields.orig_addr,
             resp_addrs: fields.resp_addrs.clone(),
-            dst_country_codes: fields.dst_country_codes.clone(),
+            resp_country_codes: fields.resp_country_codes.clone(),
             start_time: DateTime::from_timestamp_nanos(fields.start_time),
             end_time: DateTime::from_timestamp_nanos(fields.end_time),
             proto: fields.proto,
@@ -186,17 +188,17 @@ impl Match for RdpBruteForce {
     }
 }
 
-pub type BlocklistRdpFields = BlocklistRdpFieldsV0_43;
+pub type BlocklistRdpFields = BlocklistRdpFieldsV0_44;
 
 #[derive(Serialize, Deserialize)]
-pub struct BlocklistRdpFieldsV0_43 {
+pub struct BlocklistRdpFieldsV0_44 {
     pub sensor: String,
-    pub src_country_code: [u8; 2],
     pub orig_addr: IpAddr,
     pub orig_port: u16,
+    pub orig_country_code: [u8; 2],
     pub resp_addr: IpAddr,
-    pub dst_country_code: [u8; 2],
     pub resp_port: u16,
+    pub resp_country_code: [u8; 2],
     pub proto: u8,
     /// Timestamp in nanoseconds since the Unix epoch (UTC).
     pub start_time: i64,
@@ -215,7 +217,7 @@ impl BlocklistRdpFields {
     pub fn syslog_rfc5424(&self) -> String {
         let start_time_dt = DateTime::from_timestamp_nanos(self.start_time);
         format!(
-            "category={:?} sensor={:?} orig_addr={:?} orig_port={:?} resp_addr={:?} resp_port={:?} proto={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} cookie={:?} confidence={:?}",
+            "category={:?} sensor={:?} orig_addr={:?} orig_port={:?} orig_country_code={:?} resp_addr={:?} resp_port={:?} resp_country_code={:?} proto={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} cookie={:?} confidence={:?}",
             self.category.as_ref().map_or_else(
                 || "Unspecified".to_string(),
                 std::string::ToString::to_string
@@ -223,8 +225,10 @@ impl BlocklistRdpFields {
             self.sensor,
             self.orig_addr.to_string(),
             self.orig_port.to_string(),
+            std::str::from_utf8(&self.orig_country_code).unwrap_or("XX"),
             self.resp_addr.to_string(),
             self.resp_port.to_string(),
+            std::str::from_utf8(&self.resp_country_code).unwrap_or("XX"),
             self.proto.to_string(),
             start_time_dt.to_rfc3339(),
             self.duration.to_string(),
@@ -241,11 +245,11 @@ impl BlocklistRdpFields {
 pub struct BlocklistRdp {
     pub time: DateTime<Utc>,
     pub sensor: String,
-    pub src_country_code: [u8; 2],
+    pub orig_country_code: [u8; 2],
     pub orig_addr: IpAddr,
     pub orig_port: u16,
     pub resp_addr: IpAddr,
-    pub dst_country_code: [u8; 2],
+    pub resp_country_code: [u8; 2],
     pub resp_port: u16,
     pub proto: u8,
     pub start_time: DateTime<Utc>,
@@ -263,12 +267,14 @@ impl fmt::Display for BlocklistRdp {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "sensor={:?} orig_addr={:?} orig_port={:?} resp_addr={:?} resp_port={:?} proto={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} cookie={:?} triage_scores={:?}",
+            "sensor={:?} orig_addr={:?} orig_port={:?} orig_country_code={:?} resp_addr={:?} resp_port={:?} resp_country_code={:?} proto={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} cookie={:?} triage_scores={:?}",
             self.sensor,
             self.orig_addr.to_string(),
             self.orig_port.to_string(),
+            std::str::from_utf8(&self.orig_country_code).unwrap_or("XX"),
             self.resp_addr.to_string(),
             self.resp_port.to_string(),
+            std::str::from_utf8(&self.resp_country_code).unwrap_or("XX"),
             self.proto.to_string(),
             self.start_time.to_rfc3339(),
             self.duration.to_string(),
@@ -287,11 +293,11 @@ impl BlocklistRdp {
         Self {
             time,
             sensor: fields.sensor,
-            src_country_code: fields.src_country_code,
+            orig_country_code: fields.orig_country_code,
             orig_addr: fields.orig_addr,
             orig_port: fields.orig_port,
             resp_addr: fields.resp_addr,
-            dst_country_code: fields.dst_country_code,
+            resp_country_code: fields.resp_country_code,
             resp_port: fields.resp_port,
             proto: fields.proto,
             start_time: DateTime::from_timestamp_nanos(fields.start_time),
