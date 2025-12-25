@@ -38,14 +38,14 @@ pub struct NetworkThreat {
     #[serde(with = "ts_nanoseconds")]
     pub time: DateTime<Utc>,
     pub sensor: String,
-    #[serde(default)]
-    pub src_country_code: [u8; 2],
     pub orig_addr: IpAddr,
     pub orig_port: u16,
-    pub resp_addr: IpAddr,
     #[serde(default)]
-    pub dst_country_code: [u8; 2],
+    pub orig_country_code: [u8; 2],
+    pub resp_addr: IpAddr,
     pub resp_port: u16,
+    #[serde(default)]
+    pub resp_country_code: [u8; 2],
     pub proto: u8,
     pub service: String,
     #[serde(with = "ts_nanoseconds")]
@@ -70,7 +70,7 @@ impl NetworkThreat {
     #[must_use]
     pub fn syslog_rfc5424(&self) -> String {
         format!(
-            "category={:?} sensor={:?} orig_addr={:?} orig_port={:?} resp_addr={:?} resp_port={:?} proto={:?} service={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} content={:?} db_name={:?} rule_id={:?} matched_to={:?} cluster_id={:?} attack_kind={:?} confidence={:?}",
+            "category={:?} sensor={:?} orig_addr={:?} orig_port={:?} orig_country_code={:?} resp_addr={:?} resp_port={:?} resp_country_code={:?} proto={:?} service={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} content={:?} db_name={:?} rule_id={:?} matched_to={:?} cluster_id={:?} attack_kind={:?} confidence={:?}",
             self.category.as_ref().map_or_else(
                 || "Unspecified".to_string(),
                 std::string::ToString::to_string
@@ -78,8 +78,10 @@ impl NetworkThreat {
             self.sensor,
             self.orig_addr.to_string(),
             self.orig_port.to_string(),
+            std::str::from_utf8(&self.orig_country_code).unwrap_or("XX"),
             self.resp_addr.to_string(),
             self.resp_port.to_string(),
+            std::str::from_utf8(&self.resp_country_code).unwrap_or("XX"),
             self.proto.to_string(),
             self.service,
             self.start_time.to_rfc3339(),
@@ -103,12 +105,14 @@ impl fmt::Display for NetworkThreat {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "sensor={:?} orig_addr={:?} orig_port={:?} resp_addr={:?} resp_port={:?} proto={:?} service={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} content={:?} db_name={:?} rule_id={:?} matched_to={:?} cluster_id={:?} attack_kind={:?} confidence={:?} triage_scores={:?}",
+            "sensor={:?} orig_addr={:?} orig_port={:?} orig_country_code={:?} resp_addr={:?} resp_port={:?} resp_country_code={:?} proto={:?} service={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} content={:?} db_name={:?} rule_id={:?} matched_to={:?} cluster_id={:?} attack_kind={:?} confidence={:?} triage_scores={:?}",
             self.sensor,
             self.orig_addr.to_string(),
             self.orig_port.to_string(),
+            std::str::from_utf8(&self.orig_country_code).unwrap_or("XX"),
             self.resp_addr.to_string(),
             self.resp_port.to_string(),
+            std::str::from_utf8(&self.resp_country_code).unwrap_or("XX"),
             self.proto.to_string(),
             self.service,
             self.start_time.to_rfc3339(),

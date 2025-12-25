@@ -43,17 +43,17 @@ macro_rules! find_mqtt_attr_by_kind {
     }};
 }
 
-pub type BlocklistMqttFields = BlocklistMqttFieldsV0_43;
+pub type BlocklistMqttFields = BlocklistMqttFieldsV0_44;
 
 #[derive(Serialize, Deserialize)]
-pub struct BlocklistMqttFieldsV0_43 {
+pub struct BlocklistMqttFieldsV0_44 {
     pub sensor: String,
-    pub src_country_code: [u8; 2],
     pub orig_addr: IpAddr,
     pub orig_port: u16,
+    pub orig_country_code: [u8; 2],
     pub resp_addr: IpAddr,
-    pub dst_country_code: [u8; 2],
     pub resp_port: u16,
+    pub resp_country_code: [u8; 2],
     pub proto: u8,
     /// Timestamp in nanoseconds since the Unix epoch (UTC).
     pub start_time: i64,
@@ -78,7 +78,7 @@ impl BlocklistMqttFields {
         let start_time_dt = DateTime::from_timestamp_nanos(self.start_time);
 
         format!(
-            "category={:?} sensor={:?} orig_addr={:?} orig_port={:?} resp_addr={:?} resp_port={:?} proto={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} protocol={:?} version={:?} client_id={:?} connack_reason={:?} subscribe={:?} suback_reason={:?} confidence={:?}",
+            "category={:?} sensor={:?} orig_addr={:?} orig_port={:?} orig_country_code={:?} resp_addr={:?} resp_port={:?} resp_country_code={:?} proto={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} protocol={:?} version={:?} client_id={:?} connack_reason={:?} subscribe={:?} suback_reason={:?} confidence={:?}",
             self.category.as_ref().map_or_else(
                 || "Unspecified".to_string(),
                 std::string::ToString::to_string
@@ -86,8 +86,10 @@ impl BlocklistMqttFields {
             self.sensor,
             self.orig_addr.to_string(),
             self.orig_port.to_string(),
+            std::str::from_utf8(&self.orig_country_code).unwrap_or("XX"),
             self.resp_addr.to_string(),
             self.resp_port.to_string(),
+            std::str::from_utf8(&self.resp_country_code).unwrap_or("XX"),
             self.proto.to_string(),
             start_time_dt.to_rfc3339(),
             self.duration.to_string(),
@@ -110,11 +112,11 @@ impl BlocklistMqttFields {
 pub struct BlocklistMqtt {
     pub time: DateTime<Utc>,
     pub sensor: String,
-    pub src_country_code: [u8; 2],
+    pub orig_country_code: [u8; 2],
     pub orig_addr: IpAddr,
     pub orig_port: u16,
     pub resp_addr: IpAddr,
-    pub dst_country_code: [u8; 2],
+    pub resp_country_code: [u8; 2],
     pub resp_port: u16,
     pub proto: u8,
     pub start_time: DateTime<Utc>,
@@ -138,12 +140,14 @@ impl fmt::Display for BlocklistMqtt {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "sensor={:?} orig_addr={:?} orig_port={:?} resp_addr={:?} resp_port={:?} proto={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} protocol={:?} version={:?} client_id={:?} connack_reason={:?} subscribe={:?} suback_reason={:?} triage_scores={:?}",
+            "sensor={:?} orig_addr={:?} orig_port={:?} orig_country_code={:?} resp_addr={:?} resp_port={:?} resp_country_code={:?} proto={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} protocol={:?} version={:?} client_id={:?} connack_reason={:?} subscribe={:?} suback_reason={:?} triage_scores={:?}",
             self.sensor,
             self.orig_addr.to_string(),
             self.orig_port.to_string(),
+            std::str::from_utf8(&self.orig_country_code).unwrap_or("XX"),
             self.resp_addr.to_string(),
             self.resp_port.to_string(),
+            std::str::from_utf8(&self.resp_country_code).unwrap_or("XX"),
             self.proto.to_string(),
             self.start_time.to_rfc3339(),
             self.duration.to_string(),
@@ -167,11 +171,11 @@ impl BlocklistMqtt {
         Self {
             time,
             sensor: fields.sensor,
-            src_country_code: fields.src_country_code,
+            orig_country_code: fields.orig_country_code,
             orig_addr: fields.orig_addr,
             orig_port: fields.orig_port,
             resp_addr: fields.resp_addr,
-            dst_country_code: fields.dst_country_code,
+            resp_country_code: fields.resp_country_code,
             resp_port: fields.resp_port,
             proto: fields.proto,
             start_time: DateTime::from_timestamp_nanos(fields.start_time),
