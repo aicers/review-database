@@ -107,7 +107,7 @@ impl From<TriagePolicyV0_44> for crate::TriagePolicy {
 }
 
 // =============================================================================
-// Event Fields V0_43 structures (before src_country_code/dst_country_code)
+// Event Fields V0_43 structures (before orig_country_code/resp_country_code)
 // These structs represent event field schemas from version 0.43.x without
 // country code fields. From 0.44.x, country code fields were added.
 // Also handles cluster_id type change from Option<usize> to Option<u32>.
@@ -1064,10 +1064,10 @@ impl From<PortScanFieldsV0_43> for PortScanFields {
     fn from(old: PortScanFieldsV0_43) -> Self {
         Self {
             sensor: old.sensor,
-            src_country_code: *b"XX",
+            orig_country_code: *b"XX",
             orig_addr: old.orig_addr,
             resp_addr: old.resp_addr,
-            dst_country_code: *b"XX",
+            resp_country_code: *b"XX",
             resp_ports: old.resp_ports,
             start_time: old.start_time,
             end_time: old.end_time,
@@ -1080,14 +1080,14 @@ impl From<PortScanFieldsV0_43> for PortScanFields {
 
 impl From<MultiHostPortScanFieldsV0_43> for MultiHostPortScanFields {
     fn from(old: MultiHostPortScanFieldsV0_43) -> Self {
-        let dst_country_codes = vec![*b"XX"; old.resp_addrs.len()];
+        let resp_country_codes = vec![*b"XX"; old.resp_addrs.len()];
         Self {
             sensor: old.sensor,
-            src_country_code: *b"XX",
+            orig_country_code: *b"XX",
             orig_addr: old.orig_addr,
             resp_port: old.resp_port,
             resp_addrs: old.resp_addrs,
-            dst_country_codes,
+            resp_country_codes,
             proto: old.proto,
             start_time: old.start_time,
             end_time: old.end_time,
@@ -1099,13 +1099,13 @@ impl From<MultiHostPortScanFieldsV0_43> for MultiHostPortScanFields {
 
 impl From<ExternalDdosFieldsV0_43> for ExternalDdosFields {
     fn from(old: ExternalDdosFieldsV0_43) -> Self {
-        let src_country_codes = vec![*b"XX"; old.orig_addrs.len()];
+        let orig_country_codes = vec![*b"XX"; old.orig_addrs.len()];
         Self {
             sensor: old.sensor,
             orig_addrs: old.orig_addrs,
-            src_country_codes,
+            orig_country_codes,
             resp_addr: old.resp_addr,
-            dst_country_code: *b"XX",
+            resp_country_code: *b"XX",
             proto: old.proto,
             start_time: old.start_time,
             end_time: old.end_time,
@@ -1119,11 +1119,11 @@ impl From<BlocklistConnFieldsV0_43> for BlocklistConnFields {
     fn from(old: BlocklistConnFieldsV0_43) -> Self {
         Self {
             sensor: old.sensor,
-            src_country_code: *b"XX",
+            orig_country_code: *b"XX",
             orig_addr: old.orig_addr,
             orig_port: old.orig_port,
             resp_addr: old.resp_addr,
-            dst_country_code: *b"XX",
+            resp_country_code: *b"XX",
             resp_port: old.resp_port,
             proto: old.proto,
             conn_state: old.conn_state,
@@ -1146,11 +1146,11 @@ impl From<DnsEventFieldsV0_43> for DnsEventFields {
     fn from(old: DnsEventFieldsV0_43) -> Self {
         Self {
             sensor: old.sensor,
-            src_country_code: *b"XX",
+            orig_country_code: *b"XX",
             orig_addr: old.orig_addr,
             orig_port: old.orig_port,
             resp_addr: old.resp_addr,
-            dst_country_code: *b"XX",
+            resp_country_code: *b"XX",
             resp_port: old.resp_port,
             proto: old.proto,
             start_time: old.start_time,
@@ -1181,11 +1181,11 @@ impl From<CryptocurrencyMiningPoolFieldsV0_43> for CryptocurrencyMiningPoolField
     fn from(old: CryptocurrencyMiningPoolFieldsV0_43) -> Self {
         Self {
             sensor: old.sensor,
-            src_country_code: *b"XX",
+            orig_country_code: *b"XX",
             orig_addr: old.orig_addr,
             orig_port: old.orig_port,
             resp_addr: old.resp_addr,
-            dst_country_code: *b"XX",
+            resp_country_code: *b"XX",
             resp_port: old.resp_port,
             proto: old.proto,
             start_time: old.start_time,
@@ -1217,11 +1217,11 @@ impl From<BlocklistDnsFieldsV0_43> for BlocklistDnsFields {
     fn from(old: BlocklistDnsFieldsV0_43) -> Self {
         Self {
             sensor: old.sensor,
-            src_country_code: *b"XX",
+            orig_country_code: *b"XX",
             orig_addr: old.orig_addr,
             orig_port: old.orig_port,
             resp_addr: old.resp_addr,
-            dst_country_code: *b"XX",
+            resp_country_code: *b"XX",
             resp_port: old.resp_port,
             proto: old.proto,
             start_time: old.start_time,
@@ -1252,11 +1252,11 @@ impl From<HttpEventFieldsV0_43> for HttpEventFields {
     fn from(old: HttpEventFieldsV0_43) -> Self {
         Self {
             sensor: old.sensor,
-            src_country_code: *b"XX",
+            orig_country_code: *b"XX",
             orig_addr: old.orig_addr,
             orig_port: old.orig_port,
             resp_addr: old.resp_addr,
-            dst_country_code: *b"XX",
+            resp_country_code: *b"XX",
             resp_port: old.resp_port,
             proto: old.proto,
             start_time: old.start_time,
@@ -1295,11 +1295,11 @@ impl From<RepeatedHttpSessionsFieldsV0_43> for RepeatedHttpSessionsFields {
     fn from(old: RepeatedHttpSessionsFieldsV0_43) -> Self {
         Self {
             sensor: old.sensor,
-            src_country_code: *b"XX",
+            orig_country_code: *b"XX",
             orig_addr: old.orig_addr,
             orig_port: old.orig_port,
             resp_addr: old.resp_addr,
-            dst_country_code: *b"XX",
+            resp_country_code: *b"XX",
             resp_port: old.resp_port,
             proto: old.proto,
             start_time: old.start_time,
@@ -1315,11 +1315,11 @@ impl From<HttpThreatFieldsV0_43> for HttpThreatFields {
         Self {
             time: old.time,
             sensor: old.sensor,
-            src_country_code: *b"XX",
+            orig_country_code: *b"XX",
             orig_addr: old.orig_addr,
             orig_port: old.orig_port,
             resp_addr: old.resp_addr,
-            dst_country_code: *b"XX",
+            resp_country_code: *b"XX",
             resp_port: old.resp_port,
             proto: old.proto,
             start_time: old.start_time,
@@ -1364,11 +1364,11 @@ impl From<DgaFieldsV0_43> for DgaFields {
     fn from(old: DgaFieldsV0_43) -> Self {
         Self {
             sensor: old.sensor,
-            src_country_code: *b"XX",
+            orig_country_code: *b"XX",
             orig_addr: old.orig_addr,
             orig_port: old.orig_port,
             resp_addr: old.resp_addr,
-            dst_country_code: *b"XX",
+            resp_country_code: *b"XX",
             resp_port: old.resp_port,
             proto: old.proto,
             start_time: old.start_time,
@@ -1405,13 +1405,13 @@ impl From<DgaFieldsV0_43> for DgaFields {
 
 impl From<RdpBruteForceFieldsV0_43> for RdpBruteForceFields {
     fn from(old: RdpBruteForceFieldsV0_43) -> Self {
-        let dst_country_codes = vec![*b"XX"; old.resp_addrs.len()];
+        let resp_country_codes = vec![*b"XX"; old.resp_addrs.len()];
         Self {
             sensor: old.sensor,
-            src_country_code: *b"XX",
+            orig_country_code: *b"XX",
             orig_addr: old.orig_addr,
             resp_addrs: old.resp_addrs,
-            dst_country_codes,
+            resp_country_codes,
             start_time: old.start_time,
             end_time: old.end_time,
             proto: old.proto,
@@ -1425,11 +1425,11 @@ impl From<BlocklistRdpFieldsV0_43> for BlocklistRdpFields {
     fn from(old: BlocklistRdpFieldsV0_43) -> Self {
         Self {
             sensor: old.sensor,
-            src_country_code: *b"XX",
+            orig_country_code: *b"XX",
             orig_addr: old.orig_addr,
             orig_port: old.orig_port,
             resp_addr: old.resp_addr,
-            dst_country_code: *b"XX",
+            resp_country_code: *b"XX",
             resp_port: old.resp_port,
             proto: old.proto,
             start_time: old.start_time,
@@ -1449,10 +1449,10 @@ impl From<FtpBruteForceFieldsV0_43> for FtpBruteForceFields {
     fn from(old: FtpBruteForceFieldsV0_43) -> Self {
         Self {
             sensor: old.sensor,
-            src_country_code: *b"XX",
+            orig_country_code: *b"XX",
             orig_addr: old.orig_addr,
             resp_addr: old.resp_addr,
-            dst_country_code: *b"XX",
+            resp_country_code: *b"XX",
             resp_port: old.resp_port,
             proto: old.proto,
             user_list: old.user_list,
@@ -1488,11 +1488,11 @@ impl From<FtpEventFieldsV0_43> for FtpEventFields {
     fn from(old: FtpEventFieldsV0_43) -> Self {
         Self {
             sensor: old.sensor,
-            src_country_code: *b"XX",
+            orig_country_code: *b"XX",
             orig_addr: old.orig_addr,
             orig_port: old.orig_port,
             resp_addr: old.resp_addr,
-            dst_country_code: *b"XX",
+            resp_country_code: *b"XX",
             resp_port: old.resp_port,
             proto: old.proto,
             start_time: old.start_time,
@@ -1514,10 +1514,10 @@ impl From<LdapBruteForceFieldsV0_43> for LdapBruteForceFields {
     fn from(old: LdapBruteForceFieldsV0_43) -> Self {
         Self {
             sensor: old.sensor,
-            src_country_code: *b"XX",
+            orig_country_code: *b"XX",
             orig_addr: old.orig_addr,
             resp_addr: old.resp_addr,
-            dst_country_code: *b"XX",
+            resp_country_code: *b"XX",
             resp_port: old.resp_port,
             proto: old.proto,
             user_pw_list: old.user_pw_list,
@@ -1533,11 +1533,11 @@ impl From<LdapEventFieldsV0_43> for LdapEventFields {
     fn from(old: LdapEventFieldsV0_43) -> Self {
         Self {
             sensor: old.sensor,
-            src_country_code: *b"XX",
+            orig_country_code: *b"XX",
             orig_addr: old.orig_addr,
             orig_port: old.orig_port,
             resp_addr: old.resp_addr,
-            dst_country_code: *b"XX",
+            resp_country_code: *b"XX",
             resp_port: old.resp_port,
             proto: old.proto,
             start_time: old.start_time,
@@ -1563,11 +1563,11 @@ impl From<BlocklistSshFieldsV0_43> for BlocklistSshFields {
     fn from(old: BlocklistSshFieldsV0_43) -> Self {
         Self {
             sensor: old.sensor,
-            src_country_code: *b"XX",
+            orig_country_code: *b"XX",
             orig_addr: old.orig_addr,
             orig_port: old.orig_port,
             resp_addr: old.resp_addr,
-            dst_country_code: *b"XX",
+            resp_country_code: *b"XX",
             resp_port: old.resp_port,
             proto: old.proto,
             start_time: old.start_time,
@@ -1599,11 +1599,11 @@ impl From<BlocklistTlsFieldsV0_43> for BlocklistTlsFields {
     fn from(old: BlocklistTlsFieldsV0_43) -> Self {
         Self {
             sensor: old.sensor,
-            src_country_code: *b"XX",
+            orig_country_code: *b"XX",
             orig_addr: old.orig_addr,
             orig_port: old.orig_port,
             resp_addr: old.resp_addr,
-            dst_country_code: *b"XX",
+            resp_country_code: *b"XX",
             resp_port: old.resp_port,
             proto: old.proto,
             start_time: old.start_time,
@@ -1643,11 +1643,11 @@ impl From<BlocklistKerberosFieldsV0_43> for BlocklistKerberosFields {
     fn from(old: BlocklistKerberosFieldsV0_43) -> Self {
         Self {
             sensor: old.sensor,
-            src_country_code: *b"XX",
+            orig_country_code: *b"XX",
             orig_addr: old.orig_addr,
             orig_port: old.orig_port,
             resp_addr: old.resp_addr,
-            dst_country_code: *b"XX",
+            resp_country_code: *b"XX",
             resp_port: old.resp_port,
             proto: old.proto,
             start_time: old.start_time,
@@ -1675,11 +1675,11 @@ impl From<BlocklistSmtpFieldsV0_43> for BlocklistSmtpFields {
     fn from(old: BlocklistSmtpFieldsV0_43) -> Self {
         Self {
             sensor: old.sensor,
-            src_country_code: *b"XX",
+            orig_country_code: *b"XX",
             orig_addr: old.orig_addr,
             orig_port: old.orig_port,
             resp_addr: old.resp_addr,
-            dst_country_code: *b"XX",
+            resp_country_code: *b"XX",
             resp_port: old.resp_port,
             proto: old.proto,
             start_time: old.start_time,
@@ -1705,11 +1705,11 @@ impl From<BlocklistNfsFieldsV0_43> for BlocklistNfsFields {
     fn from(old: BlocklistNfsFieldsV0_43) -> Self {
         Self {
             sensor: old.sensor,
-            src_country_code: *b"XX",
+            orig_country_code: *b"XX",
             orig_addr: old.orig_addr,
             orig_port: old.orig_port,
             resp_addr: old.resp_addr,
-            dst_country_code: *b"XX",
+            resp_country_code: *b"XX",
             resp_port: old.resp_port,
             proto: old.proto,
             start_time: old.start_time,
@@ -1730,11 +1730,11 @@ impl From<BlocklistDhcpFieldsV0_43> for BlocklistDhcpFields {
     fn from(old: BlocklistDhcpFieldsV0_43) -> Self {
         Self {
             sensor: old.sensor,
-            src_country_code: *b"XX",
+            orig_country_code: *b"XX",
             orig_addr: old.orig_addr,
             orig_port: old.orig_port,
             resp_addr: old.resp_addr,
-            dst_country_code: *b"XX",
+            resp_country_code: *b"XX",
             resp_port: old.resp_port,
             proto: old.proto,
             start_time: old.start_time,
@@ -1772,11 +1772,11 @@ impl From<BlocklistDceRpcFieldsV0_43> for BlocklistDceRpcFields {
     fn from(old: BlocklistDceRpcFieldsV0_43) -> Self {
         Self {
             sensor: old.sensor,
-            src_country_code: *b"XX",
+            orig_country_code: *b"XX",
             orig_addr: old.orig_addr,
             orig_port: old.orig_port,
             resp_addr: old.resp_addr,
-            dst_country_code: *b"XX",
+            resp_country_code: *b"XX",
             resp_port: old.resp_port,
             proto: old.proto,
             start_time: old.start_time,
@@ -1797,11 +1797,11 @@ impl From<BlocklistNtlmFieldsV0_43> for BlocklistNtlmFields {
     fn from(old: BlocklistNtlmFieldsV0_43) -> Self {
         Self {
             sensor: old.sensor,
-            src_country_code: *b"XX",
+            orig_country_code: *b"XX",
             orig_addr: old.orig_addr,
             orig_port: old.orig_port,
             resp_addr: old.resp_addr,
-            dst_country_code: *b"XX",
+            resp_country_code: *b"XX",
             resp_port: old.resp_port,
             proto: old.proto,
             start_time: old.start_time,
@@ -1825,11 +1825,11 @@ impl From<BlocklistSmbFieldsV0_43> for BlocklistSmbFields {
     fn from(old: BlocklistSmbFieldsV0_43) -> Self {
         Self {
             sensor: old.sensor,
-            src_country_code: *b"XX",
+            orig_country_code: *b"XX",
             orig_addr: old.orig_addr,
             orig_port: old.orig_port,
             resp_addr: old.resp_addr,
-            dst_country_code: *b"XX",
+            resp_country_code: *b"XX",
             resp_port: old.resp_port,
             proto: old.proto,
             start_time: old.start_time,
@@ -1859,11 +1859,11 @@ impl From<BlocklistMqttFieldsV0_43> for BlocklistMqttFields {
     fn from(old: BlocklistMqttFieldsV0_43) -> Self {
         Self {
             sensor: old.sensor,
-            src_country_code: *b"XX",
+            orig_country_code: *b"XX",
             orig_addr: old.orig_addr,
             orig_port: old.orig_port,
             resp_addr: old.resp_addr,
-            dst_country_code: *b"XX",
+            resp_country_code: *b"XX",
             resp_port: old.resp_port,
             proto: old.proto,
             start_time: old.start_time,
@@ -1888,11 +1888,11 @@ impl From<BlocklistBootpFieldsV0_43> for BlocklistBootpFields {
     fn from(old: BlocklistBootpFieldsV0_43) -> Self {
         Self {
             sensor: old.sensor,
-            src_country_code: *b"XX",
+            orig_country_code: *b"XX",
             orig_addr: old.orig_addr,
             orig_port: old.orig_port,
             resp_addr: old.resp_addr,
-            dst_country_code: *b"XX",
+            resp_country_code: *b"XX",
             resp_port: old.resp_port,
             proto: old.proto,
             start_time: old.start_time,
@@ -1922,11 +1922,11 @@ impl From<BlocklistRadiusFieldsV0_43> for BlocklistRadiusFields {
     fn from(old: BlocklistRadiusFieldsV0_43) -> Self {
         Self {
             sensor: old.sensor,
-            src_country_code: *b"XX",
+            orig_country_code: *b"XX",
             orig_addr: old.orig_addr,
             orig_port: old.orig_port,
             resp_addr: old.resp_addr,
-            dst_country_code: *b"XX",
+            resp_country_code: *b"XX",
             resp_port: old.resp_port,
             proto: old.proto,
             start_time: old.start_time,
@@ -1959,11 +1959,11 @@ impl From<BlocklistMalformedDnsFieldsV0_43> for BlocklistMalformedDnsFields {
     fn from(old: BlocklistMalformedDnsFieldsV0_43) -> Self {
         Self {
             sensor: old.sensor,
-            src_country_code: *b"XX",
+            orig_country_code: *b"XX",
             orig_addr: old.orig_addr,
             orig_port: old.orig_port,
             resp_addr: old.resp_addr,
-            dst_country_code: *b"XX",
+            resp_country_code: *b"XX",
             resp_port: old.resp_port,
             proto: old.proto,
             start_time: old.start_time,
@@ -1992,13 +1992,13 @@ impl From<BlocklistMalformedDnsFieldsV0_43> for BlocklistMalformedDnsFields {
 
 impl From<UnusualDestinationPatternFieldsV0_43> for UnusualDestinationPatternFields {
     fn from(old: UnusualDestinationPatternFieldsV0_43) -> Self {
-        let dst_country_codes = vec![*b"XX"; old.destination_ips.len()];
+        let resp_country_codes = vec![*b"XX"; old.destination_ips.len()];
         Self {
             sensor: old.sensor,
             start_time: old.start_time,
             end_time: old.end_time,
             destination_ips: old.destination_ips,
-            dst_country_codes,
+            resp_country_codes,
             count: old.count,
             expected_mean: old.expected_mean,
             std_deviation: old.std_deviation,
@@ -2009,9 +2009,9 @@ impl From<UnusualDestinationPatternFieldsV0_43> for UnusualDestinationPatternFie
     }
 }
 
-/// Network threat from version 0.42.x (before country codes were added)
+/// Network threat from version 0.43.x (before country codes were added)
 #[derive(Deserialize, Serialize)]
-pub(crate) struct NetworkThreatV0_42 {
+pub(crate) struct NetworkThreatV0_43 {
     #[serde(with = "chrono::serde::ts_nanoseconds")]
     pub time: DateTime<Utc>,
     pub sensor: String,
@@ -2041,16 +2041,16 @@ pub(crate) struct NetworkThreatV0_42 {
 
 use crate::event::NetworkThreat;
 
-impl From<NetworkThreatV0_42> for NetworkThreat {
-    fn from(old: NetworkThreatV0_42) -> Self {
+impl From<NetworkThreatV0_43> for NetworkThreat {
+    fn from(old: NetworkThreatV0_43) -> Self {
         Self {
             time: old.time,
             sensor: old.sensor,
-            src_country_code: *b"XX",
+            orig_country_code: *b"XX",
             orig_addr: old.orig_addr,
             orig_port: old.orig_port,
             resp_addr: old.resp_addr,
-            dst_country_code: *b"XX",
+            resp_country_code: *b"XX",
             resp_port: old.resp_port,
             proto: old.proto,
             service: old.service,
