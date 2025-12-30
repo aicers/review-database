@@ -19,6 +19,10 @@ pub struct Model {
     pub max_event_id_num: i32,
     pub data_source_id: i32,
     pub classification_id: Option<i64>,
+    /// Description of the model, providing information about its purpose or usage.
+    pub description: String,
+    /// Path to the model file in the pretrained directory.
+    pub file_path: Option<String>,
 }
 
 /// Functions for the `model` indexed map.
@@ -194,6 +198,11 @@ pub struct Update {
     max_event_id_num: Option<i32>,
     data_source_id: Option<i32>,
     classification_id: Option<i64>,
+    description: Option<String>,
+    /// `None` means "don't update", `Some(None)` means "set to null",
+    /// `Some(Some(path))` means "set to path".
+    #[allow(clippy::option_option)]
+    file_path: Option<Option<String>>,
 }
 
 impl From<Model> for Update {
@@ -205,6 +214,8 @@ impl From<Model> for Update {
             max_event_id_num: Some(model.max_event_id_num),
             data_source_id: Some(model.data_source_id),
             classification_id: model.classification_id,
+            description: Some(model.description),
+            file_path: Some(model.file_path),
         }
     }
 }
@@ -218,6 +229,8 @@ impl From<&Model> for Update {
             max_event_id_num: Some(model.max_event_id_num),
             data_source_id: Some(model.data_source_id),
             classification_id: model.classification_id,
+            description: Some(model.description.clone()),
+            file_path: Some(model.file_path.clone()),
         }
     }
 }
@@ -247,6 +260,12 @@ impl IndexedMapUpdate for Update {
         if let Some(data_source_id) = self.data_source_id {
             value.data_source_id = data_source_id;
         }
+        if let Some(description) = &self.description {
+            value.description.clone_from(description);
+        }
+        if let Some(file_path) = &self.file_path {
+            value.file_path.clone_from(file_path);
+        }
         Ok(value)
     }
 
@@ -273,6 +292,16 @@ impl IndexedMapUpdate for Update {
         }
         if let Some(data_source_id) = self.data_source_id
             && data_source_id != value.data_source_id
+        {
+            return false;
+        }
+        if let Some(description) = &self.description
+            && description != &value.description
+        {
+            return false;
+        }
+        if let Some(file_path) = &self.file_path
+            && file_path != &value.file_path
         {
             return false;
         }
@@ -305,6 +334,8 @@ mod tests {
             max_event_id_num: 100,
             data_source_id: 42,
             classification_id: None,
+            description: String::new(),
+            file_path: None,
         }
     }
 
@@ -417,6 +448,8 @@ mod tests {
             max_event_id_num: Some(200),
             data_source_id: Some(77),
             classification_id: None,
+            description: Some("test description".into()),
+            file_path: Some(Some("test/path.bin".into())),
         };
 
         let applied = update.apply(m.clone()).unwrap();
@@ -424,8 +457,43 @@ mod tests {
         assert_eq!(applied.kind, "changed");
         assert_eq!(applied.max_event_id_num, 200);
         assert_eq!(applied.data_source_id, 77);
+        assert_eq!(applied.description, "test description");
+        assert_eq!(applied.file_path, Some("test/path.bin".to_string()));
 
         assert!(update.verify(&applied));
         assert!(!update.verify(&m)); // old model doesn't match update
+    }
+
+    #[test]
+    fn test_model_description_and_file_path() {
+        let (_permit, store) = setup_store();
+        let mut table = store.model_map();
+
+        let mut m = make_model("model-with-desc", 1);
+        m.description = "A test model for classification".to_string();
+        m.file_path = Some("pretrained/test/model.bin".to_string());
+
+        let id = table.add_model(m).unwrap();
+
+        let loaded = table.load_model(id).unwrap();
+        assert_eq!(loaded.description, "A test model for classification");
+        assert_eq!(
+            loaded.file_path,
+            Some("pretrained/test/model.bin".to_string())
+        );
+
+        // Test updating description and file_path
+        let mut updated = loaded.clone();
+        updated.description = "Updated description".to_string();
+        updated.file_path = Some("pretrained/new/path.bin".to_string());
+
+        table.update_model(&updated).unwrap();
+
+        let reloaded = table.load_model(id).unwrap();
+        assert_eq!(reloaded.description, "Updated description");
+        assert_eq!(
+            reloaded.file_path,
+            Some("pretrained/new/path.bin".to_string())
+        );
     }
 }

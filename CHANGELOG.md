@@ -7,6 +7,14 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- Added `description` and `file_path` fields to the `Model` struct. The
+  `description` field stores model-related information, while `file_path`
+  specifies the path to the model file in the pretrained directory. Existing
+  models are automatically migrated with empty description and `None` file
+  path.
+
 ### Changed
 
 - Changed `Store::network_tag_set` signature to require a `customer_id: u32`

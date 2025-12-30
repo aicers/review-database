@@ -561,6 +561,8 @@ impl Store {
             max_event_id_num: model.max_event_id_num,
             data_source_id: model.data_source_id,
             classification_id: Some(model.classification_id),
+            description: String::new(),
+            file_path: None,
         };
 
         let mut table = self.model_map();
