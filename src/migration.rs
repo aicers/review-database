@@ -113,7 +113,7 @@ const COMPATIBLE_VERSION_REQ: &str = ">=0.44.0-alpha.1,<0.44.0-alpha.2";
 /// * `data_dir` - Path to the data directory containing the database
 /// * `backup_dir` - Path to the backup directory
 /// * `locator` - Optional IP geolocation database for resolving country codes during migration.
-///   If `None`, country code fields will be set to `None` for migrated records.
+///   If `None`, country code fields will be set to "ZZ" (unknown) for migrated records.
 ///
 /// # Errors
 ///
@@ -861,10 +861,10 @@ trait ResolveCountryCodes {
     fn resolve_country_codes(&mut self, locator: &ip2location::DB);
 }
 
-/// Converts an IP address to a country code using the ip2location database.
-/// Returns the 2-letter country code, or "XX" if the lookup fails or returns
-/// an invalid code.
-fn country_code_to_bytes(locator: &ip2location::DB, addr: IpAddr) -> [u8; 2] {
+/// Looks up the country code for an IP address using the ip2location database.
+/// Returns the 2-letter country code as bytes, or "XX" if the lookup fails or
+/// returns an invalid code.
+fn lookup_country_code(locator: &ip2location::DB, addr: IpAddr) -> [u8; 2] {
     crate::util::country_code_to_bytes(&crate::util::find_ip_country(locator, addr))
 }
 
@@ -885,18 +885,18 @@ use crate::event::{
 
 impl ResolveCountryCodes for PortScanFields {
     fn resolve_country_codes(&mut self, locator: &ip2location::DB) {
-        self.orig_country_code = country_code_to_bytes(locator, self.orig_addr);
-        self.resp_country_code = country_code_to_bytes(locator, self.resp_addr);
+        self.orig_country_code = lookup_country_code(locator, self.orig_addr);
+        self.resp_country_code = lookup_country_code(locator, self.resp_addr);
     }
 }
 
 impl ResolveCountryCodes for MultiHostPortScanFields {
     fn resolve_country_codes(&mut self, locator: &ip2location::DB) {
-        self.orig_country_code = country_code_to_bytes(locator, self.orig_addr);
+        self.orig_country_code = lookup_country_code(locator, self.orig_addr);
         self.resp_country_codes = self
             .resp_addrs
             .iter()
-            .map(|addr| country_code_to_bytes(locator, *addr))
+            .map(|addr| lookup_country_code(locator, *addr))
             .collect();
     }
 }
@@ -906,202 +906,202 @@ impl ResolveCountryCodes for ExternalDdosFields {
         self.orig_country_codes = self
             .orig_addrs
             .iter()
-            .map(|addr| country_code_to_bytes(locator, *addr))
+            .map(|addr| lookup_country_code(locator, *addr))
             .collect();
-        self.resp_country_code = country_code_to_bytes(locator, self.resp_addr);
+        self.resp_country_code = lookup_country_code(locator, self.resp_addr);
     }
 }
 
 impl ResolveCountryCodes for BlocklistConnFields {
     fn resolve_country_codes(&mut self, locator: &ip2location::DB) {
-        self.orig_country_code = country_code_to_bytes(locator, self.orig_addr);
-        self.resp_country_code = country_code_to_bytes(locator, self.resp_addr);
+        self.orig_country_code = lookup_country_code(locator, self.orig_addr);
+        self.resp_country_code = lookup_country_code(locator, self.resp_addr);
     }
 }
 
 impl ResolveCountryCodes for DnsEventFields {
     fn resolve_country_codes(&mut self, locator: &ip2location::DB) {
-        self.orig_country_code = country_code_to_bytes(locator, self.orig_addr);
-        self.resp_country_code = country_code_to_bytes(locator, self.resp_addr);
+        self.orig_country_code = lookup_country_code(locator, self.orig_addr);
+        self.resp_country_code = lookup_country_code(locator, self.resp_addr);
     }
 }
 
 impl ResolveCountryCodes for CryptocurrencyMiningPoolFields {
     fn resolve_country_codes(&mut self, locator: &ip2location::DB) {
-        self.orig_country_code = country_code_to_bytes(locator, self.orig_addr);
-        self.resp_country_code = country_code_to_bytes(locator, self.resp_addr);
+        self.orig_country_code = lookup_country_code(locator, self.orig_addr);
+        self.resp_country_code = lookup_country_code(locator, self.resp_addr);
     }
 }
 
 impl ResolveCountryCodes for BlocklistDnsFields {
     fn resolve_country_codes(&mut self, locator: &ip2location::DB) {
-        self.orig_country_code = country_code_to_bytes(locator, self.orig_addr);
-        self.resp_country_code = country_code_to_bytes(locator, self.resp_addr);
+        self.orig_country_code = lookup_country_code(locator, self.orig_addr);
+        self.resp_country_code = lookup_country_code(locator, self.resp_addr);
     }
 }
 
 impl ResolveCountryCodes for HttpEventFields {
     fn resolve_country_codes(&mut self, locator: &ip2location::DB) {
-        self.orig_country_code = country_code_to_bytes(locator, self.orig_addr);
-        self.resp_country_code = country_code_to_bytes(locator, self.resp_addr);
+        self.orig_country_code = lookup_country_code(locator, self.orig_addr);
+        self.resp_country_code = lookup_country_code(locator, self.resp_addr);
     }
 }
 
 impl ResolveCountryCodes for RepeatedHttpSessionsFields {
     fn resolve_country_codes(&mut self, locator: &ip2location::DB) {
-        self.orig_country_code = country_code_to_bytes(locator, self.orig_addr);
-        self.resp_country_code = country_code_to_bytes(locator, self.resp_addr);
+        self.orig_country_code = lookup_country_code(locator, self.orig_addr);
+        self.resp_country_code = lookup_country_code(locator, self.resp_addr);
     }
 }
 
 impl ResolveCountryCodes for HttpThreatFields {
     fn resolve_country_codes(&mut self, locator: &ip2location::DB) {
-        self.orig_country_code = country_code_to_bytes(locator, self.orig_addr);
-        self.resp_country_code = country_code_to_bytes(locator, self.resp_addr);
+        self.orig_country_code = lookup_country_code(locator, self.orig_addr);
+        self.resp_country_code = lookup_country_code(locator, self.resp_addr);
     }
 }
 
 impl ResolveCountryCodes for DgaFields {
     fn resolve_country_codes(&mut self, locator: &ip2location::DB) {
-        self.orig_country_code = country_code_to_bytes(locator, self.orig_addr);
-        self.resp_country_code = country_code_to_bytes(locator, self.resp_addr);
+        self.orig_country_code = lookup_country_code(locator, self.orig_addr);
+        self.resp_country_code = lookup_country_code(locator, self.resp_addr);
     }
 }
 
 impl ResolveCountryCodes for RdpBruteForceFields {
     fn resolve_country_codes(&mut self, locator: &ip2location::DB) {
-        self.orig_country_code = country_code_to_bytes(locator, self.orig_addr);
+        self.orig_country_code = lookup_country_code(locator, self.orig_addr);
         self.resp_country_codes = self
             .resp_addrs
             .iter()
-            .map(|addr| country_code_to_bytes(locator, *addr))
+            .map(|addr| lookup_country_code(locator, *addr))
             .collect();
     }
 }
 
 impl ResolveCountryCodes for BlocklistRdpFields {
     fn resolve_country_codes(&mut self, locator: &ip2location::DB) {
-        self.orig_country_code = country_code_to_bytes(locator, self.orig_addr);
-        self.resp_country_code = country_code_to_bytes(locator, self.resp_addr);
+        self.orig_country_code = lookup_country_code(locator, self.orig_addr);
+        self.resp_country_code = lookup_country_code(locator, self.resp_addr);
     }
 }
 
 impl ResolveCountryCodes for FtpBruteForceFields {
     fn resolve_country_codes(&mut self, locator: &ip2location::DB) {
-        self.orig_country_code = country_code_to_bytes(locator, self.orig_addr);
-        self.resp_country_code = country_code_to_bytes(locator, self.resp_addr);
+        self.orig_country_code = lookup_country_code(locator, self.orig_addr);
+        self.resp_country_code = lookup_country_code(locator, self.resp_addr);
     }
 }
 
 impl ResolveCountryCodes for FtpEventFields {
     fn resolve_country_codes(&mut self, locator: &ip2location::DB) {
-        self.orig_country_code = country_code_to_bytes(locator, self.orig_addr);
-        self.resp_country_code = country_code_to_bytes(locator, self.resp_addr);
+        self.orig_country_code = lookup_country_code(locator, self.orig_addr);
+        self.resp_country_code = lookup_country_code(locator, self.resp_addr);
     }
 }
 
 impl ResolveCountryCodes for LdapBruteForceFields {
     fn resolve_country_codes(&mut self, locator: &ip2location::DB) {
-        self.orig_country_code = country_code_to_bytes(locator, self.orig_addr);
-        self.resp_country_code = country_code_to_bytes(locator, self.resp_addr);
+        self.orig_country_code = lookup_country_code(locator, self.orig_addr);
+        self.resp_country_code = lookup_country_code(locator, self.resp_addr);
     }
 }
 
 impl ResolveCountryCodes for LdapEventFields {
     fn resolve_country_codes(&mut self, locator: &ip2location::DB) {
-        self.orig_country_code = country_code_to_bytes(locator, self.orig_addr);
-        self.resp_country_code = country_code_to_bytes(locator, self.resp_addr);
+        self.orig_country_code = lookup_country_code(locator, self.orig_addr);
+        self.resp_country_code = lookup_country_code(locator, self.resp_addr);
     }
 }
 
 impl ResolveCountryCodes for BlocklistSshFields {
     fn resolve_country_codes(&mut self, locator: &ip2location::DB) {
-        self.orig_country_code = country_code_to_bytes(locator, self.orig_addr);
-        self.resp_country_code = country_code_to_bytes(locator, self.resp_addr);
+        self.orig_country_code = lookup_country_code(locator, self.orig_addr);
+        self.resp_country_code = lookup_country_code(locator, self.resp_addr);
     }
 }
 
 impl ResolveCountryCodes for BlocklistTlsFields {
     fn resolve_country_codes(&mut self, locator: &ip2location::DB) {
-        self.orig_country_code = country_code_to_bytes(locator, self.orig_addr);
-        self.resp_country_code = country_code_to_bytes(locator, self.resp_addr);
+        self.orig_country_code = lookup_country_code(locator, self.orig_addr);
+        self.resp_country_code = lookup_country_code(locator, self.resp_addr);
     }
 }
 
 impl ResolveCountryCodes for BlocklistKerberosFields {
     fn resolve_country_codes(&mut self, locator: &ip2location::DB) {
-        self.orig_country_code = country_code_to_bytes(locator, self.orig_addr);
-        self.resp_country_code = country_code_to_bytes(locator, self.resp_addr);
+        self.orig_country_code = lookup_country_code(locator, self.orig_addr);
+        self.resp_country_code = lookup_country_code(locator, self.resp_addr);
     }
 }
 
 impl ResolveCountryCodes for BlocklistSmtpFields {
     fn resolve_country_codes(&mut self, locator: &ip2location::DB) {
-        self.orig_country_code = country_code_to_bytes(locator, self.orig_addr);
-        self.resp_country_code = country_code_to_bytes(locator, self.resp_addr);
+        self.orig_country_code = lookup_country_code(locator, self.orig_addr);
+        self.resp_country_code = lookup_country_code(locator, self.resp_addr);
     }
 }
 
 impl ResolveCountryCodes for BlocklistNfsFields {
     fn resolve_country_codes(&mut self, locator: &ip2location::DB) {
-        self.orig_country_code = country_code_to_bytes(locator, self.orig_addr);
-        self.resp_country_code = country_code_to_bytes(locator, self.resp_addr);
+        self.orig_country_code = lookup_country_code(locator, self.orig_addr);
+        self.resp_country_code = lookup_country_code(locator, self.resp_addr);
     }
 }
 
 impl ResolveCountryCodes for BlocklistDhcpFields {
     fn resolve_country_codes(&mut self, locator: &ip2location::DB) {
-        self.orig_country_code = country_code_to_bytes(locator, self.orig_addr);
-        self.resp_country_code = country_code_to_bytes(locator, self.resp_addr);
+        self.orig_country_code = lookup_country_code(locator, self.orig_addr);
+        self.resp_country_code = lookup_country_code(locator, self.resp_addr);
     }
 }
 
 impl ResolveCountryCodes for BlocklistDceRpcFields {
     fn resolve_country_codes(&mut self, locator: &ip2location::DB) {
-        self.orig_country_code = country_code_to_bytes(locator, self.orig_addr);
-        self.resp_country_code = country_code_to_bytes(locator, self.resp_addr);
+        self.orig_country_code = lookup_country_code(locator, self.orig_addr);
+        self.resp_country_code = lookup_country_code(locator, self.resp_addr);
     }
 }
 
 impl ResolveCountryCodes for BlocklistNtlmFields {
     fn resolve_country_codes(&mut self, locator: &ip2location::DB) {
-        self.orig_country_code = country_code_to_bytes(locator, self.orig_addr);
-        self.resp_country_code = country_code_to_bytes(locator, self.resp_addr);
+        self.orig_country_code = lookup_country_code(locator, self.orig_addr);
+        self.resp_country_code = lookup_country_code(locator, self.resp_addr);
     }
 }
 
 impl ResolveCountryCodes for BlocklistSmbFields {
     fn resolve_country_codes(&mut self, locator: &ip2location::DB) {
-        self.orig_country_code = country_code_to_bytes(locator, self.orig_addr);
-        self.resp_country_code = country_code_to_bytes(locator, self.resp_addr);
+        self.orig_country_code = lookup_country_code(locator, self.orig_addr);
+        self.resp_country_code = lookup_country_code(locator, self.resp_addr);
     }
 }
 
 impl ResolveCountryCodes for BlocklistMqttFields {
     fn resolve_country_codes(&mut self, locator: &ip2location::DB) {
-        self.orig_country_code = country_code_to_bytes(locator, self.orig_addr);
-        self.resp_country_code = country_code_to_bytes(locator, self.resp_addr);
+        self.orig_country_code = lookup_country_code(locator, self.orig_addr);
+        self.resp_country_code = lookup_country_code(locator, self.resp_addr);
     }
 }
 
 impl ResolveCountryCodes for BlocklistBootpFields {
     fn resolve_country_codes(&mut self, locator: &ip2location::DB) {
-        self.orig_country_code = country_code_to_bytes(locator, self.orig_addr);
-        self.resp_country_code = country_code_to_bytes(locator, self.resp_addr);
+        self.orig_country_code = lookup_country_code(locator, self.orig_addr);
+        self.resp_country_code = lookup_country_code(locator, self.resp_addr);
     }
 }
 
 impl ResolveCountryCodes for BlocklistRadiusFields {
     fn resolve_country_codes(&mut self, locator: &ip2location::DB) {
-        self.orig_country_code = country_code_to_bytes(locator, self.orig_addr);
-        self.resp_country_code = country_code_to_bytes(locator, self.resp_addr);
+        self.orig_country_code = lookup_country_code(locator, self.orig_addr);
+        self.resp_country_code = lookup_country_code(locator, self.resp_addr);
     }
 }
 
 impl ResolveCountryCodes for BlocklistMalformedDnsFields {
     fn resolve_country_codes(&mut self, locator: &ip2location::DB) {
-        self.orig_country_code = country_code_to_bytes(locator, self.orig_addr);
-        self.resp_country_code = country_code_to_bytes(locator, self.resp_addr);
+        self.orig_country_code = lookup_country_code(locator, self.orig_addr);
+        self.resp_country_code = lookup_country_code(locator, self.resp_addr);
     }
 }
 
@@ -1110,15 +1110,15 @@ impl ResolveCountryCodes for UnusualDestinationPatternFields {
         self.resp_country_codes = self
             .destination_ips
             .iter()
-            .map(|addr| country_code_to_bytes(locator, *addr))
+            .map(|addr| lookup_country_code(locator, *addr))
             .collect();
     }
 }
 
 impl ResolveCountryCodes for NetworkThreat {
     fn resolve_country_codes(&mut self, locator: &ip2location::DB) {
-        self.orig_country_code = country_code_to_bytes(locator, self.orig_addr);
-        self.resp_country_code = country_code_to_bytes(locator, self.resp_addr);
+        self.orig_country_code = lookup_country_code(locator, self.orig_addr);
+        self.resp_country_code = lookup_country_code(locator, self.resp_addr);
     }
 }
 
