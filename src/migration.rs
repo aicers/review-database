@@ -100,7 +100,7 @@ use crate::{
 /// // release that involves database format change) to 3.5.0, including
 /// // all alpha changes finalized in 3.5.0.
 /// ```
-const COMPATIBLE_VERSION_REQ: &str = ">=0.44.0-alpha.1,<0.44.0-alpha.2";
+const COMPATIBLE_VERSION_REQ: &str = ">=0.44.0-alpha.2,<0.44.0-alpha.3";
 
 /// Migrates the data directory to the up-to-date format if necessary.
 ///
@@ -157,6 +157,11 @@ pub fn migrate_data_dir<P: AsRef<Path>>(data_dir: P, backup_dir: P) -> Result<()
             VersionReq::parse(">=0.43.0,<0.44.0-alpha.1")?,
             Version::parse("0.44.0-alpha.1")?,
             migrate_0_43_to_0_44,
+        ),
+        (
+            VersionReq::parse(">=0.44.0-alpha.1,<0.44.0-alpha.2")?,
+            Version::parse("0.44.0-alpha.2")?,
+            migrate_0_44_alpha1_to_0_44_alpha2,
         ),
     ];
 
@@ -243,6 +248,101 @@ fn migrate_0_42_to_0_43(data_dir: &Path) -> Result<()> {
 fn migrate_0_43_to_0_44(data_dir: &Path) -> Result<()> {
     // Migrate network tags to customer-scoped format
     migrate_network_tags_to_customer_scoped(data_dir)?;
+
+    Ok(())
+}
+
+fn migrate_0_44_alpha1_to_0_44_alpha2(data_dir: &Path) -> Result<()> {
+    // Migrate models to include new description and file_path fields
+    migrate_models_add_description_and_path(data_dir)?;
+
+    Ok(())
+}
+
+/// Migrates the models table to add `description` and `file_path` fields.
+///
+/// Models stored in the previous format (without these fields) are migrated
+/// to the new format with empty description and `None` `file_path`.
+fn migrate_models_add_description_and_path(data_dir: &Path) -> Result<()> {
+    use bincode::Options;
+
+    use crate::tables::{MODELS, Model};
+
+    let db_path = data_dir.join("states.db");
+
+    let mut opts = rocksdb::Options::default();
+    opts.create_if_missing(false);
+    opts.create_missing_column_families(false);
+
+    let db: rocksdb::OptimisticTransactionDB<rocksdb::SingleThreaded> =
+        rocksdb::OptimisticTransactionDB::open_cf(&opts, &db_path, crate::tables::MAP_NAMES)
+            .context("Failed to open database for model migration")?;
+
+    let cf = db
+        .cf_handle(MODELS)
+        .ok_or_else(|| anyhow!("models column family not found"))?;
+
+    // Read all models from the database
+    let models_to_migrate: Vec<(Vec<u8>, Vec<u8>)> = db
+        .iterator_cf(cf, rocksdb::IteratorMode::Start)
+        .filter_map(|item| match item {
+            Ok((key, value)) if !key.is_empty() => Some(Ok((key.to_vec(), value.to_vec()))),
+            Ok(_) => None, // Skip the index entry
+            Err(e) => Some(Err(e)),
+        })
+        .collect::<Result<Vec<_>, _>>()
+        .context("Failed to iterate models")?;
+
+    if models_to_migrate.is_empty() {
+        info!("No models to migrate");
+        return Ok(());
+    }
+
+    info!("Migrating {} models to new format", models_to_migrate.len());
+
+    let txn = db.transaction();
+    for (key, old_value) in &models_to_migrate {
+        // Try to deserialize as old format first
+        let old_model: migration_structures::ModelV0_43 =
+            if let Ok(model) = bincode::DefaultOptions::new().deserialize(old_value) {
+                model
+            } else {
+                // If it fails, the model might already be in the new format
+                // Try to deserialize as new format to verify
+                if bincode::DefaultOptions::new()
+                    .deserialize::<Model>(old_value)
+                    .is_ok()
+                {
+                    info!("Model already in new format, skipping");
+                    continue;
+                }
+                return Err(anyhow!("Failed to deserialize model"));
+            };
+
+        // Create new model with additional fields
+        let new_model = Model {
+            id: old_model.id,
+            name: old_model.name,
+            version: old_model.version,
+            kind: old_model.kind,
+            max_event_id_num: old_model.max_event_id_num,
+            data_source_id: old_model.data_source_id,
+            classification_id: old_model.classification_id,
+            description: String::new(),
+            file_path: None,
+        };
+
+        let new_value = bincode::DefaultOptions::new()
+            .serialize(&new_model)
+            .context("Failed to serialize new model")?;
+
+        txn.put_cf(cf, key, &new_value)
+            .context("Failed to update model")?;
+    }
+
+    txn.commit().context("Failed to commit model migration")?;
+
+    info!("Successfully migrated {} models", models_to_migrate.len());
 
     Ok(())
 }

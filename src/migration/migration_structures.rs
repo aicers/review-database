@@ -88,3 +88,18 @@ pub(crate) struct BlockNetworkV0_42 {
     pub(crate) networks: HostNetworkGroup,
     pub(crate) description: String,
 }
+
+/// Model structure from version 0.43.x (before `description` and `file_path` were added)
+///
+/// In version 0.43.x and earlier, `Model` did not have `description` or `file_path` fields.
+/// From 0.44.x, these fields were added to store model metadata and file path information.
+#[derive(Clone, Deserialize, Serialize)]
+pub(crate) struct ModelV0_43 {
+    pub(crate) id: u32,
+    pub(crate) name: String,
+    pub(crate) version: i32,
+    pub(crate) kind: String,
+    pub(crate) max_event_id_num: i32,
+    pub(crate) data_source_id: i32,
+    pub(crate) classification_id: Option<i64>,
+}
