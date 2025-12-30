@@ -7,12 +7,17 @@ use serde::{Deserialize, Serialize};
 use super::{EventCategory, LearningMethod, MEDIUM, TriageScore, common::Match};
 use crate::event::common::{AttrValue, triage_scores_to_string};
 
+pub type UnusualDestinationPatternFields = UnusualDestinationPatternFieldsV0_44;
+
 #[derive(Serialize, Deserialize)]
-pub struct UnusualDestinationPatternFields {
+pub struct UnusualDestinationPatternFieldsV0_44 {
     pub sensor: String,
+    /// Timestamp in nanoseconds since the Unix epoch (UTC).
     pub start_time: i64,
+    /// Timestamp in nanoseconds since the Unix epoch (UTC).
     pub end_time: i64,
     pub destination_ips: Vec<IpAddr>,
+    pub resp_country_codes: Vec<[u8; 2]>,
     pub count: usize,
     pub expected_mean: f64,
     pub std_deviation: f64,
@@ -59,6 +64,7 @@ pub struct UnusualDestinationPattern {
     pub start_time: DateTime<Utc>,
     pub end_time: DateTime<Utc>,
     pub destination_ips: Vec<IpAddr>,
+    pub resp_country_codes: Vec<[u8; 2]>,
     pub count: usize,
     pub expected_mean: f64,
     pub std_deviation: f64,
@@ -94,6 +100,7 @@ impl UnusualDestinationPattern {
             start_time: DateTime::from_timestamp_nanos(fields.start_time),
             end_time: DateTime::from_timestamp_nanos(fields.end_time),
             destination_ips: fields.destination_ips,
+            resp_country_codes: fields.resp_country_codes,
             count: fields.count,
             expected_mean: fields.expected_mean,
             std_deviation: fields.std_deviation,
