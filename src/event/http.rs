@@ -893,7 +893,7 @@ impl Match for DomainGenerationAlgorithm {
     }
 
     fn level(&self) -> NonZeroU8 {
-        LOW
+        MEDIUM
     }
 
     fn kind(&self) -> &'static str {
