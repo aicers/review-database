@@ -22,7 +22,7 @@ pub struct ExtraThreat {
     pub db_name: String,
     pub rule_id: u32,
     pub matched_to: String,
-    pub cluster_id: Option<usize>,
+    pub cluster_id: Option<u32>,
     pub attack_kind: String,
     pub confidence: f32,
     pub category: Option<EventCategory>,
