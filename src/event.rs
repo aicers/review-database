@@ -2393,6 +2393,53 @@ impl<'a> EventDb<'a> {
         EventIterator { inner: iter }
     }
 
+    /// Creates a raw iterator over key-value pairs for migration purposes.
+    ///
+    /// Unlike `iter_forward`, this returns raw bytes without deserializing the event fields.
+    /// This is useful for migrations that need to transform data between formats.
+    #[must_use]
+    pub fn raw_iter(&self) -> RawEventIterator<'_> {
+        let iter = self.inner.iterator(IteratorMode::Start);
+        RawEventIterator { inner: iter }
+    }
+
+    /// Updates a raw key-value pair in the database.
+    ///
+    /// This method is intended for migration purposes where raw bytes need to be
+    /// updated without going through the normal event deserialization/serialization.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a database operation fails.
+    pub fn raw_update(&self, key: &[u8], old_value: &[u8], new_value: &[u8]) -> Result<()> {
+        loop {
+            let txn = self.inner.transaction();
+            if let Some(current_value) = txn
+                .get_for_update(key, super::EXCLUSIVE)
+                .context("cannot read from event database")?
+            {
+                if old_value != current_value.as_slice() {
+                    bail!("old value mismatch");
+                }
+            } else {
+                bail!("no such entry");
+            }
+
+            txn.put(key, new_value)
+                .context("failed to write new entry")?;
+
+            match txn.commit() {
+                Ok(()) => break,
+                Err(e) => {
+                    if !e.as_ref().starts_with("Resource busy:") {
+                        return Err(e).context("failed to update entry");
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Stores a new event into the database.
     ///
     /// # Errors
@@ -2878,6 +2925,26 @@ impl Iterator for EventIterator<'_> {
 pub enum InvalidEvent {
     Key(Box<[u8]>),
     Value(Box<[u8]>),
+}
+
+/// A raw iterator over event key-value pairs for migration purposes.
+///
+/// This iterator returns raw bytes without deserializing the event fields,
+/// which is useful for migrations that need to transform data between formats.
+#[allow(clippy::module_name_repetitions)]
+pub struct RawEventIterator<'i> {
+    inner: rocksdb::DBIteratorWithThreadMode<
+        'i,
+        rocksdb::OptimisticTransactionDB<rocksdb::SingleThreaded>,
+    >,
+}
+
+impl Iterator for RawEventIterator<'_> {
+    type Item = (Box<[u8]>, Box<[u8]>);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.inner.next().and_then(Result::ok)
+    }
 }
 
 pub type Id = u32;

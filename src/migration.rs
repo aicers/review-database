@@ -128,7 +128,7 @@ pub fn migrate_data_dir<P: AsRef<Path>>(
     type Migration = (
         VersionReq,
         Version,
-        fn(&Path, Option<&ip2location::DB>) -> anyhow::Result<()>,
+        fn(&Path, &Path, Option<&ip2location::DB>) -> anyhow::Result<()>,
     );
 
     let data_dir = data_dir.as_ref();
@@ -181,7 +181,7 @@ pub fn migrate_data_dir<P: AsRef<Path>>(
         .find(|(req, _to, _m)| req.matches(&version))
     {
         info!("Migrating database to {to}");
-        m(data_dir, locator)?;
+        m(data_dir, backup_dir, locator)?;
         version = to.clone();
         if compatible.matches(&version) {
             create_version_file(&backup).context("failed to update VERSION")?;
@@ -241,7 +241,11 @@ fn map_names_v0_42_without_account_policy() -> Vec<&'static str> {
         .collect()
 }
 
-fn migrate_0_42_to_0_43(data_dir: &Path, _locator: Option<&ip2location::DB>) -> Result<()> {
+fn migrate_0_42_to_0_43(
+    data_dir: &Path,
+    _backup_dir: &Path,
+    _locator: Option<&ip2location::DB>,
+) -> Result<()> {
     let db_path = data_dir.join("states.db");
 
     // Step 1: Drop "account policy" column family if it exists (from 0.42)
@@ -256,14 +260,19 @@ fn migrate_0_42_to_0_43(data_dir: &Path, _locator: Option<&ip2location::DB>) -> 
     Ok(())
 }
 
-fn migrate_0_43_to_0_44(data_dir: &Path, locator: Option<&ip2location::DB>) -> Result<()> {
-    let db_path = data_dir.join("states.db");
-
+fn migrate_0_43_to_0_44(
+    data_dir: &Path,
+    backup_dir: &Path,
+    locator: Option<&ip2location::DB>,
+) -> Result<()> {
     // Step 1: Migrate network tags to customer-scoped format
+    // This requires direct database access for low-level meta column family operations
     migrate_network_tags_to_customer_scoped(data_dir)?;
 
-    // Step 2: Migrate event fields to add country codes
-    migrate_event_country_codes(&db_path, locator)?;
+    // Step 2: Migrate event fields to add country codes using Store abstraction
+    let store = crate::Store::new(data_dir, backup_dir)
+        .context("Failed to open Store for event migration")?;
+    migrate_event_country_codes(&store, locator)?;
 
     Ok(())
 }
@@ -608,7 +617,10 @@ fn migrate_network_tags_to_customer_scoped(dir: &Path) -> Result<()> {
 /// Migrates event fields from `V0_43` format (without country codes) to `V0_44` format
 /// (with country codes). If a locator is provided, country codes are resolved from
 /// IP addresses. Otherwise, country codes are set to None.
-fn migrate_event_country_codes(db_path: &Path, locator: Option<&ip2location::DB>) -> Result<()> {
+fn migrate_event_country_codes(
+    store: &crate::Store,
+    locator: Option<&ip2location::DB>,
+) -> Result<()> {
     use num_traits::FromPrimitive;
 
     use crate::migration::migration_structures::{
@@ -627,22 +639,12 @@ fn migrate_event_country_codes(db_path: &Path, locator: Option<&ip2location::DB>
 
     info!("Migrating event fields to add country codes");
 
-    let mut opts = rocksdb::Options::default();
-    opts.create_if_missing(false);
-    opts.create_missing_column_families(false);
+    let events = store.events();
 
-    let db: rocksdb::OptimisticTransactionDB<rocksdb::SingleThreaded> =
-        rocksdb::OptimisticTransactionDB::open_cf(&opts, db_path, crate::tables::MAP_NAMES)
-            .context("Failed to open database for event migration")?;
-
-    // Collect all events that need migration
-    // Events are stored in the default column family
-    let entries_to_migrate: Vec<(Vec<u8>, Vec<u8>)> = db
-        .iterator(rocksdb::IteratorMode::Start)
-        .filter_map(|item| match item {
-            Ok((key, value)) => Some((key.to_vec(), value.to_vec())),
-            Err(_) => None,
-        })
+    // Collect all events that need migration using raw iterator
+    let entries_to_migrate: Vec<(Vec<u8>, Vec<u8>)> = events
+        .raw_iter()
+        .map(|(key, value)| (key.to_vec(), value.to_vec()))
         .collect();
 
     if entries_to_migrate.is_empty() {
@@ -652,20 +654,10 @@ fn migrate_event_country_codes(db_path: &Path, locator: Option<&ip2location::DB>
 
     info!("Found {} events to migrate", entries_to_migrate.len());
 
-    let txn = db.transaction();
     let mut migrated_count = 0usize;
     let mut skipped_count = 0usize;
 
     for (key, value) in &entries_to_migrate {
-        // Deserialize the EventMessage wrapper
-        let event_msg: crate::EventMessage =
-            if let Ok(msg) = bincode::DefaultOptions::new().deserialize(value) {
-                msg
-            } else {
-                skipped_count += 1;
-                continue;
-            };
-
         // Extract the event kind from the key (bits 32-63 of the 128-bit key)
         let kind_value = if key.len() >= 16 {
             let key_i128 = i128::from_be_bytes(key[..16].try_into().unwrap_or([0; 16]));
@@ -681,143 +673,109 @@ fn migrate_event_country_codes(db_path: &Path, locator: Option<&ip2location::DB>
         };
 
         // Migrate the fields based on event kind
+        // Events store raw field bytes directly (not EventMessage wrapper)
         let new_fields: Vec<u8> = match kind {
             EventKind::DnsCovertChannel | EventKind::LockyRansomware => {
-                migrate_fields::<DnsEventFieldsV0_43, DnsEventFields>(&event_msg.fields, locator)?
+                migrate_fields::<DnsEventFieldsV0_43, DnsEventFields>(value, locator)?
             }
-            EventKind::HttpThreat => migrate_fields::<HttpThreatFieldsV0_43, HttpThreatFields>(
-                &event_msg.fields,
-                locator,
-            )?,
-            EventKind::RdpBruteForce => migrate_fields::<
-                RdpBruteForceFieldsV0_43,
-                RdpBruteForceFields,
-            >(&event_msg.fields, locator)?,
+            EventKind::HttpThreat => {
+                migrate_fields::<HttpThreatFieldsV0_43, HttpThreatFields>(value, locator)?
+            }
+            EventKind::RdpBruteForce => {
+                migrate_fields::<RdpBruteForceFieldsV0_43, RdpBruteForceFields>(value, locator)?
+            }
             EventKind::RepeatedHttpSessions => migrate_fields::<
                 RepeatedHttpSessionsFieldsV0_43,
                 RepeatedHttpSessionsFields,
-            >(&event_msg.fields, locator)?,
+            >(value, locator)?,
             EventKind::TorConnection | EventKind::NonBrowser | EventKind::BlocklistHttp => {
-                migrate_fields::<HttpEventFieldsV0_43, HttpEventFields>(&event_msg.fields, locator)?
+                migrate_fields::<HttpEventFieldsV0_43, HttpEventFields>(value, locator)?
             }
             EventKind::TorConnectionConn | EventKind::BlocklistConn => {
-                migrate_fields::<BlocklistConnFieldsV0_43, BlocklistConnFields>(
-                    &event_msg.fields,
-                    locator,
-                )?
+                migrate_fields::<BlocklistConnFieldsV0_43, BlocklistConnFields>(value, locator)?
             }
             EventKind::DomainGenerationAlgorithm => {
-                migrate_fields::<DgaFieldsV0_43, DgaFields>(&event_msg.fields, locator)?
+                migrate_fields::<DgaFieldsV0_43, DgaFields>(value, locator)?
             }
-            EventKind::FtpBruteForce => migrate_fields::<
-                FtpBruteForceFieldsV0_43,
-                FtpBruteForceFields,
-            >(&event_msg.fields, locator)?,
+            EventKind::FtpBruteForce => {
+                migrate_fields::<FtpBruteForceFieldsV0_43, FtpBruteForceFields>(value, locator)?
+            }
             EventKind::FtpPlainText | EventKind::BlocklistFtp => {
-                migrate_fields::<FtpEventFieldsV0_43, FtpEventFields>(&event_msg.fields, locator)?
+                migrate_fields::<FtpEventFieldsV0_43, FtpEventFields>(value, locator)?
             }
             EventKind::PortScan => {
-                migrate_fields::<PortScanFieldsV0_43, PortScanFields>(&event_msg.fields, locator)?
+                migrate_fields::<PortScanFieldsV0_43, PortScanFields>(value, locator)?
             }
             EventKind::MultiHostPortScan => migrate_fields::<
                 MultiHostPortScanFieldsV0_43,
                 MultiHostPortScanFields,
-            >(&event_msg.fields, locator)?,
+            >(value, locator)?,
             EventKind::ExternalDdos => {
-                migrate_fields::<ExternalDdosFieldsV0_43, ExternalDdosFields>(
-                    &event_msg.fields,
-                    locator,
-                )?
+                migrate_fields::<ExternalDdosFieldsV0_43, ExternalDdosFields>(value, locator)?
             }
-            EventKind::LdapBruteForce => migrate_fields::<
-                LdapBruteForceFieldsV0_43,
-                LdapBruteForceFields,
-            >(&event_msg.fields, locator)?,
+            EventKind::LdapBruteForce => {
+                migrate_fields::<LdapBruteForceFieldsV0_43, LdapBruteForceFields>(value, locator)?
+            }
             EventKind::LdapPlainText | EventKind::BlocklistLdap => {
-                migrate_fields::<LdapEventFieldsV0_43, LdapEventFields>(&event_msg.fields, locator)?
+                migrate_fields::<LdapEventFieldsV0_43, LdapEventFields>(value, locator)?
             }
             EventKind::CryptocurrencyMiningPool => migrate_fields::<
                 CryptocurrencyMiningPoolFieldsV0_43,
                 CryptocurrencyMiningPoolFields,
-            >(&event_msg.fields, locator)?,
-            EventKind::BlocklistBootp => migrate_fields::<
-                BlocklistBootpFieldsV0_43,
-                BlocklistBootpFields,
-            >(&event_msg.fields, locator)?,
-            EventKind::BlocklistDceRpc => migrate_fields::<
-                BlocklistDceRpcFieldsV0_43,
-                BlocklistDceRpcFields,
-            >(&event_msg.fields, locator)?,
-            EventKind::BlocklistDhcp => migrate_fields::<
-                BlocklistDhcpFieldsV0_43,
-                BlocklistDhcpFields,
-            >(&event_msg.fields, locator)?,
+            >(value, locator)?,
+            EventKind::BlocklistBootp => {
+                migrate_fields::<BlocklistBootpFieldsV0_43, BlocklistBootpFields>(value, locator)?
+            }
+            EventKind::BlocklistDceRpc => {
+                migrate_fields::<BlocklistDceRpcFieldsV0_43, BlocklistDceRpcFields>(value, locator)?
+            }
+            EventKind::BlocklistDhcp => {
+                migrate_fields::<BlocklistDhcpFieldsV0_43, BlocklistDhcpFields>(value, locator)?
+            }
             EventKind::BlocklistDns => {
-                migrate_fields::<BlocklistDnsFieldsV0_43, BlocklistDnsFields>(
-                    &event_msg.fields,
-                    locator,
-                )?
+                migrate_fields::<BlocklistDnsFieldsV0_43, BlocklistDnsFields>(value, locator)?
             }
             EventKind::BlocklistKerberos => migrate_fields::<
                 BlocklistKerberosFieldsV0_43,
                 BlocklistKerberosFields,
-            >(&event_msg.fields, locator)?,
+            >(value, locator)?,
             EventKind::BlocklistMalformedDns => migrate_fields::<
                 BlocklistMalformedDnsFieldsV0_43,
                 BlocklistMalformedDnsFields,
-            >(&event_msg.fields, locator)?,
-            EventKind::BlocklistMqtt => migrate_fields::<
-                BlocklistMqttFieldsV0_43,
-                BlocklistMqttFields,
-            >(&event_msg.fields, locator)?,
-            EventKind::BlocklistNfs => {
-                migrate_fields::<BlocklistNfsFieldsV0_43, BlocklistNfsFields>(
-                    &event_msg.fields,
-                    locator,
-                )?
+            >(value, locator)?,
+            EventKind::BlocklistMqtt => {
+                migrate_fields::<BlocklistMqttFieldsV0_43, BlocklistMqttFields>(value, locator)?
             }
-            EventKind::BlocklistNtlm => migrate_fields::<
-                BlocklistNtlmFieldsV0_43,
-                BlocklistNtlmFields,
-            >(&event_msg.fields, locator)?,
-            EventKind::BlocklistRadius => migrate_fields::<
-                BlocklistRadiusFieldsV0_43,
-                BlocklistRadiusFields,
-            >(&event_msg.fields, locator)?,
+            EventKind::BlocklistNfs => {
+                migrate_fields::<BlocklistNfsFieldsV0_43, BlocklistNfsFields>(value, locator)?
+            }
+            EventKind::BlocklistNtlm => {
+                migrate_fields::<BlocklistNtlmFieldsV0_43, BlocklistNtlmFields>(value, locator)?
+            }
+            EventKind::BlocklistRadius => {
+                migrate_fields::<BlocklistRadiusFieldsV0_43, BlocklistRadiusFields>(value, locator)?
+            }
             EventKind::BlocklistRdp => {
-                migrate_fields::<BlocklistRdpFieldsV0_43, BlocklistRdpFields>(
-                    &event_msg.fields,
-                    locator,
-                )?
+                migrate_fields::<BlocklistRdpFieldsV0_43, BlocklistRdpFields>(value, locator)?
             }
             EventKind::BlocklistSmb => {
-                migrate_fields::<BlocklistSmbFieldsV0_43, BlocklistSmbFields>(
-                    &event_msg.fields,
-                    locator,
-                )?
+                migrate_fields::<BlocklistSmbFieldsV0_43, BlocklistSmbFields>(value, locator)?
             }
-            EventKind::BlocklistSmtp => migrate_fields::<
-                BlocklistSmtpFieldsV0_43,
-                BlocklistSmtpFields,
-            >(&event_msg.fields, locator)?,
+            EventKind::BlocklistSmtp => {
+                migrate_fields::<BlocklistSmtpFieldsV0_43, BlocklistSmtpFields>(value, locator)?
+            }
             EventKind::BlocklistSsh => {
-                migrate_fields::<BlocklistSshFieldsV0_43, BlocklistSshFields>(
-                    &event_msg.fields,
-                    locator,
-                )?
+                migrate_fields::<BlocklistSshFieldsV0_43, BlocklistSshFields>(value, locator)?
             }
             EventKind::BlocklistTls | EventKind::SuspiciousTlsTraffic => {
-                migrate_fields::<BlocklistTlsFieldsV0_43, BlocklistTlsFields>(
-                    &event_msg.fields,
-                    locator,
-                )?
+                migrate_fields::<BlocklistTlsFieldsV0_43, BlocklistTlsFields>(value, locator)?
             }
             EventKind::UnusualDestinationPattern => migrate_fields::<
                 UnusualDestinationPatternFieldsV0_43,
                 UnusualDestinationPatternFields,
-            >(&event_msg.fields, locator)?,
+            >(value, locator)?,
             EventKind::NetworkThreat => {
-                migrate_fields::<NetworkThreatV0_43, NetworkThreat>(&event_msg.fields, locator)?
+                migrate_fields::<NetworkThreatV0_43, NetworkThreat>(value, locator)?
             }
             // These event types don't have country code fields or use different structures
             EventKind::WindowsThreat | EventKind::ExtraThreat => {
@@ -828,23 +786,13 @@ fn migrate_event_country_codes(db_path: &Path, locator: Option<&ip2location::DB>
             }
         };
 
-        // Create new EventMessage with migrated fields
-        let new_event_msg = crate::EventMessage {
-            time: event_msg.time,
-            kind: event_msg.kind,
-            fields: new_fields,
-        };
-
-        // Serialize and update
-        let new_value = bincode::DefaultOptions::new()
-            .serialize(&new_event_msg)
-            .context("failed to serialize migrated event")?;
-        txn.put(key, &new_value)
+        // Update the event with migrated fields using raw_update
+        events
+            .raw_update(key, value, &new_fields)
             .context("failed to update migrated event")?;
         migrated_count += 1;
     }
 
-    txn.commit().context("failed to commit event migration")?;
     info!(
         "Successfully migrated {} events ({} skipped)",
         migrated_count, skipped_count
