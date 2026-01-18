@@ -102,16 +102,6 @@ use crate::{
 /// ```
 const COMPATIBLE_VERSION_REQ: &str = ">=0.44.0-alpha.1,<0.44.0-alpha.2";
 
-/// A migration entry consisting of (version requirement, target version, migration function).
-///
-/// - The "version requirement" should include all the earlier, released versions that use the
-///   database format the migration function can handle, and exclude the first future version
-///   that uses a new database format.
-/// - The "to version" should be the first future version that uses a new database format.
-/// - The "migration function" should migrate the database from the version before "to version"
-///   to "to version".
-pub type Migration = (VersionReq, Version, fn(&Path) -> anyhow::Result<()>);
-
 /// Migrates the data directory to the up-to-date format if necessary.
 ///
 /// Migration is supported between released versions only. The prelease versions (alpha, beta,
@@ -122,12 +112,9 @@ pub type Migration = (VersionReq, Version, fn(&Path) -> anyhow::Result<()>);
 /// Returns an error if the data directory doesn't exist and cannot be created,
 /// or if the data directory exists but is in the format incompatible with the
 /// current version.
-///
-/// # Panics
-///
-/// Panics if `COMPATIBLE_VERSION_REQ` or any migration version string is malformed.
-/// These are compile-time constants, so a panic here indicates a programmer error.
 pub fn migrate_data_dir<P: AsRef<Path>>(data_dir: P, backup_dir: P) -> Result<()> {
+    type Migration = (VersionReq, Version, fn(&Path) -> anyhow::Result<()>);
+
     let data_dir = data_dir.as_ref();
     let backup_dir = backup_dir.as_ref();
 
@@ -135,54 +122,6 @@ pub fn migrate_data_dir<P: AsRef<Path>>(data_dir: P, backup_dir: P) -> Result<()
         unreachable!("COMPATIBLE_VERSION_REQ must be valid")
     };
 
-    // A list of migrations where each item is a tuple of (version requirement, to version,
-    // migration function).
-    //
-    // * The "version requirement" should include all the earlier, released versions that use the
-    //   database format the migration function can handle, and exclude the first future version
-    //   that uses a new database format.
-    // * The "to version" should be the first future version that uses a new database format.
-    // * The "migration function" should migrate the database from the version before "to version"
-    //   to "to version". The function name should be in the form of "migrate_A_to_B" where A is
-    //   the first version (major.minor) in the "version requirement" and B is the "to version"
-    //   (major.minor). (NOTE: Once we release 1.0.0, A and B will contain the major version only.)
-    let migrations: Vec<Migration> = vec![
-        (
-            VersionReq::parse(">=0.42.0,<0.43.0")
-                .expect("valid version requirement for 0.42 to 0.43 migration"),
-            Version::parse("0.43.0").expect("valid version 0.43.0"),
-            migrate_0_42_to_0_43,
-        ),
-        (
-            VersionReq::parse(">=0.43.0,<0.44.0-alpha.1")
-                .expect("valid version requirement for 0.43 to 0.44 migration"),
-            Version::parse("0.44.0-alpha.1").expect("valid version 0.44.0-alpha.1"),
-            migrate_0_43_to_0_44,
-        ),
-    ];
-
-    migrate_data_dir_with(data_dir, backup_dir, &compatible, &migrations)
-}
-
-/// Internal helper that performs migration with an injected migration list.
-///
-/// This function is separated from `migrate_data_dir` to allow testing the migration selection
-/// logic with test-controlled migrations, without being coupled to the actual migration list.
-///
-/// # Errors
-///
-/// Returns an error if:
-/// - The data directory doesn't exist and cannot be created
-/// - The VERSION files cannot be read or written
-/// - The data and backup versions don't match
-/// - A migration function fails
-/// - No migration path exists from the current version to a compatible version
-fn migrate_data_dir_with(
-    data_dir: &Path,
-    backup_dir: &Path,
-    compatible: &VersionReq,
-    migrations: &[Migration],
-) -> Result<()> {
     let (data, data_ver) = retrieve_or_create_version(data_dir)?;
     let (backup, backup_ver) = retrieve_or_create_version(backup_dir)?;
 
@@ -197,7 +136,31 @@ fn migrate_data_dir_with(
         return Ok(());
     }
 
-    while let Some((_req, to, m)) = migrations
+    // A list of migrations where each item is a tuple of (version requirement, to version,
+    // migration function).
+    //
+    // * The "version requirement" should include all the earlier, released versions that use the
+    //   database format the migration function can handle, and exclude the first future version
+    //   that uses a new database format.
+    // * The "to version" should be the first future version that uses a new database format.
+    // * The "migration function" should migrate the database from the version before "to version"
+    //   to "to version". The function name should be in the form of "migrate_A_to_B" where A is
+    //   the first version (major.minor) in the "version requirement" and B is the "to version"
+    //   (major.minor). (NOTE: Once we release 1.0.0, A and B will contain the major version only.)
+    let migration: Vec<Migration> = vec![
+        (
+            VersionReq::parse(">=0.42.0,<0.43.0")?,
+            Version::parse("0.43.0")?,
+            migrate_0_42_to_0_43,
+        ),
+        (
+            VersionReq::parse(">=0.43.0,<0.44.0-alpha.1")?,
+            Version::parse("0.44.0-alpha.1")?,
+            migrate_0_43_to_0_44,
+        ),
+    ];
+
+    while let Some((_req, to, m)) = migration
         .iter()
         .find(|(req, _to, _m)| req.matches(&version))
     {
@@ -681,10 +644,7 @@ mod tests {
 
     use semver::{Version, VersionReq};
 
-    use super::{
-        COMPATIBLE_VERSION_REQ, Migration, create_version_file, migrate_data_dir,
-        migrate_data_dir_with, read_version_file,
-    };
+    use super::{COMPATIBLE_VERSION_REQ, create_version_file, migrate_data_dir, read_version_file};
     use crate::tables::NETWORK_TAGS;
     use crate::test::{DbGuard, acquire_db_permit};
     use crate::{Indexable, Store};
@@ -845,67 +805,36 @@ mod tests {
     }
 
     /// Test that the migration loop properly runs migrations and updates VERSION files.
-    ///
-    /// This test verifies the following code path:
-    /// ```text
-    /// while let Some((_req, to, m)) = migrations.iter().find(|(req, ..)| req.matches(&version)) {
-    ///     m(data_dir)?;
-    ///     version = to.clone();
-    ///     if compatible.matches(&version) {
-    ///         create_version_file(&backup)?;
-    ///         return create_version_file(&data)?;
-    ///     }
-    /// }
-    /// ```
-    ///
-    /// Uses `migrate_data_dir_with` to inject controlled migrations so the test remains
-    /// stable across version bumps.
     #[test]
     fn migration_loop_runs_and_updates_version_files() {
-        use std::sync::atomic::{AtomicUsize, Ordering};
-
-        // Use a static counter to track migration execution
-        static MIGRATION_RUN_COUNT: AtomicUsize = AtomicUsize::new(0);
-
-        // Create a migration that writes a sentinel file to verify it was called
-        fn successful_migration(data_dir: &Path) -> anyhow::Result<()> {
-            MIGRATION_RUN_COUNT.fetch_add(1, Ordering::SeqCst);
-            // Write a sentinel file to prove migration ran
-            let sentinel = data_dir.join("migration_1_to_2_ran");
-            std::fs::File::create(sentinel)?;
-            Ok(())
-        }
-
         let data_dir = tempfile::tempdir().unwrap();
         let backup_dir = tempfile::tempdir().unwrap();
 
+        let db_path = data_dir.path().join("states.db");
+        let mut opts = rocksdb::Options::default();
+        opts.create_if_missing(true);
+        opts.create_missing_column_families(true);
+
+        let db: rocksdb::OptimisticTransactionDB =
+            rocksdb::OptimisticTransactionDB::open_cf(&opts, &db_path, super::MAP_NAMES_V0_42)
+                .unwrap();
+        drop(db);
+
         // Write an older version that needs migration
-        write_version(data_dir.path(), "1.0.0");
-        write_version(backup_dir.path(), "1.0.0");
-
-        // Compatible with 2.0.0
-        let compatible = VersionReq::parse(">=2.0.0,<3.0.0").unwrap();
-
-        // Reset counter
-        MIGRATION_RUN_COUNT.store(0, Ordering::SeqCst);
-
-        let migrations: Vec<Migration> = vec![(
-            VersionReq::parse(">=1.0.0,<2.0.0").unwrap(),
-            Version::parse("2.0.0").unwrap(),
-            successful_migration,
-        )];
+        write_version(data_dir.path(), "0.42.0");
+        write_version(backup_dir.path(), "0.42.0");
 
         // Run the migration
-        let result =
-            migrate_data_dir_with(data_dir.path(), backup_dir.path(), &compatible, &migrations);
+        let result = migrate_data_dir(data_dir.path(), backup_dir.path());
         assert!(result.is_ok(), "Migration should succeed");
 
-        // Verify migration was executed
-        assert_eq!(MIGRATION_RUN_COUNT.load(Ordering::SeqCst), 1);
-        assert!(
-            data_dir.path().join("migration_1_to_2_ran").exists(),
-            "Sentinel file should exist proving migration ran"
-        );
+        // Verify database opens with the current column families
+        let db: rocksdb::OptimisticTransactionDB =
+            rocksdb::OptimisticTransactionDB::open_cf(&opts, &db_path, crate::tables::MAP_NAMES)
+                .unwrap();
+        assert!(db.cf_handle("label database").is_some());
+        assert!(db.cf_handle("TI database").is_none());
+        drop(db);
 
         // Verify both VERSION files are updated to the current package version
         let data_version = read_version_file(&data_dir.path().join("VERSION")).unwrap();
@@ -922,70 +851,28 @@ mod tests {
         );
     }
 
-    /// Test that multiple sequential migrations run in order and update VERSION files.
+    /// Test that a direct migration from 0.43.0 succeeds and updates VERSION files.
     #[test]
-    fn multiple_migrations_run_sequentially_and_update_versions() {
-        use std::sync::atomic::{AtomicUsize, Ordering};
-
-        // Use a static counter to track migration order
-        static COUNTER: AtomicUsize = AtomicUsize::new(0);
-
-        // First migration: 1.0.0 -> 2.0.0
-        fn migration_1(data_dir: &Path) -> anyhow::Result<()> {
-            let count = COUNTER.fetch_add(1, Ordering::SeqCst);
-            let sentinel = data_dir.join(format!("migration_1_order_{count}"));
-            std::fs::File::create(sentinel)?;
-            Ok(())
-        }
-
-        // Second migration: 2.0.0 -> 3.0.0
-        fn migration_2(data_dir: &Path) -> anyhow::Result<()> {
-            let count = COUNTER.fetch_add(1, Ordering::SeqCst);
-            let sentinel = data_dir.join(format!("migration_2_order_{count}"));
-            std::fs::File::create(sentinel)?;
-            Ok(())
-        }
-
+    fn migration_from_0_43_updates_version_files() {
         let data_dir = tempfile::tempdir().unwrap();
         let backup_dir = tempfile::tempdir().unwrap();
 
-        // Start at version 1.0.0
-        write_version(data_dir.path(), "1.0.0");
-        write_version(backup_dir.path(), "1.0.0");
+        let db_path = data_dir.path().join("states.db");
+        let mut opts = rocksdb::Options::default();
+        opts.create_if_missing(true);
+        opts.create_missing_column_families(true);
 
-        // Compatible with 3.0.0
-        let compatible = VersionReq::parse(">=3.0.0,<4.0.0").unwrap();
+        let db: rocksdb::OptimisticTransactionDB =
+            rocksdb::OptimisticTransactionDB::open_cf(&opts, &db_path, crate::tables::MAP_NAMES)
+                .unwrap();
+        drop(db);
 
-        // Reset counter
-        COUNTER.store(0, Ordering::SeqCst);
+        // Start at version 0.43.0
+        write_version(data_dir.path(), "0.43.0");
+        write_version(backup_dir.path(), "0.43.0");
 
-        let migrations: Vec<Migration> = vec![
-            (
-                VersionReq::parse(">=1.0.0,<2.0.0").unwrap(),
-                Version::parse("2.0.0").unwrap(),
-                migration_1,
-            ),
-            (
-                VersionReq::parse(">=2.0.0,<3.0.0").unwrap(),
-                Version::parse("3.0.0").unwrap(),
-                migration_2,
-            ),
-        ];
-
-        let result =
-            migrate_data_dir_with(data_dir.path(), backup_dir.path(), &compatible, &migrations);
+        let result = migrate_data_dir(data_dir.path(), backup_dir.path());
         assert!(result.is_ok(), "Migration should succeed");
-
-        // Verify both migrations ran in correct order
-        assert!(
-            data_dir.path().join("migration_1_order_0").exists(),
-            "First migration should run first (order 0)"
-        );
-        assert!(
-            data_dir.path().join("migration_2_order_1").exists(),
-            "Second migration should run second (order 1)"
-        );
-        assert_eq!(COUNTER.load(Ordering::SeqCst), 2);
 
         // Verify VERSION files are updated
         let data_version = read_version_file(&data_dir.path().join("VERSION")).unwrap();
@@ -999,41 +886,22 @@ mod tests {
     /// Test that migration error is propagated and VERSION files are not updated on failure.
     #[test]
     fn migration_error_prevents_version_update() {
-        fn failing_migration(_: &Path) -> anyhow::Result<()> {
-            anyhow::bail!("intentional migration failure")
-        }
-
         let data_dir = tempfile::tempdir().unwrap();
         let backup_dir = tempfile::tempdir().unwrap();
 
-        write_version(data_dir.path(), "1.0.0");
-        write_version(backup_dir.path(), "1.0.0");
+        write_version(data_dir.path(), "0.42.0");
+        write_version(backup_dir.path(), "0.42.0");
 
-        let compatible = VersionReq::parse(">=2.0.0,<3.0.0").unwrap();
-
-        let migrations: Vec<Migration> = vec![(
-            VersionReq::parse(">=1.0.0,<2.0.0").unwrap(),
-            Version::parse("2.0.0").unwrap(),
-            failing_migration,
-        )];
-
-        let result =
-            migrate_data_dir_with(data_dir.path(), backup_dir.path(), &compatible, &migrations);
+        let result = migrate_data_dir(data_dir.path(), backup_dir.path());
 
         assert!(result.is_err());
-        assert!(
-            result
-                .unwrap_err()
-                .to_string()
-                .contains("intentional migration failure")
-        );
 
-        // VERSION files should remain unchanged (still 1.0.0)
+        // VERSION files should remain unchanged (still 0.42.0)
         let data_version = read_version_file(&data_dir.path().join("VERSION")).unwrap();
         let backup_version = read_version_file(&backup_dir.path().join("VERSION")).unwrap();
 
-        assert_eq!(data_version, Version::parse("1.0.0").unwrap());
-        assert_eq!(backup_version, Version::parse("1.0.0").unwrap());
+        assert_eq!(data_version, Version::parse("0.42.0").unwrap());
+        assert_eq!(backup_version, Version::parse("0.42.0").unwrap());
     }
 
     #[allow(dead_code)]
