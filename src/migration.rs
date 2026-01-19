@@ -15,7 +15,11 @@ use tracing::info;
 
 use crate::{
     AllowNetwork, BlockNetwork, Customer,
-    migration::migration_structures::{AllowNetworkV0_42, BlockNetworkV0_42},
+    event::{EventKind, ExtraThreat, HttpThreatFields, NetworkThreat, WindowsThreat},
+    migration::migration_structures::{
+        AllowNetworkV0_42, BlockNetworkV0_42, ExtraThreatV0_43, HttpThreatFieldsV0_43,
+        NetworkThreatV0_43, WindowsThreatV0_43,
+    },
     tables::NETWORK_TAGS,
 };
 
@@ -246,6 +250,12 @@ fn migrate_0_43_to_0_44(data_dir: &Path) -> Result<()> {
 
     // Migrate Network table to enforce global name uniqueness
     migrate_network_cf(data_dir)?;
+
+    // Migrate cluster_id from i32 to u32 in Cluster and TimeSeries tables
+    migrate_cluster_id_types(data_dir)?;
+
+    // Migrate events with cluster_id from Option<usize> to Option<u32>
+    migrate_event_cluster_ids(data_dir)?;
 
     Ok(())
 }
@@ -823,6 +833,387 @@ fn migrate_network_cf_inner(
     drop(db);
 
     Ok(())
+}
+
+/// Migrates `cluster_id` from `i32` to `u32` in the Cluster and `TimeSeries` tables.
+///
+/// This migration handles the type change for `cluster_id` field in the key structure:
+/// - Cluster table: key's `cluster_id` changed from `i32` to `u32`
+/// - `TimeSeries` table: key's `cluster_id` changed from `i32` to `u32`
+///
+/// For positive values, the big-endian representation is the same, so no actual
+/// data transformation is needed. However, we verify and log the migration.
+fn migrate_cluster_id_types(dir: &Path) -> Result<()> {
+    let db_path = dir.join("states.db");
+
+    let mut opts = rocksdb::Options::default();
+    opts.create_if_missing(false);
+    opts.create_missing_column_families(false);
+
+    let db: rocksdb::OptimisticTransactionDB<rocksdb::SingleThreaded> =
+        rocksdb::OptimisticTransactionDB::open_cf(&opts, &db_path, crate::tables::MAP_NAMES)
+            .context("Failed to open database for cluster_id type migration")?;
+
+    // Migrate Cluster table
+    migrate_cluster_table_keys(&db)?;
+
+    // Migrate TimeSeries table
+    migrate_time_series_table_keys(&db)?;
+
+    Ok(())
+}
+
+/// Migrates the Cluster table keys from i32 `cluster_id` to u32.
+fn migrate_cluster_table_keys(db: &rocksdb::OptimisticTransactionDB) -> Result<()> {
+    use crate::migration::migration_structures::ClusterKeyV0_43;
+
+    let cf = db
+        .cf_handle("cluster")
+        .ok_or_else(|| anyhow!("cluster column family not found"))?;
+
+    let mut entries_to_migrate: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
+    let mut negative_cluster_ids = 0usize;
+
+    for item in db.iterator_cf(cf, rocksdb::IteratorMode::Start) {
+        let (key, value) = item.context("failed to read cluster entry")?;
+
+        // Parse the old key format
+        if key.len() >= std::mem::size_of::<u32>() + std::mem::size_of::<i32>() {
+            let old_key = ClusterKeyV0_43::from_be_bytes(&key);
+
+            // Check if cluster_id is negative (which would need special handling)
+            if old_key.cluster_id < 0 {
+                negative_cluster_ids += 1;
+                // Convert negative i32 to u32 (two's complement interpretation)
+                #[allow(clippy::cast_sign_loss)]
+                let new_cluster_id = old_key.cluster_id as u32;
+
+                // Build new key with u32 cluster_id
+                let mut new_key = Vec::with_capacity(std::mem::size_of::<u32>() * 2);
+                new_key.extend(old_key.model_id.to_be_bytes());
+                new_key.extend(new_cluster_id.to_be_bytes());
+
+                entries_to_migrate.push((key.to_vec(), value.to_vec()));
+            }
+            // For non-negative values, the byte representation is identical
+            // between i32 and u32, so no migration is needed
+        }
+    }
+
+    if !entries_to_migrate.is_empty() {
+        let txn = db.transaction();
+        for (old_key, value) in &entries_to_migrate {
+            // Parse old key and create new key
+            let old_key_parsed = ClusterKeyV0_43::from_be_bytes(old_key);
+            #[allow(clippy::cast_sign_loss)]
+            let new_cluster_id = old_key_parsed.cluster_id as u32;
+
+            let mut new_key = Vec::with_capacity(std::mem::size_of::<u32>() * 2);
+            new_key.extend(old_key_parsed.model_id.to_be_bytes());
+            new_key.extend(new_cluster_id.to_be_bytes());
+
+            // Delete old entry and insert new one
+            txn.delete_cf(cf, old_key)?;
+            txn.put_cf(cf, &new_key, value)?;
+        }
+        txn.commit()
+            .context("failed to commit cluster table migration")?;
+    }
+
+    if negative_cluster_ids > 0 {
+        info!(
+            "Migrated {} cluster entries with negative cluster_id values",
+            negative_cluster_ids
+        );
+    } else {
+        info!("Cluster table migration complete (no negative cluster_ids found)");
+    }
+
+    Ok(())
+}
+
+/// Migrates the `TimeSeries` table keys from i32 `cluster_id` to u32.
+fn migrate_time_series_table_keys(db: &rocksdb::OptimisticTransactionDB) -> Result<()> {
+    use crate::migration::migration_structures::TimeSeriesKeyV0_43;
+
+    let cf = db
+        .cf_handle("time series")
+        .ok_or_else(|| anyhow!("time series column family not found"))?;
+
+    let mut entries_to_migrate: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
+    let mut negative_cluster_ids = 0usize;
+
+    for item in db.iterator_cf(cf, rocksdb::IteratorMode::Start) {
+        let (key, value) = item.context("failed to read time series entry")?;
+
+        // Parse the old key format (minimum size check)
+        let min_key_size = std::mem::size_of::<u32>()
+            + std::mem::size_of::<i32>()
+            + std::mem::size_of::<i64>() * 2;
+        if key.len() >= min_key_size {
+            let old_key = TimeSeriesKeyV0_43::from_bytes(&key);
+
+            // Check if cluster_id is negative
+            if old_key.cluster_id < 0 {
+                negative_cluster_ids += 1;
+                entries_to_migrate.push((key.to_vec(), value.to_vec()));
+            }
+        }
+    }
+
+    if !entries_to_migrate.is_empty() {
+        let txn = db.transaction();
+        for (old_key, value) in &entries_to_migrate {
+            let old_key_parsed = TimeSeriesKeyV0_43::from_bytes(old_key);
+            let new_key = old_key_parsed.to_new_key_bytes();
+
+            // Delete old entry and insert new one
+            txn.delete_cf(cf, old_key)?;
+            txn.put_cf(cf, &new_key, value)?;
+        }
+        txn.commit()
+            .context("failed to commit time series table migration")?;
+    }
+
+    if negative_cluster_ids > 0 {
+        info!(
+            "Migrated {} time series entries with negative cluster_id values",
+            negative_cluster_ids
+        );
+    } else {
+        info!("TimeSeries table migration complete (no negative cluster_ids found)");
+    }
+
+    Ok(())
+}
+
+/// Migrates event `cluster_id` fields from `Option<usize>` to `Option<u32>`.
+///
+/// This migration handles the serialization change for events that have a `cluster_id` field:
+/// - `HttpThreat` (`EventKind` = 1)
+/// - `ExtraThreat` (`EventKind` = 4)
+/// - `WindowsThreat` (`EventKind` = 31)
+/// - `NetworkThreat` (`EventKind` = 32)
+///
+/// The serialization of `Option<usize>` differs from `Option<u32>` in bincode because
+/// `usize` is architecture-dependent (8 bytes on 64-bit systems) while `u32` is 4 bytes.
+fn migrate_event_cluster_ids(dir: &Path) -> Result<()> {
+    use num_traits::FromPrimitive;
+
+    let db_path = dir.join("states.db");
+
+    let mut opts = rocksdb::Options::default();
+    opts.create_if_missing(false);
+    opts.create_missing_column_families(false);
+
+    let db: rocksdb::OptimisticTransactionDB<rocksdb::SingleThreaded> =
+        rocksdb::OptimisticTransactionDB::open_cf(&opts, &db_path, crate::tables::MAP_NAMES)
+            .context("Failed to open database for event migration")?;
+
+    // Events are stored in the default column family
+    let mut migrated_count = 0usize;
+    let mut entries_to_update: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
+    let mut errors = 0usize;
+
+    for item in db.iterator(rocksdb::IteratorMode::Start) {
+        let (key, value) = item.context("failed to read event entry")?;
+
+        // Extract event kind from the key
+        // Key format: (timestamp_nanos << 64) | (event_kind << 32) | random_bits
+        // Key is stored as big-endian i128 (16 bytes)
+        if key.len() != 16 {
+            continue;
+        }
+
+        let key_i128 = i128::from_be_bytes(key.as_ref().try_into().unwrap_or([0; 16]));
+        let event_kind_val = ((key_i128 >> 32) & 0xFFFF_FFFF) as i32;
+
+        // Try to convert to EventKind
+        let Some(event_kind) = EventKind::from_i32(event_kind_val) else {
+            continue;
+        };
+
+        // Only migrate affected event types
+        let new_value = match event_kind {
+            EventKind::HttpThreat => migrate_http_threat_fields(&value),
+            EventKind::ExtraThreat => migrate_extra_threat(&value),
+            EventKind::WindowsThreat => migrate_windows_threat(&value),
+            EventKind::NetworkThreat => migrate_network_threat(&value),
+            _ => None,
+        };
+
+        if let Some(new_val) = new_value {
+            entries_to_update.push((key.to_vec(), new_val));
+            migrated_count += 1;
+        } else if matches!(
+            event_kind,
+            EventKind::HttpThreat
+                | EventKind::ExtraThreat
+                | EventKind::WindowsThreat
+                | EventKind::NetworkThreat
+        ) {
+            // If we couldn't migrate an affected event, it might already be in the new format
+            // or there was an error. We'll count it but not fail the migration.
+            errors += 1;
+        }
+    }
+
+    if !entries_to_update.is_empty() {
+        let txn = db.transaction();
+        for (key, new_value) in &entries_to_update {
+            txn.put(key, new_value)?;
+        }
+        txn.commit().context("failed to commit event migration")?;
+    }
+
+    if errors > 0 {
+        info!(
+            "Event migration: migrated {} events, {} events skipped (possibly already migrated)",
+            migrated_count, errors
+        );
+    } else {
+        info!(
+            "Migrated {} events with cluster_id type change",
+            migrated_count
+        );
+    }
+
+    Ok(())
+}
+
+/// Migrates `HttpThreatFields` from Option<usize> to Option<u32> for `cluster_id`.
+fn migrate_http_threat_fields(value: &[u8]) -> Option<Vec<u8>> {
+    // Try to deserialize with old format
+    let old: HttpThreatFieldsV0_43 = bincode::DefaultOptions::new().deserialize(value).ok()?;
+
+    // Convert to new format
+    let new = HttpThreatFields {
+        time: old.time,
+        sensor: old.sensor,
+        orig_addr: old.orig_addr,
+        orig_port: old.orig_port,
+        resp_addr: old.resp_addr,
+        resp_port: old.resp_port,
+        proto: old.proto,
+        start_time: old.start_time,
+        duration: old.duration,
+        orig_pkts: old.orig_pkts,
+        resp_pkts: old.resp_pkts,
+        orig_l2_bytes: old.orig_l2_bytes,
+        resp_l2_bytes: old.resp_l2_bytes,
+        method: old.method,
+        host: old.host,
+        uri: old.uri,
+        referer: old.referer,
+        version: old.version,
+        user_agent: old.user_agent,
+        request_len: old.request_len,
+        response_len: old.response_len,
+        status_code: old.status_code,
+        status_msg: old.status_msg,
+        username: old.username,
+        password: old.password,
+        cookie: old.cookie,
+        content_encoding: old.content_encoding,
+        content_type: old.content_type,
+        cache_control: old.cache_control,
+        filenames: old.filenames,
+        mime_types: old.mime_types,
+        body: old.body,
+        state: old.state,
+        db_name: old.db_name,
+        rule_id: old.rule_id,
+        matched_to: old.matched_to,
+        cluster_id: old.cluster_id.and_then(|v| u32::try_from(v).ok()),
+        attack_kind: old.attack_kind,
+        confidence: old.confidence,
+        category: old.category,
+    };
+
+    bincode::DefaultOptions::new().serialize(&new).ok()
+}
+
+/// Migrates `NetworkThreat` from Option<usize> to Option<u32> for `cluster_id`.
+fn migrate_network_threat(value: &[u8]) -> Option<Vec<u8>> {
+    let old: NetworkThreatV0_43 = bincode::DefaultOptions::new().deserialize(value).ok()?;
+
+    let new = NetworkThreat {
+        time: old.time,
+        sensor: old.sensor,
+        orig_addr: old.orig_addr,
+        orig_port: old.orig_port,
+        resp_addr: old.resp_addr,
+        resp_port: old.resp_port,
+        proto: old.proto,
+        service: old.service,
+        start_time: old.start_time,
+        duration: old.duration,
+        orig_pkts: old.orig_pkts,
+        resp_pkts: old.resp_pkts,
+        orig_l2_bytes: old.orig_l2_bytes,
+        resp_l2_bytes: old.resp_l2_bytes,
+        content: old.content,
+        db_name: old.db_name,
+        rule_id: old.rule_id,
+        matched_to: old.matched_to,
+        cluster_id: old.cluster_id.and_then(|v| u32::try_from(v).ok()),
+        attack_kind: old.attack_kind,
+        confidence: old.confidence,
+        category: old.category,
+        triage_scores: old.triage_scores,
+    };
+
+    bincode::DefaultOptions::new().serialize(&new).ok()
+}
+
+/// Migrates `WindowsThreat` from Option<usize> to Option<u32> for `cluster_id`.
+fn migrate_windows_threat(value: &[u8]) -> Option<Vec<u8>> {
+    let old: WindowsThreatV0_43 = bincode::DefaultOptions::new().deserialize(value).ok()?;
+
+    let new = WindowsThreat {
+        time: old.time,
+        sensor: old.sensor,
+        service: old.service,
+        agent_name: old.agent_name,
+        agent_id: old.agent_id,
+        process_guid: old.process_guid,
+        process_id: old.process_id,
+        image: old.image,
+        user: old.user,
+        content: old.content,
+        db_name: old.db_name,
+        rule_id: old.rule_id,
+        matched_to: old.matched_to,
+        cluster_id: old.cluster_id.and_then(|v| u32::try_from(v).ok()),
+        attack_kind: old.attack_kind,
+        confidence: old.confidence,
+        category: old.category,
+        triage_scores: old.triage_scores,
+    };
+
+    bincode::DefaultOptions::new().serialize(&new).ok()
+}
+
+/// Migrates `ExtraThreat` from Option<usize> to Option<u32> for `cluster_id`.
+fn migrate_extra_threat(value: &[u8]) -> Option<Vec<u8>> {
+    let old: ExtraThreatV0_43 = bincode::DefaultOptions::new().deserialize(value).ok()?;
+
+    let new = ExtraThreat {
+        time: old.time,
+        sensor: old.sensor,
+        service: old.service,
+        content: old.content,
+        db_name: old.db_name,
+        rule_id: old.rule_id,
+        matched_to: old.matched_to,
+        cluster_id: old.cluster_id.and_then(|v| u32::try_from(v).ok()),
+        attack_kind: old.attack_kind,
+        confidence: old.confidence,
+        category: old.category,
+        triage_scores: old.triage_scores,
+    };
+
+    bincode::DefaultOptions::new().serialize(&new).ok()
 }
 
 /// Recursively creates `path` if not existed, creates the VERSION file
