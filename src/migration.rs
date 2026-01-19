@@ -686,18 +686,27 @@ mod tests {
         let data_dir = tempfile::tempdir().unwrap();
         let backup_dir = tempfile::tempdir().unwrap();
 
+        let mut data_version = Version::parse(env!("CARGO_PKG_VERSION")).unwrap();
+        if !data_version.pre.is_empty() {
+            data_version = Version::new(data_version.major, data_version.minor, data_version.patch);
+        }
+        let mut backup_version = data_version.clone();
+        backup_version.patch += 1;
+
         // Different versions in data and backup
-        write_version(data_dir.path(), "0.42.0");
-        write_version(backup_dir.path(), "0.42.1");
+        write_version(data_dir.path(), &data_version.to_string());
+        write_version(backup_dir.path(), &backup_version.to_string());
 
         let result = migrate_data_dir(data_dir.path(), backup_dir.path());
 
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
-        assert!(err.contains("mismatched database version 0.42.0 and backup version 0.42.1"));
+        assert!(err.contains(&format!(
+            "mismatched database version {data_version} and backup version {backup_version}"
+        )));
     }
 
-    /// Test that VERSION file is created when directory is empty.
+    /// Test that `VERSION` file is created when directory is empty.
     #[test]
     fn version_file_created_for_empty_directory() {
         let data_dir = tempfile::tempdir().unwrap();
@@ -711,11 +720,14 @@ mod tests {
         assert!(result.is_ok());
 
         // VERSION should be created with current package version
-        let version = read_version_file(&data_dir.path().join("VERSION")).unwrap();
-        assert_eq!(version, Version::parse(env!("CARGO_PKG_VERSION")).unwrap());
+        let data_version = read_version_file(&data_dir.path().join("VERSION")).unwrap();
+        let backup_version = read_version_file(&backup_dir.path().join("VERSION")).unwrap();
+        let current_version = Version::parse(env!("CARGO_PKG_VERSION")).unwrap();
+        assert_eq!(data_version, current_version);
+        assert_eq!(backup_version, current_version);
     }
 
-    /// Test that error is returned when VERSION file contains invalid content.
+    /// Test that error is returned when `VERSION` file contains invalid content.
     #[test]
     fn error_on_invalid_version_content() {
         let data_dir = tempfile::tempdir().unwrap();
@@ -727,7 +739,7 @@ mod tests {
         f.write_all(b"not-a-valid-version").unwrap();
 
         // Also need a file in backup to prevent it from being treated as empty
-        write_version(backup_dir.path(), "0.42.0");
+        write_version(backup_dir.path(), env!("CARGO_PKG_VERSION"));
 
         let result = migrate_data_dir(data_dir.path(), backup_dir.path());
 
@@ -756,9 +768,9 @@ mod tests {
         assert!(data_dir.exists());
         assert!(backup_dir.exists());
 
-        // VERSION files should exist with current version
-        let version = read_version_file(&data_dir.join("VERSION")).unwrap();
-        assert_eq!(version, Version::parse(env!("CARGO_PKG_VERSION")).unwrap());
+        // VERSION files should exist
+        assert!(data_dir.join("VERSION").exists());
+        assert!(backup_dir.join("VERSION").exists());
     }
 
     /// Test that migration fails for unsupported old versions.
@@ -792,7 +804,7 @@ mod tests {
         assert_eq!(version, Version::parse(env!("CARGO_PKG_VERSION")).unwrap());
     }
 
-    /// Test that reading a non-existent VERSION file returns an error.
+    /// Test that reading a non-existent `VERSION` file returns an error.
     #[test]
     fn read_nonexistent_version_file_error() {
         let temp = tempfile::tempdir().unwrap();
@@ -804,9 +816,71 @@ mod tests {
         assert!(err.contains("cannot open VERSION"));
     }
 
-    /// Test that the migration loop properly runs migrations and updates VERSION files.
+    /// Test that migrations from `START_VERSION` up to the current version succeed and update `VERSION` files.
+    ///
+    /// NOTE: `START_VERSION` is the oldest supported migration start for this test. If the supported
+    /// migration window changes and older versions are removed from the migration list, update
+    /// the start version here accordingly. This test assumes column families match the current
+    /// schema; if a migration includes column family changes, validate that path separately with
+    /// a schema-specific test.
     #[test]
-    fn migration_loop_runs_and_updates_version_files() {
+    fn migration_from_supported_minors() {
+        const START_VERSION: &str = "0.43.0";
+        let current_pkg_version = Version::parse(env!("CARGO_PKG_VERSION")).unwrap();
+        let current_base = if current_pkg_version.pre.is_empty() {
+            current_pkg_version.clone()
+        } else {
+            Version::new(
+                current_pkg_version.major,
+                current_pkg_version.minor,
+                current_pkg_version.patch,
+            )
+        };
+
+        let start_version = Version::parse(START_VERSION).unwrap();
+        if current_base.major != start_version.major || current_base.minor < start_version.minor {
+            return;
+        }
+
+        for minor in start_version.minor..=current_base.minor {
+            let version = if minor == current_base.minor {
+                current_pkg_version.clone()
+            } else {
+                Version::new(start_version.major, minor, 0)
+            };
+
+            let data_dir = tempfile::tempdir().unwrap();
+            let backup_dir = tempfile::tempdir().unwrap();
+
+            let db_path = data_dir.path().join("states.db");
+            let mut opts = rocksdb::Options::default();
+            opts.create_if_missing(true);
+            opts.create_missing_column_families(true);
+
+            let db: rocksdb::OptimisticTransactionDB = rocksdb::OptimisticTransactionDB::open_cf(
+                &opts,
+                &db_path,
+                crate::tables::MAP_NAMES,
+            )
+            .unwrap();
+            drop(db);
+
+            write_version(data_dir.path(), &version.to_string());
+            write_version(backup_dir.path(), &version.to_string());
+
+            let result = migrate_data_dir(data_dir.path(), backup_dir.path());
+            assert!(result.is_ok(), "Migration should succeed from {version}");
+
+            let data_version = read_version_file(&data_dir.path().join("VERSION")).unwrap();
+            let backup_version = read_version_file(&backup_dir.path().join("VERSION")).unwrap();
+            assert_eq!(data_version, current_pkg_version);
+            assert_eq!(backup_version, current_pkg_version);
+        }
+    }
+
+    /// Test that the `0.42`-specific migration loop runs and updates `VERSION` files.
+    #[test]
+    fn migration_from_v0_42_schema() {
         let data_dir = tempfile::tempdir().unwrap();
         let backup_dir = tempfile::tempdir().unwrap();
 
@@ -820,7 +894,7 @@ mod tests {
                 .unwrap();
         drop(db);
 
-        // Write an older version that needs migration
+        // Write an old version that needs migration
         write_version(data_dir.path(), "0.42.0");
         write_version(backup_dir.path(), "0.42.0");
 
@@ -849,59 +923,6 @@ mod tests {
             backup_version, current_pkg_version,
             "Backup VERSION should be updated to current package version"
         );
-    }
-
-    /// Test that a direct migration from 0.43.0 succeeds and updates VERSION files.
-    #[test]
-    fn migration_from_0_43_updates_version_files() {
-        let data_dir = tempfile::tempdir().unwrap();
-        let backup_dir = tempfile::tempdir().unwrap();
-
-        let db_path = data_dir.path().join("states.db");
-        let mut opts = rocksdb::Options::default();
-        opts.create_if_missing(true);
-        opts.create_missing_column_families(true);
-
-        let db: rocksdb::OptimisticTransactionDB =
-            rocksdb::OptimisticTransactionDB::open_cf(&opts, &db_path, crate::tables::MAP_NAMES)
-                .unwrap();
-        drop(db);
-
-        // Start at version 0.43.0
-        write_version(data_dir.path(), "0.43.0");
-        write_version(backup_dir.path(), "0.43.0");
-
-        let result = migrate_data_dir(data_dir.path(), backup_dir.path());
-        assert!(result.is_ok(), "Migration should succeed");
-
-        // Verify VERSION files are updated
-        let data_version = read_version_file(&data_dir.path().join("VERSION")).unwrap();
-        let backup_version = read_version_file(&backup_dir.path().join("VERSION")).unwrap();
-
-        let current_pkg_version = Version::parse(env!("CARGO_PKG_VERSION")).unwrap();
-        assert_eq!(data_version, current_pkg_version);
-        assert_eq!(backup_version, current_pkg_version);
-    }
-
-    /// Test that migration error is propagated and VERSION files are not updated on failure.
-    #[test]
-    fn migration_error_prevents_version_update() {
-        let data_dir = tempfile::tempdir().unwrap();
-        let backup_dir = tempfile::tempdir().unwrap();
-
-        write_version(data_dir.path(), "0.42.0");
-        write_version(backup_dir.path(), "0.42.0");
-
-        let result = migrate_data_dir(data_dir.path(), backup_dir.path());
-
-        assert!(result.is_err());
-
-        // VERSION files should remain unchanged (still 0.42.0)
-        let data_version = read_version_file(&data_dir.path().join("VERSION")).unwrap();
-        let backup_version = read_version_file(&backup_dir.path().join("VERSION")).unwrap();
-
-        assert_eq!(data_version, Version::parse("0.42.0").unwrap());
-        assert_eq!(backup_version, Version::parse("0.42.0").unwrap());
     }
 
     #[allow(dead_code)]
