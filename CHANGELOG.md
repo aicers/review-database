@@ -10,7 +10,8 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 ### Changed
 
 - **BREAKING**: Unified `cluster_id` and `model_id` types to `u32` across the
-  codebase. This affects the following:
+  codebase. Automatic data migration is provided for existing databases. This
+  affects the following:
   - `Cluster::id` in `tables/cluster.rs` changed from `i32` to `u32`
   - `TimeSeries::cluster_id` in `tables/time_series.rs` changed from `i32` to
     `u32`
@@ -26,6 +27,12 @@ Versioning](https://semver.org/spec/v2.0.0.html).
     `csv_column_extra`
   - `TopColumnsOfCluster::cluster_id` changed from `i32` to `u32`
   - `ModelIndicator` serialization now uses `u32` for `model_id`
+  - Data migration is automatically performed for:
+    - `Cluster` table (keys with negative `cluster_id` values)
+    - `TimeSeries` table (keys with negative `cluster_id` values)
+    - Events (`HttpThreat`, `NetworkThreat`, `WindowsThreat`, `ExtraThreat`)
+      with `cluster_id` field serialization change from `Option<usize>` to
+      `Option<u32>`
 - Changed `Store::network_tag_set` signature to require a `customer_id: u32`
   parameter and now returns `CustomerTagSet` instead of `TagSet<NetworkTagId>`.
   Existing network tags are automatically migrated to be associated with the
