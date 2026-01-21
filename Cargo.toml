@@ -1,6 +1,6 @@
 [package]
 name = "review-database"
-version = "0.44.0-alpha.1"
+version = "0.44.0-alpha.2"
 edition = "2024"
 
 [dependencies]
@@ -15,6 +15,7 @@ data-encoding = "2"
 flate2 = "1.0"
 ip2location = "0.6.0"
 ipnet = { version = "2", features = ["serde"] }
+itertools = "0.14"
 jiff = "0.2.15"
 memchr = "2"
 num-derive = "0.4"
