@@ -4,6 +4,7 @@ use std::{fmt, net::IpAddr};
 
 use attrievent::attribute::{RawEventAttrKind, RdpAttr};
 use chrono::{DateTime, Utc};
+use itertools::Itertools;
 use serde::{Deserialize, Serialize};
 
 use super::{
@@ -86,7 +87,7 @@ impl RdpBruteForceFields {
         let start_time_dt = DateTime::from_timestamp_nanos(self.start_time);
         let end_time_dt = DateTime::from_timestamp_nanos(self.end_time);
         format!(
-            "category={:?} sensor={:?} orig_addr={:?} orig_country_code={:?} resp_addrs={:?} start_time={:?} end_time={:?} proto={:?} confidence={:?}",
+            "category={:?} sensor={:?} orig_addr={:?} orig_country_code={:?} resp_addrs={:?} resp_country_codes={:?} start_time={:?} end_time={:?} proto={:?} confidence={:?}",
             self.category.as_ref().map_or_else(
                 || "Unspecified".to_string(),
                 std::string::ToString::to_string
@@ -95,6 +96,10 @@ impl RdpBruteForceFields {
             self.orig_addr.to_string(),
             std::str::from_utf8(&self.orig_country_code).unwrap_or("XX"),
             vector_to_string(&self.resp_addrs),
+            self.resp_country_codes
+                .iter()
+                .map(|code| std::str::from_utf8(code).unwrap_or("XX"))
+                .join(","),
             start_time_dt.to_rfc3339(),
             end_time_dt.to_rfc3339(),
             self.proto.to_string(),
@@ -107,8 +112,8 @@ impl RdpBruteForceFields {
 pub struct RdpBruteForce {
     pub sensor: String,
     pub time: DateTime<Utc>,
-    pub orig_country_code: [u8; 2],
     pub orig_addr: IpAddr,
+    pub orig_country_code: [u8; 2],
     pub resp_addrs: Vec<IpAddr>,
     pub resp_country_codes: Vec<[u8; 2]>,
     pub start_time: DateTime<Utc>,
@@ -123,10 +128,14 @@ impl fmt::Display for RdpBruteForce {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "orig_addr={:?} orig_country_code={:?} resp_addrs={:?} start_time={:?} end_time={:?} proto={:?} triage_scores={:?}",
+            "orig_addr={:?} orig_country_code={:?} resp_addrs={:?} resp_country_codes={:?} start_time={:?} end_time={:?} proto={:?} triage_scores={:?}",
             self.orig_addr.to_string(),
             std::str::from_utf8(&self.orig_country_code).unwrap_or("XX"),
             vector_to_string(&self.resp_addrs),
+            self.resp_country_codes
+                .iter()
+                .map(|code| std::str::from_utf8(code).unwrap_or("XX"))
+                .join(","),
             self.start_time.to_rfc3339(),
             self.end_time.to_rfc3339(),
             self.proto.to_string(),
@@ -140,8 +149,8 @@ impl RdpBruteForce {
         RdpBruteForce {
             sensor: fields.sensor.clone(),
             time,
-            orig_country_code: *b"XX",
             orig_addr: fields.orig_addr,
+            orig_country_code: *b"XX",
             resp_addrs: fields.resp_addrs.clone(),
             resp_country_codes: vec![*b"XX"; fields.resp_addrs.len()],
             start_time: DateTime::from_timestamp_nanos(fields.start_time),
@@ -320,12 +329,12 @@ impl BlocklistRdpFields {
 pub struct BlocklistRdp {
     pub time: DateTime<Utc>,
     pub sensor: String,
-    pub orig_country_code: [u8; 2],
     pub orig_addr: IpAddr,
     pub orig_port: u16,
+    pub orig_country_code: [u8; 2],
     pub resp_addr: IpAddr,
-    pub resp_country_code: [u8; 2],
     pub resp_port: u16,
+    pub resp_country_code: [u8; 2],
     pub proto: u8,
     pub start_time: DateTime<Utc>,
     pub duration: i64,
@@ -368,12 +377,12 @@ impl BlocklistRdp {
         Self {
             time,
             sensor: fields.sensor,
-            orig_country_code: *b"XX",
             orig_addr: fields.orig_addr,
             orig_port: fields.orig_port,
+            orig_country_code: *b"XX",
             resp_addr: fields.resp_addr,
-            resp_country_code: *b"XX",
             resp_port: fields.resp_port,
+            resp_country_code: *b"XX",
             proto: fields.proto,
             start_time: DateTime::from_timestamp_nanos(fields.start_time),
             duration: fields.duration,
