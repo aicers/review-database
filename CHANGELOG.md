@@ -9,11 +9,10 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
-- Added `orig_country_code` and `resp_country_code` fields to all event-specific
-  `*Fields` structs and `NetworkThreat`. These fields store 2-letter ISO country
-  codes as `[u8; 2]`, enabling geographic filtering and analysis of
-  security events. Country codes can be resolved from IP addresses using an
-  ip2location database during event creation.
+- Added `orig_country_code` and `resp_country_code` fields to event-related
+  structs that contain origin and response IP addresses. These fields store
+  2-letter ISO country codes as `[u8; 2]`, enabling geographic filtering and
+  analysis of security events.
 - Updated `migrate_data_dir` function signature to accept an optional
   `ip2location::DB` parameter for resolving country codes during migration
   from older database formats.
