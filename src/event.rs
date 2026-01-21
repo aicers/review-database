@@ -2418,51 +2418,14 @@ impl<'a> EventDb<'a> {
         EventIterator { inner: iter }
     }
 
-    /// Creates a raw iterator over key-value pairs for migration purposes.
+    /// Creates a raw iterator over key-value pairs for the entire events.
     ///
     /// Unlike `iter_forward`, this returns raw bytes without deserializing the event fields.
     /// This is useful for migrations that need to transform data between formats.
     #[must_use]
-    pub fn raw_iter(&self) -> RawEventIterator<'_> {
+    pub fn raw_iter_forward(&self) -> RawEventIterator<'_> {
         let iter = self.inner.iterator(IteratorMode::Start);
         RawEventIterator { inner: iter }
-    }
-
-    /// Updates a raw key-value pair in the database.
-    ///
-    /// This method is intended for migration purposes where raw bytes need to be
-    /// updated without going through the normal event deserialization/serialization.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if a database operation fails.
-    pub fn raw_update(&self, key: &[u8], old_value: &[u8], new_value: &[u8]) -> Result<()> {
-        loop {
-            let txn = self.inner.transaction();
-            if let Some(current_value) = txn
-                .get_for_update(key, super::EXCLUSIVE)
-                .context("cannot read from event database")?
-            {
-                if old_value != current_value.as_slice() {
-                    bail!("old value mismatch");
-                }
-            } else {
-                bail!("no such entry");
-            }
-
-            txn.put(key, new_value)
-                .context("failed to write new entry")?;
-
-            match txn.commit() {
-                Ok(()) => break,
-                Err(e) => {
-                    if !e.as_ref().starts_with("Resource busy:") {
-                        return Err(e).context("failed to update entry");
-                    }
-                }
-            }
-        }
-        Ok(())
     }
 
     /// Stores a new event into the database.
@@ -2961,7 +2924,7 @@ pub enum InvalidEvent {
     Value(Box<[u8]>),
 }
 
-/// A raw iterator over event key-value pairs for migration purposes.
+/// A raw iterator over event key-value pairs.
 ///
 /// This iterator returns raw bytes without deserializing the event fields,
 /// which is useful for migrations that need to transform data between formats.
@@ -3065,12 +3028,12 @@ mod tests {
     fn example_message(kind: EventKind, category: EventCategory) -> EventMessage {
         let fields = DnsEventFields {
             sensor: "collector1".to_string(),
-            orig_country_code: *b"XX",
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             orig_port: 10000,
-            resp_country_code: *b"XX",
+            orig_country_code: *b"XX",
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
             resp_port: 53,
+            resp_country_code: *b"XX",
             proto: 17,
             start_time: Utc
                 .with_ymd_and_hms(1970, 1, 1, 0, 1, 1)
@@ -3182,12 +3145,12 @@ mod tests {
     fn syslog_for_dga() {
         let fields = DgaFields {
             sensor: "collector1".to_string(),
-            orig_country_code: *b"XX",
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             orig_port: 10000,
-            resp_country_code: *b"XX",
+            orig_country_code: *b"XX",
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
             resp_port: 80,
+            resp_country_code: *b"XX",
             proto: 6,
             start_time: Utc
                 .with_ymd_and_hms(1970, 1, 1, 0, 0, 0)
@@ -3336,12 +3299,12 @@ mod tests {
         let fields = HttpThreatFields {
             time: Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap(),
             sensor: "collector1".to_string(),
-            orig_country_code: *b"XX",
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             orig_port: 10000,
-            resp_country_code: *b"XX",
+            orig_country_code: *b"XX",
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
             resp_port: 80,
+            resp_country_code: *b"XX",
             proto: 6,
             start_time: Utc
                 .with_ymd_and_hms(1970, 1, 1, 0, 0, 0)
@@ -3409,12 +3372,12 @@ mod tests {
     fn syslog_for_nonbrowser() {
         let fields = HttpEventFields {
             sensor: "collector1".to_string(),
-            orig_country_code: *b"XX",
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             orig_port: 10000,
-            resp_country_code: *b"XX",
+            orig_country_code: *b"XX",
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
             resp_port: 80,
+            resp_country_code: *b"XX",
             proto: 6,
             start_time: Utc
                 .with_ymd_and_hms(1970, 1, 1, 0, 1, 1)
@@ -3477,12 +3440,12 @@ mod tests {
     fn syslog_for_blocklist_http() {
         let fields = BlocklistHttpFields {
             sensor: "collector1".to_string(),
-            orig_country_code: *b"XX",
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             orig_port: 10000,
-            resp_country_code: *b"XX",
+            orig_country_code: *b"XX",
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
             resp_port: 80,
+            resp_country_code: *b"XX",
             proto: 6,
             start_time: Utc
                 .with_ymd_and_hms(1970, 1, 1, 0, 0, 0)
@@ -3546,12 +3509,12 @@ mod tests {
     fn syslog_for_lockyransomware() {
         let fields = DnsEventFields {
             sensor: "collector1".to_string(),
-            orig_country_code: *b"XX",
             orig_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 3)),
             orig_port: 10000,
-            resp_country_code: *b"XX",
+            orig_country_code: *b"XX",
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 4)),
             resp_port: 53,
+            resp_country_code: *b"XX",
             proto: 17,
             start_time: Utc
                 .with_ymd_and_hms(1970, 1, 1, 0, 1, 1)
@@ -3609,11 +3572,11 @@ mod tests {
     fn syslog_for_portscan() {
         let fields = PortScanFields {
             sensor: String::new(),
-            orig_country_code: *b"XX",
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
-            resp_country_code: *b"XX",
+            orig_country_code: *b"XX",
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
             resp_ports: vec![80, 443, 8000, 8080, 8888, 8443, 9000, 9001, 9002],
+            resp_country_code: *b"XX",
             start_time: Utc
                 .with_ymd_and_hms(1970, 1, 1, 0, 1, 1)
                 .unwrap()
@@ -3640,7 +3603,7 @@ mod tests {
         let (_, _, syslog_message) = message.unwrap();
         assert_eq!(
             &syslog_message,
-            r#"time="1970-01-01T00:01:01+00:00" event_kind="PortScan" category="Reconnaissance" sensor="" orig_addr="127.0.0.1" orig_country_code="XX" resp_addr="127.0.0.2" resp_country_code="XX" resp_ports="80,443,8000,8080,8888,8443,9000,9001,9002" start_time="1970-01-01T00:01:01+00:00" end_time="1970-01-01T00:01:02+00:00" proto="6" confidence="0.3""#
+            r#"time="1970-01-01T00:01:01+00:00" event_kind="PortScan" category="Reconnaissance" sensor="" orig_addr="127.0.0.1" orig_country_code="XX" resp_addr="127.0.0.2" resp_ports="80,443,8000,8080,8888,8443,9000,9001,9002" resp_country_code="XX" start_time="1970-01-01T00:01:01+00:00" end_time="1970-01-01T00:01:02+00:00" proto="6" confidence="0.3""#
         );
 
         let port_scan = Event::PortScan(PortScan::new(
@@ -3650,7 +3613,7 @@ mod tests {
         .to_string();
         assert_eq!(
             &port_scan,
-            r#"time="1970-01-01T00:01:01+00:00" event_kind="PortScan" category="Reconnaissance" orig_addr="127.0.0.1" orig_country_code="XX" resp_addr="127.0.0.2" resp_country_code="XX" resp_ports="80,443,8000,8080,8888,8443,9000,9001,9002" start_time="1970-01-01T00:01:01+00:00" end_time="1970-01-01T00:01:02+00:00" proto="6" triage_scores="""#
+            r#"time="1970-01-01T00:01:01+00:00" event_kind="PortScan" category="Reconnaissance" orig_addr="127.0.0.1" orig_country_code="XX" resp_addr="127.0.0.2" resp_ports="80,443,8000,8080,8888,8443,9000,9001,9002" resp_country_code="XX" start_time="1970-01-01T00:01:01+00:00" end_time="1970-01-01T00:01:02+00:00" proto="6" triage_scores="""#
         );
     }
 
@@ -3658,14 +3621,14 @@ mod tests {
     fn syslog_for_multihostportscan() {
         let fields = MultiHostPortScanFields {
             sensor: String::new(),
-            orig_country_code: *b"XX",
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
-            resp_country_codes: vec![*b"XX", *b"XX"],
+            orig_country_code: *b"XX",
             resp_addrs: vec![
                 IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
                 IpAddr::V4(Ipv4Addr::new(127, 0, 0, 3)),
             ],
             resp_port: 80,
+            resp_country_codes: vec![*b"XX", *b"XX"],
             start_time: Utc
                 .with_ymd_and_hms(1970, 1, 1, 0, 1, 1)
                 .unwrap()
@@ -3692,7 +3655,7 @@ mod tests {
         let (_, _, syslog_message) = message.unwrap();
         assert_eq!(
             &syslog_message,
-            r#"time="1970-01-01T00:01:01+00:00" event_kind="MultiHostPortScan" category="Reconnaissance" sensor="" orig_addr="127.0.0.1" orig_country_code="XX" resp_addrs="127.0.0.2,127.0.0.3" resp_port="80" proto="6" start_time="1970-01-01T00:01:01+00:00" end_time="1970-01-01T00:01:02+00:00" confidence="0.3""#
+            r#"time="1970-01-01T00:01:01+00:00" event_kind="MultiHostPortScan" category="Reconnaissance" sensor="" orig_addr="127.0.0.1" orig_country_code="XX" resp_addrs="127.0.0.2,127.0.0.3" resp_port="80" resp_country_codes="XX,XX" proto="6" start_time="1970-01-01T00:01:01+00:00" end_time="1970-01-01T00:01:02+00:00" confidence="0.3""#
         );
 
         let multi_host_port_scan = Event::MultiHostPortScan(MultiHostPortScan::new(
@@ -3702,7 +3665,7 @@ mod tests {
         .to_string();
         assert_eq!(
             &multi_host_port_scan,
-            r#"time="1970-01-01T00:01:01+00:00" event_kind="MultiHostPortScan" category="Reconnaissance" orig_addr="127.0.0.1" orig_country_code="XX" resp_addrs="127.0.0.2,127.0.0.3" resp_port="80" proto="6" start_time="1970-01-01T00:01:01+00:00" end_time="1970-01-01T00:01:02+00:00" triage_scores="""#
+            r#"time="1970-01-01T00:01:01+00:00" event_kind="MultiHostPortScan" category="Reconnaissance" orig_addr="127.0.0.1" orig_country_code="XX" resp_addrs="127.0.0.2,127.0.0.3" resp_port="80" resp_country_codes="XX,XX" proto="6" start_time="1970-01-01T00:01:01+00:00" end_time="1970-01-01T00:01:02+00:00" triage_scores="""#
         );
     }
 
@@ -3710,13 +3673,13 @@ mod tests {
     fn syslog_for_externalddos() {
         let fields = ExternalDdosFields {
             sensor: String::new(),
-            orig_country_codes: vec![*b"XX", *b"XX"],
             orig_addrs: vec![
                 IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
                 IpAddr::V4(Ipv4Addr::new(127, 0, 0, 3)),
             ],
-            resp_country_code: *b"XX",
+            orig_country_codes: vec![*b"XX", *b"XX"],
             resp_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
+            resp_country_code: *b"XX",
             start_time: Utc
                 .with_ymd_and_hms(1970, 1, 1, 0, 1, 1)
                 .unwrap()
@@ -3742,7 +3705,7 @@ mod tests {
         let (_, _, syslog_message) = message.unwrap();
         assert_eq!(
             &syslog_message,
-            r#"time="1970-01-01T01:01:01+00:00" event_kind="ExternalDdos" category="Impact" sensor="" orig_addrs="127.0.0.2,127.0.0.3" resp_addr="127.0.0.1" resp_country_code="XX" proto="6" start_time="1970-01-01T00:01:01+00:00" end_time="1970-01-01T00:01:02+00:00" confidence="0.3""#
+            r#"time="1970-01-01T01:01:01+00:00" event_kind="ExternalDdos" category="Impact" sensor="" orig_addrs="127.0.0.2,127.0.0.3" orig_country_codes="XX,XX" resp_addr="127.0.0.1" resp_country_code="XX" proto="6" start_time="1970-01-01T00:01:01+00:00" end_time="1970-01-01T00:01:02+00:00" confidence="0.3""#
         );
 
         let external_ddos = Event::ExternalDdos(ExternalDdos::new(
@@ -3752,19 +3715,19 @@ mod tests {
         .to_string();
         assert_eq!(
             &external_ddos,
-            r#"time="1970-01-01T01:01:01+00:00" event_kind="ExternalDdos" category="Impact" orig_addrs="127.0.0.2,127.0.0.3" resp_addr="127.0.0.1" resp_country_code="XX" proto="6" start_time="1970-01-01T00:01:01+00:00" end_time="1970-01-01T00:01:02+00:00" triage_scores="""#
+            r#"time="1970-01-01T01:01:01+00:00" event_kind="ExternalDdos" category="Impact" orig_addrs="127.0.0.2,127.0.0.3" orig_country_codes="XX,XX" resp_addr="127.0.0.1" resp_country_code="XX" proto="6" start_time="1970-01-01T00:01:01+00:00" end_time="1970-01-01T00:01:02+00:00" triage_scores="""#
         );
     }
 
     fn blocklist_bootp_fields() -> BlocklistBootpFields {
         BlocklistBootpFields {
             sensor: "collector1".to_string(),
-            orig_country_code: *b"XX",
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             orig_port: 68,
-            resp_country_code: *b"XX",
+            orig_country_code: *b"XX",
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
             resp_port: 67,
+            resp_country_code: *b"XX",
             proto: 17,
             start_time: Utc
                 .with_ymd_and_hms(1970, 1, 1, 0, 0, 0)
@@ -3892,12 +3855,12 @@ mod tests {
     fn syslog_for_blocklist_conn() {
         let fields = BlocklistConnFields {
             sensor: "collector1".to_string(),
-            orig_country_code: *b"XX",
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             orig_port: 10000,
-            resp_country_code: *b"XX",
+            orig_country_code: *b"XX",
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
             resp_port: 80,
+            resp_country_code: *b"XX",
             proto: 6,
             conn_state: "SAF".to_string(),
             start_time: Utc
@@ -3946,12 +3909,12 @@ mod tests {
     fn syslog_for_blocklist_dcerpc() {
         let fields = BlocklistDceRpcFields {
             sensor: "collector1".to_string(),
-            orig_country_code: *b"XX",
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             orig_port: 10000,
-            resp_country_code: *b"XX",
+            orig_country_code: *b"XX",
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
             resp_port: 135,
+            resp_country_code: *b"XX",
             proto: 6,
             start_time: Utc
                 .with_ymd_and_hms(1970, 1, 1, 0, 0, 0)
@@ -3999,12 +3962,12 @@ mod tests {
     fn blocklist_dhcp_fields() -> BlocklistDhcpFields {
         BlocklistDhcpFields {
             sensor: "collector1".to_string(),
-            orig_country_code: *b"XX",
             orig_addr: IpAddr::from_str("127.0.0.1").unwrap(),
             orig_port: 68,
-            resp_country_code: *b"XX",
+            orig_country_code: *b"XX",
             resp_addr: IpAddr::from_str("127.0.0.2").unwrap(),
             resp_port: 67,
+            resp_country_code: *b"XX",
             proto: 17,
             start_time: Utc
                 .with_ymd_and_hms(1970, 1, 1, 0, 0, 0)
@@ -4139,12 +4102,12 @@ mod tests {
     fn syslog_for_dnscovertchannel() {
         let fields = DnsEventFields {
             sensor: "collector1".to_string(),
-            orig_country_code: *b"XX",
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             orig_port: 10000,
-            resp_country_code: *b"XX",
+            orig_country_code: *b"XX",
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
             resp_port: 53,
+            resp_country_code: *b"XX",
             proto: 17,
             start_time: Utc
                 .with_ymd_and_hms(1970, 1, 1, 0, 1, 1)
@@ -4207,12 +4170,12 @@ mod tests {
     fn syslog_for_cryptocurrencyminingpool() {
         let fields = CryptocurrencyMiningPoolFields {
             sensor: "collector1".to_string(),
-            orig_country_code: *b"XX",
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             orig_port: 10000,
-            resp_country_code: *b"XX",
+            orig_country_code: *b"XX",
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
             resp_port: 53,
+            resp_country_code: *b"XX",
             proto: 17,
             start_time: Utc
                 .with_ymd_and_hms(1970, 1, 1, 0, 1, 1)
@@ -4271,12 +4234,12 @@ mod tests {
     fn syslog_for_blocklist_dns() {
         let fields = BlocklistDnsFields {
             sensor: "collector1".to_string(),
-            orig_country_code: *b"XX",
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             orig_port: 10000,
-            resp_country_code: *b"XX",
+            orig_country_code: *b"XX",
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
             resp_port: 53,
+            resp_country_code: *b"XX",
             proto: 17,
             start_time: Utc
                 .with_ymd_and_hms(1970, 1, 1, 0, 0, 0)
@@ -4332,11 +4295,11 @@ mod tests {
     fn syslog_for_ftpbruteforce() {
         let fields = FtpBruteForceFields {
             sensor: String::new(),
-            orig_country_code: *b"XX",
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
-            resp_country_code: *b"XX",
+            orig_country_code: *b"XX",
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
             resp_port: 21,
+            resp_country_code: *b"XX",
             proto: 6,
             user_list: vec!["user1".to_string(), "user_2".to_string()],
             start_time: Utc
@@ -4399,12 +4362,12 @@ mod tests {
 
         let fields = FtpEventFields {
             sensor: "collector1".to_string(),
-            orig_country_code: *b"XX",
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             orig_port: 10000,
-            resp_country_code: *b"XX",
+            orig_country_code: *b"XX",
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
             resp_port: 21,
+            resp_country_code: *b"XX",
             proto: 6,
             start_time: Utc
                 .with_ymd_and_hms(1970, 1, 1, 0, 1, 1)
@@ -4465,12 +4428,12 @@ mod tests {
         };
 
         FtpEventFields {
-            orig_country_code: *b"XX",
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             orig_port: 10000,
-            resp_country_code: *b"XX",
+            orig_country_code: *b"XX",
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
             resp_port: 21,
+            resp_country_code: *b"XX",
             proto: 6,
             start_time: Utc
                 .with_ymd_and_hms(1970, 1, 1, 0, 1, 1)
@@ -4597,12 +4560,12 @@ mod tests {
             .unwrap();
         let fields = RepeatedHttpSessionsFields {
             sensor: "collector1".to_string(),
-            orig_country_code: *b"XX",
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             orig_port: 10000,
-            resp_country_code: *b"XX",
+            orig_country_code: *b"XX",
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
             resp_port: 443,
+            resp_country_code: *b"XX",
             proto: 6,
             start_time: now,
             end_time: now,
@@ -4638,12 +4601,12 @@ mod tests {
     fn syslog_for_blocklist_kerberos() {
         let fields = BlocklistKerberosFields {
             sensor: "collector1".to_string(),
-            orig_country_code: *b"XX",
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             orig_port: 10000,
-            resp_country_code: *b"XX",
+            orig_country_code: *b"XX",
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
             resp_port: 88,
+            resp_country_code: *b"XX",
             proto: 17,
             start_time: Utc
                 .with_ymd_and_hms(1970, 1, 1, 0, 0, 0)
@@ -4698,11 +4661,11 @@ mod tests {
     fn syslog_for_ldapbruteforce() {
         let fields = LdapBruteForceFields {
             sensor: String::new(),
-            orig_country_code: *b"XX",
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
-            resp_country_code: *b"XX",
+            orig_country_code: *b"XX",
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
             resp_port: 389,
+            resp_country_code: *b"XX",
             proto: 6,
             user_pw_list: vec![
                 ("user1".to_string(), "pw1".to_string()),
@@ -4752,12 +4715,12 @@ mod tests {
     fn syslog_for_ldapplaintext() {
         let fields = LdapEventFields {
             sensor: "collector1".to_string(),
-            orig_country_code: *b"XX",
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             orig_port: 10000,
-            resp_country_code: *b"XX",
+            orig_country_code: *b"XX",
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
             resp_port: 389,
+            resp_country_code: *b"XX",
             proto: 6,
             start_time: Utc
                 .with_ymd_and_hms(1970, 1, 1, 0, 1, 1)
@@ -4809,12 +4772,12 @@ mod tests {
     fn ldapeventfields() -> LdapEventFields {
         LdapEventFields {
             sensor: "collector1".to_string(),
-            orig_country_code: *b"XX",
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             orig_port: 10000,
-            resp_country_code: *b"XX",
+            orig_country_code: *b"XX",
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
             resp_port: 389,
+            resp_country_code: *b"XX",
             proto: 6,
             start_time: Utc
                 .with_ymd_and_hms(1970, 1, 1, 0, 1, 1)
@@ -4938,12 +4901,12 @@ mod tests {
     fn blocklist_radius_fields() -> BlocklistRadiusFields {
         BlocklistRadiusFields {
             sensor: "collector1".to_string(),
-            orig_country_code: *b"XX",
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             orig_port: 10000,
-            resp_country_code: *b"XX",
+            orig_country_code: *b"XX",
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
             resp_port: 1812,
+            resp_country_code: *b"XX",
             proto: 17,
             start_time: 0,
             duration: 0,
@@ -5073,12 +5036,12 @@ mod tests {
     fn syslog_for_blocklist_mqtt() {
         let fields = BlocklistMqttFields {
             sensor: "collector1".to_string(),
-            orig_country_code: *b"XX",
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             orig_port: 10000,
-            resp_country_code: *b"XX",
+            orig_country_code: *b"XX",
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
             resp_port: 1883,
+            resp_country_code: *b"XX",
             proto: 6,
             start_time: Utc
                 .with_ymd_and_hms(1970, 1, 1, 0, 0, 0)
@@ -5131,12 +5094,12 @@ mod tests {
         let fields = NetworkThreat {
             time: Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap(),
             sensor: "collector1".to_string(),
-            orig_country_code: *b"XX",
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             orig_port: 10000,
+            orig_country_code: *b"XX",
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
-            resp_country_code: *b"XX",
             resp_port: 80,
+            resp_country_code: *b"XX",
             proto: 6,
             service: "http".to_string(),
             start_time: Utc.with_ymd_and_hms(1970, 1, 1, 0, 0, 0).unwrap(),
@@ -5175,12 +5138,12 @@ mod tests {
     fn syslog_for_blocklist_nfs() {
         let fields = BlocklistNfsFields {
             sensor: "collector1".to_string(),
-            orig_country_code: *b"XX",
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             orig_port: 10000,
-            resp_country_code: *b"XX",
+            orig_country_code: *b"XX",
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
             resp_port: 2049,
+            resp_country_code: *b"XX",
             proto: 6,
             start_time: Utc
                 .with_ymd_and_hms(1970, 1, 1, 0, 0, 0)
@@ -5228,12 +5191,12 @@ mod tests {
     fn syslog_for_blocklist_ntlm() {
         let fields = BlocklistNtlmFields {
             sensor: "collector1".to_string(),
-            orig_country_code: *b"XX",
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             orig_port: 10000,
-            resp_country_code: *b"XX",
+            orig_country_code: *b"XX",
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
             resp_port: 445,
+            resp_country_code: *b"XX",
             proto: 6,
             start_time: Utc
                 .with_ymd_and_hms(1970, 1, 1, 0, 0, 0)
@@ -5313,12 +5276,12 @@ mod tests {
     fn blocklist_malformed_dns_fields() -> BlocklistMalformedDnsFields {
         BlocklistMalformedDnsFields {
             sensor: "collector1".to_string(),
-            orig_country_code: *b"XX",
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             orig_port: 10000,
-            resp_country_code: *b"XX",
+            orig_country_code: *b"XX",
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
             resp_port: 53,
+            resp_country_code: *b"XX",
             proto: 17,
             start_time: Utc
                 .with_ymd_and_hms(1970, 1, 1, 0, 0, 0)
@@ -5447,13 +5410,13 @@ mod tests {
     fn syslog_for_rdpbruteforce() {
         let fields = RdpBruteForceFields {
             sensor: String::new(),
-            orig_country_code: *b"XX",
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
-            resp_country_codes: vec![*b"XX", *b"XX"],
+            orig_country_code: *b"XX",
             resp_addrs: vec![
                 IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
                 IpAddr::V4(Ipv4Addr::new(127, 0, 0, 3)),
             ],
+            resp_country_codes: vec![*b"XX", *b"XX"],
             start_time: Utc
                 .with_ymd_and_hms(1970, 1, 1, 0, 1, 1)
                 .unwrap()
@@ -5480,7 +5443,7 @@ mod tests {
         let (_, _, syslog_message) = message.unwrap();
         assert_eq!(
             &syslog_message,
-            r#"time="1970-01-01T00:01:01+00:00" event_kind="RdpBruteForce" category="Discovery" sensor="" orig_addr="127.0.0.1" orig_country_code="XX" resp_addrs="127.0.0.2,127.0.0.3" start_time="1970-01-01T00:01:01+00:00" end_time="1970-01-01T00:10:02+00:00" proto="6" confidence="0.3""#
+            r#"time="1970-01-01T00:01:01+00:00" event_kind="RdpBruteForce" category="Discovery" sensor="" orig_addr="127.0.0.1" orig_country_code="XX" resp_addrs="127.0.0.2,127.0.0.3" resp_country_codes="XX,XX" start_time="1970-01-01T00:01:01+00:00" end_time="1970-01-01T00:10:02+00:00" proto="6" confidence="0.3""#
         );
 
         let rdp_brute_force = Event::RdpBruteForce(RdpBruteForce::new(
@@ -5491,7 +5454,7 @@ mod tests {
 
         assert_eq!(
             &rdp_brute_force,
-            r#"time="1970-01-01T00:01:01+00:00" event_kind="RdpBruteForce" category="Discovery" orig_addr="127.0.0.1" orig_country_code="XX" resp_addrs="127.0.0.2,127.0.0.3" start_time="1970-01-01T00:01:01+00:00" end_time="1970-01-01T00:10:02+00:00" proto="6" triage_scores="""#
+            r#"time="1970-01-01T00:01:01+00:00" event_kind="RdpBruteForce" category="Discovery" orig_addr="127.0.0.1" orig_country_code="XX" resp_addrs="127.0.0.2,127.0.0.3" resp_country_codes="XX,XX" start_time="1970-01-01T00:01:01+00:00" end_time="1970-01-01T00:10:02+00:00" proto="6" triage_scores="""#
         );
     }
 
@@ -5499,12 +5462,12 @@ mod tests {
     fn syslog_for_blocklist_rdp() {
         let fields = BlocklistRdpFields {
             sensor: "collector1".to_string(),
-            orig_country_code: *b"XX",
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             orig_port: 10000,
-            resp_country_code: *b"XX",
+            orig_country_code: *b"XX",
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
             resp_port: 3389,
+            resp_country_code: *b"XX",
             proto: 6,
             start_time: Utc
                 .with_ymd_and_hms(1970, 1, 1, 0, 0, 0)
@@ -5551,12 +5514,12 @@ mod tests {
     fn syslog_for_blocklist_smb() {
         let fields = BlocklistSmbFields {
             sensor: "collector1".to_string(),
-            orig_country_code: *b"XX",
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             orig_port: 10000,
-            resp_country_code: *b"XX",
+            orig_country_code: *b"XX",
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
             resp_port: 445,
+            resp_country_code: *b"XX",
             proto: 6,
             start_time: Utc
                 .with_ymd_and_hms(1970, 1, 1, 0, 0, 0)
@@ -5613,12 +5576,12 @@ mod tests {
     fn syslog_for_blocklist_smtp() {
         let fields = BlocklistSmtpFields {
             sensor: "collector1".to_string(),
-            orig_country_code: *b"XX",
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             orig_port: 10000,
-            resp_country_code: *b"XX",
+            orig_country_code: *b"XX",
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
             resp_port: 25,
+            resp_country_code: *b"XX",
             proto: 6,
             start_time: Utc
                 .with_ymd_and_hms(1970, 1, 1, 0, 0, 0)
@@ -5671,12 +5634,12 @@ mod tests {
     fn syslog_for_blocklist_ssh() {
         let fields = BlocklistSshFields {
             sensor: "collector1".to_string(),
-            orig_country_code: *b"XX",
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             orig_port: 10000,
-            resp_country_code: *b"XX",
+            orig_country_code: *b"XX",
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
             resp_port: 22,
+            resp_country_code: *b"XX",
             proto: 6,
             start_time: Utc
                 .with_ymd_and_hms(1970, 1, 1, 0, 0, 0)
@@ -5789,12 +5752,12 @@ mod tests {
     fn syslog_for_blocklist_tls() {
         let fields = BlocklistTlsFields {
             sensor: "collector1".to_string(),
-            orig_country_code: *b"XX",
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             orig_port: 10000,
-            resp_country_code: *b"XX",
+            orig_country_code: *b"XX",
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
             resp_port: 443,
+            resp_country_code: *b"XX",
             proto: 6,
             start_time: Utc
                 .with_ymd_and_hms(1970, 1, 1, 0, 0, 0)
@@ -5870,12 +5833,12 @@ mod tests {
             resp_pkts: 0,
             orig_l2_bytes: 0,
             resp_l2_bytes: 0,
-            orig_country_code: *b"XX",
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             orig_port: 10000,
-            resp_country_code: *b"XX",
+            orig_country_code: *b"XX",
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
             resp_port: 443,
+            resp_country_code: *b"XX",
             proto: 6,
             method: "GET".to_string(),
             host: "host".to_string(),
@@ -6002,12 +5965,12 @@ mod tests {
     fn blocklist_tls_fields() -> BlocklistTlsFields {
         BlocklistTlsFields {
             sensor: "collector1".to_string(),
-            orig_country_code: *b"XX",
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             orig_port: 10000,
-            resp_country_code: *b"XX",
+            orig_country_code: *b"XX",
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
             resp_port: 443,
+            resp_country_code: *b"XX",
             proto: 6,
             start_time: Utc
                 .with_ymd_and_hms(1970, 1, 1, 0, 0, 0)

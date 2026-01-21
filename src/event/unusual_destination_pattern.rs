@@ -2,6 +2,7 @@ use std::{fmt, net::IpAddr, num::NonZeroU8};
 
 use attrievent::attribute::{ConnAttr, RawEventAttrKind};
 use chrono::{DateTime, Utc};
+use itertools::Itertools;
 use serde::{Deserialize, Serialize};
 
 use super::{EventCategory, LearningMethod, MEDIUM, TriageScore, common::Match};
@@ -32,7 +33,7 @@ impl UnusualDestinationPatternFields {
         let start_time_dt = DateTime::from_timestamp_nanos(self.start_time);
         let end_time_dt = DateTime::from_timestamp_nanos(self.end_time);
         format!(
-            "category={:?} sensor={:?} start_time={:?} end_time={:?} destination_ips={:?} count={:?} expected_mean={:?} std_deviation={:?} z_score={:?} confidence={:?}",
+            "category={:?} sensor={:?} start_time={:?} end_time={:?} destination_ips={:?} resp_country_codes={:?} count={:?} expected_mean={:?} std_deviation={:?} z_score={:?} confidence={:?}",
             self.category.as_ref().map_or_else(
                 || "Unspecified".to_string(),
                 std::string::ToString::to_string
@@ -41,6 +42,10 @@ impl UnusualDestinationPatternFields {
             start_time_dt.to_rfc3339(),
             end_time_dt.to_rfc3339(),
             format_ip_vec(&self.destination_ips),
+            self.resp_country_codes
+                .iter()
+                .map(|code| std::str::from_utf8(code).unwrap_or("XX"))
+                .join(","),
             self.count.to_string(),
             self.expected_mean.to_string(),
             self.std_deviation.to_string(),
@@ -78,11 +83,15 @@ impl fmt::Display for UnusualDestinationPattern {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "sensor={:?} start_time={:?} end_time={:?} destination_ips={:?} count={:?} expected_mean={:?} std_deviation={:?} z_score={:?} triage_scores={:?}",
+            "sensor={:?} start_time={:?} end_time={:?} destination_ips={:?} resp_country_codes={:?} count={:?} expected_mean={:?} std_deviation={:?} z_score={:?} triage_scores={:?}",
             self.sensor,
             self.start_time.to_rfc3339(),
             self.end_time.to_rfc3339(),
             format_ip_vec(&self.destination_ips),
+            self.resp_country_codes
+                .iter()
+                .map(|code| std::str::from_utf8(code).unwrap_or("XX"))
+                .join(","),
             self.count.to_string(),
             self.expected_mean.to_string(),
             self.std_deviation.to_string(),

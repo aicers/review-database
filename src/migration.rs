@@ -860,7 +860,7 @@ fn migrate_network_cf_inner(
 /// Migrates event fields from `V0_43` format (without country codes) to `V0_44` format
 /// (with country codes). Also converts HttpThreat cluster_id from Option<usize> to Option<u32>.
 /// If a locator is provided, country codes are resolved from IP addresses.
-/// Otherwise, country codes are set to "ZZ".
+/// Otherwise, country codes are set to "ZZ" (unknown).
 fn migrate_event_country_codes(
     store: &crate::Store,
     locator: Option<&ip2location::DB>,
@@ -897,7 +897,7 @@ fn migrate_event_country_codes(
 
     // Collect all events that need migration using raw iterator
     let entries_to_migrate: Vec<(Vec<u8>, Vec<u8>)> = events
-        .raw_iter()
+        .raw_iter_forward()
         .map(|(key, value)| (key.to_vec(), value.to_vec()))
         .collect();
 
@@ -913,13 +913,17 @@ fn migrate_event_country_codes(
 
     for (key, value) in &entries_to_migrate {
         // Extract the event kind from the key (bits 32-63 of the 128-bit key)
-        let kind_value = if key.len() >= 16 {
-            let key_i128 = i128::from_be_bytes(key[..16].try_into().unwrap_or([0; 16]));
-            ((key_i128 >> 32) & 0xFFFF_FFFF) as i32
+        let key_i128 = if key.len() >= 16 {
+            let Ok(key_bytes) = key[..16].try_into() else {
+                skipped_count += 1;
+                continue;
+            };
+            i128::from_be_bytes(key_bytes)
         } else {
             skipped_count += 1;
             continue;
         };
+        let kind_value = ((key_i128 >> 32) & 0xFFFF_FFFF) as i32;
 
         let Some(kind) = EventKind::from_i32(kind_value) else {
             skipped_count += 1;
@@ -930,107 +934,137 @@ fn migrate_event_country_codes(
         // Events store raw field bytes directly (not EventMessage wrapper)
         let new_fields: Vec<u8> = match kind {
             EventKind::DnsCovertChannel | EventKind::LockyRansomware => {
-                migrate_fields::<DnsEventFieldsV0_43, DnsEventFields>(value, locator)?
+                migrate_event_with_country_code::<DnsEventFieldsV0_43, DnsEventFields>(
+                    value, locator,
+                )?
             }
-            EventKind::HttpThreat => {
-                migrate_fields::<HttpThreatFieldsV0_43, HttpThreatFields>(value, locator)?
-            }
-            EventKind::RdpBruteForce => {
-                migrate_fields::<RdpBruteForceFieldsV0_43, RdpBruteForceFields>(value, locator)?
-            }
-            EventKind::RepeatedHttpSessions => migrate_fields::<
+            EventKind::HttpThreat => migrate_event_with_country_code::<
+                HttpThreatFieldsV0_43,
+                HttpThreatFields,
+            >(value, locator)?,
+            EventKind::RdpBruteForce => migrate_event_with_country_code::<
+                RdpBruteForceFieldsV0_43,
+                RdpBruteForceFields,
+            >(value, locator)?,
+            EventKind::RepeatedHttpSessions => migrate_event_with_country_code::<
                 RepeatedHttpSessionsFieldsV0_43,
                 RepeatedHttpSessionsFields,
             >(value, locator)?,
             EventKind::TorConnection | EventKind::NonBrowser | EventKind::BlocklistHttp => {
-                migrate_fields::<HttpEventFieldsV0_43, HttpEventFields>(value, locator)?
+                migrate_event_with_country_code::<HttpEventFieldsV0_43, HttpEventFields>(
+                    value, locator,
+                )?
             }
             EventKind::TorConnectionConn | EventKind::BlocklistConn => {
-                migrate_fields::<BlocklistConnFieldsV0_43, BlocklistConnFields>(value, locator)?
+                migrate_event_with_country_code::<BlocklistConnFieldsV0_43, BlocklistConnFields>(
+                    value, locator,
+                )?
             }
             EventKind::DomainGenerationAlgorithm => {
-                migrate_fields::<DgaFieldsV0_43, DgaFields>(value, locator)?
+                migrate_event_with_country_code::<DgaFieldsV0_43, DgaFields>(value, locator)?
             }
-            EventKind::FtpBruteForce => {
-                migrate_fields::<FtpBruteForceFieldsV0_43, FtpBruteForceFields>(value, locator)?
-            }
-            EventKind::FtpPlainText | EventKind::BlocklistFtp => {
-                migrate_fields::<FtpEventFieldsV0_43, FtpEventFields>(value, locator)?
-            }
-            EventKind::PortScan => {
-                migrate_fields::<PortScanFieldsV0_43, PortScanFields>(value, locator)?
-            }
-            EventKind::MultiHostPortScan => migrate_fields::<
+            EventKind::FtpBruteForce => migrate_event_with_country_code::<
+                FtpBruteForceFieldsV0_43,
+                FtpBruteForceFields,
+            >(value, locator)?,
+            EventKind::FtpPlainText | EventKind::BlocklistFtp => migrate_event_with_country_code::<
+                FtpEventFieldsV0_43,
+                FtpEventFields,
+            >(value, locator)?,
+            EventKind::PortScan => migrate_event_with_country_code::<
+                PortScanFieldsV0_43,
+                PortScanFields,
+            >(value, locator)?,
+            EventKind::MultiHostPortScan => migrate_event_with_country_code::<
                 MultiHostPortScanFieldsV0_43,
                 MultiHostPortScanFields,
             >(value, locator)?,
-            EventKind::ExternalDdos => {
-                migrate_fields::<ExternalDdosFieldsV0_43, ExternalDdosFields>(value, locator)?
-            }
-            EventKind::LdapBruteForce => {
-                migrate_fields::<LdapBruteForceFieldsV0_43, LdapBruteForceFields>(value, locator)?
-            }
+            EventKind::ExternalDdos => migrate_event_with_country_code::<
+                ExternalDdosFieldsV0_43,
+                ExternalDdosFields,
+            >(value, locator)?,
+            EventKind::LdapBruteForce => migrate_event_with_country_code::<
+                LdapBruteForceFieldsV0_43,
+                LdapBruteForceFields,
+            >(value, locator)?,
             EventKind::LdapPlainText | EventKind::BlocklistLdap => {
-                migrate_fields::<LdapEventFieldsV0_43, LdapEventFields>(value, locator)?
+                migrate_event_with_country_code::<LdapEventFieldsV0_43, LdapEventFields>(
+                    value, locator,
+                )?
             }
-            EventKind::CryptocurrencyMiningPool => migrate_fields::<
+            EventKind::CryptocurrencyMiningPool => migrate_event_with_country_code::<
                 CryptocurrencyMiningPoolFieldsV0_43,
                 CryptocurrencyMiningPoolFields,
             >(value, locator)?,
-            EventKind::BlocklistBootp => {
-                migrate_fields::<BlocklistBootpFieldsV0_43, BlocklistBootpFields>(value, locator)?
-            }
-            EventKind::BlocklistDceRpc => {
-                migrate_fields::<BlocklistDceRpcFieldsV0_43, BlocklistDceRpcFields>(value, locator)?
-            }
-            EventKind::BlocklistDhcp => {
-                migrate_fields::<BlocklistDhcpFieldsV0_43, BlocklistDhcpFields>(value, locator)?
-            }
-            EventKind::BlocklistDns => {
-                migrate_fields::<BlocklistDnsFieldsV0_43, BlocklistDnsFields>(value, locator)?
-            }
-            EventKind::BlocklistKerberos => migrate_fields::<
+            EventKind::BlocklistBootp => migrate_event_with_country_code::<
+                BlocklistBootpFieldsV0_43,
+                BlocklistBootpFields,
+            >(value, locator)?,
+            EventKind::BlocklistDceRpc => migrate_event_with_country_code::<
+                BlocklistDceRpcFieldsV0_43,
+                BlocklistDceRpcFields,
+            >(value, locator)?,
+            EventKind::BlocklistDhcp => migrate_event_with_country_code::<
+                BlocklistDhcpFieldsV0_43,
+                BlocklistDhcpFields,
+            >(value, locator)?,
+            EventKind::BlocklistDns => migrate_event_with_country_code::<
+                BlocklistDnsFieldsV0_43,
+                BlocklistDnsFields,
+            >(value, locator)?,
+            EventKind::BlocklistKerberos => migrate_event_with_country_code::<
                 BlocklistKerberosFieldsV0_43,
                 BlocklistKerberosFields,
             >(value, locator)?,
-            EventKind::BlocklistMalformedDns => migrate_fields::<
+            EventKind::BlocklistMalformedDns => migrate_event_with_country_code::<
                 BlocklistMalformedDnsFieldsV0_43,
                 BlocklistMalformedDnsFields,
             >(value, locator)?,
-            EventKind::BlocklistMqtt => {
-                migrate_fields::<BlocklistMqttFieldsV0_43, BlocklistMqttFields>(value, locator)?
-            }
-            EventKind::BlocklistNfs => {
-                migrate_fields::<BlocklistNfsFieldsV0_43, BlocklistNfsFields>(value, locator)?
-            }
-            EventKind::BlocklistNtlm => {
-                migrate_fields::<BlocklistNtlmFieldsV0_43, BlocklistNtlmFields>(value, locator)?
-            }
-            EventKind::BlocklistRadius => {
-                migrate_fields::<BlocklistRadiusFieldsV0_43, BlocklistRadiusFields>(value, locator)?
-            }
-            EventKind::BlocklistRdp => {
-                migrate_fields::<BlocklistRdpFieldsV0_43, BlocklistRdpFields>(value, locator)?
-            }
-            EventKind::BlocklistSmb => {
-                migrate_fields::<BlocklistSmbFieldsV0_43, BlocklistSmbFields>(value, locator)?
-            }
-            EventKind::BlocklistSmtp => {
-                migrate_fields::<BlocklistSmtpFieldsV0_43, BlocklistSmtpFields>(value, locator)?
-            }
-            EventKind::BlocklistSsh => {
-                migrate_fields::<BlocklistSshFieldsV0_43, BlocklistSshFields>(value, locator)?
-            }
+            EventKind::BlocklistMqtt => migrate_event_with_country_code::<
+                BlocklistMqttFieldsV0_43,
+                BlocklistMqttFields,
+            >(value, locator)?,
+            EventKind::BlocklistNfs => migrate_event_with_country_code::<
+                BlocklistNfsFieldsV0_43,
+                BlocklistNfsFields,
+            >(value, locator)?,
+            EventKind::BlocklistNtlm => migrate_event_with_country_code::<
+                BlocklistNtlmFieldsV0_43,
+                BlocklistNtlmFields,
+            >(value, locator)?,
+            EventKind::BlocklistRadius => migrate_event_with_country_code::<
+                BlocklistRadiusFieldsV0_43,
+                BlocklistRadiusFields,
+            >(value, locator)?,
+            EventKind::BlocklistRdp => migrate_event_with_country_code::<
+                BlocklistRdpFieldsV0_43,
+                BlocklistRdpFields,
+            >(value, locator)?,
+            EventKind::BlocklistSmb => migrate_event_with_country_code::<
+                BlocklistSmbFieldsV0_43,
+                BlocklistSmbFields,
+            >(value, locator)?,
+            EventKind::BlocklistSmtp => migrate_event_with_country_code::<
+                BlocklistSmtpFieldsV0_43,
+                BlocklistSmtpFields,
+            >(value, locator)?,
+            EventKind::BlocklistSsh => migrate_event_with_country_code::<
+                BlocklistSshFieldsV0_43,
+                BlocklistSshFields,
+            >(value, locator)?,
             EventKind::BlocklistTls | EventKind::SuspiciousTlsTraffic => {
-                migrate_fields::<BlocklistTlsFieldsV0_43, BlocklistTlsFields>(value, locator)?
+                migrate_event_with_country_code::<BlocklistTlsFieldsV0_43, BlocklistTlsFields>(
+                    value, locator,
+                )?
             }
-            EventKind::UnusualDestinationPattern => migrate_fields::<
+            EventKind::UnusualDestinationPattern => migrate_event_with_country_code::<
                 UnusualDestinationPatternFieldsV0_43,
                 UnusualDestinationPatternFields,
             >(value, locator)?,
-            EventKind::NetworkThreat => {
-                migrate_fields::<NetworkThreatV0_43, NetworkThreat>(value, locator)?
-            }
+            EventKind::NetworkThreat => migrate_event_with_country_code::<
+                NetworkThreatV0_43,
+                NetworkThreat,
+            >(value, locator)?,
             // These event types don't have country code fields or use different structures
             EventKind::WindowsThreat | EventKind::ExtraThreat => {
                 // Skip migration for these types - they don't have the standard
@@ -1040,9 +1074,12 @@ fn migrate_event_country_codes(
             }
         };
 
-        // Update the event with migrated fields using raw_update
+        // Update the event with migrated fields
         events
-            .raw_update(key, value, &new_fields)
+            .update(
+                (key.as_slice(), value.as_slice()),
+                (key.as_slice(), new_fields.as_slice()),
+            )
             .context("failed to update migrated event")?;
         migrated_count += 1;
     }
@@ -1070,6 +1107,71 @@ fn lookup_country_code(locator: &ip2location::DB, addr: IpAddr) -> [u8; 2] {
     crate::util::country_code_to_bytes(&crate::util::find_ip_country(locator, addr))
 }
 
+fn lookup_country_codes<I>(locator: &ip2location::DB, addrs: I) -> Vec<[u8; 2]>
+where
+    I: IntoIterator<Item = IpAddr>,
+{
+    addrs
+        .into_iter()
+        .map(|addr| lookup_country_code(locator, addr))
+        .collect()
+}
+
+macro_rules! impl_resolve_country_codes {
+    (
+        $ty:ty,
+        orig: single ($orig_addr:ident => $orig_cc:ident),
+        resp: single ($resp_addr:ident => $resp_cc:ident)
+        $(,)?
+    ) => {
+        impl ResolveCountryCodes for $ty {
+            fn resolve_country_codes(&mut self, locator: &ip2location::DB) {
+                self.$orig_cc = lookup_country_code(locator, self.$orig_addr);
+                self.$resp_cc = lookup_country_code(locator, self.$resp_addr);
+            }
+        }
+    };
+    (
+        $ty:ty,
+        orig: single ($orig_addr:ident => $orig_cc:ident),
+        resp: multi ($resp_addrs:ident => $resp_ccs:ident)
+        $(,)?
+    ) => {
+        impl ResolveCountryCodes for $ty {
+            fn resolve_country_codes(&mut self, locator: &ip2location::DB) {
+                self.$orig_cc = lookup_country_code(locator, self.$orig_addr);
+                self.$resp_ccs = lookup_country_codes(locator, self.$resp_addrs.iter().copied());
+            }
+        }
+    };
+    (
+        $ty:ty,
+        orig: multi ($orig_addrs:ident => $orig_ccs:ident),
+        resp: single ($resp_addr:ident => $resp_cc:ident)
+        $(,)?
+    ) => {
+        impl ResolveCountryCodes for $ty {
+            fn resolve_country_codes(&mut self, locator: &ip2location::DB) {
+                self.$orig_ccs = lookup_country_codes(locator, self.$orig_addrs.iter().copied());
+                self.$resp_cc = lookup_country_code(locator, self.$resp_addr);
+            }
+        }
+    };
+    (
+        $ty:ty,
+        orig: multi ($orig_addrs:ident => $orig_ccs:ident),
+        resp: multi ($resp_addrs:ident => $resp_ccs:ident)
+        $(,)?
+    ) => {
+        impl ResolveCountryCodes for $ty {
+            fn resolve_country_codes(&mut self, locator: &ip2location::DB) {
+                self.$orig_ccs = lookup_country_codes(locator, self.$orig_addrs.iter().copied());
+                self.$resp_ccs = lookup_country_codes(locator, self.$resp_addrs.iter().copied());
+            }
+        }
+    };
+}
+
 // =============================================================================
 // ResolveCountryCodes implementations for event field types
 // =============================================================================
@@ -1085,227 +1187,161 @@ use crate::event::{
     RepeatedHttpSessionsFields, UnusualDestinationPatternFields,
 };
 
-impl ResolveCountryCodes for PortScanFields {
-    fn resolve_country_codes(&mut self, locator: &ip2location::DB) {
-        self.orig_country_code = lookup_country_code(locator, self.orig_addr);
-        self.resp_country_code = lookup_country_code(locator, self.resp_addr);
-    }
-}
-
-impl ResolveCountryCodes for MultiHostPortScanFields {
-    fn resolve_country_codes(&mut self, locator: &ip2location::DB) {
-        self.orig_country_code = lookup_country_code(locator, self.orig_addr);
-        self.resp_country_codes = self
-            .resp_addrs
-            .iter()
-            .map(|addr| lookup_country_code(locator, *addr))
-            .collect();
-    }
-}
-
-impl ResolveCountryCodes for ExternalDdosFields {
-    fn resolve_country_codes(&mut self, locator: &ip2location::DB) {
-        self.orig_country_codes = self
-            .orig_addrs
-            .iter()
-            .map(|addr| lookup_country_code(locator, *addr))
-            .collect();
-        self.resp_country_code = lookup_country_code(locator, self.resp_addr);
-    }
-}
-
-impl ResolveCountryCodes for BlocklistConnFields {
-    fn resolve_country_codes(&mut self, locator: &ip2location::DB) {
-        self.orig_country_code = lookup_country_code(locator, self.orig_addr);
-        self.resp_country_code = lookup_country_code(locator, self.resp_addr);
-    }
-}
-
-impl ResolveCountryCodes for DnsEventFields {
-    fn resolve_country_codes(&mut self, locator: &ip2location::DB) {
-        self.orig_country_code = lookup_country_code(locator, self.orig_addr);
-        self.resp_country_code = lookup_country_code(locator, self.resp_addr);
-    }
-}
-
-impl ResolveCountryCodes for CryptocurrencyMiningPoolFields {
-    fn resolve_country_codes(&mut self, locator: &ip2location::DB) {
-        self.orig_country_code = lookup_country_code(locator, self.orig_addr);
-        self.resp_country_code = lookup_country_code(locator, self.resp_addr);
-    }
-}
-
-impl ResolveCountryCodes for BlocklistDnsFields {
-    fn resolve_country_codes(&mut self, locator: &ip2location::DB) {
-        self.orig_country_code = lookup_country_code(locator, self.orig_addr);
-        self.resp_country_code = lookup_country_code(locator, self.resp_addr);
-    }
-}
-
-impl ResolveCountryCodes for HttpEventFields {
-    fn resolve_country_codes(&mut self, locator: &ip2location::DB) {
-        self.orig_country_code = lookup_country_code(locator, self.orig_addr);
-        self.resp_country_code = lookup_country_code(locator, self.resp_addr);
-    }
-}
-
-impl ResolveCountryCodes for RepeatedHttpSessionsFields {
-    fn resolve_country_codes(&mut self, locator: &ip2location::DB) {
-        self.orig_country_code = lookup_country_code(locator, self.orig_addr);
-        self.resp_country_code = lookup_country_code(locator, self.resp_addr);
-    }
-}
-
-impl ResolveCountryCodes for HttpThreatFields {
-    fn resolve_country_codes(&mut self, locator: &ip2location::DB) {
-        self.orig_country_code = lookup_country_code(locator, self.orig_addr);
-        self.resp_country_code = lookup_country_code(locator, self.resp_addr);
-    }
-}
-
-impl ResolveCountryCodes for DgaFields {
-    fn resolve_country_codes(&mut self, locator: &ip2location::DB) {
-        self.orig_country_code = lookup_country_code(locator, self.orig_addr);
-        self.resp_country_code = lookup_country_code(locator, self.resp_addr);
-    }
-}
-
-impl ResolveCountryCodes for RdpBruteForceFields {
-    fn resolve_country_codes(&mut self, locator: &ip2location::DB) {
-        self.orig_country_code = lookup_country_code(locator, self.orig_addr);
-        self.resp_country_codes = self
-            .resp_addrs
-            .iter()
-            .map(|addr| lookup_country_code(locator, *addr))
-            .collect();
-    }
-}
-
-impl ResolveCountryCodes for BlocklistRdpFields {
-    fn resolve_country_codes(&mut self, locator: &ip2location::DB) {
-        self.orig_country_code = lookup_country_code(locator, self.orig_addr);
-        self.resp_country_code = lookup_country_code(locator, self.resp_addr);
-    }
-}
-
-impl ResolveCountryCodes for FtpBruteForceFields {
-    fn resolve_country_codes(&mut self, locator: &ip2location::DB) {
-        self.orig_country_code = lookup_country_code(locator, self.orig_addr);
-        self.resp_country_code = lookup_country_code(locator, self.resp_addr);
-    }
-}
-
-impl ResolveCountryCodes for FtpEventFields {
-    fn resolve_country_codes(&mut self, locator: &ip2location::DB) {
-        self.orig_country_code = lookup_country_code(locator, self.orig_addr);
-        self.resp_country_code = lookup_country_code(locator, self.resp_addr);
-    }
-}
-
-impl ResolveCountryCodes for LdapBruteForceFields {
-    fn resolve_country_codes(&mut self, locator: &ip2location::DB) {
-        self.orig_country_code = lookup_country_code(locator, self.orig_addr);
-        self.resp_country_code = lookup_country_code(locator, self.resp_addr);
-    }
-}
-
-impl ResolveCountryCodes for LdapEventFields {
-    fn resolve_country_codes(&mut self, locator: &ip2location::DB) {
-        self.orig_country_code = lookup_country_code(locator, self.orig_addr);
-        self.resp_country_code = lookup_country_code(locator, self.resp_addr);
-    }
-}
-
-impl ResolveCountryCodes for BlocklistSshFields {
-    fn resolve_country_codes(&mut self, locator: &ip2location::DB) {
-        self.orig_country_code = lookup_country_code(locator, self.orig_addr);
-        self.resp_country_code = lookup_country_code(locator, self.resp_addr);
-    }
-}
-
-impl ResolveCountryCodes for BlocklistTlsFields {
-    fn resolve_country_codes(&mut self, locator: &ip2location::DB) {
-        self.orig_country_code = lookup_country_code(locator, self.orig_addr);
-        self.resp_country_code = lookup_country_code(locator, self.resp_addr);
-    }
-}
-
-impl ResolveCountryCodes for BlocklistKerberosFields {
-    fn resolve_country_codes(&mut self, locator: &ip2location::DB) {
-        self.orig_country_code = lookup_country_code(locator, self.orig_addr);
-        self.resp_country_code = lookup_country_code(locator, self.resp_addr);
-    }
-}
-
-impl ResolveCountryCodes for BlocklistSmtpFields {
-    fn resolve_country_codes(&mut self, locator: &ip2location::DB) {
-        self.orig_country_code = lookup_country_code(locator, self.orig_addr);
-        self.resp_country_code = lookup_country_code(locator, self.resp_addr);
-    }
-}
-
-impl ResolveCountryCodes for BlocklistNfsFields {
-    fn resolve_country_codes(&mut self, locator: &ip2location::DB) {
-        self.orig_country_code = lookup_country_code(locator, self.orig_addr);
-        self.resp_country_code = lookup_country_code(locator, self.resp_addr);
-    }
-}
-
-impl ResolveCountryCodes for BlocklistDhcpFields {
-    fn resolve_country_codes(&mut self, locator: &ip2location::DB) {
-        self.orig_country_code = lookup_country_code(locator, self.orig_addr);
-        self.resp_country_code = lookup_country_code(locator, self.resp_addr);
-    }
-}
-
-impl ResolveCountryCodes for BlocklistDceRpcFields {
-    fn resolve_country_codes(&mut self, locator: &ip2location::DB) {
-        self.orig_country_code = lookup_country_code(locator, self.orig_addr);
-        self.resp_country_code = lookup_country_code(locator, self.resp_addr);
-    }
-}
-
-impl ResolveCountryCodes for BlocklistNtlmFields {
-    fn resolve_country_codes(&mut self, locator: &ip2location::DB) {
-        self.orig_country_code = lookup_country_code(locator, self.orig_addr);
-        self.resp_country_code = lookup_country_code(locator, self.resp_addr);
-    }
-}
-
-impl ResolveCountryCodes for BlocklistSmbFields {
-    fn resolve_country_codes(&mut self, locator: &ip2location::DB) {
-        self.orig_country_code = lookup_country_code(locator, self.orig_addr);
-        self.resp_country_code = lookup_country_code(locator, self.resp_addr);
-    }
-}
-
-impl ResolveCountryCodes for BlocklistMqttFields {
-    fn resolve_country_codes(&mut self, locator: &ip2location::DB) {
-        self.orig_country_code = lookup_country_code(locator, self.orig_addr);
-        self.resp_country_code = lookup_country_code(locator, self.resp_addr);
-    }
-}
-
-impl ResolveCountryCodes for BlocklistBootpFields {
-    fn resolve_country_codes(&mut self, locator: &ip2location::DB) {
-        self.orig_country_code = lookup_country_code(locator, self.orig_addr);
-        self.resp_country_code = lookup_country_code(locator, self.resp_addr);
-    }
-}
-
-impl ResolveCountryCodes for BlocklistRadiusFields {
-    fn resolve_country_codes(&mut self, locator: &ip2location::DB) {
-        self.orig_country_code = lookup_country_code(locator, self.orig_addr);
-        self.resp_country_code = lookup_country_code(locator, self.resp_addr);
-    }
-}
-
-impl ResolveCountryCodes for BlocklistMalformedDnsFields {
-    fn resolve_country_codes(&mut self, locator: &ip2location::DB) {
-        self.orig_country_code = lookup_country_code(locator, self.orig_addr);
-        self.resp_country_code = lookup_country_code(locator, self.resp_addr);
-    }
-}
+impl_resolve_country_codes!(
+    PortScanFields,
+    orig: single (orig_addr => orig_country_code),
+    resp: single (resp_addr => resp_country_code),
+);
+impl_resolve_country_codes!(
+    MultiHostPortScanFields,
+    orig: single (orig_addr => orig_country_code),
+    resp: multi (resp_addrs => resp_country_codes),
+);
+impl_resolve_country_codes!(
+    ExternalDdosFields,
+    orig: multi (orig_addrs => orig_country_codes),
+    resp: single (resp_addr => resp_country_code),
+);
+impl_resolve_country_codes!(
+    BlocklistConnFields,
+    orig: single (orig_addr => orig_country_code),
+    resp: single (resp_addr => resp_country_code),
+);
+impl_resolve_country_codes!(
+    DnsEventFields,
+    orig: single (orig_addr => orig_country_code),
+    resp: single (resp_addr => resp_country_code),
+);
+impl_resolve_country_codes!(
+    CryptocurrencyMiningPoolFields,
+    orig: single (orig_addr => orig_country_code),
+    resp: single (resp_addr => resp_country_code),
+);
+impl_resolve_country_codes!(
+    BlocklistDnsFields,
+    orig: single (orig_addr => orig_country_code),
+    resp: single (resp_addr => resp_country_code),
+);
+impl_resolve_country_codes!(
+    HttpEventFields,
+    orig: single (orig_addr => orig_country_code),
+    resp: single (resp_addr => resp_country_code),
+);
+impl_resolve_country_codes!(
+    RepeatedHttpSessionsFields,
+    orig: single (orig_addr => orig_country_code),
+    resp: single (resp_addr => resp_country_code),
+);
+impl_resolve_country_codes!(
+    HttpThreatFields,
+    orig: single (orig_addr => orig_country_code),
+    resp: single (resp_addr => resp_country_code),
+);
+impl_resolve_country_codes!(
+    DgaFields,
+    orig: single (orig_addr => orig_country_code),
+    resp: single (resp_addr => resp_country_code),
+);
+impl_resolve_country_codes!(
+    RdpBruteForceFields,
+    orig: single (orig_addr => orig_country_code),
+    resp: multi (resp_addrs => resp_country_codes),
+);
+impl_resolve_country_codes!(
+    BlocklistRdpFields,
+    orig: single (orig_addr => orig_country_code),
+    resp: single (resp_addr => resp_country_code),
+);
+impl_resolve_country_codes!(
+    FtpBruteForceFields,
+    orig: single (orig_addr => orig_country_code),
+    resp: single (resp_addr => resp_country_code),
+);
+impl_resolve_country_codes!(
+    FtpEventFields,
+    orig: single (orig_addr => orig_country_code),
+    resp: single (resp_addr => resp_country_code),
+);
+impl_resolve_country_codes!(
+    LdapBruteForceFields,
+    orig: single (orig_addr => orig_country_code),
+    resp: single (resp_addr => resp_country_code),
+);
+impl_resolve_country_codes!(
+    LdapEventFields,
+    orig: single (orig_addr => orig_country_code),
+    resp: single (resp_addr => resp_country_code),
+);
+impl_resolve_country_codes!(
+    BlocklistSshFields,
+    orig: single (orig_addr => orig_country_code),
+    resp: single (resp_addr => resp_country_code),
+);
+impl_resolve_country_codes!(
+    BlocklistTlsFields,
+    orig: single (orig_addr => orig_country_code),
+    resp: single (resp_addr => resp_country_code),
+);
+impl_resolve_country_codes!(
+    BlocklistKerberosFields,
+    orig: single (orig_addr => orig_country_code),
+    resp: single (resp_addr => resp_country_code),
+);
+impl_resolve_country_codes!(
+    BlocklistSmtpFields,
+    orig: single (orig_addr => orig_country_code),
+    resp: single (resp_addr => resp_country_code),
+);
+impl_resolve_country_codes!(
+    BlocklistNfsFields,
+    orig: single (orig_addr => orig_country_code),
+    resp: single (resp_addr => resp_country_code),
+);
+impl_resolve_country_codes!(
+    BlocklistDhcpFields,
+    orig: single (orig_addr => orig_country_code),
+    resp: single (resp_addr => resp_country_code),
+);
+impl_resolve_country_codes!(
+    BlocklistDceRpcFields,
+    orig: single (orig_addr => orig_country_code),
+    resp: single (resp_addr => resp_country_code),
+);
+impl_resolve_country_codes!(
+    BlocklistNtlmFields,
+    orig: single (orig_addr => orig_country_code),
+    resp: single (resp_addr => resp_country_code),
+);
+impl_resolve_country_codes!(
+    BlocklistSmbFields,
+    orig: single (orig_addr => orig_country_code),
+    resp: single (resp_addr => resp_country_code),
+);
+impl_resolve_country_codes!(
+    BlocklistMqttFields,
+    orig: single (orig_addr => orig_country_code),
+    resp: single (resp_addr => resp_country_code),
+);
+impl_resolve_country_codes!(
+    BlocklistBootpFields,
+    orig: single (orig_addr => orig_country_code),
+    resp: single (resp_addr => resp_country_code),
+);
+impl_resolve_country_codes!(
+    BlocklistRadiusFields,
+    orig: single (orig_addr => orig_country_code),
+    resp: single (resp_addr => resp_country_code),
+);
+impl_resolve_country_codes!(
+    BlocklistMalformedDnsFields,
+    orig: single (orig_addr => orig_country_code),
+    resp: single (resp_addr => resp_country_code),
+);
+impl_resolve_country_codes!(
+    NetworkThreat,
+    orig: single (orig_addr => orig_country_code),
+    resp: single (resp_addr => resp_country_code),
+);
 
 impl ResolveCountryCodes for UnusualDestinationPatternFields {
     fn resolve_country_codes(&mut self, locator: &ip2location::DB) {
@@ -1317,32 +1353,24 @@ impl ResolveCountryCodes for UnusualDestinationPatternFields {
     }
 }
 
-impl ResolveCountryCodes for NetworkThreat {
-    fn resolve_country_codes(&mut self, locator: &ip2location::DB) {
-        self.orig_country_code = lookup_country_code(locator, self.orig_addr);
-        self.resp_country_code = lookup_country_code(locator, self.resp_addr);
-    }
-}
-
 /// Helper function to migrate event fields from old format to new format
-fn migrate_fields<O, N>(old_data: &[u8], locator: Option<&ip2location::DB>) -> Result<Vec<u8>>
+fn migrate_event_with_country_code<O, N>(
+    old_data: &[u8],
+    locator: Option<&ip2location::DB>,
+) -> Result<Vec<u8>>
 where
     O: serde::de::DeserializeOwned,
     N: serde::Serialize + serde::de::DeserializeOwned + From<O> + ResolveCountryCodes,
 {
     // First try to deserialize as the new format (already migrated)
-    if bincode::DefaultOptions::new()
-        .deserialize::<N>(old_data)
-        .is_ok()
-    {
+    if bincode::deserialize::<N>(old_data).is_ok() {
         // Already in new format, no migration needed
         return Ok(old_data.to_vec());
     }
 
     // Deserialize as old format and convert
-    let old_fields: O = bincode::DefaultOptions::new()
-        .deserialize(old_data)
-        .context("failed to deserialize old event fields")?;
+    let old_fields: O =
+        bincode::deserialize(old_data).context("failed to deserialize old event fields")?;
 
     let mut new_fields: N = old_fields.into();
 
@@ -1351,9 +1379,7 @@ where
         new_fields.resolve_country_codes(loc);
     }
 
-    bincode::DefaultOptions::new()
-        .serialize(&new_fields)
-        .context("failed to serialize new event fields")
+    bincode::serialize(&new_fields).context("failed to serialize new event fields")
 }
 
 /// Recursively creates `path` if not existed, creates the VERSION file
@@ -1414,9 +1440,15 @@ mod tests {
     use std::io::Write;
     use std::path::Path;
 
+    use chrono::{TimeZone, Utc};
     use semver::{Version, VersionReq};
 
-    use super::{COMPATIBLE_VERSION_REQ, create_version_file, migrate_data_dir, read_version_file};
+    use super::migration_structures::DnsEventFieldsV0_43;
+    use super::{
+        COMPATIBLE_VERSION_REQ, create_version_file, migrate_data_dir, migrate_event_country_codes,
+        read_version_file,
+    };
+    use crate::event::{DnsEventFields, EventKind, EventMessage};
     use crate::tables::NETWORK_TAGS;
     use crate::test::{DbGuard, acquire_db_permit};
     use crate::{Indexable, Store};
@@ -2727,125 +2759,63 @@ mod tests {
     }
 
     #[test]
-    fn test_migrate_http_threat_events() {
-        use std::net::IpAddr;
-
-        use bincode::Options;
-
-        use super::migration_structures::HttpThreatFieldsV0_43;
-        use crate::event::{EventKind, HttpThreatFields};
-
-        // Create test directory and database
-        let db_dir = tempfile::tempdir().unwrap();
-        let db_path = db_dir.path().join("states.db");
-
-        let mut opts = rocksdb::Options::default();
-        opts.create_if_missing(true);
-        opts.create_missing_column_families(true);
-
-        let db: rocksdb::OptimisticTransactionDB<rocksdb::SingleThreaded> =
-            rocksdb::OptimisticTransactionDB::open_cf(&opts, &db_path, crate::tables::MAP_NAMES)
-                .unwrap();
-
-        // Create old-format HttpThreatFields with Option<usize> cluster_id
-        let old_event = HttpThreatFieldsV0_43 {
-            time: chrono::Utc::now(),
-            sensor: "test-sensor".to_string(),
-            orig_addr: "192.168.1.1".parse::<IpAddr>().unwrap(),
-            orig_port: 12345,
-            resp_addr: "10.0.0.1".parse::<IpAddr>().unwrap(),
-            resp_port: 80,
-            proto: 6,
-            start_time: 1000,
-            duration: 100,
-            orig_pkts: 10,
-            resp_pkts: 20,
-            orig_l2_bytes: 1000,
-            resp_l2_bytes: 2000,
-            method: "GET".to_string(),
-            host: "example.com".to_string(),
-            uri: "/test".to_string(),
-            referer: String::new(),
-            version: "HTTP/1.1".to_string(),
-            user_agent: "test-agent".to_string(),
-            request_len: 100,
-            response_len: 200,
-            status_code: 200,
-            status_msg: "OK".to_string(),
-            username: String::new(),
-            password: String::new(),
-            cookie: String::new(),
-            content_encoding: String::new(),
-            content_type: "text/html".to_string(),
-            cache_control: String::new(),
-            filenames: vec![],
-            mime_types: vec![],
-            body: vec![],
-            state: String::new(),
-            db_name: "test_db".to_string(),
-            rule_id: 1,
-            matched_to: "test_rule".to_string(),
-            cluster_id: Some(42_usize), // OLD TYPE: Option<usize>
-            attack_kind: "test_attack".to_string(),
+    fn migrate_event_country_codes_sets_default_country_codes() {
+        let schema = TestSchema::new();
+        let old_fields = DnsEventFieldsV0_43 {
+            sensor: "collector1".to_string(),
+            orig_addr: std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
+            orig_port: 10000,
+            resp_addr: std::net::IpAddr::V4(std::net::Ipv4Addr::new(127, 0, 0, 2)),
+            resp_port: 53,
+            proto: 17,
+            start_time: Utc
+                .with_ymd_and_hms(1970, 1, 1, 0, 1, 1)
+                .unwrap()
+                .timestamp_nanos_opt()
+                .unwrap(),
+            duration: 0,
+            orig_pkts: 0,
+            resp_pkts: 0,
+            orig_l2_bytes: 0,
+            resp_l2_bytes: 0,
+            query: "foo.com".to_string(),
+            answer: vec!["10.10.10.10".to_string()],
+            trans_id: 123,
+            rtt: 1,
+            qclass: 0,
+            qtype: 0,
+            rcode: 0,
+            aa_flag: false,
+            tc_flag: false,
+            rd_flag: false,
+            ra_flag: true,
+            ttl: vec![120],
             confidence: 0.9,
-            category: None,
+            category: Some(crate::EventCategory::CommandAndControl),
         };
 
-        // Serialize old-format value
-        let serialized = bincode::DefaultOptions::new()
-            .serialize(&old_event)
-            .unwrap();
+        let event_time = Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap();
+        let serialized = bincode::serialize(&old_fields).unwrap();
+        let message = EventMessage {
+            time: event_time,
+            kind: EventKind::DnsCovertChannel,
+            fields: serialized,
+        };
+        let event_db = schema.store.events();
+        event_db.put(&message).unwrap();
 
-        // Create event key: (timestamp_nanos << 64) | (event_kind << 32) | random_bits
-        // EventKind::HttpThreat = 1
-        let timestamp_nanos = chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0);
-        let event_kind = EventKind::HttpThreat as i32;
-        let random_bits: u32 = 12345;
-        let key_i128: i128 = (i128::from(timestamp_nanos) << 64)
-            | (i128::from(event_kind) << 32)
-            | i128::from(random_bits);
-        let key_bytes = key_i128.to_be_bytes();
+        migrate_event_country_codes(&schema.store, None).unwrap();
 
-        // Store in default column family (where events are stored)
-        db.put(key_bytes, &serialized).unwrap();
-        drop(db);
+        let event_db = schema.store.events();
+        let mut iter = event_db.raw_iter_forward();
+        let (_, value) = iter.next().expect("migrated event");
+        let migrated: DnsEventFields = bincode::deserialize(&value).unwrap();
 
-        // Run the migration
-        super::migrate_http_threat_events(db_dir.path()).unwrap();
+        assert_eq!(migrated.orig_country_code, *b"ZZ");
+        assert_eq!(migrated.resp_country_code, *b"ZZ");
+        assert!(iter.next().is_none());
+        drop(iter);
 
-        // Verify the migration by reading back and checking new format
-        let db: rocksdb::OptimisticTransactionDB<rocksdb::SingleThreaded> =
-            rocksdb::OptimisticTransactionDB::open_cf(&opts, &db_path, crate::tables::MAP_NAMES)
-                .unwrap();
-
-        let value = db.get(key_bytes).unwrap().unwrap();
-        let new_event: HttpThreatFields =
-            bincode::DefaultOptions::new().deserialize(&value).unwrap();
-
-        // Verify the cluster_id was migrated from Option<usize> to Option<u32>
-        assert_eq!(new_event.cluster_id, Some(42_u32));
-        assert_eq!(new_event.sensor, "test-sensor");
-        assert_eq!(new_event.host, "example.com");
-        assert_eq!(new_event.method, "GET");
-    }
-
-    #[test]
-    fn test_migrate_http_threat_events_empty_db() {
-        // Test that migration succeeds when there are no HttpThreat events
-        let db_dir = tempfile::tempdir().unwrap();
-        let db_path = db_dir.path().join("states.db");
-
-        let mut opts = rocksdb::Options::default();
-        opts.create_if_missing(true);
-        opts.create_missing_column_families(true);
-
-        let db: rocksdb::OptimisticTransactionDB<rocksdb::SingleThreaded> =
-            rocksdb::OptimisticTransactionDB::open_cf(&opts, &db_path, crate::tables::MAP_NAMES)
-                .unwrap();
-        drop(db);
-
-        // Run the migration - should succeed with no events
-        let result = super::migrate_http_threat_events(db_dir.path());
-        assert!(result.is_ok());
+        let _ = schema.close();
     }
 }
