@@ -1680,12 +1680,12 @@ mod tests {
     fn blocklist_bootp_fields() -> BlocklistBootpFields {
         BlocklistBootpFields {
             sensor: "sensor".to_string(),
-            orig_country_code: *b"XX",
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             orig_port: 68,
+            orig_country_code: *b"XX",
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
-            resp_country_code: *b"XX",
             resp_port: 67,
+            resp_country_code: *b"XX",
             proto: 17,
             start_time: Utc
                 .with_ymd_and_hms(1970, 1, 1, 0, 0, 0)
@@ -1716,12 +1716,12 @@ mod tests {
     fn blocklist_conn_fields() -> BlocklistConnFields {
         BlocklistConnFields {
             sensor: "collector1".to_string(),
-            orig_country_code: *b"XX",
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             orig_port: 10000,
+            orig_country_code: *b"XX",
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
-            resp_country_code: *b"XX",
             resp_port: 80,
+            resp_country_code: *b"XX",
             proto: 6,
             conn_state: "SAF".to_string(),
             start_time: Utc
@@ -1745,12 +1745,12 @@ mod tests {
     fn blocklist_dcerpc_fields() -> BlocklistDceRpcFields {
         BlocklistDceRpcFields {
             sensor: "sensor".to_string(),
-            orig_country_code: *b"XX",
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             orig_port: 10000,
+            orig_country_code: *b"XX",
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
-            resp_country_code: *b"XX",
             resp_port: 135,
+            resp_country_code: *b"XX",
             proto: 6,
             start_time: Utc
                 .with_ymd_and_hms(1970, 1, 1, 0, 0, 0)
@@ -1772,12 +1772,12 @@ mod tests {
     fn blocklist_dhcp_fields() -> BlocklistDhcpFields {
         BlocklistDhcpFields {
             sensor: "sensor".to_string(),
-            orig_country_code: *b"XX",
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             orig_port: 68,
+            orig_country_code: *b"XX",
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
-            resp_country_code: *b"XX",
             resp_port: 67,
+            resp_country_code: *b"XX",
             proto: 17,
             start_time: Utc
                 .with_ymd_and_hms(1970, 1, 1, 0, 0, 0)
@@ -1817,12 +1817,12 @@ mod tests {
     fn blocklist_dns_fields() -> BlocklistDnsFields {
         BlocklistDnsFields {
             sensor: "sensor".to_string(),
-            orig_country_code: *b"XX",
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             orig_port: 10000,
+            orig_country_code: *b"XX",
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
-            resp_country_code: *b"XX",
             resp_port: 53,
+            resp_country_code: *b"XX",
             proto: 17,
             start_time: Utc
                 .with_ymd_and_hms(1970, 1, 1, 0, 0, 0)
@@ -1854,12 +1854,12 @@ mod tests {
     fn blocklist_http_fields() -> BlocklistHttpFields {
         BlocklistHttpFields {
             sensor: "sensor".to_string(),
-            orig_country_code: *b"XX",
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             orig_port: 10000,
+            orig_country_code: *b"XX",
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
-            resp_country_code: *b"XX",
             resp_port: 80,
+            resp_country_code: *b"XX",
             proto: 6,
             start_time: Utc
                 .with_ymd_and_hms(1970, 1, 1, 0, 0, 0)
@@ -1899,12 +1899,12 @@ mod tests {
     fn blocklist_kerberos_fields() -> BlocklistKerberosFields {
         BlocklistKerberosFields {
             sensor: "sensor".to_string(),
-            orig_country_code: *b"XX",
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             orig_port: 10000,
+            orig_country_code: *b"XX",
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
-            resp_country_code: *b"XX",
             resp_port: 88,
+            resp_country_code: *b"XX",
             proto: 17,
             start_time: Utc
                 .with_ymd_and_hms(1970, 1, 1, 0, 0, 0)
@@ -1933,12 +1933,12 @@ mod tests {
     fn blocklist_mqtt_fields() -> BlocklistMqttFields {
         BlocklistMqttFields {
             sensor: "sensor".to_string(),
-            orig_country_code: *b"XX",
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             orig_port: 10000,
+            orig_country_code: *b"XX",
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
-            resp_country_code: *b"XX",
             resp_port: 1883,
+            resp_country_code: *b"XX",
             proto: 6,
             start_time: Utc
                 .with_ymd_and_hms(1970, 1, 1, 0, 0, 0)
@@ -1964,12 +1964,12 @@ mod tests {
     fn blocklist_nfs_fields() -> BlocklistNfsFields {
         BlocklistNfsFields {
             sensor: "sensor".to_string(),
-            orig_country_code: *b"XX",
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             orig_port: 10000,
+            orig_country_code: *b"XX",
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
-            resp_country_code: *b"XX",
             resp_port: 2049,
+            resp_country_code: *b"XX",
             proto: 6,
             start_time: Utc
                 .with_ymd_and_hms(1970, 1, 1, 0, 0, 0)
@@ -1991,12 +1991,12 @@ mod tests {
     fn blocklist_ntlm_fields() -> BlocklistNtlmFields {
         BlocklistNtlmFields {
             sensor: "sensor".to_string(),
-            orig_country_code: *b"XX",
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             orig_port: 10000,
+            orig_country_code: *b"XX",
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
-            resp_country_code: *b"XX",
             resp_port: 445,
+            resp_country_code: *b"XX",
             proto: 6,
             start_time: Utc
                 .with_ymd_and_hms(1970, 1, 1, 0, 0, 0)
@@ -2021,12 +2021,12 @@ mod tests {
     fn blocklist_rdp_fields() -> BlocklistRdpFields {
         BlocklistRdpFields {
             sensor: "sensor".to_string(),
-            orig_country_code: *b"XX",
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             orig_port: 10000,
+            orig_country_code: *b"XX",
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
-            resp_country_code: *b"XX",
             resp_port: 3389,
+            resp_country_code: *b"XX",
             proto: 6,
             start_time: Utc
                 .with_ymd_and_hms(1970, 1, 1, 0, 0, 0)
@@ -2047,12 +2047,12 @@ mod tests {
     fn blocklist_smb_fields() -> BlocklistSmbFields {
         BlocklistSmbFields {
             sensor: "sensor".to_string(),
-            orig_country_code: *b"XX",
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             orig_port: 10000,
+            orig_country_code: *b"XX",
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
-            resp_country_code: *b"XX",
             resp_port: 445,
+            resp_country_code: *b"XX",
             proto: 6,
             start_time: Utc
                 .with_ymd_and_hms(1970, 1, 1, 0, 0, 0)
@@ -2083,12 +2083,12 @@ mod tests {
     fn blocklist_smtp_fields() -> BlocklistSmtpFields {
         BlocklistSmtpFields {
             sensor: "sensor".to_string(),
-            orig_country_code: *b"XX",
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             orig_port: 10000,
+            orig_country_code: *b"XX",
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
-            resp_country_code: *b"XX",
             resp_port: 25,
+            resp_country_code: *b"XX",
             proto: 6,
             start_time: Utc
                 .with_ymd_and_hms(1970, 1, 1, 0, 0, 0)
@@ -2115,12 +2115,12 @@ mod tests {
     fn blocklist_ssh_fields() -> BlocklistSshFields {
         BlocklistSshFields {
             sensor: "sensor".to_string(),
-            orig_country_code: *b"XX",
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             orig_port: 10000,
+            orig_country_code: *b"XX",
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
-            resp_country_code: *b"XX",
             resp_port: 22,
+            resp_country_code: *b"XX",
             proto: 6,
             start_time: Utc
                 .with_ymd_and_hms(1970, 1, 1, 0, 0, 0)
@@ -2153,12 +2153,12 @@ mod tests {
     fn blocklist_tls_fields() -> BlocklistTlsFields {
         BlocklistTlsFields {
             sensor: "sensor".to_string(),
-            orig_country_code: *b"XX",
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             orig_port: 10000,
+            orig_country_code: *b"XX",
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
-            resp_country_code: *b"XX",
             resp_port: 443,
+            resp_country_code: *b"XX",
             proto: 6,
             start_time: Utc
                 .with_ymd_and_hms(1970, 1, 1, 0, 0, 0)
@@ -2199,12 +2199,12 @@ mod tests {
     fn ldap_event_fields() -> LdapEventFields {
         LdapEventFields {
             sensor: "sensor".to_string(),
-            orig_country_code: *b"XX",
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             orig_port: 10000,
+            orig_country_code: *b"XX",
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
-            resp_country_code: *b"XX",
             resp_port: 389,
+            resp_country_code: *b"XX",
             proto: 6,
             start_time: Utc
                 .with_ymd_and_hms(1970, 1, 1, 0, 1, 1)
@@ -2246,12 +2246,12 @@ mod tests {
 
         FtpEventFields {
             sensor: "collector1".to_string(),
-            orig_country_code: *b"XX",
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             orig_port: 10000,
+            orig_country_code: *b"XX",
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
-            resp_country_code: *b"XX",
             resp_port: 21,
+            resp_country_code: *b"XX",
             proto: 6,
             start_time: Utc
                 .with_ymd_and_hms(1970, 1, 1, 0, 1, 1)
@@ -2274,11 +2274,11 @@ mod tests {
     fn port_scan_fields() -> PortScanFields {
         PortScanFields {
             sensor: String::new(),
-            orig_country_code: *b"XX",
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
+            orig_country_code: *b"XX",
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
-            resp_country_code: *b"XX",
             resp_ports: vec![80, 443, 8000, 8080, 8888, 8443, 9000, 9001, 9002],
+            resp_country_code: *b"XX",
             start_time: Utc
                 .with_ymd_and_hms(1970, 1, 1, 0, 1, 1)
                 .unwrap()
@@ -2298,14 +2298,14 @@ mod tests {
     fn multi_host_port_scan_fields() -> MultiHostPortScanFields {
         MultiHostPortScanFields {
             sensor: String::new(),
-            orig_country_code: *b"XX",
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
+            orig_country_code: *b"XX",
             resp_addrs: vec![
                 IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
                 IpAddr::V4(Ipv4Addr::new(127, 0, 0, 3)),
             ],
-            resp_country_codes: vec![*b"XX", *b"XX"],
             resp_port: 80,
+            resp_country_codes: vec![*b"XX", *b"XX"],
             start_time: Utc
                 .with_ymd_and_hms(1970, 1, 1, 0, 1, 1)
                 .unwrap()
@@ -2351,12 +2351,12 @@ mod tests {
     fn crypto_miining_pool_fields() -> CryptocurrencyMiningPoolFields {
         CryptocurrencyMiningPoolFields {
             sensor: "sensro".to_string(),
-            orig_country_code: *b"XX",
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             orig_port: 10000,
+            orig_country_code: *b"XX",
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
-            resp_country_code: *b"XX",
             resp_port: 53,
+            resp_country_code: *b"XX",
             proto: 17,
             start_time: Utc
                 .with_ymd_and_hms(1970, 1, 1, 0, 1, 1)
@@ -2389,11 +2389,11 @@ mod tests {
     fn ftp_brute_force_fields() -> FtpBruteForceFields {
         FtpBruteForceFields {
             sensor: String::new(),
-            orig_country_code: *b"XX",
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
+            orig_country_code: *b"XX",
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
-            resp_country_code: *b"XX",
             resp_port: 21,
+            resp_country_code: *b"XX",
             proto: 6,
             user_list: vec!["user1".to_string(), "user_2".to_string()],
             start_time: Utc
@@ -2416,12 +2416,12 @@ mod tests {
         let now = chrono::Utc::now().timestamp_nanos_opt().unwrap();
         RepeatedHttpSessionsFields {
             sensor: "sensor".to_string(),
-            orig_country_code: *b"XX",
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             orig_port: 10000,
+            orig_country_code: *b"XX",
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
-            resp_country_code: *b"XX",
             resp_port: 443,
+            resp_country_code: *b"XX",
             proto: 6,
             start_time: now,
             end_time: now,
@@ -2433,12 +2433,12 @@ mod tests {
     fn dga_fields() -> DgaFields {
         DgaFields {
             sensor: "sensor".to_string(),
-            orig_country_code: *b"XX",
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             orig_port: 10000,
+            orig_country_code: *b"XX",
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
-            resp_country_code: *b"XX",
             resp_port: 80,
+            resp_country_code: *b"XX",
             proto: 6,
             start_time: Utc
                 .with_ymd_and_hms(1970, 1, 1, 0, 0, 0)
@@ -2478,12 +2478,12 @@ mod tests {
     fn http_event_fields() -> HttpEventFields {
         HttpEventFields {
             sensor: "sensor".to_string(),
-            orig_country_code: *b"XX",
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             orig_port: 10000,
+            orig_country_code: *b"XX",
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
-            resp_country_code: *b"XX",
             resp_port: 80,
+            resp_country_code: *b"XX",
             proto: 6,
             start_time: Utc
                 .with_ymd_and_hms(1970, 1, 1, 0, 1, 1)
@@ -2523,11 +2523,11 @@ mod tests {
     fn ldap_brute_force_fields() -> LdapBruteForceFields {
         LdapBruteForceFields {
             sensor: String::new(),
-            orig_country_code: *b"XX",
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
+            orig_country_code: *b"XX",
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
-            resp_country_code: *b"XX",
             resp_port: 389,
+            resp_country_code: *b"XX",
             proto: 6,
             user_pw_list: vec![
                 ("user1".to_string(), "pw1".to_string()),
@@ -2551,8 +2551,8 @@ mod tests {
     fn rdp_brute_force_fields() -> RdpBruteForceFields {
         RdpBruteForceFields {
             sensor: String::new(),
-            orig_country_code: *b"XX",
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
+            orig_country_code: *b"XX",
             resp_addrs: vec![
                 IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
                 IpAddr::V4(Ipv4Addr::new(127, 0, 0, 3)),
@@ -2577,12 +2577,12 @@ mod tests {
     fn dns_event_fields() -> DnsEventFields {
         DnsEventFields {
             sensor: "sensor".to_string(),
-            orig_country_code: *b"XX",
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             orig_port: 10000,
+            orig_country_code: *b"XX",
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
-            resp_country_code: *b"XX",
             resp_port: 53,
+            resp_country_code: *b"XX",
             proto: 17,
             start_time: Utc
                 .with_ymd_and_hms(1970, 1, 1, 0, 1, 1)
@@ -2615,12 +2615,12 @@ mod tests {
         NetworkThreat {
             time: Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap(),
             sensor: "sensor".to_string(),
-            orig_country_code: *b"XX",
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             orig_port: 10000,
+            orig_country_code: *b"XX",
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
-            resp_country_code: *b"XX",
             resp_port: 80,
+            resp_country_code: *b"XX",
             proto: 6,
             service: "http".to_string(),
             start_time: Utc.with_ymd_and_hms(1970, 1, 1, 0, 0, 0).unwrap(),
@@ -2685,12 +2685,12 @@ mod tests {
         HttpThreatFields {
             time: Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap(),
             sensor: "sensor".to_string(),
-            orig_country_code: *b"XX",
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             orig_port: 10000,
+            orig_country_code: *b"XX",
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
-            resp_country_code: *b"XX",
             resp_port: 80,
+            resp_country_code: *b"XX",
             proto: 6,
             start_time: Utc
                 .with_ymd_and_hms(1970, 1, 1, 0, 0, 0)
@@ -2734,12 +2734,12 @@ mod tests {
     fn blocklist_radius_fields() -> BlocklistRadiusFields {
         BlocklistRadiusFields {
             sensor: "sensor".to_string(),
-            orig_country_code: *b"XX",
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             orig_port: 10000,
+            orig_country_code: *b"XX",
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
-            resp_country_code: *b"XX",
             resp_port: 1812,
+            resp_country_code: *b"XX",
             proto: 17,
             start_time: Utc
                 .with_ymd_and_hms(1970, 1, 1, 0, 0, 0)
@@ -2773,12 +2773,12 @@ mod tests {
     fn blocklist_malformed_dns_fields() -> BlocklistMalformedDnsFields {
         BlocklistMalformedDnsFields {
             sensor: "sensor".to_string(),
-            orig_country_code: *b"XX",
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             orig_port: 10000,
+            orig_country_code: *b"XX",
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
-            resp_country_code: *b"XX",
             resp_port: 53,
+            resp_country_code: *b"XX",
             proto: 17,
             start_time: Utc
                 .with_ymd_and_hms(1970, 1, 1, 0, 0, 0)
