@@ -559,12 +559,8 @@ pub trait Indexed {
             };
 
             let new_entry = new.apply(entry.into());
-            txn.put_cf(
-                self.cf(),
-                new_key,
-                new_entry.context("invalid update")?.value(),
-            )
-            .context("failed to write updated entry")?;
+            txn.put_cf(self.cf(), new_key, new_entry?.value())
+                .context("failed to write updated entry")?;
             txn.put_cf(
                 self.cf(),
                 [],
@@ -653,12 +649,8 @@ pub trait Indexed {
         };
 
         let new_entry = new.apply(entry.into());
-        txn.put_cf(
-            self.cf(),
-            new_key,
-            new_entry.context("invalid update")?.value(),
-        )
-        .context("failed to write updated entry")?;
+        txn.put_cf(self.cf(), new_key, new_entry?.value())
+            .context("failed to write updated entry")?;
         txn.put_cf(
             self.cf(),
             [],
