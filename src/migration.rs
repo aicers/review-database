@@ -838,18 +838,14 @@ mod tests {
         };
 
         let start_version = Version::parse(START_VERSION).unwrap();
-        if current_base.major != start_version.major {
-            assert!(
-                false,
-                "`START_VERSION` must be updated for major version bump (current {current_base}, start {start_version})"
-            );
-        }
-        if current_base.minor < start_version.minor {
-            assert!(
-                false,
-                "`START_VERSION` {start_version} is ahead of current {current_base}; please correct it"
-            );
-        }
+        assert!(
+            current_base.major == start_version.major,
+            "`START_VERSION` must be updated for major version bump (current {current_base}, start {start_version})"
+        );
+        assert!(
+            current_base.minor >= start_version.minor,
+            "`START_VERSION` {start_version} is ahead of current {current_base}; please correct it"
+        );
 
         for minor in start_version.minor..=current_base.minor {
             let version = if minor == current_base.minor {
