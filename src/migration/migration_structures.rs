@@ -106,99 +106,6 @@ pub(crate) struct NetworkValueV0_43 {
 }
 
 // ============================================================================
-// Migration structures for cluster_id/model_id type unification (0.43 -> 0.44)
-// ============================================================================
-
-/// Key structure for `Cluster` table from version 0.43.x
-/// In 0.43.x, `cluster_id` was `i32`. From 0.44.x, it changed to `u32`.
-pub(crate) struct ClusterKeyV0_43 {
-    pub(crate) model_id: u32,
-    pub(crate) cluster_id: i32,
-}
-
-impl ClusterKeyV0_43 {
-    pub(crate) fn from_be_bytes(buf: &[u8]) -> Self {
-        let (val, rest) = buf.split_at(std::mem::size_of::<u32>());
-        let mut arr = [0; std::mem::size_of::<u32>()];
-        arr.copy_from_slice(val);
-        let model_id = u32::from_be_bytes(arr);
-
-        let mut arr = [0; std::mem::size_of::<i32>()];
-        arr.copy_from_slice(rest);
-        let cluster_id = i32::from_be_bytes(arr);
-
-        Self {
-            model_id,
-            cluster_id,
-        }
-    }
-}
-
-/// Key structure for `TimeSeries` table from version 0.43.x
-/// In 0.43.x, `cluster_id` was `i32`. From 0.44.x, it changed to `u32`.
-pub(crate) struct TimeSeriesKeyV0_43 {
-    pub(crate) model_id: u32,
-    pub(crate) cluster_id: i32,
-    pub(crate) time: i64,
-    pub(crate) value: i64,
-    pub(crate) count_index: Option<i32>,
-}
-
-impl TimeSeriesKeyV0_43 {
-    pub(crate) fn from_bytes(buf: &[u8]) -> Self {
-        let (val, rest) = buf.split_at(std::mem::size_of::<u32>());
-        let mut arr = [0; std::mem::size_of::<u32>()];
-        arr.copy_from_slice(val);
-        let model_id = u32::from_be_bytes(arr);
-
-        let (val, rest) = rest.split_at(std::mem::size_of::<i32>());
-        let mut arr = [0; std::mem::size_of::<i32>()];
-        arr.copy_from_slice(val);
-        let cluster_id = i32::from_be_bytes(arr);
-
-        let (val, rest) = rest.split_at(std::mem::size_of::<i64>());
-        let mut arr = [0; std::mem::size_of::<i64>()];
-        arr.copy_from_slice(val);
-        let time = i64::from_be_bytes(arr);
-
-        let (val, rest) = rest.split_at(std::mem::size_of::<i64>());
-        arr.copy_from_slice(val);
-        let value = i64::from_be_bytes(arr);
-
-        let count_index = if rest.is_empty() {
-            None
-        } else {
-            let mut arr = [0; std::mem::size_of::<i32>()];
-            arr.copy_from_slice(rest);
-            Some(i32::from_be_bytes(arr))
-        };
-
-        Self {
-            model_id,
-            cluster_id,
-            time,
-            value,
-            count_index,
-        }
-    }
-
-    pub(crate) fn to_new_key_bytes(&self) -> Vec<u8> {
-        let mut buf = Vec::new();
-        buf.extend(self.model_id.to_be_bytes());
-        // Convert i32 cluster_id to u32
-        #[allow(clippy::cast_sign_loss)]
-        let cluster_id_u32 = self.cluster_id as u32;
-        buf.extend(cluster_id_u32.to_be_bytes());
-        buf.extend(self.time.to_be_bytes());
-        buf.extend(self.value.to_be_bytes());
-        if let Some(count_index) = self.count_index {
-            buf.extend(count_index.to_be_bytes());
-        }
-        buf
-    }
-}
-
-// ============================================================================
 // Old event structures for migration (cluster_id: Option<usize> -> Option<u32>)
 // ============================================================================
 
@@ -207,10 +114,12 @@ use std::net::IpAddr;
 use chrono::serde::ts_nanoseconds;
 
 use crate::EventCategory;
-use crate::event::TriageScore;
 
 /// `HttpThreatFields` structure from version 0.43.x (before `cluster_id` type change)
 /// In 0.43.x, `cluster_id` was `Option<usize>`. From 0.44.x, it changed to `Option<u32>`.
+///
+/// Note: Other event types (`NetworkThreat`, `WindowsThreat`, `ExtraThreat`) are not generated
+/// on production servers, so their migration structures are not needed.
 #[derive(Debug, Deserialize, Serialize)]
 pub(crate) struct HttpThreatFieldsV0_43 {
     #[serde(with = "ts_nanoseconds")]
@@ -254,76 +163,4 @@ pub(crate) struct HttpThreatFieldsV0_43 {
     pub attack_kind: String,
     pub confidence: f32,
     pub category: Option<EventCategory>,
-}
-
-/// `NetworkThreat` structure from version 0.43.x (before `cluster_id` type change)
-#[derive(Debug, Deserialize, Serialize)]
-pub(crate) struct NetworkThreatV0_43 {
-    #[serde(with = "ts_nanoseconds")]
-    pub time: DateTime<Utc>,
-    pub sensor: String,
-    pub orig_addr: IpAddr,
-    pub orig_port: u16,
-    pub resp_addr: IpAddr,
-    pub resp_port: u16,
-    pub proto: u8,
-    pub service: String,
-    #[serde(with = "ts_nanoseconds")]
-    pub start_time: DateTime<Utc>,
-    pub duration: i64,
-    pub orig_pkts: u64,
-    pub resp_pkts: u64,
-    pub orig_l2_bytes: u64,
-    pub resp_l2_bytes: u64,
-    pub content: String,
-    pub db_name: String,
-    pub rule_id: u32,
-    pub matched_to: String,
-    pub cluster_id: Option<usize>, // OLD TYPE
-    pub attack_kind: String,
-    pub confidence: f32,
-    pub category: Option<EventCategory>,
-    pub triage_scores: Option<Vec<TriageScore>>,
-}
-
-/// `WindowsThreat` structure from version 0.43.x (before `cluster_id` type change)
-#[derive(Debug, Deserialize, Serialize)]
-pub(crate) struct WindowsThreatV0_43 {
-    #[serde(with = "ts_nanoseconds")]
-    pub time: DateTime<Utc>,
-    pub sensor: String,
-    pub service: String,
-    pub agent_name: String,
-    pub agent_id: String,
-    pub process_guid: String,
-    pub process_id: u32,
-    pub image: String,
-    pub user: String,
-    pub content: String,
-    pub db_name: String,
-    pub rule_id: u32,
-    pub matched_to: String,
-    pub cluster_id: Option<usize>, // OLD TYPE
-    pub attack_kind: String,
-    pub confidence: f32,
-    pub category: Option<EventCategory>,
-    pub triage_scores: Option<Vec<TriageScore>>,
-}
-
-/// `ExtraThreat` structure from version 0.43.x (before `cluster_id` type change)
-#[derive(Debug, Deserialize, Serialize)]
-pub(crate) struct ExtraThreatV0_43 {
-    #[serde(with = "ts_nanoseconds")]
-    pub time: DateTime<Utc>,
-    pub sensor: String,
-    pub service: String,
-    pub content: String,
-    pub db_name: String,
-    pub rule_id: u32,
-    pub matched_to: String,
-    pub cluster_id: Option<usize>, // OLD TYPE
-    pub attack_kind: String,
-    pub confidence: f32,
-    pub category: Option<EventCategory>,
-    pub triage_scores: Option<Vec<TriageScore>>,
 }
