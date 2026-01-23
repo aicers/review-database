@@ -17,9 +17,9 @@ use crate::{
     AllowNetwork, BlockNetwork, Customer,
     event::{EventKind, HttpThreatFields},
     migration::migration_structures::{
-        AllowNetworkV0_42, BlockNetworkV0_42, HttpThreatFieldsV0_43,
+        AllowNetworkV0_42, BlockNetworkV0_42, HttpThreatFieldsV0_43, ModelIndicatorValueV0_43,
     },
-    tables::NETWORK_TAGS,
+    tables::{MODEL_INDICATORS, NETWORK_TAGS},
 };
 
 /// The range of versions that use the current database format.
@@ -249,6 +249,11 @@ fn migrate_0_43_to_0_44(data_dir: &Path) -> Result<()> {
 
     // Migrate Network table to enforce global name uniqueness
     migrate_network_cf(data_dir)?;
+
+    // Migrate ModelIndicator with model_id from i32 to u32
+    // Note: ModelIndicator::Value is serialized using bincode::DefaultOptions (varint),
+    // so the i32→u32 change is NOT byte-compatible for non-zero values.
+    migrate_model_indicators(data_dir)?;
 
     // Migrate HttpThreat events with cluster_id from Option<usize> to Option<u32>
     // Note: Cluster and TimeSeries table migrations are not needed because the
@@ -836,6 +841,92 @@ fn migrate_network_cf_inner(
     Ok(())
 }
 
+/// Migrates `ModelIndicator` entries with `model_id` from `i32` to `u32`.
+///
+/// This migration handles the serialization change for `ModelIndicator::Value`.
+/// Since bincode's `DefaultOptions` uses varint encoding, the i32→u32 change
+/// is NOT byte-compatible for non-zero values, requiring migration.
+fn migrate_model_indicators(dir: &Path) -> Result<()> {
+    let db_path = dir.join("states.db");
+
+    let mut opts = rocksdb::Options::default();
+    opts.create_if_missing(false);
+    opts.create_missing_column_families(false);
+
+    let db: rocksdb::OptimisticTransactionDB<rocksdb::SingleThreaded> =
+        rocksdb::OptimisticTransactionDB::open_cf(&opts, &db_path, crate::tables::MAP_NAMES)
+            .context("Failed to open database for ModelIndicator migration")?;
+
+    let cf = db
+        .cf_handle(MODEL_INDICATORS)
+        .ok_or_else(|| anyhow!("model indicators column family not found"))?;
+
+    let mut migrated_count = 0usize;
+    let mut errors = 0usize;
+
+    // Collect entries to migrate
+    let mut entries_to_update: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
+
+    for item in db.iterator_cf(cf, rocksdb::IteratorMode::Start) {
+        let (key, value) = item.context("failed to read model indicator entry")?;
+
+        // Try to deserialize with old format
+        if let Ok(old) =
+            bincode::DefaultOptions::new().deserialize::<ModelIndicatorValueV0_43>(&value)
+        {
+            // Convert to new format
+            #[derive(serde::Serialize)]
+            struct NewValue {
+                description: String,
+                model_id: u32,
+                tokens: std::collections::HashSet<Vec<String>>,
+                #[serde(with = "chrono::serde::ts_seconds")]
+                last_modification_time: chrono::DateTime<chrono::Utc>,
+            }
+
+            let new_value = NewValue {
+                description: old.description,
+                model_id: u32::try_from(old.model_id).unwrap_or(0),
+                tokens: old.tokens,
+                last_modification_time: old.last_modification_time,
+            };
+
+            if let Ok(serialized) = bincode::DefaultOptions::new().serialize(&new_value) {
+                entries_to_update.push((key.to_vec(), serialized));
+                migrated_count += 1;
+            } else {
+                errors += 1;
+            }
+        } else {
+            // If we couldn't deserialize with old format, it might already be in the new format
+            errors += 1;
+        }
+    }
+
+    if !entries_to_update.is_empty() {
+        let txn = db.transaction();
+        for (key, new_value) in &entries_to_update {
+            txn.put_cf(cf, key, new_value)?;
+        }
+        txn.commit()
+            .context("failed to commit ModelIndicator migration")?;
+    }
+
+    if errors > 0 {
+        info!(
+            "ModelIndicator migration: migrated {} entries, {} entries skipped (possibly already migrated)",
+            migrated_count, errors
+        );
+    } else {
+        info!(
+            "Migrated {} ModelIndicator entries with model_id type change",
+            migrated_count
+        );
+    }
+
+    Ok(())
+}
+
 /// Migrates `HttpThreat` events with `cluster_id` from `Option<usize>` to `Option<u32>`.
 ///
 /// This migration handles the serialization change for `HttpThreat` events.
@@ -846,6 +937,9 @@ fn migrate_network_cf_inner(
 /// on production servers, so their migration is unnecessary.
 fn migrate_http_threat_events(dir: &Path) -> Result<()> {
     use num_traits::FromPrimitive;
+
+    /// Number of records to commit per transaction batch to bound memory usage.
+    const BATCH_SIZE: usize = 100;
 
     let db_path = dir.join("states.db");
 
@@ -859,8 +953,8 @@ fn migrate_http_threat_events(dir: &Path) -> Result<()> {
 
     // Events are stored in the default column family
     let mut migrated_count = 0usize;
-    let mut entries_to_update: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
     let mut errors = 0usize;
+    let mut batch: Vec<(Vec<u8>, Vec<u8>)> = Vec::with_capacity(BATCH_SIZE);
 
     for item in db.iterator(rocksdb::IteratorMode::Start) {
         let (key, value) = item.context("failed to read event entry")?;
@@ -883,8 +977,18 @@ fn migrate_http_threat_events(dir: &Path) -> Result<()> {
         // Only migrate HttpThreat events
         if event_kind == EventKind::HttpThreat {
             if let Some(new_val) = migrate_http_threat_fields(&value) {
-                entries_to_update.push((key.to_vec(), new_val));
+                batch.push((key.to_vec(), new_val));
                 migrated_count += 1;
+
+                // Commit batch when it reaches BATCH_SIZE
+                if batch.len() >= BATCH_SIZE {
+                    let txn = db.transaction();
+                    for (k, v) in batch.drain(..) {
+                        txn.put(&k, &v)?;
+                    }
+                    txn.commit()
+                        .context("failed to commit HttpThreat event migration batch")?;
+                }
             } else {
                 // If we couldn't migrate, it might already be in the new format
                 // or there was an error. We'll count it but not fail the migration.
@@ -893,13 +997,14 @@ fn migrate_http_threat_events(dir: &Path) -> Result<()> {
         }
     }
 
-    if !entries_to_update.is_empty() {
+    // Commit any remaining entries in the final batch
+    if !batch.is_empty() {
         let txn = db.transaction();
-        for (key, new_value) in &entries_to_update {
-            txn.put(key, new_value)?;
+        for (k, v) in batch.drain(..) {
+            txn.put(&k, &v)?;
         }
         txn.commit()
-            .context("failed to commit HttpThreat event migration")?;
+            .context("failed to commit final HttpThreat event migration batch")?;
     }
 
     if errors > 0 {
