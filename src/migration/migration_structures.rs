@@ -111,9 +111,23 @@ pub(crate) struct NetworkValueV0_43 {
 
 use std::net::IpAddr;
 
-use chrono::serde::ts_nanoseconds;
+use chrono::serde::{ts_nanoseconds, ts_seconds};
 
 use crate::EventCategory;
+
+/// `ModelIndicator::Value` structure from version 0.43.x (before `model_id` type change)
+/// In 0.43.x, `model_id` was `i32`. From 0.44.x, it changed to `u32`.
+///
+/// Since `ModelIndicator::Value` is serialized using `bincode::DefaultOptions` (varint encoding),
+/// the i32→u32 change is NOT byte-compatible for non-zero values, requiring migration.
+#[derive(Deserialize, Serialize)]
+pub(crate) struct ModelIndicatorValueV0_43 {
+    pub description: String,
+    pub model_id: i32,
+    pub tokens: std::collections::HashSet<Vec<String>>,
+    #[serde(with = "ts_seconds")]
+    pub last_modification_time: DateTime<Utc>,
+}
 
 /// `HttpThreatFields` structure from version 0.43.x (before `cluster_id` type change)
 /// In 0.43.x, `cluster_id` was `Option<usize>`. From 0.44.x, it changed to `Option<u32>`.

@@ -26,13 +26,17 @@ Versioning](https://semver.org/spec/v2.0.0.html).
     `csv_column_extra`
   - `TopColumnsOfCluster::cluster_id` changed from `i32` to `u32`
   - `ModelIndicator` serialization now uses `u32` for `model_id`
-  - Data migration is automatically performed for `HttpThreat` events with
-    `cluster_id` field serialization change from `Option<usize>` to
-    `Option<u32>`. No migration is needed for `Cluster` and `TimeSeries` tables
-    because the big-endian byte representation is identical between `i32` and
-    `u32` for non-negative values. Other event types (`NetworkThreat`,
-    `WindowsThreat`, `ExtraThreat`) are not generated on production servers and
-    do not require migration.
+  - Data migration is automatically performed for:
+    - `ModelIndicator` entries with `model_id` field serialization change from
+      `i32` to `u32` (bincode varint encoding is not byte-compatible between
+      signed and unsigned types for non-zero values)
+    - `HttpThreat` events with `cluster_id` field serialization change from
+      `Option<usize>` to `Option<u32>`
+  - No migration is needed for `Cluster` and `TimeSeries` tables because the
+    big-endian byte representation is identical between `i32` and `u32` for
+    non-negative values. Other event types (`NetworkThreat`, `WindowsThreat`,
+    `ExtraThreat`) are not generated on production servers and do not require
+    migration.
 - Changed `Store::network_tag_set` signature to require a `customer_id: u32`
   parameter and now returns `CustomerTagSet` instead of `TagSet<NetworkTagId>`.
   Existing network tags are automatically migrated to be associated with the
