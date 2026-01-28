@@ -1430,9 +1430,9 @@ mod tests {
     use chrono::{TimeZone, Utc};
     use semver::{Version, VersionReq};
 
-    use super::{COMPATIBLE_VERSION_REQ, create_version_file, migrate_data_dir, read_version_file};
     use super::migrate_event_country_codes;
     use super::migration_structures::DnsEventFieldsV0_43;
+    use super::{COMPATIBLE_VERSION_REQ, create_version_file, migrate_data_dir, read_version_file};
     use crate::event::{DnsEventFields, EventKind, EventMessage};
     use crate::tables::NETWORK_TAGS;
     use crate::test::{DbGuard, acquire_db_permit};
