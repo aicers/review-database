@@ -1461,7 +1461,7 @@ mod tests {
         write_version(backup_dir.path(), current_version);
 
         // This should succeed without calling any migration
-        let result = migrate_data_dir(data_dir.path(), backup_dir.path());
+        let result = migrate_data_dir(data_dir.path(), backup_dir.path(), None);
         assert!(result.is_ok());
 
         // VERSION should remain unchanged
@@ -1486,7 +1486,7 @@ mod tests {
         write_version(data_dir.path(), &data_version.to_string());
         write_version(backup_dir.path(), &backup_version.to_string());
 
-        let result = migrate_data_dir(data_dir.path(), backup_dir.path());
+        let result = migrate_data_dir(data_dir.path(), backup_dir.path(), None);
 
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
@@ -1503,7 +1503,7 @@ mod tests {
 
         // Don't write any VERSION files - directories are empty
 
-        let result = migrate_data_dir(data_dir.path(), backup_dir.path());
+        let result = migrate_data_dir(data_dir.path(), backup_dir.path(), None);
 
         // Should succeed (empty dir gets current version)
         assert!(result.is_ok());
@@ -1530,7 +1530,7 @@ mod tests {
         // Also need a file in backup to prevent it from being treated as empty
         write_version(backup_dir.path(), env!("CARGO_PKG_VERSION"));
 
-        let result = migrate_data_dir(data_dir.path(), backup_dir.path());
+        let result = migrate_data_dir(data_dir.path(), backup_dir.path(), None);
 
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
@@ -1548,7 +1548,7 @@ mod tests {
         assert!(!data_dir.exists());
         assert!(!backup_dir.exists());
 
-        let result = migrate_data_dir(&data_dir, &backup_dir);
+        let result = migrate_data_dir(&data_dir, &backup_dir, None);
 
         // Should succeed
         assert!(result.is_ok());
@@ -1572,7 +1572,7 @@ mod tests {
         write_version(data_dir.path(), "0.30.0");
         write_version(backup_dir.path(), "0.30.0");
 
-        let result = migrate_data_dir(data_dir.path(), backup_dir.path());
+        let result = migrate_data_dir(data_dir.path(), backup_dir.path(), None);
 
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
@@ -1662,7 +1662,7 @@ mod tests {
             write_version(data_dir.path(), &version.to_string());
             write_version(backup_dir.path(), &version.to_string());
 
-            let result = migrate_data_dir(data_dir.path(), backup_dir.path());
+            let result = migrate_data_dir(data_dir.path(), backup_dir.path(), None);
             assert!(result.is_ok(), "Migration should succeed from {version}");
 
             let data_version = read_version_file(&data_dir.path().join("VERSION")).unwrap();
@@ -1693,7 +1693,7 @@ mod tests {
         write_version(backup_dir.path(), "0.42.0");
 
         // Run the migration
-        let result = migrate_data_dir(data_dir.path(), backup_dir.path());
+        let result = migrate_data_dir(data_dir.path(), backup_dir.path(), None);
         assert!(result.is_ok(), "Migration should succeed");
 
         // Verify database opens with the current column families

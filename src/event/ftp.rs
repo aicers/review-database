@@ -6,10 +6,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use super::{EventCategory, LearningMethod, MEDIUM, TriageScore, common::Match};
-use crate::{
-    event::common::{AttrValue, triage_scores_to_string},
-    types::EventCategoryV0_41,
-};
+use crate::event::common::{AttrValue, triage_scores_to_string};
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct FtpCommand {
@@ -207,40 +204,6 @@ pub struct FtpBruteForceFieldsV0_44 {
     pub category: Option<EventCategory>,
 }
 
-impl From<FtpBruteForceFieldsV0_41> for FtpBruteForceFieldsV0_44 {
-    fn from(value: FtpBruteForceFieldsV0_41) -> Self {
-        Self {
-            sensor: String::new(),
-            orig_addr: value.src_addr,
-            orig_country_code: *b"XX",
-            resp_addr: value.dst_addr,
-            resp_port: value.dst_port,
-            resp_country_code: *b"XX",
-            proto: value.proto,
-            user_list: value.user_list,
-            start_time: value.start_time.timestamp_nanos_opt().unwrap_or_default(),
-            end_time: value.end_time.timestamp_nanos_opt().unwrap_or_default(),
-            is_internal: value.is_internal,
-            confidence: value.confidence,
-            category: value.category.into(),
-        }
-    }
-}
-
-#[derive(Serialize, Deserialize)]
-pub(crate) struct FtpBruteForceFieldsV0_41 {
-    pub sensor: String,
-    pub src_addr: IpAddr,
-    pub dst_addr: IpAddr,
-    pub dst_port: u16,
-    pub proto: u8,
-    pub user_list: Vec<String>,
-    pub start_time: DateTime<Utc>,
-    pub end_time: DateTime<Utc>,
-    pub is_internal: bool,
-    pub confidence: f32,
-    pub category: EventCategoryV0_41,
-}
 #[derive(Serialize, Deserialize)]
 pub struct FtpBruteForce {
     pub sensor: String,
