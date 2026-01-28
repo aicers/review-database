@@ -100,7 +100,7 @@ use crate::{
 /// // release that involves database format change) to 3.5.0, including
 /// // all alpha changes finalized in 3.5.0.
 /// ```
-const COMPATIBLE_VERSION_REQ: &str = ">=0.44.0-alpha.1,<0.44.0-alpha.2";
+const COMPATIBLE_VERSION_REQ: &str = ">=0.44.0-alpha.2,<0.44.0-alpha.3";
 
 /// Migrates the data directory to the up-to-date format if necessary.
 ///
@@ -154,8 +154,8 @@ pub fn migrate_data_dir<P: AsRef<Path>>(data_dir: P, backup_dir: P) -> Result<()
             migrate_0_42_to_0_43,
         ),
         (
-            VersionReq::parse(">=0.43.0,<0.44.0-alpha.1")?,
-            Version::parse("0.44.0-alpha.1")?,
+            VersionReq::parse(">=0.43.0,<0.44.0-alpha.2")?,
+            Version::parse("0.44.0-alpha.2")?,
             migrate_0_43_to_0_44,
         ),
     ];
