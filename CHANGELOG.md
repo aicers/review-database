@@ -7,6 +7,14 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- Added validation to prevent duplicate network ranges within a customer's
+  network list. When adding or updating networks under a Customer, the system
+  now rejects entries if any two networks have the same `network_group` value.
+  The new `IndexedTable<Customer>::insert` method validates on creation, and
+  the `Update::apply` method validates on updates.
+
 ### Changed
 
 - Changed `Store::network_tag_set` signature to require a `customer_id: u32`
