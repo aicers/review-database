@@ -100,7 +100,7 @@ use crate::{
 /// // release that involves database format change) to 3.5.0, including
 /// // all alpha changes finalized in 3.5.0.
 /// ```
-const COMPATIBLE_VERSION_REQ: &str = ">=0.44.0-alpha.1,<0.44.0-alpha.2";
+const COMPATIBLE_VERSION_REQ: &str = ">=0.44.0-alpha.2,<0.44.0-alpha.3";
 
 /// Migrates the data directory to the up-to-date format if necessary.
 ///
@@ -154,8 +154,8 @@ pub fn migrate_data_dir<P: AsRef<Path>>(data_dir: P, backup_dir: P) -> Result<()
             migrate_0_42_to_0_43,
         ),
         (
-            VersionReq::parse(">=0.43.0,<0.44.0-alpha.1")?,
-            Version::parse("0.44.0-alpha.1")?,
+            VersionReq::parse(">=0.43.0,<0.44.0-alpha.2")?,
+            Version::parse("0.44.0-alpha.2")?,
             migrate_0_43_to_0_44,
         ),
     ];
@@ -243,6 +243,9 @@ fn migrate_0_42_to_0_43(data_dir: &Path) -> Result<()> {
 fn migrate_0_43_to_0_44(data_dir: &Path) -> Result<()> {
     // Migrate network tags to customer-scoped format
     migrate_network_tags_to_customer_scoped(data_dir)?;
+
+    // Migrate Network table to enforce global name uniqueness
+    migrate_network_cf(data_dir)?;
 
     Ok(())
 }
@@ -580,6 +583,244 @@ fn migrate_network_tags_to_customer_scoped(dir: &Path) -> Result<()> {
         "Successfully migrated {} network tags to customer-scoped format",
         tags_to_migrate.len()
     );
+
+    Ok(())
+}
+
+/// Migrates the Network table from 0.43 to 0.44.
+///
+/// This migration:
+/// 1. Reads all existing Network entries (old format: key = name + id, value without id)
+/// 2. Deduplicates by name, keeping only the entry with the smallest id
+/// 3. Clears the network column family
+/// 4. Re-inserts networks with new format: key = name only, value contains id (no `customer_ids`)
+fn migrate_network_cf(data_dir: &Path) -> Result<()> {
+    use crate::tables::MAP_NAMES;
+
+    let db_path = data_dir.join("states.db");
+
+    info!("Migrating Network table to enforce global name uniqueness");
+
+    let mut opts = rocksdb::Options::default();
+    opts.create_if_missing(false);
+    opts.create_missing_column_families(false);
+
+    migrate_network_cf_inner(&db_path, &opts, &MAP_NAMES)?;
+
+    info!("Successfully migrated Network table");
+    Ok(())
+}
+
+/// Migrates the network column family in a single database.
+#[allow(clippy::items_after_statements)]
+fn migrate_network_cf_inner(
+    db_path: &Path,
+    opts: &rocksdb::Options,
+    cf_names: &[&str],
+) -> Result<()> {
+    use std::collections::HashMap;
+    use std::mem::size_of;
+
+    use bincode::Options;
+    use serde::{Deserialize, Serialize};
+
+    use self::migration_structures::NetworkValueV0_43;
+
+    // New value format: id + description + networks + tag_ids + creation_time (no customer_ids)
+    #[derive(Serialize)]
+    struct NewNetworkValue {
+        id: u32,
+        description: String,
+        networks: crate::types::HostNetworkGroup,
+        tag_ids: Vec<u32>,
+        creation_time: chrono::DateTime<chrono::Utc>,
+    }
+
+    // Build a new index using the same structure as KeyIndex
+    // KeyIndex is a Vec<KeyIndexEntry> + available: u32 + inactive: Option<u32>
+    #[derive(Clone, Deserialize, Serialize)]
+    enum KeyIndexEntry {
+        Key(Vec<u8>),
+        Index(u32),
+        Inactive(Option<u32>),
+    }
+
+    #[derive(Default, Deserialize, Serialize)]
+    struct KeyIndex {
+        keys: Vec<KeyIndexEntry>,
+        available: u32,
+        inactive: Option<u32>,
+    }
+
+    let db: rocksdb::OptimisticTransactionDB<rocksdb::SingleThreaded> =
+        rocksdb::OptimisticTransactionDB::open_cf(opts, db_path, cf_names)
+            .context("Failed to open database for network migration")?;
+
+    let cf = db
+        .cf_handle("networks")
+        .ok_or_else(|| anyhow!("networks column family not found"))?;
+
+    // Step 1: Read all existing entries and collect by name
+    // Old key format: name bytes + id (4 bytes big-endian)
+    // Old value format: NetworkValueV0_43 (without id, with customer_ids)
+    let mut networks_by_name: HashMap<String, (u32, NetworkValueV0_43)> = HashMap::new();
+    let mut duplicate_count = 0usize;
+
+    let iter = db.iterator_cf(cf, rocksdb::IteratorMode::Start);
+    for item in iter {
+        let (key, value) = item.context("Failed to read network entry")?;
+
+        // Skip the index entry (empty key)
+        if key.is_empty() {
+            continue;
+        }
+
+        // Parse old key format: name + id (4 bytes)
+        if key.len() < size_of::<u32>() {
+            info!("Skipping malformed network key (too short)");
+            continue;
+        }
+
+        let (name_bytes, id_bytes) = key.split_at(key.len() - size_of::<u32>());
+        let name = match std::str::from_utf8(name_bytes) {
+            Ok(n) => n.to_owned(),
+            Err(e) => {
+                info!("Skipping network with invalid UTF-8 name: {e}");
+                continue;
+            }
+        };
+
+        let mut buf = [0u8; size_of::<u32>()];
+        buf.copy_from_slice(id_bytes);
+        let id = u32::from_be_bytes(buf);
+
+        let old_value: NetworkValueV0_43 = bincode::DefaultOptions::new()
+            .deserialize(&value)
+            .context("Failed to deserialize old network value")?;
+
+        // Keep entry with smallest id for each name
+        match networks_by_name.get(&name) {
+            Some((existing_id, _)) if *existing_id <= id => {
+                duplicate_count += 1;
+                info!(
+                    "Discarding duplicate network '{}' with id {} (keeping id {})",
+                    name, id, existing_id
+                );
+            }
+            Some((existing_id, _)) => {
+                duplicate_count += 1;
+                info!(
+                    "Replacing network '{}' id {} with smaller id {}",
+                    name, existing_id, id
+                );
+                networks_by_name.insert(name, (id, old_value));
+            }
+            None => {
+                networks_by_name.insert(name, (id, old_value));
+            }
+        }
+    }
+
+    info!(
+        "Found {} unique networks, discarded {} duplicates",
+        networks_by_name.len(),
+        duplicate_count
+    );
+
+    // Step 2: Clear the network column family
+    // We need to delete all keys
+    let txn = db.transaction();
+    let iter = db.iterator_cf(cf, rocksdb::IteratorMode::Start);
+    for item in iter {
+        let (key, _) = item.context("Failed to read key for deletion")?;
+        txn.delete_cf(cf, &key)
+            .context("Failed to delete old network entry")?;
+    }
+    txn.commit()
+        .context("Failed to commit deletion transaction")?;
+
+    // Step 3: Re-insert with new format
+    // New key format: name bytes only (for global uniqueness)
+
+    // Sort entries by id to maintain proper index order
+    let mut entries: Vec<_> = networks_by_name.into_iter().collect();
+    entries.sort_by_key(|(_, (id, _))| *id);
+
+    let mut key_index = KeyIndex::default();
+
+    let txn = db.transaction();
+    for (name, (id, old_value)) in &entries {
+        let new_value = NewNetworkValue {
+            id: *id,
+            description: old_value.description.clone(),
+            networks: old_value.networks.clone(),
+            tag_ids: old_value.tag_ids.clone(),
+            creation_time: old_value.creation_time,
+        };
+
+        let value_bytes = bincode::DefaultOptions::new()
+            .serialize(&new_value)
+            .context("Failed to serialize new network value")?;
+
+        // New key is just the name
+        let key = name.as_bytes();
+
+        txn.put_cf(cf, key, value_bytes)
+            .context("Failed to insert migrated network")?;
+
+        // We'll rebuild the index after all inserts to preserve gaps correctly.
+    }
+
+    if !entries.is_empty() {
+        let max_id = entries
+            .last()
+            .map(|(_, (id, _))| *id)
+            .expect("non-empty entries");
+        let len = usize::try_from(max_id)
+            .context("Too many index entries")?
+            .saturating_add(1);
+
+        let mut keys = vec![KeyIndexEntry::Index(0); len];
+        let mut used = vec![false; len];
+
+        for (name, (id, _)) in &entries {
+            let idx = usize::try_from(*id).context("Too many index entries")?;
+            keys[idx] = KeyIndexEntry::Key(name.as_bytes().to_vec());
+            used[idx] = true;
+        }
+
+        let gaps: Vec<usize> = used
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, in_use)| if *in_use { None } else { Some(idx) })
+            .collect();
+
+        if gaps.is_empty() {
+            key_index.available = u32::try_from(len).context("Too many index entries")?;
+        } else {
+            for (pos, gap_idx) in gaps.iter().enumerate() {
+                let next = gaps.get(pos + 1).copied().unwrap_or(len);
+                let next = u32::try_from(next).context("Too many index entries")?;
+                keys[*gap_idx] = KeyIndexEntry::Index(next);
+            }
+            key_index.available = u32::try_from(gaps[0]).context("Too many index entries")?;
+        }
+
+        key_index.keys = keys;
+        key_index.inactive = None;
+    }
+
+    // Store the index
+    let index_bytes = bincode::DefaultOptions::new()
+        .serialize(&key_index)
+        .context("Failed to serialize key index")?;
+    txn.put_cf(cf, [], index_bytes)
+        .context("Failed to store key index")?;
+
+    txn.commit()
+        .context("Failed to commit migration transaction")?;
+
+    drop(db);
 
     Ok(())
 }
@@ -964,6 +1205,8 @@ mod tests {
         use crate::collections::KeyIndex;
         use crate::tables::{CUSTOMERS, META};
 
+        let _permit = acquire_db_permit();
+
         // Create test directories
         let db_dir = tempfile::tempdir().unwrap();
         let backup_dir = tempfile::tempdir().unwrap();
@@ -1105,6 +1348,8 @@ mod tests {
         use crate::collections::KeyIndex;
         use crate::tables::META;
 
+        let _permit = acquire_db_permit();
+
         // Create test directories
         let db_dir = tempfile::tempdir().unwrap();
         let backup_dir = tempfile::tempdir().unwrap();
@@ -1187,6 +1432,8 @@ mod tests {
 
         use crate::collections::KeyIndex;
         use crate::tables::{CUSTOMERS, META};
+
+        let _permit = acquire_db_permit();
 
         // Create test directories
         let db_dir = tempfile::tempdir().unwrap();
@@ -1278,5 +1525,389 @@ mod tests {
                 "Tag should not be double-prefixed"
             );
         }
+    }
+
+    /// Helper to create an old-format network key (name + id as 4-byte big-endian)
+    fn make_old_network_key(name: &str, id: u32) -> Vec<u8> {
+        let mut key = name.as_bytes().to_vec();
+        key.extend_from_slice(&id.to_be_bytes());
+        key
+    }
+
+    #[test]
+    fn migrate_network_cf_single_entry() {
+        use bincode::Options;
+
+        use super::migration_structures::NetworkValueV0_43;
+        use crate::{HostNetworkGroup, Iterable};
+
+        let permit = acquire_db_permit();
+
+        // Create test database
+        let db_dir = tempfile::tempdir().unwrap();
+        let db_path = db_dir.path().join("states.db");
+
+        let mut opts = rocksdb::Options::default();
+        opts.create_if_missing(true);
+        opts.create_missing_column_families(true);
+
+        // Create database and insert old-format network entry
+        let db: rocksdb::OptimisticTransactionDB<rocksdb::SingleThreaded> =
+            rocksdb::OptimisticTransactionDB::open_cf(&opts, &db_path, crate::tables::MAP_NAMES)
+                .unwrap();
+
+        let networks_cf = db.cf_handle("networks").unwrap();
+
+        // Create old-format network entry
+        // Old key: name bytes + id (4 bytes big-endian)
+        // Old value: NetworkValueV0_43 (without id, with customer_ids)
+        let old_value = NetworkValueV0_43 {
+            description: "Test network description".to_string(),
+            networks: HostNetworkGroup::default(),
+            customer_ids: vec![1, 2, 3],
+            tag_ids: vec![10, 20],
+            creation_time: chrono::Utc::now(),
+        };
+
+        let old_key = make_old_network_key("TestNetwork", 5);
+        let old_value_bytes = bincode::DefaultOptions::new()
+            .serialize(&old_value)
+            .unwrap();
+
+        db.put_cf(networks_cf, &old_key, &old_value_bytes).unwrap();
+        drop(db);
+
+        // Run the migration
+        super::migrate_network_cf_inner(&db_path, &opts, &crate::tables::MAP_NAMES).unwrap();
+
+        // Verify the migration
+        let test_schema = TestSchema::new_with_dir(permit, db_dir, tempfile::tempdir().unwrap());
+
+        let networks: Vec<_> = test_schema
+            .store
+            .network_map()
+            .iter(rocksdb::Direction::Forward, None)
+            .filter_map(Result::ok)
+            .collect();
+
+        assert_eq!(networks.len(), 1, "Should have exactly one network");
+        assert_eq!(networks[0].name, "TestNetwork");
+        assert_eq!(networks[0].id, 5);
+        assert_eq!(networks[0].description, "Test network description");
+        assert_eq!(networks[0].tag_ids(), &[10, 20]);
+        // customer_ids should be gone (not part of the new schema)
+    }
+
+    #[test]
+    fn migrate_network_cf_deduplicates_by_name_keeps_smallest_id() {
+        use bincode::Options;
+
+        use super::migration_structures::NetworkValueV0_43;
+        use crate::{HostNetworkGroup, Iterable};
+
+        let permit = acquire_db_permit();
+
+        // Create test database
+        let db_dir = tempfile::tempdir().unwrap();
+        let db_path = db_dir.path().join("states.db");
+
+        let mut opts = rocksdb::Options::default();
+        opts.create_if_missing(true);
+        opts.create_missing_column_families(true);
+
+        // Create database and insert multiple old-format network entries with same name
+        let db: rocksdb::OptimisticTransactionDB<rocksdb::SingleThreaded> =
+            rocksdb::OptimisticTransactionDB::open_cf(&opts, &db_path, crate::tables::MAP_NAMES)
+                .unwrap();
+
+        let networks_cf = db.cf_handle("networks").unwrap();
+
+        let creation_time = chrono::Utc::now();
+
+        // Entry 1: "DuplicateNet" with id=10
+        let old_value1 = NetworkValueV0_43 {
+            description: "Description for id 10".to_string(),
+            networks: HostNetworkGroup::default(),
+            customer_ids: vec![1],
+            tag_ids: vec![100],
+            creation_time,
+        };
+        let old_key1 = make_old_network_key("DuplicateNet", 10);
+        let old_value_bytes1 = bincode::DefaultOptions::new()
+            .serialize(&old_value1)
+            .unwrap();
+        db.put_cf(networks_cf, &old_key1, &old_value_bytes1)
+            .unwrap();
+
+        // Entry 2: "DuplicateNet" with id=3 (smallest - should be kept)
+        let old_value2 = NetworkValueV0_43 {
+            description: "Description for id 3".to_string(),
+            networks: HostNetworkGroup::default(),
+            customer_ids: vec![2],
+            tag_ids: vec![200],
+            creation_time,
+        };
+        let old_key2 = make_old_network_key("DuplicateNet", 3);
+        let old_value_bytes2 = bincode::DefaultOptions::new()
+            .serialize(&old_value2)
+            .unwrap();
+        db.put_cf(networks_cf, &old_key2, &old_value_bytes2)
+            .unwrap();
+
+        // Entry 3: "DuplicateNet" with id=7
+        let old_value3 = NetworkValueV0_43 {
+            description: "Description for id 7".to_string(),
+            networks: HostNetworkGroup::default(),
+            customer_ids: vec![3],
+            tag_ids: vec![300],
+            creation_time,
+        };
+        let old_key3 = make_old_network_key("DuplicateNet", 7);
+        let old_value_bytes3 = bincode::DefaultOptions::new()
+            .serialize(&old_value3)
+            .unwrap();
+        db.put_cf(networks_cf, &old_key3, &old_value_bytes3)
+            .unwrap();
+
+        // Entry 4: "UniqueNet" with id=1 (different name, should be preserved)
+        let old_value4 = NetworkValueV0_43 {
+            description: "Unique network".to_string(),
+            networks: HostNetworkGroup::default(),
+            customer_ids: vec![4],
+            tag_ids: vec![400],
+            creation_time,
+        };
+        let old_key4 = make_old_network_key("UniqueNet", 1);
+        let old_value_bytes4 = bincode::DefaultOptions::new()
+            .serialize(&old_value4)
+            .unwrap();
+        db.put_cf(networks_cf, &old_key4, &old_value_bytes4)
+            .unwrap();
+
+        drop(db);
+
+        // Run the migration
+        super::migrate_network_cf_inner(&db_path, &opts, &crate::tables::MAP_NAMES).unwrap();
+
+        // Verify the migration
+        let test_schema = TestSchema::new_with_dir(permit, db_dir, tempfile::tempdir().unwrap());
+
+        let networks: Vec<_> = test_schema
+            .store
+            .network_map()
+            .iter(rocksdb::Direction::Forward, None)
+            .filter_map(Result::ok)
+            .collect();
+
+        assert_eq!(
+            networks.len(),
+            2,
+            "Should have exactly two networks (duplicates removed)"
+        );
+
+        // Find the DuplicateNet entry - should have id=3 (smallest)
+        let duplicate_net = networks.iter().find(|n| n.name == "DuplicateNet").unwrap();
+        assert_eq!(
+            duplicate_net.id, 3,
+            "Should keep the entry with smallest id"
+        );
+        assert_eq!(duplicate_net.description, "Description for id 3");
+        assert_eq!(duplicate_net.tag_ids(), &[200]);
+
+        // Find the UniqueNet entry - should be preserved
+        let unique_net = networks.iter().find(|n| n.name == "UniqueNet").unwrap();
+        assert_eq!(unique_net.id, 1);
+        assert_eq!(unique_net.description, "Unique network");
+        assert_eq!(unique_net.tag_ids(), &[400]);
+    }
+
+    #[test]
+    fn migrate_network_cf_empty_column_family() {
+        use crate::Iterable;
+
+        let permit = acquire_db_permit();
+
+        // Create test database
+        let db_dir = tempfile::tempdir().unwrap();
+        let db_path = db_dir.path().join("states.db");
+
+        let mut opts = rocksdb::Options::default();
+        opts.create_if_missing(true);
+        opts.create_missing_column_families(true);
+
+        // Create empty database with networks column family
+        let db: rocksdb::OptimisticTransactionDB<rocksdb::SingleThreaded> =
+            rocksdb::OptimisticTransactionDB::open_cf(&opts, &db_path, crate::tables::MAP_NAMES)
+                .unwrap();
+        drop(db);
+
+        // Run the migration - should not fail on empty column family
+        super::migrate_network_cf_inner(&db_path, &opts, &crate::tables::MAP_NAMES).unwrap();
+
+        // Verify the migration produced an empty result
+        let test_schema = TestSchema::new_with_dir(permit, db_dir, tempfile::tempdir().unwrap());
+
+        let networks: Vec<_> = test_schema
+            .store
+            .network_map()
+            .iter(rocksdb::Direction::Forward, None)
+            .filter_map(Result::ok)
+            .collect();
+
+        assert_eq!(networks.len(), 0, "Should have no networks");
+    }
+
+    #[test]
+    fn migrate_network_cf_multiple_unique_networks() {
+        use bincode::Options;
+
+        use super::migration_structures::NetworkValueV0_43;
+        use crate::{HostNetworkGroup, Iterable};
+
+        let permit = acquire_db_permit();
+
+        // Create test database
+        let db_dir = tempfile::tempdir().unwrap();
+        let db_path = db_dir.path().join("states.db");
+
+        let mut opts = rocksdb::Options::default();
+        opts.create_if_missing(true);
+        opts.create_missing_column_families(true);
+
+        // Create database and insert multiple unique network entries
+        let db: rocksdb::OptimisticTransactionDB<rocksdb::SingleThreaded> =
+            rocksdb::OptimisticTransactionDB::open_cf(&opts, &db_path, crate::tables::MAP_NAMES)
+                .unwrap();
+
+        let networks_cf = db.cf_handle("networks").unwrap();
+
+        let creation_time = chrono::Utc::now();
+
+        // Create 5 unique networks with different names and IDs
+        let network_data = [
+            ("NetworkA", 2, "Description A", vec![1]),
+            ("NetworkB", 5, "Description B", vec![2, 3]),
+            ("NetworkC", 1, "Description C", vec![]),
+            ("NetworkD", 8, "Description D", vec![4, 5, 6]),
+            ("NetworkE", 3, "Description E", vec![7]),
+        ];
+
+        for (name, id, desc, tags) in &network_data {
+            let old_value = NetworkValueV0_43 {
+                description: desc.to_string(),
+                networks: HostNetworkGroup::default(),
+                customer_ids: vec![1, 2],
+                tag_ids: tags.clone(),
+                creation_time,
+            };
+            let old_key = make_old_network_key(name, *id);
+            let old_value_bytes = bincode::DefaultOptions::new()
+                .serialize(&old_value)
+                .unwrap();
+            db.put_cf(networks_cf, &old_key, &old_value_bytes).unwrap();
+        }
+
+        drop(db);
+
+        // Run the migration
+        super::migrate_network_cf_inner(&db_path, &opts, &crate::tables::MAP_NAMES).unwrap();
+
+        // Verify the migration
+        let test_schema = TestSchema::new_with_dir(permit, db_dir, tempfile::tempdir().unwrap());
+
+        let networks: Vec<_> = test_schema
+            .store
+            .network_map()
+            .iter(rocksdb::Direction::Forward, None)
+            .filter_map(Result::ok)
+            .collect();
+
+        assert_eq!(networks.len(), 5, "Should have all 5 unique networks");
+
+        // Verify each network was migrated correctly
+        for (name, id, desc, tags) in &network_data {
+            let network = networks.iter().find(|n| n.name == *name).unwrap();
+            assert_eq!(network.id, *id, "ID should be preserved for {name}");
+            assert_eq!(
+                network.description, *desc,
+                "Description should be preserved for {name}"
+            );
+            assert_eq!(
+                network.tag_ids(),
+                tags.as_slice(),
+                "Tag IDs should be preserved for {name}"
+            );
+        }
+    }
+
+    #[test]
+    fn migrate_network_cf_rebuilds_index_with_gaps() {
+        use bincode::Options;
+
+        use super::migration_structures::NetworkValueV0_43;
+        use crate::{HostNetworkGroup, Network};
+
+        let permit = acquire_db_permit();
+
+        // Create test database
+        let db_dir = tempfile::tempdir().unwrap();
+        let db_path = db_dir.path().join("states.db");
+
+        let mut opts = rocksdb::Options::default();
+        opts.create_if_missing(true);
+        opts.create_missing_column_families(true);
+
+        // Create database and insert old-format network entries with gaps in ids
+        let db: rocksdb::OptimisticTransactionDB<rocksdb::SingleThreaded> =
+            rocksdb::OptimisticTransactionDB::open_cf(&opts, &db_path, crate::tables::MAP_NAMES)
+                .unwrap();
+
+        let networks_cf = db.cf_handle("networks").unwrap();
+
+        let creation_time = chrono::Utc::now();
+        let entries = [("NetA", 1), ("NetB", 3)];
+        for (name, id) in entries {
+            let old_value = NetworkValueV0_43 {
+                description: format!("Description {id}"),
+                networks: HostNetworkGroup::default(),
+                customer_ids: vec![1],
+                tag_ids: vec![],
+                creation_time,
+            };
+            let old_key = make_old_network_key(name, id);
+            let old_value_bytes = bincode::DefaultOptions::new()
+                .serialize(&old_value)
+                .unwrap();
+            db.put_cf(networks_cf, &old_key, &old_value_bytes).unwrap();
+        }
+
+        drop(db);
+
+        // Run the migration
+        super::migrate_network_cf_inner(&db_path, &opts, &crate::tables::MAP_NAMES).unwrap();
+
+        // Verify the index reuses gaps
+        let test_schema = TestSchema::new_with_dir(permit, db_dir, tempfile::tempdir().unwrap());
+        let table = test_schema.store.network_map();
+
+        let id0 = table
+            .insert(Network::new(
+                "GapNet".to_string(),
+                "Gap description".to_string(),
+                HostNetworkGroup::default(),
+                vec![],
+            ))
+            .unwrap();
+        assert_eq!(id0, 0, "First available id should fill the gap at 0");
+
+        let id2 = table
+            .insert(Network::new(
+                "GapNet2".to_string(),
+                "Gap description 2".to_string(),
+                HostNetworkGroup::default(),
+                vec![],
+            ))
+            .unwrap();
+        assert_eq!(id2, 2, "Second available id should fill the gap at 2");
     }
 }

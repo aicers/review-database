@@ -13,6 +13,18 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   parameter and now returns `CustomerTagSet` instead of `TagSet<NetworkTagId>`.
   Existing network tags are automatically migrated to be associated with the
   smallest customer ID found in the database.
+- Removed `customer_ids` field from `Network` struct. Networks are now globally
+  shared and managed by administrators, rather than being tied to specific
+  customers. The database key for networks is now based solely on the name
+  (enforcing global uniqueness) instead of name + id. The `id` is now stored in
+  the value. A migration automatically deduplicates networks by name, keeping
+  only the entry with the smallest id.
+- Updated `Network::new` to no longer accept a `customer_ids` parameter.
+- Updated `NetworkUpdate::new` to no longer accept a `customer_ids` parameter.
+
+### Removed
+
+- Removed `IndexedTable<Network>::remove_customer` method.
 
 ## [0.43.0] - 2025-12-18
 

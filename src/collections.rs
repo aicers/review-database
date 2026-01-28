@@ -463,38 +463,6 @@ pub trait Indexed {
         Ok(key)
     }
 
-    /// Overwrites the value of an existing key-value pair.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the key doesn't exist.
-    fn overwrite<T: Indexable>(&self, entry: &T) -> Result<()> {
-        loop {
-            let txn = self.db().transaction();
-            if entry.indexed_key().is_empty() {
-                bail!("key shouldn't be empty");
-            }
-            if txn
-                .get_for_update_cf(self.cf(), entry.indexed_key(), super::EXCLUSIVE)
-                .context("cannot read from database")?
-                .is_none()
-            {
-                bail!("key doesn't exist");
-            }
-            txn.put_cf(self.cf(), entry.indexed_key(), entry.value())
-                .context("failed to write new entry")?;
-            match txn.commit() {
-                Ok(()) => break,
-                Err(e) => {
-                    if !e.as_ref().starts_with("Resource busy:") {
-                        return Err(e).context("failed to store new entry");
-                    }
-                }
-            }
-        }
-        Ok(())
-    }
-
     /// Updates an old key-value pair to a new one.
     ///
     /// # Errors
