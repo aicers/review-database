@@ -9,6 +9,34 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **BREAKING**: Unified `cluster_id` and `model_id` types to `u32` across the
+  codebase. This affects the following:
+  - `Cluster::id` in `tables/cluster.rs` changed from `i32` to `u32`
+  - `TimeSeries::cluster_id` in `tables/time_series.rs` changed from `i32` to
+    `u32`
+  - `UpdateClusterRequest::cluster_id` changed from `i32` to `u32`
+  - `ClusterDbSchema` fields `cluster_id` and `model_id` changed from `i32` to
+    `u32`
+  - Event structs (`NetworkThreat`, `HttpThreat`, `HttpThreatFields`,
+    `WindowsThreat`, `ExtraThreat`) now use `Option<u32>` instead of
+    `Option<usize>` for `cluster_id`
+  - Function signatures updated: `get_top_time_series_of_cluster`,
+    `add_time_series`, `update_cluster`, `count_rounds_by_cluster`,
+    `get_top_ip_addresses_of_cluster`, `insert` and `get_by_model` in
+    `csv_column_extra`
+  - `TopColumnsOfCluster::cluster_id` changed from `i32` to `u32`
+  - `ModelIndicator` serialization now uses `u32` for `model_id`
+  - Data migration is automatically performed for:
+    - `ModelIndicator` entries with `model_id` field serialization change from
+      `i32` to `u32` (bincode varint encoding is not byte-compatible between
+      signed and unsigned types for non-zero values)
+    - `HttpThreat` events with `cluster_id` field serialization change from
+      `Option<usize>` to `Option<u32>`
+  - No migration is needed for `Cluster` and `TimeSeries` tables because the
+    big-endian byte representation is identical between `i32` and `u32` for
+    non-negative values. Other event types (`NetworkThreat`, `WindowsThreat`,
+    `ExtraThreat`) are not generated on production servers and do not require
+    migration.
 - Changed `Store::network_tag_set` signature to require a `customer_id: u32`
   parameter and now returns `CustomerTagSet` instead of `TagSet<NetworkTagId>`.
   Existing network tags are automatically migrated to be associated with the

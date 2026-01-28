@@ -22,7 +22,7 @@ impl<'d> Table<'d, TimeSeries> {
         &self,
         model_id: u32,
         batch_ts: i64,
-        series: Vec<(i32, Vec<Column>)>,
+        series: Vec<(u32, Vec<Column>)>,
     ) -> Result<()> {
         let txn = self.map.db.transaction();
         for (cluster_id, columns) in series {
@@ -116,7 +116,7 @@ impl<'d> Table<'d, TimeSeries> {
     pub fn get_top_time_series_of_cluster(
         &self,
         model_id: u32,
-        cluster_id: i32,
+        cluster_id: u32,
         start: Option<i64>,
         end: Option<i64>,
     ) -> Result<(Option<i64>, Option<i64>, Vec<Column>)> {
@@ -173,7 +173,7 @@ impl<'d> Table<'d, TimeSeries> {
         end: Option<i64>,
     ) -> Result<Vec<(Option<i32>, Vec<Cluster>)>> {
         let series = self.time_series_of_model(model_id, time, start, end)?;
-        let mut columns: HashMap<Option<i32>, HashMap<i32, HashMap<i64, usize>>> = HashMap::new();
+        let mut columns: HashMap<Option<i32>, HashMap<u32, HashMap<i64, usize>>> = HashMap::new();
         for ts in series {
             columns
                 .entry(ts.count_index)
@@ -281,14 +281,14 @@ pub struct Column {
 }
 
 pub struct Cluster {
-    pub id: i32,
+    pub id: u32,
     pub time_counts: Vec<TimeCount>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct TimeSeries {
     pub model_id: u32,
-    pub cluster_id: i32,
+    pub cluster_id: u32,
     pub time: i64, // batch_ts
     pub value: i64,
     pub count_index: Option<i32>, // column index
@@ -337,7 +337,7 @@ impl FromKeyValue for TimeSeries {
 
 struct Key {
     model_id: u32,
-    cluster_id: i32,
+    cluster_id: u32,
     time: i64,
     value: i64,
     count_index: Option<i32>,
@@ -362,10 +362,10 @@ impl Key {
         buf.copy_from_slice(val);
         let model_id = u32::from_be_bytes(buf);
 
-        let (val, rest) = rest.split_at(size_of::<i32>());
-        let mut buf = [0; size_of::<i32>()];
+        let (val, rest) = rest.split_at(size_of::<u32>());
+        let mut buf = [0; size_of::<u32>()];
         buf.copy_from_slice(val);
-        let cluster_id = i32::from_be_bytes(buf);
+        let cluster_id = u32::from_be_bytes(buf);
 
         let (val, rest) = rest.split_at(size_of::<i64>());
         let mut buf = [0; size_of::<i64>()];

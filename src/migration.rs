@@ -15,8 +15,11 @@ use tracing::info;
 
 use crate::{
     AllowNetwork, BlockNetwork, Customer,
-    migration::migration_structures::{AllowNetworkV0_42, BlockNetworkV0_42},
-    tables::NETWORK_TAGS,
+    event::{EventKind, HttpThreatFields},
+    migration::migration_structures::{
+        AllowNetworkV0_42, BlockNetworkV0_42, HttpThreatFieldsV0_43, ModelIndicatorValueV0_43,
+    },
+    tables::{MODEL_INDICATORS, NETWORK_TAGS},
 };
 
 /// The range of versions that use the current database format.
@@ -246,6 +249,19 @@ fn migrate_0_43_to_0_44(data_dir: &Path) -> Result<()> {
 
     // Migrate Network table to enforce global name uniqueness
     migrate_network_cf(data_dir)?;
+
+    // Migrate ModelIndicator with model_id from i32 to u32
+    // Note: ModelIndicator::Value is serialized using bincode::DefaultOptions (varint),
+    // so the i32→u32 change is NOT byte-compatible for non-zero values.
+    migrate_model_indicators(data_dir)?;
+
+    // Migrate HttpThreat events with cluster_id from Option<usize> to Option<u32>
+    // Note: Cluster and TimeSeries table migrations are not needed because the
+    // big-endian byte representation is identical between i32 and u32 for non-negative
+    // values, and the unsupervised engine never produces negative cluster_id values.
+    // Other event types (ExtraThreat, WindowsThreat, NetworkThreat) are not generated
+    // on production servers, so only HttpThreat migration is needed.
+    migrate_http_threat_events(data_dir)?;
 
     Ok(())
 }
@@ -823,6 +839,239 @@ fn migrate_network_cf_inner(
     drop(db);
 
     Ok(())
+}
+
+/// Migrates `ModelIndicator` entries with `model_id` from `i32` to `u32`.
+///
+/// This migration handles the serialization change for `ModelIndicator::Value`.
+/// Since bincode's `DefaultOptions` uses varint encoding, the i32→u32 change
+/// is NOT byte-compatible for non-zero values, requiring migration.
+fn migrate_model_indicators(dir: &Path) -> Result<()> {
+    let db_path = dir.join("states.db");
+
+    let mut opts = rocksdb::Options::default();
+    opts.create_if_missing(false);
+    opts.create_missing_column_families(false);
+
+    let db: rocksdb::OptimisticTransactionDB<rocksdb::SingleThreaded> =
+        rocksdb::OptimisticTransactionDB::open_cf(&opts, &db_path, crate::tables::MAP_NAMES)
+            .context("Failed to open database for ModelIndicator migration")?;
+
+    let cf = db
+        .cf_handle(MODEL_INDICATORS)
+        .ok_or_else(|| anyhow!("model indicators column family not found"))?;
+
+    let mut migrated_count = 0usize;
+    let mut errors = 0usize;
+
+    // Collect entries to migrate
+    let mut entries_to_update: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
+
+    for item in db.iterator_cf(cf, rocksdb::IteratorMode::Start) {
+        let (key, value) = item.context("failed to read model indicator entry")?;
+
+        // Try to deserialize with old format
+        if let Ok(old) =
+            bincode::DefaultOptions::new().deserialize::<ModelIndicatorValueV0_43>(&value)
+        {
+            // Convert to new format
+            #[derive(serde::Serialize)]
+            struct NewValue {
+                description: String,
+                model_id: u32,
+                tokens: std::collections::HashSet<Vec<String>>,
+                #[serde(with = "chrono::serde::ts_seconds")]
+                last_modification_time: chrono::DateTime<chrono::Utc>,
+            }
+
+            let new_value = NewValue {
+                description: old.description,
+                model_id: u32::try_from(old.model_id).unwrap_or(0),
+                tokens: old.tokens,
+                last_modification_time: old.last_modification_time,
+            };
+
+            if let Ok(serialized) = bincode::DefaultOptions::new().serialize(&new_value) {
+                entries_to_update.push((key.to_vec(), serialized));
+                migrated_count += 1;
+            } else {
+                errors += 1;
+            }
+        } else {
+            // If we couldn't deserialize with old format, it might already be in the new format
+            errors += 1;
+        }
+    }
+
+    if !entries_to_update.is_empty() {
+        let txn = db.transaction();
+        for (key, new_value) in &entries_to_update {
+            txn.put_cf(cf, key, new_value)?;
+        }
+        txn.commit()
+            .context("failed to commit ModelIndicator migration")?;
+    }
+
+    if errors > 0 {
+        info!(
+            "ModelIndicator migration: migrated {} entries, {} entries skipped (possibly already migrated)",
+            migrated_count, errors
+        );
+    } else {
+        info!(
+            "Migrated {} ModelIndicator entries with model_id type change",
+            migrated_count
+        );
+    }
+
+    Ok(())
+}
+
+/// Migrates `HttpThreat` events with `cluster_id` from `Option<usize>` to `Option<u32>`.
+///
+/// This migration handles the serialization change for `HttpThreat` events.
+/// The serialization of `Option<usize>` differs from `Option<u32>` in bincode because
+/// `usize` is architecture-dependent (8 bytes on 64-bit systems) while `u32` is 4 bytes.
+///
+/// Note: Other event types (`ExtraThreat`, `WindowsThreat`, `NetworkThreat`) are not generated
+/// on production servers, so their migration is unnecessary.
+fn migrate_http_threat_events(dir: &Path) -> Result<()> {
+    use num_traits::FromPrimitive;
+
+    /// Number of records to commit per transaction batch to bound memory usage.
+    const BATCH_SIZE: usize = 100;
+
+    let db_path = dir.join("states.db");
+
+    let mut opts = rocksdb::Options::default();
+    opts.create_if_missing(false);
+    opts.create_missing_column_families(false);
+
+    let db: rocksdb::OptimisticTransactionDB<rocksdb::SingleThreaded> =
+        rocksdb::OptimisticTransactionDB::open_cf(&opts, &db_path, crate::tables::MAP_NAMES)
+            .context("Failed to open database for HttpThreat event migration")?;
+
+    // Events are stored in the default column family
+    let mut migrated_count = 0usize;
+    let mut errors = 0usize;
+    let mut batch: Vec<(Vec<u8>, Vec<u8>)> = Vec::with_capacity(BATCH_SIZE);
+
+    for item in db.iterator(rocksdb::IteratorMode::Start) {
+        let (key, value) = item.context("failed to read event entry")?;
+
+        // Extract event kind from the key
+        // Key format: (timestamp_nanos << 64) | (event_kind << 32) | random_bits
+        // Key is stored as big-endian i128 (16 bytes)
+        if key.len() != 16 {
+            continue;
+        }
+
+        let key_i128 = i128::from_be_bytes(key.as_ref().try_into().unwrap_or([0; 16]));
+        let event_kind_val = ((key_i128 >> 32) & 0xFFFF_FFFF) as i32;
+
+        // Try to convert to EventKind
+        let Some(event_kind) = EventKind::from_i32(event_kind_val) else {
+            continue;
+        };
+
+        // Only migrate HttpThreat events
+        if event_kind == EventKind::HttpThreat {
+            if let Some(new_val) = migrate_http_threat_fields(&value) {
+                batch.push((key.to_vec(), new_val));
+                migrated_count += 1;
+
+                // Commit batch when it reaches BATCH_SIZE
+                if batch.len() >= BATCH_SIZE {
+                    let txn = db.transaction();
+                    for (k, v) in batch.drain(..) {
+                        txn.put(&k, &v)?;
+                    }
+                    txn.commit()
+                        .context("failed to commit HttpThreat event migration batch")?;
+                }
+            } else {
+                // If we couldn't migrate, it might already be in the new format
+                // or there was an error. We'll count it but not fail the migration.
+                errors += 1;
+            }
+        }
+    }
+
+    // Commit any remaining entries in the final batch
+    if !batch.is_empty() {
+        let txn = db.transaction();
+        for (k, v) in batch.drain(..) {
+            txn.put(&k, &v)?;
+        }
+        txn.commit()
+            .context("failed to commit final HttpThreat event migration batch")?;
+    }
+
+    if errors > 0 {
+        info!(
+            "HttpThreat event migration: migrated {} events, {} events skipped (possibly already migrated)",
+            migrated_count, errors
+        );
+    } else {
+        info!(
+            "Migrated {} HttpThreat events with cluster_id type change",
+            migrated_count
+        );
+    }
+
+    Ok(())
+}
+
+/// Migrates `HttpThreatFields` from Option<usize> to Option<u32> for `cluster_id`.
+fn migrate_http_threat_fields(value: &[u8]) -> Option<Vec<u8>> {
+    // Try to deserialize with old format
+    let old: HttpThreatFieldsV0_43 = bincode::DefaultOptions::new().deserialize(value).ok()?;
+
+    // Convert to new format
+    let new = HttpThreatFields {
+        time: old.time,
+        sensor: old.sensor,
+        orig_addr: old.orig_addr,
+        orig_port: old.orig_port,
+        resp_addr: old.resp_addr,
+        resp_port: old.resp_port,
+        proto: old.proto,
+        start_time: old.start_time,
+        duration: old.duration,
+        orig_pkts: old.orig_pkts,
+        resp_pkts: old.resp_pkts,
+        orig_l2_bytes: old.orig_l2_bytes,
+        resp_l2_bytes: old.resp_l2_bytes,
+        method: old.method,
+        host: old.host,
+        uri: old.uri,
+        referer: old.referer,
+        version: old.version,
+        user_agent: old.user_agent,
+        request_len: old.request_len,
+        response_len: old.response_len,
+        status_code: old.status_code,
+        status_msg: old.status_msg,
+        username: old.username,
+        password: old.password,
+        cookie: old.cookie,
+        content_encoding: old.content_encoding,
+        content_type: old.content_type,
+        cache_control: old.cache_control,
+        filenames: old.filenames,
+        mime_types: old.mime_types,
+        body: old.body,
+        state: old.state,
+        db_name: old.db_name,
+        rule_id: old.rule_id,
+        matched_to: old.matched_to,
+        cluster_id: old.cluster_id.and_then(|v| u32::try_from(v).ok()),
+        attack_kind: old.attack_kind,
+        confidence: old.confidence,
+        category: old.category,
+    };
+
+    bincode::DefaultOptions::new().serialize(&new).ok()
 }
 
 /// Recursively creates `path` if not existed, creates the VERSION file
@@ -2193,5 +2442,235 @@ mod tests {
             ))
             .unwrap();
         assert_eq!(id2, 2, "Second available id should fill the gap at 2");
+    }
+
+    #[test]
+    fn test_migrate_model_indicators() {
+        use std::collections::HashSet;
+
+        use bincode::Options;
+
+        use super::migration_structures::ModelIndicatorValueV0_43;
+        use crate::tables::MODEL_INDICATORS;
+
+        // Create test directory and database
+        let db_dir = tempfile::tempdir().unwrap();
+        let db_path = db_dir.path().join("states.db");
+
+        let mut opts = rocksdb::Options::default();
+        opts.create_if_missing(true);
+        opts.create_missing_column_families(true);
+
+        let db: rocksdb::OptimisticTransactionDB<rocksdb::SingleThreaded> =
+            rocksdb::OptimisticTransactionDB::open_cf(&opts, &db_path, crate::tables::MAP_NAMES)
+                .unwrap();
+
+        let cf = db.cf_handle(MODEL_INDICATORS).unwrap();
+
+        // Create old-format ModelIndicator values with i32 model_id
+        let old_value1 = ModelIndicatorValueV0_43 {
+            description: "Test indicator 1".to_string(),
+            model_id: 42_i32,
+            tokens: {
+                let mut set = HashSet::new();
+                set.insert(vec!["token1".to_string(), "token2".to_string()]);
+                set
+            },
+            last_modification_time: chrono::Utc::now(),
+        };
+
+        let old_value2 = ModelIndicatorValueV0_43 {
+            description: "Test indicator 2".to_string(),
+            model_id: 123_i32,
+            tokens: HashSet::new(),
+            last_modification_time: chrono::Utc::now(),
+        };
+
+        // Serialize and store old-format values
+        let serialized1 = bincode::DefaultOptions::new()
+            .serialize(&old_value1)
+            .unwrap();
+        let serialized2 = bincode::DefaultOptions::new()
+            .serialize(&old_value2)
+            .unwrap();
+
+        db.put_cf(cf, b"indicator1", &serialized1).unwrap();
+        db.put_cf(cf, b"indicator2", &serialized2).unwrap();
+        drop(db);
+
+        // Run the migration
+        super::migrate_model_indicators(db_dir.path()).unwrap();
+
+        // Verify the migration by reading back and checking new format
+        let db: rocksdb::OptimisticTransactionDB<rocksdb::SingleThreaded> =
+            rocksdb::OptimisticTransactionDB::open_cf(&opts, &db_path, crate::tables::MAP_NAMES)
+                .unwrap();
+        let cf = db.cf_handle(MODEL_INDICATORS).unwrap();
+
+        // Define the new value structure to verify
+        #[derive(serde::Deserialize)]
+        #[allow(dead_code, clippy::items_after_statements)]
+        struct NewValue {
+            description: String,
+            model_id: u32,
+            tokens: HashSet<Vec<String>>,
+            #[serde(with = "chrono::serde::ts_seconds")]
+            last_modification_time: chrono::DateTime<chrono::Utc>,
+        }
+
+        // Verify indicator1
+        let value1 = db.get_cf(cf, b"indicator1").unwrap().unwrap();
+        let new1: NewValue = bincode::DefaultOptions::new().deserialize(&value1).unwrap();
+        assert_eq!(new1.description, "Test indicator 1");
+        assert_eq!(new1.model_id, 42_u32);
+
+        // Verify indicator2
+        let value2 = db.get_cf(cf, b"indicator2").unwrap().unwrap();
+        let new2: NewValue = bincode::DefaultOptions::new().deserialize(&value2).unwrap();
+        assert_eq!(new2.description, "Test indicator 2");
+        assert_eq!(new2.model_id, 123_u32);
+    }
+
+    #[test]
+    fn test_migrate_http_threat_events() {
+        use std::net::IpAddr;
+
+        use bincode::Options;
+
+        use super::migration_structures::HttpThreatFieldsV0_43;
+        use crate::event::{EventKind, HttpThreatFields};
+
+        // Create test directory and database
+        let db_dir = tempfile::tempdir().unwrap();
+        let db_path = db_dir.path().join("states.db");
+
+        let mut opts = rocksdb::Options::default();
+        opts.create_if_missing(true);
+        opts.create_missing_column_families(true);
+
+        let db: rocksdb::OptimisticTransactionDB<rocksdb::SingleThreaded> =
+            rocksdb::OptimisticTransactionDB::open_cf(&opts, &db_path, crate::tables::MAP_NAMES)
+                .unwrap();
+
+        // Create old-format HttpThreatFields with Option<usize> cluster_id
+        let old_event = HttpThreatFieldsV0_43 {
+            time: chrono::Utc::now(),
+            sensor: "test-sensor".to_string(),
+            orig_addr: "192.168.1.1".parse::<IpAddr>().unwrap(),
+            orig_port: 12345,
+            resp_addr: "10.0.0.1".parse::<IpAddr>().unwrap(),
+            resp_port: 80,
+            proto: 6,
+            start_time: 1000,
+            duration: 100,
+            orig_pkts: 10,
+            resp_pkts: 20,
+            orig_l2_bytes: 1000,
+            resp_l2_bytes: 2000,
+            method: "GET".to_string(),
+            host: "example.com".to_string(),
+            uri: "/test".to_string(),
+            referer: String::new(),
+            version: "HTTP/1.1".to_string(),
+            user_agent: "test-agent".to_string(),
+            request_len: 100,
+            response_len: 200,
+            status_code: 200,
+            status_msg: "OK".to_string(),
+            username: String::new(),
+            password: String::new(),
+            cookie: String::new(),
+            content_encoding: String::new(),
+            content_type: "text/html".to_string(),
+            cache_control: String::new(),
+            filenames: vec![],
+            mime_types: vec![],
+            body: vec![],
+            state: String::new(),
+            db_name: "test_db".to_string(),
+            rule_id: 1,
+            matched_to: "test_rule".to_string(),
+            cluster_id: Some(42_usize), // OLD TYPE: Option<usize>
+            attack_kind: "test_attack".to_string(),
+            confidence: 0.9,
+            category: None,
+        };
+
+        // Serialize old-format value
+        let serialized = bincode::DefaultOptions::new()
+            .serialize(&old_event)
+            .unwrap();
+
+        // Create event key: (timestamp_nanos << 64) | (event_kind << 32) | random_bits
+        // EventKind::HttpThreat = 1
+        let timestamp_nanos = chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0);
+        let event_kind = EventKind::HttpThreat as i32;
+        let random_bits: u32 = 12345;
+        let key_i128: i128 = (i128::from(timestamp_nanos) << 64)
+            | (i128::from(event_kind) << 32)
+            | i128::from(random_bits);
+        let key_bytes = key_i128.to_be_bytes();
+
+        // Store in default column family (where events are stored)
+        db.put(key_bytes, &serialized).unwrap();
+        drop(db);
+
+        // Run the migration
+        super::migrate_http_threat_events(db_dir.path()).unwrap();
+
+        // Verify the migration by reading back and checking new format
+        let db: rocksdb::OptimisticTransactionDB<rocksdb::SingleThreaded> =
+            rocksdb::OptimisticTransactionDB::open_cf(&opts, &db_path, crate::tables::MAP_NAMES)
+                .unwrap();
+
+        let value = db.get(key_bytes).unwrap().unwrap();
+        let new_event: HttpThreatFields =
+            bincode::DefaultOptions::new().deserialize(&value).unwrap();
+
+        // Verify the cluster_id was migrated from Option<usize> to Option<u32>
+        assert_eq!(new_event.cluster_id, Some(42_u32));
+        assert_eq!(new_event.sensor, "test-sensor");
+        assert_eq!(new_event.host, "example.com");
+        assert_eq!(new_event.method, "GET");
+    }
+
+    #[test]
+    fn test_migrate_http_threat_events_empty_db() {
+        // Test that migration succeeds when there are no HttpThreat events
+        let db_dir = tempfile::tempdir().unwrap();
+        let db_path = db_dir.path().join("states.db");
+
+        let mut opts = rocksdb::Options::default();
+        opts.create_if_missing(true);
+        opts.create_missing_column_families(true);
+
+        let db: rocksdb::OptimisticTransactionDB<rocksdb::SingleThreaded> =
+            rocksdb::OptimisticTransactionDB::open_cf(&opts, &db_path, crate::tables::MAP_NAMES)
+                .unwrap();
+        drop(db);
+
+        // Run the migration - should succeed with no events
+        let result = super::migrate_http_threat_events(db_dir.path());
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_migrate_model_indicators_empty_db() {
+        // Test that migration succeeds when there are no ModelIndicator entries
+        let db_dir = tempfile::tempdir().unwrap();
+        let db_path = db_dir.path().join("states.db");
+
+        let mut opts = rocksdb::Options::default();
+        opts.create_if_missing(true);
+        opts.create_missing_column_families(true);
+
+        let db: rocksdb::OptimisticTransactionDB<rocksdb::SingleThreaded> =
+            rocksdb::OptimisticTransactionDB::open_cf(&opts, &db_path, crate::tables::MAP_NAMES)
+                .unwrap();
+        drop(db);
+
+        // Run the migration - should succeed with no entries
+        let result = super::migrate_model_indicators(db_dir.path());
+        assert!(result.is_ok());
     }
 }
