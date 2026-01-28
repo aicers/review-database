@@ -2606,8 +2606,9 @@ mod tests {
         let timestamp_nanos = chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0);
         let event_kind = EventKind::HttpThreat as i32;
         let random_bits: u32 = 12345;
-        let key_i128: i128 =
-            (i128::from(timestamp_nanos) << 64) | (i128::from(event_kind) << 32) | i128::from(random_bits);
+        let key_i128: i128 = (i128::from(timestamp_nanos) << 64)
+            | (i128::from(event_kind) << 32)
+            | i128::from(random_bits);
         let key_bytes = key_i128.to_be_bytes();
 
         // Store in default column family (where events are stored)
@@ -2623,9 +2624,8 @@ mod tests {
                 .unwrap();
 
         let value = db.get(key_bytes).unwrap().unwrap();
-        let new_event: HttpThreatFields = bincode::DefaultOptions::new()
-            .deserialize(&value)
-            .unwrap();
+        let new_event: HttpThreatFields =
+            bincode::DefaultOptions::new().deserialize(&value).unwrap();
 
         // Verify the cluster_id was migrated from Option<usize> to Option<u32>
         assert_eq!(new_event.cluster_id, Some(42_u32));
