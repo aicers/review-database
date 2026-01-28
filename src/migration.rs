@@ -880,12 +880,296 @@ fn read_version_file(path: &Path) -> Result<Version> {
 
 #[cfg(test)]
 mod tests {
+    use std::io::Write;
+    use std::path::Path;
+
     use semver::{Version, VersionReq};
 
-    use super::COMPATIBLE_VERSION_REQ;
+    use super::{COMPATIBLE_VERSION_REQ, create_version_file, migrate_data_dir, read_version_file};
     use crate::tables::NETWORK_TAGS;
     use crate::test::{DbGuard, acquire_db_permit};
     use crate::{Indexable, Store};
+
+    /// Helper to write a specific version to a VERSION file.
+    fn write_version(path: &Path, version: &str) {
+        let version_file = path.join("VERSION");
+        let mut f = std::fs::File::create(&version_file).unwrap();
+        f.write_all(version.as_bytes()).unwrap();
+    }
+
+    // =========================================================================
+    // Tests for migrate_data_dir
+    // =========================================================================
+
+    /// Test that migration is skipped when the version is already compatible.
+    #[test]
+    fn migration_skipped_when_version_compatible() {
+        let data_dir = tempfile::tempdir().unwrap();
+        let backup_dir = tempfile::tempdir().unwrap();
+
+        // Write the current compatible version to both directories
+        let current_version = env!("CARGO_PKG_VERSION");
+        write_version(data_dir.path(), current_version);
+        write_version(backup_dir.path(), current_version);
+
+        // This should succeed without calling any migration
+        let result = migrate_data_dir(data_dir.path(), backup_dir.path());
+        assert!(result.is_ok());
+
+        // VERSION should remain unchanged
+        let version = read_version_file(&data_dir.path().join("VERSION")).unwrap();
+        assert_eq!(version, Version::parse(current_version).unwrap());
+    }
+
+    /// Test that error is returned when data and backup versions mismatch.
+    #[test]
+    fn error_on_version_mismatch() {
+        let data_dir = tempfile::tempdir().unwrap();
+        let backup_dir = tempfile::tempdir().unwrap();
+
+        let mut data_version = Version::parse(env!("CARGO_PKG_VERSION")).unwrap();
+        if !data_version.pre.is_empty() {
+            data_version = Version::new(data_version.major, data_version.minor, data_version.patch);
+        }
+        let mut backup_version = data_version.clone();
+        backup_version.patch += 1;
+
+        // Different versions in data and backup
+        write_version(data_dir.path(), &data_version.to_string());
+        write_version(backup_dir.path(), &backup_version.to_string());
+
+        let result = migrate_data_dir(data_dir.path(), backup_dir.path());
+
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains(&format!(
+            "mismatched database version {data_version} and backup version {backup_version}"
+        )));
+    }
+
+    /// Test that `VERSION` file is created when directory is empty.
+    #[test]
+    fn version_file_created_for_empty_directory() {
+        let data_dir = tempfile::tempdir().unwrap();
+        let backup_dir = tempfile::tempdir().unwrap();
+
+        // Don't write any VERSION files - directories are empty
+
+        let result = migrate_data_dir(data_dir.path(), backup_dir.path());
+
+        // Should succeed (empty dir gets current version)
+        assert!(result.is_ok());
+
+        // VERSION should be created with current package version
+        let data_version = read_version_file(&data_dir.path().join("VERSION")).unwrap();
+        let backup_version = read_version_file(&backup_dir.path().join("VERSION")).unwrap();
+        let current_version = Version::parse(env!("CARGO_PKG_VERSION")).unwrap();
+        assert_eq!(data_version, current_version);
+        assert_eq!(backup_version, current_version);
+    }
+
+    /// Test that error is returned when `VERSION` file contains invalid content.
+    #[test]
+    fn error_on_invalid_version_content() {
+        let data_dir = tempfile::tempdir().unwrap();
+        let backup_dir = tempfile::tempdir().unwrap();
+
+        // Write invalid version content
+        let version_file = data_dir.path().join("VERSION");
+        let mut f = std::fs::File::create(&version_file).unwrap();
+        f.write_all(b"not-a-valid-version").unwrap();
+
+        // Also need a file in backup to prevent it from being treated as empty
+        write_version(backup_dir.path(), env!("CARGO_PKG_VERSION"));
+
+        let result = migrate_data_dir(data_dir.path(), backup_dir.path());
+
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("cannot parse VERSION"));
+    }
+
+    /// Test that non-existent data directory is created.
+    #[test]
+    fn non_existent_directory_is_created() {
+        let temp = tempfile::tempdir().unwrap();
+        let data_dir = temp.path().join("new_data_dir");
+        let backup_dir = temp.path().join("new_backup_dir");
+
+        // Directories don't exist yet
+        assert!(!data_dir.exists());
+        assert!(!backup_dir.exists());
+
+        let result = migrate_data_dir(&data_dir, &backup_dir);
+
+        // Should succeed
+        assert!(result.is_ok());
+
+        // Directories should now exist
+        assert!(data_dir.exists());
+        assert!(backup_dir.exists());
+
+        // VERSION files should exist
+        assert!(data_dir.join("VERSION").exists());
+        assert!(backup_dir.join("VERSION").exists());
+    }
+
+    /// Test that migration fails for unsupported old versions.
+    #[test]
+    fn migration_fails_for_unsupported_version() {
+        let data_dir = tempfile::tempdir().unwrap();
+        let backup_dir = tempfile::tempdir().unwrap();
+
+        // Write a version that's too old and not in the migration list
+        write_version(data_dir.path(), "0.30.0");
+        write_version(backup_dir.path(), "0.30.0");
+
+        let result = migrate_data_dir(data_dir.path(), backup_dir.path());
+
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("migration from 0.30.0 is not supported"));
+    }
+
+    /// Test `read_version_file` and `create_version_file` helper functions.
+    #[test]
+    fn version_file_helpers() {
+        let temp = tempfile::tempdir().unwrap();
+        let version_path = temp.path().join("VERSION");
+
+        // Create a version file
+        create_version_file(&version_path).unwrap();
+
+        // Read it back
+        let version = read_version_file(&version_path).unwrap();
+        assert_eq!(version, Version::parse(env!("CARGO_PKG_VERSION")).unwrap());
+    }
+
+    /// Test that reading a non-existent `VERSION` file returns an error.
+    #[test]
+    fn read_nonexistent_version_file_error() {
+        let temp = tempfile::tempdir().unwrap();
+        let version_path = temp.path().join("NONEXISTENT_VERSION");
+
+        let result = read_version_file(&version_path);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("cannot open VERSION"));
+    }
+
+    /// Test that migrations from `START_VERSION` up to the current version succeed and update `VERSION` files.
+    ///
+    /// NOTE: `START_VERSION` is the oldest supported migration start for this test. If the supported
+    /// migration window changes and older versions are removed from the migration list, update
+    /// the start version here accordingly. This test assumes column families match the current
+    /// schema; if a migration includes column family changes, validate that path separately with
+    /// a schema-specific test.
+    #[test]
+    fn migration_from_supported_minors() {
+        const START_VERSION: &str = "0.43.0";
+        let current_pkg_version = Version::parse(env!("CARGO_PKG_VERSION")).unwrap();
+        let current_base = if current_pkg_version.pre.is_empty() {
+            current_pkg_version.clone()
+        } else {
+            Version::new(
+                current_pkg_version.major,
+                current_pkg_version.minor,
+                current_pkg_version.patch,
+            )
+        };
+
+        let start_version = Version::parse(START_VERSION).unwrap();
+        assert!(
+            current_base.major == start_version.major,
+            "`START_VERSION` must be updated for major version bump (current {current_base}, start {start_version})"
+        );
+        assert!(
+            current_base.minor >= start_version.minor,
+            "`START_VERSION` {start_version} is ahead of current {current_base}; please correct it"
+        );
+
+        for minor in start_version.minor..=current_base.minor {
+            let version = if minor == current_base.minor {
+                current_pkg_version.clone()
+            } else {
+                Version::new(start_version.major, minor, 0)
+            };
+
+            let data_dir = tempfile::tempdir().unwrap();
+            let backup_dir = tempfile::tempdir().unwrap();
+
+            let db_path = data_dir.path().join("states.db");
+            let mut opts = rocksdb::Options::default();
+            opts.create_if_missing(true);
+            opts.create_missing_column_families(true);
+
+            let db: rocksdb::OptimisticTransactionDB = rocksdb::OptimisticTransactionDB::open_cf(
+                &opts,
+                &db_path,
+                crate::tables::MAP_NAMES,
+            )
+            .unwrap();
+            drop(db);
+
+            write_version(data_dir.path(), &version.to_string());
+            write_version(backup_dir.path(), &version.to_string());
+
+            let result = migrate_data_dir(data_dir.path(), backup_dir.path());
+            assert!(result.is_ok(), "Migration should succeed from {version}");
+
+            let data_version = read_version_file(&data_dir.path().join("VERSION")).unwrap();
+            let backup_version = read_version_file(&backup_dir.path().join("VERSION")).unwrap();
+            assert_eq!(data_version, current_pkg_version);
+            assert_eq!(backup_version, current_pkg_version);
+        }
+    }
+
+    /// Test that the `0.42`-specific migration loop runs and updates `VERSION` files.
+    #[test]
+    fn migration_from_v0_42_schema() {
+        let data_dir = tempfile::tempdir().unwrap();
+        let backup_dir = tempfile::tempdir().unwrap();
+
+        let db_path = data_dir.path().join("states.db");
+        let mut opts = rocksdb::Options::default();
+        opts.create_if_missing(true);
+        opts.create_missing_column_families(true);
+
+        let db: rocksdb::OptimisticTransactionDB =
+            rocksdb::OptimisticTransactionDB::open_cf(&opts, &db_path, super::MAP_NAMES_V0_42)
+                .unwrap();
+        drop(db);
+
+        // Write an old version that needs migration
+        write_version(data_dir.path(), "0.42.0");
+        write_version(backup_dir.path(), "0.42.0");
+
+        // Run the migration
+        let result = migrate_data_dir(data_dir.path(), backup_dir.path());
+        assert!(result.is_ok(), "Migration should succeed");
+
+        // Verify database opens with the current column families
+        let db: rocksdb::OptimisticTransactionDB =
+            rocksdb::OptimisticTransactionDB::open_cf(&opts, &db_path, crate::tables::MAP_NAMES)
+                .unwrap();
+        assert!(db.cf_handle("label database").is_some());
+        assert!(db.cf_handle("TI database").is_none());
+        drop(db);
+
+        // Verify both VERSION files are updated to the current package version
+        let data_version = read_version_file(&data_dir.path().join("VERSION")).unwrap();
+        let backup_version = read_version_file(&backup_dir.path().join("VERSION")).unwrap();
+
+        let current_pkg_version = Version::parse(env!("CARGO_PKG_VERSION")).unwrap();
+        assert_eq!(
+            data_version, current_pkg_version,
+            "Data VERSION should be updated to current package version"
+        );
+        assert_eq!(
+            backup_version, current_pkg_version,
+            "Backup VERSION should be updated to current package version"
+        );
+    }
 
     #[allow(dead_code)]
     struct TestSchema {
