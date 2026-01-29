@@ -222,7 +222,7 @@ mod test {
     }
 
     #[test]
-    fn insert_with_duplicate_network_range_fails() {
+    fn insert_with_duplicate_network_range_fails_even_with_different_network_types() {
         let (_permit, store) = setup_store();
         let table = store.customer_map();
 
@@ -232,6 +232,7 @@ mod test {
             vec![],
         );
 
+        // Duplicate network_group should be rejected regardless of network_type.
         let networks = vec![
             CustomerNetwork {
                 name: "network1".to_string(),
@@ -242,7 +243,7 @@ mod test {
             CustomerNetwork {
                 name: "network2".to_string(),
                 description: "Second network with same range".to_string(),
-                network_type: NetworkType::Intranet,
+                network_type: NetworkType::Extranet,
                 network_group: network_group.clone(),
             },
         ];
