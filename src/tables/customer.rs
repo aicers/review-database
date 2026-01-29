@@ -116,7 +116,6 @@ impl IndexedMapUpdate for Update {
             value.description.push_str(description);
         }
         if let Some(networks) = self.networks.as_deref() {
-            check_duplicate_network_group(networks)?;
             value.networks.clear();
             value.networks.extend(networks.iter().cloned());
         }
@@ -181,6 +180,9 @@ impl<'d> IndexedTable<'d, Customer> {
     ///
     /// Returns an error if the `id` is invalid or the database operation fails.
     pub fn update(&mut self, id: u32, old: &Update, new: &Update) -> Result<()> {
+        if let Some(networks) = new.networks.as_deref() {
+            check_duplicate_network_group(networks)?;
+        }
         self.indexed_map.update(id, old, new)
     }
 }
