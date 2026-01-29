@@ -6,10 +6,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use super::{EventCategory, LearningMethod, MEDIUM, TriageScore, common::Match};
-use crate::{
-    event::common::{AttrValue, triage_scores_to_string},
-    types::EventCategoryV0_41,
-};
+use crate::event::common::{AttrValue, triage_scores_to_string};
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct FtpCommand {
@@ -159,7 +156,22 @@ macro_rules! find_ftp_attr_by_kind {
     }};
 }
 
-pub type FtpBruteForceFields = FtpBruteForceFieldsV0_42;
+#[derive(Serialize, Deserialize)]
+pub struct FtpBruteForceFields {
+    pub sensor: String,
+    pub orig_addr: IpAddr,
+    pub resp_addr: IpAddr,
+    pub resp_port: u16,
+    pub proto: u8,
+    pub user_list: Vec<String>,
+    /// Timestamp in nanoseconds since the Unix epoch (UTC).
+    pub start_time: i64,
+    /// Timestamp in nanoseconds since the Unix epoch (UTC).
+    pub end_time: i64,
+    pub is_internal: bool,
+    pub confidence: f32,
+    pub category: Option<EventCategory>,
+}
 
 impl FtpBruteForceFields {
     #[must_use]
@@ -186,55 +198,6 @@ impl FtpBruteForceFields {
     }
 }
 
-#[derive(Serialize, Deserialize)]
-pub struct FtpBruteForceFieldsV0_42 {
-    pub sensor: String,
-    pub orig_addr: IpAddr,
-    pub resp_addr: IpAddr,
-    pub resp_port: u16,
-    pub proto: u8,
-    pub user_list: Vec<String>,
-    /// Timestamp in nanoseconds since the Unix epoch (UTC).
-    pub start_time: i64,
-    /// Timestamp in nanoseconds since the Unix epoch (UTC).
-    pub end_time: i64,
-    pub is_internal: bool,
-    pub confidence: f32,
-    pub category: Option<EventCategory>,
-}
-
-impl From<FtpBruteForceFieldsV0_41> for FtpBruteForceFieldsV0_42 {
-    fn from(value: FtpBruteForceFieldsV0_41) -> Self {
-        Self {
-            sensor: String::new(),
-            orig_addr: value.src_addr,
-            resp_addr: value.dst_addr,
-            resp_port: value.dst_port,
-            proto: value.proto,
-            user_list: value.user_list,
-            start_time: value.start_time.timestamp_nanos_opt().unwrap_or_default(),
-            end_time: value.end_time.timestamp_nanos_opt().unwrap_or_default(),
-            is_internal: value.is_internal,
-            confidence: value.confidence,
-            category: value.category.into(),
-        }
-    }
-}
-
-#[derive(Serialize, Deserialize)]
-pub(crate) struct FtpBruteForceFieldsV0_41 {
-    pub sensor: String,
-    pub src_addr: IpAddr,
-    pub dst_addr: IpAddr,
-    pub dst_port: u16,
-    pub proto: u8,
-    pub user_list: Vec<String>,
-    pub start_time: DateTime<Utc>,
-    pub end_time: DateTime<Utc>,
-    pub is_internal: bool,
-    pub confidence: f32,
-    pub category: EventCategoryV0_41,
-}
 #[derive(Serialize, Deserialize)]
 pub struct FtpBruteForce {
     pub sensor: String,
@@ -353,7 +316,27 @@ impl Match for FtpBruteForce {
     }
 }
 
-pub type FtpEventFields = FtpEventFieldsV0_42;
+#[derive(Debug, Deserialize, Serialize)]
+pub struct FtpEventFields {
+    pub sensor: String,
+    pub orig_addr: IpAddr,
+    pub orig_port: u16,
+    pub resp_addr: IpAddr,
+    pub resp_port: u16,
+    pub proto: u8,
+    /// Timestamp in nanoseconds since the Unix epoch (UTC).
+    pub start_time: i64,
+    pub duration: i64,
+    pub orig_pkts: u64,
+    pub resp_pkts: u64,
+    pub orig_l2_bytes: u64,
+    pub resp_l2_bytes: u64,
+    pub user: String,
+    pub password: String,
+    pub commands: Vec<FtpCommand>,
+    pub confidence: f32,
+    pub category: Option<EventCategory>,
+}
 
 impl FtpEventFields {
     #[must_use]
@@ -390,28 +373,6 @@ impl FtpEventFields {
             self.confidence.to_string()
         )
     }
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-pub struct FtpEventFieldsV0_42 {
-    pub sensor: String,
-    pub orig_addr: IpAddr,
-    pub orig_port: u16,
-    pub resp_addr: IpAddr,
-    pub resp_port: u16,
-    pub proto: u8,
-    /// Timestamp in nanoseconds since the Unix epoch (UTC).
-    pub start_time: i64,
-    pub duration: i64,
-    pub orig_pkts: u64,
-    pub resp_pkts: u64,
-    pub orig_l2_bytes: u64,
-    pub resp_l2_bytes: u64,
-    pub user: String,
-    pub password: String,
-    pub commands: Vec<FtpCommand>,
-    pub confidence: f32,
-    pub category: Option<EventCategory>,
 }
 
 #[derive(Deserialize, Serialize)]

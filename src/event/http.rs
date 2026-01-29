@@ -59,10 +59,8 @@ macro_rules! find_http_attr_by_kind {
 }
 pub(super) use find_http_attr_by_kind;
 
-pub type HttpEventFields = HttpEventFieldsV0_42;
-
 #[derive(Deserialize, Serialize)]
-pub struct HttpEventFieldsV0_42 {
+pub struct HttpEventFields {
     pub sensor: String,
     pub orig_addr: IpAddr,
     pub orig_port: u16,
@@ -147,10 +145,8 @@ impl HttpEventFields {
     }
 }
 
-pub type RepeatedHttpSessionsFields = RepeatedHttpSessionsFieldsV0_42;
-
 #[derive(Serialize, Deserialize)]
-pub struct RepeatedHttpSessionsFieldsV0_42 {
+pub struct RepeatedHttpSessionsFields {
     pub sensor: String,
     pub orig_addr: IpAddr,
     pub orig_port: u16,
@@ -303,11 +299,9 @@ impl Match for RepeatedHttpSessions {
     }
 }
 
-pub type HttpThreatFields = HttpThreatFieldsV0_42;
-
 #[derive(Debug, Deserialize, Serialize)]
 #[allow(clippy::module_name_repetitions)]
-pub struct HttpThreatFieldsV0_42 {
+pub struct HttpThreatFields {
     #[serde(with = "ts_nanoseconds")]
     pub time: DateTime<Utc>,
     pub sensor: String,
@@ -652,10 +646,8 @@ impl Match for HttpThreat {
     }
 }
 
-pub type DgaFields = DgaFieldsV0_42;
-
 #[derive(Debug, Deserialize, Serialize)]
-pub struct DgaFieldsV0_42 {
+pub struct DgaFields {
     pub sensor: String,
     pub orig_addr: IpAddr,
     pub orig_port: u16,

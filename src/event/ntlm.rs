@@ -34,10 +34,8 @@ macro_rules! find_ntlm_attr_by_kind {
     }};
 }
 
-pub type BlocklistNtlmFields = BlocklistNtlmFieldsV0_42;
-
 #[derive(Serialize, Deserialize)]
-pub struct BlocklistNtlmFieldsV0_42 {
+pub struct BlocklistNtlmFields {
     pub sensor: String,
     pub orig_addr: IpAddr,
     pub orig_port: u16,

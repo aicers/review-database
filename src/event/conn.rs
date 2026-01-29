@@ -35,10 +35,8 @@ macro_rules! find_conn_attr_by_kind {
 }
 pub(crate) use find_conn_attr_by_kind;
 
-pub type PortScanFields = PortScanFieldsV0_42;
-
 #[derive(Serialize, Deserialize)]
-pub struct PortScanFieldsV0_42 {
+pub struct PortScanFields {
     pub sensor: String,
     pub orig_addr: IpAddr,
     pub resp_addr: IpAddr,
@@ -186,10 +184,8 @@ impl Match for PortScan {
     }
 }
 
-pub type MultiHostPortScanFields = MultiHostPortScanFieldsV0_42;
-
 #[derive(Serialize, Deserialize)]
-pub struct MultiHostPortScanFieldsV0_42 {
+pub struct MultiHostPortScanFields {
     pub sensor: String,
     pub orig_addr: IpAddr,
     pub resp_port: u16,
@@ -338,10 +334,8 @@ impl Match for MultiHostPortScan {
     }
 }
 
-pub type ExternalDdosFields = ExternalDdosFieldsV0_42;
-
 #[derive(Serialize, Deserialize)]
-pub struct ExternalDdosFieldsV0_42 {
+pub struct ExternalDdosFields {
     pub sensor: String,
     pub orig_addrs: Vec<IpAddr>,
     pub resp_addr: IpAddr,
@@ -484,10 +478,8 @@ impl Match for ExternalDdos {
     }
 }
 
-pub type BlocklistConnFields = BlocklistConnFieldsV0_42;
-
 #[derive(Deserialize, Serialize)]
-pub struct BlocklistConnFieldsV0_42 {
+pub struct BlocklistConnFields {
     pub sensor: String,
     pub orig_addr: IpAddr,
     pub orig_port: u16,

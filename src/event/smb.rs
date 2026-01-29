@@ -40,10 +40,8 @@ macro_rules! find_smb_attr_by_kind {
     }};
 }
 
-pub type BlocklistSmbFields = BlocklistSmbFieldsV0_42;
-
 #[derive(Serialize, Deserialize)]
-pub struct BlocklistSmbFieldsV0_42 {
+pub struct BlocklistSmbFields {
     pub sensor: String,
     pub orig_addr: IpAddr,
     pub orig_port: u16,

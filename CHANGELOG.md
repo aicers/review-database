@@ -25,6 +25,12 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 ### Removed
 
 - Removed `IndexedTable<Network>::remove_customer` method.
+- Removed support for database migrations from versions prior to 0.43.0.
+  Migration from 0.42.x is no longer supported. Deployments on 0.42.x or earlier
+  must first upgrade to 0.43.x before upgrading to the current version.
+- Removed legacy type aliases and versioned structs (e.g., `EventCategoryV0_41`,
+  `FtpBruteForceFieldsV0_41`, `FilterValueV0_41`, `AllowNetworkV0_42`,
+  `BlockNetworkV0_42`) that were only used for pre-0.42 compatibility.
 
 ## [0.43.0] - 2025-12-18
 

@@ -36,10 +36,8 @@ macro_rules! find_smtp_attr_by_kind {
     }};
 }
 
-pub type BlocklistSmtpFields = BlocklistSmtpFieldsV0_42;
-
 #[derive(Serialize, Deserialize)]
-pub struct BlocklistSmtpFieldsV0_42 {
+pub struct BlocklistSmtpFields {
     pub sensor: String,
     pub orig_addr: IpAddr,
     pub orig_port: u16,

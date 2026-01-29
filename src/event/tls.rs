@@ -68,10 +68,8 @@ macro_rules! find_tls_attr_by_kind {
     }};
 }
 
-pub type BlocklistTlsFields = BlocklistTlsFieldsV0_42;
-
 #[derive(Serialize, Deserialize)]
-pub struct BlocklistTlsFieldsV0_42 {
+pub struct BlocklistTlsFields {
     pub sensor: String,
     pub orig_addr: IpAddr,
     pub orig_port: u16,
