@@ -5,7 +5,6 @@ use anyhow::Result;
 use chrono::{NaiveDateTime, naive::serde::ts_nanoseconds_option};
 use ipnet::IpNet;
 use num_derive::{FromPrimitive, ToPrimitive};
-use num_traits::FromPrimitive;
 use serde::{Deserialize, Serialize};
 use strum_macros::Display;
 
@@ -87,49 +86,6 @@ pub type EventCategory = EventCategoryV0_42;
 )]
 #[repr(u8)]
 pub enum EventCategoryV0_42 {
-    Reconnaissance = 1,
-    InitialAccess,
-    Execution,
-    CredentialAccess,
-    Discovery,
-    LateralMovement,
-    CommandAndControl,
-    Exfiltration,
-    Impact,
-    Collection,
-    DefenseEvasion,
-    Persistence,
-    PrivilegeEscalation,
-    ResourceDevelopment,
-}
-
-impl From<EventCategoryV0_41> for Option<EventCategoryV0_42> {
-    fn from(value: EventCategoryV0_41) -> Self {
-        match value {
-            EventCategoryV0_41::Unknown => None,
-            _ => EventCategoryV0_42::from_u8(value as u8),
-        }
-    }
-}
-
-#[derive(
-    Debug,
-    Display,
-    Copy,
-    Clone,
-    Eq,
-    Hash,
-    PartialEq,
-    Deserialize,
-    Serialize,
-    PartialOrd,
-    Ord,
-    FromPrimitive,
-    ToPrimitive,
-)]
-#[repr(u8)]
-pub(crate) enum EventCategoryV0_41 {
-    Unknown = 0,
     Reconnaissance = 1,
     InitialAccess,
     Execution,
