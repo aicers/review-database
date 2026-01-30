@@ -19,7 +19,7 @@ use crate::{
     migration::migration_structures::{
         AllowNetworkV0_42, BlockNetworkV0_42, HttpThreatFieldsV0_43, ModelIndicatorValueV0_43,
     },
-    tables::{MODEL_INDICATORS, NETWORK_TAGS},
+    tables::{MODEL_INDICATORS, ModelIndicatorValue, NETWORK_TAGS},
 };
 
 /// The range of versions that use the current database format.
@@ -875,16 +875,7 @@ fn migrate_model_indicators(dir: &Path) -> Result<()> {
             bincode::DefaultOptions::new().deserialize::<ModelIndicatorValueV0_43>(&value)
         {
             // Convert to new format
-            #[derive(serde::Serialize)]
-            struct NewValue {
-                description: String,
-                model_id: u32,
-                tokens: std::collections::HashSet<Vec<String>>,
-                #[serde(with = "chrono::serde::ts_seconds")]
-                last_modification_time: chrono::DateTime<chrono::Utc>,
-            }
-
-            let new_value = NewValue {
+            let new_value = ModelIndicatorValue {
                 description: old.description,
                 model_id: u32::try_from(old.model_id).unwrap_or(0),
                 tokens: old.tokens,
@@ -2451,7 +2442,7 @@ mod tests {
         use bincode::Options;
 
         use super::migration_structures::ModelIndicatorValueV0_43;
-        use crate::tables::MODEL_INDICATORS;
+        use crate::tables::{MODEL_INDICATORS, ModelIndicatorValue};
 
         // Create test directory and database
         let db_dir = tempfile::tempdir().unwrap();
@@ -2507,26 +2498,17 @@ mod tests {
                 .unwrap();
         let cf = db.cf_handle(MODEL_INDICATORS).unwrap();
 
-        // Define the new value structure to verify
-        #[derive(serde::Deserialize)]
-        #[allow(dead_code, clippy::items_after_statements)]
-        struct NewValue {
-            description: String,
-            model_id: u32,
-            tokens: HashSet<Vec<String>>,
-            #[serde(with = "chrono::serde::ts_seconds")]
-            last_modification_time: chrono::DateTime<chrono::Utc>,
-        }
-
         // Verify indicator1
         let value1 = db.get_cf(cf, b"indicator1").unwrap().unwrap();
-        let new1: NewValue = bincode::DefaultOptions::new().deserialize(&value1).unwrap();
+        let new1: ModelIndicatorValue =
+            bincode::DefaultOptions::new().deserialize(&value1).unwrap();
         assert_eq!(new1.description, "Test indicator 1");
         assert_eq!(new1.model_id, 42_u32);
 
         // Verify indicator2
         let value2 = db.get_cf(cf, b"indicator2").unwrap().unwrap();
-        let new2: NewValue = bincode::DefaultOptions::new().deserialize(&value2).unwrap();
+        let new2: ModelIndicatorValue =
+            bincode::DefaultOptions::new().deserialize(&value2).unwrap();
         assert_eq!(new2.description, "Test indicator 2");
         assert_eq!(new2.model_id, 123_u32);
     }
