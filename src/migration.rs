@@ -1257,7 +1257,7 @@ use crate::event::{
     BlocklistNfsFields, BlocklistNtlmFields, BlocklistRadiusFields, BlocklistRdpFields,
     BlocklistSmbFields, BlocklistSmtpFields, BlocklistSshFields, BlocklistTlsFields,
     CryptocurrencyMiningPoolFields, DgaFields, DnsEventFields, ExternalDdosFields,
-    FtpBruteForceFields, FtpEventFields, HttpEventFields, HttpThreatFields, LdapBruteForceFields,
+    FtpBruteForceFields, FtpEventFields, HttpEventFields, LdapBruteForceFields,
     LdapEventFields, MultiHostPortScanFields, NetworkThreat, PortScanFields, RdpBruteForceFields,
     RepeatedHttpSessionsFields, UnusualDestinationPatternFields,
 };
