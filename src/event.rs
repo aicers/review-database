@@ -2009,6 +2009,28 @@ pub enum LearningMethod {
     SemiSupervised,
 }
 
+/// A filter used to query events from the database.
+///
+/// # Customer Filtering Behavior
+///
+/// The `customers` field does **not** filter events by an explicit customer ID
+/// stored on each event. Instead, the current implementation resolves each
+/// customer's registered network ranges and matches an event if any of its
+/// source addresses (`src_addrs`) or destination addresses (`dst_addrs`) fall
+/// within those ranges.
+///
+/// In other words, customer filtering performs network-range matching against
+/// the customer's registered networks, not direct per-event customer
+/// attribution.
+///
+/// ## Known Limitation
+///
+/// The event storage schema (`EventDb`) does not currently store an explicit
+/// customer identifier for each event. Introducing explicit customer
+/// attribution in storage would require a cross-cutting schema change and is
+/// intentionally out of scope. See [issue #687] for context.
+///
+/// [issue #687]: https://github.com/aicers/review-database/issues/687
 #[allow(clippy::module_name_repetitions)]
 pub struct EventFilter {
     customers: Option<Vec<Customer>>,

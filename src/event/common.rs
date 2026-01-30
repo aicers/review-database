@@ -99,6 +99,12 @@ pub(super) trait Match {
         filter: &EventFilter,
         locator: Option<&ip2location::DB>,
     ) -> Result<(bool, Option<Vec<TriageScore>>)> {
+        // Customer matching uses the customer's registered network ranges to
+        // test event addresses (src_addrs/dst_addrs). It does NOT filter based
+        // on a customer ID attached to the event. If you need per-event
+        // customer attribution, that requires modifying the EventDb schema
+        // (see issue #687) — do not attempt to change storage layout in this
+        // function.
         if let Some(customers) = &filter.customers
             && customers.iter().all(|customer| {
                 self.src_addrs()
