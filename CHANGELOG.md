@@ -7,6 +7,13 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed `CsvColumnExtra::get_by_model` to use big-endian byte encoding for the
+  `model_id` key lookup. Previously, `to_byte_slice` produced native-endian raw
+  bytes, which mismatched the table's big-endian key encoding on little-endian
+  architectures.
+
 ### Changed
 
 - **BREAKING**: Unified `cluster_id` and `model_id` types to `u32` across the

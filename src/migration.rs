@@ -874,10 +874,15 @@ fn migrate_model_indicators(dir: &Path) -> Result<()> {
         if let Ok(old) =
             bincode::DefaultOptions::new().deserialize::<ModelIndicatorValueV0_43>(&value)
         {
-            // Convert to new format
+            // Convert to new format, skipping entries with negative model_id
+            let Some(model_id) = u32::try_from(old.model_id).ok() else {
+                errors += 1;
+                continue;
+            };
+
             let new_value = ModelIndicatorValue {
                 description: old.description,
-                model_id: u32::try_from(old.model_id).unwrap_or(0),
+                model_id,
                 tokens: old.tokens,
                 last_modification_time: old.last_modification_time,
             };
