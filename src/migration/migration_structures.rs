@@ -1996,7 +1996,8 @@ impl From<NetworkThreatV0_43> for NetworkThreat {
             db_name: old.db_name,
             rule_id: old.rule_id,
             matched_to: old.matched_to,
-            cluster_id: old.cluster_id,
+            // Convert cluster_id from Option<usize> to Option<u32>
+            cluster_id: old.cluster_id.and_then(|v| u32::try_from(v).ok()),
             attack_kind: old.attack_kind,
             confidence: old.confidence,
             category: old.category,
