@@ -102,7 +102,7 @@ use crate::{
 /// // release that involves database format change) to 3.5.0, including
 /// // all alpha changes finalized in 3.5.0.
 /// ```
-const COMPATIBLE_VERSION_REQ: &str = ">=0.44.0-alpha.2,<0.44.0-alpha.3";
+const COMPATIBLE_VERSION_REQ: &str = ">=0.44.0-alpha.3,<0.44.0-alpha.4";
 
 /// Migrates the data directory to the up-to-date format if necessary.
 ///
@@ -171,8 +171,8 @@ pub fn migrate_data_dir<P: AsRef<Path>>(
             migrate_0_42_to_0_43,
         ),
         (
-            VersionReq::parse(">=0.43.0,<0.44.0-alpha.2")?,
-            Version::parse("0.44.0-alpha.2")?,
+            VersionReq::parse(">=0.43.0,<0.44.0-alpha.3")?,
+            Version::parse("0.44.0-alpha.3")?,
             migrate_0_43_to_0_44,
         ),
     ];
@@ -1182,7 +1182,7 @@ use crate::event::{
     BlocklistNfsFields, BlocklistNtlmFields, BlocklistRadiusFields, BlocklistRdpFields,
     BlocklistSmbFields, BlocklistSmtpFields, BlocklistSshFields, BlocklistTlsFields,
     CryptocurrencyMiningPoolFields, DgaFields, DnsEventFields, ExternalDdosFields,
-    FtpBruteForceFields, FtpEventFields, HttpEventFields, HttpThreatFields, LdapBruteForceFields,
+    FtpBruteForceFields, FtpEventFields, HttpEventFields, LdapBruteForceFields,
     LdapEventFields, MultiHostPortScanFields, NetworkThreat, PortScanFields, RdpBruteForceFields,
     RepeatedHttpSessionsFields, UnusualDestinationPatternFields,
 };
