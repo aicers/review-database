@@ -61,7 +61,6 @@ pub use self::label_db::{
 };
 pub use self::model::Model;
 pub use self::model_indicator::ModelIndicator;
-pub(crate) use self::model_indicator::Value as ModelIndicatorValue;
 pub use self::network::{Network, Update as NetworkUpdate};
 pub(crate) use self::node::Inner as InnerNode;
 pub use self::node::{

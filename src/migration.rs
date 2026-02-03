@@ -17,9 +17,9 @@ use crate::{
     AllowNetwork, BlockNetwork, Customer,
     event::{EventKind, HttpThreatFields},
     migration::migration_structures::{
-        AllowNetworkV0_42, BlockNetworkV0_42, HttpThreatFieldsV0_43, ModelIndicatorValueV0_43,
+        AllowNetworkV0_42, BlockNetworkV0_42, HttpThreatFieldsV0_43,
     },
-    tables::{MODEL_INDICATORS, ModelIndicatorValue, NETWORK_TAGS},
+    tables::NETWORK_TAGS,
 };
 
 /// The range of versions that use the current database format.
@@ -249,11 +249,6 @@ fn migrate_0_43_to_0_44(data_dir: &Path) -> Result<()> {
 
     // Migrate Network table to enforce global name uniqueness
     migrate_network_cf(data_dir)?;
-
-    // Migrate ModelIndicator with model_id from i32 to u32
-    // Note: ModelIndicator::Value is serialized using bincode::DefaultOptions (varint),
-    // so the i32→u32 change is NOT byte-compatible for non-zero values.
-    migrate_model_indicators(data_dir)?;
 
     // Migrate HttpThreat events with cluster_id from Option<usize> to Option<u32>
     // Note: Cluster and TimeSeries table migrations are not needed because the
@@ -846,83 +841,6 @@ fn migrate_network_cf_inner(
 /// This migration handles the serialization change for `ModelIndicator::Value`.
 /// Since bincode's `DefaultOptions` uses varint encoding, the i32→u32 change
 /// is NOT byte-compatible for non-zero values, requiring migration.
-fn migrate_model_indicators(dir: &Path) -> Result<()> {
-    let db_path = dir.join("states.db");
-
-    let mut opts = rocksdb::Options::default();
-    opts.create_if_missing(false);
-    opts.create_missing_column_families(false);
-
-    let db: rocksdb::OptimisticTransactionDB<rocksdb::SingleThreaded> =
-        rocksdb::OptimisticTransactionDB::open_cf(&opts, &db_path, crate::tables::MAP_NAMES)
-            .context("Failed to open database for ModelIndicator migration")?;
-
-    let cf = db
-        .cf_handle(MODEL_INDICATORS)
-        .ok_or_else(|| anyhow!("model indicators column family not found"))?;
-
-    let mut migrated_count = 0usize;
-    let mut errors = 0usize;
-
-    // Collect entries to migrate
-    let mut entries_to_update: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
-
-    for item in db.iterator_cf(cf, rocksdb::IteratorMode::Start) {
-        let (key, value) = item.context("failed to read model indicator entry")?;
-
-        // Try to deserialize with old format
-        if let Ok(old) =
-            bincode::DefaultOptions::new().deserialize::<ModelIndicatorValueV0_43>(&value)
-        {
-            // Convert to new format, skipping entries with negative model_id
-            let Some(model_id) = u32::try_from(old.model_id).ok() else {
-                errors += 1;
-                continue;
-            };
-
-            let new_value = ModelIndicatorValue {
-                description: old.description,
-                model_id,
-                tokens: old.tokens,
-                last_modification_time: old.last_modification_time,
-            };
-
-            if let Ok(serialized) = bincode::DefaultOptions::new().serialize(&new_value) {
-                entries_to_update.push((key.to_vec(), serialized));
-                migrated_count += 1;
-            } else {
-                errors += 1;
-            }
-        } else {
-            // If we couldn't deserialize with old format, it might already be in the new format
-            errors += 1;
-        }
-    }
-
-    if !entries_to_update.is_empty() {
-        let txn = db.transaction();
-        for (key, new_value) in &entries_to_update {
-            txn.put_cf(cf, key, new_value)?;
-        }
-        txn.commit()
-            .context("failed to commit ModelIndicator migration")?;
-    }
-
-    if errors > 0 {
-        info!(
-            "ModelIndicator migration: migrated {} entries, {} entries skipped (possibly already migrated)",
-            migrated_count, errors
-        );
-    } else {
-        info!(
-            "Migrated {} ModelIndicator entries with model_id type change",
-            migrated_count
-        );
-    }
-
-    Ok(())
-}
-
 /// Migrates `HttpThreat` events with `cluster_id` from `Option<usize>` to `Option<u32>`.
 ///
 /// This migration handles the serialization change for `HttpThreat` events.
@@ -2441,84 +2359,6 @@ mod tests {
     }
 
     #[test]
-    fn test_migrate_model_indicators() {
-        use std::collections::HashSet;
-
-        use bincode::Options;
-
-        use super::migration_structures::ModelIndicatorValueV0_43;
-        use crate::tables::{MODEL_INDICATORS, ModelIndicatorValue};
-
-        // Create test directory and database
-        let db_dir = tempfile::tempdir().unwrap();
-        let db_path = db_dir.path().join("states.db");
-
-        let mut opts = rocksdb::Options::default();
-        opts.create_if_missing(true);
-        opts.create_missing_column_families(true);
-
-        let db: rocksdb::OptimisticTransactionDB<rocksdb::SingleThreaded> =
-            rocksdb::OptimisticTransactionDB::open_cf(&opts, &db_path, crate::tables::MAP_NAMES)
-                .unwrap();
-
-        let cf = db.cf_handle(MODEL_INDICATORS).unwrap();
-
-        // Create old-format ModelIndicator values with i32 model_id
-        let old_value1 = ModelIndicatorValueV0_43 {
-            description: "Test indicator 1".to_string(),
-            model_id: 42_i32,
-            tokens: {
-                let mut set = HashSet::new();
-                set.insert(vec!["token1".to_string(), "token2".to_string()]);
-                set
-            },
-            last_modification_time: chrono::Utc::now(),
-        };
-
-        let old_value2 = ModelIndicatorValueV0_43 {
-            description: "Test indicator 2".to_string(),
-            model_id: 123_i32,
-            tokens: HashSet::new(),
-            last_modification_time: chrono::Utc::now(),
-        };
-
-        // Serialize and store old-format values
-        let serialized1 = bincode::DefaultOptions::new()
-            .serialize(&old_value1)
-            .unwrap();
-        let serialized2 = bincode::DefaultOptions::new()
-            .serialize(&old_value2)
-            .unwrap();
-
-        db.put_cf(cf, b"indicator1", &serialized1).unwrap();
-        db.put_cf(cf, b"indicator2", &serialized2).unwrap();
-        drop(db);
-
-        // Run the migration
-        super::migrate_model_indicators(db_dir.path()).unwrap();
-
-        // Verify the migration by reading back and checking new format
-        let db: rocksdb::OptimisticTransactionDB<rocksdb::SingleThreaded> =
-            rocksdb::OptimisticTransactionDB::open_cf(&opts, &db_path, crate::tables::MAP_NAMES)
-                .unwrap();
-        let cf = db.cf_handle(MODEL_INDICATORS).unwrap();
-
-        // Verify indicator1
-        let value1 = db.get_cf(cf, b"indicator1").unwrap().unwrap();
-        let new1: ModelIndicatorValue =
-            bincode::DefaultOptions::new().deserialize(&value1).unwrap();
-        assert_eq!(new1.description, "Test indicator 1");
-        assert_eq!(new1.model_id, 42_u32);
-
-        // Verify indicator2
-        let value2 = db.get_cf(cf, b"indicator2").unwrap().unwrap();
-        let new2: ModelIndicatorValue =
-            bincode::DefaultOptions::new().deserialize(&value2).unwrap();
-        assert_eq!(new2.description, "Test indicator 2");
-        assert_eq!(new2.model_id, 123_u32);
-    }
-
-    #[test]
     fn test_migrate_http_threat_events() {
         use std::net::IpAddr;
 
@@ -2638,26 +2478,6 @@ mod tests {
 
         // Run the migration - should succeed with no events
         let result = super::migrate_http_threat_events(db_dir.path());
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn test_migrate_model_indicators_empty_db() {
-        // Test that migration succeeds when there are no ModelIndicator entries
-        let db_dir = tempfile::tempdir().unwrap();
-        let db_path = db_dir.path().join("states.db");
-
-        let mut opts = rocksdb::Options::default();
-        opts.create_if_missing(true);
-        opts.create_missing_column_families(true);
-
-        let db: rocksdb::OptimisticTransactionDB<rocksdb::SingleThreaded> =
-            rocksdb::OptimisticTransactionDB::open_cf(&opts, &db_path, crate::tables::MAP_NAMES)
-                .unwrap();
-        drop(db);
-
-        // Run the migration - should succeed with no entries
-        let result = super::migrate_model_indicators(db_dir.path());
         assert!(result.is_ok());
     }
 }
