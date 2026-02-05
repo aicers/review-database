@@ -52,12 +52,12 @@ impl ModelIndicator {
 }
 
 #[derive(Deserialize, Serialize)]
-pub(crate) struct Value {
-    pub(crate) description: String,
-    pub(crate) model_id: u32,
-    pub(crate) tokens: HashSet<Vec<String>>,
+struct Value {
+    description: String,
+    model_id: u32,
+    tokens: HashSet<Vec<String>>,
     #[serde(with = "ts_seconds")]
-    pub(crate) last_modification_time: DateTime<Utc>,
+    last_modification_time: DateTime<Utc>,
 }
 
 impl FromKeyValue for ModelIndicator {
