@@ -2011,7 +2011,7 @@ pub enum LearningMethod {
 
 /// A filter used to query events from the database.
 ///
-/// # Customer Filtering Behavior
+/// # Notes
 ///
 /// The `customers` field does **not** filter events by an explicit customer ID
 /// stored on each event. Instead, the current implementation resolves each
