@@ -2023,7 +2023,7 @@ pub enum LearningMethod {
 /// the customer's registered networks, not direct per-event customer
 /// attribution.
 ///
-/// # Known Limitation
+/// # Limitations
 ///
 /// The event storage schema (`EventDb`) does not currently store an explicit
 /// customer identifier for each event. Introducing explicit customer
