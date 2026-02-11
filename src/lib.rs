@@ -290,7 +290,18 @@ impl Store {
                 }))
             }
             (None, None, None) => Ok(None),
-            _ => Err(anyhow!("incomplete backup configuration")),
+            (duration, time, num) => Err(anyhow!(
+                "incomplete backup configuration: missing keys: {}",
+                [
+                    duration.is_none().then_some(tables::KEY_BACKUP_DURATION),
+                    time.is_none().then_some(tables::KEY_BACKUP_TIME),
+                    num.is_none().then_some(tables::KEY_NUM_OF_BACKUPS_TO_KEEP),
+                ]
+                .into_iter()
+                .flatten()
+                .collect::<Vec<_>>()
+                .join(", ")
+            )),
         }
     }
 
