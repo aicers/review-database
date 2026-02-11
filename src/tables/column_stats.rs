@@ -17,7 +17,7 @@ const DEFAULT_PORTION_OF_TOP_N: f64 = 1.0;
 
 #[derive(Deserialize)]
 pub struct TopColumnsOfCluster {
-    pub cluster_id: i32,
+    pub cluster_id: u32,
     pub columns: Vec<TopElementCountsByColumn>,
 }
 
@@ -359,7 +359,7 @@ impl<'d> Table<'d, ColumnStats> {
     pub fn get_top_ip_addresses_of_cluster(
         &self,
         model_id: u32,
-        cluster_ids: &[i32],
+        cluster_ids: &[u32],
         size: usize,
     ) -> Result<Vec<TopElementCountsByColumn>> {
         use std::cmp::Reverse;
@@ -367,13 +367,13 @@ impl<'d> Table<'d, ColumnStats> {
         if cluster_ids.is_empty() {
             return Ok(Vec::new());
         }
-        let mut prefix = Vec::with_capacity(size_of::<i32>() + size_of::<u32>());
+        let mut prefix = Vec::with_capacity(size_of::<u32>() + size_of::<u32>());
         prefix.extend(model_id.to_be_bytes());
         prefix.extend(u32::to_be_bytes(0)); // placeholder for cluster_id
 
         let mut top_n: HashMap<u32, HashMap<String, i64>> = HashMap::new();
         for cluster_id in cluster_ids {
-            prefix[size_of::<i32>()..].copy_from_slice(&cluster_id.to_be_bytes());
+            prefix[size_of::<u32>()..].copy_from_slice(&cluster_id.to_be_bytes());
             let iter = self.prefix_iter(Direction::Forward, None, &prefix);
             for result in iter {
                 let column_stats = result?;
@@ -494,7 +494,7 @@ impl<'d> Table<'d, ColumnStats> {
     /// # Errors
     ///
     /// Returns an error if the database operation fails.
-    pub fn count_rounds_by_cluster(&self, model_id: i32, cluster_id: u32) -> Result<i64> {
+    pub fn count_rounds_by_cluster(&self, model_id: u32, cluster_id: u32) -> Result<i64> {
         let mut prefix = model_id.to_be_bytes().to_vec();
         prefix.extend(cluster_id.to_be_bytes());
         let iter = self.prefix_iter(Direction::Forward, None, &prefix);
@@ -739,26 +739,23 @@ fn to_multi_maps(
         n_index: column.to_usize().expect("column index < usize::max"),
         selected: selected
             .into_iter()
-            .map(|(cluster_id, v)| {
-                let cluster_id = cluster_id.to_i32().expect("cluster_id is a valid i32");
-                TopColumnsOfCluster {
-                    cluster_id,
-                    columns: v
-                        .into_iter()
-                        .map(|(col, top_n)| TopElementCountsByColumn {
-                            column_index: col.to_usize().expect("column index < usize::max"),
-                            counts: top_n
-                                .into_iter()
-                                .flat_map(|ecs| {
-                                    ecs.iter().map(|ec| ElementCount {
-                                        value: ec.value.to_string(),
-                                        count: ec.count.to_i64().expect("Count is not a valid i64"),
-                                    })
+            .map(|(cluster_id, v)| TopColumnsOfCluster {
+                cluster_id,
+                columns: v
+                    .into_iter()
+                    .map(|(col, top_n)| TopElementCountsByColumn {
+                        column_index: col.to_usize().expect("column index < usize::max"),
+                        counts: top_n
+                            .into_iter()
+                            .flat_map(|ecs| {
+                                ecs.iter().map(|ec| ElementCount {
+                                    value: ec.value.to_string(),
+                                    count: ec.count.to_i64().expect("Count is not a valid i64"),
                                 })
-                                .collect(),
-                        })
-                        .collect(),
-                }
+                            })
+                            .collect(),
+                    })
+                    .collect(),
             })
             .collect(),
     }
