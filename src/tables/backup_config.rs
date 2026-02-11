@@ -1,6 +1,6 @@
 //! The `backup_config` module.
 
-use anyhow::{Result, anyhow};
+use anyhow::{Context, Result, anyhow};
 use serde::{Deserialize, Serialize};
 
 /// Configuration for RocksDB backup settings.
@@ -71,13 +71,13 @@ impl BackupConfig {
 
         let hours = parts[0]
             .parse::<u32>()
-            .map_err(|_| anyhow!("hours must be a valid number"))?;
+            .context("hours must be a valid number")?;
         let minutes = parts[1]
             .parse::<u32>()
-            .map_err(|_| anyhow!("minutes must be a valid number"))?;
+            .context("minutes must be a valid number")?;
         let seconds = parts[2]
             .parse::<u32>()
-            .map_err(|_| anyhow!("seconds must be a valid number"))?;
+            .context("seconds must be a valid number")?;
 
         if hours > 23 {
             return Err(anyhow!("hours must be between 0 and 23, got: {hours}"));
@@ -190,6 +190,128 @@ mod tests {
                 .unwrap_err()
                 .to_string()
                 .contains("num_of_backups_to_keep must be >= 1")
+        );
+    }
+
+    #[test]
+    fn test_valid_backup_config_min_values() {
+        let config = BackupConfig::new(1, "00:00:00".to_string(), 1).unwrap();
+        assert_eq!(config.backup_duration, 1);
+        assert_eq!(config.backup_time, "00:00:00");
+        assert_eq!(config.num_of_backups_to_keep, 1);
+    }
+
+    #[test]
+    fn test_valid_backup_config_max_time_bounds() {
+        let config = BackupConfig::new(1, "23:59:59".to_string(), 1).unwrap();
+        assert_eq!(config.backup_time, "23:59:59");
+    }
+
+    #[test]
+    fn test_invalid_time_non_numeric_hours() {
+        let result = BackupConfig::new(1, "aa:00:00".to_string(), 1);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("hours must be a valid number")
+        );
+    }
+
+    #[test]
+    fn test_invalid_time_non_numeric_minutes() {
+        let result = BackupConfig::new(1, "00:bb:00".to_string(), 1);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("minutes must be a valid number")
+        );
+    }
+
+    #[test]
+    fn test_invalid_time_non_numeric_seconds() {
+        let result = BackupConfig::new(1, "00:00:cc".to_string(), 1);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("seconds must be a valid number")
+        );
+    }
+
+    #[test]
+    fn test_invalid_time_empty() {
+        let result = BackupConfig::new(1, String::new(), 1);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("backup_time must be in HH:MM:SS format")
+        );
+    }
+
+    #[test]
+    fn test_invalid_time_whitespace() {
+        let result = BackupConfig::new(1, "   ".to_string(), 1);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("backup_time must be in HH:MM:SS format")
+        );
+    }
+
+    #[test]
+    fn test_invalid_time_missing_field() {
+        let result = BackupConfig::new(1, "00:00".to_string(), 1);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("backup_time must be in HH:MM:SS format")
+        );
+    }
+
+    #[test]
+    fn test_invalid_time_extra_field() {
+        let result = BackupConfig::new(1, "00:00:00:00".to_string(), 1);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("backup_time must be in HH:MM:SS format")
+        );
+    }
+
+    #[test]
+    fn test_invalid_time_leading_space() {
+        let result = BackupConfig::new(1, " 00:00:00".to_string(), 1);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("hours must be a valid number")
+        );
+    }
+
+    #[test]
+    fn test_invalid_time_trailing_space() {
+        let result = BackupConfig::new(1, "00:00:00 ".to_string(), 1);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("seconds must be a valid number")
         );
     }
 }
