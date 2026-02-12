@@ -269,8 +269,8 @@ impl Store {
     ///
     /// # Errors
     ///
-    /// Returns an error if any value is invalid or if the database operation
-    /// fails.
+    /// Returns an error if any value is invalid, if the configuration is only
+    /// partially initialized, or if the database operation fails.
     pub fn backup_config(&self) -> Result<Option<BackupConfig>> {
         let config = self.config_map();
 

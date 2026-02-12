@@ -529,7 +529,26 @@ mod tests {
         );
     }
 
-    // BackupConfig tests
+    fn assert_backup_config_values(
+        store: &Store,
+        duration: Option<&str>,
+        time: Option<&str>,
+        num_to_keep: Option<&str>,
+    ) {
+        let config_map = store.config_map();
+        assert_eq!(
+            config_map.current(KEY_BACKUP_DURATION).unwrap(),
+            duration.map(ToString::to_string)
+        );
+        assert_eq!(
+            config_map.current(KEY_BACKUP_TIME).unwrap(),
+            time.map(ToString::to_string)
+        );
+        assert_eq!(
+            config_map.current(KEY_NUM_OF_BACKUPS_TO_KEEP).unwrap(),
+            num_to_keep.map(ToString::to_string)
+        );
+    }
 
     #[test]
     fn backup_config_read_returns_none_when_missing() {
@@ -550,19 +569,7 @@ mod tests {
         assert!(store.init_backup_config(&config).is_ok());
 
         // Verify all values were stored correctly
-        let config_map = store.config_map();
-        assert_eq!(
-            config_map.current(KEY_BACKUP_DURATION).unwrap(),
-            Some("7".to_string())
-        );
-        assert_eq!(
-            config_map.current(KEY_BACKUP_TIME).unwrap(),
-            Some("02:00:00".to_string())
-        );
-        assert_eq!(
-            config_map.current(KEY_NUM_OF_BACKUPS_TO_KEEP).unwrap(),
-            Some("10".to_string())
-        );
+        assert_backup_config_values(&store, Some("7"), Some("02:00:00"), Some("10"));
 
         // Read should return the initialized config
         let read_config = store.backup_config().unwrap();
@@ -584,19 +591,7 @@ mod tests {
         assert!(store.init_backup_config(&new_config).is_err());
 
         // Verify existing values were NOT overwritten
-        let config_map = store.config_map();
-        assert_eq!(
-            config_map.current(KEY_BACKUP_DURATION).unwrap(),
-            Some("7".to_string())
-        );
-        assert_eq!(
-            config_map.current(KEY_BACKUP_TIME).unwrap(),
-            Some("02:00:00".to_string())
-        );
-        assert_eq!(
-            config_map.current(KEY_NUM_OF_BACKUPS_TO_KEEP).unwrap(),
-            Some("10".to_string())
-        );
+        assert_backup_config_values(&store, Some("7"), Some("02:00:00"), Some("10"));
     }
 
     #[test]
@@ -614,15 +609,7 @@ mod tests {
         assert!(store.init_backup_config(&config).is_err());
 
         // Verify nothing was written
-        let config_map = store.config_map();
-        assert!(config_map.current(KEY_BACKUP_DURATION).unwrap().is_none());
-        assert!(config_map.current(KEY_BACKUP_TIME).unwrap().is_none());
-        assert!(
-            config_map
-                .current(KEY_NUM_OF_BACKUPS_TO_KEEP)
-                .unwrap()
-                .is_none()
-        );
+        assert_backup_config_values(&store, None, None, None);
     }
 
     #[test]
@@ -644,19 +631,7 @@ mod tests {
         assert!(store.update_backup_config(&config, &update).is_ok());
 
         // Verify all values were updated
-        let config_map = store.config_map();
-        assert_eq!(
-            config_map.current(KEY_BACKUP_DURATION).unwrap(),
-            Some("14".to_string())
-        );
-        assert_eq!(
-            config_map.current(KEY_BACKUP_TIME).unwrap(),
-            Some("03:30:00".to_string())
-        );
-        assert_eq!(
-            config_map.current(KEY_NUM_OF_BACKUPS_TO_KEEP).unwrap(),
-            Some("15".to_string())
-        );
+        assert_backup_config_values(&store, Some("14"), Some("03:30:00"), Some("15"));
 
         // Read should return the updated config
         let expected = BackupConfig::new(14, "03:30:00".to_string(), 15).unwrap();
@@ -682,23 +657,11 @@ mod tests {
         assert!(store.update_backup_config(&config, &update).is_ok());
 
         // Verify only backup_duration changed
-        let config_map = store.config_map();
-        assert_eq!(
-            config_map.current(KEY_BACKUP_DURATION).unwrap(),
-            Some("14".to_string())
-        );
-        assert_eq!(
-            config_map.current(KEY_BACKUP_TIME).unwrap(),
-            Some("02:00:00".to_string())
-        );
-        assert_eq!(
-            config_map.current(KEY_NUM_OF_BACKUPS_TO_KEEP).unwrap(),
-            Some("10".to_string())
-        );
+        assert_backup_config_values(&store, Some("14"), Some("02:00:00"), Some("10"));
     }
 
     #[test]
-    fn update_backup_config_wrong_old_value() {
+    fn update_backup_config_fails_on_old_value_mismatch() {
         let (_permit, store) = setup_store();
 
         let config = BackupConfig::new(7, "02:00:00".to_string(), 10).unwrap();
@@ -720,19 +683,7 @@ mod tests {
         assert!(store.update_backup_config(&wrong_config, &update).is_err());
 
         // Verify values remained unchanged
-        let config_map = store.config_map();
-        assert_eq!(
-            config_map.current(KEY_BACKUP_DURATION).unwrap(),
-            Some("7".to_string())
-        );
-        assert_eq!(
-            config_map.current(KEY_BACKUP_TIME).unwrap(),
-            Some("02:00:00".to_string())
-        );
-        assert_eq!(
-            config_map.current(KEY_NUM_OF_BACKUPS_TO_KEEP).unwrap(),
-            Some("10".to_string())
-        );
+        assert_backup_config_values(&store, Some("7"), Some("02:00:00"), Some("10"));
     }
 
     #[test]
@@ -751,19 +702,7 @@ mod tests {
         assert!(store.update_backup_config(&config, &update).is_err());
 
         // Verify values remained unchanged
-        let config_map = store.config_map();
-        assert_eq!(
-            config_map.current(KEY_BACKUP_DURATION).unwrap(),
-            Some("7".to_string())
-        );
-        assert_eq!(
-            config_map.current(KEY_BACKUP_TIME).unwrap(),
-            Some("02:00:00".to_string())
-        );
-        assert_eq!(
-            config_map.current(KEY_NUM_OF_BACKUPS_TO_KEEP).unwrap(),
-            Some("10".to_string())
-        );
+        assert_backup_config_values(&store, Some("7"), Some("02:00:00"), Some("10"));
     }
 
     #[test]
@@ -781,23 +720,11 @@ mod tests {
         assert!(store.update_backup_config(&config, &update).is_ok());
 
         // Verify values remained unchanged
-        let config_map = store.config_map();
-        assert_eq!(
-            config_map.current(KEY_BACKUP_DURATION).unwrap(),
-            Some("7".to_string())
-        );
-        assert_eq!(
-            config_map.current(KEY_BACKUP_TIME).unwrap(),
-            Some("02:00:00".to_string())
-        );
-        assert_eq!(
-            config_map.current(KEY_NUM_OF_BACKUPS_TO_KEEP).unwrap(),
-            Some("10".to_string())
-        );
+        assert_backup_config_values(&store, Some("7"), Some("02:00:00"), Some("10"));
     }
 
     #[test]
-    fn update_backup_config_atomicity() {
+    fn update_backup_config_atomicity_on_mixed_old_values() {
         let (_permit, store) = setup_store();
 
         let config = BackupConfig::new(7, "02:00:00".to_string(), 10).unwrap();
@@ -820,19 +747,7 @@ mod tests {
         assert!(store.update_backup_config(&mixed_config, &update).is_err());
 
         // Verify NO values were updated (atomicity)
-        let config_map = store.config_map();
-        assert_eq!(
-            config_map.current(KEY_BACKUP_DURATION).unwrap(),
-            Some("7".to_string()) // Should NOT be 14
-        );
-        assert_eq!(
-            config_map.current(KEY_BACKUP_TIME).unwrap(),
-            Some("02:00:00".to_string()) // Should NOT be 03:00:00
-        );
-        assert_eq!(
-            config_map.current(KEY_NUM_OF_BACKUPS_TO_KEEP).unwrap(),
-            Some("10".to_string())
-        );
+        assert_backup_config_values(&store, Some("7"), Some("02:00:00"), Some("10"));
     }
 
     #[test]
@@ -848,20 +763,7 @@ mod tests {
         assert!(store.init_backup_config(&config).is_err());
 
         // Verify ALL other keys were NOT created (atomicity check)
-        let config_map = store.config_map();
-        assert!(config_map.current(KEY_BACKUP_TIME).unwrap().is_none());
-        assert!(
-            config_map
-                .current(KEY_NUM_OF_BACKUPS_TO_KEEP)
-                .unwrap()
-                .is_none()
-        );
-
-        // Verify existing key was NOT overwritten
-        assert_eq!(
-            config_map.current(KEY_BACKUP_DURATION).unwrap(),
-            Some("7".to_string())
-        );
+        assert_backup_config_values(&store, Some("7"), None, None);
     }
 
     #[test]
@@ -879,14 +781,28 @@ mod tests {
         assert!(store.update_backup_config(&config, &update).is_err());
 
         // Verify nothing was written
+        assert_backup_config_values(&store, None, None, None);
+    }
+
+    #[test]
+    fn backup_config_missing_keys_error_includes_keys() {
+        let (_permit, store) = setup_store();
         let config_map = store.config_map();
-        assert!(config_map.current(KEY_BACKUP_DURATION).unwrap().is_none());
-        assert!(config_map.current(KEY_BACKUP_TIME).unwrap().is_none());
+
+        config_map.init(KEY_BACKUP_DURATION, "7").unwrap();
+
+        let err = store.backup_config().unwrap_err().to_string();
         assert!(
-            config_map
-                .current(KEY_NUM_OF_BACKUPS_TO_KEEP)
-                .unwrap()
-                .is_none()
+            err.contains("incomplete backup configuration: missing keys:"),
+            "error message should include missing keys prefix: {err}"
+        );
+        assert!(
+            err.contains(KEY_BACKUP_TIME),
+            "error should mention missing backup_time: {err}"
+        );
+        assert!(
+            err.contains(KEY_NUM_OF_BACKUPS_TO_KEEP),
+            "error should mention missing num_of_backups_to_keep: {err}"
         );
     }
 }
