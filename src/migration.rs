@@ -933,7 +933,7 @@ fn migrate_network_cf_inner(
 }
 
 /// Migrates event fields from `V0_43` format (without country codes) to `V0_44` format
-/// (with country codes). Also converts HttpThreat cluster_id from Option<usize> to Option<u32>.
+/// (with country codes). Also converts `HttpThreat` `cluster_id` from Option<usize> to Option<u32>.
 /// If a locator is provided, country codes are resolved from IP addresses.
 /// Otherwise, country codes are set to "ZZ" (unknown).
 fn migrate_event_country_codes(
@@ -1257,8 +1257,8 @@ use crate::event::{
     BlocklistNfsFields, BlocklistNtlmFields, BlocklistRadiusFields, BlocklistRdpFields,
     BlocklistSmbFields, BlocklistSmtpFields, BlocklistSshFields, BlocklistTlsFields,
     CryptocurrencyMiningPoolFields, DgaFields, DnsEventFields, ExternalDdosFields,
-    FtpBruteForceFields, FtpEventFields, HttpEventFields, LdapBruteForceFields,
-    LdapEventFields, MultiHostPortScanFields, NetworkThreat, PortScanFields, RdpBruteForceFields,
+    FtpBruteForceFields, FtpEventFields, HttpEventFields, LdapBruteForceFields, LdapEventFields,
+    MultiHostPortScanFields, NetworkThreat, PortScanFields, RdpBruteForceFields,
     RepeatedHttpSessionsFields, UnusualDestinationPatternFields,
 };
 
