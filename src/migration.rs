@@ -17,7 +17,9 @@ use tracing::info;
 use crate::{
     AllowNetwork, BlockNetwork, Customer,
     event::{EventKind, HttpThreatFields},
-    migration::migration_structures::{AllowNetworkV0_42, BlockNetworkV0_42, HttpThreatFieldsV0_43},
+    migration::migration_structures::{
+        AllowNetworkV0_42, BlockNetworkV0_42, HttpThreatFieldsV0_43,
+    },
     tables::NETWORK_TAGS,
 };
 
@@ -858,7 +860,7 @@ fn migrate_network_cf_inner(
 }
 
 /// Migrates event fields from `V0_43` format (without country codes) to `V0_44` format
-/// (with country codes). Also converts HttpThreat cluster_id from Option<usize> to Option<u32>.
+/// (with country codes). Also converts `HttpThreat` `cluster_id` from Option<usize> to Option<u32>.
 /// If a locator is provided, country codes are resolved from IP addresses.
 /// Otherwise, country codes are set to "ZZ" (unknown).
 fn migrate_event_country_codes(
@@ -885,10 +887,10 @@ fn migrate_event_country_codes(
         BlocklistSmbFieldsV0_43, BlocklistSmtpFieldsV0_43, BlocklistSshFieldsV0_43,
         BlocklistTlsFieldsV0_43, CryptocurrencyMiningPoolFieldsV0_43, DgaFieldsV0_43,
         DnsEventFieldsV0_43, ExternalDdosFieldsV0_43, FtpBruteForceFieldsV0_43,
-        FtpEventFieldsV0_43, HttpEventFieldsV0_43,
-        LdapBruteForceFieldsV0_43, LdapEventFieldsV0_43, MultiHostPortScanFieldsV0_43,
-        NetworkThreatV0_43, PortScanFieldsV0_43, RdpBruteForceFieldsV0_43,
-        RepeatedHttpSessionsFieldsV0_43, UnusualDestinationPatternFieldsV0_43,
+        FtpEventFieldsV0_43, HttpEventFieldsV0_43, LdapBruteForceFieldsV0_43, LdapEventFieldsV0_43,
+        MultiHostPortScanFieldsV0_43, NetworkThreatV0_43, PortScanFieldsV0_43,
+        RdpBruteForceFieldsV0_43, RepeatedHttpSessionsFieldsV0_43,
+        UnusualDestinationPatternFieldsV0_43,
     };
 
     info!("Migrating event fields to add country codes");
@@ -1182,8 +1184,8 @@ use crate::event::{
     BlocklistNfsFields, BlocklistNtlmFields, BlocklistRadiusFields, BlocklistRdpFields,
     BlocklistSmbFields, BlocklistSmtpFields, BlocklistSshFields, BlocklistTlsFields,
     CryptocurrencyMiningPoolFields, DgaFields, DnsEventFields, ExternalDdosFields,
-    FtpBruteForceFields, FtpEventFields, HttpEventFields, LdapBruteForceFields,
-    LdapEventFields, MultiHostPortScanFields, NetworkThreat, PortScanFields, RdpBruteForceFields,
+    FtpBruteForceFields, FtpEventFields, HttpEventFields, LdapBruteForceFields, LdapEventFields,
+    MultiHostPortScanFields, NetworkThreat, PortScanFields, RdpBruteForceFields,
     RepeatedHttpSessionsFields, UnusualDestinationPatternFields,
 };
 
