@@ -7,6 +7,14 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- Added `#[repr(u32)]` and `#[non_exhaustive]` attributes to `EventKind` enum.
+  Explicit discriminant values are now assigned to each variant to ensure
+  stable serialization. The numeric values are guaranteed not to change in
+  future versions. New variants must be appended to the end of the enum and
+  assigned the next sequential value.
+
 ### Fixed
 
 - Fixed `CsvColumnExtra::get_by_model` to use big-endian byte encoding for the
