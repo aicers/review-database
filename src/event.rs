@@ -1900,49 +1900,51 @@ fn find_network(ip: IpAddr, networks: &[Network]) -> Option<u32> {
 }
 
 #[derive(Serialize, Clone, Copy, Debug, Deserialize, Eq, FromPrimitive, PartialEq, ToPrimitive)]
+#[repr(u32)]
+#[non_exhaustive]
 #[allow(clippy::module_name_repetitions)]
 pub enum EventKind {
-    DnsCovertChannel,
-    HttpThreat,
-    RdpBruteForce,
-    RepeatedHttpSessions,
-    ExtraThreat,
-    TorConnection,
-    DomainGenerationAlgorithm,
-    FtpBruteForce,
-    FtpPlainText,
-    PortScan,
-    MultiHostPortScan,
-    NonBrowser,
-    LdapBruteForce,
-    LdapPlainText,
-    ExternalDdos,
-    CryptocurrencyMiningPool,
-    BlocklistConn,
-    BlocklistDns,
-    BlocklistDceRpc,
-    BlocklistFtp,
-    BlocklistHttp,
-    BlocklistKerberos,
-    BlocklistLdap,
-    BlocklistMqtt,
-    BlocklistNfs,
-    BlocklistNtlm,
-    BlocklistRdp,
-    BlocklistSmb,
-    BlocklistSmtp,
-    BlocklistSsh,
-    BlocklistTls,
-    WindowsThreat,
-    NetworkThreat,
-    LockyRansomware,
-    SuspiciousTlsTraffic,
-    BlocklistBootp,
-    BlocklistDhcp,
-    TorConnectionConn,
-    BlocklistRadius,
-    BlocklistMalformedDns,
-    UnusualDestinationPattern,
+    DnsCovertChannel = 0,
+    HttpThreat = 1,
+    RdpBruteForce = 2,
+    RepeatedHttpSessions = 3,
+    ExtraThreat = 4,
+    TorConnection = 5,
+    DomainGenerationAlgorithm = 6,
+    FtpBruteForce = 7,
+    FtpPlainText = 8,
+    PortScan = 9,
+    MultiHostPortScan = 10,
+    NonBrowser = 11,
+    LdapBruteForce = 12,
+    LdapPlainText = 13,
+    ExternalDdos = 14,
+    CryptocurrencyMiningPool = 15,
+    BlocklistConn = 16,
+    BlocklistDns = 17,
+    BlocklistDceRpc = 18,
+    BlocklistFtp = 19,
+    BlocklistHttp = 20,
+    BlocklistKerberos = 21,
+    BlocklistLdap = 22,
+    BlocklistMqtt = 23,
+    BlocklistNfs = 24,
+    BlocklistNtlm = 25,
+    BlocklistRdp = 26,
+    BlocklistSmb = 27,
+    BlocklistSmtp = 28,
+    BlocklistSsh = 29,
+    BlocklistTls = 30,
+    WindowsThreat = 31,
+    NetworkThreat = 32,
+    LockyRansomware = 33,
+    SuspiciousTlsTraffic = 34,
+    BlocklistBootp = 35,
+    BlocklistDhcp = 36,
+    TorConnectionConn = 37,
+    BlocklistRadius = 38,
+    BlocklistMalformedDns = 39,
+    UnusualDestinationPattern = 40,
 }
 
 impl EventKind {
@@ -6074,5 +6076,131 @@ mod tests {
         // Verify that the source country was counted
         assert_eq!(counter.get("US"), Some(&1));
         assert_eq!(counter.len(), 1);
+    }
+
+    #[test]
+    fn event_kind_stable_discriminants() {
+        use num_traits::{FromPrimitive, ToPrimitive};
+
+        // Test that ToPrimitive yields the expected numeric values.
+        // These values must remain stable across versions.
+        assert_eq!(EventKind::DnsCovertChannel.to_u32(), Some(0));
+        assert_eq!(EventKind::HttpThreat.to_u32(), Some(1));
+        assert_eq!(EventKind::RdpBruteForce.to_u32(), Some(2));
+        assert_eq!(EventKind::RepeatedHttpSessions.to_u32(), Some(3));
+        assert_eq!(EventKind::ExtraThreat.to_u32(), Some(4));
+        assert_eq!(EventKind::TorConnection.to_u32(), Some(5));
+        assert_eq!(EventKind::DomainGenerationAlgorithm.to_u32(), Some(6));
+        assert_eq!(EventKind::FtpBruteForce.to_u32(), Some(7));
+        assert_eq!(EventKind::FtpPlainText.to_u32(), Some(8));
+        assert_eq!(EventKind::PortScan.to_u32(), Some(9));
+        assert_eq!(EventKind::MultiHostPortScan.to_u32(), Some(10));
+        assert_eq!(EventKind::NonBrowser.to_u32(), Some(11));
+        assert_eq!(EventKind::LdapBruteForce.to_u32(), Some(12));
+        assert_eq!(EventKind::LdapPlainText.to_u32(), Some(13));
+        assert_eq!(EventKind::ExternalDdos.to_u32(), Some(14));
+        assert_eq!(EventKind::CryptocurrencyMiningPool.to_u32(), Some(15));
+        assert_eq!(EventKind::BlocklistConn.to_u32(), Some(16));
+        assert_eq!(EventKind::BlocklistDns.to_u32(), Some(17));
+        assert_eq!(EventKind::BlocklistDceRpc.to_u32(), Some(18));
+        assert_eq!(EventKind::BlocklistFtp.to_u32(), Some(19));
+        assert_eq!(EventKind::BlocklistHttp.to_u32(), Some(20));
+        assert_eq!(EventKind::BlocklistKerberos.to_u32(), Some(21));
+        assert_eq!(EventKind::BlocklistLdap.to_u32(), Some(22));
+        assert_eq!(EventKind::BlocklistMqtt.to_u32(), Some(23));
+        assert_eq!(EventKind::BlocklistNfs.to_u32(), Some(24));
+        assert_eq!(EventKind::BlocklistNtlm.to_u32(), Some(25));
+        assert_eq!(EventKind::BlocklistRdp.to_u32(), Some(26));
+        assert_eq!(EventKind::BlocklistSmb.to_u32(), Some(27));
+        assert_eq!(EventKind::BlocklistSmtp.to_u32(), Some(28));
+        assert_eq!(EventKind::BlocklistSsh.to_u32(), Some(29));
+        assert_eq!(EventKind::BlocklistTls.to_u32(), Some(30));
+        assert_eq!(EventKind::WindowsThreat.to_u32(), Some(31));
+        assert_eq!(EventKind::NetworkThreat.to_u32(), Some(32));
+        assert_eq!(EventKind::LockyRansomware.to_u32(), Some(33));
+        assert_eq!(EventKind::SuspiciousTlsTraffic.to_u32(), Some(34));
+        assert_eq!(EventKind::BlocklistBootp.to_u32(), Some(35));
+        assert_eq!(EventKind::BlocklistDhcp.to_u32(), Some(36));
+        assert_eq!(EventKind::TorConnectionConn.to_u32(), Some(37));
+        assert_eq!(EventKind::BlocklistRadius.to_u32(), Some(38));
+        assert_eq!(EventKind::BlocklistMalformedDns.to_u32(), Some(39));
+        assert_eq!(EventKind::UnusualDestinationPattern.to_u32(), Some(40));
+
+        // Test FromPrimitive round-trip conversion
+        assert_eq!(EventKind::from_u32(0), Some(EventKind::DnsCovertChannel));
+        assert_eq!(EventKind::from_u32(1), Some(EventKind::HttpThreat));
+        assert_eq!(EventKind::from_u32(20), Some(EventKind::BlocklistHttp));
+        assert_eq!(
+            EventKind::from_u32(40),
+            Some(EventKind::UnusualDestinationPattern)
+        );
+
+        // Test that invalid values return None
+        assert_eq!(EventKind::from_u32(41), None);
+        assert_eq!(EventKind::from_u32(100), None);
+        assert_eq!(EventKind::from_u32(u32::MAX), None);
+    }
+
+    #[test]
+    fn event_kind_serde_round_trip() {
+        // Test that serde serialization and deserialization round-trips correctly.
+        // This ensures the numeric representation is preserved through bincode.
+        let original = EventKind::BlocklistHttp;
+        let serialized = bincode::serialize(&original).expect("serialization should succeed");
+        let deserialized: EventKind =
+            bincode::deserialize(&serialized).expect("deserialization should succeed");
+        assert_eq!(original, deserialized);
+
+        // Test all variants round-trip correctly
+        let all_variants = [
+            EventKind::DnsCovertChannel,
+            EventKind::HttpThreat,
+            EventKind::RdpBruteForce,
+            EventKind::RepeatedHttpSessions,
+            EventKind::ExtraThreat,
+            EventKind::TorConnection,
+            EventKind::DomainGenerationAlgorithm,
+            EventKind::FtpBruteForce,
+            EventKind::FtpPlainText,
+            EventKind::PortScan,
+            EventKind::MultiHostPortScan,
+            EventKind::NonBrowser,
+            EventKind::LdapBruteForce,
+            EventKind::LdapPlainText,
+            EventKind::ExternalDdos,
+            EventKind::CryptocurrencyMiningPool,
+            EventKind::BlocklistConn,
+            EventKind::BlocklistDns,
+            EventKind::BlocklistDceRpc,
+            EventKind::BlocklistFtp,
+            EventKind::BlocklistHttp,
+            EventKind::BlocklistKerberos,
+            EventKind::BlocklistLdap,
+            EventKind::BlocklistMqtt,
+            EventKind::BlocklistNfs,
+            EventKind::BlocklistNtlm,
+            EventKind::BlocklistRdp,
+            EventKind::BlocklistSmb,
+            EventKind::BlocklistSmtp,
+            EventKind::BlocklistSsh,
+            EventKind::BlocklistTls,
+            EventKind::WindowsThreat,
+            EventKind::NetworkThreat,
+            EventKind::LockyRansomware,
+            EventKind::SuspiciousTlsTraffic,
+            EventKind::BlocklistBootp,
+            EventKind::BlocklistDhcp,
+            EventKind::TorConnectionConn,
+            EventKind::BlocklistRadius,
+            EventKind::BlocklistMalformedDns,
+            EventKind::UnusualDestinationPattern,
+        ];
+
+        for variant in all_variants {
+            let serialized = bincode::serialize(&variant).expect("serialization should succeed");
+            let deserialized: EventKind =
+                bincode::deserialize(&serialized).expect("deserialization should succeed");
+            assert_eq!(variant, deserialized);
+        }
     }
 }

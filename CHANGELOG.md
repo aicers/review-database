@@ -7,16 +7,14 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-### Fixed
-
-- Fixed `CsvColumnExtra::get_by_model` to use big-endian byte encoding for the
-  `model_id` key lookup. Previously, `to_byte_slice` produced native-endian raw
-  bytes, which mismatched the table's big-endian key encoding on little-endian
-  architectures.
-
 ### Changed
 
-- **BREAKING**: Unified `cluster_id` and `model_id` types to `u32` across the
+- Added `#[repr(u32)]` and `#[non_exhaustive]` attributes to `EventKind` enum.
+  Explicit discriminant values are now assigned to each variant to ensure
+  stable serialization. The numeric values are guaranteed not to change in
+  future versions. New variants must be appended to the end of the enum and
+  assigned the next sequential value.
+- Unified `cluster_id` and `model_id` types to `u32` across the
   codebase. This affects the following:
   - `Cluster::id` in `tables/cluster.rs` changed from `i32` to `u32`
   - `TimeSeries::cluster_id` in `tables/time_series.rs` changed from `i32` to
@@ -53,6 +51,13 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   only the entry with the smallest id.
 - Updated `Network::new` to no longer accept a `customer_ids` parameter.
 - Updated `NetworkUpdate::new` to no longer accept a `customer_ids` parameter.
+
+### Fixed
+
+- Fixed `CsvColumnExtra::get_by_model` to use big-endian byte encoding for the
+  `model_id` key lookup. Previously, `to_byte_slice` produced native-endian raw
+  bytes, which mismatched the table's big-endian key encoding on little-endian
+  architectures.
 
 ### Removed
 
@@ -737,8 +742,8 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   generating `rustls::ClientConfig`.
 - Changed the display message format of `EventMessage` and `Event` to RFC 5424.
   Modified messages will be sent to syslog.
-- Used `FromPrimitive` and `ToPrimitive` for converting `EventCategory` instead of
-  manually implementing `TryFrom`.
+- Used `FromPrimitive` and `ToPrimitive` for converting `EventCategory` instead
+  of manually implementing `TryFrom`.
 - `EventCategory` definition is moved to `review-protocol`.
 
 ### Removed
