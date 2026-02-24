@@ -606,7 +606,12 @@ mod tests {
         };
 
         // Should return error due to validation
-        assert!(store.init_backup_config(&config).is_err());
+        let result = store.init_backup_config(&config);
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("backup_duration must be >= 1"));
 
         // Verify nothing was written
         assert_backup_config_values(&store, None, None, None);
@@ -699,7 +704,12 @@ mod tests {
             ..Default::default()
         };
 
-        assert!(store.update_backup_config(&config, &update).is_err());
+        let result = store.update_backup_config(&config, &update);
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("backup_duration must be >= 1"));
 
         // Verify values remained unchanged
         assert_backup_config_values(&store, Some("7"), Some("02:00:00"), Some("10"));
@@ -760,7 +770,12 @@ mod tests {
         let config = BackupConfig::new(14, "02:00:00".to_string(), 10).unwrap();
 
         // Try to initialize config (should fail because one key exists)
-        assert!(store.init_backup_config(&config).is_err());
+        let result = store.init_backup_config(&config);
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("key already exists"));
 
         // Verify ALL other keys were NOT created (atomicity check)
         assert_backup_config_values(&store, Some("7"), None, None);
@@ -778,7 +793,12 @@ mod tests {
         };
 
         // Try to update when no config exists - should fail
-        assert!(store.update_backup_config(&config, &update).is_err());
+        let result = store.update_backup_config(&config, &update);
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("no such entry"));
 
         // Verify nothing was written
         assert_backup_config_values(&store, None, None, None);

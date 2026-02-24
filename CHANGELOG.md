@@ -31,13 +31,11 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   assigned the next sequential value.
 - Unified `cluster_id` and `model_id` types to `u32` across the
 - **BREAKING**: Refactored `BackupConfig` to remove embedded policy defaults.
-  The library no longer provides `DEFAULT_BACKUP_TIME`, `DEFAULT_BACKUP_DURATION`,
-  or `DEFAULT_NUM_OF_BACKUPS_TO_KEEP` constants. Higher-level applications must
-  define their own defaults.
+  Higher-level applications must define their own defaults.
 - **BREAKING**: Removed `BackupConfig::default()` implementation. Applications
   that relied on default values must now explicitly construct `BackupConfig`.
-- **BREAKING**: `Store::backup_config()` now returns `Option<BackupConfig>`
-  instead of returning a default when no configuration exists. Returns `None`
+- **BREAKING**: `Store::backup_config()` now returns `Result<Option<BackupConfig>>`
+  instead of a default value when no configuration exists. Returns `Ok(None)`
   if the configuration has not been initialized.
 - **BREAKING**: Backup configuration is now stored in `config_map` using
   separate keys (`backup_duration`, `backup_time`, `num_of_backups_to_keep`)
