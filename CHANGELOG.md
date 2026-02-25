@@ -15,32 +15,26 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   as separate key-value pairs.
 - Added `BackupConfigUpdate` struct for partial backup configuration updates.
 
-### Fixed
-
-- Fixed `CsvColumnExtra::get_by_model` to use big-endian byte encoding for the
-  `model_id` key lookup. Previously, `to_byte_slice` produced native-endian raw
-  bytes, which mismatched the table's big-endian key encoding on little-endian
-  architectures.
-
 ### Changed
 
+- **BREAKING**: Refactored `BackupConfig` to remove embedded policy defaults.
+  The library no longer provides `DEFAULT_BACKUP_TIME`, `DEFAULT_BACKUP_DURATION`,
+  or `DEFAULT_NUM_OF_BACKUPS_TO_KEEP` constants. Higher-level applications must
+  define their own defaults.
+- **BREAKING**: Removed `BackupConfig::default()` implementation. Applications
+  that relied on default values must now explicitly construct `BackupConfig`.
+- **BREAKING**: `Store::backup_config()` now returns `Option<BackupConfig>`
+  instead of returning a default when no configuration exists. Returns `None`
+  if the configuration has not been initialized.
+- **BREAKING**: Backup configuration is now stored in `config_map` using
+  separate keys (`backup_duration`, `backup_time`, `num_of_backups_to_keep`)
+  instead of a single serialized entry.
 - Added `#[repr(u32)]` and `#[non_exhaustive]` attributes to `EventKind` enum.
   Explicit discriminant values are now assigned to each variant to ensure
   stable serialization. The numeric values are guaranteed not to change in
   future versions. New variants must be appended to the end of the enum and
   assigned the next sequential value.
 - Unified `cluster_id` and `model_id` types to `u32` across the
-- **BREAKING**: Refactored `BackupConfig` to remove embedded policy defaults.
-  Higher-level applications must define their own defaults.
-- **BREAKING**: Removed `BackupConfig::default()` implementation. Applications
-  that relied on default values must now explicitly construct `BackupConfig`.
-- **BREAKING**: `Store::backup_config()` now returns `Result<Option<BackupConfig>>`
-  instead of a default value when no configuration exists. Returns `Ok(None)`
-  if the configuration has not been initialized.
-- **BREAKING**: Backup configuration is now stored in `config_map` using
-  separate keys (`backup_duration`, `backup_time`, `num_of_backups_to_keep`)
-  instead of a single serialized entry.
-- **BREAKING**: Unified `cluster_id` and `model_id` types to `u32` across the
   codebase. This affects the following:
   - `Cluster::id` in `tables/cluster.rs` changed from `i32` to `u32`
   - `TimeSeries::cluster_id` in `tables/time_series.rs` changed from `i32` to
