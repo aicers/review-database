@@ -265,12 +265,13 @@ impl Store {
 
     /// Returns the current backup configuration from the config table.
     ///
-    /// Returns `None` if the backup configuration has not been initialized.
+    /// Returns `Ok(None)` if the backup configuration has not been initialized.
     ///
     /// # Errors
     ///
-    /// Returns an error if any value is invalid, if the configuration is only
-    /// partially initialized, or if the database operation fails.
+    /// Returns an error if numeric fields cannot be parsed, if the
+    /// configuration is only partially initialized, or if the database
+    /// operation fails.
     pub fn backup_config(&self) -> Result<Option<BackupConfig>> {
         let config = self.config_map();
 

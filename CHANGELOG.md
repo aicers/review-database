@@ -18,9 +18,6 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 ### Changed
 
 - **BREAKING**: Refactored `BackupConfig` to remove embedded policy defaults.
-  The library no longer provides `DEFAULT_BACKUP_TIME`, `DEFAULT_BACKUP_DURATION`,
-  or `DEFAULT_NUM_OF_BACKUPS_TO_KEEP` constants. Higher-level applications must
-  define their own defaults.
 - **BREAKING**: Removed `BackupConfig::default()` implementation. Applications
   that relied on default values must now explicitly construct `BackupConfig`.
 - **BREAKING**: `Store::backup_config()` now returns `Option<BackupConfig>`
