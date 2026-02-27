@@ -20,9 +20,9 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 - **BREAKING**: Refactored `BackupConfig` to remove embedded policy defaults.
 - **BREAKING**: Removed `BackupConfig::default()` implementation. Applications
   that relied on default values must now explicitly construct `BackupConfig`.
-- **BREAKING**: `Store::backup_config()` now returns `Option<BackupConfig>`
-  instead of returning a default when no configuration exists. Returns `None`
-  if the configuration has not been initialized.
+- **BREAKING**: `backup_config` no longer returns a pre-defined default
+  configuration when none has been initialized. It now indicates that nothing
+  is stored.
 - **BREAKING**: Backup configuration is now stored in `config_map` using
   separate keys (`backup_duration`, `backup_time`, `num_of_backups_to_keep`)
   instead of a single serialized entry.
