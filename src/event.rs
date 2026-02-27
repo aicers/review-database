@@ -2495,14 +2495,13 @@ impl<'a> EventDb<'a> {
 
         macro_rules! convert_fields {
             ($ext_ty:ty, $int_ty:ty) => {{
-                let ext = bincode::deserialize::<$ext_ty>(&event.fields)
-                    .with_context(|| {
-                        format!(
-                            "failed to deserialize external {} fields for {:?}",
-                            stringify!($ext_ty),
-                            event.kind,
-                        )
-                    })?;
+                let ext = bincode::deserialize::<$ext_ty>(&event.fields).with_context(|| {
+                    format!(
+                        "failed to deserialize external {} fields for {:?}",
+                        stringify!($ext_ty),
+                        event.kind,
+                    )
+                })?;
                 bincode::serialize(&<$int_ty>::from(ext))
                     .context("failed to re-serialize as internal format")?
             }};
@@ -2569,7 +2568,10 @@ impl<'a> EventDb<'a> {
                 convert_fields!(BlocklistKerberosFieldsV0_43, BlocklistKerberosFields)
             }
             EventKind::BlocklistMalformedDns => {
-                convert_fields!(BlocklistMalformedDnsFieldsV0_43, BlocklistMalformedDnsFields)
+                convert_fields!(
+                    BlocklistMalformedDnsFieldsV0_43,
+                    BlocklistMalformedDnsFields
+                )
             }
             EventKind::BlocklistMqtt => {
                 convert_fields!(BlocklistMqttFieldsV0_43, BlocklistMqttFields)
