@@ -55,6 +55,18 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 - Updated `migrate_data_dir` function signature to accept an optional
   `ip2location::DB` parameter for resolving country codes during migration
   from older database formats.
+- Introduced a dual-type schema architecture separating external and internal
+  event representations. External types (e.g. `DnsEventFieldsExternal`) match
+  the wire format sent by external applications and do not include
+  country-code fields. Internal types (e.g. `DnsEventFields`) are the
+  DB-layer representation that include country-code fields. All `V0_43`
+  event-field structs are now public and re-exported with `External` suffix
+  aliases (e.g. `DnsEventFieldsExternal`).
+- Added `EventDb::put_external` method that accepts an `EventMessage` whose
+  fields are in the external (no country code) format, converts them to the
+  internal format (defaulting country codes to `"ZZ"`), and stores the
+  result. This allows ingestion-time schema transformation for events produced
+  by external applications.
 
 ### Fixed
 
