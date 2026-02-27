@@ -115,7 +115,7 @@ impl From<TriagePolicyV0_44> for crate::TriagePolicy {
 
 /// FTP Command structure for `V0_43` migration
 #[derive(Clone, Deserialize, Serialize)]
-pub(crate) struct FtpCommandV0_43 {
+pub struct FtpCommandV0_43 {
     pub command: String,
     pub reply_code: String,
     pub reply_msg: String,
@@ -123,7 +123,7 @@ pub(crate) struct FtpCommandV0_43 {
 
 /// Port scan fields from version 0.43.x (before country codes were added)
 #[derive(Serialize, Deserialize)]
-pub(crate) struct PortScanFieldsV0_43 {
+pub struct PortScanFieldsV0_43 {
     pub sensor: String,
     pub orig_addr: IpAddr,
     pub resp_addr: IpAddr,
@@ -137,7 +137,7 @@ pub(crate) struct PortScanFieldsV0_43 {
 
 /// Multi-host port scan fields from version 0.43.x
 #[derive(Serialize, Deserialize)]
-pub(crate) struct MultiHostPortScanFieldsV0_43 {
+pub struct MultiHostPortScanFieldsV0_43 {
     pub sensor: String,
     pub orig_addr: IpAddr,
     pub resp_port: u16,
@@ -191,7 +191,7 @@ pub(crate) struct BlocklistDhcpFieldsV0_42 {
 
 /// External `DDoS` fields from version 0.43.x
 #[derive(Serialize, Deserialize)]
-pub(crate) struct ExternalDdosFieldsV0_43 {
+pub struct ExternalDdosFieldsV0_43 {
     pub sensor: String,
     pub orig_addrs: Vec<IpAddr>,
     pub resp_addr: IpAddr,
@@ -204,7 +204,7 @@ pub(crate) struct ExternalDdosFieldsV0_43 {
 
 /// Blocklist connection fields from version 0.43.x
 #[derive(Deserialize, Serialize)]
-pub(crate) struct BlocklistConnFieldsV0_43 {
+pub struct BlocklistConnFieldsV0_43 {
     pub sensor: String,
     pub orig_addr: IpAddr,
     pub orig_port: u16,
@@ -228,7 +228,7 @@ pub(crate) struct BlocklistConnFieldsV0_43 {
 /// DNS event fields from version 0.43.x
 #[allow(clippy::struct_excessive_bools)]
 #[derive(Deserialize, Serialize)]
-pub(crate) struct DnsEventFieldsV0_43 {
+pub struct DnsEventFieldsV0_43 {
     pub sensor: String,
     pub orig_addr: IpAddr,
     pub orig_port: u16,
@@ -260,7 +260,7 @@ pub(crate) struct DnsEventFieldsV0_43 {
 /// Cryptocurrency mining pool fields from version 0.43.x
 #[allow(clippy::struct_excessive_bools)]
 #[derive(Deserialize, Serialize)]
-pub(crate) struct CryptocurrencyMiningPoolFieldsV0_43 {
+pub struct CryptocurrencyMiningPoolFieldsV0_43 {
     pub sensor: String,
     pub orig_addr: IpAddr,
     pub orig_port: u16,
@@ -293,7 +293,7 @@ pub(crate) struct CryptocurrencyMiningPoolFieldsV0_43 {
 /// Blocklist DNS fields from version 0.43.x
 #[allow(clippy::struct_excessive_bools)]
 #[derive(Deserialize, Serialize)]
-pub(crate) struct BlocklistDnsFieldsV0_43 {
+pub struct BlocklistDnsFieldsV0_43 {
     pub sensor: String,
     pub orig_addr: IpAddr,
     pub orig_port: u16,
@@ -324,7 +324,7 @@ pub(crate) struct BlocklistDnsFieldsV0_43 {
 
 /// HTTP event fields from version 0.43.x
 #[derive(Deserialize, Serialize)]
-pub(crate) struct HttpEventFieldsV0_43 {
+pub struct HttpEventFieldsV0_43 {
     pub sensor: String,
     pub orig_addr: IpAddr,
     pub orig_port: u16,
@@ -363,7 +363,7 @@ pub(crate) struct HttpEventFieldsV0_43 {
 
 /// Repeated HTTP sessions fields from version 0.43.x
 #[derive(Serialize, Deserialize)]
-pub(crate) struct RepeatedHttpSessionsFieldsV0_43 {
+pub struct RepeatedHttpSessionsFieldsV0_43 {
     pub sensor: String,
     pub orig_addr: IpAddr,
     pub orig_port: u16,
@@ -384,7 +384,7 @@ pub(crate) struct RepeatedHttpSessionsFieldsV0_43 {
 /// Note: Other event types (`NetworkThreat`, `WindowsThreat`, `ExtraThreat`) are not generated
 /// on production servers, so their migration structures are not needed.
 #[derive(Debug, Deserialize, Serialize)]
-pub(crate) struct HttpThreatFieldsV0_43 {
+pub struct HttpThreatFieldsV0_43 {
     #[serde(with = "ts_nanoseconds")]
     pub time: DateTime<Utc>,
     pub sensor: String,
@@ -430,7 +430,7 @@ pub(crate) struct HttpThreatFieldsV0_43 {
 
 /// DGA fields from version 0.43.x
 #[derive(Deserialize, Serialize)]
-pub(crate) struct DgaFieldsV0_43 {
+pub struct DgaFieldsV0_43 {
     pub sensor: String,
     pub orig_addr: IpAddr,
     pub orig_port: u16,
@@ -469,7 +469,7 @@ pub(crate) struct DgaFieldsV0_43 {
 
 /// RDP brute force fields from version 0.43.x
 #[derive(Serialize, Deserialize)]
-pub(crate) struct RdpBruteForceFieldsV0_43 {
+pub struct RdpBruteForceFieldsV0_43 {
     pub sensor: String,
     pub orig_addr: IpAddr,
     pub resp_addrs: Vec<IpAddr>,
@@ -482,7 +482,7 @@ pub(crate) struct RdpBruteForceFieldsV0_43 {
 
 /// Blocklist RDP fields from version 0.43.x
 #[derive(Serialize, Deserialize)]
-pub(crate) struct BlocklistRdpFieldsV0_43 {
+pub struct BlocklistRdpFieldsV0_43 {
     pub sensor: String,
     pub orig_addr: IpAddr,
     pub orig_port: u16,
@@ -502,7 +502,7 @@ pub(crate) struct BlocklistRdpFieldsV0_43 {
 
 /// FTP brute force fields from version 0.43.x
 #[derive(Serialize, Deserialize)]
-pub(crate) struct FtpBruteForceFieldsV0_43 {
+pub struct FtpBruteForceFieldsV0_43 {
     pub sensor: String,
     pub orig_addr: IpAddr,
     pub resp_addr: IpAddr,
@@ -518,7 +518,7 @@ pub(crate) struct FtpBruteForceFieldsV0_43 {
 
 /// FTP event fields from version 0.43.x
 #[derive(Deserialize, Serialize)]
-pub(crate) struct FtpEventFieldsV0_43 {
+pub struct FtpEventFieldsV0_43 {
     pub sensor: String,
     pub orig_addr: IpAddr,
     pub orig_port: u16,
@@ -540,7 +540,7 @@ pub(crate) struct FtpEventFieldsV0_43 {
 
 /// LDAP brute force fields from version 0.43.x
 #[derive(Serialize, Deserialize)]
-pub(crate) struct LdapBruteForceFieldsV0_43 {
+pub struct LdapBruteForceFieldsV0_43 {
     pub sensor: String,
     pub orig_addr: IpAddr,
     pub resp_addr: IpAddr,
@@ -555,7 +555,7 @@ pub(crate) struct LdapBruteForceFieldsV0_43 {
 
 /// LDAP event fields from version 0.43.x
 #[derive(Serialize, Deserialize)]
-pub(crate) struct LdapEventFieldsV0_43 {
+pub struct LdapEventFieldsV0_43 {
     pub sensor: String,
     pub orig_addr: IpAddr,
     pub orig_port: u16,
@@ -581,7 +581,7 @@ pub(crate) struct LdapEventFieldsV0_43 {
 
 /// Blocklist SSH fields from version 0.43.x
 #[derive(Serialize, Deserialize)]
-pub(crate) struct BlocklistSshFieldsV0_43 {
+pub struct BlocklistSshFieldsV0_43 {
     pub sensor: String,
     pub orig_addr: IpAddr,
     pub orig_port: u16,
@@ -613,7 +613,7 @@ pub(crate) struct BlocklistSshFieldsV0_43 {
 
 /// Blocklist TLS fields from version 0.43.x
 #[derive(Serialize, Deserialize)]
-pub(crate) struct BlocklistTlsFieldsV0_43 {
+pub struct BlocklistTlsFieldsV0_43 {
     pub sensor: String,
     pub orig_addr: IpAddr,
     pub orig_port: u16,
@@ -653,7 +653,7 @@ pub(crate) struct BlocklistTlsFieldsV0_43 {
 
 /// Blocklist Kerberos fields from version 0.43.x
 #[derive(Serialize, Deserialize)]
-pub(crate) struct BlocklistKerberosFieldsV0_43 {
+pub struct BlocklistKerberosFieldsV0_43 {
     pub sensor: String,
     pub orig_addr: IpAddr,
     pub orig_port: u16,
@@ -681,7 +681,7 @@ pub(crate) struct BlocklistKerberosFieldsV0_43 {
 
 /// Blocklist SMTP fields from version 0.43.x
 #[derive(Serialize, Deserialize)]
-pub(crate) struct BlocklistSmtpFieldsV0_43 {
+pub struct BlocklistSmtpFieldsV0_43 {
     pub sensor: String,
     pub orig_addr: IpAddr,
     pub orig_port: u16,
@@ -707,7 +707,7 @@ pub(crate) struct BlocklistSmtpFieldsV0_43 {
 
 /// Blocklist NFS fields from version 0.43.x
 #[derive(Serialize, Deserialize)]
-pub(crate) struct BlocklistNfsFieldsV0_43 {
+pub struct BlocklistNfsFieldsV0_43 {
     pub sensor: String,
     pub orig_addr: IpAddr,
     pub orig_port: u16,
@@ -728,7 +728,7 @@ pub(crate) struct BlocklistNfsFieldsV0_43 {
 
 /// Blocklist DHCP fields from version 0.43.x
 #[derive(Serialize, Deserialize)]
-pub(crate) struct BlocklistDhcpFieldsV0_43 {
+pub struct BlocklistDhcpFieldsV0_43 {
     pub sensor: String,
     pub orig_addr: IpAddr,
     pub orig_port: u16,
@@ -765,7 +765,7 @@ pub(crate) struct BlocklistDhcpFieldsV0_43 {
 
 /// Blocklist DCE-RPC fields from version 0.43.x
 #[derive(Serialize, Deserialize)]
-pub(crate) struct BlocklistDceRpcFieldsV0_43 {
+pub struct BlocklistDceRpcFieldsV0_43 {
     pub sensor: String,
     pub orig_addr: IpAddr,
     pub orig_port: u16,
@@ -788,7 +788,7 @@ pub(crate) struct BlocklistDceRpcFieldsV0_43 {
 
 /// Blocklist NTLM fields from version 0.43.x
 #[derive(Serialize, Deserialize)]
-pub(crate) struct BlocklistNtlmFieldsV0_43 {
+pub struct BlocklistNtlmFieldsV0_43 {
     pub sensor: String,
     pub orig_addr: IpAddr,
     pub orig_port: u16,
@@ -812,7 +812,7 @@ pub(crate) struct BlocklistNtlmFieldsV0_43 {
 
 /// Blocklist SMB fields from version 0.43.x
 #[derive(Serialize, Deserialize)]
-pub(crate) struct BlocklistSmbFieldsV0_43 {
+pub struct BlocklistSmbFieldsV0_43 {
     pub sensor: String,
     pub orig_addr: IpAddr,
     pub orig_port: u16,
@@ -842,7 +842,7 @@ pub(crate) struct BlocklistSmbFieldsV0_43 {
 
 /// Blocklist MQTT fields from version 0.43.x
 #[derive(Serialize, Deserialize)]
-pub(crate) struct BlocklistMqttFieldsV0_43 {
+pub struct BlocklistMqttFieldsV0_43 {
     pub sensor: String,
     pub orig_addr: IpAddr,
     pub orig_port: u16,
@@ -867,7 +867,7 @@ pub(crate) struct BlocklistMqttFieldsV0_43 {
 
 /// Blocklist BOOTP fields from version 0.43.x
 #[derive(Serialize, Deserialize)]
-pub(crate) struct BlocklistBootpFieldsV0_43 {
+pub struct BlocklistBootpFieldsV0_43 {
     pub sensor: String,
     pub orig_addr: IpAddr,
     pub orig_port: u16,
@@ -897,7 +897,7 @@ pub(crate) struct BlocklistBootpFieldsV0_43 {
 
 /// Blocklist Radius fields from version 0.43.x
 #[derive(Serialize, Deserialize)]
-pub(crate) struct BlocklistRadiusFieldsV0_43 {
+pub struct BlocklistRadiusFieldsV0_43 {
     pub sensor: String,
     pub orig_addr: IpAddr,
     pub orig_port: u16,
@@ -930,7 +930,7 @@ pub(crate) struct BlocklistRadiusFieldsV0_43 {
 
 /// Blocklist malformed DNS fields from version 0.43.x
 #[derive(Serialize, Deserialize)]
-pub(crate) struct BlocklistMalformedDnsFieldsV0_43 {
+pub struct BlocklistMalformedDnsFieldsV0_43 {
     pub sensor: String,
     pub orig_addr: IpAddr,
     pub orig_port: u16,
@@ -961,7 +961,7 @@ pub(crate) struct BlocklistMalformedDnsFieldsV0_43 {
 
 /// Unusual destination pattern fields from version 0.43.x
 #[derive(Serialize, Deserialize)]
-pub(crate) struct UnusualDestinationPatternFieldsV0_43 {
+pub struct UnusualDestinationPatternFieldsV0_43 {
     pub sensor: String,
     pub start_time: i64,
     pub end_time: i64,
@@ -1943,7 +1943,7 @@ impl From<UnusualDestinationPatternFieldsV0_43> for UnusualDestinationPatternFie
 
 /// Network threat from version 0.43.x (before country codes were added)
 #[derive(Deserialize, Serialize)]
-pub(crate) struct NetworkThreatV0_43 {
+pub struct NetworkThreatV0_43 {
     #[serde(with = "chrono::serde::ts_nanoseconds")]
     pub time: DateTime<Utc>,
     pub sensor: String,

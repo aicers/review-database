@@ -2588,6 +2588,156 @@ impl<'a> EventDb<'a> {
         Ok(key)
     }
 
+    /// Stores a new event from an external source into the database.
+    ///
+    /// Unlike [`put`], this method accepts event fields serialized in the external
+    /// format (without country code fields). It deserializes the fields using the
+    /// external schema, adds default country codes (`"ZZ"`), re-serializes in the
+    /// internal schema, and then stores the result.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if deserialization of the external fields or the database
+    /// operation fails.
+    pub fn put_external(&self, event: &EventMessage) -> Result<i128> {
+        use crate::migration::migration_structures::{
+            BlocklistBootpFieldsV0_43, BlocklistConnFieldsV0_43, BlocklistDceRpcFieldsV0_43,
+            BlocklistDhcpFieldsV0_43, BlocklistDnsFieldsV0_43, BlocklistKerberosFieldsV0_43,
+            BlocklistMalformedDnsFieldsV0_43, BlocklistMqttFieldsV0_43, BlocklistNfsFieldsV0_43,
+            BlocklistNtlmFieldsV0_43, BlocklistRadiusFieldsV0_43, BlocklistRdpFieldsV0_43,
+            BlocklistSmbFieldsV0_43, BlocklistSmtpFieldsV0_43, BlocklistSshFieldsV0_43,
+            BlocklistTlsFieldsV0_43, CryptocurrencyMiningPoolFieldsV0_43, DgaFieldsV0_43,
+            DnsEventFieldsV0_43, ExternalDdosFieldsV0_43, FtpBruteForceFieldsV0_43,
+            FtpEventFieldsV0_43, HttpEventFieldsV0_43, HttpThreatFieldsV0_43,
+            LdapBruteForceFieldsV0_43, LdapEventFieldsV0_43, MultiHostPortScanFieldsV0_43,
+            NetworkThreatV0_43, PortScanFieldsV0_43, RdpBruteForceFieldsV0_43,
+            RepeatedHttpSessionsFieldsV0_43, UnusualDestinationPatternFieldsV0_43,
+        };
+
+        macro_rules! convert_fields {
+            ($ext_ty:ty, $int_ty:ty) => {{
+                let ext = bincode::deserialize::<$ext_ty>(&event.fields)
+                    .with_context(|| {
+                        format!(
+                            "failed to deserialize external {} fields for {:?}",
+                            stringify!($ext_ty),
+                            event.kind,
+                        )
+                    })?;
+                bincode::serialize(&<$int_ty>::from(ext))
+                    .context("failed to re-serialize as internal format")?
+            }};
+        }
+
+        let internal_fields: Vec<u8> = match event.kind {
+            EventKind::DnsCovertChannel | EventKind::LockyRansomware => {
+                convert_fields!(DnsEventFieldsV0_43, DnsEventFields)
+            }
+            EventKind::HttpThreat => convert_fields!(HttpThreatFieldsV0_43, HttpThreatFields),
+            EventKind::RdpBruteForce => {
+                convert_fields!(RdpBruteForceFieldsV0_43, RdpBruteForceFields)
+            }
+            EventKind::RepeatedHttpSessions => {
+                convert_fields!(RepeatedHttpSessionsFieldsV0_43, RepeatedHttpSessionsFields)
+            }
+            EventKind::TorConnection | EventKind::NonBrowser | EventKind::BlocklistHttp => {
+                convert_fields!(HttpEventFieldsV0_43, HttpEventFields)
+            }
+            EventKind::TorConnectionConn | EventKind::BlocklistConn => {
+                convert_fields!(BlocklistConnFieldsV0_43, BlocklistConnFields)
+            }
+            EventKind::DomainGenerationAlgorithm => {
+                convert_fields!(DgaFieldsV0_43, DgaFields)
+            }
+            EventKind::FtpBruteForce => {
+                convert_fields!(FtpBruteForceFieldsV0_43, FtpBruteForceFields)
+            }
+            EventKind::FtpPlainText | EventKind::BlocklistFtp => {
+                convert_fields!(FtpEventFieldsV0_43, FtpEventFields)
+            }
+            EventKind::PortScan => convert_fields!(PortScanFieldsV0_43, PortScanFields),
+            EventKind::MultiHostPortScan => {
+                convert_fields!(MultiHostPortScanFieldsV0_43, MultiHostPortScanFields)
+            }
+            EventKind::LdapBruteForce => {
+                convert_fields!(LdapBruteForceFieldsV0_43, LdapBruteForceFields)
+            }
+            EventKind::LdapPlainText | EventKind::BlocklistLdap => {
+                convert_fields!(LdapEventFieldsV0_43, LdapEventFields)
+            }
+            EventKind::ExternalDdos => {
+                convert_fields!(ExternalDdosFieldsV0_43, ExternalDdosFields)
+            }
+            EventKind::CryptocurrencyMiningPool => {
+                convert_fields!(
+                    CryptocurrencyMiningPoolFieldsV0_43,
+                    CryptocurrencyMiningPoolFields
+                )
+            }
+            EventKind::BlocklistBootp => {
+                convert_fields!(BlocklistBootpFieldsV0_43, BlocklistBootpFields)
+            }
+            EventKind::BlocklistDceRpc => {
+                convert_fields!(BlocklistDceRpcFieldsV0_43, BlocklistDceRpcFields)
+            }
+            EventKind::BlocklistDhcp => {
+                convert_fields!(BlocklistDhcpFieldsV0_43, BlocklistDhcpFields)
+            }
+            EventKind::BlocklistDns => {
+                convert_fields!(BlocklistDnsFieldsV0_43, BlocklistDnsFields)
+            }
+            EventKind::BlocklistKerberos => {
+                convert_fields!(BlocklistKerberosFieldsV0_43, BlocklistKerberosFields)
+            }
+            EventKind::BlocklistMalformedDns => {
+                convert_fields!(BlocklistMalformedDnsFieldsV0_43, BlocklistMalformedDnsFields)
+            }
+            EventKind::BlocklistMqtt => {
+                convert_fields!(BlocklistMqttFieldsV0_43, BlocklistMqttFields)
+            }
+            EventKind::BlocklistNfs => {
+                convert_fields!(BlocklistNfsFieldsV0_43, BlocklistNfsFields)
+            }
+            EventKind::BlocklistNtlm => {
+                convert_fields!(BlocklistNtlmFieldsV0_43, BlocklistNtlmFields)
+            }
+            EventKind::BlocklistRadius => {
+                convert_fields!(BlocklistRadiusFieldsV0_43, BlocklistRadiusFields)
+            }
+            EventKind::BlocklistRdp => {
+                convert_fields!(BlocklistRdpFieldsV0_43, BlocklistRdpFields)
+            }
+            EventKind::BlocklistSmb => {
+                convert_fields!(BlocklistSmbFieldsV0_43, BlocklistSmbFields)
+            }
+            EventKind::BlocklistSmtp => {
+                convert_fields!(BlocklistSmtpFieldsV0_43, BlocklistSmtpFields)
+            }
+            EventKind::BlocklistSsh => {
+                convert_fields!(BlocklistSshFieldsV0_43, BlocklistSshFields)
+            }
+            EventKind::BlocklistTls | EventKind::SuspiciousTlsTraffic => {
+                convert_fields!(BlocklistTlsFieldsV0_43, BlocklistTlsFields)
+            }
+            EventKind::NetworkThreat => convert_fields!(NetworkThreatV0_43, NetworkThreat),
+            EventKind::UnusualDestinationPattern => {
+                convert_fields!(
+                    UnusualDestinationPatternFieldsV0_43,
+                    UnusualDestinationPatternFields
+                )
+            }
+            // These event types have no country code fields; store the external fields as-is.
+            EventKind::WindowsThreat | EventKind::ExtraThreat => event.fields.clone(),
+        };
+
+        let internal_event = EventMessage {
+            time: event.time,
+            kind: event.kind,
+            fields: internal_fields,
+        };
+        self.put(&internal_event)
+    }
+
     /// Updates an old key-value pair to a new one.
     ///
     /// # Errors
@@ -3264,6 +3414,67 @@ mod tests {
         assert!(iter.next().is_some());
         assert!(iter.next().is_some());
         assert!(iter.next().is_none());
+    }
+
+    #[test]
+    fn event_db_put_external() {
+        use crate::migration::migration_structures::DnsEventFieldsV0_43;
+
+        let (_permit, store) = setup_store();
+        let db = store.events();
+
+        // Create an external-format event (without country codes)
+        let ext_fields = DnsEventFieldsV0_43 {
+            sensor: "collector1".to_string(),
+            orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
+            orig_port: 10000,
+            resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
+            resp_port: 53,
+            proto: 17,
+            start_time: Utc
+                .with_ymd_and_hms(1970, 1, 1, 0, 1, 1)
+                .unwrap()
+                .timestamp_nanos_opt()
+                .unwrap(),
+            duration: 0,
+            orig_pkts: 0,
+            resp_pkts: 0,
+            orig_l2_bytes: 0,
+            resp_l2_bytes: 0,
+            query: "foo.com".to_string(),
+            answer: vec!["1.1.1.1".to_string()],
+            trans_id: 1,
+            rtt: 1,
+            qclass: 0,
+            qtype: 0,
+            rcode: 0,
+            aa_flag: false,
+            tc_flag: false,
+            rd_flag: false,
+            ra_flag: false,
+            ttl: vec![1; 5],
+            confidence: 0.8,
+            category: Some(EventCategory::CommandAndControl),
+        };
+
+        let ext_message = EventMessage {
+            time: Utc::now(),
+            kind: EventKind::DnsCovertChannel,
+            fields: bincode::serialize(&ext_fields).expect("serializable"),
+        };
+
+        // put_external should succeed and convert to internal format
+        db.put_external(&ext_message).unwrap();
+
+        // Verify the stored event can be deserialized as internal format (with country codes).
+        // raw_iter_forward returns (key_bytes, value_bytes) where value_bytes == the fields.
+        let mut iter = db.raw_iter_forward();
+        let (_key, fields_bytes) = iter.next().expect("should have an entry");
+        let internal_fields = bincode::deserialize::<DnsEventFields>(&fields_bytes)
+            .expect("should deserialize as internal format with country codes");
+        assert_eq!(internal_fields.orig_country_code, *b"ZZ");
+        assert_eq!(internal_fields.resp_country_code, *b"ZZ");
+        assert_eq!(internal_fields.sensor, "collector1");
     }
 
     #[test]
