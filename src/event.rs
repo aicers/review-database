@@ -42,6 +42,7 @@ use rand::{RngCore, rng};
 pub use rocksdb::Direction;
 use rocksdb::IteratorMode;
 use serde::{Deserialize, Serialize};
+use tracing::warn;
 
 use self::common::Match;
 pub use self::{
@@ -2502,6 +2503,12 @@ impl<'a> EventDb<'a> {
         }
         Ok(())
     }
+
+    /// Inserts a raw key-value pair into the event database.
+    #[cfg(test)]
+    fn put_raw(&self, key: &[u8], value: &[u8]) {
+        self.inner.put(key, value).expect("put_raw should succeed");
+    }
 }
 
 #[allow(clippy::module_name_repetitions)]
@@ -2516,18 +2523,21 @@ impl Iterator for EventIterator<'_> {
     type Item = Result<(i128, Event), InvalidEvent>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let (k, v) = self.inner.next().transpose().ok().flatten()?;
+        let (key, kind, time, v) = loop {
+            let (k, v) = self.inner.next().transpose().ok().flatten()?;
 
-        let key: [u8; 16] = if let Ok(key) = k.as_ref().try_into() {
-            key
-        } else {
-            return Some(Err(InvalidEvent::Key(k)));
-        };
-        let key = i128::from_be_bytes(key);
-        let time = Utc.timestamp_nanos((key >> 64).try_into().expect("valid i64"));
-        let kind_num = (key & 0xffff_ffff_0000_0000) >> 32;
-        let Some(kind) = EventKind::from_i128(kind_num) else {
-            return Some(Err(InvalidEvent::Key(k)));
+            let key: [u8; 16] = if let Ok(key) = k.as_ref().try_into() {
+                key
+            } else {
+                return Some(Err(InvalidEvent::Key(k)));
+            };
+            let key = i128::from_be_bytes(key);
+            let time = Utc.timestamp_nanos((key >> 64).try_into().expect("valid i64"));
+            let kind_num = (key & 0xffff_ffff_0000_0000) >> 32;
+            if let Some(kind) = EventKind::from_i128(kind_num) {
+                break (key, kind, time, v);
+            }
+            warn!("Unknown event kind: {kind_num}; skipped");
         };
         match kind {
             EventKind::BlocklistBootp => {
@@ -6202,5 +6212,63 @@ mod tests {
                 bincode::deserialize(&serialized).expect("deserialization should succeed");
             assert_eq!(variant, deserialized);
         }
+    }
+
+    #[test]
+    fn iterator_skips_unknown_event_kind() {
+        let (_permit, store) = setup_store();
+        let db = store.events();
+
+        // Insert an entry with an unknown event kind (kind = 9999).
+        let unknown_kind: i128 = 9999;
+        let ts: i128 = 1_000_000_000; // 1 second in nanos
+        let unknown_key = (ts << 64) | (unknown_kind << 32);
+        db.put_raw(&unknown_key.to_be_bytes(), b"dummy");
+
+        // Insert a valid entry after the unknown one.
+        let msg = example_message(
+            EventKind::DnsCovertChannel,
+            EventCategory::CommandAndControl,
+        );
+        db.put(&msg).unwrap();
+
+        // The iterator should skip the unknown entry and yield
+        // only the valid one.
+        let mut iter = db.iter_forward();
+        let item = iter.next();
+        assert!(item.is_some_and(|r| r.is_ok()));
+        assert!(iter.next().is_none());
+    }
+
+    #[test]
+    fn iterator_returns_none_when_only_unknown_kinds() {
+        let (_permit, store) = setup_store();
+        let db = store.events();
+
+        // Insert only entries with unknown event kinds.
+        for kind_num in [9999_i128, 10000, 10001] {
+            let ts: i128 = 1_000_000_000;
+            let key = (ts << 64) | (kind_num << 32);
+            db.put_raw(&key.to_be_bytes(), b"dummy");
+        }
+
+        let mut iter = db.iter_forward();
+        assert!(
+            iter.next().is_none(),
+            "expected None when all entries have unknown kinds",
+        );
+    }
+
+    #[test]
+    fn iterator_errors_on_malformed_key() {
+        let (_permit, store) = setup_store();
+        let db = store.events();
+
+        // Insert an entry with a key that is not 16 bytes.
+        db.put_raw(&[0xAB; 8], b"dummy");
+
+        let mut iter = db.iter_forward();
+        let item = iter.next();
+        assert!(item.is_some_and(|r| r.is_err()));
     }
 }
