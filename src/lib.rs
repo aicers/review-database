@@ -36,6 +36,7 @@ pub use self::collections::Indexable;
 pub(crate) use self::collections::{IndexedMap, IndexedMapUpdate, Map};
 pub use self::column_statistics::*;
 pub use self::event::{Event, EventDb, EventKind, EventMessage};
+pub use self::migration::migrate_data_dir;
 // Re-export V0_43 structs as External types for use in the communication layer.
 // These represent the current external schema (without internal-only fields like country codes).
 pub use self::migration::migration_structures::{
@@ -56,23 +57,18 @@ pub use self::migration::migration_structures::{
     BlocklistSshFieldsV0_43 as BlocklistSshFieldsExternal,
     BlocklistTlsFieldsV0_43 as BlocklistTlsFieldsExternal,
     CryptocurrencyMiningPoolFieldsV0_43 as CryptocurrencyMiningPoolFieldsExternal,
-    DgaFieldsV0_43 as DgaFieldsExternal,
-    DnsEventFieldsV0_43 as DnsEventFieldsExternal,
+    DgaFieldsV0_43 as DgaFieldsExternal, DnsEventFieldsV0_43 as DnsEventFieldsExternal,
     ExternalDdosFieldsV0_43 as ExternalDdosFieldsExternal,
-    FtpBruteForceFieldsV0_43 as FtpBruteForceFieldsExternal,
-    FtpCommandV0_43 as FtpCommandExternal,
-    FtpEventFieldsV0_43 as FtpEventFieldsExternal,
-    HttpEventFieldsV0_43 as HttpEventFieldsExternal,
+    FtpBruteForceFieldsV0_43 as FtpBruteForceFieldsExternal, FtpCommandV0_43 as FtpCommandExternal,
+    FtpEventFieldsV0_43 as FtpEventFieldsExternal, HttpEventFieldsV0_43 as HttpEventFieldsExternal,
     HttpThreatFieldsV0_43 as HttpThreatFieldsExternal,
     LdapBruteForceFieldsV0_43 as LdapBruteForceFieldsExternal,
     LdapEventFieldsV0_43 as LdapEventFieldsExternal,
     MultiHostPortScanFieldsV0_43 as MultiHostPortScanFieldsExternal,
-    NetworkThreatV0_43 as NetworkThreatExternal,
-    PortScanFieldsV0_43 as PortScanFieldsExternal,
+    NetworkThreatV0_43 as NetworkThreatExternal, PortScanFieldsV0_43 as PortScanFieldsExternal,
     RepeatedHttpSessionsFieldsV0_43 as RepeatedHttpSessionsFieldsExternal,
     UnusualDestinationPatternFieldsV0_43 as UnusualDestinationPatternFieldsExternal,
 };
-pub use self::migration::migrate_data_dir;
 pub use self::model::{Digest, Model};
 pub use self::scores::Scores;
 use self::tables::StateDb;
