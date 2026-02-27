@@ -1,6 +1,6 @@
 //! Routines to check the database format version and migrate it if necessary.
 #![allow(clippy::too_many_lines)]
-mod migration_structures;
+pub(crate) mod migration_structures;
 
 use std::{
     fs::{File, create_dir_all},
