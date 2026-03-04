@@ -42,20 +42,20 @@ pub use self::scores::Scores;
 use self::tables::StateDb;
 pub use self::tables::{
     AccessToken, Agent, AgentConfig, AgentKind, AgentStatus, AllowNetwork, AllowNetworkUpdate,
-    AttrCmpKind, BackupConfig, BlockNetwork, BlockNetworkUpdate, Cluster, ClusterTimeSeries,
-    ColumnStats, ColumnTimeSeries, Confidence, CsvColumnExtra as CsvColumnExtraConfig, Customer,
-    CustomerNetwork, CustomerUpdate, DataSource, DataSourceUpdate, DataType, ExclusionReason,
-    ExternalService, ExternalServiceConfig, ExternalServiceKind, ExternalServiceStatus, Filter,
-    FilterValue, Host, IndexedTable, Iterable, LabelDb, LabelDbKind, LabelDbRule, LabelDbRuleKind,
-    Model as ModelDigest, ModelIndicator, Network, NetworkFilter, NetworkUpdate, Node, NodeProfile,
-    NodeTable, NodeUpdate, OutlierInfo, OutlierInfoKey, OutlierInfoValue, PacketAttr,
-    PeriodForSearch, ProtocolPorts, Response, ResponseKind, SamplingInterval, SamplingKind,
-    SamplingPeriod, SamplingPolicy, SamplingPolicyUpdate, Structured,
-    StructuredClusteringAlgorithm, Table, Template, TimeSeries, TopColumnsOfCluster, TopMultimaps,
-    TorExitNode, TrafficFilter, TriageExclusion, TriageExclusionReason,
-    TriageExclusionReasonUpdate, TriagePolicy, TriagePolicyInput, TriagePolicyUpdate,
-    TriageResponse, TriageResponseUpdate, TrustedDomain, TrustedUserAgent, UniqueKey, Unstructured,
-    UnstructuredClusteringAlgorithm, UserAgent, ValueKind,
+    AttrCmpKind, BackupConfig, BackupConfigUpdate, BlockNetwork, BlockNetworkUpdate, Cluster,
+    ClusterTimeSeries, ColumnStats, ColumnTimeSeries, Confidence,
+    CsvColumnExtra as CsvColumnExtraConfig, Customer, CustomerNetwork, CustomerUpdate, DataSource,
+    DataSourceUpdate, DataType, ExclusionReason, ExternalService, ExternalServiceConfig,
+    ExternalServiceKind, ExternalServiceStatus, Filter, FilterValue, Host, IndexedTable, Iterable,
+    LabelDb, LabelDbKind, LabelDbRule, LabelDbRuleKind, Model as ModelDigest, ModelIndicator,
+    Network, NetworkFilter, NetworkUpdate, Node, NodeProfile, NodeTable, NodeUpdate, OutlierInfo,
+    OutlierInfoKey, OutlierInfoValue, PacketAttr, PeriodForSearch, ProtocolPorts, Response,
+    ResponseKind, SamplingInterval, SamplingKind, SamplingPeriod, SamplingPolicy,
+    SamplingPolicyUpdate, Structured, StructuredClusteringAlgorithm, Table, Template, TimeSeries,
+    TopColumnsOfCluster, TopMultimaps, TorExitNode, TrafficFilter, TriageExclusion,
+    TriageExclusionReason, TriageExclusionReasonUpdate, TriagePolicy, TriagePolicyInput,
+    TriagePolicyUpdate, TriageResponse, TriageResponseUpdate, TrustedDomain, TrustedUserAgent,
+    UniqueKey, Unstructured, UnstructuredClusteringAlgorithm, UserAgent, ValueKind,
 };
 pub use self::top_n::*;
 #[allow(deprecated)]
@@ -167,10 +167,143 @@ impl Store {
         self.states.configs()
     }
 
-    #[must_use]
-    #[allow(clippy::missing_panics_doc)]
-    pub fn backup_config_map(&self) -> Table<'_, BackupConfig> {
-        self.states.backup_configs()
+    /// Initializes backup configuration in the config table.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if config is invalid, any of the config values have
+    /// already been initialized or if database operation fails.
+    pub fn init_backup_config(&self, config: &BackupConfig) -> Result<()> {
+        config.validate()?;
+
+        let config_map = self.config_map();
+        let duration = config.backup_duration.to_string();
+        let time = config.backup_time.clone();
+        let num = config.num_of_backups_to_keep.to_string();
+
+        let updates = vec![
+            (tables::KEY_BACKUP_DURATION, duration.as_str()),
+            (tables::KEY_BACKUP_TIME, time.as_str()),
+            (tables::KEY_NUM_OF_BACKUPS_TO_KEEP, num.as_str()),
+        ];
+        config_map.init_multi(&updates)?;
+        Ok(())
+    }
+
+    /// Updates backup configuration in the config table.
+    ///
+    /// This function updates backup config fields using compare-and-swap
+    /// semantics. Both old config (for verification) and new config update must
+    /// be provided to ensure no concurrent modifications have occurred.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the new config is invalid, if any old value does not
+    /// match the current value in the database (indicating concurrent
+    /// modification), if the key does not exist, or if the database operation
+    /// fails.
+    pub fn update_backup_config(
+        &self,
+        old_config: &BackupConfig,
+        update: &BackupConfigUpdate,
+    ) -> Result<()> {
+        let config_map = self.config_map();
+        let mut updates = Vec::new();
+
+        let old_duration_str = old_config.backup_duration.to_string();
+        let new_duration_str;
+        if let Some(new_val) = update.backup_duration {
+            new_duration_str = new_val.to_string();
+            updates.push((
+                tables::KEY_BACKUP_DURATION,
+                old_duration_str.as_str(),
+                new_duration_str.as_str(),
+            ));
+        }
+
+        let old_time_str = old_config.backup_time.clone();
+        let new_time_str;
+        if let Some(ref new_val) = update.backup_time {
+            new_time_str = new_val.clone();
+            updates.push((
+                tables::KEY_BACKUP_TIME,
+                old_time_str.as_str(),
+                new_time_str.as_str(),
+            ));
+        }
+
+        let old_num_str = old_config.num_of_backups_to_keep.to_string();
+        let new_num_str;
+        if let Some(new_val) = update.num_of_backups_to_keep {
+            new_num_str = new_val.to_string();
+            updates.push((
+                tables::KEY_NUM_OF_BACKUPS_TO_KEEP,
+                old_num_str.as_str(),
+                new_num_str.as_str(),
+            ));
+        }
+
+        // Validate the NEW resulting config
+        let resulting_config = BackupConfig {
+            backup_duration: update.backup_duration.unwrap_or(old_config.backup_duration),
+            backup_time: update
+                .backup_time
+                .clone()
+                .unwrap_or_else(|| old_config.backup_time.clone()),
+            num_of_backups_to_keep: update
+                .num_of_backups_to_keep
+                .unwrap_or(old_config.num_of_backups_to_keep),
+        };
+        resulting_config.validate()?;
+
+        if !updates.is_empty() {
+            config_map.update_compare_multi(&updates)?;
+        }
+
+        Ok(())
+    }
+
+    /// Returns the current backup configuration from the config table.
+    ///
+    /// Returns `Ok(None)` if the backup configuration has not been initialized.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if numeric fields cannot be parsed, if the
+    /// configuration is only partially initialized, or if the database
+    /// operation fails.
+    pub fn backup_config(&self) -> Result<Option<BackupConfig>> {
+        let config = self.config_map();
+
+        let duration = config.current(tables::KEY_BACKUP_DURATION)?;
+        let time = config.current(tables::KEY_BACKUP_TIME)?;
+        let num = config.current(tables::KEY_NUM_OF_BACKUPS_TO_KEEP)?;
+
+        match (duration, time, num) {
+            (Some(d), Some(t), Some(n)) => {
+                let backup_duration = d.parse()?;
+                let backup_time = t;
+                let num_of_backups_to_keep = n.parse()?;
+                Ok(Some(BackupConfig {
+                    backup_duration,
+                    backup_time,
+                    num_of_backups_to_keep,
+                }))
+            }
+            (None, None, None) => Ok(None),
+            (duration, time, num) => Err(anyhow!(
+                "incomplete backup configuration: missing keys: {}",
+                [
+                    duration.is_none().then_some(tables::KEY_BACKUP_DURATION),
+                    time.is_none().then_some(tables::KEY_BACKUP_TIME),
+                    num.is_none().then_some(tables::KEY_NUM_OF_BACKUPS_TO_KEEP),
+                ]
+                .into_iter()
+                .flatten()
+                .collect::<Vec<_>>()
+                .join(", ")
+            )),
+        }
     }
 
     /// Initializes account policy settings in the config table.

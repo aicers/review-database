@@ -7,8 +7,25 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- Added `init_backup_config`, `update_backup_config`, and `backup_config`
+  methods to `Store` for managing backup configuration in the config table.
+  This aligns with the `AccountPolicy` pattern where configuration is stored
+  as separate key-value pairs.
+- Added `BackupConfigUpdate` struct for partial backup configuration updates.
+
 ### Changed
 
+- **BREAKING**: Refactored `BackupConfig` to remove embedded policy defaults.
+- **BREAKING**: Removed `BackupConfig::default()` implementation. Applications
+  that relied on default values must now explicitly construct `BackupConfig`.
+- **BREAKING**: `backup_config` no longer returns a pre-defined default
+  configuration when none has been initialized. It now indicates that nothing
+  is stored.
+- **BREAKING**: Backup configuration is now stored in `config_map` using
+  separate keys (`backup_duration`, `backup_time`, `num_of_backups_to_keep`)
+  instead of a single serialized entry.
 - Added `#[repr(u32)]` and `#[non_exhaustive]` attributes to `EventKind` enum.
   Explicit discriminant values are now assigned to each variant to ensure
   stable serialization. The numeric values are guaranteed not to change in
@@ -61,6 +78,8 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Removed
 
+- Removed `Store::backup_config_map()` method. Use `init_backup_config`,
+  `update_backup_config`, and `backup_config` methods instead.
 - Removed `IndexedTable<Network>::remove_customer` method.
 
 ## [0.43.0] - 2025-12-18

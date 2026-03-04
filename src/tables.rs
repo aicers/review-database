@@ -43,12 +43,13 @@ use serde::{Deserialize, Serialize};
 pub use self::access_token::AccessToken;
 pub use self::agent::{Agent, AgentKind};
 pub use self::allow_network::{AllowNetwork, Update as AllowNetworkUpdate};
-pub use self::backup_config::BackupConfig;
+pub use self::backup_config::{BackupConfig, BackupConfigUpdate};
 pub use self::block_network::{BlockNetwork, Update as BlockNetworkUpdate};
 pub use self::cluster::Cluster;
 pub use self::column_stats::{ColumnStats, TopColumnsOfCluster, TopMultimaps};
 pub use self::config::{
-    KEY_EXPIRY_PERIOD, KEY_LOCKOUT_DURATION, KEY_LOCKOUT_THRESHOLD, KEY_SUSPENSION_THRESHOLD,
+    KEY_BACKUP_DURATION, KEY_BACKUP_TIME, KEY_EXPIRY_PERIOD, KEY_LOCKOUT_DURATION,
+    KEY_LOCKOUT_THRESHOLD, KEY_NUM_OF_BACKUPS_TO_KEEP, KEY_SUSPENSION_THRESHOLD,
 };
 pub use self::csv_column_extra::CsvColumnExtra;
 pub use self::customer::{Customer, Network as CustomerNetwork, Update as CustomerUpdate};
@@ -404,12 +405,6 @@ impl StateDb {
     pub(crate) fn configs(&self) -> Table<'_, String> {
         let inner = self.inner.as_ref().expect("database must be open");
         Table::<String>::open(inner).expect("{CONFIGS} table must be present")
-    }
-
-    #[must_use]
-    pub(crate) fn backup_configs(&self) -> Table<'_, BackupConfig> {
-        let inner = self.inner.as_ref().expect("database must be open");
-        Table::<BackupConfig>::open(inner).expect("{CONFIGS} table must be present")
     }
 
     #[must_use]
