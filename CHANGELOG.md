@@ -26,6 +26,10 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 - **BREAKING**: Backup configuration is now stored in `config_map` using
   separate keys (`backup_duration`, `backup_time`, `num_of_backups_to_keep`)
   instead of a single serialized entry.
+- `EventIterator` now skips entries with unknown `EventKind` values
+  instead of returning an error. A warning is logged for each
+  skipped entry. This improves resilience when new event types
+  are stored by newer agents.
 - Added `#[repr(u32)]` and `#[non_exhaustive]` attributes to `EventKind` enum.
   Explicit discriminant values are now assigned to each variant to ensure
   stable serialization. The numeric values are guaranteed not to change in
