@@ -2,6 +2,7 @@ use std::{fmt, net::IpAddr, num::NonZeroU8};
 
 use attrievent::attribute::{ConnAttr, RawEventAttrKind};
 use chrono::{DateTime, Utc};
+use itertools::Itertools;
 use serde::{Deserialize, Serialize};
 
 use super::{EventCategory, LearningMethod, MEDIUM, TriageScore, common::Match};
@@ -35,14 +36,16 @@ macro_rules! find_conn_attr_by_kind {
 }
 pub(crate) use find_conn_attr_by_kind;
 
-pub type PortScanFields = PortScanFieldsV0_42;
+pub type PortScanFields = PortScanFieldsV0_44;
 
 #[derive(Serialize, Deserialize)]
-pub struct PortScanFieldsV0_42 {
+pub struct PortScanFieldsV0_44 {
     pub sensor: String,
     pub orig_addr: IpAddr,
+    pub orig_country_code: [u8; 2],
     pub resp_addr: IpAddr,
     pub resp_ports: Vec<u16>,
+    pub resp_country_code: [u8; 2],
     /// Timestamp in nanoseconds since the Unix epoch (UTC).
     pub start_time: i64,
     /// Timestamp in nanoseconds since the Unix epoch (UTC).
@@ -58,15 +61,17 @@ impl PortScanFields {
         let start_time_dt = DateTime::from_timestamp_nanos(self.start_time);
         let end_time_dt = DateTime::from_timestamp_nanos(self.end_time);
         format!(
-            "category={:?} sensor={:?} orig_addr={:?} resp_addr={:?} resp_ports={:?} start_time={:?} end_time={:?} proto={:?} confidence={:?}",
+            "category={:?} sensor={:?} orig_addr={:?} orig_country_code={:?} resp_addr={:?} resp_ports={:?} resp_country_code={:?} start_time={:?} end_time={:?} proto={:?} confidence={:?}",
             self.category.as_ref().map_or_else(
                 || "Unspecified".to_string(),
                 std::string::ToString::to_string
             ),
             self.sensor,
             self.orig_addr.to_string(),
+            std::str::from_utf8(&self.orig_country_code).unwrap_or("XX"),
             self.resp_addr.to_string(),
             vector_to_string(&self.resp_ports),
+            std::str::from_utf8(&self.resp_country_code).unwrap_or("XX"),
             start_time_dt.to_rfc3339(),
             end_time_dt.to_rfc3339(),
             self.proto.to_string(),
@@ -81,8 +86,10 @@ pub struct PortScan {
     pub sensor: String,
     pub time: DateTime<Utc>,
     pub orig_addr: IpAddr,
+    pub orig_country_code: [u8; 2],
     pub resp_addr: IpAddr,
     pub resp_ports: Vec<u16>,
+    pub resp_country_code: [u8; 2],
     pub start_time: DateTime<Utc>,
     pub end_time: DateTime<Utc>,
     pub proto: u8,
@@ -95,10 +102,12 @@ impl fmt::Display for PortScan {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(
             f,
-            "orig_addr={:?} resp_addr={:?} resp_ports={:?} start_time={:?} end_time={:?} proto={:?} triage_scores={:?}",
+            "orig_addr={:?} orig_country_code={:?} resp_addr={:?} resp_ports={:?} resp_country_code={:?} start_time={:?} end_time={:?} proto={:?} triage_scores={:?}",
             self.orig_addr.to_string(),
+            std::str::from_utf8(&self.orig_country_code).unwrap_or("XX"),
             self.resp_addr.to_string(),
             vector_to_string(&self.resp_ports),
+            std::str::from_utf8(&self.resp_country_code).unwrap_or("XX"),
             self.start_time.to_rfc3339(),
             self.end_time.to_rfc3339(),
             self.proto.to_string(),
@@ -113,8 +122,10 @@ impl PortScan {
             sensor: fields.sensor.clone(),
             time,
             orig_addr: fields.orig_addr,
+            orig_country_code: fields.orig_country_code,
             resp_addr: fields.resp_addr,
             resp_ports: fields.resp_ports.clone(),
+            resp_country_code: fields.resp_country_code,
             proto: fields.proto,
             start_time: DateTime::from_timestamp_nanos(fields.start_time),
             end_time: DateTime::from_timestamp_nanos(fields.end_time),
@@ -186,14 +197,16 @@ impl Match for PortScan {
     }
 }
 
-pub type MultiHostPortScanFields = MultiHostPortScanFieldsV0_42;
+pub type MultiHostPortScanFields = MultiHostPortScanFieldsV0_44;
 
 #[derive(Serialize, Deserialize)]
-pub struct MultiHostPortScanFieldsV0_42 {
+pub struct MultiHostPortScanFieldsV0_44 {
     pub sensor: String,
     pub orig_addr: IpAddr,
-    pub resp_port: u16,
+    pub orig_country_code: [u8; 2],
     pub resp_addrs: Vec<IpAddr>,
+    pub resp_port: u16,
+    pub resp_country_codes: Vec<[u8; 2]>,
     pub proto: u8,
     /// Timestamp in nanoseconds since the Unix epoch (UTC).
     pub start_time: i64,
@@ -209,15 +222,20 @@ impl MultiHostPortScanFields {
         let start_time_dt = DateTime::from_timestamp_nanos(self.start_time);
         let end_time_dt = DateTime::from_timestamp_nanos(self.end_time);
         format!(
-            "category={:?} sensor={:?} orig_addr={:?} resp_addrs={:?} resp_port={:?} proto={:?} start_time={:?} end_time={:?} confidence={:?}",
+            "category={:?} sensor={:?} orig_addr={:?} orig_country_code={:?} resp_addrs={:?} resp_port={:?} resp_country_codes={:?} proto={:?} start_time={:?} end_time={:?} confidence={:?}",
             self.category.as_ref().map_or_else(
                 || "Unspecified".to_string(),
                 std::string::ToString::to_string
             ),
             self.sensor,
             self.orig_addr.to_string(),
+            std::str::from_utf8(&self.orig_country_code).unwrap_or("XX"),
             vector_to_string(&self.resp_addrs),
             self.resp_port.to_string(),
+            self.resp_country_codes
+                .iter()
+                .map(|code| std::str::from_utf8(code).unwrap_or("XX"))
+                .join(","),
             self.proto.to_string(),
             start_time_dt.to_rfc3339(),
             end_time_dt.to_rfc3339(),
@@ -232,8 +250,10 @@ pub struct MultiHostPortScan {
     pub sensor: String,
     pub time: DateTime<Utc>,
     pub orig_addr: IpAddr,
-    pub resp_port: u16,
+    pub orig_country_code: [u8; 2],
     pub resp_addrs: Vec<IpAddr>,
+    pub resp_port: u16,
+    pub resp_country_codes: Vec<[u8; 2]>,
     pub proto: u8,
     pub start_time: DateTime<Utc>,
     pub end_time: DateTime<Utc>,
@@ -246,10 +266,15 @@ impl fmt::Display for MultiHostPortScan {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(
             f,
-            "orig_addr={:?} resp_addrs={:?} resp_port={:?} proto={:?} start_time={:?} end_time={:?} triage_scores={:?}",
+            "orig_addr={:?} orig_country_code={:?} resp_addrs={:?} resp_port={:?} resp_country_codes={:?} proto={:?} start_time={:?} end_time={:?} triage_scores={:?}",
             self.orig_addr.to_string(),
+            std::str::from_utf8(&self.orig_country_code).unwrap_or("XX"),
             vector_to_string(&self.resp_addrs),
             self.resp_port.to_string(),
+            self.resp_country_codes
+                .iter()
+                .map(|code| std::str::from_utf8(code).unwrap_or("XX"))
+                .join(","),
             self.proto.to_string(),
             self.start_time.to_rfc3339(),
             self.end_time.to_rfc3339(),
@@ -264,8 +289,10 @@ impl MultiHostPortScan {
             sensor: fields.sensor.clone(),
             time,
             orig_addr: fields.orig_addr,
-            resp_port: fields.resp_port,
+            orig_country_code: fields.orig_country_code,
             resp_addrs: fields.resp_addrs.clone(),
+            resp_port: fields.resp_port,
+            resp_country_codes: fields.resp_country_codes.clone(),
             proto: fields.proto,
             start_time: DateTime::from_timestamp_nanos(fields.start_time),
             end_time: DateTime::from_timestamp_nanos(fields.end_time),
@@ -338,13 +365,15 @@ impl Match for MultiHostPortScan {
     }
 }
 
-pub type ExternalDdosFields = ExternalDdosFieldsV0_42;
+pub type ExternalDdosFields = ExternalDdosFieldsV0_44;
 
 #[derive(Serialize, Deserialize)]
-pub struct ExternalDdosFieldsV0_42 {
+pub struct ExternalDdosFieldsV0_44 {
     pub sensor: String,
     pub orig_addrs: Vec<IpAddr>,
+    pub orig_country_codes: Vec<[u8; 2]>,
     pub resp_addr: IpAddr,
+    pub resp_country_code: [u8; 2],
     pub proto: u8,
     /// Timestamp in nanoseconds since the Unix epoch (UTC).
     pub start_time: i64,
@@ -360,14 +389,19 @@ impl ExternalDdosFields {
         let start_time_dt = DateTime::from_timestamp_nanos(self.start_time);
         let end_time_dt = DateTime::from_timestamp_nanos(self.end_time);
         format!(
-            "category={:?} sensor={:?} orig_addrs={:?} resp_addr={:?} proto={:?} start_time={:?} end_time={:?} confidence={:?}",
+            "category={:?} sensor={:?} orig_addrs={:?} orig_country_codes={:?} resp_addr={:?} resp_country_code={:?} proto={:?} start_time={:?} end_time={:?} confidence={:?}",
             self.category.as_ref().map_or_else(
                 || "Unspecified".to_string(),
                 std::string::ToString::to_string
             ),
             self.sensor,
             vector_to_string(&self.orig_addrs),
+            self.orig_country_codes
+                .iter()
+                .map(|code| std::str::from_utf8(code).unwrap_or("XX"))
+                .join(","),
             self.resp_addr.to_string(),
+            std::str::from_utf8(&self.resp_country_code).unwrap_or("XX"),
             self.proto.to_string(),
             start_time_dt.to_rfc3339(),
             end_time_dt.to_rfc3339(),
@@ -382,7 +416,9 @@ pub struct ExternalDdos {
     pub sensor: String,
     pub time: DateTime<Utc>,
     pub orig_addrs: Vec<IpAddr>,
+    pub orig_country_codes: Vec<[u8; 2]>,
     pub resp_addr: IpAddr,
+    pub resp_country_code: [u8; 2],
     pub proto: u8,
     pub start_time: DateTime<Utc>,
     pub end_time: DateTime<Utc>,
@@ -395,9 +431,14 @@ impl fmt::Display for ExternalDdos {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(
             f,
-            "orig_addrs={:?} resp_addr={:?} proto={:?} start_time={:?} end_time={:?} triage_scores={:?}",
+            "orig_addrs={:?} orig_country_codes={:?} resp_addr={:?} resp_country_code={:?} proto={:?} start_time={:?} end_time={:?} triage_scores={:?}",
             vector_to_string(&self.orig_addrs),
+            self.orig_country_codes
+                .iter()
+                .map(|code| std::str::from_utf8(code).unwrap_or("XX"))
+                .join(","),
             self.resp_addr.to_string(),
+            std::str::from_utf8(&self.resp_country_code).unwrap_or("XX"),
             self.proto.to_string(),
             self.start_time.to_rfc3339(),
             self.end_time.to_rfc3339(),
@@ -412,7 +453,9 @@ impl ExternalDdos {
             sensor: fields.sensor.clone(),
             time,
             orig_addrs: fields.orig_addrs.clone(),
+            orig_country_codes: fields.orig_country_codes.clone(),
             resp_addr: fields.resp_addr,
+            resp_country_code: fields.resp_country_code,
             proto: fields.proto,
             start_time: DateTime::from_timestamp_nanos(fields.start_time),
             end_time: DateTime::from_timestamp_nanos(fields.end_time),
@@ -484,15 +527,17 @@ impl Match for ExternalDdos {
     }
 }
 
-pub type BlocklistConnFields = BlocklistConnFieldsV0_42;
+pub type BlocklistConnFields = BlocklistConnFieldsV0_44;
 
 #[derive(Deserialize, Serialize)]
-pub struct BlocklistConnFieldsV0_42 {
+pub struct BlocklistConnFieldsV0_44 {
     pub sensor: String,
     pub orig_addr: IpAddr,
     pub orig_port: u16,
+    pub orig_country_code: [u8; 2],
     pub resp_addr: IpAddr,
     pub resp_port: u16,
+    pub resp_country_code: [u8; 2],
     pub proto: u8,
     pub conn_state: String,
     /// Timestamp in nanoseconds since the Unix epoch (UTC).
@@ -515,7 +560,7 @@ impl BlocklistConnFields {
         let start_time_dt = DateTime::from_timestamp_nanos(self.start_time);
 
         format!(
-            "category={:?} sensor={:?} orig_addr={:?} orig_port={:?} resp_addr={:?} resp_port={:?} proto={:?} conn_state={:?} start_time={:?} duration={:?} service={:?} orig_bytes={:?} resp_bytes={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} confidence={:?}",
+            "category={:?} sensor={:?} orig_addr={:?} orig_port={:?} orig_country_code={:?} resp_addr={:?} resp_port={:?} resp_country_code={:?} proto={:?} conn_state={:?} start_time={:?} duration={:?} service={:?} orig_bytes={:?} resp_bytes={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} confidence={:?}",
             self.category.as_ref().map_or_else(
                 || "Unspecified".to_string(),
                 std::string::ToString::to_string
@@ -523,8 +568,10 @@ impl BlocklistConnFields {
             self.sensor,
             self.orig_addr.to_string(),
             self.orig_port.to_string(),
+            std::str::from_utf8(&self.orig_country_code).unwrap_or("XX"),
             self.resp_addr.to_string(),
             self.resp_port.to_string(),
+            std::str::from_utf8(&self.resp_country_code).unwrap_or("XX"),
             self.proto.to_string(),
             self.conn_state,
             start_time_dt.to_rfc3339(),
@@ -547,8 +594,10 @@ pub struct BlocklistConn {
     pub time: DateTime<Utc>,
     pub orig_addr: IpAddr,
     pub orig_port: u16,
+    pub orig_country_code: [u8; 2],
     pub resp_addr: IpAddr,
     pub resp_port: u16,
+    pub resp_country_code: [u8; 2],
     pub proto: u8,
     pub conn_state: String,
     pub start_time: DateTime<Utc>,
@@ -569,12 +618,14 @@ impl fmt::Display for BlocklistConn {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(
             f,
-            "sensor={:?} orig_addr={:?} orig_port={:?} resp_addr={:?} resp_port={:?} proto={:?} conn_state={:?} start_time={:?} duration={:?} service={:?} orig_bytes={:?} resp_bytes={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} triage_scores={:?}",
+            "sensor={:?} orig_addr={:?} orig_port={:?} orig_country_code={:?} resp_addr={:?} resp_port={:?} resp_country_code={:?} proto={:?} conn_state={:?} start_time={:?} duration={:?} service={:?} orig_bytes={:?} resp_bytes={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} triage_scores={:?}",
             self.sensor,
             self.orig_addr.to_string(),
             self.orig_port.to_string(),
+            std::str::from_utf8(&self.orig_country_code).unwrap_or("XX"),
             self.resp_addr.to_string(),
             self.resp_port.to_string(),
+            std::str::from_utf8(&self.resp_country_code).unwrap_or("XX"),
             self.proto.to_string(),
             self.conn_state,
             self.start_time.to_rfc3339(),
@@ -598,8 +649,10 @@ impl BlocklistConn {
             sensor: fields.sensor,
             orig_addr: fields.orig_addr,
             orig_port: fields.orig_port,
+            orig_country_code: fields.orig_country_code,
             resp_addr: fields.resp_addr,
             resp_port: fields.resp_port,
+            resp_country_code: fields.resp_country_code,
             proto: fields.proto,
             conn_state: fields.conn_state,
             start_time: DateTime::from_timestamp_nanos(fields.start_time),
