@@ -1447,8 +1447,7 @@ mod tests {
 
     use super::migration_structures::{
         DnsEventFieldsV0_43, ExternalDdosFieldsV0_43, MultiHostPortScanFieldsV0_43,
-        PortScanFieldsV0_43, RdpBruteForceFieldsV0_43,
-        UnusualDestinationPatternFieldsV0_43,
+        PortScanFieldsV0_43, RdpBruteForceFieldsV0_43, UnusualDestinationPatternFieldsV0_43,
     };
     use super::{
         COMPATIBLE_VERSION_REQ, create_version_file, migrate_data_dir, migrate_event_country_codes,
@@ -2879,10 +2878,7 @@ mod tests {
             sensor: "s1".to_string(),
             orig_addr: "10.0.0.1".parse().unwrap(),
             resp_port: 22,
-            resp_addrs: vec![
-                "10.0.0.2".parse().unwrap(),
-                "10.0.0.3".parse().unwrap(),
-            ],
+            resp_addrs: vec!["10.0.0.2".parse().unwrap(), "10.0.0.3".parse().unwrap()],
             proto: 6,
             start_time: 1_000_000_000,
             end_time: 2_000_000_000,
@@ -2915,10 +2911,7 @@ mod tests {
         let schema = TestSchema::new();
         let old = ExternalDdosFieldsV0_43 {
             sensor: "s1".to_string(),
-            orig_addrs: vec![
-                "10.0.0.1".parse().unwrap(),
-                "10.0.0.2".parse().unwrap(),
-            ],
+            orig_addrs: vec!["10.0.0.1".parse().unwrap(), "10.0.0.2".parse().unwrap()],
             resp_addr: "10.0.0.3".parse().unwrap(),
             proto: 17,
             start_time: 1_000_000_000,
