@@ -1,14 +1,14 @@
 #![allow(clippy::module_name_repetitions)]
 
-use std::{fmt, net::IpAddr, num::NonZeroU8};
+use std::{fmt, net::IpAddr};
 
 use attrievent::attribute::{RawEventAttrKind, RdpAttr};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use super::{
-    EventCategory, LearningMethod, MEDIUM, TriageScore,
-    common::{Match, vector_to_string},
+    EventCategory, LearningMethod, ThreatLevel, TriageScore,
+    common::{DefaultThreatLevel, Match, vector_to_string},
 };
 use crate::event::common::{AttrValue, triage_scores_to_string};
 
@@ -119,6 +119,12 @@ impl RdpBruteForce {
     }
 }
 
+impl DefaultThreatLevel for RdpBruteForce {
+    fn default_threat_level() -> ThreatLevel {
+        ThreatLevel::Medium
+    }
+}
+
 impl Match for RdpBruteForce {
     fn src_addrs(&self) -> &[IpAddr] {
         std::slice::from_ref(&self.orig_addr)
@@ -144,8 +150,8 @@ impl Match for RdpBruteForce {
         self.category
     }
 
-    fn level(&self) -> NonZeroU8 {
-        MEDIUM
+    fn level(&self) -> ThreatLevel {
+        ThreatLevel::Medium
     }
 
     fn kind(&self) -> &'static str {
@@ -296,6 +302,12 @@ impl BlocklistRdp {
     }
 }
 
+impl DefaultThreatLevel for BlocklistRdp {
+    fn default_threat_level() -> ThreatLevel {
+        ThreatLevel::Medium
+    }
+}
+
 impl Match for BlocklistRdp {
     fn src_addrs(&self) -> &[IpAddr] {
         std::slice::from_ref(&self.orig_addr)
@@ -321,8 +333,8 @@ impl Match for BlocklistRdp {
         self.category
     }
 
-    fn level(&self) -> NonZeroU8 {
-        MEDIUM
+    fn level(&self) -> ThreatLevel {
+        ThreatLevel::Medium
     }
 
     fn kind(&self) -> &'static str {

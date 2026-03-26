@@ -1,10 +1,13 @@
-use std::{fmt, net::IpAddr, num::NonZeroU8};
+use std::{fmt, net::IpAddr};
 
 use attrievent::attribute::{ConnAttr, RawEventAttrKind};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use super::{EventCategory, LearningMethod, MEDIUM, TriageScore, common::Match};
+use super::{
+    EventCategory, LearningMethod, ThreatLevel, TriageScore,
+    common::{DefaultThreatLevel, Match},
+};
 use crate::event::common::{AttrValue, triage_scores_to_string};
 
 #[derive(Serialize, Deserialize)]
@@ -105,6 +108,12 @@ impl UnusualDestinationPattern {
     }
 }
 
+impl DefaultThreatLevel for UnusualDestinationPattern {
+    fn default_threat_level() -> ThreatLevel {
+        ThreatLevel::Medium
+    }
+}
+
 impl Match for UnusualDestinationPattern {
     fn src_addrs(&self) -> &[IpAddr] {
         &[]
@@ -130,8 +139,8 @@ impl Match for UnusualDestinationPattern {
         self.category
     }
 
-    fn level(&self) -> NonZeroU8 {
-        MEDIUM
+    fn level(&self) -> ThreatLevel {
+        ThreatLevel::Medium
     }
 
     fn kind(&self) -> &'static str {

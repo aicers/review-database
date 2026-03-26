@@ -1,10 +1,13 @@
-use std::{fmt, net::IpAddr, num::NonZeroU8};
+use std::{fmt, net::IpAddr};
 
 use attrievent::attribute::{RawEventAttrKind, TlsAttr};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use super::{EventCategory, LearningMethod, MEDIUM, TriageScore, common::Match};
+use super::{
+    EventCategory, LearningMethod, ThreatLevel, TriageScore,
+    common::{DefaultThreatLevel, Match},
+};
 use crate::event::common::{AttrValue, triage_scores_to_string, vector_to_string};
 
 macro_rules! find_tls_attr_by_kind {
@@ -287,6 +290,12 @@ impl BlocklistTls {
     }
 }
 
+impl DefaultThreatLevel for BlocklistTls {
+    fn default_threat_level() -> ThreatLevel {
+        ThreatLevel::Medium
+    }
+}
+
 impl Match for BlocklistTls {
     fn src_addrs(&self) -> &[IpAddr] {
         std::slice::from_ref(&self.orig_addr)
@@ -312,8 +321,8 @@ impl Match for BlocklistTls {
         self.category
     }
 
-    fn level(&self) -> NonZeroU8 {
-        MEDIUM
+    fn level(&self) -> ThreatLevel {
+        ThreatLevel::Medium
     }
 
     fn kind(&self) -> &'static str {
@@ -465,6 +474,12 @@ impl SuspiciousTlsTraffic {
     }
 }
 
+impl DefaultThreatLevel for SuspiciousTlsTraffic {
+    fn default_threat_level() -> ThreatLevel {
+        ThreatLevel::Medium
+    }
+}
+
 impl Match for SuspiciousTlsTraffic {
     fn src_addrs(&self) -> &[IpAddr] {
         std::slice::from_ref(&self.orig_addr)
@@ -490,8 +505,8 @@ impl Match for SuspiciousTlsTraffic {
         self.category
     }
 
-    fn level(&self) -> NonZeroU8 {
-        MEDIUM
+    fn level(&self) -> ThreatLevel {
+        ThreatLevel::Medium
     }
 
     fn kind(&self) -> &'static str {

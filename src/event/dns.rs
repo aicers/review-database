@@ -1,11 +1,14 @@
 #![allow(clippy::module_name_repetitions, clippy::struct_excessive_bools)]
-use std::{fmt, net::IpAddr, num::NonZeroU8};
+use std::{fmt, net::IpAddr};
 
 use attrievent::attribute::{DnsAttr, RawEventAttrKind};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use super::{EventCategory, HIGH, LearningMethod, MEDIUM, TriageScore, common::Match};
+use super::{
+    EventCategory, LearningMethod, ThreatLevel, TriageScore,
+    common::{DefaultThreatLevel, Match},
+};
 use crate::{
     TriageExclusion,
     event::common::{AttrValue, triage_scores_to_string, vector_to_string},
@@ -221,6 +224,12 @@ impl DnsCovertChannel {
     }
 }
 
+impl DefaultThreatLevel for DnsCovertChannel {
+    fn default_threat_level() -> ThreatLevel {
+        ThreatLevel::Medium
+    }
+}
+
 impl Match for DnsCovertChannel {
     fn src_addrs(&self) -> &[IpAddr] {
         std::slice::from_ref(&self.orig_addr)
@@ -246,8 +255,8 @@ impl Match for DnsCovertChannel {
         self.category
     }
 
-    fn level(&self) -> NonZeroU8 {
-        MEDIUM
+    fn level(&self) -> ThreatLevel {
+        ThreatLevel::Medium
     }
 
     fn kind(&self) -> &'static str {
@@ -393,6 +402,12 @@ impl LockyRansomware {
     }
 }
 
+impl DefaultThreatLevel for LockyRansomware {
+    fn default_threat_level() -> ThreatLevel {
+        ThreatLevel::High
+    }
+}
+
 impl Match for LockyRansomware {
     fn src_addrs(&self) -> &[IpAddr] {
         std::slice::from_ref(&self.orig_addr)
@@ -418,8 +433,8 @@ impl Match for LockyRansomware {
         self.category
     }
 
-    fn level(&self) -> NonZeroU8 {
-        HIGH
+    fn level(&self) -> ThreatLevel {
+        ThreatLevel::High
     }
 
     fn kind(&self) -> &'static str {
@@ -641,6 +656,12 @@ impl CryptocurrencyMiningPool {
     }
 }
 
+impl DefaultThreatLevel for CryptocurrencyMiningPool {
+    fn default_threat_level() -> ThreatLevel {
+        ThreatLevel::Medium
+    }
+}
+
 impl Match for CryptocurrencyMiningPool {
     fn src_addrs(&self) -> &[IpAddr] {
         std::slice::from_ref(&self.orig_addr)
@@ -666,8 +687,8 @@ impl Match for CryptocurrencyMiningPool {
         self.category
     }
 
-    fn level(&self) -> NonZeroU8 {
-        MEDIUM
+    fn level(&self) -> ThreatLevel {
+        ThreatLevel::Medium
     }
 
     fn kind(&self) -> &'static str {
@@ -884,6 +905,12 @@ impl BlocklistDns {
     }
 }
 
+impl DefaultThreatLevel for BlocklistDns {
+    fn default_threat_level() -> ThreatLevel {
+        ThreatLevel::Medium
+    }
+}
+
 impl Match for BlocklistDns {
     fn src_addrs(&self) -> &[IpAddr] {
         std::slice::from_ref(&self.orig_addr)
@@ -909,8 +936,8 @@ impl Match for BlocklistDns {
         self.category
     }
 
-    fn level(&self) -> NonZeroU8 {
-        MEDIUM
+    fn level(&self) -> ThreatLevel {
+        ThreatLevel::Medium
     }
 
     fn kind(&self) -> &'static str {

@@ -2,14 +2,16 @@
 use std::{
     fmt,
     net::{IpAddr, Ipv4Addr},
-    num::NonZeroU8,
 };
 
 use attrievent::attribute::{RawEventAttrKind, WindowAttr};
 use chrono::{DateTime, Utc, serde::ts_nanoseconds};
 use serde::{Deserialize, Serialize};
 
-use super::{EventCategory, LearningMethod, MEDIUM, TriageScore, common::Match};
+use super::{
+    EventCategory, LearningMethod, ThreatLevel, TriageScore,
+    common::{DefaultThreatLevel, Match},
+};
 use crate::event::common::{AttrValue, triage_scores_to_string};
 
 // TODO: We plan to implement the triage feature only after we have cleaned up the range of
@@ -111,6 +113,12 @@ impl fmt::Display for WindowsThreat {
     }
 }
 
+impl DefaultThreatLevel for WindowsThreat {
+    fn default_threat_level() -> ThreatLevel {
+        ThreatLevel::Medium
+    }
+}
+
 // TODO: Make new Match trait for Windows threat events
 impl Match for WindowsThreat {
     fn sensor(&self) -> &str {
@@ -141,8 +149,8 @@ impl Match for WindowsThreat {
         self.category
     }
 
-    fn level(&self) -> NonZeroU8 {
-        MEDIUM
+    fn level(&self) -> ThreatLevel {
+        ThreatLevel::Medium
     }
 
     fn kind(&self) -> &'static str {
