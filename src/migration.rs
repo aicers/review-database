@@ -1,10 +1,11 @@
 //! Routines to check the database format version and migrate it if necessary.
 #![allow(clippy::too_many_lines)]
-mod migration_structures;
+pub(crate) mod migration_structures;
 
 use std::{
     fs::{File, create_dir_all},
     io::{Read, Write},
+    net::IpAddr,
     path::{Path, PathBuf},
 };
 
@@ -103,20 +104,35 @@ use crate::{
 /// // release that involves database format change) to 3.5.0, including
 /// // all alpha changes finalized in 3.5.0.
 /// ```
-const COMPATIBLE_VERSION_REQ: &str = ">=0.44.0-alpha.2,<0.44.0-alpha.3";
+const COMPATIBLE_VERSION_REQ: &str = ">=0.44.0-alpha.3,<0.44.0-alpha.4";
 
 /// Migrates the data directory to the up-to-date format if necessary.
 ///
 /// Migration is supported between released versions only. The prelease versions (alpha, beta,
 /// etc.) should be assumed to be incompatible with each other.
 ///
+/// # Arguments
+///
+/// * `data_dir` - Path to the data directory containing the database
+/// * `backup_dir` - Path to the backup directory
+/// * `locator` - Optional IP geolocation database for resolving country codes during migration.
+///   If `None`, country code fields will be set to "ZZ" (unknown) for migrated records.
+///
 /// # Errors
 ///
 /// Returns an error if the data directory doesn't exist and cannot be created,
 /// or if the data directory exists but is in the format incompatible with the
 /// current version.
-pub fn migrate_data_dir<P: AsRef<Path>>(data_dir: P, backup_dir: P) -> Result<()> {
-    type Migration = (VersionReq, Version, fn(&Path) -> anyhow::Result<()>);
+pub fn migrate_data_dir<P: AsRef<Path>>(
+    data_dir: P,
+    backup_dir: P,
+    locator: Option<&ip2location::DB>,
+) -> Result<()> {
+    type Migration = (
+        VersionReq,
+        Version,
+        fn(&Path, &Path, Option<&ip2location::DB>) -> anyhow::Result<()>,
+    );
 
     let data_dir = data_dir.as_ref();
     let backup_dir = backup_dir.as_ref();
@@ -157,8 +173,8 @@ pub fn migrate_data_dir<P: AsRef<Path>>(data_dir: P, backup_dir: P) -> Result<()
             migrate_0_42_to_0_43,
         ),
         (
-            VersionReq::parse(">=0.43.0,<0.44.0-alpha.2")?,
-            Version::parse("0.44.0-alpha.2")?,
+            VersionReq::parse(">=0.43.0,<0.44.0-alpha.3")?,
+            Version::parse("0.44.0-alpha.3")?,
             migrate_0_43_to_0_44,
         ),
     ];
@@ -168,7 +184,7 @@ pub fn migrate_data_dir<P: AsRef<Path>>(data_dir: P, backup_dir: P) -> Result<()
         .find(|(req, _to, _m)| req.matches(&version))
     {
         info!("Migrating database to {to}");
-        m(data_dir)?;
+        m(data_dir, backup_dir, locator)?;
         version = to.clone();
         if compatible.matches(&version) {
             create_version_file(&backup).context("failed to update VERSION")?;
@@ -228,7 +244,11 @@ fn map_names_v0_42_without_account_policy() -> Vec<&'static str> {
         .collect()
 }
 
-fn migrate_0_42_to_0_43(data_dir: &Path) -> Result<()> {
+fn migrate_0_42_to_0_43(
+    data_dir: &Path,
+    _backup_dir: &Path,
+    _locator: Option<&ip2location::DB>,
+) -> Result<()> {
     let db_path = data_dir.join("states.db");
 
     // Step 1: Drop "account policy" column family if it exists (from 0.42)
@@ -243,20 +263,23 @@ fn migrate_0_42_to_0_43(data_dir: &Path) -> Result<()> {
     Ok(())
 }
 
-fn migrate_0_43_to_0_44(data_dir: &Path) -> Result<()> {
+fn migrate_0_43_to_0_44(
+    data_dir: &Path,
+    backup_dir: &Path,
+    locator: Option<&ip2location::DB>,
+) -> Result<()> {
     // Migrate network tags to customer-scoped format
+    // This requires direct database access for low-level meta column family operations
     migrate_network_tags_to_customer_scoped(data_dir)?;
 
     // Migrate Network table to enforce global name uniqueness
     migrate_network_cf(data_dir)?;
 
-    // Migrate HttpThreat events with cluster_id from Option<usize> to Option<u32>
-    // Note: Cluster and TimeSeries table migrations are not needed because the
-    // big-endian byte representation is identical between i32 and u32 for non-negative
-    // values, and the unsupervised engine never produces negative cluster_id values.
-    // Other event types (ExtraThreat, WindowsThreat, NetworkThreat) are not generated
-    // on production servers, so only HttpThreat migration is needed.
-    migrate_http_threat_events(data_dir)?;
+    // Migrate event fields to add country codes and convert HttpThreat cluster_id
+    // from Option<usize> to Option<u32>, using Store abstraction
+    let store = crate::Store::new(data_dir, backup_dir)
+        .context("Failed to open Store for event migration")?;
+    migrate_event_country_codes(&store, locator)?;
 
     Ok(())
 }
@@ -836,156 +859,529 @@ fn migrate_network_cf_inner(
     Ok(())
 }
 
-/// Migrates `ModelIndicator` entries with `model_id` from `i32` to `u32`.
-///
-/// This migration handles the serialization change for `ModelIndicator::Value`.
-/// Since bincode's `DefaultOptions` uses varint encoding, the i32→u32 change
-/// is NOT byte-compatible for non-zero values, requiring migration.
-/// Migrates `HttpThreat` events with `cluster_id` from `Option<usize>` to `Option<u32>`.
-///
-/// This migration handles the serialization change for `HttpThreat` events.
-/// The serialization of `Option<usize>` differs from `Option<u32>` in bincode because
-/// `usize` is architecture-dependent (8 bytes on 64-bit systems) while `u32` is 4 bytes.
-///
-/// Note: Other event types (`ExtraThreat`, `WindowsThreat`, `NetworkThreat`) are not generated
-/// on production servers, so their migration is unnecessary.
-fn migrate_http_threat_events(dir: &Path) -> Result<()> {
+/// Migrates event fields from `V0_43` format (without country codes) to `V0_44` format
+/// (with country codes). Also converts `HttpThreat` `cluster_id` from Option<usize> to Option<u32>.
+/// If a locator is provided, country codes are resolved from IP addresses.
+/// Otherwise, country codes are set to "ZZ" (unknown).
+fn migrate_event_country_codes(
+    store: &crate::Store,
+    locator: Option<&ip2location::DB>,
+) -> Result<()> {
     use num_traits::FromPrimitive;
 
-    /// Number of records to commit per transaction batch to bound memory usage.
-    const BATCH_SIZE: usize = 100;
+    use crate::event::{
+        BlocklistBootpFields, BlocklistConnFields, BlocklistDceRpcFields, BlocklistDhcpFields,
+        BlocklistDnsFields, BlocklistKerberosFields, BlocklistMalformedDnsFields,
+        BlocklistMqttFields, BlocklistNfsFields, BlocklistNtlmFields, BlocklistRadiusFields,
+        BlocklistRdpFields, BlocklistSmbFields, BlocklistSmtpFields, BlocklistSshFields,
+        BlocklistTlsFields, CryptocurrencyMiningPoolFields, DgaFields, DnsEventFields,
+        ExternalDdosFields, FtpBruteForceFields, FtpEventFields, HttpEventFields,
+        LdapBruteForceFields, LdapEventFields, MultiHostPortScanFields, PortScanFields,
+        RdpBruteForceFields, RepeatedHttpSessionsFields, UnusualDestinationPatternFields,
+    };
+    use crate::migration::migration_structures::{
+        BlocklistBootpFieldsV0_43, BlocklistConnFieldsV0_43, BlocklistDceRpcFieldsV0_43,
+        BlocklistDhcpFieldsV0_43, BlocklistDnsFieldsV0_43, BlocklistKerberosFieldsV0_43,
+        BlocklistMalformedDnsFieldsV0_43, BlocklistMqttFieldsV0_43, BlocklistNfsFieldsV0_43,
+        BlocklistNtlmFieldsV0_43, BlocklistRadiusFieldsV0_43, BlocklistRdpFieldsV0_43,
+        BlocklistSmbFieldsV0_43, BlocklistSmtpFieldsV0_43, BlocklistSshFieldsV0_43,
+        BlocklistTlsFieldsV0_43, CryptocurrencyMiningPoolFieldsV0_43, DgaFieldsV0_43,
+        DnsEventFieldsV0_43, ExternalDdosFieldsV0_43, FtpBruteForceFieldsV0_43,
+        FtpEventFieldsV0_43, HttpEventFieldsV0_43, LdapBruteForceFieldsV0_43, LdapEventFieldsV0_43,
+        MultiHostPortScanFieldsV0_43, NetworkThreatV0_43, PortScanFieldsV0_43,
+        RdpBruteForceFieldsV0_43, RepeatedHttpSessionsFieldsV0_43,
+        UnusualDestinationPatternFieldsV0_43,
+    };
 
-    let db_path = dir.join("states.db");
+    info!("Migrating event fields to add country codes");
 
-    let mut opts = rocksdb::Options::default();
-    opts.create_if_missing(false);
-    opts.create_missing_column_families(false);
+    let events = store.events();
 
-    let db: rocksdb::OptimisticTransactionDB<rocksdb::SingleThreaded> =
-        rocksdb::OptimisticTransactionDB::open_cf(&opts, &db_path, crate::tables::MAP_NAMES)
-            .context("Failed to open database for HttpThreat event migration")?;
+    // Collect all events that need migration using raw iterator
+    let entries_to_migrate: Vec<(Vec<u8>, Vec<u8>)> = events
+        .raw_iter_forward()
+        .map(|(key, value)| (key.to_vec(), value.to_vec()))
+        .collect();
 
-    // Events are stored in the default column family
+    if entries_to_migrate.is_empty() {
+        info!("No events to migrate");
+        return Ok(());
+    }
+
+    info!("Found {} events to migrate", entries_to_migrate.len());
+
     let mut migrated_count = 0usize;
-    let mut errors = 0usize;
-    let mut batch: Vec<(Vec<u8>, Vec<u8>)> = Vec::with_capacity(BATCH_SIZE);
+    let mut skipped_count = 0usize;
 
-    for item in db.iterator(rocksdb::IteratorMode::Start) {
-        let (key, value) = item.context("failed to read event entry")?;
-
-        // Extract event kind from the key
-        // Key format: (timestamp_nanos << 64) | (event_kind << 32) | random_bits
-        // Key is stored as big-endian i128 (16 bytes)
-        if key.len() != 16 {
+    for (key, value) in &entries_to_migrate {
+        // Extract the event kind from the key (bits 32-63 of the 128-bit key)
+        let key_i128 = if key.len() >= 16 {
+            let Ok(key_bytes) = key[..16].try_into() else {
+                skipped_count += 1;
+                continue;
+            };
+            i128::from_be_bytes(key_bytes)
+        } else {
+            skipped_count += 1;
             continue;
-        }
+        };
+        let kind_value = ((key_i128 >> 32) & 0xFFFF_FFFF) as i32;
 
-        let key_i128 = i128::from_be_bytes(key.as_ref().try_into().unwrap_or([0; 16]));
-        let event_kind_val = ((key_i128 >> 32) & 0xFFFF_FFFF) as i32;
-
-        // Try to convert to EventKind
-        let Some(event_kind) = EventKind::from_i32(event_kind_val) else {
+        let Some(kind) = EventKind::from_i32(kind_value) else {
+            skipped_count += 1;
             continue;
         };
 
-        // Only migrate HttpThreat events
-        if event_kind == EventKind::HttpThreat {
-            if let Some(new_val) = migrate_http_threat_fields(&value) {
-                batch.push((key.to_vec(), new_val));
-                migrated_count += 1;
-
-                // Commit batch when it reaches BATCH_SIZE
-                if batch.len() >= BATCH_SIZE {
-                    let txn = db.transaction();
-                    for (k, v) in batch.drain(..) {
-                        txn.put(&k, &v)?;
-                    }
-                    txn.commit()
-                        .context("failed to commit HttpThreat event migration batch")?;
-                }
-            } else {
-                // If we couldn't migrate, it might already be in the new format
-                // or there was an error. We'll count it but not fail the migration.
-                errors += 1;
+        // Migrate the fields based on event kind
+        // Events store raw field bytes directly (not EventMessage wrapper)
+        let new_fields: Vec<u8> = match kind {
+            EventKind::DnsCovertChannel | EventKind::LockyRansomware => {
+                migrate_event_with_country_code::<DnsEventFieldsV0_43, DnsEventFields>(
+                    value, locator,
+                )?
             }
-        }
+            EventKind::HttpThreat => migrate_event_with_country_code::<
+                HttpThreatFieldsV0_43,
+                HttpThreatFields,
+            >(value, locator)?,
+            EventKind::RdpBruteForce => migrate_event_with_country_code::<
+                RdpBruteForceFieldsV0_43,
+                RdpBruteForceFields,
+            >(value, locator)?,
+            EventKind::RepeatedHttpSessions => migrate_event_with_country_code::<
+                RepeatedHttpSessionsFieldsV0_43,
+                RepeatedHttpSessionsFields,
+            >(value, locator)?,
+            EventKind::TorConnection | EventKind::NonBrowser | EventKind::BlocklistHttp => {
+                migrate_event_with_country_code::<HttpEventFieldsV0_43, HttpEventFields>(
+                    value, locator,
+                )?
+            }
+            EventKind::TorConnectionConn | EventKind::BlocklistConn => {
+                migrate_event_with_country_code::<BlocklistConnFieldsV0_43, BlocklistConnFields>(
+                    value, locator,
+                )?
+            }
+            EventKind::DomainGenerationAlgorithm => {
+                migrate_event_with_country_code::<DgaFieldsV0_43, DgaFields>(value, locator)?
+            }
+            EventKind::FtpBruteForce => migrate_event_with_country_code::<
+                FtpBruteForceFieldsV0_43,
+                FtpBruteForceFields,
+            >(value, locator)?,
+            EventKind::FtpPlainText | EventKind::BlocklistFtp => migrate_event_with_country_code::<
+                FtpEventFieldsV0_43,
+                FtpEventFields,
+            >(value, locator)?,
+            EventKind::PortScan => migrate_event_with_country_code::<
+                PortScanFieldsV0_43,
+                PortScanFields,
+            >(value, locator)?,
+            EventKind::MultiHostPortScan => migrate_event_with_country_code::<
+                MultiHostPortScanFieldsV0_43,
+                MultiHostPortScanFields,
+            >(value, locator)?,
+            EventKind::ExternalDdos => migrate_event_with_country_code::<
+                ExternalDdosFieldsV0_43,
+                ExternalDdosFields,
+            >(value, locator)?,
+            EventKind::LdapBruteForce => migrate_event_with_country_code::<
+                LdapBruteForceFieldsV0_43,
+                LdapBruteForceFields,
+            >(value, locator)?,
+            EventKind::LdapPlainText | EventKind::BlocklistLdap => {
+                migrate_event_with_country_code::<LdapEventFieldsV0_43, LdapEventFields>(
+                    value, locator,
+                )?
+            }
+            EventKind::CryptocurrencyMiningPool => migrate_event_with_country_code::<
+                CryptocurrencyMiningPoolFieldsV0_43,
+                CryptocurrencyMiningPoolFields,
+            >(value, locator)?,
+            EventKind::BlocklistBootp => migrate_event_with_country_code::<
+                BlocklistBootpFieldsV0_43,
+                BlocklistBootpFields,
+            >(value, locator)?,
+            EventKind::BlocklistDceRpc => migrate_event_with_country_code::<
+                BlocklistDceRpcFieldsV0_43,
+                BlocklistDceRpcFields,
+            >(value, locator)?,
+            EventKind::BlocklistDhcp => migrate_event_with_country_code::<
+                BlocklistDhcpFieldsV0_43,
+                BlocklistDhcpFields,
+            >(value, locator)?,
+            EventKind::BlocklistDns => migrate_event_with_country_code::<
+                BlocklistDnsFieldsV0_43,
+                BlocklistDnsFields,
+            >(value, locator)?,
+            EventKind::BlocklistKerberos => migrate_event_with_country_code::<
+                BlocklistKerberosFieldsV0_43,
+                BlocklistKerberosFields,
+            >(value, locator)?,
+            EventKind::BlocklistMalformedDns => migrate_event_with_country_code::<
+                BlocklistMalformedDnsFieldsV0_43,
+                BlocklistMalformedDnsFields,
+            >(value, locator)?,
+            EventKind::BlocklistMqtt => migrate_event_with_country_code::<
+                BlocklistMqttFieldsV0_43,
+                BlocklistMqttFields,
+            >(value, locator)?,
+            EventKind::BlocklistNfs => migrate_event_with_country_code::<
+                BlocklistNfsFieldsV0_43,
+                BlocklistNfsFields,
+            >(value, locator)?,
+            EventKind::BlocklistNtlm => migrate_event_with_country_code::<
+                BlocklistNtlmFieldsV0_43,
+                BlocklistNtlmFields,
+            >(value, locator)?,
+            EventKind::BlocklistRadius => migrate_event_with_country_code::<
+                BlocklistRadiusFieldsV0_43,
+                BlocklistRadiusFields,
+            >(value, locator)?,
+            EventKind::BlocklistRdp => migrate_event_with_country_code::<
+                BlocklistRdpFieldsV0_43,
+                BlocklistRdpFields,
+            >(value, locator)?,
+            EventKind::BlocklistSmb => migrate_event_with_country_code::<
+                BlocklistSmbFieldsV0_43,
+                BlocklistSmbFields,
+            >(value, locator)?,
+            EventKind::BlocklistSmtp => migrate_event_with_country_code::<
+                BlocklistSmtpFieldsV0_43,
+                BlocklistSmtpFields,
+            >(value, locator)?,
+            EventKind::BlocklistSsh => migrate_event_with_country_code::<
+                BlocklistSshFieldsV0_43,
+                BlocklistSshFields,
+            >(value, locator)?,
+            EventKind::BlocklistTls | EventKind::SuspiciousTlsTraffic => {
+                migrate_event_with_country_code::<BlocklistTlsFieldsV0_43, BlocklistTlsFields>(
+                    value, locator,
+                )?
+            }
+            EventKind::UnusualDestinationPattern => migrate_event_with_country_code::<
+                UnusualDestinationPatternFieldsV0_43,
+                UnusualDestinationPatternFields,
+            >(value, locator)?,
+            EventKind::NetworkThreat => migrate_event_with_country_code::<
+                NetworkThreatV0_43,
+                NetworkThreat,
+            >(value, locator)?,
+            // These event types don't have country code fields or use different structures
+            EventKind::WindowsThreat | EventKind::ExtraThreat => {
+                // Skip migration for these types - they don't have the standard
+                // orig_addr/resp_addr fields or use different serialization
+                skipped_count += 1;
+                continue;
+            }
+        };
+
+        // Update the event with migrated fields
+        events
+            .update(
+                (key.as_slice(), value.as_slice()),
+                (key.as_slice(), new_fields.as_slice()),
+            )
+            .context("failed to update migrated event")?;
+        migrated_count += 1;
     }
 
-    // Commit any remaining entries in the final batch
-    if !batch.is_empty() {
-        let txn = db.transaction();
-        for (k, v) in batch.drain(..) {
-            txn.put(&k, &v)?;
-        }
-        txn.commit()
-            .context("failed to commit final HttpThreat event migration batch")?;
-    }
-
-    if errors > 0 {
-        info!(
-            "HttpThreat event migration: migrated {} events, {} events skipped (possibly already migrated)",
-            migrated_count, errors
-        );
-    } else {
-        info!(
-            "Migrated {} HttpThreat events with cluster_id type change",
-            migrated_count
-        );
-    }
-
+    info!(
+        "Successfully migrated {} events ({} skipped)",
+        migrated_count, skipped_count
+    );
     Ok(())
 }
 
-/// Migrates `HttpThreatFields` from Option<usize> to Option<u32> for `cluster_id`.
-fn migrate_http_threat_fields(value: &[u8]) -> Option<Vec<u8>> {
-    // Try to deserialize with old format
-    let old: HttpThreatFieldsV0_43 = bincode::DefaultOptions::new().deserialize(value).ok()?;
+/// Trait for applying country code resolution to migrated event fields.
+///
+/// Types implementing this trait can have their country code fields populated
+/// from IP addresses using an ip2location database.
+trait ResolveCountryCodes {
+    /// Resolves country codes from IP addresses using the provided locator.
+    fn resolve_country_codes(&mut self, locator: &ip2location::DB);
+}
 
-    // Convert to new format
-    let new = HttpThreatFields {
-        time: old.time,
-        sensor: old.sensor,
-        orig_addr: old.orig_addr,
-        orig_port: old.orig_port,
-        resp_addr: old.resp_addr,
-        resp_port: old.resp_port,
-        proto: old.proto,
-        start_time: old.start_time,
-        duration: old.duration,
-        orig_pkts: old.orig_pkts,
-        resp_pkts: old.resp_pkts,
-        orig_l2_bytes: old.orig_l2_bytes,
-        resp_l2_bytes: old.resp_l2_bytes,
-        method: old.method,
-        host: old.host,
-        uri: old.uri,
-        referer: old.referer,
-        version: old.version,
-        user_agent: old.user_agent,
-        request_len: old.request_len,
-        response_len: old.response_len,
-        status_code: old.status_code,
-        status_msg: old.status_msg,
-        username: old.username,
-        password: old.password,
-        cookie: old.cookie,
-        content_encoding: old.content_encoding,
-        content_type: old.content_type,
-        cache_control: old.cache_control,
-        filenames: old.filenames,
-        mime_types: old.mime_types,
-        body: old.body,
-        state: old.state,
-        db_name: old.db_name,
-        rule_id: old.rule_id,
-        matched_to: old.matched_to,
-        cluster_id: old.cluster_id.and_then(|v| u32::try_from(v).ok()),
-        attack_kind: old.attack_kind,
-        confidence: old.confidence,
-        category: old.category,
+/// Looks up the country code for an IP address using the ip2location database.
+/// Returns the 2-letter country code as bytes, or "XX" if the lookup fails or
+/// returns an invalid code.
+fn lookup_country_code(locator: &ip2location::DB, addr: IpAddr) -> [u8; 2] {
+    crate::util::country_code_to_bytes(&crate::util::find_ip_country(locator, addr))
+}
+
+fn lookup_country_codes<I>(locator: &ip2location::DB, addrs: I) -> Vec<[u8; 2]>
+where
+    I: IntoIterator<Item = IpAddr>,
+{
+    addrs
+        .into_iter()
+        .map(|addr| lookup_country_code(locator, addr))
+        .collect()
+}
+
+macro_rules! impl_resolve_country_codes {
+    (
+        $ty:ty,
+        orig: single ($orig_addr:ident => $orig_cc:ident),
+        resp: single ($resp_addr:ident => $resp_cc:ident)
+        $(,)?
+    ) => {
+        impl ResolveCountryCodes for $ty {
+            fn resolve_country_codes(&mut self, locator: &ip2location::DB) {
+                self.$orig_cc = lookup_country_code(locator, self.$orig_addr);
+                self.$resp_cc = lookup_country_code(locator, self.$resp_addr);
+            }
+        }
     };
+    (
+        $ty:ty,
+        orig: single ($orig_addr:ident => $orig_cc:ident),
+        resp: multi ($resp_addrs:ident => $resp_ccs:ident)
+        $(,)?
+    ) => {
+        impl ResolveCountryCodes for $ty {
+            fn resolve_country_codes(&mut self, locator: &ip2location::DB) {
+                self.$orig_cc = lookup_country_code(locator, self.$orig_addr);
+                self.$resp_ccs = lookup_country_codes(locator, self.$resp_addrs.iter().copied());
+            }
+        }
+    };
+    (
+        $ty:ty,
+        orig: multi ($orig_addrs:ident => $orig_ccs:ident),
+        resp: single ($resp_addr:ident => $resp_cc:ident)
+        $(,)?
+    ) => {
+        impl ResolveCountryCodes for $ty {
+            fn resolve_country_codes(&mut self, locator: &ip2location::DB) {
+                self.$orig_ccs = lookup_country_codes(locator, self.$orig_addrs.iter().copied());
+                self.$resp_cc = lookup_country_code(locator, self.$resp_addr);
+            }
+        }
+    };
+    (
+        $ty:ty,
+        orig: multi ($orig_addrs:ident => $orig_ccs:ident),
+        resp: multi ($resp_addrs:ident => $resp_ccs:ident)
+        $(,)?
+    ) => {
+        impl ResolveCountryCodes for $ty {
+            fn resolve_country_codes(&mut self, locator: &ip2location::DB) {
+                self.$orig_ccs = lookup_country_codes(locator, self.$orig_addrs.iter().copied());
+                self.$resp_ccs = lookup_country_codes(locator, self.$resp_addrs.iter().copied());
+            }
+        }
+    };
+}
 
-    bincode::DefaultOptions::new().serialize(&new).ok()
+// =============================================================================
+// ResolveCountryCodes implementations for event field types
+// =============================================================================
+
+use crate::event::{
+    BlocklistBootpFields, BlocklistConnFields, BlocklistDceRpcFields, BlocklistDhcpFields,
+    BlocklistDnsFields, BlocklistKerberosFields, BlocklistMalformedDnsFields, BlocklistMqttFields,
+    BlocklistNfsFields, BlocklistNtlmFields, BlocklistRadiusFields, BlocklistRdpFields,
+    BlocklistSmbFields, BlocklistSmtpFields, BlocklistSshFields, BlocklistTlsFields,
+    CryptocurrencyMiningPoolFields, DgaFields, DnsEventFields, ExternalDdosFields,
+    FtpBruteForceFields, FtpEventFields, HttpEventFields, LdapBruteForceFields, LdapEventFields,
+    MultiHostPortScanFields, NetworkThreat, PortScanFields, RdpBruteForceFields,
+    RepeatedHttpSessionsFields, UnusualDestinationPatternFields,
+};
+
+impl_resolve_country_codes!(
+    PortScanFields,
+    orig: single (orig_addr => orig_country_code),
+    resp: single (resp_addr => resp_country_code),
+);
+impl_resolve_country_codes!(
+    MultiHostPortScanFields,
+    orig: single (orig_addr => orig_country_code),
+    resp: multi (resp_addrs => resp_country_codes),
+);
+impl_resolve_country_codes!(
+    ExternalDdosFields,
+    orig: multi (orig_addrs => orig_country_codes),
+    resp: single (resp_addr => resp_country_code),
+);
+impl_resolve_country_codes!(
+    BlocklistConnFields,
+    orig: single (orig_addr => orig_country_code),
+    resp: single (resp_addr => resp_country_code),
+);
+impl_resolve_country_codes!(
+    DnsEventFields,
+    orig: single (orig_addr => orig_country_code),
+    resp: single (resp_addr => resp_country_code),
+);
+impl_resolve_country_codes!(
+    CryptocurrencyMiningPoolFields,
+    orig: single (orig_addr => orig_country_code),
+    resp: single (resp_addr => resp_country_code),
+);
+impl_resolve_country_codes!(
+    BlocklistDnsFields,
+    orig: single (orig_addr => orig_country_code),
+    resp: single (resp_addr => resp_country_code),
+);
+impl_resolve_country_codes!(
+    HttpEventFields,
+    orig: single (orig_addr => orig_country_code),
+    resp: single (resp_addr => resp_country_code),
+);
+impl_resolve_country_codes!(
+    RepeatedHttpSessionsFields,
+    orig: single (orig_addr => orig_country_code),
+    resp: single (resp_addr => resp_country_code),
+);
+impl_resolve_country_codes!(
+    HttpThreatFields,
+    orig: single (orig_addr => orig_country_code),
+    resp: single (resp_addr => resp_country_code),
+);
+impl_resolve_country_codes!(
+    DgaFields,
+    orig: single (orig_addr => orig_country_code),
+    resp: single (resp_addr => resp_country_code),
+);
+impl_resolve_country_codes!(
+    RdpBruteForceFields,
+    orig: single (orig_addr => orig_country_code),
+    resp: multi (resp_addrs => resp_country_codes),
+);
+impl_resolve_country_codes!(
+    BlocklistRdpFields,
+    orig: single (orig_addr => orig_country_code),
+    resp: single (resp_addr => resp_country_code),
+);
+impl_resolve_country_codes!(
+    FtpBruteForceFields,
+    orig: single (orig_addr => orig_country_code),
+    resp: single (resp_addr => resp_country_code),
+);
+impl_resolve_country_codes!(
+    FtpEventFields,
+    orig: single (orig_addr => orig_country_code),
+    resp: single (resp_addr => resp_country_code),
+);
+impl_resolve_country_codes!(
+    LdapBruteForceFields,
+    orig: single (orig_addr => orig_country_code),
+    resp: single (resp_addr => resp_country_code),
+);
+impl_resolve_country_codes!(
+    LdapEventFields,
+    orig: single (orig_addr => orig_country_code),
+    resp: single (resp_addr => resp_country_code),
+);
+impl_resolve_country_codes!(
+    BlocklistSshFields,
+    orig: single (orig_addr => orig_country_code),
+    resp: single (resp_addr => resp_country_code),
+);
+impl_resolve_country_codes!(
+    BlocklistTlsFields,
+    orig: single (orig_addr => orig_country_code),
+    resp: single (resp_addr => resp_country_code),
+);
+impl_resolve_country_codes!(
+    BlocklistKerberosFields,
+    orig: single (orig_addr => orig_country_code),
+    resp: single (resp_addr => resp_country_code),
+);
+impl_resolve_country_codes!(
+    BlocklistSmtpFields,
+    orig: single (orig_addr => orig_country_code),
+    resp: single (resp_addr => resp_country_code),
+);
+impl_resolve_country_codes!(
+    BlocklistNfsFields,
+    orig: single (orig_addr => orig_country_code),
+    resp: single (resp_addr => resp_country_code),
+);
+impl_resolve_country_codes!(
+    BlocklistDhcpFields,
+    orig: single (orig_addr => orig_country_code),
+    resp: single (resp_addr => resp_country_code),
+);
+impl_resolve_country_codes!(
+    BlocklistDceRpcFields,
+    orig: single (orig_addr => orig_country_code),
+    resp: single (resp_addr => resp_country_code),
+);
+impl_resolve_country_codes!(
+    BlocklistNtlmFields,
+    orig: single (orig_addr => orig_country_code),
+    resp: single (resp_addr => resp_country_code),
+);
+impl_resolve_country_codes!(
+    BlocklistSmbFields,
+    orig: single (orig_addr => orig_country_code),
+    resp: single (resp_addr => resp_country_code),
+);
+impl_resolve_country_codes!(
+    BlocklistMqttFields,
+    orig: single (orig_addr => orig_country_code),
+    resp: single (resp_addr => resp_country_code),
+);
+impl_resolve_country_codes!(
+    BlocklistBootpFields,
+    orig: single (orig_addr => orig_country_code),
+    resp: single (resp_addr => resp_country_code),
+);
+impl_resolve_country_codes!(
+    BlocklistRadiusFields,
+    orig: single (orig_addr => orig_country_code),
+    resp: single (resp_addr => resp_country_code),
+);
+impl_resolve_country_codes!(
+    BlocklistMalformedDnsFields,
+    orig: single (orig_addr => orig_country_code),
+    resp: single (resp_addr => resp_country_code),
+);
+impl_resolve_country_codes!(
+    NetworkThreat,
+    orig: single (orig_addr => orig_country_code),
+    resp: single (resp_addr => resp_country_code),
+);
+
+impl ResolveCountryCodes for UnusualDestinationPatternFields {
+    fn resolve_country_codes(&mut self, locator: &ip2location::DB) {
+        self.resp_country_codes = self
+            .destination_ips
+            .iter()
+            .map(|addr| lookup_country_code(locator, *addr))
+            .collect();
+    }
+}
+
+/// Helper function to migrate event fields from old format to new format
+fn migrate_event_with_country_code<O, N>(
+    old_data: &[u8],
+    locator: Option<&ip2location::DB>,
+) -> Result<Vec<u8>>
+where
+    O: serde::de::DeserializeOwned,
+    N: serde::Serialize + serde::de::DeserializeOwned + From<O> + ResolveCountryCodes,
+{
+    // First try to deserialize as the new format (already migrated)
+    if bincode::deserialize::<N>(old_data).is_ok() {
+        // Already in new format, no migration needed
+        return Ok(old_data.to_vec());
+    }
+
+    // Deserialize as old format and convert
+    let old_fields: O =
+        bincode::deserialize(old_data).context("failed to deserialize old event fields")?;
+
+    let mut new_fields: N = old_fields.into();
+
+    // Apply country code resolution if locator is provided
+    if let Some(loc) = locator {
+        new_fields.resolve_country_codes(loc);
+    }
+
+    bincode::serialize(&new_fields).context("failed to serialize new event fields")
 }
 
 /// Recursively creates `path` if not existed, creates the VERSION file
@@ -1046,9 +1442,37 @@ mod tests {
     use std::io::Write;
     use std::path::Path;
 
+    use chrono::{TimeZone, Utc};
     use semver::{Version, VersionReq};
 
-    use super::{COMPATIBLE_VERSION_REQ, create_version_file, migrate_data_dir, read_version_file};
+    use super::migration_structures::{
+        BlocklistBootpFieldsV0_43, BlocklistConnFieldsV0_43, BlocklistDceRpcFieldsV0_43,
+        BlocklistDhcpFieldsV0_43, BlocklistDnsFieldsV0_43, BlocklistKerberosFieldsV0_43,
+        BlocklistMalformedDnsFieldsV0_43, BlocklistMqttFieldsV0_43, BlocklistNfsFieldsV0_43,
+        BlocklistNtlmFieldsV0_43, BlocklistRadiusFieldsV0_43, BlocklistRdpFieldsV0_43,
+        BlocklistSmbFieldsV0_43, BlocklistSmtpFieldsV0_43, BlocklistSshFieldsV0_43,
+        BlocklistTlsFieldsV0_43, CryptocurrencyMiningPoolFieldsV0_43, DgaFieldsV0_43,
+        DnsEventFieldsV0_43, ExternalDdosFieldsV0_43, FtpBruteForceFieldsV0_43,
+        FtpEventFieldsV0_43, HttpEventFieldsV0_43, HttpThreatFieldsV0_43,
+        LdapBruteForceFieldsV0_43, LdapEventFieldsV0_43, MultiHostPortScanFieldsV0_43,
+        NetworkThreatV0_43, PortScanFieldsV0_43, RdpBruteForceFieldsV0_43,
+        RepeatedHttpSessionsFieldsV0_43, UnusualDestinationPatternFieldsV0_43,
+    };
+    use super::{
+        COMPATIBLE_VERSION_REQ, create_version_file, migrate_data_dir, migrate_event_country_codes,
+        read_version_file,
+    };
+    use crate::event::{
+        BlocklistBootpFields, BlocklistConnFields, BlocklistDceRpcFields, BlocklistDhcpFields,
+        BlocklistDnsFields, BlocklistKerberosFields, BlocklistMalformedDnsFields,
+        BlocklistMqttFields, BlocklistNfsFields, BlocklistNtlmFields, BlocklistRadiusFields,
+        BlocklistRdpFields, BlocklistSmbFields, BlocklistSmtpFields, BlocklistSshFields,
+        BlocklistTlsFields, CryptocurrencyMiningPoolFields, DgaFields, DnsEventFields, EventKind,
+        EventMessage, ExternalDdosFields, FtpBruteForceFields, FtpEventFields, HttpEventFields,
+        HttpThreatFields, LdapBruteForceFields, LdapEventFields, MultiHostPortScanFields,
+        NetworkThreat, PortScanFields, RdpBruteForceFields, RepeatedHttpSessionsFields,
+        UnusualDestinationPatternFields,
+    };
     use crate::tables::NETWORK_TAGS;
     use crate::test::{DbGuard, acquire_db_permit};
     use crate::{Indexable, Store};
@@ -1076,7 +1500,7 @@ mod tests {
         write_version(backup_dir.path(), current_version);
 
         // This should succeed without calling any migration
-        let result = migrate_data_dir(data_dir.path(), backup_dir.path());
+        let result = migrate_data_dir(data_dir.path(), backup_dir.path(), None);
         assert!(result.is_ok());
 
         // VERSION should remain unchanged
@@ -1101,7 +1525,7 @@ mod tests {
         write_version(data_dir.path(), &data_version.to_string());
         write_version(backup_dir.path(), &backup_version.to_string());
 
-        let result = migrate_data_dir(data_dir.path(), backup_dir.path());
+        let result = migrate_data_dir(data_dir.path(), backup_dir.path(), None);
 
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
@@ -1118,7 +1542,7 @@ mod tests {
 
         // Don't write any VERSION files - directories are empty
 
-        let result = migrate_data_dir(data_dir.path(), backup_dir.path());
+        let result = migrate_data_dir(data_dir.path(), backup_dir.path(), None);
 
         // Should succeed (empty dir gets current version)
         assert!(result.is_ok());
@@ -1145,7 +1569,7 @@ mod tests {
         // Also need a file in backup to prevent it from being treated as empty
         write_version(backup_dir.path(), env!("CARGO_PKG_VERSION"));
 
-        let result = migrate_data_dir(data_dir.path(), backup_dir.path());
+        let result = migrate_data_dir(data_dir.path(), backup_dir.path(), None);
 
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
@@ -1163,7 +1587,7 @@ mod tests {
         assert!(!data_dir.exists());
         assert!(!backup_dir.exists());
 
-        let result = migrate_data_dir(&data_dir, &backup_dir);
+        let result = migrate_data_dir(&data_dir, &backup_dir, None);
 
         // Should succeed
         assert!(result.is_ok());
@@ -1187,7 +1611,7 @@ mod tests {
         write_version(data_dir.path(), "0.30.0");
         write_version(backup_dir.path(), "0.30.0");
 
-        let result = migrate_data_dir(data_dir.path(), backup_dir.path());
+        let result = migrate_data_dir(data_dir.path(), backup_dir.path(), None);
 
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
@@ -1277,7 +1701,7 @@ mod tests {
             write_version(data_dir.path(), &version.to_string());
             write_version(backup_dir.path(), &version.to_string());
 
-            let result = migrate_data_dir(data_dir.path(), backup_dir.path());
+            let result = migrate_data_dir(data_dir.path(), backup_dir.path(), None);
             assert!(result.is_ok(), "Migration should succeed from {version}");
 
             let data_version = read_version_file(&data_dir.path().join("VERSION")).unwrap();
@@ -1308,7 +1732,7 @@ mod tests {
         write_version(backup_dir.path(), "0.42.0");
 
         // Run the migration
-        let result = migrate_data_dir(data_dir.path(), backup_dir.path());
+        let result = migrate_data_dir(data_dir.path(), backup_dir.path(), None);
         assert!(result.is_ok(), "Migration should succeed");
 
         // Verify database opens with the current column families
@@ -2359,47 +2783,489 @@ mod tests {
     }
 
     #[test]
-    fn test_migrate_http_threat_events() {
-        use std::net::IpAddr;
+    fn migrate_event_country_codes_sets_default_country_codes() {
+        let schema = TestSchema::new();
+        let old_fields = DnsEventFieldsV0_43 {
+            sensor: "collector1".to_string(),
+            orig_addr: std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
+            orig_port: 10000,
+            resp_addr: std::net::IpAddr::V4(std::net::Ipv4Addr::new(127, 0, 0, 2)),
+            resp_port: 53,
+            proto: 17,
+            start_time: Utc
+                .with_ymd_and_hms(1970, 1, 1, 0, 1, 1)
+                .unwrap()
+                .timestamp_nanos_opt()
+                .unwrap(),
+            duration: 0,
+            orig_pkts: 0,
+            resp_pkts: 0,
+            orig_l2_bytes: 0,
+            resp_l2_bytes: 0,
+            query: "foo.com".to_string(),
+            answer: vec!["10.10.10.10".to_string()],
+            trans_id: 123,
+            rtt: 1,
+            qclass: 0,
+            qtype: 0,
+            rcode: 0,
+            aa_flag: false,
+            tc_flag: false,
+            rd_flag: false,
+            ra_flag: true,
+            ttl: vec![120],
+            confidence: 0.9,
+            category: Some(crate::EventCategory::CommandAndControl),
+        };
 
-        use bincode::Options;
+        let event_time = Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap();
+        let serialized = bincode::serialize(&old_fields).unwrap();
+        let message = EventMessage {
+            time: event_time,
+            kind: EventKind::DnsCovertChannel,
+            fields: serialized,
+        };
+        let event_db = schema.store.events();
+        event_db.put(&message).unwrap();
 
-        use super::migration_structures::HttpThreatFieldsV0_43;
-        use crate::event::{EventKind, HttpThreatFields};
+        migrate_event_country_codes(&schema.store, None).unwrap();
 
-        // Create test directory and database
-        let db_dir = tempfile::tempdir().unwrap();
-        let db_path = db_dir.path().join("states.db");
+        let event_db = schema.store.events();
+        let mut iter = event_db.raw_iter_forward();
+        let (_, value) = iter.next().expect("migrated event");
+        let migrated: DnsEventFields = bincode::deserialize(&value).unwrap();
 
-        let mut opts = rocksdb::Options::default();
-        opts.create_if_missing(true);
-        opts.create_missing_column_families(true);
+        assert_eq!(migrated.orig_country_code, *b"ZZ");
+        assert_eq!(migrated.resp_country_code, *b"ZZ");
+        assert!(iter.next().is_none());
+        drop(iter);
 
-        let db: rocksdb::OptimisticTransactionDB<rocksdb::SingleThreaded> =
-            rocksdb::OptimisticTransactionDB::open_cf(&opts, &db_path, crate::tables::MAP_NAMES)
-                .unwrap();
+        let _ = schema.close();
+    }
 
-        // Create old-format HttpThreatFields with Option<usize> cluster_id
-        let old_event = HttpThreatFieldsV0_43 {
-            time: chrono::Utc::now(),
-            sensor: "test-sensor".to_string(),
-            orig_addr: "192.168.1.1".parse::<IpAddr>().unwrap(),
+    #[test]
+    fn migrate_event_country_codes_empty_db() {
+        let schema = TestSchema::new();
+        // No events inserted — should return Ok without error
+        migrate_event_country_codes(&schema.store, None).unwrap();
+        let _ = schema.close();
+    }
+
+    #[test]
+    fn migrate_port_scan_event() {
+        let schema = TestSchema::new();
+        let old = PortScanFieldsV0_43 {
+            sensor: "s1".to_string(),
+            orig_addr: "10.0.0.1".parse().unwrap(),
+            resp_addr: "10.0.0.2".parse().unwrap(),
+            resp_ports: vec![80, 443],
+            start_time: 1_000_000_000,
+            end_time: 2_000_000_000,
+            proto: 6,
+            confidence: 0.8,
+            category: None,
+        };
+        let serialized = bincode::serialize(&old).unwrap();
+        let event_time = Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap();
+        let message = EventMessage {
+            time: event_time,
+            kind: EventKind::PortScan,
+            fields: serialized,
+        };
+        schema.store.events().put(&message).unwrap();
+
+        migrate_event_country_codes(&schema.store, None).unwrap();
+
+        let events = schema.store.events();
+        let mut iter = events.raw_iter_forward();
+        let (_, value) = iter.next().expect("migrated event");
+        let migrated: PortScanFields = bincode::deserialize(&value).unwrap();
+        assert_eq!(migrated.orig_country_code, *b"ZZ");
+        assert_eq!(migrated.resp_country_code, *b"ZZ");
+        assert_eq!(migrated.resp_ports, vec![80, 443]);
+        drop(iter);
+        let _ = schema.close();
+    }
+
+    #[test]
+    fn migrate_multi_host_port_scan_event() {
+        let schema = TestSchema::new();
+        let old = MultiHostPortScanFieldsV0_43 {
+            sensor: "s1".to_string(),
+            orig_addr: "10.0.0.1".parse().unwrap(),
+            resp_port: 22,
+            resp_addrs: vec!["10.0.0.2".parse().unwrap(), "10.0.0.3".parse().unwrap()],
+            proto: 6,
+            start_time: 1_000_000_000,
+            end_time: 2_000_000_000,
+            confidence: 0.7,
+            category: None,
+        };
+        let serialized = bincode::serialize(&old).unwrap();
+        let event_time = Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 2).unwrap();
+        let message = EventMessage {
+            time: event_time,
+            kind: EventKind::MultiHostPortScan,
+            fields: serialized,
+        };
+        schema.store.events().put(&message).unwrap();
+
+        migrate_event_country_codes(&schema.store, None).unwrap();
+
+        let events = schema.store.events();
+        let mut iter = events.raw_iter_forward();
+        let (_, value) = iter.next().expect("migrated event");
+        let migrated: MultiHostPortScanFields = bincode::deserialize(&value).unwrap();
+        assert_eq!(migrated.orig_country_code, *b"ZZ");
+        assert_eq!(migrated.resp_country_codes, vec![*b"ZZ", *b"ZZ"]);
+        drop(iter);
+        let _ = schema.close();
+    }
+
+    #[test]
+    fn migrate_external_ddos_event() {
+        let schema = TestSchema::new();
+        let old = ExternalDdosFieldsV0_43 {
+            sensor: "s1".to_string(),
+            orig_addrs: vec!["10.0.0.1".parse().unwrap(), "10.0.0.2".parse().unwrap()],
+            resp_addr: "10.0.0.3".parse().unwrap(),
+            proto: 17,
+            start_time: 1_000_000_000,
+            end_time: 2_000_000_000,
+            confidence: 0.9,
+            category: None,
+        };
+        let serialized = bincode::serialize(&old).unwrap();
+        let event_time = Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 3).unwrap();
+        let message = EventMessage {
+            time: event_time,
+            kind: EventKind::ExternalDdos,
+            fields: serialized,
+        };
+        schema.store.events().put(&message).unwrap();
+
+        migrate_event_country_codes(&schema.store, None).unwrap();
+
+        let events = schema.store.events();
+        let mut iter = events.raw_iter_forward();
+        let (_, value) = iter.next().expect("migrated event");
+        let migrated: ExternalDdosFields = bincode::deserialize(&value).unwrap();
+        assert_eq!(migrated.orig_country_codes, vec![*b"ZZ", *b"ZZ"]);
+        assert_eq!(migrated.resp_country_code, *b"ZZ");
+        drop(iter);
+        let _ = schema.close();
+    }
+
+    #[test]
+    fn migrate_rdp_brute_force_event() {
+        let schema = TestSchema::new();
+        let old = RdpBruteForceFieldsV0_43 {
+            sensor: "s1".to_string(),
+            orig_addr: "10.0.0.1".parse().unwrap(),
+            resp_addrs: vec!["10.0.0.2".parse().unwrap()],
+            start_time: 1_000_000_000,
+            end_time: 2_000_000_000,
+            proto: 6,
+            confidence: 0.6,
+            category: None,
+        };
+        let serialized = bincode::serialize(&old).unwrap();
+        let event_time = Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 4).unwrap();
+        let message = EventMessage {
+            time: event_time,
+            kind: EventKind::RdpBruteForce,
+            fields: serialized,
+        };
+        schema.store.events().put(&message).unwrap();
+
+        migrate_event_country_codes(&schema.store, None).unwrap();
+
+        let events = schema.store.events();
+        let mut iter = events.raw_iter_forward();
+        let (_, value) = iter.next().expect("migrated event");
+        let migrated: RdpBruteForceFields = bincode::deserialize(&value).unwrap();
+        assert_eq!(migrated.orig_country_code, *b"ZZ");
+        assert_eq!(migrated.resp_country_codes, vec![*b"ZZ"]);
+        drop(iter);
+        let _ = schema.close();
+    }
+
+    #[test]
+    fn migrate_unusual_destination_pattern_event() {
+        let schema = TestSchema::new();
+        let old = UnusualDestinationPatternFieldsV0_43 {
+            sensor: "s1".to_string(),
+            start_time: 1_000_000_000,
+            end_time: 2_000_000_000,
+            destination_ips: vec![
+                "10.0.0.1".parse().unwrap(),
+                "10.0.0.2".parse().unwrap(),
+                "10.0.0.3".parse().unwrap(),
+            ],
+            count: 3,
+            expected_mean: 1.0,
+            std_deviation: 0.5,
+            z_score: 4.0,
+            confidence: 0.95,
+            category: None,
+        };
+        let serialized = bincode::serialize(&old).unwrap();
+        let event_time = Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 5).unwrap();
+        let message = EventMessage {
+            time: event_time,
+            kind: EventKind::UnusualDestinationPattern,
+            fields: serialized,
+        };
+        schema.store.events().put(&message).unwrap();
+
+        migrate_event_country_codes(&schema.store, None).unwrap();
+
+        let events = schema.store.events();
+        let mut iter = events.raw_iter_forward();
+        let (_, value) = iter.next().expect("migrated event");
+        let migrated: UnusualDestinationPatternFields = bincode::deserialize(&value).unwrap();
+        assert_eq!(migrated.resp_country_codes, vec![*b"ZZ", *b"ZZ", *b"ZZ"]);
+        assert_eq!(migrated.destination_ips.len(), 3);
+        drop(iter);
+        let _ = schema.close();
+    }
+
+    #[test]
+    fn migrate_already_migrated_event_is_idempotent() {
+        let schema = TestSchema::new();
+        // Insert an event in V0_43 format
+        let old_fields = DnsEventFieldsV0_43 {
+            sensor: "collector1".to_string(),
+            orig_addr: std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
+            orig_port: 10000,
+            resp_addr: std::net::IpAddr::V4(std::net::Ipv4Addr::new(127, 0, 0, 2)),
+            resp_port: 53,
+            proto: 17,
+            start_time: Utc
+                .with_ymd_and_hms(1970, 1, 1, 0, 1, 1)
+                .unwrap()
+                .timestamp_nanos_opt()
+                .unwrap(),
+            duration: 0,
+            orig_pkts: 0,
+            resp_pkts: 0,
+            orig_l2_bytes: 0,
+            resp_l2_bytes: 0,
+            query: "bar.com".to_string(),
+            answer: vec!["1.2.3.4".to_string()],
+            trans_id: 456,
+            rtt: 2,
+            qclass: 0,
+            qtype: 0,
+            rcode: 0,
+            aa_flag: false,
+            tc_flag: false,
+            rd_flag: false,
+            ra_flag: true,
+            ttl: vec![60],
+            confidence: 0.8,
+            category: None,
+        };
+        let event_time = Utc.with_ymd_and_hms(1970, 1, 1, 0, 2, 1).unwrap();
+        let serialized = bincode::serialize(&old_fields).unwrap();
+        let message = EventMessage {
+            time: event_time,
+            kind: EventKind::DnsCovertChannel,
+            fields: serialized,
+        };
+        schema.store.events().put(&message).unwrap();
+
+        // First migration
+        migrate_event_country_codes(&schema.store, None).unwrap();
+
+        // Second migration — should be idempotent (already-migrated path)
+        migrate_event_country_codes(&schema.store, None).unwrap();
+
+        let events = schema.store.events();
+        let mut iter = events.raw_iter_forward();
+        let (_, value) = iter.next().expect("migrated event");
+        let migrated: DnsEventFields = bincode::deserialize(&value).unwrap();
+        assert_eq!(migrated.orig_country_code, *b"ZZ");
+        assert_eq!(migrated.resp_country_code, *b"ZZ");
+        assert_eq!(migrated.query, "bar.com");
+        drop(iter);
+        let _ = schema.close();
+    }
+
+    #[test]
+    fn migrate_windows_threat_is_skipped() {
+        use crate::event::WindowsThreat;
+
+        let schema = TestSchema::new();
+        let event_time = Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 6).unwrap();
+        let wt = WindowsThreat {
+            time: event_time,
+            sensor: "s1".to_string(),
+            service: "svc".to_string(),
+            agent_name: "agent".to_string(),
+            agent_id: "id".to_string(),
+            process_guid: "guid".to_string(),
+            process_id: 1234,
+            image: "img".to_string(),
+            user: "user".to_string(),
+            content: "content".to_string(),
+            db_name: "db".to_string(),
+            rule_id: 1,
+            matched_to: "match".to_string(),
+            cluster_id: None,
+            attack_kind: "kind".to_string(),
+            confidence: 0.5,
+            category: None,
+            triage_scores: None,
+        };
+        let serialized = bincode::serialize(&wt).unwrap();
+        let message = EventMessage {
+            time: event_time,
+            kind: EventKind::WindowsThreat,
+            fields: serialized.clone(),
+        };
+        schema.store.events().put(&message).unwrap();
+
+        migrate_event_country_codes(&schema.store, None).unwrap();
+
+        // WindowsThreat should be skipped — data unchanged
+        let events = schema.store.events();
+        let mut iter = events.raw_iter_forward();
+        let (_, value) = iter.next().expect("event exists");
+        // Should still deserialize as the original type (unchanged)
+        let deserialized: WindowsThreat = bincode::deserialize(&value).unwrap();
+        assert_eq!(deserialized.sensor, "s1");
+        drop(iter);
+        let _ = schema.close();
+    }
+
+    #[test]
+    fn migrate_mixed_event_types() {
+        let schema = TestSchema::new();
+        let event_time = Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap();
+
+        // Insert a DnsCovertChannel event
+        let dns = DnsEventFieldsV0_43 {
+            sensor: "s1".to_string(),
+            orig_addr: "10.0.0.1".parse().unwrap(),
+            orig_port: 10000,
+            resp_addr: "10.0.0.2".parse().unwrap(),
+            resp_port: 53,
+            proto: 17,
+            start_time: event_time.timestamp_nanos_opt().unwrap(),
+            duration: 0,
+            orig_pkts: 0,
+            resp_pkts: 0,
+            orig_l2_bytes: 0,
+            resp_l2_bytes: 0,
+            query: "test.com".to_string(),
+            answer: vec![],
+            trans_id: 1,
+            rtt: 1,
+            qclass: 0,
+            qtype: 0,
+            rcode: 0,
+            aa_flag: false,
+            tc_flag: false,
+            rd_flag: false,
+            ra_flag: false,
+            ttl: vec![],
+            confidence: 0.5,
+            category: None,
+        };
+        schema
+            .store
+            .events()
+            .put(&EventMessage {
+                time: event_time,
+                kind: EventKind::DnsCovertChannel,
+                fields: bincode::serialize(&dns).unwrap(),
+            })
+            .unwrap();
+
+        // Insert a PortScan event
+        let ps = PortScanFieldsV0_43 {
+            sensor: "s1".to_string(),
+            orig_addr: "10.0.0.3".parse().unwrap(),
+            resp_addr: "10.0.0.4".parse().unwrap(),
+            resp_ports: vec![22],
+            start_time: 1_000_000_000,
+            end_time: 2_000_000_000,
+            proto: 6,
+            confidence: 0.9,
+            category: None,
+        };
+        let event_time2 = Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 2).unwrap();
+        schema
+            .store
+            .events()
+            .put(&EventMessage {
+                time: event_time2,
+                kind: EventKind::PortScan,
+                fields: bincode::serialize(&ps).unwrap(),
+            })
+            .unwrap();
+
+        // Insert an ExternalDdos event
+        let ddos = ExternalDdosFieldsV0_43 {
+            sensor: "s1".to_string(),
+            orig_addrs: vec!["10.0.0.5".parse().unwrap()],
+            resp_addr: "10.0.0.6".parse().unwrap(),
+            proto: 17,
+            start_time: 1_000_000_000,
+            end_time: 2_000_000_000,
+            confidence: 0.85,
+            category: None,
+        };
+        let event_time3 = Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 3).unwrap();
+        schema
+            .store
+            .events()
+            .put(&EventMessage {
+                time: event_time3,
+                kind: EventKind::ExternalDdos,
+                fields: bincode::serialize(&ddos).unwrap(),
+            })
+            .unwrap();
+
+        // Migrate all at once
+        migrate_event_country_codes(&schema.store, None).unwrap();
+
+        // Verify all migrated
+        let events = schema.store.events();
+        let mut count = 0;
+        for (_, _) in events.raw_iter_forward() {
+            count += 1;
+        }
+        assert_eq!(count, 3);
+
+        let _ = schema.close();
+    }
+
+    #[test]
+    fn migrate_http_threat_event() {
+        let schema = TestSchema::new();
+        let event_time = Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap();
+        let old = HttpThreatFieldsV0_43 {
+            time: event_time,
+            sensor: "s1".to_string(),
+            orig_addr: "10.0.0.1".parse().unwrap(),
             orig_port: 12345,
-            resp_addr: "10.0.0.1".parse::<IpAddr>().unwrap(),
+            resp_addr: "10.0.0.2".parse().unwrap(),
             resp_port: 80,
             proto: 6,
-            start_time: 1000,
+            start_time: event_time.timestamp_nanos_opt().unwrap(),
             duration: 100,
             orig_pkts: 10,
-            resp_pkts: 20,
+            resp_pkts: 5,
             orig_l2_bytes: 1000,
-            resp_l2_bytes: 2000,
+            resp_l2_bytes: 500,
             method: "GET".to_string(),
             host: "example.com".to_string(),
-            uri: "/test".to_string(),
+            uri: "/".to_string(),
             referer: String::new(),
-            version: "HTTP/1.1".to_string(),
-            user_agent: "test-agent".to_string(),
+            version: "1.1".to_string(),
+            user_agent: "test".to_string(),
             request_len: 100,
             response_len: 200,
             status_code: 200,
@@ -2414,70 +3280,1325 @@ mod tests {
             mime_types: vec![],
             body: vec![],
             state: String::new(),
-            db_name: "test_db".to_string(),
+            db_name: "db".to_string(),
             rule_id: 1,
-            matched_to: "test_rule".to_string(),
-            cluster_id: Some(42_usize), // OLD TYPE: Option<usize>
-            attack_kind: "test_attack".to_string(),
+            matched_to: "match".to_string(),
+            cluster_id: None,
+            attack_kind: "kind".to_string(),
             confidence: 0.9,
             category: None,
         };
-
-        // Serialize old-format value
-        let serialized = bincode::DefaultOptions::new()
-            .serialize(&old_event)
+        let serialized = bincode::serialize(&old).unwrap();
+        schema
+            .store
+            .events()
+            .put(&EventMessage {
+                time: event_time,
+                kind: EventKind::HttpThreat,
+                fields: serialized,
+            })
             .unwrap();
 
-        // Create event key: (timestamp_nanos << 64) | (event_kind << 32) | random_bits
-        // EventKind::HttpThreat = 1
-        let timestamp_nanos = chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0);
-        let event_kind = EventKind::HttpThreat as i32;
-        let random_bits: u32 = 12345;
-        let key_i128: i128 = (i128::from(timestamp_nanos) << 64)
-            | (i128::from(event_kind) << 32)
-            | i128::from(random_bits);
-        let key_bytes = key_i128.to_be_bytes();
+        migrate_event_country_codes(&schema.store, None).unwrap();
 
-        // Store in default column family (where events are stored)
-        db.put(key_bytes, &serialized).unwrap();
-        drop(db);
-
-        // Run the migration
-        super::migrate_http_threat_events(db_dir.path()).unwrap();
-
-        // Verify the migration by reading back and checking new format
-        let db: rocksdb::OptimisticTransactionDB<rocksdb::SingleThreaded> =
-            rocksdb::OptimisticTransactionDB::open_cf(&opts, &db_path, crate::tables::MAP_NAMES)
-                .unwrap();
-
-        let value = db.get(key_bytes).unwrap().unwrap();
-        let new_event: HttpThreatFields =
-            bincode::DefaultOptions::new().deserialize(&value).unwrap();
-
-        // Verify the cluster_id was migrated from Option<usize> to Option<u32>
-        assert_eq!(new_event.cluster_id, Some(42_u32));
-        assert_eq!(new_event.sensor, "test-sensor");
-        assert_eq!(new_event.host, "example.com");
-        assert_eq!(new_event.method, "GET");
+        let events = schema.store.events();
+        let mut iter = events.raw_iter_forward();
+        let (_, value) = iter.next().expect("migrated event");
+        let migrated: HttpThreatFields = bincode::deserialize(&value).unwrap();
+        assert_eq!(migrated.orig_country_code, *b"ZZ");
+        assert_eq!(migrated.resp_country_code, *b"ZZ");
+        drop(iter);
+        let _ = schema.close();
     }
 
     #[test]
-    fn test_migrate_http_threat_events_empty_db() {
-        // Test that migration succeeds when there are no HttpThreat events
-        let db_dir = tempfile::tempdir().unwrap();
-        let db_path = db_dir.path().join("states.db");
+    fn migrate_repeated_http_sessions_event() {
+        let schema = TestSchema::new();
+        let old = RepeatedHttpSessionsFieldsV0_43 {
+            sensor: "s1".to_string(),
+            orig_addr: "10.0.0.1".parse().unwrap(),
+            orig_port: 12345,
+            resp_addr: "10.0.0.2".parse().unwrap(),
+            resp_port: 80,
+            proto: 6,
+            start_time: 1_000_000_000,
+            end_time: 2_000_000_000,
+            confidence: 0.8,
+            category: None,
+        };
+        let serialized = bincode::serialize(&old).unwrap();
+        let event_time = Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap();
+        schema
+            .store
+            .events()
+            .put(&EventMessage {
+                time: event_time,
+                kind: EventKind::RepeatedHttpSessions,
+                fields: serialized,
+            })
+            .unwrap();
 
-        let mut opts = rocksdb::Options::default();
-        opts.create_if_missing(true);
-        opts.create_missing_column_families(true);
+        migrate_event_country_codes(&schema.store, None).unwrap();
 
-        let db: rocksdb::OptimisticTransactionDB<rocksdb::SingleThreaded> =
-            rocksdb::OptimisticTransactionDB::open_cf(&opts, &db_path, crate::tables::MAP_NAMES)
-                .unwrap();
-        drop(db);
+        let events = schema.store.events();
+        let mut iter = events.raw_iter_forward();
+        let (_, value) = iter.next().expect("migrated event");
+        let migrated: RepeatedHttpSessionsFields = bincode::deserialize(&value).unwrap();
+        assert_eq!(migrated.orig_country_code, *b"ZZ");
+        assert_eq!(migrated.resp_country_code, *b"ZZ");
+        drop(iter);
+        let _ = schema.close();
+    }
 
-        // Run the migration - should succeed with no events
-        let result = super::migrate_http_threat_events(db_dir.path());
-        assert!(result.is_ok());
+    #[test]
+    fn migrate_http_event_fields() {
+        let schema = TestSchema::new();
+        let old = HttpEventFieldsV0_43 {
+            sensor: "s1".to_string(),
+            orig_addr: "10.0.0.1".parse().unwrap(),
+            orig_port: 12345,
+            resp_addr: "10.0.0.2".parse().unwrap(),
+            resp_port: 80,
+            proto: 6,
+            start_time: 1_000_000_000,
+            duration: 100,
+            orig_pkts: 10,
+            resp_pkts: 5,
+            orig_l2_bytes: 1000,
+            resp_l2_bytes: 500,
+            method: "GET".to_string(),
+            host: "example.com".to_string(),
+            uri: "/".to_string(),
+            referer: String::new(),
+            version: "1.1".to_string(),
+            user_agent: "test".to_string(),
+            request_len: 100,
+            response_len: 200,
+            status_code: 200,
+            status_msg: "OK".to_string(),
+            username: String::new(),
+            password: String::new(),
+            cookie: String::new(),
+            content_encoding: String::new(),
+            content_type: "text/html".to_string(),
+            cache_control: String::new(),
+            filenames: vec![],
+            mime_types: vec![],
+            body: vec![],
+            state: String::new(),
+            confidence: 0.9,
+            category: None,
+        };
+        let serialized = bincode::serialize(&old).unwrap();
+        let event_time = Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap();
+        schema
+            .store
+            .events()
+            .put(&EventMessage {
+                time: event_time,
+                kind: EventKind::TorConnection,
+                fields: serialized,
+            })
+            .unwrap();
+
+        migrate_event_country_codes(&schema.store, None).unwrap();
+
+        let events = schema.store.events();
+        let mut iter = events.raw_iter_forward();
+        let (_, value) = iter.next().expect("migrated event");
+        let migrated: HttpEventFields = bincode::deserialize(&value).unwrap();
+        assert_eq!(migrated.orig_country_code, *b"ZZ");
+        assert_eq!(migrated.resp_country_code, *b"ZZ");
+        drop(iter);
+        let _ = schema.close();
+    }
+
+    #[test]
+    fn migrate_blocklist_conn_event() {
+        let schema = TestSchema::new();
+        let old = BlocklistConnFieldsV0_43 {
+            sensor: "s1".to_string(),
+            orig_addr: "10.0.0.1".parse().unwrap(),
+            orig_port: 12345,
+            resp_addr: "10.0.0.2".parse().unwrap(),
+            resp_port: 80,
+            proto: 6,
+            conn_state: "SF".to_string(),
+            start_time: 1_000_000_000,
+            duration: 100,
+            service: "http".to_string(),
+            orig_bytes: 500,
+            resp_bytes: 1000,
+            orig_pkts: 10,
+            resp_pkts: 5,
+            orig_l2_bytes: 600,
+            resp_l2_bytes: 1100,
+            confidence: 0.8,
+            category: None,
+        };
+        let serialized = bincode::serialize(&old).unwrap();
+        let event_time = Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap();
+        schema
+            .store
+            .events()
+            .put(&EventMessage {
+                time: event_time,
+                kind: EventKind::BlocklistConn,
+                fields: serialized,
+            })
+            .unwrap();
+
+        migrate_event_country_codes(&schema.store, None).unwrap();
+
+        let events = schema.store.events();
+        let mut iter = events.raw_iter_forward();
+        let (_, value) = iter.next().expect("migrated event");
+        let migrated: BlocklistConnFields = bincode::deserialize(&value).unwrap();
+        assert_eq!(migrated.orig_country_code, *b"ZZ");
+        assert_eq!(migrated.resp_country_code, *b"ZZ");
+        drop(iter);
+        let _ = schema.close();
+    }
+
+    #[test]
+    fn migrate_dga_event() {
+        let schema = TestSchema::new();
+        let old = DgaFieldsV0_43 {
+            sensor: "s1".to_string(),
+            orig_addr: "10.0.0.1".parse().unwrap(),
+            orig_port: 12345,
+            resp_addr: "10.0.0.2".parse().unwrap(),
+            resp_port: 80,
+            proto: 6,
+            start_time: 1_000_000_000,
+            duration: 100,
+            orig_pkts: 10,
+            resp_pkts: 5,
+            orig_l2_bytes: 1000,
+            resp_l2_bytes: 500,
+            method: "GET".to_string(),
+            host: "dga.example.com".to_string(),
+            uri: "/".to_string(),
+            referer: String::new(),
+            version: "1.1".to_string(),
+            user_agent: "test".to_string(),
+            request_len: 100,
+            response_len: 200,
+            status_code: 200,
+            status_msg: "OK".to_string(),
+            username: String::new(),
+            password: String::new(),
+            cookie: String::new(),
+            content_encoding: String::new(),
+            content_type: String::new(),
+            cache_control: String::new(),
+            filenames: vec![],
+            mime_types: vec![],
+            body: vec![],
+            state: String::new(),
+            confidence: 0.9,
+            category: None,
+        };
+        let serialized = bincode::serialize(&old).unwrap();
+        let event_time = Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap();
+        schema
+            .store
+            .events()
+            .put(&EventMessage {
+                time: event_time,
+                kind: EventKind::DomainGenerationAlgorithm,
+                fields: serialized,
+            })
+            .unwrap();
+
+        migrate_event_country_codes(&schema.store, None).unwrap();
+
+        let events = schema.store.events();
+        let mut iter = events.raw_iter_forward();
+        let (_, value) = iter.next().expect("migrated event");
+        let migrated: DgaFields = bincode::deserialize(&value).unwrap();
+        assert_eq!(migrated.orig_country_code, *b"ZZ");
+        assert_eq!(migrated.resp_country_code, *b"ZZ");
+        drop(iter);
+        let _ = schema.close();
+    }
+
+    #[test]
+    fn migrate_ftp_brute_force_event() {
+        let schema = TestSchema::new();
+        let old = FtpBruteForceFieldsV0_43 {
+            sensor: "s1".to_string(),
+            orig_addr: "10.0.0.1".parse().unwrap(),
+            resp_addr: "10.0.0.2".parse().unwrap(),
+            resp_port: 21,
+            proto: 6,
+            user_list: vec!["admin".to_string()],
+            start_time: 1_000_000_000,
+            end_time: 2_000_000_000,
+            is_internal: false,
+            confidence: 0.7,
+            category: None,
+        };
+        let serialized = bincode::serialize(&old).unwrap();
+        let event_time = Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap();
+        schema
+            .store
+            .events()
+            .put(&EventMessage {
+                time: event_time,
+                kind: EventKind::FtpBruteForce,
+                fields: serialized,
+            })
+            .unwrap();
+
+        migrate_event_country_codes(&schema.store, None).unwrap();
+
+        let events = schema.store.events();
+        let mut iter = events.raw_iter_forward();
+        let (_, value) = iter.next().expect("migrated event");
+        let migrated: FtpBruteForceFields = bincode::deserialize(&value).unwrap();
+        assert_eq!(migrated.orig_country_code, *b"ZZ");
+        assert_eq!(migrated.resp_country_code, *b"ZZ");
+        drop(iter);
+        let _ = schema.close();
+    }
+
+    #[test]
+    fn migrate_ftp_event_fields() {
+        use super::migration_structures::FtpCommandV0_43;
+        let schema = TestSchema::new();
+        let old = FtpEventFieldsV0_43 {
+            sensor: "s1".to_string(),
+            orig_addr: "10.0.0.1".parse().unwrap(),
+            orig_port: 12345,
+            resp_addr: "10.0.0.2".parse().unwrap(),
+            resp_port: 21,
+            proto: 6,
+            start_time: 1_000_000_000,
+            duration: 100,
+            orig_pkts: 10,
+            resp_pkts: 5,
+            orig_l2_bytes: 1000,
+            resp_l2_bytes: 500,
+            user: "admin".to_string(),
+            password: "pass".to_string(),
+            commands: vec![FtpCommandV0_43 {
+                command: "LIST".to_string(),
+                reply_code: "150".to_string(),
+                reply_msg: "OK".to_string(),
+            }],
+            confidence: 0.8,
+            category: None,
+        };
+        let serialized = bincode::serialize(&old).unwrap();
+        let event_time = Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap();
+        schema
+            .store
+            .events()
+            .put(&EventMessage {
+                time: event_time,
+                kind: EventKind::FtpPlainText,
+                fields: serialized,
+            })
+            .unwrap();
+
+        migrate_event_country_codes(&schema.store, None).unwrap();
+
+        let events = schema.store.events();
+        let mut iter = events.raw_iter_forward();
+        let (_, value) = iter.next().expect("migrated event");
+        let migrated: FtpEventFields = bincode::deserialize(&value).unwrap();
+        assert_eq!(migrated.orig_country_code, *b"ZZ");
+        assert_eq!(migrated.resp_country_code, *b"ZZ");
+        drop(iter);
+        let _ = schema.close();
+    }
+
+    #[test]
+    fn migrate_ldap_brute_force_event() {
+        let schema = TestSchema::new();
+        let old = LdapBruteForceFieldsV0_43 {
+            sensor: "s1".to_string(),
+            orig_addr: "10.0.0.1".parse().unwrap(),
+            resp_addr: "10.0.0.2".parse().unwrap(),
+            resp_port: 389,
+            proto: 6,
+            user_pw_list: vec![("admin".to_string(), "pass".to_string())],
+            start_time: 1_000_000_000,
+            end_time: 2_000_000_000,
+            confidence: 0.7,
+            category: None,
+        };
+        let serialized = bincode::serialize(&old).unwrap();
+        let event_time = Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap();
+        schema
+            .store
+            .events()
+            .put(&EventMessage {
+                time: event_time,
+                kind: EventKind::LdapBruteForce,
+                fields: serialized,
+            })
+            .unwrap();
+
+        migrate_event_country_codes(&schema.store, None).unwrap();
+
+        let events = schema.store.events();
+        let mut iter = events.raw_iter_forward();
+        let (_, value) = iter.next().expect("migrated event");
+        let migrated: LdapBruteForceFields = bincode::deserialize(&value).unwrap();
+        assert_eq!(migrated.orig_country_code, *b"ZZ");
+        assert_eq!(migrated.resp_country_code, *b"ZZ");
+        drop(iter);
+        let _ = schema.close();
+    }
+
+    #[test]
+    fn migrate_ldap_event_fields() {
+        let schema = TestSchema::new();
+        let old = LdapEventFieldsV0_43 {
+            sensor: "s1".to_string(),
+            orig_addr: "10.0.0.1".parse().unwrap(),
+            orig_port: 12345,
+            resp_addr: "10.0.0.2".parse().unwrap(),
+            resp_port: 389,
+            proto: 6,
+            start_time: 1_000_000_000,
+            duration: 100,
+            orig_pkts: 10,
+            resp_pkts: 5,
+            orig_l2_bytes: 1000,
+            resp_l2_bytes: 500,
+            message_id: 1,
+            version: 3,
+            opcode: vec!["bind".to_string()],
+            result: vec!["success".to_string()],
+            diagnostic_message: vec![],
+            object: vec![],
+            argument: vec![],
+            confidence: 0.8,
+            category: None,
+        };
+        let serialized = bincode::serialize(&old).unwrap();
+        let event_time = Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap();
+        schema
+            .store
+            .events()
+            .put(&EventMessage {
+                time: event_time,
+                kind: EventKind::LdapPlainText,
+                fields: serialized,
+            })
+            .unwrap();
+
+        migrate_event_country_codes(&schema.store, None).unwrap();
+
+        let events = schema.store.events();
+        let mut iter = events.raw_iter_forward();
+        let (_, value) = iter.next().expect("migrated event");
+        let migrated: LdapEventFields = bincode::deserialize(&value).unwrap();
+        assert_eq!(migrated.orig_country_code, *b"ZZ");
+        assert_eq!(migrated.resp_country_code, *b"ZZ");
+        drop(iter);
+        let _ = schema.close();
+    }
+
+    #[test]
+    fn migrate_cryptocurrency_mining_pool_event() {
+        let schema = TestSchema::new();
+        let old = CryptocurrencyMiningPoolFieldsV0_43 {
+            sensor: "s1".to_string(),
+            orig_addr: "10.0.0.1".parse().unwrap(),
+            orig_port: 12345,
+            resp_addr: "10.0.0.2".parse().unwrap(),
+            resp_port: 53,
+            proto: 17,
+            start_time: 1_000_000_000,
+            duration: 100,
+            orig_pkts: 10,
+            resp_pkts: 5,
+            orig_l2_bytes: 1000,
+            resp_l2_bytes: 500,
+            query: "pool.mining.com".to_string(),
+            answer: vec!["1.2.3.4".to_string()],
+            trans_id: 1,
+            rtt: 10,
+            qclass: 1,
+            qtype: 1,
+            rcode: 0,
+            aa_flag: false,
+            tc_flag: false,
+            rd_flag: true,
+            ra_flag: true,
+            ttl: vec![300],
+            coins: vec!["BTC".to_string()],
+            confidence: 0.9,
+            category: None,
+        };
+        let serialized = bincode::serialize(&old).unwrap();
+        let event_time = Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap();
+        schema
+            .store
+            .events()
+            .put(&EventMessage {
+                time: event_time,
+                kind: EventKind::CryptocurrencyMiningPool,
+                fields: serialized,
+            })
+            .unwrap();
+
+        migrate_event_country_codes(&schema.store, None).unwrap();
+
+        let events = schema.store.events();
+        let mut iter = events.raw_iter_forward();
+        let (_, value) = iter.next().expect("migrated event");
+        let migrated: CryptocurrencyMiningPoolFields = bincode::deserialize(&value).unwrap();
+        assert_eq!(migrated.orig_country_code, *b"ZZ");
+        assert_eq!(migrated.resp_country_code, *b"ZZ");
+        drop(iter);
+        let _ = schema.close();
+    }
+
+    #[test]
+    fn migrate_blocklist_dns_event() {
+        let schema = TestSchema::new();
+        let old = BlocklistDnsFieldsV0_43 {
+            sensor: "s1".to_string(),
+            orig_addr: "10.0.0.1".parse().unwrap(),
+            orig_port: 12345,
+            resp_addr: "10.0.0.2".parse().unwrap(),
+            resp_port: 53,
+            proto: 17,
+            start_time: 1_000_000_000,
+            duration: 100,
+            orig_pkts: 10,
+            resp_pkts: 5,
+            orig_l2_bytes: 1000,
+            resp_l2_bytes: 500,
+            query: "bad.com".to_string(),
+            answer: vec![],
+            trans_id: 1,
+            rtt: 10,
+            qclass: 1,
+            qtype: 1,
+            rcode: 0,
+            aa_flag: false,
+            tc_flag: false,
+            rd_flag: true,
+            ra_flag: true,
+            ttl: vec![60],
+            confidence: 0.9,
+            category: None,
+        };
+        let serialized = bincode::serialize(&old).unwrap();
+        let event_time = Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap();
+        schema
+            .store
+            .events()
+            .put(&EventMessage {
+                time: event_time,
+                kind: EventKind::BlocklistDns,
+                fields: serialized,
+            })
+            .unwrap();
+
+        migrate_event_country_codes(&schema.store, None).unwrap();
+
+        let events = schema.store.events();
+        let mut iter = events.raw_iter_forward();
+        let (_, value) = iter.next().expect("migrated event");
+        let migrated: BlocklistDnsFields = bincode::deserialize(&value).unwrap();
+        assert_eq!(migrated.orig_country_code, *b"ZZ");
+        assert_eq!(migrated.resp_country_code, *b"ZZ");
+        drop(iter);
+        let _ = schema.close();
+    }
+
+    #[test]
+    fn migrate_blocklist_rdp_event() {
+        let schema = TestSchema::new();
+        let old = BlocklistRdpFieldsV0_43 {
+            sensor: "s1".to_string(),
+            orig_addr: "10.0.0.1".parse().unwrap(),
+            orig_port: 12345,
+            resp_addr: "10.0.0.2".parse().unwrap(),
+            resp_port: 3389,
+            proto: 6,
+            start_time: 1_000_000_000,
+            duration: 100,
+            orig_pkts: 10,
+            resp_pkts: 5,
+            orig_l2_bytes: 1000,
+            resp_l2_bytes: 500,
+            cookie: "cookie".to_string(),
+            confidence: 0.8,
+            category: None,
+        };
+        let serialized = bincode::serialize(&old).unwrap();
+        let event_time = Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap();
+        schema
+            .store
+            .events()
+            .put(&EventMessage {
+                time: event_time,
+                kind: EventKind::BlocklistRdp,
+                fields: serialized,
+            })
+            .unwrap();
+
+        migrate_event_country_codes(&schema.store, None).unwrap();
+
+        let events = schema.store.events();
+        let mut iter = events.raw_iter_forward();
+        let (_, value) = iter.next().expect("migrated event");
+        let migrated: BlocklistRdpFields = bincode::deserialize(&value).unwrap();
+        assert_eq!(migrated.orig_country_code, *b"ZZ");
+        assert_eq!(migrated.resp_country_code, *b"ZZ");
+        drop(iter);
+        let _ = schema.close();
+    }
+
+    #[test]
+    fn migrate_blocklist_ssh_event() {
+        let schema = TestSchema::new();
+        let old = BlocklistSshFieldsV0_43 {
+            sensor: "s1".to_string(),
+            orig_addr: "10.0.0.1".parse().unwrap(),
+            orig_port: 12345,
+            resp_addr: "10.0.0.2".parse().unwrap(),
+            resp_port: 22,
+            proto: 6,
+            start_time: 1_000_000_000,
+            duration: 100,
+            orig_pkts: 10,
+            resp_pkts: 5,
+            orig_l2_bytes: 1000,
+            resp_l2_bytes: 500,
+            client: "OpenSSH_8.9".to_string(),
+            server: "OpenSSH_8.2".to_string(),
+            cipher_alg: "aes256-ctr".to_string(),
+            mac_alg: "hmac-sha2-256".to_string(),
+            compression_alg: "none".to_string(),
+            kex_alg: "curve25519-sha256".to_string(),
+            host_key_alg: "ssh-ed25519".to_string(),
+            hassh_algorithms: String::new(),
+            hassh: String::new(),
+            hassh_server_algorithms: String::new(),
+            hassh_server: String::new(),
+            client_shka: String::new(),
+            server_shka: String::new(),
+            confidence: 0.8,
+            category: None,
+        };
+        let serialized = bincode::serialize(&old).unwrap();
+        let event_time = Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap();
+        schema
+            .store
+            .events()
+            .put(&EventMessage {
+                time: event_time,
+                kind: EventKind::BlocklistSsh,
+                fields: serialized,
+            })
+            .unwrap();
+
+        migrate_event_country_codes(&schema.store, None).unwrap();
+
+        let events = schema.store.events();
+        let mut iter = events.raw_iter_forward();
+        let (_, value) = iter.next().expect("migrated event");
+        let migrated: BlocklistSshFields = bincode::deserialize(&value).unwrap();
+        assert_eq!(migrated.orig_country_code, *b"ZZ");
+        assert_eq!(migrated.resp_country_code, *b"ZZ");
+        drop(iter);
+        let _ = schema.close();
+    }
+
+    #[test]
+    fn migrate_blocklist_tls_event() {
+        let schema = TestSchema::new();
+        let old = BlocklistTlsFieldsV0_43 {
+            sensor: "s1".to_string(),
+            orig_addr: "10.0.0.1".parse().unwrap(),
+            orig_port: 12345,
+            resp_addr: "10.0.0.2".parse().unwrap(),
+            resp_port: 443,
+            proto: 6,
+            start_time: 1_000_000_000,
+            duration: 100,
+            orig_pkts: 10,
+            resp_pkts: 5,
+            orig_l2_bytes: 1000,
+            resp_l2_bytes: 500,
+            server_name: "example.com".to_string(),
+            alpn_protocol: "h2".to_string(),
+            ja3: String::new(),
+            version: "TLSv1.3".to_string(),
+            client_cipher_suites: vec![0x1301],
+            client_extensions: vec![],
+            cipher: 0x1301,
+            extensions: vec![],
+            ja3s: String::new(),
+            serial: String::new(),
+            subject_country: "US".to_string(),
+            subject_org_name: String::new(),
+            subject_common_name: "example.com".to_string(),
+            validity_not_before: 0,
+            validity_not_after: 0,
+            subject_alt_name: String::new(),
+            issuer_country: "US".to_string(),
+            issuer_org_name: String::new(),
+            issuer_org_unit_name: String::new(),
+            issuer_common_name: String::new(),
+            last_alert: 0,
+            confidence: 0.8,
+            category: None,
+        };
+        let serialized = bincode::serialize(&old).unwrap();
+        let event_time = Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap();
+        schema
+            .store
+            .events()
+            .put(&EventMessage {
+                time: event_time,
+                kind: EventKind::BlocklistTls,
+                fields: serialized,
+            })
+            .unwrap();
+
+        migrate_event_country_codes(&schema.store, None).unwrap();
+
+        let events = schema.store.events();
+        let mut iter = events.raw_iter_forward();
+        let (_, value) = iter.next().expect("migrated event");
+        let migrated: BlocklistTlsFields = bincode::deserialize(&value).unwrap();
+        assert_eq!(migrated.orig_country_code, *b"ZZ");
+        assert_eq!(migrated.resp_country_code, *b"ZZ");
+        drop(iter);
+        let _ = schema.close();
+    }
+
+    #[test]
+    fn migrate_blocklist_kerberos_event() {
+        let schema = TestSchema::new();
+        let old = BlocklistKerberosFieldsV0_43 {
+            sensor: "s1".to_string(),
+            orig_addr: "10.0.0.1".parse().unwrap(),
+            orig_port: 12345,
+            resp_addr: "10.0.0.2".parse().unwrap(),
+            resp_port: 88,
+            proto: 6,
+            start_time: 1_000_000_000,
+            duration: 100,
+            orig_pkts: 10,
+            resp_pkts: 5,
+            orig_l2_bytes: 1000,
+            resp_l2_bytes: 500,
+            client_time: 1_000_000_000,
+            server_time: 1_000_000_000,
+            error_code: 0,
+            client_realm: "EXAMPLE.COM".to_string(),
+            cname_type: 1,
+            client_name: vec!["user".to_string()],
+            realm: "EXAMPLE.COM".to_string(),
+            sname_type: 2,
+            service_name: vec!["krbtgt".to_string()],
+            confidence: 0.8,
+            category: None,
+        };
+        let serialized = bincode::serialize(&old).unwrap();
+        let event_time = Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap();
+        schema
+            .store
+            .events()
+            .put(&EventMessage {
+                time: event_time,
+                kind: EventKind::BlocklistKerberos,
+                fields: serialized,
+            })
+            .unwrap();
+
+        migrate_event_country_codes(&schema.store, None).unwrap();
+
+        let events = schema.store.events();
+        let mut iter = events.raw_iter_forward();
+        let (_, value) = iter.next().expect("migrated event");
+        let migrated: BlocklistKerberosFields = bincode::deserialize(&value).unwrap();
+        assert_eq!(migrated.orig_country_code, *b"ZZ");
+        assert_eq!(migrated.resp_country_code, *b"ZZ");
+        drop(iter);
+        let _ = schema.close();
+    }
+
+    #[test]
+    fn migrate_blocklist_smtp_event() {
+        let schema = TestSchema::new();
+        let old = BlocklistSmtpFieldsV0_43 {
+            sensor: "s1".to_string(),
+            orig_addr: "10.0.0.1".parse().unwrap(),
+            orig_port: 12345,
+            resp_addr: "10.0.0.2".parse().unwrap(),
+            resp_port: 25,
+            proto: 6,
+            start_time: 1_000_000_000,
+            duration: 100,
+            orig_pkts: 10,
+            resp_pkts: 5,
+            orig_l2_bytes: 1000,
+            resp_l2_bytes: 500,
+            mailfrom: "sender@example.com".to_string(),
+            date: "2024-01-01".to_string(),
+            from: "sender@example.com".to_string(),
+            to: "recipient@example.com".to_string(),
+            subject: "Test".to_string(),
+            agent: "test-agent".to_string(),
+            state: String::new(),
+            confidence: 0.8,
+            category: None,
+        };
+        let serialized = bincode::serialize(&old).unwrap();
+        let event_time = Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap();
+        schema
+            .store
+            .events()
+            .put(&EventMessage {
+                time: event_time,
+                kind: EventKind::BlocklistSmtp,
+                fields: serialized,
+            })
+            .unwrap();
+
+        migrate_event_country_codes(&schema.store, None).unwrap();
+
+        let events = schema.store.events();
+        let mut iter = events.raw_iter_forward();
+        let (_, value) = iter.next().expect("migrated event");
+        let migrated: BlocklistSmtpFields = bincode::deserialize(&value).unwrap();
+        assert_eq!(migrated.orig_country_code, *b"ZZ");
+        assert_eq!(migrated.resp_country_code, *b"ZZ");
+        drop(iter);
+        let _ = schema.close();
+    }
+
+    #[test]
+    fn migrate_blocklist_nfs_event() {
+        let schema = TestSchema::new();
+        let old = BlocklistNfsFieldsV0_43 {
+            sensor: "s1".to_string(),
+            orig_addr: "10.0.0.1".parse().unwrap(),
+            orig_port: 12345,
+            resp_addr: "10.0.0.2".parse().unwrap(),
+            resp_port: 2049,
+            proto: 6,
+            start_time: 1_000_000_000,
+            duration: 100,
+            orig_pkts: 10,
+            resp_pkts: 5,
+            orig_l2_bytes: 1000,
+            resp_l2_bytes: 500,
+            read_files: vec!["file1.txt".to_string()],
+            write_files: vec![],
+            confidence: 0.8,
+            category: None,
+        };
+        let serialized = bincode::serialize(&old).unwrap();
+        let event_time = Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap();
+        schema
+            .store
+            .events()
+            .put(&EventMessage {
+                time: event_time,
+                kind: EventKind::BlocklistNfs,
+                fields: serialized,
+            })
+            .unwrap();
+
+        migrate_event_country_codes(&schema.store, None).unwrap();
+
+        let events = schema.store.events();
+        let mut iter = events.raw_iter_forward();
+        let (_, value) = iter.next().expect("migrated event");
+        let migrated: BlocklistNfsFields = bincode::deserialize(&value).unwrap();
+        assert_eq!(migrated.orig_country_code, *b"ZZ");
+        assert_eq!(migrated.resp_country_code, *b"ZZ");
+        drop(iter);
+        let _ = schema.close();
+    }
+
+    #[test]
+    fn migrate_blocklist_dhcp_event() {
+        let schema = TestSchema::new();
+        let old = BlocklistDhcpFieldsV0_43 {
+            sensor: "s1".to_string(),
+            orig_addr: "10.0.0.1".parse().unwrap(),
+            orig_port: 68,
+            resp_addr: "10.0.0.2".parse().unwrap(),
+            resp_port: 67,
+            proto: 17,
+            start_time: 1_000_000_000,
+            duration: 100,
+            orig_pkts: 10,
+            resp_pkts: 5,
+            orig_l2_bytes: 1000,
+            resp_l2_bytes: 500,
+            msg_type: 1,
+            ciaddr: "0.0.0.0".parse().unwrap(),
+            yiaddr: "10.0.0.10".parse().unwrap(),
+            siaddr: "10.0.0.1".parse().unwrap(),
+            giaddr: "0.0.0.0".parse().unwrap(),
+            subnet_mask: "255.255.255.0".parse().unwrap(),
+            router: vec!["10.0.0.1".parse().unwrap()],
+            domain_name_server: vec!["8.8.8.8".parse().unwrap()],
+            req_ip_addr: "10.0.0.10".parse().unwrap(),
+            lease_time: 3600,
+            server_id: "10.0.0.1".parse().unwrap(),
+            param_req_list: vec![1, 3, 6],
+            message: String::new(),
+            renewal_time: 1800,
+            rebinding_time: 3150,
+            class_id: vec![],
+            client_id_type: 1,
+            client_id: vec![0x00, 0x11, 0x22, 0x33, 0x44, 0x55],
+            confidence: 0.8,
+            category: None,
+        };
+        let serialized = bincode::serialize(&old).unwrap();
+        let event_time = Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap();
+        schema
+            .store
+            .events()
+            .put(&EventMessage {
+                time: event_time,
+                kind: EventKind::BlocklistDhcp,
+                fields: serialized,
+            })
+            .unwrap();
+
+        migrate_event_country_codes(&schema.store, None).unwrap();
+
+        let events = schema.store.events();
+        let mut iter = events.raw_iter_forward();
+        let (_, value) = iter.next().expect("migrated event");
+        let migrated: BlocklistDhcpFields = bincode::deserialize(&value).unwrap();
+        assert_eq!(migrated.orig_country_code, *b"ZZ");
+        assert_eq!(migrated.resp_country_code, *b"ZZ");
+        drop(iter);
+        let _ = schema.close();
+    }
+
+    #[test]
+    fn migrate_blocklist_dcerpc_event() {
+        let schema = TestSchema::new();
+        let old = BlocklistDceRpcFieldsV0_43 {
+            sensor: "s1".to_string(),
+            orig_addr: "10.0.0.1".parse().unwrap(),
+            orig_port: 12345,
+            resp_addr: "10.0.0.2".parse().unwrap(),
+            resp_port: 135,
+            proto: 6,
+            start_time: 1_000_000_000,
+            duration: 100,
+            orig_pkts: 10,
+            resp_pkts: 5,
+            orig_l2_bytes: 1000,
+            resp_l2_bytes: 500,
+            rtt: 10,
+            named_pipe: "\\pipe\\test".to_string(),
+            endpoint: "test_endpoint".to_string(),
+            operation: "op".to_string(),
+            confidence: 0.8,
+            category: None,
+        };
+        let serialized = bincode::serialize(&old).unwrap();
+        let event_time = Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap();
+        schema
+            .store
+            .events()
+            .put(&EventMessage {
+                time: event_time,
+                kind: EventKind::BlocklistDceRpc,
+                fields: serialized,
+            })
+            .unwrap();
+
+        migrate_event_country_codes(&schema.store, None).unwrap();
+
+        let events = schema.store.events();
+        let mut iter = events.raw_iter_forward();
+        let (_, value) = iter.next().expect("migrated event");
+        let migrated: BlocklistDceRpcFields = bincode::deserialize(&value).unwrap();
+        assert_eq!(migrated.orig_country_code, *b"ZZ");
+        assert_eq!(migrated.resp_country_code, *b"ZZ");
+        drop(iter);
+        let _ = schema.close();
+    }
+
+    #[test]
+    fn migrate_blocklist_ntlm_event() {
+        let schema = TestSchema::new();
+        let old = BlocklistNtlmFieldsV0_43 {
+            sensor: "s1".to_string(),
+            orig_addr: "10.0.0.1".parse().unwrap(),
+            orig_port: 12345,
+            resp_addr: "10.0.0.2".parse().unwrap(),
+            resp_port: 445,
+            proto: 6,
+            start_time: 1_000_000_000,
+            duration: 100,
+            orig_pkts: 10,
+            resp_pkts: 5,
+            orig_l2_bytes: 1000,
+            resp_l2_bytes: 500,
+            protocol: "NTLMSSP".to_string(),
+            username: "admin".to_string(),
+            hostname: "host1".to_string(),
+            domainname: "DOMAIN".to_string(),
+            success: "true".to_string(),
+            confidence: 0.8,
+            category: None,
+        };
+        let serialized = bincode::serialize(&old).unwrap();
+        let event_time = Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap();
+        schema
+            .store
+            .events()
+            .put(&EventMessage {
+                time: event_time,
+                kind: EventKind::BlocklistNtlm,
+                fields: serialized,
+            })
+            .unwrap();
+
+        migrate_event_country_codes(&schema.store, None).unwrap();
+
+        let events = schema.store.events();
+        let mut iter = events.raw_iter_forward();
+        let (_, value) = iter.next().expect("migrated event");
+        let migrated: BlocklistNtlmFields = bincode::deserialize(&value).unwrap();
+        assert_eq!(migrated.orig_country_code, *b"ZZ");
+        assert_eq!(migrated.resp_country_code, *b"ZZ");
+        drop(iter);
+        let _ = schema.close();
+    }
+
+    #[test]
+    fn migrate_blocklist_smb_event() {
+        let schema = TestSchema::new();
+        let old = BlocklistSmbFieldsV0_43 {
+            sensor: "s1".to_string(),
+            orig_addr: "10.0.0.1".parse().unwrap(),
+            orig_port: 12345,
+            resp_addr: "10.0.0.2".parse().unwrap(),
+            resp_port: 445,
+            proto: 6,
+            start_time: 1_000_000_000,
+            duration: 100,
+            orig_pkts: 10,
+            resp_pkts: 5,
+            orig_l2_bytes: 1000,
+            resp_l2_bytes: 500,
+            command: 1,
+            path: "\\\\share".to_string(),
+            service: "IPC$".to_string(),
+            file_name: "test.txt".to_string(),
+            file_size: 1024,
+            resource_type: 1,
+            fid: 1,
+            create_time: 0,
+            access_time: 0,
+            write_time: 0,
+            change_time: 0,
+            confidence: 0.8,
+            category: None,
+        };
+        let serialized = bincode::serialize(&old).unwrap();
+        let event_time = Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap();
+        schema
+            .store
+            .events()
+            .put(&EventMessage {
+                time: event_time,
+                kind: EventKind::BlocklistSmb,
+                fields: serialized,
+            })
+            .unwrap();
+
+        migrate_event_country_codes(&schema.store, None).unwrap();
+
+        let events = schema.store.events();
+        let mut iter = events.raw_iter_forward();
+        let (_, value) = iter.next().expect("migrated event");
+        let migrated: BlocklistSmbFields = bincode::deserialize(&value).unwrap();
+        assert_eq!(migrated.orig_country_code, *b"ZZ");
+        assert_eq!(migrated.resp_country_code, *b"ZZ");
+        drop(iter);
+        let _ = schema.close();
+    }
+
+    #[test]
+    fn migrate_blocklist_mqtt_event() {
+        let schema = TestSchema::new();
+        let old = BlocklistMqttFieldsV0_43 {
+            sensor: "s1".to_string(),
+            orig_addr: "10.0.0.1".parse().unwrap(),
+            orig_port: 12345,
+            resp_addr: "10.0.0.2".parse().unwrap(),
+            resp_port: 1883,
+            proto: 6,
+            start_time: 1_000_000_000,
+            duration: 100,
+            orig_pkts: 10,
+            resp_pkts: 5,
+            orig_l2_bytes: 1000,
+            resp_l2_bytes: 500,
+            protocol: "MQTT".to_string(),
+            version: 5,
+            client_id: "client1".to_string(),
+            connack_reason: 0,
+            subscribe: vec!["topic/#".to_string()],
+            suback_reason: vec![0],
+            confidence: 0.8,
+            category: None,
+        };
+        let serialized = bincode::serialize(&old).unwrap();
+        let event_time = Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap();
+        schema
+            .store
+            .events()
+            .put(&EventMessage {
+                time: event_time,
+                kind: EventKind::BlocklistMqtt,
+                fields: serialized,
+            })
+            .unwrap();
+
+        migrate_event_country_codes(&schema.store, None).unwrap();
+
+        let events = schema.store.events();
+        let mut iter = events.raw_iter_forward();
+        let (_, value) = iter.next().expect("migrated event");
+        let migrated: BlocklistMqttFields = bincode::deserialize(&value).unwrap();
+        assert_eq!(migrated.orig_country_code, *b"ZZ");
+        assert_eq!(migrated.resp_country_code, *b"ZZ");
+        drop(iter);
+        let _ = schema.close();
+    }
+
+    #[test]
+    fn migrate_blocklist_bootp_event() {
+        let schema = TestSchema::new();
+        let old = BlocklistBootpFieldsV0_43 {
+            sensor: "s1".to_string(),
+            orig_addr: "10.0.0.1".parse().unwrap(),
+            orig_port: 68,
+            resp_addr: "10.0.0.2".parse().unwrap(),
+            resp_port: 67,
+            proto: 17,
+            start_time: 1_000_000_000,
+            duration: 100,
+            orig_pkts: 10,
+            resp_pkts: 5,
+            orig_l2_bytes: 1000,
+            resp_l2_bytes: 500,
+            op: 1,
+            htype: 1,
+            hops: 0,
+            xid: 12345,
+            ciaddr: "0.0.0.0".parse().unwrap(),
+            yiaddr: "10.0.0.10".parse().unwrap(),
+            siaddr: "10.0.0.1".parse().unwrap(),
+            giaddr: "0.0.0.0".parse().unwrap(),
+            chaddr: vec![0x00, 0x11, 0x22, 0x33, 0x44, 0x55],
+            sname: String::new(),
+            file: String::new(),
+            confidence: 0.8,
+            category: None,
+        };
+        let serialized = bincode::serialize(&old).unwrap();
+        let event_time = Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap();
+        schema
+            .store
+            .events()
+            .put(&EventMessage {
+                time: event_time,
+                kind: EventKind::BlocklistBootp,
+                fields: serialized,
+            })
+            .unwrap();
+
+        migrate_event_country_codes(&schema.store, None).unwrap();
+
+        let events = schema.store.events();
+        let mut iter = events.raw_iter_forward();
+        let (_, value) = iter.next().expect("migrated event");
+        let migrated: BlocklistBootpFields = bincode::deserialize(&value).unwrap();
+        assert_eq!(migrated.orig_country_code, *b"ZZ");
+        assert_eq!(migrated.resp_country_code, *b"ZZ");
+        drop(iter);
+        let _ = schema.close();
+    }
+
+    #[test]
+    fn migrate_blocklist_radius_event() {
+        let schema = TestSchema::new();
+        let old = BlocklistRadiusFieldsV0_43 {
+            sensor: "s1".to_string(),
+            orig_addr: "10.0.0.1".parse().unwrap(),
+            orig_port: 12345,
+            resp_addr: "10.0.0.2".parse().unwrap(),
+            resp_port: 1812,
+            proto: 17,
+            start_time: 1_000_000_000,
+            duration: 100,
+            orig_pkts: 10,
+            resp_pkts: 5,
+            orig_l2_bytes: 1000,
+            resp_l2_bytes: 500,
+            id: 1,
+            code: 1,
+            resp_code: 2,
+            auth: "auth".to_string(),
+            resp_auth: "resp_auth".to_string(),
+            user_name: b"user".to_vec(),
+            user_passwd: b"pass".to_vec(),
+            chap_passwd: vec![],
+            nas_ip: "10.0.0.3".parse().unwrap(),
+            nas_port: 0,
+            state: vec![],
+            nas_id: vec![],
+            nas_port_type: 0,
+            message: String::new(),
+            confidence: 0.8,
+            category: None,
+        };
+        let serialized = bincode::serialize(&old).unwrap();
+        let event_time = Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap();
+        schema
+            .store
+            .events()
+            .put(&EventMessage {
+                time: event_time,
+                kind: EventKind::BlocklistRadius,
+                fields: serialized,
+            })
+            .unwrap();
+
+        migrate_event_country_codes(&schema.store, None).unwrap();
+
+        let events = schema.store.events();
+        let mut iter = events.raw_iter_forward();
+        let (_, value) = iter.next().expect("migrated event");
+        let migrated: BlocklistRadiusFields = bincode::deserialize(&value).unwrap();
+        assert_eq!(migrated.orig_country_code, *b"ZZ");
+        assert_eq!(migrated.resp_country_code, *b"ZZ");
+        drop(iter);
+        let _ = schema.close();
+    }
+
+    #[test]
+    fn migrate_blocklist_malformed_dns_event() {
+        let schema = TestSchema::new();
+        let old = BlocklistMalformedDnsFieldsV0_43 {
+            sensor: "s1".to_string(),
+            orig_addr: "10.0.0.1".parse().unwrap(),
+            orig_port: 12345,
+            resp_addr: "10.0.0.2".parse().unwrap(),
+            resp_port: 53,
+            proto: 17,
+            start_time: 1_000_000_000,
+            duration: 100,
+            orig_pkts: 10,
+            resp_pkts: 5,
+            orig_l2_bytes: 1000,
+            resp_l2_bytes: 500,
+            trans_id: 1,
+            flags: 0x8180,
+            question_count: 1,
+            answer_count: 1,
+            authority_count: 0,
+            additional_count: 0,
+            query_count: 1,
+            resp_count: 1,
+            query_bytes: 50,
+            resp_bytes: 100,
+            query_body: vec![vec![1, 2, 3]],
+            resp_body: vec![vec![4, 5, 6]],
+            confidence: 0.8,
+            category: None,
+        };
+        let serialized = bincode::serialize(&old).unwrap();
+        let event_time = Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap();
+        schema
+            .store
+            .events()
+            .put(&EventMessage {
+                time: event_time,
+                kind: EventKind::BlocklistMalformedDns,
+                fields: serialized,
+            })
+            .unwrap();
+
+        migrate_event_country_codes(&schema.store, None).unwrap();
+
+        let events = schema.store.events();
+        let mut iter = events.raw_iter_forward();
+        let (_, value) = iter.next().expect("migrated event");
+        let migrated: BlocklistMalformedDnsFields = bincode::deserialize(&value).unwrap();
+        assert_eq!(migrated.orig_country_code, *b"ZZ");
+        assert_eq!(migrated.resp_country_code, *b"ZZ");
+        drop(iter);
+        let _ = schema.close();
+    }
+
+    #[test]
+    fn migrate_network_threat_event() {
+        let schema = TestSchema::new();
+        let event_time = Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap();
+        let old = NetworkThreatV0_43 {
+            time: event_time,
+            sensor: "s1".to_string(),
+            orig_addr: "10.0.0.1".parse().unwrap(),
+            orig_port: 12345,
+            resp_addr: "10.0.0.2".parse().unwrap(),
+            resp_port: 80,
+            proto: 6,
+            service: "http".to_string(),
+            start_time: event_time,
+            duration: 100,
+            orig_pkts: 10,
+            resp_pkts: 5,
+            orig_l2_bytes: 1000,
+            resp_l2_bytes: 500,
+            content: "threat content".to_string(),
+            db_name: "db".to_string(),
+            rule_id: 1,
+            matched_to: "match".to_string(),
+            cluster_id: None,
+            attack_kind: "kind".to_string(),
+            confidence: 0.9,
+            category: None,
+            triage_scores: None,
+        };
+        let serialized = bincode::serialize(&old).unwrap();
+        schema
+            .store
+            .events()
+            .put(&EventMessage {
+                time: event_time,
+                kind: EventKind::NetworkThreat,
+                fields: serialized,
+            })
+            .unwrap();
+
+        migrate_event_country_codes(&schema.store, None).unwrap();
+
+        let events = schema.store.events();
+        let mut iter = events.raw_iter_forward();
+        let (_, value) = iter.next().expect("migrated event");
+        let migrated: NetworkThreat = bincode::deserialize(&value).unwrap();
+        assert_eq!(migrated.orig_country_code, *b"ZZ");
+        assert_eq!(migrated.resp_country_code, *b"ZZ");
+        drop(iter);
+        let _ = schema.close();
     }
 }
