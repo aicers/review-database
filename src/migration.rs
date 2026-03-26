@@ -1445,12 +1445,19 @@ mod tests {
     use chrono::{TimeZone, Utc};
     use semver::{Version, VersionReq};
 
-    use super::migration_structures::DnsEventFieldsV0_43;
+    use super::migration_structures::{
+        DnsEventFieldsV0_43, ExternalDdosFieldsV0_43, MultiHostPortScanFieldsV0_43,
+        PortScanFieldsV0_43, RdpBruteForceFieldsV0_43,
+        UnusualDestinationPatternFieldsV0_43,
+    };
     use super::{
         COMPATIBLE_VERSION_REQ, create_version_file, migrate_data_dir, migrate_event_country_codes,
         read_version_file,
     };
-    use crate::event::{DnsEventFields, EventKind, EventMessage};
+    use crate::event::{
+        DnsEventFields, EventKind, EventMessage, ExternalDdosFields, MultiHostPortScanFields,
+        PortScanFields, RdpBruteForceFields, UnusualDestinationPatternFields,
+    };
     use crate::tables::NETWORK_TAGS;
     use crate::test::{DbGuard, acquire_db_permit};
     use crate::{Indexable, Store};
@@ -2817,6 +2824,411 @@ mod tests {
         assert_eq!(migrated.resp_country_code, *b"ZZ");
         assert!(iter.next().is_none());
         drop(iter);
+
+        let _ = schema.close();
+    }
+
+    #[test]
+    fn migrate_event_country_codes_empty_db() {
+        let schema = TestSchema::new();
+        // No events inserted — should return Ok without error
+        migrate_event_country_codes(&schema.store, None).unwrap();
+        let _ = schema.close();
+    }
+
+    #[test]
+    fn migrate_port_scan_event() {
+        let schema = TestSchema::new();
+        let old = PortScanFieldsV0_43 {
+            sensor: "s1".to_string(),
+            orig_addr: "10.0.0.1".parse().unwrap(),
+            resp_addr: "10.0.0.2".parse().unwrap(),
+            resp_ports: vec![80, 443],
+            start_time: 1_000_000_000,
+            end_time: 2_000_000_000,
+            proto: 6,
+            confidence: 0.8,
+            category: None,
+        };
+        let serialized = bincode::serialize(&old).unwrap();
+        let event_time = Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap();
+        let message = EventMessage {
+            time: event_time,
+            kind: EventKind::PortScan,
+            fields: serialized,
+        };
+        schema.store.events().put(&message).unwrap();
+
+        migrate_event_country_codes(&schema.store, None).unwrap();
+
+        let events = schema.store.events();
+        let mut iter = events.raw_iter_forward();
+        let (_, value) = iter.next().expect("migrated event");
+        let migrated: PortScanFields = bincode::deserialize(&value).unwrap();
+        assert_eq!(migrated.orig_country_code, *b"ZZ");
+        assert_eq!(migrated.resp_country_code, *b"ZZ");
+        assert_eq!(migrated.resp_ports, vec![80, 443]);
+        drop(iter);
+        let _ = schema.close();
+    }
+
+    #[test]
+    fn migrate_multi_host_port_scan_event() {
+        let schema = TestSchema::new();
+        let old = MultiHostPortScanFieldsV0_43 {
+            sensor: "s1".to_string(),
+            orig_addr: "10.0.0.1".parse().unwrap(),
+            resp_port: 22,
+            resp_addrs: vec![
+                "10.0.0.2".parse().unwrap(),
+                "10.0.0.3".parse().unwrap(),
+            ],
+            proto: 6,
+            start_time: 1_000_000_000,
+            end_time: 2_000_000_000,
+            confidence: 0.7,
+            category: None,
+        };
+        let serialized = bincode::serialize(&old).unwrap();
+        let event_time = Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 2).unwrap();
+        let message = EventMessage {
+            time: event_time,
+            kind: EventKind::MultiHostPortScan,
+            fields: serialized,
+        };
+        schema.store.events().put(&message).unwrap();
+
+        migrate_event_country_codes(&schema.store, None).unwrap();
+
+        let events = schema.store.events();
+        let mut iter = events.raw_iter_forward();
+        let (_, value) = iter.next().expect("migrated event");
+        let migrated: MultiHostPortScanFields = bincode::deserialize(&value).unwrap();
+        assert_eq!(migrated.orig_country_code, *b"ZZ");
+        assert_eq!(migrated.resp_country_codes, vec![*b"ZZ", *b"ZZ"]);
+        drop(iter);
+        let _ = schema.close();
+    }
+
+    #[test]
+    fn migrate_external_ddos_event() {
+        let schema = TestSchema::new();
+        let old = ExternalDdosFieldsV0_43 {
+            sensor: "s1".to_string(),
+            orig_addrs: vec![
+                "10.0.0.1".parse().unwrap(),
+                "10.0.0.2".parse().unwrap(),
+            ],
+            resp_addr: "10.0.0.3".parse().unwrap(),
+            proto: 17,
+            start_time: 1_000_000_000,
+            end_time: 2_000_000_000,
+            confidence: 0.9,
+            category: None,
+        };
+        let serialized = bincode::serialize(&old).unwrap();
+        let event_time = Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 3).unwrap();
+        let message = EventMessage {
+            time: event_time,
+            kind: EventKind::ExternalDdos,
+            fields: serialized,
+        };
+        schema.store.events().put(&message).unwrap();
+
+        migrate_event_country_codes(&schema.store, None).unwrap();
+
+        let events = schema.store.events();
+        let mut iter = events.raw_iter_forward();
+        let (_, value) = iter.next().expect("migrated event");
+        let migrated: ExternalDdosFields = bincode::deserialize(&value).unwrap();
+        assert_eq!(migrated.orig_country_codes, vec![*b"ZZ", *b"ZZ"]);
+        assert_eq!(migrated.resp_country_code, *b"ZZ");
+        drop(iter);
+        let _ = schema.close();
+    }
+
+    #[test]
+    fn migrate_rdp_brute_force_event() {
+        let schema = TestSchema::new();
+        let old = RdpBruteForceFieldsV0_43 {
+            sensor: "s1".to_string(),
+            orig_addr: "10.0.0.1".parse().unwrap(),
+            resp_addrs: vec!["10.0.0.2".parse().unwrap()],
+            start_time: 1_000_000_000,
+            end_time: 2_000_000_000,
+            proto: 6,
+            confidence: 0.6,
+            category: None,
+        };
+        let serialized = bincode::serialize(&old).unwrap();
+        let event_time = Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 4).unwrap();
+        let message = EventMessage {
+            time: event_time,
+            kind: EventKind::RdpBruteForce,
+            fields: serialized,
+        };
+        schema.store.events().put(&message).unwrap();
+
+        migrate_event_country_codes(&schema.store, None).unwrap();
+
+        let events = schema.store.events();
+        let mut iter = events.raw_iter_forward();
+        let (_, value) = iter.next().expect("migrated event");
+        let migrated: RdpBruteForceFields = bincode::deserialize(&value).unwrap();
+        assert_eq!(migrated.orig_country_code, *b"ZZ");
+        assert_eq!(migrated.resp_country_codes, vec![*b"ZZ"]);
+        drop(iter);
+        let _ = schema.close();
+    }
+
+    #[test]
+    fn migrate_unusual_destination_pattern_event() {
+        let schema = TestSchema::new();
+        let old = UnusualDestinationPatternFieldsV0_43 {
+            sensor: "s1".to_string(),
+            start_time: 1_000_000_000,
+            end_time: 2_000_000_000,
+            destination_ips: vec![
+                "10.0.0.1".parse().unwrap(),
+                "10.0.0.2".parse().unwrap(),
+                "10.0.0.3".parse().unwrap(),
+            ],
+            count: 3,
+            expected_mean: 1.0,
+            std_deviation: 0.5,
+            z_score: 4.0,
+            confidence: 0.95,
+            category: None,
+        };
+        let serialized = bincode::serialize(&old).unwrap();
+        let event_time = Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 5).unwrap();
+        let message = EventMessage {
+            time: event_time,
+            kind: EventKind::UnusualDestinationPattern,
+            fields: serialized,
+        };
+        schema.store.events().put(&message).unwrap();
+
+        migrate_event_country_codes(&schema.store, None).unwrap();
+
+        let events = schema.store.events();
+        let mut iter = events.raw_iter_forward();
+        let (_, value) = iter.next().expect("migrated event");
+        let migrated: UnusualDestinationPatternFields = bincode::deserialize(&value).unwrap();
+        assert_eq!(migrated.resp_country_codes, vec![*b"ZZ", *b"ZZ", *b"ZZ"]);
+        assert_eq!(migrated.destination_ips.len(), 3);
+        drop(iter);
+        let _ = schema.close();
+    }
+
+    #[test]
+    fn migrate_already_migrated_event_is_idempotent() {
+        let schema = TestSchema::new();
+        // Insert an event in V0_43 format
+        let old_fields = DnsEventFieldsV0_43 {
+            sensor: "collector1".to_string(),
+            orig_addr: std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
+            orig_port: 10000,
+            resp_addr: std::net::IpAddr::V4(std::net::Ipv4Addr::new(127, 0, 0, 2)),
+            resp_port: 53,
+            proto: 17,
+            start_time: Utc
+                .with_ymd_and_hms(1970, 1, 1, 0, 1, 1)
+                .unwrap()
+                .timestamp_nanos_opt()
+                .unwrap(),
+            duration: 0,
+            orig_pkts: 0,
+            resp_pkts: 0,
+            orig_l2_bytes: 0,
+            resp_l2_bytes: 0,
+            query: "bar.com".to_string(),
+            answer: vec!["1.2.3.4".to_string()],
+            trans_id: 456,
+            rtt: 2,
+            qclass: 0,
+            qtype: 0,
+            rcode: 0,
+            aa_flag: false,
+            tc_flag: false,
+            rd_flag: false,
+            ra_flag: true,
+            ttl: vec![60],
+            confidence: 0.8,
+            category: None,
+        };
+        let event_time = Utc.with_ymd_and_hms(1970, 1, 1, 0, 2, 1).unwrap();
+        let serialized = bincode::serialize(&old_fields).unwrap();
+        let message = EventMessage {
+            time: event_time,
+            kind: EventKind::DnsCovertChannel,
+            fields: serialized,
+        };
+        schema.store.events().put(&message).unwrap();
+
+        // First migration
+        migrate_event_country_codes(&schema.store, None).unwrap();
+
+        // Second migration — should be idempotent (already-migrated path)
+        migrate_event_country_codes(&schema.store, None).unwrap();
+
+        let events = schema.store.events();
+        let mut iter = events.raw_iter_forward();
+        let (_, value) = iter.next().expect("migrated event");
+        let migrated: DnsEventFields = bincode::deserialize(&value).unwrap();
+        assert_eq!(migrated.orig_country_code, *b"ZZ");
+        assert_eq!(migrated.resp_country_code, *b"ZZ");
+        assert_eq!(migrated.query, "bar.com");
+        drop(iter);
+        let _ = schema.close();
+    }
+
+    #[test]
+    fn migrate_windows_threat_is_skipped() {
+        use crate::event::WindowsThreat;
+
+        let schema = TestSchema::new();
+        let event_time = Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 6).unwrap();
+        let wt = WindowsThreat {
+            time: event_time,
+            sensor: "s1".to_string(),
+            service: "svc".to_string(),
+            agent_name: "agent".to_string(),
+            agent_id: "id".to_string(),
+            process_guid: "guid".to_string(),
+            process_id: 1234,
+            image: "img".to_string(),
+            user: "user".to_string(),
+            content: "content".to_string(),
+            db_name: "db".to_string(),
+            rule_id: 1,
+            matched_to: "match".to_string(),
+            cluster_id: None,
+            attack_kind: "kind".to_string(),
+            confidence: 0.5,
+            category: None,
+            triage_scores: None,
+        };
+        let serialized = bincode::serialize(&wt).unwrap();
+        let message = EventMessage {
+            time: event_time,
+            kind: EventKind::WindowsThreat,
+            fields: serialized.clone(),
+        };
+        schema.store.events().put(&message).unwrap();
+
+        migrate_event_country_codes(&schema.store, None).unwrap();
+
+        // WindowsThreat should be skipped — data unchanged
+        let events = schema.store.events();
+        let mut iter = events.raw_iter_forward();
+        let (_, value) = iter.next().expect("event exists");
+        // Should still deserialize as the original type (unchanged)
+        let deserialized: WindowsThreat = bincode::deserialize(&value).unwrap();
+        assert_eq!(deserialized.sensor, "s1");
+        drop(iter);
+        let _ = schema.close();
+    }
+
+    #[test]
+    fn migrate_mixed_event_types() {
+        let schema = TestSchema::new();
+        let event_time = Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap();
+
+        // Insert a DnsCovertChannel event
+        let dns = DnsEventFieldsV0_43 {
+            sensor: "s1".to_string(),
+            orig_addr: "10.0.0.1".parse().unwrap(),
+            orig_port: 10000,
+            resp_addr: "10.0.0.2".parse().unwrap(),
+            resp_port: 53,
+            proto: 17,
+            start_time: event_time.timestamp_nanos_opt().unwrap(),
+            duration: 0,
+            orig_pkts: 0,
+            resp_pkts: 0,
+            orig_l2_bytes: 0,
+            resp_l2_bytes: 0,
+            query: "test.com".to_string(),
+            answer: vec![],
+            trans_id: 1,
+            rtt: 1,
+            qclass: 0,
+            qtype: 0,
+            rcode: 0,
+            aa_flag: false,
+            tc_flag: false,
+            rd_flag: false,
+            ra_flag: false,
+            ttl: vec![],
+            confidence: 0.5,
+            category: None,
+        };
+        schema
+            .store
+            .events()
+            .put(&EventMessage {
+                time: event_time,
+                kind: EventKind::DnsCovertChannel,
+                fields: bincode::serialize(&dns).unwrap(),
+            })
+            .unwrap();
+
+        // Insert a PortScan event
+        let ps = PortScanFieldsV0_43 {
+            sensor: "s1".to_string(),
+            orig_addr: "10.0.0.3".parse().unwrap(),
+            resp_addr: "10.0.0.4".parse().unwrap(),
+            resp_ports: vec![22],
+            start_time: 1_000_000_000,
+            end_time: 2_000_000_000,
+            proto: 6,
+            confidence: 0.9,
+            category: None,
+        };
+        let event_time2 = Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 2).unwrap();
+        schema
+            .store
+            .events()
+            .put(&EventMessage {
+                time: event_time2,
+                kind: EventKind::PortScan,
+                fields: bincode::serialize(&ps).unwrap(),
+            })
+            .unwrap();
+
+        // Insert an ExternalDdos event
+        let ddos = ExternalDdosFieldsV0_43 {
+            sensor: "s1".to_string(),
+            orig_addrs: vec!["10.0.0.5".parse().unwrap()],
+            resp_addr: "10.0.0.6".parse().unwrap(),
+            proto: 17,
+            start_time: 1_000_000_000,
+            end_time: 2_000_000_000,
+            confidence: 0.85,
+            category: None,
+        };
+        let event_time3 = Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 3).unwrap();
+        schema
+            .store
+            .events()
+            .put(&EventMessage {
+                time: event_time3,
+                kind: EventKind::ExternalDdos,
+                fields: bincode::serialize(&ddos).unwrap(),
+            })
+            .unwrap();
+
+        // Migrate all at once
+        migrate_event_country_codes(&schema.store, None).unwrap();
+
+        // Verify all migrated
+        let events = schema.store.events();
+        let mut count = 0;
+        for (_, _) in events.raw_iter_forward() {
+            count += 1;
+        }
+        assert_eq!(count, 3);
 
         let _ = schema.close();
     }
