@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 
 use super::{
     EventCategory, LearningMethod, ThreatLevel, TriageScore,
-    common::{AttrValue, DefaultThreatLevel, Match},
+    common::{AttrValue, Match},
 };
 use crate::event::common::{to_hardware_address, triage_scores_to_string, vector_to_string};
 
@@ -269,8 +269,9 @@ impl BlocklistDhcp {
     }
 }
 
-impl DefaultThreatLevel for BlocklistDhcp {
-    fn default_threat_level() -> ThreatLevel {
+impl BlocklistDhcp {
+    #[must_use]
+    pub fn threat_level() -> ThreatLevel {
         ThreatLevel::Medium
     }
 }
@@ -301,7 +302,7 @@ impl Match for BlocklistDhcp {
     }
 
     fn level(&self) -> ThreatLevel {
-        ThreatLevel::Medium
+        Self::threat_level()
     }
 
     fn kind(&self) -> &'static str {

@@ -5,10 +5,7 @@ use attrievent::attribute::{FtpAttr, RawEventAttrKind};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use super::{
-    EventCategory, LearningMethod, ThreatLevel, TriageScore,
-    common::{DefaultThreatLevel, Match},
-};
+use super::{EventCategory, LearningMethod, ThreatLevel, TriageScore, common::Match};
 use crate::event::common::{AttrValue, triage_scores_to_string};
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -258,8 +255,9 @@ impl FtpBruteForce {
     }
 }
 
-impl DefaultThreatLevel for FtpBruteForce {
-    fn default_threat_level() -> ThreatLevel {
+impl FtpBruteForce {
+    #[must_use]
+    pub fn threat_level() -> ThreatLevel {
         ThreatLevel::Medium
     }
 }
@@ -290,7 +288,7 @@ impl Match for FtpBruteForce {
     }
 
     fn level(&self) -> ThreatLevel {
-        ThreatLevel::Medium
+        Self::threat_level()
     }
 
     fn kind(&self) -> &'static str {
@@ -469,8 +467,9 @@ impl FtpPlainText {
     }
 }
 
-impl DefaultThreatLevel for FtpPlainText {
-    fn default_threat_level() -> ThreatLevel {
+impl FtpPlainText {
+    #[must_use]
+    pub fn threat_level() -> ThreatLevel {
         ThreatLevel::Medium
     }
 }
@@ -501,7 +500,7 @@ impl Match for FtpPlainText {
     }
 
     fn level(&self) -> ThreatLevel {
-        ThreatLevel::Medium
+        Self::threat_level()
     }
 
     fn kind(&self) -> &'static str {
@@ -606,8 +605,9 @@ impl BlocklistFtp {
     }
 }
 
-impl DefaultThreatLevel for BlocklistFtp {
-    fn default_threat_level() -> ThreatLevel {
+impl BlocklistFtp {
+    #[must_use]
+    pub fn threat_level() -> ThreatLevel {
         ThreatLevel::Medium
     }
 }
@@ -638,7 +638,7 @@ impl Match for BlocklistFtp {
     }
 
     fn level(&self) -> ThreatLevel {
-        ThreatLevel::Medium
+        Self::threat_level()
     }
 
     fn kind(&self) -> &'static str {

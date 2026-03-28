@@ -5,10 +5,7 @@ use attrievent::attribute::{DnsAttr, RawEventAttrKind};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use super::{
-    EventCategory, LearningMethod, ThreatLevel, TriageScore,
-    common::{DefaultThreatLevel, Match},
-};
+use super::{EventCategory, LearningMethod, ThreatLevel, TriageScore, common::Match};
 use crate::{
     TriageExclusion,
     event::common::{AttrValue, triage_scores_to_string, vector_to_string},
@@ -224,8 +221,9 @@ impl DnsCovertChannel {
     }
 }
 
-impl DefaultThreatLevel for DnsCovertChannel {
-    fn default_threat_level() -> ThreatLevel {
+impl DnsCovertChannel {
+    #[must_use]
+    pub fn threat_level() -> ThreatLevel {
         ThreatLevel::Medium
     }
 }
@@ -256,7 +254,7 @@ impl Match for DnsCovertChannel {
     }
 
     fn level(&self) -> ThreatLevel {
-        ThreatLevel::Medium
+        Self::threat_level()
     }
 
     fn kind(&self) -> &'static str {
@@ -402,8 +400,9 @@ impl LockyRansomware {
     }
 }
 
-impl DefaultThreatLevel for LockyRansomware {
-    fn default_threat_level() -> ThreatLevel {
+impl LockyRansomware {
+    #[must_use]
+    pub fn threat_level() -> ThreatLevel {
         ThreatLevel::High
     }
 }
@@ -434,7 +433,7 @@ impl Match for LockyRansomware {
     }
 
     fn level(&self) -> ThreatLevel {
-        ThreatLevel::High
+        Self::threat_level()
     }
 
     fn kind(&self) -> &'static str {
@@ -656,8 +655,9 @@ impl CryptocurrencyMiningPool {
     }
 }
 
-impl DefaultThreatLevel for CryptocurrencyMiningPool {
-    fn default_threat_level() -> ThreatLevel {
+impl CryptocurrencyMiningPool {
+    #[must_use]
+    pub fn threat_level() -> ThreatLevel {
         ThreatLevel::Medium
     }
 }
@@ -688,7 +688,7 @@ impl Match for CryptocurrencyMiningPool {
     }
 
     fn level(&self) -> ThreatLevel {
-        ThreatLevel::Medium
+        Self::threat_level()
     }
 
     fn kind(&self) -> &'static str {
@@ -905,8 +905,9 @@ impl BlocklistDns {
     }
 }
 
-impl DefaultThreatLevel for BlocklistDns {
-    fn default_threat_level() -> ThreatLevel {
+impl BlocklistDns {
+    #[must_use]
+    pub fn threat_level() -> ThreatLevel {
         ThreatLevel::Medium
     }
 }
@@ -937,7 +938,7 @@ impl Match for BlocklistDns {
     }
 
     fn level(&self) -> ThreatLevel {
-        ThreatLevel::Medium
+        Self::threat_level()
     }
 
     fn kind(&self) -> &'static str {

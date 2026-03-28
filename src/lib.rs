@@ -35,7 +35,7 @@ pub use self::cluster::*;
 pub use self::collections::Indexable;
 pub(crate) use self::collections::{IndexedMap, IndexedMapUpdate, Map};
 pub use self::column_statistics::*;
-pub use self::event::{DefaultThreatLevel, Event, EventDb, EventKind, EventMessage, ThreatLevel};
+pub use self::event::{Event, EventDb, EventKind, EventMessage, ThreatLevel};
 pub use self::migration::migrate_data_dir;
 pub use self::model::{Digest, Model};
 pub use self::scores::Scores;

@@ -14,8 +14,6 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   This aligns with the `AccountPolicy` pattern where configuration is stored
   as separate key-value pairs.
 - Added `BackupConfigUpdate` struct for partial backup configuration updates.
-- Added `DefaultThreatLevel` trait providing a public API for
-  querying each detection event type's default threat level.
 - Re-exported `ThreatLevel` from `review-protocol` as
   `review_database::ThreatLevel`.
 

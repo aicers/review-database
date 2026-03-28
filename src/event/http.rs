@@ -5,10 +5,7 @@ use attrievent::attribute::{HttpAttr, RawEventAttrKind};
 use chrono::{DateTime, Utc, serde::ts_nanoseconds};
 use serde::{Deserialize, Serialize};
 
-use super::{
-    EventCategory, EventFilter, LearningMethod, ThreatLevel, TriageScore,
-    common::{DefaultThreatLevel, Match},
-};
+use super::{EventCategory, EventFilter, LearningMethod, ThreatLevel, TriageScore, common::Match};
 use crate::{
     TriageExclusion,
     event::common::{AttrValue, triage_scores_to_string},
@@ -245,8 +242,9 @@ impl RepeatedHttpSessions {
     }
 }
 
-impl DefaultThreatLevel for RepeatedHttpSessions {
-    fn default_threat_level() -> ThreatLevel {
+impl RepeatedHttpSessions {
+    #[must_use]
+    pub fn threat_level() -> ThreatLevel {
         ThreatLevel::Medium
     }
 }
@@ -277,7 +275,7 @@ impl Match for RepeatedHttpSessions {
     }
 
     fn level(&self) -> ThreatLevel {
-        ThreatLevel::Medium
+        Self::threat_level()
     }
 
     fn kind(&self) -> &'static str {
@@ -571,8 +569,9 @@ impl HttpThreat {
     }
 }
 
-impl DefaultThreatLevel for HttpThreat {
-    fn default_threat_level() -> ThreatLevel {
+impl HttpThreat {
+    #[must_use]
+    pub fn threat_level() -> ThreatLevel {
         ThreatLevel::Low
     }
 }
@@ -603,7 +602,7 @@ impl Match for HttpThreat {
     }
 
     fn level(&self) -> ThreatLevel {
-        ThreatLevel::Low
+        Self::threat_level()
     }
 
     fn kind(&self) -> &'static str {
@@ -882,8 +881,9 @@ impl DomainGenerationAlgorithm {
     }
 }
 
-impl DefaultThreatLevel for DomainGenerationAlgorithm {
-    fn default_threat_level() -> ThreatLevel {
+impl DomainGenerationAlgorithm {
+    #[must_use]
+    pub fn threat_level() -> ThreatLevel {
         ThreatLevel::Medium
     }
 }
@@ -914,7 +914,7 @@ impl Match for DomainGenerationAlgorithm {
     }
 
     fn level(&self) -> ThreatLevel {
-        ThreatLevel::Medium
+        Self::threat_level()
     }
 
     fn kind(&self) -> &'static str {
@@ -1078,8 +1078,9 @@ impl NonBrowser {
     }
 }
 
-impl DefaultThreatLevel for NonBrowser {
-    fn default_threat_level() -> ThreatLevel {
+impl NonBrowser {
+    #[must_use]
+    pub fn threat_level() -> ThreatLevel {
         ThreatLevel::Medium
     }
 }
@@ -1110,7 +1111,7 @@ impl Match for NonBrowser {
     }
 
     fn level(&self) -> ThreatLevel {
-        ThreatLevel::Medium
+        Self::threat_level()
     }
 
     fn kind(&self) -> &'static str {
@@ -1278,8 +1279,9 @@ impl BlocklistHttp {
     }
 }
 
-impl DefaultThreatLevel for BlocklistHttp {
-    fn default_threat_level() -> ThreatLevel {
+impl BlocklistHttp {
+    #[must_use]
+    pub fn threat_level() -> ThreatLevel {
         ThreatLevel::Medium
     }
 }
@@ -1310,7 +1312,7 @@ impl Match for BlocklistHttp {
     }
 
     fn level(&self) -> ThreatLevel {
-        ThreatLevel::Medium
+        Self::threat_level()
     }
 
     fn kind(&self) -> &'static str {

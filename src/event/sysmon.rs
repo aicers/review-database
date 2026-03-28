@@ -8,10 +8,7 @@ use attrievent::attribute::{RawEventAttrKind, WindowAttr};
 use chrono::{DateTime, Utc, serde::ts_nanoseconds};
 use serde::{Deserialize, Serialize};
 
-use super::{
-    EventCategory, LearningMethod, ThreatLevel, TriageScore,
-    common::{DefaultThreatLevel, Match},
-};
+use super::{EventCategory, LearningMethod, ThreatLevel, TriageScore, common::Match};
 use crate::event::common::{AttrValue, triage_scores_to_string};
 
 // TODO: We plan to implement the triage feature only after we have cleaned up the range of
@@ -113,8 +110,9 @@ impl fmt::Display for WindowsThreat {
     }
 }
 
-impl DefaultThreatLevel for WindowsThreat {
-    fn default_threat_level() -> ThreatLevel {
+impl WindowsThreat {
+    #[must_use]
+    pub fn threat_level() -> ThreatLevel {
         ThreatLevel::Medium
     }
 }
@@ -150,7 +148,7 @@ impl Match for WindowsThreat {
     }
 
     fn level(&self) -> ThreatLevel {
-        ThreatLevel::Medium
+        Self::threat_level()
     }
 
     fn kind(&self) -> &'static str {

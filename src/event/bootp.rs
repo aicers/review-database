@@ -4,10 +4,7 @@ use attrievent::attribute::{BootpAttr, RawEventAttrKind};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use super::{
-    EventCategory, LearningMethod, ThreatLevel, TriageScore,
-    common::{DefaultThreatLevel, Match},
-};
+use super::{EventCategory, LearningMethod, ThreatLevel, TriageScore, common::Match};
 use crate::event::common::{AttrValue, to_hardware_address, triage_scores_to_string};
 
 macro_rules! find_bootp_attr_by_kind {
@@ -210,8 +207,9 @@ impl BlocklistBootp {
     }
 }
 
-impl DefaultThreatLevel for BlocklistBootp {
-    fn default_threat_level() -> ThreatLevel {
+impl BlocklistBootp {
+    #[must_use]
+    pub fn threat_level() -> ThreatLevel {
         ThreatLevel::Medium
     }
 }
@@ -242,7 +240,7 @@ impl Match for BlocklistBootp {
     }
 
     fn level(&self) -> ThreatLevel {
-        ThreatLevel::Medium
+        Self::threat_level()
     }
 
     fn kind(&self) -> &'static str {

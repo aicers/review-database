@@ -4,10 +4,7 @@ use attrievent::attribute::{ConnAttr, HttpAttr, RawEventAttrKind};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use super::{
-    EventCategory, LearningMethod, ThreatLevel, TriageScore,
-    common::{DefaultThreatLevel, Match},
-};
+use super::{EventCategory, LearningMethod, ThreatLevel, TriageScore, common::Match};
 use crate::TriageExclusion;
 use crate::event::{
     common::{AttrValue, triage_scores_to_string},
@@ -141,8 +138,9 @@ impl TorConnection {
     }
 }
 
-impl DefaultThreatLevel for TorConnection {
-    fn default_threat_level() -> ThreatLevel {
+impl TorConnection {
+    #[must_use]
+    pub fn threat_level() -> ThreatLevel {
         ThreatLevel::Medium
     }
 }
@@ -173,7 +171,7 @@ impl Match for TorConnection {
     }
 
     fn level(&self) -> ThreatLevel {
-        ThreatLevel::Medium
+        Self::threat_level()
     }
 
     fn kind(&self) -> &'static str {
@@ -288,8 +286,9 @@ impl TorConnectionConn {
     }
 }
 
-impl DefaultThreatLevel for TorConnectionConn {
-    fn default_threat_level() -> ThreatLevel {
+impl TorConnectionConn {
+    #[must_use]
+    pub fn threat_level() -> ThreatLevel {
         ThreatLevel::Medium
     }
 }
@@ -320,7 +319,7 @@ impl Match for TorConnectionConn {
     }
 
     fn level(&self) -> ThreatLevel {
-        ThreatLevel::Medium
+        Self::threat_level()
     }
 
     fn kind(&self) -> &'static str {

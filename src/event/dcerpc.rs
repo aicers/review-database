@@ -4,10 +4,7 @@ use attrievent::attribute::RawEventAttrKind;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use super::{
-    EventCategory, LearningMethod, ThreatLevel, TriageScore,
-    common::{DefaultThreatLevel, Match},
-};
+use super::{EventCategory, LearningMethod, ThreatLevel, TriageScore, common::Match};
 use crate::event::common::{AttrValue, triage_scores_to_string};
 
 pub type BlocklistDceRpcFields = BlocklistDceRpcFieldsV0_42;
@@ -142,8 +139,9 @@ impl BlocklistDceRpc {
     }
 }
 
-impl DefaultThreatLevel for BlocklistDceRpc {
-    fn default_threat_level() -> ThreatLevel {
+impl BlocklistDceRpc {
+    #[must_use]
+    pub fn threat_level() -> ThreatLevel {
         ThreatLevel::Medium
     }
 }
@@ -174,7 +172,7 @@ impl Match for BlocklistDceRpc {
     }
 
     fn level(&self) -> ThreatLevel {
-        ThreatLevel::Medium
+        Self::threat_level()
     }
 
     fn kind(&self) -> &'static str {

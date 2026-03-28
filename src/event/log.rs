@@ -8,10 +8,7 @@ use attrievent::attribute::{LogAttr, RawEventAttrKind};
 use chrono::{DateTime, Utc, serde::ts_nanoseconds};
 use serde::{Deserialize, Serialize};
 
-use super::{
-    EventCategory, LearningMethod, ThreatLevel, TriageScore,
-    common::{DefaultThreatLevel, Match},
-};
+use super::{EventCategory, LearningMethod, ThreatLevel, TriageScore, common::Match};
 use crate::event::common::{AttrValue, triage_scores_to_string};
 
 #[derive(Serialize, Deserialize)]
@@ -72,8 +69,9 @@ impl fmt::Display for ExtraThreat {
     }
 }
 
-impl DefaultThreatLevel for ExtraThreat {
-    fn default_threat_level() -> ThreatLevel {
+impl ExtraThreat {
+    #[must_use]
+    pub fn threat_level() -> ThreatLevel {
         ThreatLevel::Medium
     }
 }
@@ -104,7 +102,7 @@ impl Match for ExtraThreat {
     }
 
     fn level(&self) -> ThreatLevel {
-        ThreatLevel::Medium
+        Self::threat_level()
     }
 
     fn kind(&self) -> &'static str {

@@ -44,7 +44,6 @@ use rocksdb::IteratorMode;
 use serde::{Deserialize, Serialize};
 use tracing::warn;
 
-pub use self::common::DefaultThreatLevel;
 use self::common::Match;
 pub use self::{
     bootp::{BlocklistBootp, BlocklistBootpFields},

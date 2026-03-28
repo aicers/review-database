@@ -21,7 +21,7 @@ num-derive = "0.4"
 num-traits = "0.2"
 rand = "0.9"
 regex = "1"
-review-protocol = { git = "https://github.com/petabi/review-protocol.git", rev = "9221e5ab", version = "0.15.0" }
+review-protocol = { git = "https://github.com/petabi/review-protocol.git", rev = "9221e5ab" }
 ring = { version = "0.17", features = ["std"] }
 rocksdb = "0.24"
 semver = "1"

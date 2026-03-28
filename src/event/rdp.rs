@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use super::{
     EventCategory, LearningMethod, ThreatLevel, TriageScore,
-    common::{DefaultThreatLevel, Match, vector_to_string},
+    common::{Match, vector_to_string},
 };
 use crate::event::common::{AttrValue, triage_scores_to_string};
 
@@ -119,8 +119,9 @@ impl RdpBruteForce {
     }
 }
 
-impl DefaultThreatLevel for RdpBruteForce {
-    fn default_threat_level() -> ThreatLevel {
+impl RdpBruteForce {
+    #[must_use]
+    pub fn threat_level() -> ThreatLevel {
         ThreatLevel::Medium
     }
 }
@@ -151,7 +152,7 @@ impl Match for RdpBruteForce {
     }
 
     fn level(&self) -> ThreatLevel {
-        ThreatLevel::Medium
+        Self::threat_level()
     }
 
     fn kind(&self) -> &'static str {
@@ -302,8 +303,9 @@ impl BlocklistRdp {
     }
 }
 
-impl DefaultThreatLevel for BlocklistRdp {
-    fn default_threat_level() -> ThreatLevel {
+impl BlocklistRdp {
+    #[must_use]
+    pub fn threat_level() -> ThreatLevel {
         ThreatLevel::Medium
     }
 }
@@ -334,7 +336,7 @@ impl Match for BlocklistRdp {
     }
 
     fn level(&self) -> ThreatLevel {
-        ThreatLevel::Medium
+        Self::threat_level()
     }
 
     fn kind(&self) -> &'static str {

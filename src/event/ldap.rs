@@ -5,10 +5,7 @@ use attrievent::attribute::{LdapAttr, RawEventAttrKind};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use super::{
-    EventCategory, LearningMethod, ThreatLevel, TriageScore,
-    common::{DefaultThreatLevel, Match},
-};
+use super::{EventCategory, LearningMethod, ThreatLevel, TriageScore, common::Match};
 use crate::event::common::{AttrValue, triage_scores_to_string};
 
 macro_rules! find_ldap_attr_by_kind {
@@ -156,8 +153,9 @@ impl LdapBruteForce {
     }
 }
 
-impl DefaultThreatLevel for LdapBruteForce {
-    fn default_threat_level() -> ThreatLevel {
+impl LdapBruteForce {
+    #[must_use]
+    pub fn threat_level() -> ThreatLevel {
         ThreatLevel::Medium
     }
 }
@@ -188,7 +186,7 @@ impl Match for LdapBruteForce {
     }
 
     fn level(&self) -> ThreatLevel {
-        ThreatLevel::Medium
+        Self::threat_level()
     }
 
     fn kind(&self) -> &'static str {
@@ -370,8 +368,9 @@ impl LdapPlainText {
     }
 }
 
-impl DefaultThreatLevel for LdapPlainText {
-    fn default_threat_level() -> ThreatLevel {
+impl LdapPlainText {
+    #[must_use]
+    pub fn threat_level() -> ThreatLevel {
         ThreatLevel::Medium
     }
 }
@@ -402,7 +401,7 @@ impl Match for LdapPlainText {
     }
 
     fn level(&self) -> ThreatLevel {
-        ThreatLevel::Medium
+        Self::threat_level()
     }
 
     fn kind(&self) -> &'static str {
@@ -512,8 +511,9 @@ impl BlocklistLdap {
     }
 }
 
-impl DefaultThreatLevel for BlocklistLdap {
-    fn default_threat_level() -> ThreatLevel {
+impl BlocklistLdap {
+    #[must_use]
+    pub fn threat_level() -> ThreatLevel {
         ThreatLevel::Medium
     }
 }
@@ -544,7 +544,7 @@ impl Match for BlocklistLdap {
     }
 
     fn level(&self) -> ThreatLevel {
-        ThreatLevel::Medium
+        Self::threat_level()
     }
 
     fn kind(&self) -> &'static str {
