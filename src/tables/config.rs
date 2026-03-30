@@ -16,6 +16,9 @@ pub const KEY_BACKUP_DURATION: &str = "backup_duration";
 pub const KEY_BACKUP_TIME: &str = "backup_time";
 pub const KEY_NUM_OF_BACKUPS_TO_KEEP: &str = "num_of_backups_to_keep";
 
+// Retention config keys
+pub const KEY_RETENTION_PERIOD: &str = "stats_retention_period_in_days";
+
 /// Functions for the `configs` map.
 impl<'d> Table<'d, String> {
     /// Opens the  `configs` map in the database.
@@ -117,10 +120,14 @@ mod tests {
 
     use crate::tables::config::{
         KEY_BACKUP_DURATION, KEY_BACKUP_TIME, KEY_EXPIRY_PERIOD, KEY_LOCKOUT_DURATION,
-        KEY_LOCKOUT_THRESHOLD, KEY_NUM_OF_BACKUPS_TO_KEEP, KEY_SUSPENSION_THRESHOLD,
+        KEY_LOCKOUT_THRESHOLD, KEY_NUM_OF_BACKUPS_TO_KEEP, KEY_RETENTION_PERIOD,
+        KEY_SUSPENSION_THRESHOLD,
     };
     use crate::test::{DbGuard, acquire_db_permit};
-    use crate::{AccountPolicy, AccountPolicyUpdate, BackupConfig, BackupConfigUpdate, Store};
+    use crate::{
+        AccountPolicy, AccountPolicyUpdate, BackupConfig, BackupConfigUpdate, RetentionConfig,
+        RetentionConfigUpdate, Store,
+    };
 
     fn setup_store() -> (DbGuard<'static>, Arc<Store>) {
         let permit = acquire_db_permit();
@@ -827,5 +834,142 @@ mod tests {
             err.contains(KEY_NUM_OF_BACKUPS_TO_KEEP),
             "error should mention missing num_of_backups_to_keep: {err}"
         );
+    }
+
+    #[test]
+    fn retention_config_read_returns_none_when_missing() {
+        let (_permit, store) = setup_store();
+        let config = store.retention_config().unwrap();
+        assert!(config.is_none());
+    }
+
+    #[test]
+    fn init_retention_config_success() {
+        let (_permit, store) = setup_store();
+
+        let config = RetentionConfig::new(90).unwrap();
+        assert!(store.init_retention_config(&config).is_ok());
+
+        let config_map = store.config_map();
+        assert_eq!(
+            config_map.current(KEY_RETENTION_PERIOD).unwrap(),
+            Some("90".to_string())
+        );
+
+        let read_config = store.retention_config().unwrap();
+        assert_eq!(read_config, Some(config));
+    }
+
+    #[test]
+    fn init_retention_config_already_exists() {
+        let (_permit, store) = setup_store();
+
+        let config = RetentionConfig::new(90).unwrap();
+        assert!(store.init_retention_config(&config).is_ok());
+
+        let new_config = RetentionConfig::new(180).unwrap();
+        assert!(store.init_retention_config(&new_config).is_err());
+
+        // Verify original value is unchanged
+        let read_config = store.retention_config().unwrap();
+        assert_eq!(read_config, Some(config));
+    }
+
+    #[test]
+    fn init_retention_config_validation_failure() {
+        let (_permit, store) = setup_store();
+
+        let config = RetentionConfig { period_in_days: 0 };
+        let result = store.init_retention_config(&config);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("period_in_days must be >= 1")
+        );
+
+        // Verify nothing was written
+        let config_map = store.config_map();
+        assert!(config_map.current(KEY_RETENTION_PERIOD).unwrap().is_none());
+    }
+
+    #[test]
+    fn update_retention_config_success() {
+        let (_permit, store) = setup_store();
+
+        let config = RetentionConfig::new(90).unwrap();
+        store.init_retention_config(&config).unwrap();
+
+        let update = RetentionConfigUpdate {
+            period_in_days: Some(180),
+        };
+        assert!(store.update_retention_config(&config, &update).is_ok());
+
+        let read_config = store.retention_config().unwrap();
+        assert_eq!(
+            read_config,
+            Some(RetentionConfig {
+                period_in_days: 180
+            })
+        );
+    }
+
+    #[test]
+    fn update_retention_config_no_changes() {
+        let (_permit, store) = setup_store();
+
+        let config = RetentionConfig::new(90).unwrap();
+        store.init_retention_config(&config).unwrap();
+
+        let update = RetentionConfigUpdate::default();
+        assert!(store.update_retention_config(&config, &update).is_ok());
+
+        let read_config = store.retention_config().unwrap();
+        assert_eq!(read_config, Some(config));
+    }
+
+    #[test]
+    fn update_retention_config_wrong_old_value() {
+        let (_permit, store) = setup_store();
+
+        let config = RetentionConfig::new(90).unwrap();
+        store.init_retention_config(&config).unwrap();
+
+        let wrong = RetentionConfig {
+            period_in_days: 999,
+        };
+        let update = RetentionConfigUpdate {
+            period_in_days: Some(180),
+        };
+        assert!(store.update_retention_config(&wrong, &update).is_err());
+
+        // Verify value unchanged
+        let read_config = store.retention_config().unwrap();
+        assert_eq!(read_config, Some(config));
+    }
+
+    #[test]
+    fn update_retention_config_validation_failure() {
+        let (_permit, store) = setup_store();
+
+        let config = RetentionConfig::new(90).unwrap();
+        store.init_retention_config(&config).unwrap();
+
+        let update = RetentionConfigUpdate {
+            period_in_days: Some(0),
+        };
+        let result = store.update_retention_config(&config, &update);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("period_in_days must be >= 1")
+        );
+
+        // Verify value unchanged
+        let read_config = store.retention_config().unwrap();
+        assert_eq!(read_config, Some(config));
     }
 }
