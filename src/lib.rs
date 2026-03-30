@@ -50,12 +50,13 @@ pub use self::tables::{
     LabelDb, LabelDbKind, LabelDbRule, LabelDbRuleKind, Model as ModelDigest, ModelIndicator,
     Network, NetworkFilter, NetworkUpdate, Node, NodeProfile, NodeTable, NodeUpdate, OutlierInfo,
     OutlierInfoKey, OutlierInfoValue, PacketAttr, PeriodForSearch, ProtocolPorts, Response,
-    ResponseKind, SamplingInterval, SamplingKind, SamplingPeriod, SamplingPolicy,
-    SamplingPolicyUpdate, Structured, StructuredClusteringAlgorithm, Table, Template, TimeSeries,
-    TopColumnsOfCluster, TopMultimaps, TorExitNode, TrafficFilter, TriageExclusion,
-    TriageExclusionReason, TriageExclusionReasonUpdate, TriagePolicy, TriagePolicyInput,
-    TriagePolicyUpdate, TriageResponse, TriageResponseUpdate, TrustedDomain, TrustedUserAgent,
-    UniqueKey, Unstructured, UnstructuredClusteringAlgorithm, UserAgent, ValueKind,
+    ResponseKind, RetentionConfig, RetentionConfigUpdate, SamplingInterval, SamplingKind,
+    SamplingPeriod, SamplingPolicy, SamplingPolicyUpdate, Structured,
+    StructuredClusteringAlgorithm, Table, Template, TimeSeries, TopColumnsOfCluster, TopMultimaps,
+    TorExitNode, TrafficFilter, TriageExclusion, TriageExclusionReason,
+    TriageExclusionReasonUpdate, TriagePolicy, TriagePolicyInput, TriagePolicyUpdate,
+    TriageResponse, TriageResponseUpdate, TrustedDomain, TrustedUserAgent, UniqueKey, Unstructured,
+    UnstructuredClusteringAlgorithm, UserAgent, ValueKind,
 };
 pub use self::top_n::*;
 #[allow(deprecated)]
@@ -351,6 +352,76 @@ impl Store {
                     Ok(())
                 }
             }
+        }
+    }
+
+    /// Initializes retention configuration in the config table.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if config is invalid, the config value has already
+    /// been initialized, or if the database operation fails.
+    pub fn init_retention_config(&self, config: &RetentionConfig) -> Result<()> {
+        config.validate()?;
+
+        let config_map = self.config_map();
+        let period = config.period_in_days.to_string();
+
+        config_map.init(tables::KEY_RETENTION_PERIOD, period.as_str())?;
+        Ok(())
+    }
+
+    /// Updates retention configuration in the config table.
+    ///
+    /// This function updates the retention config using compare-and-swap
+    /// semantics. Both old config (for verification) and new config update
+    /// must be provided to ensure no concurrent modifications have occurred.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the new config is invalid, if the old value does
+    /// not match the current value in the database (indicating concurrent
+    /// modification), if the key does not exist, or if the database
+    /// operation fails.
+    pub fn update_retention_config(
+        &self,
+        old_config: &RetentionConfig,
+        update: &RetentionConfigUpdate,
+    ) -> Result<()> {
+        let resulting_config = RetentionConfig {
+            period_in_days: update.period_in_days.unwrap_or(old_config.period_in_days),
+        };
+        resulting_config.validate()?;
+
+        if let Some(new_val) = update.period_in_days {
+            let config_map = self.config_map();
+            let old_str = old_config.period_in_days.to_string();
+            let new_str = new_val.to_string();
+            config_map.update_compare(tables::KEY_RETENTION_PERIOD, &old_str, &new_str)?;
+        }
+
+        Ok(())
+    }
+
+    /// Returns the current retention configuration from the config table.
+    ///
+    /// Returns `Ok(None)` if the retention configuration has not been
+    /// initialized.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the numeric field cannot be parsed or if the
+    /// database operation fails.
+    pub fn retention_config(&self) -> Result<Option<RetentionConfig>> {
+        let config = self.config_map();
+        let period = config.current(tables::KEY_RETENTION_PERIOD)?;
+
+        match period {
+            Some(p) => {
+                let period_in_days = p.parse()?;
+                Ok(Some(RetentionConfig { period_in_days }))
+            }
+            None => Ok(None),
         }
     }
 
@@ -889,6 +960,29 @@ impl Store {
         txn.commit()?;
 
         Ok(())
+    }
+
+    /// Removes column statistics entries older than the configured
+    /// retention period.
+    ///
+    /// Returns the number of entries removed, or `Ok(None)` if no
+    /// retention configuration has been set.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the retention configuration cannot be read or
+    /// if the database operation fails.
+    pub fn purge_old_column_stats(&self) -> Result<Option<usize>> {
+        let Some(config) = self.retention_config()? else {
+            return Ok(None);
+        };
+
+        let cutoff = chrono::Utc::now().naive_utc()
+            - chrono::Duration::days(i64::from(config.period_in_days));
+
+        let table = self.column_stats_map();
+        let count = table.remove_older_than(cutoff)?;
+        Ok(Some(count))
     }
 
     /// Returns the model and classifer with the given model name.
