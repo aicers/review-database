@@ -2494,6 +2494,63 @@ impl<'a> EventDb<'a> {
         Ok(())
     }
 
+    /// Removes all events whose timestamp is strictly before `before`.
+    ///
+    /// Events are stored with an i128 key whose upper 64 bits encode the
+    /// timestamp in nanoseconds. This method iterates from the beginning
+    /// of the event database and deletes every entry whose timestamp is
+    /// earlier than `before`, using batched writes for efficiency.
+    ///
+    /// Returns the number of events deleted.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a database operation fails.
+    pub fn remove_before(&self, before: DateTime<Utc>) -> Result<u64> {
+        const BATCH_SIZE: usize = 1000;
+
+        let cutoff_nanos = before.timestamp_nanos_opt().unwrap_or(i64::MAX);
+        let mut deleted: u64 = 0;
+
+        loop {
+            let iter = self.inner.iterator(IteratorMode::Start);
+            let mut batch = rocksdb::WriteBatchWithTransaction::<true>::default();
+            let mut batch_count = 0;
+
+            for item in iter {
+                let (k, _v) = item.context("cannot read from event database")?;
+                let key_bytes: [u8; 16] = match k.as_ref().try_into() {
+                    Ok(b) => b,
+                    Err(_) => continue,
+                };
+                let key = i128::from_be_bytes(key_bytes);
+                let ts = (key >> 64) as i64;
+
+                if ts >= cutoff_nanos {
+                    break;
+                }
+
+                batch.delete(&k);
+                batch_count += 1;
+
+                if batch_count >= BATCH_SIZE {
+                    break;
+                }
+            }
+
+            if batch_count == 0 {
+                break;
+            }
+
+            self.inner
+                .write(batch)
+                .context("failed to delete expired events")?;
+            deleted += batch_count as u64;
+        }
+
+        Ok(deleted)
+    }
+
     /// Inserts a raw key-value pair into the event database.
     #[cfg(test)]
     fn put_raw(&self, key: &[u8], value: &[u8]) {
@@ -6311,5 +6368,97 @@ mod tests {
         let mut iter = db.iter_forward();
         let item = iter.next();
         assert!(item.is_some_and(|r| r.is_err()));
+    }
+
+    #[test]
+    fn remove_before_deletes_old_events() {
+        let (_permit, store) = setup_store();
+        let db = store.events();
+
+        // Insert events at different timestamps.
+        let old_time = Utc.with_ymd_and_hms(2020, 1, 1, 0, 0, 0).unwrap();
+        let recent_time = Utc.with_ymd_and_hms(2025, 6, 1, 0, 0, 0).unwrap();
+
+        let old_msg = EventMessage {
+            time: old_time,
+            kind: EventKind::DnsCovertChannel,
+            fields: bincode::serialize(&DnsEventFields {
+                sensor: "s1".to_string(),
+                orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
+                orig_port: 1000,
+                resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
+                resp_port: 53,
+                proto: 17,
+                start_time: old_time.timestamp_nanos_opt().unwrap(),
+                duration: 0,
+                orig_pkts: 0,
+                resp_pkts: 0,
+                orig_l2_bytes: 0,
+                resp_l2_bytes: 0,
+                query: "old.com".to_string(),
+                answer: vec![],
+                trans_id: 1,
+                rtt: 1,
+                qclass: 0,
+                qtype: 0,
+                rcode: 0,
+                aa_flag: false,
+                tc_flag: false,
+                rd_flag: false,
+                ra_flag: false,
+                ttl: vec![],
+                confidence: 0.5,
+                category: None,
+            })
+            .unwrap(),
+        };
+
+        let recent_msg = EventMessage {
+            time: recent_time,
+            kind: EventKind::DnsCovertChannel,
+            fields: old_msg.fields.clone(),
+        };
+
+        db.put(&old_msg).unwrap();
+        db.put(&recent_msg).unwrap();
+
+        // Verify both events exist.
+        assert_eq!(db.iter_forward().count(), 2);
+
+        // Remove events before 2024-01-01.
+        let cutoff = Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap();
+        let deleted = db.remove_before(cutoff).unwrap();
+        assert_eq!(deleted, 1);
+
+        // Only the recent event remains.
+        assert_eq!(db.iter_forward().count(), 1);
+    }
+
+    #[test]
+    fn remove_before_no_events_to_delete() {
+        let (_permit, store) = setup_store();
+        let db = store.events();
+
+        let msg = example_message(
+            EventKind::DnsCovertChannel,
+            EventCategory::CommandAndControl,
+        );
+        db.put(&msg).unwrap();
+
+        // Cutoff in the past — nothing to delete.
+        let cutoff = Utc.with_ymd_and_hms(1970, 1, 1, 0, 0, 0).unwrap();
+        let deleted = db.remove_before(cutoff).unwrap();
+        assert_eq!(deleted, 0);
+        assert_eq!(db.iter_forward().count(), 1);
+    }
+
+    #[test]
+    fn remove_before_empty_db() {
+        let (_permit, store) = setup_store();
+        let db = store.events();
+
+        let cutoff = Utc::now();
+        let deleted = db.remove_before(cutoff).unwrap();
+        assert_eq!(deleted, 0);
     }
 }

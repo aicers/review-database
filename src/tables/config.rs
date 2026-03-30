@@ -16,6 +16,9 @@ pub const KEY_BACKUP_DURATION: &str = "backup_duration";
 pub const KEY_BACKUP_TIME: &str = "backup_time";
 pub const KEY_NUM_OF_BACKUPS_TO_KEEP: &str = "num_of_backups_to_keep";
 
+// Event retention config key
+pub const KEY_EVENT_RETENTION_PERIOD_DAYS: &str = "event_retention_period_days";
+
 /// Functions for the `configs` map.
 impl<'d> Table<'d, String> {
     /// Opens the  `configs` map in the database.
@@ -116,8 +119,9 @@ mod tests {
     use std::sync::Arc;
 
     use crate::tables::config::{
-        KEY_BACKUP_DURATION, KEY_BACKUP_TIME, KEY_EXPIRY_PERIOD, KEY_LOCKOUT_DURATION,
-        KEY_LOCKOUT_THRESHOLD, KEY_NUM_OF_BACKUPS_TO_KEEP, KEY_SUSPENSION_THRESHOLD,
+        KEY_BACKUP_DURATION, KEY_BACKUP_TIME, KEY_EVENT_RETENTION_PERIOD_DAYS, KEY_EXPIRY_PERIOD,
+        KEY_LOCKOUT_DURATION, KEY_LOCKOUT_THRESHOLD, KEY_NUM_OF_BACKUPS_TO_KEEP,
+        KEY_SUSPENSION_THRESHOLD,
     };
     use crate::test::{DbGuard, acquire_db_permit};
     use crate::{AccountPolicy, AccountPolicyUpdate, BackupConfig, BackupConfigUpdate, Store};
@@ -826,6 +830,58 @@ mod tests {
         assert!(
             err.contains(KEY_NUM_OF_BACKUPS_TO_KEEP),
             "error should mention missing num_of_backups_to_keep: {err}"
+        );
+    }
+
+    #[test]
+    fn event_retention_default_is_none() {
+        let (_permit, store) = setup_store();
+        let result = store.event_retention_period().unwrap();
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn set_event_retention_period_days() {
+        let (_permit, store) = setup_store();
+
+        store.set_event_retention_period(Some(365)).unwrap();
+        assert_eq!(store.event_retention_period().unwrap(), Some(365));
+
+        // Update to a different value.
+        store.set_event_retention_period(Some(30)).unwrap();
+        assert_eq!(store.event_retention_period().unwrap(), Some(30));
+    }
+
+    #[test]
+    fn set_event_retention_unlimited() {
+        let (_permit, store) = setup_store();
+
+        // Set a value first, then switch to unlimited.
+        store.set_event_retention_period(Some(90)).unwrap();
+        assert_eq!(store.event_retention_period().unwrap(), Some(90));
+
+        store.set_event_retention_period(None).unwrap();
+        assert_eq!(store.event_retention_period().unwrap(), None);
+    }
+
+    #[test]
+    fn set_event_retention_zero_is_rejected() {
+        let (_permit, store) = setup_store();
+        let err = store.set_event_retention_period(Some(0));
+        assert!(err.is_err());
+        assert!(err.unwrap_err().to_string().contains("must be >= 1 day"));
+    }
+
+    #[test]
+    fn event_retention_raw_value() {
+        let (_permit, store) = setup_store();
+        let config = store.config_map();
+
+        // Verify the raw config key is correct.
+        store.set_event_retention_period(Some(180)).unwrap();
+        assert_eq!(
+            config.current(KEY_EVENT_RETENTION_PERIOD_DAYS).unwrap(),
+            Some("180".to_string())
         );
     }
 }
