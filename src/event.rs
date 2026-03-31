@@ -1492,7 +1492,7 @@ impl Event {
     /// Returns an error if matching the event against the filter fails.
     pub fn count_level(
         &self,
-        counter: &mut Vec<(ThreatLevel, usize)>,
+        counter: &mut HashMap<ThreatLevel, usize>,
         locator: Option<&ip2location::DB>,
         filter: &EventFilter,
     ) -> Result<()> {
@@ -1708,11 +1708,7 @@ impl Event {
         }
 
         if let Some(level) = level {
-            if let Some(entry) = counter.iter_mut().find(|(l, _)| *l == level) {
-                entry.1 += 1;
-            } else {
-                counter.push((level, 1));
-            }
+            *counter.entry(level).or_insert(0) += 1;
         }
 
         Ok(())
@@ -3078,7 +3074,7 @@ mod tests {
             triage_policies: None,
         };
         assert_eq!(event.kind(None, &filter).unwrap(), Some(LOCKY_RANSOMWARE));
-        let mut counter = Vec::new();
+        let mut counter = HashMap::new();
         event.count_level(&mut counter, None, &filter).unwrap();
         assert_eq!(counter.len(), 1);
 
@@ -3770,7 +3766,7 @@ mod tests {
             )
         );
         assert_eq!(event.kind(None, &filter).unwrap(), Some(BLOCKLIST));
-        let mut counter = Vec::new();
+        let mut counter = HashMap::new();
         event.count_level(&mut counter, None, &filter).unwrap();
         assert_eq!(counter.len(), 1);
 
@@ -4011,7 +4007,7 @@ mod tests {
             )
         );
         assert_eq!(event.kind(None, &filter).unwrap(), Some(BLOCKLIST));
-        let mut counter = Vec::new();
+        let mut counter = HashMap::new();
         event.count_level(&mut counter, None, &filter).unwrap();
         assert_eq!(counter.len(), 1);
 
@@ -4452,7 +4448,7 @@ mod tests {
             )
         );
         assert_eq!(event.kind(None, &filter).unwrap(), Some(BLOCKLIST));
-        let mut counter = Vec::new();
+        let mut counter = HashMap::new();
         event.count_level(&mut counter, None, &filter).unwrap();
         assert_eq!(counter.len(), 1);
 
@@ -4789,7 +4785,7 @@ mod tests {
             )
         );
         assert_eq!(event.kind(None, &filter).unwrap(), Some(BLOCKLIST));
-        let mut counter = Vec::new();
+        let mut counter = HashMap::new();
         event.count_level(&mut counter, None, &filter).unwrap();
         assert_eq!(counter.len(), 1);
 
@@ -4889,7 +4885,7 @@ mod tests {
             )
         );
         assert_eq!(event.kind(None, &filter).unwrap(), Some(BLOCKLIST));
-        let mut counter = Vec::new();
+        let mut counter = HashMap::new();
         event.count_level(&mut counter, None, &filter).unwrap();
         assert_eq!(counter.len(), 1);
 
@@ -5256,7 +5252,7 @@ mod tests {
             )
         );
         assert_eq!(event.kind(None, &filter).unwrap(), Some(BLOCKLIST));
-        let mut counter = Vec::new();
+        let mut counter = HashMap::new();
         event.count_level(&mut counter, None, &filter).unwrap();
         assert_eq!(counter.len(), 1);
 
@@ -5827,7 +5823,7 @@ mod tests {
             )
         );
         assert_eq!(event.kind(None, &filter).unwrap(), Some(TOR_CONNECTION));
-        let mut counter = Vec::new();
+        let mut counter = HashMap::new();
         event.count_level(&mut counter, None, &filter).unwrap();
         assert_eq!(counter.len(), 1);
 
@@ -5987,7 +5983,7 @@ mod tests {
             event.kind(None, &filter).unwrap(),
             Some(SUSPICIOUS_TLS_TRAFFIC)
         );
-        let mut counter = Vec::new();
+        let mut counter = HashMap::new();
         event.count_level(&mut counter, None, &filter).unwrap();
         assert_eq!(counter.len(), 1);
 

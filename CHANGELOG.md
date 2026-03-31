@@ -21,8 +21,9 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 - **BREAKING**: Replaced hardcoded `NonZeroU8` threat level
   constants with `review-protocol`'s `ThreatLevel` enum.
-  `EventFilter::levels` and `Event::count_level` now use
-  `ThreatLevel` instead of `NonZeroU8`.
+  `EventFilter::levels` now uses `Vec<ThreatLevel>` instead of
+  `Vec<NonZeroU8>`. `Event::count_level` now uses
+  `HashMap<ThreatLevel, usize>` instead of `HashMap<NonZeroU8, usize>`.
 - **BREAKING**: Refactored `BackupConfig` to remove embedded policy defaults.
 - **BREAKING**: Removed `BackupConfig::default()` implementation. Applications
   that relied on default values must now explicitly construct `BackupConfig`.
