@@ -2,7 +2,6 @@ use std::{
     borrow::Cow,
     fmt::{self, Formatter, Write},
     net::IpAddr,
-    num::NonZeroU8,
 };
 
 use anyhow::Result;
@@ -12,7 +11,8 @@ use num_traits::ToPrimitive;
 use serde::{Deserialize, Serialize};
 
 use super::{
-    EventCategory, EventFilter, FlowKind, LearningMethod, TrafficDirection, eq_ip_country,
+    EventCategory, EventFilter, FlowKind, LearningMethod, ThreatLevel, TrafficDirection,
+    eq_ip_country,
 };
 use crate::{AttrCmpKind, Confidence, PacketAttr, TriageExclusion, ValueKind};
 
@@ -31,7 +31,7 @@ pub(super) trait Match {
     #[allow(dead_code)] // for future use
     fn proto(&self) -> u8;
     fn category(&self) -> Option<EventCategory>;
-    fn level(&self) -> NonZeroU8;
+    fn level(&self) -> ThreatLevel;
     fn kind(&self) -> &str;
     fn sensor(&self) -> &str;
     fn confidence(&self) -> Option<f32>;

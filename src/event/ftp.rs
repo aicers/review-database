@@ -1,11 +1,11 @@
 #![allow(clippy::module_name_repetitions)]
-use std::{fmt, net::IpAddr, num::NonZeroU8};
+use std::{fmt, net::IpAddr};
 
 use attrievent::attribute::{FtpAttr, RawEventAttrKind};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use super::{EventCategory, LearningMethod, MEDIUM, TriageScore, common::Match};
+use super::{EventCategory, LearningMethod, ThreatLevel, TriageScore, common::Match};
 use crate::event::common::{AttrValue, triage_scores_to_string};
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -255,6 +255,13 @@ impl FtpBruteForce {
     }
 }
 
+impl FtpBruteForce {
+    #[must_use]
+    pub fn threat_level() -> ThreatLevel {
+        ThreatLevel::Medium
+    }
+}
+
 impl Match for FtpBruteForce {
     fn src_addrs(&self) -> &[IpAddr] {
         std::slice::from_ref(&self.orig_addr)
@@ -280,8 +287,8 @@ impl Match for FtpBruteForce {
         self.category
     }
 
-    fn level(&self) -> NonZeroU8 {
-        MEDIUM
+    fn level(&self) -> ThreatLevel {
+        Self::threat_level()
     }
 
     fn kind(&self) -> &'static str {
@@ -460,6 +467,13 @@ impl FtpPlainText {
     }
 }
 
+impl FtpPlainText {
+    #[must_use]
+    pub fn threat_level() -> ThreatLevel {
+        ThreatLevel::Medium
+    }
+}
+
 impl Match for FtpPlainText {
     fn src_addrs(&self) -> &[IpAddr] {
         std::slice::from_ref(&self.orig_addr)
@@ -485,8 +499,8 @@ impl Match for FtpPlainText {
         self.category
     }
 
-    fn level(&self) -> NonZeroU8 {
-        MEDIUM
+    fn level(&self) -> ThreatLevel {
+        Self::threat_level()
     }
 
     fn kind(&self) -> &'static str {
@@ -591,6 +605,13 @@ impl BlocklistFtp {
     }
 }
 
+impl BlocklistFtp {
+    #[must_use]
+    pub fn threat_level() -> ThreatLevel {
+        ThreatLevel::Medium
+    }
+}
+
 impl Match for BlocklistFtp {
     fn src_addrs(&self) -> &[IpAddr] {
         std::slice::from_ref(&self.orig_addr)
@@ -616,8 +637,8 @@ impl Match for BlocklistFtp {
         self.category
     }
 
-    fn level(&self) -> NonZeroU8 {
-        MEDIUM
+    fn level(&self) -> ThreatLevel {
+        Self::threat_level()
     }
 
     fn kind(&self) -> &'static str {

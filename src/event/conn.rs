@@ -1,10 +1,10 @@
-use std::{fmt, net::IpAddr, num::NonZeroU8};
+use std::{fmt, net::IpAddr};
 
 use attrievent::attribute::{ConnAttr, RawEventAttrKind};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use super::{EventCategory, LearningMethod, MEDIUM, TriageScore, common::Match};
+use super::{EventCategory, LearningMethod, ThreatLevel, TriageScore, common::Match};
 use crate::event::common::{AttrValue, triage_scores_to_string, vector_to_string};
 
 #[macro_export]
@@ -125,6 +125,13 @@ impl PortScan {
     }
 }
 
+impl PortScan {
+    #[must_use]
+    pub fn threat_level() -> ThreatLevel {
+        ThreatLevel::Medium
+    }
+}
+
 impl Match for PortScan {
     fn src_addrs(&self) -> &[IpAddr] {
         std::slice::from_ref(&self.orig_addr)
@@ -150,8 +157,8 @@ impl Match for PortScan {
         self.category
     }
 
-    fn level(&self) -> NonZeroU8 {
-        MEDIUM
+    fn level(&self) -> ThreatLevel {
+        Self::threat_level()
     }
 
     fn kind(&self) -> &'static str {
@@ -276,6 +283,13 @@ impl MultiHostPortScan {
     }
 }
 
+impl MultiHostPortScan {
+    #[must_use]
+    pub fn threat_level() -> ThreatLevel {
+        ThreatLevel::Medium
+    }
+}
+
 impl Match for MultiHostPortScan {
     fn src_addrs(&self) -> &[IpAddr] {
         std::slice::from_ref(&self.orig_addr)
@@ -301,8 +315,8 @@ impl Match for MultiHostPortScan {
         self.category
     }
 
-    fn level(&self) -> NonZeroU8 {
-        MEDIUM
+    fn level(&self) -> ThreatLevel {
+        Self::threat_level()
     }
 
     fn kind(&self) -> &'static str {
@@ -423,6 +437,13 @@ impl ExternalDdos {
     }
 }
 
+impl ExternalDdos {
+    #[must_use]
+    pub fn threat_level() -> ThreatLevel {
+        ThreatLevel::Medium
+    }
+}
+
 impl Match for ExternalDdos {
     fn src_addrs(&self) -> &[IpAddr] {
         &self.orig_addrs
@@ -448,8 +469,8 @@ impl Match for ExternalDdos {
         self.category
     }
 
-    fn level(&self) -> NonZeroU8 {
-        MEDIUM
+    fn level(&self) -> ThreatLevel {
+        Self::threat_level()
     }
 
     fn kind(&self) -> &'static str {
@@ -618,6 +639,13 @@ impl BlocklistConn {
     }
 }
 
+impl BlocklistConn {
+    #[must_use]
+    pub fn threat_level() -> ThreatLevel {
+        ThreatLevel::Medium
+    }
+}
+
 impl Match for BlocklistConn {
     fn src_addrs(&self) -> &[IpAddr] {
         std::slice::from_ref(&self.orig_addr)
@@ -643,8 +671,8 @@ impl Match for BlocklistConn {
         self.category
     }
 
-    fn level(&self) -> NonZeroU8 {
-        MEDIUM
+    fn level(&self) -> ThreatLevel {
+        Self::threat_level()
     }
 
     fn kind(&self) -> &'static str {

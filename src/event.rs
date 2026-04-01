@@ -30,7 +30,6 @@ use std::{
     convert::TryInto,
     fmt::{self},
     net::IpAddr,
-    num::NonZeroU8,
 };
 
 use aho_corasick::AhoCorasickBuilder;
@@ -39,6 +38,7 @@ use chrono::{DateTime, TimeZone, Utc, serde::ts_nanoseconds};
 use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive, ToPrimitive};
 use rand::{RngCore, rng};
+pub use review_protocol::types::ThreatLevel;
 pub use rocksdb::Direction;
 use rocksdb::IteratorMode;
 use serde::{Deserialize, Serialize};
@@ -87,16 +87,6 @@ use super::{
     Customer, EventCategory, Network, TriagePolicyInput,
     types::{Endpoint, HostNetworkGroup},
 };
-
-// event levels (currently unused ones commented out)
-// const VERY_LOW: NonZeroU8 =NonZeroU8::new(1).expect("eThe constant holds the nonzero value 1, which is always valid");
-const LOW: NonZeroU8 =
-    NonZeroU8::new(2).expect("The constant holds the nonzero value 2, which is always valid");
-const MEDIUM: NonZeroU8 =
-    NonZeroU8::new(3).expect("The constant holds the nonzero value 3, which is always valid");
-const HIGH: NonZeroU8 =
-    NonZeroU8::new(4).expect("The constant holds the nonzero value 4, which is always valid");
-// const VERY_HIGH: NonZeroU8 =NonZeroU8::new(5).expect("The constant holds the nonzero value 5, which is always valid");
 
 // event kind
 const DNS_COVERT_CHANNEL: &str = "DNS Covert Channel";
@@ -1502,7 +1492,7 @@ impl Event {
     /// Returns an error if matching the event against the filter fails.
     pub fn count_level(
         &self,
-        counter: &mut HashMap<NonZeroU8, usize>,
+        counter: &mut HashMap<ThreatLevel, usize>,
         locator: Option<&ip2location::DB>,
         filter: &EventFilter,
     ) -> Result<()> {
@@ -1718,7 +1708,7 @@ impl Event {
         }
 
         if let Some(level) = level {
-            counter.entry(level).and_modify(|e| *e += 1).or_insert(1);
+            *counter.entry(level).or_insert(0) += 1;
         }
 
         Ok(())
@@ -2043,7 +2033,7 @@ pub struct EventFilter {
     destination: Option<IpAddr>,
     countries: Option<Vec<[u8; 2]>>,
     categories: Option<Vec<Option<EventCategory>>>,
-    levels: Option<Vec<NonZeroU8>>,
+    levels: Option<Vec<ThreatLevel>>,
     kinds: Option<Vec<String>>,
     learning_methods: Option<Vec<LearningMethod>>,
     sensors: Option<Vec<String>>,
@@ -2064,7 +2054,7 @@ impl EventFilter {
         destination: Option<IpAddr>,
         countries: Option<Vec<[u8; 2]>>,
         categories: Option<Vec<Option<EventCategory>>>,
-        levels: Option<Vec<NonZeroU8>>,
+        levels: Option<Vec<ThreatLevel>>,
         kinds: Option<Vec<String>>,
         learning_methods: Option<Vec<LearningMethod>>,
         sensors: Option<Vec<String>>,
@@ -3736,7 +3726,7 @@ mod tests {
 
     #[test]
     fn event_blocklist_bootp() {
-        use super::{BLOCKLIST, MEDIUM};
+        use super::{BLOCKLIST, ThreatLevel};
 
         let (_permit, store) = setup_store();
 
@@ -3760,7 +3750,7 @@ mod tests {
             destination: Some(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2))),
             countries: None,
             categories: None,
-            levels: Some(vec![MEDIUM]),
+            levels: Some(vec![ThreatLevel::Medium]),
             kinds: Some(vec!["blocklist bootp".to_string()]),
             learning_methods: None,
             sensors: Some(vec!["collector1".to_string()]),
@@ -3977,7 +3967,7 @@ mod tests {
 
     #[test]
     fn event_blocklist_dhcp() {
-        use super::{BLOCKLIST, MEDIUM};
+        use super::{BLOCKLIST, ThreatLevel};
 
         let (_permit, store) = setup_store();
 
@@ -4001,7 +3991,7 @@ mod tests {
             destination: Some(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2))),
             countries: None,
             categories: None,
-            levels: Some(vec![MEDIUM]),
+            levels: Some(vec![ThreatLevel::Medium]),
             kinds: Some(vec!["blocklist dhcp".to_string()]),
             learning_methods: None,
             sensors: Some(vec!["collector1".to_string()]),
@@ -4418,7 +4408,7 @@ mod tests {
 
     #[test]
     fn event_blocklist_ftp() {
-        use super::{BLOCKLIST, MEDIUM};
+        use super::{BLOCKLIST, ThreatLevel};
 
         let (_permit, store) = setup_store();
 
@@ -4442,7 +4432,7 @@ mod tests {
             destination: Some(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2))),
             countries: None,
             categories: None,
-            levels: Some(vec![MEDIUM]),
+            levels: Some(vec![ThreatLevel::Medium]),
             kinds: Some(vec!["blocklist ftp".to_string()]),
             learning_methods: None,
             sensors: Some(vec!["collector1".to_string()]),
@@ -4755,7 +4745,7 @@ mod tests {
 
     #[test]
     fn event_blocklist_ldap() {
-        use super::{BLOCKLIST, MEDIUM};
+        use super::{BLOCKLIST, ThreatLevel};
 
         let (_permit, store) = setup_store();
 
@@ -4779,7 +4769,7 @@ mod tests {
             destination: Some(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2))),
             countries: None,
             categories: None,
-            levels: Some(vec![MEDIUM]),
+            levels: Some(vec![ThreatLevel::Medium]),
             kinds: Some(vec!["blocklist ldap".to_string()]),
             learning_methods: None,
             sensors: Some(vec!["collector1".to_string()]),
@@ -4855,7 +4845,7 @@ mod tests {
 
     #[test]
     fn event_blocklist_radius() {
-        use super::{BLOCKLIST, MEDIUM};
+        use super::{BLOCKLIST, ThreatLevel};
 
         let (_permit, store) = setup_store();
 
@@ -4879,7 +4869,7 @@ mod tests {
             destination: Some(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2))),
             countries: None,
             categories: None,
-            levels: Some(vec![MEDIUM]),
+            levels: Some(vec![ThreatLevel::Medium]),
             kinds: Some(vec!["blocklist radius".to_string()]),
             learning_methods: None,
             sensors: Some(vec!["collector1".to_string()]),
@@ -5222,7 +5212,7 @@ mod tests {
 
     #[test]
     fn event_blocklist_malformed_dns() {
-        use super::{BLOCKLIST, MEDIUM};
+        use super::{BLOCKLIST, ThreatLevel};
 
         let (_permit, store) = setup_store();
 
@@ -5246,7 +5236,7 @@ mod tests {
             destination: Some(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2))),
             countries: None,
             categories: None,
-            levels: Some(vec![MEDIUM]),
+            levels: Some(vec![ThreatLevel::Medium]),
             kinds: Some(vec!["blocklist malformed dns".to_string()]),
             learning_methods: None,
             sensors: Some(vec!["collector1".to_string()]),
@@ -5793,7 +5783,7 @@ mod tests {
 
     #[test]
     fn event_torconnection() {
-        use super::{MEDIUM, TOR_CONNECTION};
+        use super::{TOR_CONNECTION, ThreatLevel};
 
         let (_permit, store) = setup_store();
 
@@ -5817,7 +5807,7 @@ mod tests {
             destination: Some(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2))),
             countries: None,
             categories: None,
-            levels: Some(vec![MEDIUM]),
+            levels: Some(vec![ThreatLevel::Medium]),
             kinds: Some(vec!["tor exit nodes".to_string()]),
             learning_methods: None,
             sensors: Some(vec!["collector1".to_string()]),
@@ -5949,7 +5939,7 @@ mod tests {
 
     #[test]
     fn event_suspicious_tls_traffic() {
-        use super::{MEDIUM, SUSPICIOUS_TLS_TRAFFIC};
+        use super::{SUSPICIOUS_TLS_TRAFFIC, ThreatLevel};
 
         let (_permit, store) = setup_store();
 
@@ -5974,7 +5964,7 @@ mod tests {
             destination: Some(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2))),
             countries: None,
             categories: None,
-            levels: Some(vec![MEDIUM]),
+            levels: Some(vec![ThreatLevel::Medium]),
             kinds: Some(vec!["suspicious tls traffic".to_string()]),
             learning_methods: None,
             sensors: Some(vec!["collector1".to_string()]),

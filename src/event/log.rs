@@ -2,14 +2,13 @@
 use std::{
     fmt,
     net::{IpAddr, Ipv4Addr},
-    num::NonZeroU8,
 };
 
 use attrievent::attribute::{LogAttr, RawEventAttrKind};
 use chrono::{DateTime, Utc, serde::ts_nanoseconds};
 use serde::{Deserialize, Serialize};
 
-use super::{EventCategory, LearningMethod, MEDIUM, TriageScore, common::Match};
+use super::{EventCategory, LearningMethod, ThreatLevel, TriageScore, common::Match};
 use crate::event::common::{AttrValue, triage_scores_to_string};
 
 #[derive(Serialize, Deserialize)]
@@ -70,6 +69,13 @@ impl fmt::Display for ExtraThreat {
     }
 }
 
+impl ExtraThreat {
+    #[must_use]
+    pub fn threat_level() -> ThreatLevel {
+        ThreatLevel::Medium
+    }
+}
+
 impl Match for ExtraThreat {
     fn src_addrs(&self) -> &[IpAddr] {
         std::slice::from_ref(&IpAddr::V4(Ipv4Addr::UNSPECIFIED))
@@ -95,8 +101,8 @@ impl Match for ExtraThreat {
         self.category
     }
 
-    fn level(&self) -> NonZeroU8 {
-        MEDIUM
+    fn level(&self) -> ThreatLevel {
+        Self::threat_level()
     }
 
     fn kind(&self) -> &'static str {

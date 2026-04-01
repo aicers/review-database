@@ -1,11 +1,11 @@
-use std::{fmt, net::IpAddr, num::NonZeroU8};
+use std::{fmt, net::IpAddr};
 
 use attrievent::attribute::{DhcpAttr, RawEventAttrKind};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use super::{
-    EventCategory, LearningMethod, MEDIUM, TriageScore,
+    EventCategory, LearningMethod, ThreatLevel, TriageScore,
     common::{AttrValue, Match},
 };
 use crate::event::common::{to_hardware_address, triage_scores_to_string, vector_to_string};
@@ -269,6 +269,13 @@ impl BlocklistDhcp {
     }
 }
 
+impl BlocklistDhcp {
+    #[must_use]
+    pub fn threat_level() -> ThreatLevel {
+        ThreatLevel::Medium
+    }
+}
+
 impl Match for BlocklistDhcp {
     fn src_addrs(&self) -> &[IpAddr] {
         std::slice::from_ref(&self.orig_addr)
@@ -294,8 +301,8 @@ impl Match for BlocklistDhcp {
         self.category
     }
 
-    fn level(&self) -> NonZeroU8 {
-        MEDIUM
+    fn level(&self) -> ThreatLevel {
+        Self::threat_level()
     }
 
     fn kind(&self) -> &'static str {

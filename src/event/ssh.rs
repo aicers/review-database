@@ -1,10 +1,10 @@
-use std::{fmt, net::IpAddr, num::NonZeroU8};
+use std::{fmt, net::IpAddr};
 
 use attrievent::attribute::{RawEventAttrKind, SshAttr};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use super::{EventCategory, LearningMethod, MEDIUM, TriageScore, common::Match};
+use super::{EventCategory, LearningMethod, ThreatLevel, TriageScore, common::Match};
 use crate::event::common::{AttrValue, triage_scores_to_string};
 
 macro_rules! find_ssh_attr_by_kind {
@@ -221,6 +221,13 @@ impl BlocklistSsh {
     }
 }
 
+impl BlocklistSsh {
+    #[must_use]
+    pub fn threat_level() -> ThreatLevel {
+        ThreatLevel::Medium
+    }
+}
+
 impl Match for BlocklistSsh {
     fn src_addrs(&self) -> &[IpAddr] {
         std::slice::from_ref(&self.orig_addr)
@@ -246,8 +253,8 @@ impl Match for BlocklistSsh {
         self.category
     }
 
-    fn level(&self) -> NonZeroU8 {
-        MEDIUM
+    fn level(&self) -> ThreatLevel {
+        Self::threat_level()
     }
 
     fn kind(&self) -> &'static str {

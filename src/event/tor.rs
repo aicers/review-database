@@ -1,10 +1,10 @@
-use std::{fmt, net::IpAddr, num::NonZeroU8};
+use std::{fmt, net::IpAddr};
 
 use attrievent::attribute::{ConnAttr, HttpAttr, RawEventAttrKind};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use super::{EventCategory, LearningMethod, MEDIUM, TriageScore, common::Match};
+use super::{EventCategory, LearningMethod, ThreatLevel, TriageScore, common::Match};
 use crate::TriageExclusion;
 use crate::event::{
     common::{AttrValue, triage_scores_to_string},
@@ -138,6 +138,13 @@ impl TorConnection {
     }
 }
 
+impl TorConnection {
+    #[must_use]
+    pub fn threat_level() -> ThreatLevel {
+        ThreatLevel::Medium
+    }
+}
+
 impl Match for TorConnection {
     fn src_addrs(&self) -> &[IpAddr] {
         std::slice::from_ref(&self.orig_addr)
@@ -163,8 +170,8 @@ impl Match for TorConnection {
         self.category
     }
 
-    fn level(&self) -> NonZeroU8 {
-        MEDIUM
+    fn level(&self) -> ThreatLevel {
+        Self::threat_level()
     }
 
     fn kind(&self) -> &'static str {
@@ -279,6 +286,13 @@ impl TorConnectionConn {
     }
 }
 
+impl TorConnectionConn {
+    #[must_use]
+    pub fn threat_level() -> ThreatLevel {
+        ThreatLevel::Medium
+    }
+}
+
 impl Match for TorConnectionConn {
     fn src_addrs(&self) -> &[IpAddr] {
         std::slice::from_ref(&self.orig_addr)
@@ -304,8 +318,8 @@ impl Match for TorConnectionConn {
         self.category
     }
 
-    fn level(&self) -> NonZeroU8 {
-        MEDIUM
+    fn level(&self) -> ThreatLevel {
+        Self::threat_level()
     }
 
     fn kind(&self) -> &'static str {
@@ -338,7 +352,7 @@ mod tests {
 
     use super::{Match, TorConnectionConn};
     use crate::event::{
-        EventCategory, LearningMethod, MEDIUM, common::AttrValue, conn::BlocklistConnFields,
+        EventCategory, LearningMethod, ThreatLevel, common::AttrValue, conn::BlocklistConnFields,
     };
 
     fn tor_connection_conn_fields() -> BlocklistConnFields {
@@ -427,7 +441,7 @@ mod tests {
         assert_eq!(event.dst_port(), 443);
         assert_eq!(event.proto(), 6);
         assert_eq!(event.category(), Some(EventCategory::CommandAndControl));
-        assert_eq!(event.level(), MEDIUM);
+        assert_eq!(event.level(), ThreatLevel::Medium);
         assert_eq!(event.kind(), "tor exit nodes");
         assert_eq!(event.sensor(), "test-sensor");
         assert_eq!(event.confidence(), Some(0.95));

@@ -1,11 +1,11 @@
-use std::{fmt, net::IpAddr, num::NonZeroU8};
+use std::{fmt, net::IpAddr};
 
 use aho_corasick::AhoCorasickBuilder;
 use attrievent::attribute::{HttpAttr, RawEventAttrKind};
 use chrono::{DateTime, Utc, serde::ts_nanoseconds};
 use serde::{Deserialize, Serialize};
 
-use super::{EventCategory, EventFilter, LOW, LearningMethod, MEDIUM, TriageScore, common::Match};
+use super::{EventCategory, EventFilter, LearningMethod, ThreatLevel, TriageScore, common::Match};
 use crate::{
     TriageExclusion,
     event::common::{AttrValue, triage_scores_to_string},
@@ -242,6 +242,13 @@ impl RepeatedHttpSessions {
     }
 }
 
+impl RepeatedHttpSessions {
+    #[must_use]
+    pub fn threat_level() -> ThreatLevel {
+        ThreatLevel::Medium
+    }
+}
+
 impl Match for RepeatedHttpSessions {
     fn src_addrs(&self) -> &[IpAddr] {
         std::slice::from_ref(&self.orig_addr)
@@ -267,8 +274,8 @@ impl Match for RepeatedHttpSessions {
         self.category
     }
 
-    fn level(&self) -> std::num::NonZeroU8 {
-        MEDIUM
+    fn level(&self) -> ThreatLevel {
+        Self::threat_level()
     }
 
     fn kind(&self) -> &'static str {
@@ -562,6 +569,13 @@ impl HttpThreat {
     }
 }
 
+impl HttpThreat {
+    #[must_use]
+    pub fn threat_level() -> ThreatLevel {
+        ThreatLevel::Low
+    }
+}
+
 impl Match for HttpThreat {
     fn src_addrs(&self) -> &[IpAddr] {
         std::slice::from_ref(&self.orig_addr)
@@ -587,8 +601,8 @@ impl Match for HttpThreat {
         self.category
     }
 
-    fn level(&self) -> NonZeroU8 {
-        LOW
+    fn level(&self) -> ThreatLevel {
+        Self::threat_level()
     }
 
     fn kind(&self) -> &'static str {
@@ -867,6 +881,13 @@ impl DomainGenerationAlgorithm {
     }
 }
 
+impl DomainGenerationAlgorithm {
+    #[must_use]
+    pub fn threat_level() -> ThreatLevel {
+        ThreatLevel::Medium
+    }
+}
+
 impl Match for DomainGenerationAlgorithm {
     fn src_addrs(&self) -> &[IpAddr] {
         std::slice::from_ref(&self.orig_addr)
@@ -892,8 +913,8 @@ impl Match for DomainGenerationAlgorithm {
         self.category
     }
 
-    fn level(&self) -> NonZeroU8 {
-        MEDIUM
+    fn level(&self) -> ThreatLevel {
+        Self::threat_level()
     }
 
     fn kind(&self) -> &'static str {
@@ -1057,6 +1078,13 @@ impl NonBrowser {
     }
 }
 
+impl NonBrowser {
+    #[must_use]
+    pub fn threat_level() -> ThreatLevel {
+        ThreatLevel::Medium
+    }
+}
+
 impl Match for NonBrowser {
     fn src_addrs(&self) -> &[IpAddr] {
         std::slice::from_ref(&self.orig_addr)
@@ -1082,8 +1110,8 @@ impl Match for NonBrowser {
         self.category
     }
 
-    fn level(&self) -> NonZeroU8 {
-        MEDIUM
+    fn level(&self) -> ThreatLevel {
+        Self::threat_level()
     }
 
     fn kind(&self) -> &'static str {
@@ -1251,6 +1279,13 @@ impl BlocklistHttp {
     }
 }
 
+impl BlocklistHttp {
+    #[must_use]
+    pub fn threat_level() -> ThreatLevel {
+        ThreatLevel::Medium
+    }
+}
+
 impl Match for BlocklistHttp {
     fn src_addrs(&self) -> &[IpAddr] {
         std::slice::from_ref(&self.orig_addr)
@@ -1276,8 +1311,8 @@ impl Match for BlocklistHttp {
         self.category
     }
 
-    fn level(&self) -> NonZeroU8 {
-        MEDIUM
+    fn level(&self) -> ThreatLevel {
+        Self::threat_level()
     }
 
     fn kind(&self) -> &'static str {
