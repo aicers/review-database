@@ -7,10 +7,23 @@ use serde::{Deserialize, Serialize};
 use super::{EventCategory, LearningMethod, ThreatLevel, TriageScore, common::Match};
 use crate::event::common::{AttrValue, triage_scores_to_string};
 
-pub type BlocklistDceRpcFields = BlocklistDceRpcFieldsV0_42;
+pub type BlocklistDceRpcFields = BlocklistDceRpcFieldsV0_44;
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct DceRpcContext {
+    pub id: u16,
+    pub abstract_syntax: u128,
+    pub abstract_major: u16,
+    pub abstract_minor: u16,
+    pub transfer_syntax: u128,
+    pub transfer_major: u16,
+    pub transfer_minor: u16,
+    pub acceptance: u16,
+    pub reason: u16,
+}
 
 #[derive(Serialize, Deserialize)]
-pub struct BlocklistDceRpcFieldsV0_42 {
+pub struct BlocklistDceRpcFieldsV0_44 {
     pub sensor: String,
     pub orig_addr: IpAddr,
     pub orig_port: u16,
@@ -24,10 +37,8 @@ pub struct BlocklistDceRpcFieldsV0_42 {
     pub resp_pkts: u64,
     pub orig_l2_bytes: u64,
     pub resp_l2_bytes: u64,
-    pub rtt: i64,
-    pub named_pipe: String,
-    pub endpoint: String,
-    pub operation: String,
+    pub context: Vec<DceRpcContext>,
+    pub request: Vec<String>,
     pub confidence: f32,
     pub category: Option<EventCategory>,
 }
@@ -36,8 +47,34 @@ impl BlocklistDceRpcFields {
     #[must_use]
     pub fn syslog_rfc5424(&self) -> String {
         let start_time_dt = DateTime::from_timestamp_nanos(self.start_time);
+        let context_str = self
+            .context
+            .iter()
+            .map(|c| {
+                format!(
+                    "id={} abstract_syntax={:#x} abstract={}.{} \
+                     transfer_syntax={:#x} transfer={}.{} \
+                     acceptance={} reason={}",
+                    c.id,
+                    c.abstract_syntax,
+                    c.abstract_major,
+                    c.abstract_minor,
+                    c.transfer_syntax,
+                    c.transfer_major,
+                    c.transfer_minor,
+                    c.acceptance,
+                    c.reason,
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("; ");
+        let request_str = self.request.join(",");
         format!(
-            "category={:?} sensor={:?} orig_addr={:?} orig_port={:?} resp_addr={:?} resp_port={:?} proto={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} rtt={:?} named_pipe={:?} endpoint={:?} operation={:?} confidence={:?}",
+            "category={:?} sensor={:?} orig_addr={:?} orig_port={:?} \
+             resp_addr={:?} resp_port={:?} proto={:?} start_time={:?} \
+             duration={:?} orig_pkts={:?} resp_pkts={:?} \
+             orig_l2_bytes={:?} resp_l2_bytes={:?} \
+             context={:?} request={:?} confidence={:?}",
             self.category.as_ref().map_or_else(
                 || "Unspecified".to_string(),
                 std::string::ToString::to_string
@@ -54,10 +91,8 @@ impl BlocklistDceRpcFields {
             self.resp_pkts.to_string(),
             self.orig_l2_bytes.to_string(),
             self.resp_l2_bytes.to_string(),
-            self.rtt.to_string(),
-            self.named_pipe,
-            self.endpoint,
-            self.operation,
+            context_str,
+            request_str,
             self.confidence.to_string()
         )
     }
@@ -77,10 +112,8 @@ pub struct BlocklistDceRpc {
     pub resp_pkts: u64,
     pub orig_l2_bytes: u64,
     pub resp_l2_bytes: u64,
-    pub rtt: i64,
-    pub named_pipe: String,
-    pub endpoint: String,
-    pub operation: String,
+    pub context: Vec<DceRpcContext>,
+    pub request: Vec<String>,
     pub confidence: f32,
     pub category: Option<EventCategory>,
     pub triage_scores: Option<Vec<TriageScore>>,
@@ -88,9 +121,35 @@ pub struct BlocklistDceRpc {
 
 impl fmt::Display for BlocklistDceRpc {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let context_str = self
+            .context
+            .iter()
+            .map(|c| {
+                format!(
+                    "id={} abstract_syntax={:#x} abstract={}.{} \
+                     transfer_syntax={:#x} transfer={}.{} \
+                     acceptance={} reason={}",
+                    c.id,
+                    c.abstract_syntax,
+                    c.abstract_major,
+                    c.abstract_minor,
+                    c.transfer_syntax,
+                    c.transfer_major,
+                    c.transfer_minor,
+                    c.acceptance,
+                    c.reason,
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("; ");
+        let request_str = self.request.join(",");
         write!(
             f,
-            "sensor={:?} orig_addr={:?} orig_port={:?} resp_addr={:?} resp_port={:?} proto={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} rtt={:?} named_pipe={:?} endpoint={:?} operation={:?} triage_scores={:?}",
+            "sensor={:?} orig_addr={:?} orig_port={:?} \
+             resp_addr={:?} resp_port={:?} proto={:?} \
+             start_time={:?} duration={:?} orig_pkts={:?} \
+             resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} \
+             context={:?} request={:?} triage_scores={:?}",
             self.sensor,
             self.orig_addr.to_string(),
             self.orig_port.to_string(),
@@ -103,10 +162,8 @@ impl fmt::Display for BlocklistDceRpc {
             self.resp_pkts.to_string(),
             self.orig_l2_bytes.to_string(),
             self.resp_l2_bytes.to_string(),
-            self.rtt.to_string(),
-            self.named_pipe,
-            self.endpoint,
-            self.operation,
+            context_str,
+            request_str,
             triage_scores_to_string(self.triage_scores.as_ref())
         )
     }
@@ -128,10 +185,8 @@ impl BlocklistDceRpc {
             resp_pkts: fields.resp_pkts,
             orig_l2_bytes: fields.orig_l2_bytes,
             resp_l2_bytes: fields.resp_l2_bytes,
-            rtt: fields.rtt,
-            named_pipe: fields.named_pipe,
-            endpoint: fields.endpoint,
-            operation: fields.operation,
+            context: fields.context,
+            request: fields.request,
             confidence: fields.confidence,
             category: fields.category,
             triage_scores: None,

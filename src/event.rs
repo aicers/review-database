@@ -52,7 +52,7 @@ pub use self::{
         BlocklistConn, BlocklistConnFields, ExternalDdos, ExternalDdosFields, MultiHostPortScan,
         MultiHostPortScanFields, PortScan, PortScanFields,
     },
-    dcerpc::{BlocklistDceRpc, BlocklistDceRpcFields},
+    dcerpc::{BlocklistDceRpc, BlocklistDceRpcFields, DceRpcContext},
     dhcp::{BlocklistDhcp, BlocklistDhcpFields},
     dns::{
         BlocklistDns, BlocklistDnsFields, CryptocurrencyMiningPool, CryptocurrencyMiningPoolFields,
@@ -2964,15 +2964,15 @@ mod tests {
             BlocklistRadiusFields, BlocklistRdp, BlocklistRdpFields, BlocklistSmb,
             BlocklistSmbFields, BlocklistSmtp, BlocklistSmtpFields, BlocklistSsh,
             BlocklistSshFields, BlocklistTls, BlocklistTlsFields, CryptocurrencyMiningPool,
-            CryptocurrencyMiningPoolFields, DgaFields, DnsCovertChannel, DnsEventFields,
-            DomainGenerationAlgorithm, Event, EventFilter, EventKind, EventMessage, ExternalDdos,
-            ExternalDdosFields, ExtraThreat, FtpBruteForce, FtpBruteForceFields, FtpEventFields,
-            FtpPlainText, HttpEventFields, HttpThreat, HttpThreatFields, LOCKY_RANSOMWARE,
-            LdapBruteForce, LdapBruteForceFields, LdapEventFields, LdapPlainText, LockyRansomware,
-            MultiHostPortScan, MultiHostPortScanFields, NetworkThreat, NonBrowser, PortScan,
-            PortScanFields, RdpBruteForce, RdpBruteForceFields, RecordType, RepeatedHttpSessions,
-            RepeatedHttpSessionsFields, SuspiciousTlsTraffic, TorConnection, TriageScore,
-            WindowsThreat,
+            CryptocurrencyMiningPoolFields, DceRpcContext, DgaFields, DnsCovertChannel,
+            DnsEventFields, DomainGenerationAlgorithm, Event, EventFilter, EventKind, EventMessage,
+            ExternalDdos, ExternalDdosFields, ExtraThreat, FtpBruteForce, FtpBruteForceFields,
+            FtpEventFields, FtpPlainText, HttpEventFields, HttpThreat, HttpThreatFields,
+            LOCKY_RANSOMWARE, LdapBruteForce, LdapBruteForceFields, LdapEventFields, LdapPlainText,
+            LockyRansomware, MultiHostPortScan, MultiHostPortScanFields, NetworkThreat, NonBrowser,
+            PortScan, PortScanFields, RdpBruteForce, RdpBruteForceFields, RecordType,
+            RepeatedHttpSessions, RepeatedHttpSessionsFields, SuspiciousTlsTraffic, TorConnection,
+            TriageScore, WindowsThreat,
         },
         types::EventCategory,
     };
@@ -3862,10 +3862,22 @@ mod tests {
             resp_pkts: 0,
             orig_l2_bytes: 0,
             resp_l2_bytes: 0,
-            rtt: 1,
-            named_pipe: "svcctl".to_string(),
-            endpoint: "epmapper".to_string(),
-            operation: "bind".to_string(),
+            context: vec![DceRpcContext {
+                id: 0,
+                abstract_syntax: 0x1234_5678_9abc_def0,
+                abstract_major: 1,
+                abstract_minor: 0,
+                transfer_syntax: 0xfedc_ba98_7654_3210,
+                transfer_major: 2,
+                transfer_minor: 0,
+                acceptance: 0,
+                reason: 0,
+            }],
+            request: vec![
+                "svcctl".to_string(),
+                "epmapper".to_string(),
+                "bind".to_string(),
+            ],
             confidence: 1.0,
             category: Some(EventCategory::InitialAccess),
         };
@@ -3881,7 +3893,26 @@ mod tests {
         let (_, _, syslog_message) = message.unwrap();
         assert_eq!(
             &syslog_message,
-            r#"time="1970-01-01T01:01:01+00:00" event_kind="BlocklistDceRpc" category="InitialAccess" sensor="collector1" orig_addr="127.0.0.1" orig_port="10000" resp_addr="127.0.0.2" resp_port="135" proto="6" start_time="1970-01-01T00:00:00+00:00" duration="0" orig_pkts="0" resp_pkts="0" orig_l2_bytes="0" resp_l2_bytes="0" rtt="1" named_pipe="svcctl" endpoint="epmapper" operation="bind" confidence="1""#
+            "time=\"1970-01-01T01:01:01+00:00\" \
+             event_kind=\"BlocklistDceRpc\" \
+             category=\"InitialAccess\" \
+             sensor=\"collector1\" \
+             orig_addr=\"127.0.0.1\" \
+             orig_port=\"10000\" \
+             resp_addr=\"127.0.0.2\" \
+             resp_port=\"135\" \
+             proto=\"6\" \
+             start_time=\"1970-01-01T00:00:00+00:00\" \
+             duration=\"0\" \
+             orig_pkts=\"0\" \
+             resp_pkts=\"0\" \
+             orig_l2_bytes=\"0\" \
+             resp_l2_bytes=\"0\" \
+             context=\"id=0 abstract_syntax=0x123456789abcdef0 \
+             abstract=1.0 transfer_syntax=0xfedcba9876543210 \
+             transfer=2.0 acceptance=0 reason=0\" \
+             request=\"svcctl,epmapper,bind\" \
+             confidence=\"1\""
         );
 
         let blocklist_dce_rpc = Event::Blocklist(RecordType::DceRpc(BlocklistDceRpc::new(
@@ -3891,7 +3922,26 @@ mod tests {
         .to_string();
         assert_eq!(
             &blocklist_dce_rpc,
-            r#"time="1970-01-01T01:01:01+00:00" event_kind="BlocklistDceRpc" category="InitialAccess" sensor="collector1" orig_addr="127.0.0.1" orig_port="10000" resp_addr="127.0.0.2" resp_port="135" proto="6" start_time="1970-01-01T00:00:00+00:00" duration="0" orig_pkts="0" resp_pkts="0" orig_l2_bytes="0" resp_l2_bytes="0" rtt="1" named_pipe="svcctl" endpoint="epmapper" operation="bind" triage_scores="""#
+            "time=\"1970-01-01T01:01:01+00:00\" \
+             event_kind=\"BlocklistDceRpc\" \
+             category=\"InitialAccess\" \
+             sensor=\"collector1\" \
+             orig_addr=\"127.0.0.1\" \
+             orig_port=\"10000\" \
+             resp_addr=\"127.0.0.2\" \
+             resp_port=\"135\" \
+             proto=\"6\" \
+             start_time=\"1970-01-01T00:00:00+00:00\" \
+             duration=\"0\" \
+             orig_pkts=\"0\" \
+             resp_pkts=\"0\" \
+             orig_l2_bytes=\"0\" \
+             resp_l2_bytes=\"0\" \
+             context=\"id=0 abstract_syntax=0x123456789abcdef0 \
+             abstract=1.0 transfer_syntax=0xfedcba9876543210 \
+             transfer=2.0 acceptance=0 reason=0\" \
+             request=\"svcctl,epmapper,bind\" \
+             triage_scores=\"\""
         );
     }
 

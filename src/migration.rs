@@ -15,9 +15,9 @@ use tracing::info;
 
 use crate::{
     AllowNetwork, BlockNetwork, Customer,
-    event::{EventKind, HttpThreatFields},
+    event::{BlocklistDceRpcFields, EventKind, HttpThreatFields},
     migration::migration_structures::{
-        AllowNetworkV0_42, BlockNetworkV0_42, HttpThreatFieldsV0_43,
+        AllowNetworkV0_42, BlockNetworkV0_42, BlocklistDceRpcFieldsV0_42, HttpThreatFieldsV0_43,
     },
     tables::NETWORK_TAGS,
 };
@@ -103,7 +103,7 @@ use crate::{
 /// // release that involves database format change) to 3.5.0, including
 /// // all alpha changes finalized in 3.5.0.
 /// ```
-const COMPATIBLE_VERSION_REQ: &str = ">=0.44.0-alpha.2,<0.44.0-alpha.3";
+const COMPATIBLE_VERSION_REQ: &str = ">=0.44.0-alpha.3,<0.44.0-alpha.4";
 
 /// Migrates the data directory to the up-to-date format if necessary.
 ///
@@ -157,8 +157,8 @@ pub fn migrate_data_dir<P: AsRef<Path>>(data_dir: P, backup_dir: P) -> Result<()
             migrate_0_42_to_0_43,
         ),
         (
-            VersionReq::parse(">=0.43.0,<0.44.0-alpha.2")?,
-            Version::parse("0.44.0-alpha.2")?,
+            VersionReq::parse(">=0.43.0,<0.44.0-alpha.3")?,
+            Version::parse("0.44.0-alpha.3")?,
             migrate_0_43_to_0_44,
         ),
     ];
@@ -257,6 +257,10 @@ fn migrate_0_43_to_0_44(data_dir: &Path) -> Result<()> {
     // Other event types (ExtraThreat, WindowsThreat, NetworkThreat) are not generated
     // on production servers, so only HttpThreat migration is needed.
     migrate_http_threat_events(data_dir)?;
+
+    // Migrate BlocklistDceRpc events: replace rtt/named_pipe/endpoint/operation
+    // with context (Vec<DceRpcContext>) and request (Vec<String>)
+    migrate_blocklist_dcerpc_events(data_dir)?;
 
     Ok(())
 }
@@ -981,6 +985,119 @@ fn migrate_http_threat_fields(value: &[u8]) -> Option<Vec<u8>> {
         matched_to: old.matched_to,
         cluster_id: old.cluster_id.and_then(|v| u32::try_from(v).ok()),
         attack_kind: old.attack_kind,
+        confidence: old.confidence,
+        category: old.category,
+    };
+
+    bincode::DefaultOptions::new().serialize(&new).ok()
+}
+
+fn migrate_blocklist_dcerpc_events(dir: &Path) -> Result<()> {
+    use num_traits::FromPrimitive;
+
+    const BATCH_SIZE: usize = 100;
+
+    let db_path = dir.join("states.db");
+
+    let mut opts = rocksdb::Options::default();
+    opts.create_if_missing(false);
+    opts.create_missing_column_families(false);
+
+    let db: rocksdb::OptimisticTransactionDB<rocksdb::SingleThreaded> =
+        rocksdb::OptimisticTransactionDB::open_cf(&opts, &db_path, crate::tables::MAP_NAMES)
+            .context("Failed to open database for BlocklistDceRpc event migration")?;
+
+    let mut migrated_count = 0usize;
+    let mut errors = 0usize;
+    let mut batch: Vec<(Vec<u8>, Vec<u8>)> = Vec::with_capacity(BATCH_SIZE);
+
+    for item in db.iterator(rocksdb::IteratorMode::Start) {
+        let (key, value) = item.context("failed to read event entry")?;
+
+        if key.len() != 16 {
+            continue;
+        }
+
+        let key_i128 = i128::from_be_bytes(key.as_ref().try_into().unwrap_or([0; 16]));
+        let event_kind_val = ((key_i128 >> 32) & 0xFFFF_FFFF) as i32;
+
+        let Some(event_kind) = EventKind::from_i32(event_kind_val) else {
+            continue;
+        };
+
+        if event_kind == EventKind::BlocklistDceRpc {
+            if let Some(new_val) = migrate_blocklist_dcerpc_fields(&value) {
+                batch.push((key.to_vec(), new_val));
+                migrated_count += 1;
+
+                if batch.len() >= BATCH_SIZE {
+                    let txn = db.transaction();
+                    for (k, v) in batch.drain(..) {
+                        txn.put(&k, &v)?;
+                    }
+                    txn.commit()
+                        .context("failed to commit BlocklistDceRpc event migration batch")?;
+                }
+            } else {
+                errors += 1;
+            }
+        }
+    }
+
+    if !batch.is_empty() {
+        let txn = db.transaction();
+        for (k, v) in batch.drain(..) {
+            txn.put(&k, &v)?;
+        }
+        txn.commit()
+            .context("failed to commit final BlocklistDceRpc event migration batch")?;
+    }
+
+    if errors > 0 {
+        info!(
+            "BlocklistDceRpc event migration: migrated {} events, \
+             {} events skipped (possibly already migrated)",
+            migrated_count, errors
+        );
+    } else {
+        info!(
+            "Migrated {} BlocklistDceRpc events to new context/request format",
+            migrated_count
+        );
+    }
+
+    Ok(())
+}
+
+fn migrate_blocklist_dcerpc_fields(value: &[u8]) -> Option<Vec<u8>> {
+    let old: BlocklistDceRpcFieldsV0_42 = bincode::DefaultOptions::new().deserialize(value).ok()?;
+
+    let mut request = Vec::new();
+    if !old.named_pipe.is_empty() {
+        request.push(old.named_pipe);
+    }
+    if !old.endpoint.is_empty() {
+        request.push(old.endpoint);
+    }
+    if !old.operation.is_empty() {
+        request.push(old.operation);
+    }
+
+    let new = BlocklistDceRpcFields {
+        sensor: old.sensor,
+        orig_addr: old.orig_addr,
+        orig_port: old.orig_port,
+        resp_addr: old.resp_addr,
+        resp_port: old.resp_port,
+        proto: old.proto,
+        start_time: old.start_time,
+        duration: old.duration,
+        orig_pkts: old.orig_pkts,
+        resp_pkts: old.resp_pkts,
+        orig_l2_bytes: old.orig_l2_bytes,
+        resp_l2_bytes: old.resp_l2_bytes,
+        context: Vec::new(),
+        request,
         confidence: old.confidence,
         category: old.category,
     };
@@ -2479,5 +2596,122 @@ mod tests {
         // Run the migration - should succeed with no events
         let result = super::migrate_http_threat_events(db_dir.path());
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_migrate_blocklist_dcerpc_events() {
+        use std::net::IpAddr;
+
+        use bincode::Options;
+
+        use super::migration_structures::BlocklistDceRpcFieldsV0_42;
+        use crate::event::{BlocklistDceRpcFields, EventKind};
+
+        let db_dir = tempfile::tempdir().unwrap();
+        let db_path = db_dir.path().join("states.db");
+
+        let mut opts = rocksdb::Options::default();
+        opts.create_if_missing(true);
+        opts.create_missing_column_families(true);
+
+        let db: rocksdb::OptimisticTransactionDB<rocksdb::SingleThreaded> =
+            rocksdb::OptimisticTransactionDB::open_cf(&opts, &db_path, crate::tables::MAP_NAMES)
+                .unwrap();
+
+        let old_event = BlocklistDceRpcFieldsV0_42 {
+            sensor: "test-sensor".to_string(),
+            orig_addr: "192.168.1.1".parse::<IpAddr>().unwrap(),
+            orig_port: 12345,
+            resp_addr: "10.0.0.1".parse::<IpAddr>().unwrap(),
+            resp_port: 135,
+            proto: 6,
+            start_time: 1000,
+            duration: 100,
+            orig_pkts: 10,
+            resp_pkts: 20,
+            orig_l2_bytes: 1000,
+            resp_l2_bytes: 2000,
+            rtt: 42,
+            named_pipe: "svcctl".to_string(),
+            endpoint: "epmapper".to_string(),
+            operation: "bind".to_string(),
+            confidence: 0.95,
+            category: None,
+        };
+
+        let serialized = bincode::DefaultOptions::new()
+            .serialize(&old_event)
+            .unwrap();
+
+        let timestamp_nanos = chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0);
+        let event_kind = EventKind::BlocklistDceRpc as i32;
+        let random_bits: u32 = 12345;
+        let key_i128: i128 = (i128::from(timestamp_nanos) << 64)
+            | (i128::from(event_kind) << 32)
+            | i128::from(random_bits);
+        let key_bytes = key_i128.to_be_bytes();
+
+        db.put(key_bytes, &serialized).unwrap();
+        drop(db);
+
+        super::migrate_blocklist_dcerpc_events(db_dir.path()).unwrap();
+
+        let db: rocksdb::OptimisticTransactionDB<rocksdb::SingleThreaded> =
+            rocksdb::OptimisticTransactionDB::open_cf(&opts, &db_path, crate::tables::MAP_NAMES)
+                .unwrap();
+
+        let value = db.get(key_bytes).unwrap().unwrap();
+        let new_event: BlocklistDceRpcFields =
+            bincode::DefaultOptions::new().deserialize(&value).unwrap();
+
+        assert_eq!(new_event.sensor, "test-sensor");
+        assert_eq!(new_event.orig_port, 12345);
+        assert_eq!(new_event.resp_port, 135);
+        assert!(new_event.context.is_empty());
+        assert_eq!(new_event.request, vec!["svcctl", "epmapper", "bind"]);
+        assert!((new_event.confidence - 0.95).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn test_migrate_blocklist_dcerpc_fields_empty_strings() {
+        use std::net::IpAddr;
+
+        use bincode::Options;
+
+        use super::migration_structures::BlocklistDceRpcFieldsV0_42;
+        use crate::event::BlocklistDceRpcFields;
+
+        let old_event = BlocklistDceRpcFieldsV0_42 {
+            sensor: "sensor".to_string(),
+            orig_addr: "127.0.0.1".parse::<IpAddr>().unwrap(),
+            orig_port: 1000,
+            resp_addr: "127.0.0.2".parse::<IpAddr>().unwrap(),
+            resp_port: 135,
+            proto: 6,
+            start_time: 0,
+            duration: 0,
+            orig_pkts: 0,
+            resp_pkts: 0,
+            orig_l2_bytes: 0,
+            resp_l2_bytes: 0,
+            rtt: 0,
+            named_pipe: String::new(),
+            endpoint: String::new(),
+            operation: String::new(),
+            confidence: 1.0,
+            category: None,
+        };
+
+        let serialized = bincode::DefaultOptions::new()
+            .serialize(&old_event)
+            .unwrap();
+
+        let new_val = super::migrate_blocklist_dcerpc_fields(&serialized).unwrap();
+        let new_event: BlocklistDceRpcFields = bincode::DefaultOptions::new()
+            .deserialize(&new_val)
+            .unwrap();
+
+        assert!(new_event.context.is_empty());
+        assert!(new_event.request.is_empty());
     }
 }

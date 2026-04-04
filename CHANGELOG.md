@@ -19,6 +19,12 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **BREAKING**: Updated `BlocklistDceRpcFields` to replace
+  `rtt`, `named_pipe`, `endpoint`, and `operation` fields
+  with `context: Vec<DceRpcContext>` and
+  `request: Vec<String>` to support multiple DCE/RPC
+  contexts and requests. Added `DceRpcContext` struct.
+  Includes migration from the old format.
 - **BREAKING**: Replaced hardcoded `NonZeroU8` threat level
   constants with `review-protocol`'s `ThreatLevel` enum.
   `EventFilter::levels` now uses `Vec<ThreatLevel>` instead of

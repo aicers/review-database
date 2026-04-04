@@ -1686,10 +1686,8 @@ mod tests {
             resp_pkts: 0,
             orig_l2_bytes: 0,
             resp_l2_bytes: 0,
-            rtt: 1,
-            named_pipe: "svcctl".to_string(),
-            endpoint: "epmapper".to_string(),
-            operation: "bind".to_string(),
+            context: Vec::new(),
+            request: vec!["svcctl".to_string()],
             confidence: 1.0,
             category: Some(EventCategory::InitialAccess),
         }
