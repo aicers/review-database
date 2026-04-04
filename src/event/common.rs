@@ -287,7 +287,7 @@ pub(super) trait Match {
 
     fn score_by_confidence(&self, confidence: &[Confidence]) -> f64 {
         confidence.iter().fold(0.0, |score, conf| {
-            if Some(conf.threat_category) == self.category()
+            if conf.threat_category == self.category()
                 && conf.threat_kind.to_lowercase() == self.kind().to_lowercase()
                 && self
                     .confidence()

@@ -49,6 +49,62 @@ pub(crate) struct NetworkValueV0_43 {
 }
 
 // ============================================================================
+// Old triage policy structures for migration
+// (Confidence.threat_category: EventCategory -> Option<EventCategory>)
+// ============================================================================
+
+use crate::{PacketAttr, Response};
+
+/// `Confidence` structure from version 0.43.x (before `threat_category` became
+/// optional). In 0.43.x, `threat_category` was `EventCategory`. From 0.44.x
+/// alpha.3, it changed to `Option<EventCategory>`.
+#[derive(Clone, Deserialize, Serialize)]
+pub(crate) struct ConfidenceV0_43 {
+    pub(crate) threat_category: EventCategory,
+    pub(crate) threat_kind: String,
+    pub(crate) confidence: f64,
+    pub(crate) weight: Option<f64>,
+}
+
+/// `TriagePolicy` structure from version 0.43.x, containing `ConfidenceV0_43`
+/// with non-optional `threat_category`.
+#[derive(Clone, Deserialize, Serialize)]
+pub(crate) struct TriagePolicyV0_43 {
+    pub(crate) id: u32,
+    pub(crate) name: String,
+    pub(crate) triage_exclusion_id: Vec<u32>,
+    pub(crate) packet_attr: Vec<PacketAttr>,
+    pub(crate) confidence: Vec<ConfidenceV0_43>,
+    pub(crate) response: Vec<Response>,
+    pub(crate) creation_time: DateTime<Utc>,
+    pub(crate) customer_id: Option<u32>,
+}
+
+impl From<TriagePolicyV0_43> for crate::TriagePolicy {
+    fn from(old: TriagePolicyV0_43) -> Self {
+        Self {
+            id: old.id,
+            name: old.name,
+            triage_exclusion_id: old.triage_exclusion_id,
+            packet_attr: old.packet_attr,
+            confidence: old
+                .confidence
+                .into_iter()
+                .map(|c| crate::Confidence {
+                    threat_category: Some(c.threat_category),
+                    threat_kind: c.threat_kind,
+                    confidence: c.confidence,
+                    weight: c.weight,
+                })
+                .collect(),
+            response: old.response,
+            creation_time: old.creation_time,
+            customer_id: old.customer_id,
+        }
+    }
+}
+
+// ============================================================================
 // Old event structures for migration (cluster_id: Option<usize> -> Option<u32>)
 // ============================================================================
 

@@ -259,6 +259,52 @@ fn migrate_0_43_to_0_44(data_dir: &Path) -> Result<()> {
     // - BlocklistDhcp: add the new `options` field
     migrate_event_fields(data_dir)?;
 
+    // Migrate triage policy Confidence.threat_category from EventCategory to
+    // Option<EventCategory>, wrapping old values in Some(...)
+    migrate_triage_policy_confidence(data_dir)?;
+
+    Ok(())
+}
+
+/// Migrates triage policy records so that `Confidence.threat_category` is
+/// wrapped in `Some(...)` to match the new `Option<EventCategory>` layout.
+fn migrate_triage_policy_confidence(dir: &Path) -> Result<()> {
+    use bincode::Options;
+
+    use crate::Indexable;
+    use crate::migration::migration_structures::TriagePolicyV0_43;
+
+    let db_path = dir.join("states.db");
+    let mut opts = rocksdb::Options::default();
+    opts.create_if_missing(false);
+    opts.create_missing_column_families(false);
+
+    let db: rocksdb::OptimisticTransactionDB<rocksdb::SingleThreaded> =
+        rocksdb::OptimisticTransactionDB::open_cf(&opts, &db_path, crate::tables::MAP_NAMES)
+            .context("Failed to open database for triage policy migration")?;
+
+    let cf = db
+        .cf_handle(crate::tables::TRIAGE_POLICY)
+        .context("triage policy column family not found")?;
+
+    let mut migrated = 0usize;
+    let iter = db.iterator_cf(&cf, rocksdb::IteratorMode::Start);
+    for item in iter {
+        let (key, value) = item.context("failed to read triage policy entry")?;
+        let old: TriagePolicyV0_43 = bincode::DefaultOptions::new()
+            .deserialize(value.as_ref())
+            .context("failed to deserialize old triage policy")?;
+        let new = crate::TriagePolicy::from(old);
+        let new_value = new.value();
+        db.put_cf(&cf, &key, &new_value)
+            .context("failed to write migrated triage policy")?;
+        migrated += 1;
+    }
+
+    info!(
+        "Migrated {} triage policy records (Confidence.threat_category -> Option)",
+        migrated
+    );
     Ok(())
 }
 
@@ -2829,5 +2875,90 @@ mod tests {
         assert_eq!(new_event.client_id, vec![0xaa, 0xbb, 0xcc]);
         assert!((new_event.confidence - 0.8).abs() < f32::EPSILON);
         assert!(new_event.category.is_none());
+    }
+
+    /// Test that triage policy migration converts `Confidence.threat_category`
+    /// from `EventCategory` to `Some(EventCategory)`.
+    #[test]
+    fn migrate_triage_policy_confidence_wraps_category() {
+        use bincode::Options;
+
+        use super::migration_structures::{ConfidenceV0_43, TriagePolicyV0_43};
+        use crate::EventCategory;
+
+        let db_dir = tempfile::tempdir().unwrap();
+        let db_path = db_dir.path().join("states.db");
+
+        let mut opts = rocksdb::Options::default();
+        opts.create_if_missing(true);
+        opts.create_missing_column_families(true);
+
+        // Create database and insert an old-format triage policy
+        let db: rocksdb::OptimisticTransactionDB<rocksdb::SingleThreaded> =
+            rocksdb::OptimisticTransactionDB::open_cf(&opts, &db_path, crate::tables::MAP_NAMES)
+                .unwrap();
+
+        let cf = db.cf_handle(crate::tables::TRIAGE_POLICY).unwrap();
+
+        let old_policy = TriagePolicyV0_43 {
+            id: 1,
+            name: "test_policy".to_string(),
+            triage_exclusion_id: vec![],
+            packet_attr: vec![],
+            confidence: vec![
+                ConfidenceV0_43 {
+                    threat_category: EventCategory::Reconnaissance,
+                    threat_kind: "scan".to_string(),
+                    confidence: 0.9,
+                    weight: Some(2.0),
+                },
+                ConfidenceV0_43 {
+                    threat_category: EventCategory::Exfiltration,
+                    threat_kind: "dns_tunnel".to_string(),
+                    confidence: 0.5,
+                    weight: None,
+                },
+            ],
+            response: vec![],
+            creation_time: chrono::Utc::now(),
+            customer_id: None,
+        };
+
+        // Build the key: customer_id (u32::MAX for None) + name
+        let mut key = Vec::new();
+        key.extend_from_slice(&u32::MAX.to_be_bytes());
+        key.extend_from_slice(b"test_policy");
+
+        let old_value = bincode::DefaultOptions::new()
+            .serialize(&old_policy)
+            .unwrap();
+        db.put_cf(&cf, &key, &old_value).unwrap();
+        drop(db);
+
+        // Run the migration
+        super::migrate_triage_policy_confidence(db_dir.path()).unwrap();
+
+        // Reopen and verify
+        let db: rocksdb::OptimisticTransactionDB<rocksdb::SingleThreaded> =
+            rocksdb::OptimisticTransactionDB::open_cf(&opts, &db_path, crate::tables::MAP_NAMES)
+                .unwrap();
+        let cf = db.cf_handle(crate::tables::TRIAGE_POLICY).unwrap();
+
+        let migrated_bytes = db.get_cf(&cf, &key).unwrap().unwrap();
+        let migrated: crate::TriagePolicy = bincode::DefaultOptions::new()
+            .deserialize(&migrated_bytes)
+            .unwrap();
+
+        assert_eq!(migrated.confidence.len(), 2);
+        assert_eq!(
+            migrated.confidence[0].threat_category,
+            Some(EventCategory::Reconnaissance)
+        );
+        assert_eq!(migrated.confidence[0].threat_kind, "scan");
+        assert_eq!(
+            migrated.confidence[1].threat_category,
+            Some(EventCategory::Exfiltration)
+        );
+        assert_eq!(migrated.confidence[1].threat_kind, "dns_tunnel");
     }
 }

@@ -461,9 +461,9 @@ impl Ord for PacketAttr {
     }
 }
 
-#[derive(Clone, PartialEq, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 pub struct Confidence {
-    pub threat_category: EventCategory,
+    pub threat_category: Option<EventCategory>,
     pub threat_kind: String,
     pub confidence: f64,
     pub weight: Option<f64>,
@@ -478,8 +478,16 @@ impl PartialOrd for Confidence {
 }
 
 impl Ord for Confidence {
+    /// Ordering: `threat_category` first (None < Some, delegating to
+    /// `EventCategory::cmp` for two `Some` values), then `threat_kind`,
+    /// `confidence`, and `weight`.
     fn cmp(&self, other: &Self) -> Ordering {
-        let first = self.threat_category.cmp(&other.threat_category);
+        let first = match (self.threat_category, other.threat_category) {
+            (None, None) => Ordering::Equal,
+            (None, Some(_)) => Ordering::Less,
+            (Some(_), None) => Ordering::Greater,
+            (Some(a), Some(b)) => a.cmp(&b),
+        };
         if first != Ordering::Equal {
             return first;
         }
@@ -847,5 +855,100 @@ mod test {
             exclusion_reason: ExclusionReason::Domain(vec!["example.com".to_string()]),
             description: description.to_string(),
         }
+    }
+
+    // =========================================================================
+    // Confidence: persistence, ordering, and optional threat_category tests
+    // =========================================================================
+
+    use crate::{Confidence, EventCategory};
+
+    fn make_confidence(
+        category: Option<EventCategory>,
+        kind: &str,
+        confidence: f64,
+        weight: Option<f64>,
+    ) -> Confidence {
+        Confidence {
+            threat_category: category,
+            threat_kind: kind.to_string(),
+            confidence,
+            weight,
+        }
+    }
+
+    #[test]
+    fn confidence_bincode_roundtrip_some() {
+        use bincode::Options;
+
+        let conf = make_confidence(
+            Some(EventCategory::Reconnaissance),
+            "brute_force",
+            0.9,
+            Some(2.0),
+        );
+        let bytes = bincode::DefaultOptions::new().serialize(&conf).unwrap();
+        let back: Confidence = bincode::DefaultOptions::new().deserialize(&bytes).unwrap();
+        assert_eq!(conf, back);
+    }
+
+    #[test]
+    fn confidence_bincode_roundtrip_none() {
+        use bincode::Options;
+
+        let conf = make_confidence(None, "unknown", 0.5, None);
+        let bytes = bincode::DefaultOptions::new().serialize(&conf).unwrap();
+        let back: Confidence = bincode::DefaultOptions::new().deserialize(&bytes).unwrap();
+        assert_eq!(conf, back);
+    }
+
+    #[test]
+    fn confidence_ordering_none_less_than_some() {
+        let none_conf = make_confidence(None, "a", 0.5, None);
+        let some_conf = make_confidence(Some(EventCategory::Reconnaissance), "a", 0.5, None);
+        assert!(none_conf < some_conf);
+        assert!(some_conf > none_conf);
+    }
+
+    #[test]
+    fn confidence_ordering_some_vs_some_preserves_category_order() {
+        let recon = make_confidence(Some(EventCategory::Reconnaissance), "a", 0.5, None);
+        let exec = make_confidence(Some(EventCategory::Execution), "a", 0.5, None);
+        // EventCategory derives Ord from repr(u8) order:
+        // Reconnaissance = 1, Execution = 3
+        assert!(recon < exec);
+    }
+
+    #[test]
+    fn confidence_ordering_none_vs_none_falls_through_to_kind() {
+        let a = make_confidence(None, "alpha", 0.5, None);
+        let b = make_confidence(None, "beta", 0.5, None);
+        assert!(a < b);
+    }
+
+    #[test]
+    fn confidence_persistence_in_triage_policy() {
+        let (_permit, store) = setup_store();
+        let table = store.triage_policy_map();
+
+        let mut entry = create_entry("conf_test", None);
+        entry.confidence = vec![
+            make_confidence(
+                Some(EventCategory::Exfiltration),
+                "dns_tunnel",
+                0.8,
+                Some(1.5),
+            ),
+            make_confidence(None, "generic", 0.3, None),
+        ];
+        let id = table.put(entry.clone()).unwrap();
+
+        let retrieved = table.get_by_id(id).unwrap().unwrap();
+        assert_eq!(retrieved.confidence.len(), 2);
+        assert_eq!(
+            retrieved.confidence[0].threat_category,
+            Some(EventCategory::Exfiltration)
+        );
+        assert_eq!(retrieved.confidence[1].threat_category, None);
     }
 }
