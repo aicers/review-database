@@ -2469,7 +2469,7 @@ impl<'a> EventDb<'a> {
 
     /// Stores a new event from an external source into the database.
     ///
-    /// Unlike [`put`], this method accepts event fields serialized in the external
+    /// Unlike [`Self::put`], this method accepts event fields serialized in the external
     /// format (without country code fields). It deserializes the fields using the
     /// external schema, adds default country codes (`"ZZ"`), re-serializes in the
     /// internal schema, and then stores the result.
