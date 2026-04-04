@@ -112,6 +112,16 @@ impl<'d> Table<'d, String> {
             .map(|p| String::from_utf8(p.as_ref().to_owned()).map_err(|e| anyhow!("{e}")))
             .transpose()
     }
+
+    /// Deletes a config key.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the key does not exist or the database operation
+    /// fails.
+    pub fn delete(&self, key: &str) -> Result<()> {
+        self.map.delete(key.as_bytes()).map_err(Into::into)
+    }
 }
 
 #[cfg(test)]
@@ -882,6 +892,13 @@ mod tests {
         assert_eq!(
             config.current(KEY_EVENT_RETENTION_PERIOD_DAYS).unwrap(),
             Some("180".to_string())
+        );
+
+        // Setting unlimited removes the key entirely.
+        store.set_event_retention_period(None).unwrap();
+        assert_eq!(
+            config.current(KEY_EVENT_RETENTION_PERIOD_DAYS).unwrap(),
+            None
         );
     }
 }
