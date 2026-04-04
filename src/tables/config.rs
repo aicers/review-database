@@ -120,7 +120,7 @@ impl<'d> Table<'d, String> {
     /// Returns an error if the key does not exist or the database operation
     /// fails.
     pub fn delete(&self, key: &str) -> Result<()> {
-        self.map.delete(key.as_bytes()).map_err(Into::into)
+        self.map.delete(key.as_bytes())
     }
 }
 

@@ -335,7 +335,7 @@ impl Store {
     /// operation fails.
     pub fn set_event_retention_period(&self, days: Option<u32>) -> Result<()> {
         match days {
-            Some(0) => return Err(anyhow!("event retention period must be >= 1 day")),
+            Some(0) => Err(anyhow!("event retention period must be >= 1 day")),
             Some(d) => self
                 .config_map()
                 .update(tables::KEY_EVENT_RETENTION_PERIOD_DAYS, &d.to_string()),
