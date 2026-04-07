@@ -58,33 +58,6 @@ use chrono::serde::ts_nanoseconds;
 
 use crate::EventCategory;
 
-/// `BlocklistDceRpcFields` structure from version 0.42.x (before context/request changes)
-///
-/// In 0.42.x, DCE/RPC events used single-value fields (`rtt`, `named_pipe`,
-/// `endpoint`, `operation`). From 0.44.x, these were replaced with
-/// `context: Vec<DceRpcContext>` and `request: Vec<String>`.
-#[derive(Deserialize, Serialize)]
-pub(crate) struct BlocklistDceRpcFieldsV0_42 {
-    pub(crate) sensor: String,
-    pub(crate) orig_addr: IpAddr,
-    pub(crate) orig_port: u16,
-    pub(crate) resp_addr: IpAddr,
-    pub(crate) resp_port: u16,
-    pub(crate) proto: u8,
-    pub(crate) start_time: i64,
-    pub(crate) duration: i64,
-    pub(crate) orig_pkts: u64,
-    pub(crate) resp_pkts: u64,
-    pub(crate) orig_l2_bytes: u64,
-    pub(crate) resp_l2_bytes: u64,
-    pub(crate) rtt: i64,
-    pub(crate) named_pipe: String,
-    pub(crate) endpoint: String,
-    pub(crate) operation: String,
-    pub(crate) confidence: f32,
-    pub(crate) category: Option<EventCategory>,
-}
-
 /// `HttpThreatFields` structure from version 0.43.x (before `cluster_id` type change)
 /// In 0.43.x, `cluster_id` was `Option<usize>`. From 0.44.x, it changed to `Option<u32>`.
 ///

@@ -15,9 +15,11 @@ use tracing::info;
 
 use crate::{
     AllowNetwork, BlockNetwork, Customer,
-    event::{BlocklistDceRpcFields, EventKind, HttpThreatFields},
+    event::{
+        BlocklistDceRpcFields, BlocklistDceRpcFieldsV0_42, EventKind, HttpThreatFields,
+    },
     migration::migration_structures::{
-        AllowNetworkV0_42, BlockNetworkV0_42, BlocklistDceRpcFieldsV0_42, HttpThreatFieldsV0_43,
+        AllowNetworkV0_42, BlockNetworkV0_42, HttpThreatFieldsV0_43,
     },
     tables::NETWORK_TAGS,
 };
@@ -1072,17 +1074,6 @@ fn migrate_blocklist_dcerpc_events(dir: &Path) -> Result<()> {
 fn migrate_blocklist_dcerpc_fields(value: &[u8]) -> Option<Vec<u8>> {
     let old: BlocklistDceRpcFieldsV0_42 = bincode::DefaultOptions::new().deserialize(value).ok()?;
 
-    let mut request = Vec::new();
-    if !old.named_pipe.is_empty() {
-        request.push(old.named_pipe);
-    }
-    if !old.endpoint.is_empty() {
-        request.push(old.endpoint);
-    }
-    if !old.operation.is_empty() {
-        request.push(old.operation);
-    }
-
     let new = BlocklistDceRpcFields {
         sensor: old.sensor,
         orig_addr: old.orig_addr,
@@ -1097,7 +1088,7 @@ fn migrate_blocklist_dcerpc_fields(value: &[u8]) -> Option<Vec<u8>> {
         orig_l2_bytes: old.orig_l2_bytes,
         resp_l2_bytes: old.resp_l2_bytes,
         context: Vec::new(),
-        request,
+        request: Vec::new(),
         confidence: old.confidence,
         category: old.category,
     };
@@ -2604,7 +2595,7 @@ mod tests {
 
         use bincode::Options;
 
-        use super::migration_structures::BlocklistDceRpcFieldsV0_42;
+        use crate::event::BlocklistDceRpcFieldsV0_42;
         use crate::event::{BlocklistDceRpcFields, EventKind};
 
         let db_dir = tempfile::tempdir().unwrap();
@@ -2668,7 +2659,7 @@ mod tests {
         assert_eq!(new_event.orig_port, 12345);
         assert_eq!(new_event.resp_port, 135);
         assert!(new_event.context.is_empty());
-        assert_eq!(new_event.request, vec!["svcctl", "epmapper", "bind"]);
+        assert!(new_event.request.is_empty());
         assert!((new_event.confidence - 0.95).abs() < f32::EPSILON);
     }
 
@@ -2678,7 +2669,7 @@ mod tests {
 
         use bincode::Options;
 
-        use super::migration_structures::BlocklistDceRpcFieldsV0_42;
+        use crate::event::BlocklistDceRpcFieldsV0_42;
         use crate::event::BlocklistDceRpcFields;
 
         let old_event = BlocklistDceRpcFieldsV0_42 {

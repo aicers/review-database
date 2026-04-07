@@ -52,7 +52,7 @@ pub use self::{
         BlocklistConn, BlocklistConnFields, ExternalDdos, ExternalDdosFields, MultiHostPortScan,
         MultiHostPortScanFields, PortScan, PortScanFields,
     },
-    dcerpc::{BlocklistDceRpc, BlocklistDceRpcFields, DceRpcContext},
+    dcerpc::{BlocklistDceRpc, BlocklistDceRpcFields, BlocklistDceRpcFieldsV0_42, DceRpcContext},
     dhcp::{BlocklistDhcp, BlocklistDhcpFields},
     dns::{
         BlocklistDns, BlocklistDnsFields, CryptocurrencyMiningPool, CryptocurrencyMiningPoolFields,
