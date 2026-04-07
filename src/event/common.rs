@@ -335,6 +335,31 @@ pub fn vector_to_string<T: ToString>(v: &[T]) -> String {
     }
 }
 
+/// Formats DHCP options as a compact string.
+///
+/// Each option is represented as `code:hex_data` where the data is
+/// hex-encoded. Options are comma-separated. At most 8 options are
+/// shown; if there are more, `+N more` is appended.
+const MAX_DHCP_OPTIONS_DISPLAY: usize = 8;
+
+pub fn dhcp_options_to_string(options: &[(u8, Vec<u8>)]) -> String {
+    if options.is_empty() {
+        return String::new();
+    }
+    let shown = options.len().min(MAX_DHCP_OPTIONS_DISPLAY);
+    let mut parts: Vec<String> = options[..shown]
+        .iter()
+        .map(|(code, data)| format!("{code}:{}", hex::encode(data)))
+        .collect();
+    if options.len() > MAX_DHCP_OPTIONS_DISPLAY {
+        parts.push(format!(
+            "+{} more",
+            options.len() - MAX_DHCP_OPTIONS_DISPLAY
+        ));
+    }
+    parts.join(",")
+}
+
 /// Converts a hardware address to a colon-separated string.
 pub fn to_hardware_address(chaddr: &[u8]) -> String {
     let mut iter = chaddr.iter();
@@ -1730,6 +1755,7 @@ mod tests {
             class_id: "MSFT 5.0".as_bytes().to_vec(),
             client_id_type: 1,
             client_id: vec![7, 8, 9],
+            options: vec![],
             confidence: 1.0,
             category: Some(EventCategory::InitialAccess),
         }

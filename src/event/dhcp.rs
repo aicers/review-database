@@ -8,7 +8,9 @@ use super::{
     EventCategory, LearningMethod, ThreatLevel, TriageScore,
     common::{AttrValue, Match},
 };
-use crate::event::common::{to_hardware_address, triage_scores_to_string, vector_to_string};
+use crate::event::common::{
+    dhcp_options_to_string, to_hardware_address, triage_scores_to_string, vector_to_string,
+};
 
 macro_rules! find_dhcp_attr_by_kind {
     ($event: expr, $raw_event_attr: expr) => {{
@@ -93,6 +95,7 @@ pub struct BlocklistDhcpFieldsV0_42 {
     pub class_id: Vec<u8>,
     pub client_id_type: u8,
     pub client_id: Vec<u8>,
+    pub options: Vec<(u8, Vec<u8>)>,
     pub confidence: f32,
     pub category: Option<EventCategory>,
 }
@@ -107,7 +110,7 @@ impl BlocklistDhcpFields {
     pub fn syslog_rfc5424(&self) -> String {
         let start_time_dt = DateTime::from_timestamp_nanos(self.start_time);
         format!(
-            "category={:?} sensor={:?} orig_addr={:?} orig_port={:?} resp_addr={:?} resp_port={:?} proto={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} msg_type={:?} ciaddr={:?} yiaddr={:?} siaddr={:?} giaddr={:?} subnet_mask={:?} router={:?} domain_name_server={:?} req_ip_addr={:?} lease_time={:?} server_id={:?} param_req_list={:?} message={:?} renewal_time={:?} rebinding_time={:?} class_id={:?} client_id_type={:?} client_id={:?} confidence={:?}",
+            "category={:?} sensor={:?} orig_addr={:?} orig_port={:?} resp_addr={:?} resp_port={:?} proto={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} msg_type={:?} ciaddr={:?} yiaddr={:?} siaddr={:?} giaddr={:?} subnet_mask={:?} router={:?} domain_name_server={:?} req_ip_addr={:?} lease_time={:?} server_id={:?} param_req_list={:?} message={:?} renewal_time={:?} rebinding_time={:?} class_id={:?} client_id_type={:?} client_id={:?} options={:?} confidence={:?}",
             self.category.as_ref().map_or_else(
                 || "Unspecified".to_string(),
                 std::string::ToString::to_string
@@ -144,6 +147,7 @@ impl BlocklistDhcpFields {
                 .to_string(),
             self.client_id_type.to_string(),
             to_hardware_address(&self.client_id),
+            dhcp_options_to_string(&self.options),
             self.confidence.to_string(),
         )
     }
@@ -182,6 +186,7 @@ pub struct BlocklistDhcp {
     pub class_id: Vec<u8>,
     pub client_id_type: u8,
     pub client_id: Vec<u8>,
+    pub options: Vec<(u8, Vec<u8>)>,
     pub confidence: f32,
     pub category: Option<EventCategory>,
     pub triage_scores: Option<Vec<TriageScore>>,
@@ -190,7 +195,7 @@ impl fmt::Display for BlocklistDhcp {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "sensor={:?} orig_addr={:?} orig_port={:?} resp_addr={:?} resp_port={:?} proto={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} msg_type={:?} ciaddr={:?} yiaddr={:?} siaddr={:?} giaddr={:?} subnet_mask={:?} router={:?} domain_name_server={:?} req_ip_addr={:?} lease_time={:?} server_id={:?} param_req_list={:?} message={:?} renewal_time={:?} rebinding_time={:?} class_id={:?} client_id_type={:?} client_id={:?} triage_scores={:?}",
+            "sensor={:?} orig_addr={:?} orig_port={:?} resp_addr={:?} resp_port={:?} proto={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} msg_type={:?} ciaddr={:?} yiaddr={:?} siaddr={:?} giaddr={:?} subnet_mask={:?} router={:?} domain_name_server={:?} req_ip_addr={:?} lease_time={:?} server_id={:?} param_req_list={:?} message={:?} renewal_time={:?} rebinding_time={:?} class_id={:?} client_id_type={:?} client_id={:?} options={:?} triage_scores={:?}",
             self.sensor,
             self.orig_addr.to_string(),
             self.orig_port.to_string(),
@@ -223,6 +228,7 @@ impl fmt::Display for BlocklistDhcp {
                 .to_string(),
             self.client_id_type.to_string(),
             to_hardware_address(&self.client_id),
+            dhcp_options_to_string(&self.options),
             triage_scores_to_string(self.triage_scores.as_ref())
         )
     }
@@ -262,6 +268,7 @@ impl BlocklistDhcp {
             class_id: fields.class_id,
             client_id_type: fields.client_id_type,
             client_id: fields.client_id,
+            options: fields.options,
             confidence: fields.confidence,
             category: fields.category,
             triage_scores: None,

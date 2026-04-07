@@ -15,9 +15,12 @@ use tracing::info;
 
 use crate::{
     AllowNetwork, BlockNetwork, Customer,
-    event::{BlocklistDceRpcFields, BlocklistDceRpcFieldsV0_42, EventKind, HttpThreatFields},
+    event::{
+        BlocklistDceRpcFields, BlocklistDceRpcFieldsV0_42, BlocklistDhcpFields, EventKind,
+        HttpThreatFields,
+    },
     migration::migration_structures::{
-        AllowNetworkV0_42, BlockNetworkV0_42, HttpThreatFieldsV0_43,
+        AllowNetworkV0_42, BlockNetworkV0_42, BlocklistDhcpFieldsV0_44, HttpThreatFieldsV0_43,
     },
     tables::NETWORK_TAGS,
 };
@@ -160,6 +163,11 @@ pub fn migrate_data_dir<P: AsRef<Path>>(data_dir: P, backup_dir: P) -> Result<()
             VersionReq::parse(">=0.43.0,<0.44.0-alpha.3")?,
             Version::parse("0.44.0-alpha.3")?,
             migrate_0_43_to_0_44,
+        ),
+        (
+            VersionReq::parse(">=0.44.0-alpha.2,<0.44.0-alpha.3")?,
+            Version::parse("0.44.0-alpha.3")?,
+            migrate_0_44_alpha2_to_0_44_alpha3,
         ),
     ];
 
@@ -1087,6 +1095,134 @@ fn migrate_blocklist_dcerpc_fields(value: &[u8]) -> Option<Vec<u8>> {
         resp_l2_bytes: old.resp_l2_bytes,
         context: Vec::new(),
         request: Vec::new(),
+        confidence: old.confidence,
+        category: old.category,
+    };
+
+    bincode::DefaultOptions::new().serialize(&new).ok()
+}
+
+fn migrate_0_44_alpha2_to_0_44_alpha3(data_dir: &Path) -> Result<()> {
+    migrate_blocklist_dhcp_events(data_dir)
+}
+
+/// Migrates `BlocklistDhcp` events to add the new `options` field.
+///
+/// Old records serialized without `options` are deserialized using
+/// `BlocklistDhcpFieldsV0_44` and re-serialized with `options: vec![]`.
+fn migrate_blocklist_dhcp_events(dir: &Path) -> Result<()> {
+    use num_traits::FromPrimitive;
+
+    const BATCH_SIZE: usize = 100;
+
+    let db_path = dir.join("states.db");
+
+    let mut opts = rocksdb::Options::default();
+    opts.create_if_missing(false);
+    opts.create_missing_column_families(false);
+
+    let db: rocksdb::OptimisticTransactionDB<rocksdb::SingleThreaded> =
+        rocksdb::OptimisticTransactionDB::open_cf(&opts, &db_path, crate::tables::MAP_NAMES)
+            .context("Failed to open database for BlocklistDhcp event migration")?;
+
+    let mut migrated_count = 0usize;
+    let mut errors = 0usize;
+    let mut batch: Vec<(Vec<u8>, Vec<u8>)> = Vec::with_capacity(BATCH_SIZE);
+
+    for item in db.iterator(rocksdb::IteratorMode::Start) {
+        let (key, value) = item.context("failed to read event entry")?;
+
+        if key.len() != 16 {
+            continue;
+        }
+
+        let key_i128 = i128::from_be_bytes(key.as_ref().try_into().unwrap_or([0; 16]));
+        let event_kind_val = ((key_i128 >> 32) & 0xFFFF_FFFF) as i32;
+
+        let Some(event_kind) = EventKind::from_i32(event_kind_val) else {
+            continue;
+        };
+
+        if event_kind == EventKind::BlocklistDhcp {
+            if let Some(new_val) = migrate_blocklist_dhcp_fields(&value) {
+                batch.push((key.to_vec(), new_val));
+                migrated_count += 1;
+
+                if batch.len() >= BATCH_SIZE {
+                    let txn = db.transaction();
+                    for (k, v) in batch.drain(..) {
+                        txn.put(&k, &v)?;
+                    }
+                    txn.commit()
+                        .context("failed to commit BlocklistDhcp event migration batch")?;
+                }
+            } else {
+                errors += 1;
+            }
+        }
+    }
+
+    if !batch.is_empty() {
+        let txn = db.transaction();
+        for (k, v) in batch.drain(..) {
+            txn.put(&k, &v)?;
+        }
+        txn.commit()
+            .context("failed to commit final BlocklistDhcp event migration batch")?;
+    }
+
+    if errors > 0 {
+        info!(
+            "BlocklistDhcp event migration: migrated {} events, {} events skipped \
+             (possibly already migrated)",
+            migrated_count, errors
+        );
+    } else {
+        info!(
+            "Migrated {} BlocklistDhcp events to add options field",
+            migrated_count
+        );
+    }
+
+    Ok(())
+}
+
+/// Migrates a single `BlocklistDhcpFields` record by adding an empty `options` field.
+fn migrate_blocklist_dhcp_fields(value: &[u8]) -> Option<Vec<u8>> {
+    let old: BlocklistDhcpFieldsV0_44 = bincode::DefaultOptions::new().deserialize(value).ok()?;
+
+    let new = BlocklistDhcpFields {
+        sensor: old.sensor,
+        orig_addr: old.orig_addr,
+        orig_port: old.orig_port,
+        resp_addr: old.resp_addr,
+        resp_port: old.resp_port,
+        proto: old.proto,
+        start_time: old.start_time,
+        duration: old.duration,
+        orig_pkts: old.orig_pkts,
+        resp_pkts: old.resp_pkts,
+        orig_l2_bytes: old.orig_l2_bytes,
+        resp_l2_bytes: old.resp_l2_bytes,
+        msg_type: old.msg_type,
+        ciaddr: old.ciaddr,
+        yiaddr: old.yiaddr,
+        siaddr: old.siaddr,
+        giaddr: old.giaddr,
+        subnet_mask: old.subnet_mask,
+        router: old.router,
+        domain_name_server: old.domain_name_server,
+        req_ip_addr: old.req_ip_addr,
+        lease_time: old.lease_time,
+        server_id: old.server_id,
+        param_req_list: old.param_req_list,
+        message: old.message,
+        renewal_time: old.renewal_time,
+        rebinding_time: old.rebinding_time,
+        class_id: old.class_id,
+        client_id_type: old.client_id_type,
+        client_id: old.client_id,
+        options: vec![],
         confidence: old.confidence,
         category: old.category,
     };

@@ -16,6 +16,10 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 - Added `BackupConfigUpdate` struct for partial backup configuration updates.
 - Re-exported `ThreatLevel` from `review-protocol` as
   `review_database::ThreatLevel`.
+- Added `options: Vec<(u8, Vec<u8>)>` field to
+  `BlocklistDhcpFields` and `BlocklistDhcp` to support all
+  DHCP option values. Existing records are migrated with an
+  empty options list.
 
 ### Changed
 
