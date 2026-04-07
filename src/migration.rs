@@ -15,9 +15,7 @@ use tracing::info;
 
 use crate::{
     AllowNetwork, BlockNetwork, Customer,
-    event::{
-        BlocklistDceRpcFields, BlocklistDceRpcFieldsV0_42, EventKind, HttpThreatFields,
-    },
+    event::{BlocklistDceRpcFields, BlocklistDceRpcFieldsV0_42, EventKind, HttpThreatFields},
     migration::migration_structures::{
         AllowNetworkV0_42, BlockNetworkV0_42, HttpThreatFieldsV0_43,
     },
@@ -2669,8 +2667,8 @@ mod tests {
 
         use bincode::Options;
 
-        use crate::event::BlocklistDceRpcFieldsV0_42;
         use crate::event::BlocklistDceRpcFields;
+        use crate::event::BlocklistDceRpcFieldsV0_42;
 
         let old_event = BlocklistDceRpcFieldsV0_42 {
             sensor: "sensor".to_string(),
