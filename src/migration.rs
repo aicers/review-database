@@ -106,7 +106,7 @@ use crate::{
 /// // release that involves database format change) to 3.5.0, including
 /// // all alpha changes finalized in 3.5.0.
 /// ```
-const COMPATIBLE_VERSION_REQ: &str = ">=0.44.0,<0.45.0-alpha";
+const COMPATIBLE_VERSION_REQ: &str = ">=0.45.0-alpha.1,<0.45.0-alpha.2";
 
 /// Migrates the data directory to the up-to-date format if necessary.
 ///
@@ -163,6 +163,11 @@ pub fn migrate_data_dir<P: AsRef<Path>>(data_dir: P, backup_dir: P) -> Result<()
             VersionReq::parse(">=0.43.0,<0.44.0")?,
             Version::parse("0.44.0")?,
             migrate_0_43_to_0_44,
+        ),
+        (
+            VersionReq::parse(">=0.44.0,<0.45.0-alpha.1")?,
+            Version::parse("0.45.0-alpha.1")?,
+            migrate_0_44_to_0_45,
         ),
     ];
 
@@ -259,6 +264,10 @@ fn migrate_0_43_to_0_44(data_dir: &Path) -> Result<()> {
     // - BlocklistDhcp: add the new `options` field
     migrate_event_fields(data_dir)?;
 
+    Ok(())
+}
+
+fn migrate_0_44_to_0_45(data_dir: &Path) -> Result<()> {
     // Migrate triage policy Confidence.threat_category from EventCategory to
     // Option<EventCategory>, wrapping old values in Some(...)
     migrate_triage_policy_confidence(data_dir)?;
@@ -291,6 +300,12 @@ fn migrate_triage_policy_confidence(dir: &Path) -> Result<()> {
     let iter = db.iterator_cf(&cf, rocksdb::IteratorMode::Start);
     for item in iter {
         let (key, value) = item.context("failed to read triage policy entry")?;
+
+        // Skip the index entry (empty key) used by IndexedMap metadata
+        if key.is_empty() {
+            continue;
+        }
+
         let old: TriagePolicyV0_43 = bincode::DefaultOptions::new()
             .deserialize(value.as_ref())
             .context("failed to deserialize old triage policy")?;

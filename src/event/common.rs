@@ -2718,4 +2718,80 @@ mod tests {
             category: Some(EventCategory::InitialAccess),
         }
     }
+
+    use crate::Confidence;
+
+    fn make_confidence(
+        category: Option<EventCategory>,
+        kind: &str,
+        confidence: f64,
+        weight: Option<f64>,
+    ) -> Confidence {
+        Confidence {
+            threat_category: category,
+            threat_kind: kind.to_string(),
+            confidence,
+            weight,
+        }
+    }
+
+    /// Tests that `score_by_confidence` with `None` category matches only
+    /// events whose `category()` returns `None`, and `Some(category)` matches
+    /// only events with the same category.
+    #[test]
+    fn score_by_confidence_none_matches_only_none_category() {
+        let time = Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap();
+
+        // Event with category = Some(Reconnaissance)
+        let fields_with_cat = http_threat_fields(); // category: Some(Reconnaissance)
+        let event_with_cat = HttpThreat::new(time, fields_with_cat);
+
+        // Event with category = None
+        let mut fields_no_cat = http_threat_fields();
+        fields_no_cat.category = None;
+        let event_no_cat = HttpThreat::new(time, fields_no_cat);
+
+        // Confidence targeting None category, matching kind "http threat"
+        let conf_none = vec![make_confidence(None, "http threat", 0.0, Some(5.0))];
+
+        // Confidence targeting Some(Reconnaissance), matching kind "http threat"
+        let conf_some = vec![make_confidence(
+            Some(EventCategory::Reconnaissance),
+            "http threat",
+            0.0,
+            Some(3.0),
+        )];
+
+        // None-category confidence must NOT match an event with Some(Reconnaissance)
+        assert_eq!(
+            event_with_cat
+                .score_by_confidence(&conf_none)
+                .partial_cmp(&0.0),
+            Some(Ordering::Equal)
+        );
+
+        // None-category confidence MUST match an event with None category
+        assert_eq!(
+            event_no_cat
+                .score_by_confidence(&conf_none)
+                .partial_cmp(&5.0),
+            Some(Ordering::Equal)
+        );
+
+        // Some(Recon) confidence MUST match an event with Some(Reconnaissance)
+        assert_eq!(
+            event_with_cat
+                .score_by_confidence(&conf_some)
+                .partial_cmp(&3.0),
+            Some(Ordering::Equal)
+        );
+
+        // Some(Recon) confidence must NOT match an event with None category
+        assert_eq!(
+            event_no_cat
+                .score_by_confidence(&conf_some)
+                .partial_cmp(&0.0),
+            Some(Ordering::Equal)
+        );
+    }
 }
