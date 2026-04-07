@@ -20,7 +20,7 @@ use crate::{
         HttpThreatFields,
     },
     migration::migration_structures::{
-        AllowNetworkV0_42, BlockNetworkV0_42, BlocklistDhcpFieldsV0_44, HttpThreatFieldsV0_43,
+        AllowNetworkV0_42, BlockNetworkV0_42, BlocklistDhcpFieldsV0_42, HttpThreatFieldsV0_43,
     },
     tables::NETWORK_TAGS,
 };
@@ -164,11 +164,6 @@ pub fn migrate_data_dir<P: AsRef<Path>>(data_dir: P, backup_dir: P) -> Result<()
             Version::parse("0.44.0-alpha.3")?,
             migrate_0_43_to_0_44,
         ),
-        (
-            VersionReq::parse(">=0.44.0-alpha.2,<0.44.0-alpha.3")?,
-            Version::parse("0.44.0-alpha.3")?,
-            migrate_0_44_alpha2_to_0_44_alpha3,
-        ),
     ];
 
     while let Some((_req, to, m)) = migration
@@ -269,6 +264,9 @@ fn migrate_0_43_to_0_44(data_dir: &Path) -> Result<()> {
     // Migrate BlocklistDceRpc events: replace rtt/named_pipe/endpoint/operation
     // with context (Vec<DceRpcContext>) and request (Vec<String>)
     migrate_blocklist_dcerpc_events(data_dir)?;
+
+    // Migrate BlocklistDhcp events to add the new `options` field
+    migrate_blocklist_dhcp_events(data_dir)?;
 
     Ok(())
 }
@@ -1102,14 +1100,10 @@ fn migrate_blocklist_dcerpc_fields(value: &[u8]) -> Option<Vec<u8>> {
     bincode::DefaultOptions::new().serialize(&new).ok()
 }
 
-fn migrate_0_44_alpha2_to_0_44_alpha3(data_dir: &Path) -> Result<()> {
-    migrate_blocklist_dhcp_events(data_dir)
-}
-
 /// Migrates `BlocklistDhcp` events to add the new `options` field.
 ///
 /// Old records serialized without `options` are deserialized using
-/// `BlocklistDhcpFieldsV0_44` and re-serialized with `options: vec![]`.
+/// `BlocklistDhcpFieldsV0_42` and re-serialized with `options: vec![]`.
 fn migrate_blocklist_dhcp_events(dir: &Path) -> Result<()> {
     use num_traits::FromPrimitive;
 
@@ -1189,7 +1183,7 @@ fn migrate_blocklist_dhcp_events(dir: &Path) -> Result<()> {
 
 /// Migrates a single `BlocklistDhcpFields` record by adding an empty `options` field.
 fn migrate_blocklist_dhcp_fields(value: &[u8]) -> Option<Vec<u8>> {
-    let old: BlocklistDhcpFieldsV0_44 = bincode::DefaultOptions::new().deserialize(value).ok()?;
+    let old: BlocklistDhcpFieldsV0_42 = bincode::DefaultOptions::new().deserialize(value).ok()?;
 
     let new = BlocklistDhcpFields {
         sensor: old.sensor,
@@ -2838,5 +2832,121 @@ mod tests {
 
         assert!(new_event.context.is_empty());
         assert!(new_event.request.is_empty());
+    }
+
+    #[test]
+    fn test_migrate_blocklist_dhcp_events() {
+        use std::net::IpAddr;
+
+        use bincode::Options;
+
+        use super::migration_structures::BlocklistDhcpFieldsV0_42;
+        use crate::event::{BlocklistDhcpFields, EventKind};
+
+        // Create test directory and database
+        let db_dir = tempfile::tempdir().unwrap();
+        let db_path = db_dir.path().join("states.db");
+
+        let mut opts = rocksdb::Options::default();
+        opts.create_if_missing(true);
+        opts.create_missing_column_families(true);
+
+        let db: rocksdb::OptimisticTransactionDB<rocksdb::SingleThreaded> =
+            rocksdb::OptimisticTransactionDB::open_cf(&opts, &db_path, crate::tables::MAP_NAMES)
+                .unwrap();
+
+        // Create old-format BlocklistDhcpFields without `options` field
+        let old_event = BlocklistDhcpFieldsV0_42 {
+            sensor: "test-sensor".to_string(),
+            orig_addr: "192.168.1.1".parse::<IpAddr>().unwrap(),
+            orig_port: 68,
+            resp_addr: "10.0.0.1".parse::<IpAddr>().unwrap(),
+            resp_port: 67,
+            proto: 17,
+            start_time: 1000,
+            duration: 100,
+            orig_pkts: 1,
+            resp_pkts: 1,
+            orig_l2_bytes: 300,
+            resp_l2_bytes: 300,
+            msg_type: 1,
+            ciaddr: "0.0.0.0".parse::<IpAddr>().unwrap(),
+            yiaddr: "192.168.1.100".parse::<IpAddr>().unwrap(),
+            siaddr: "10.0.0.1".parse::<IpAddr>().unwrap(),
+            giaddr: "0.0.0.0".parse::<IpAddr>().unwrap(),
+            subnet_mask: "255.255.255.0".parse::<IpAddr>().unwrap(),
+            router: vec!["10.0.0.1".parse::<IpAddr>().unwrap()],
+            domain_name_server: vec!["8.8.8.8".parse::<IpAddr>().unwrap()],
+            req_ip_addr: "192.168.1.100".parse::<IpAddr>().unwrap(),
+            lease_time: 3600,
+            server_id: "10.0.0.1".parse::<IpAddr>().unwrap(),
+            param_req_list: vec![1, 3, 6],
+            message: String::new(),
+            renewal_time: 1800,
+            rebinding_time: 3150,
+            class_id: vec![],
+            client_id_type: 1,
+            client_id: vec![0xaa, 0xbb, 0xcc],
+            confidence: 0.8,
+            category: None,
+        };
+
+        // Serialize old-format value
+        let serialized = bincode::DefaultOptions::new()
+            .serialize(&old_event)
+            .unwrap();
+
+        // Create event key: (timestamp_nanos << 64) | (event_kind << 32) | random_bits
+        let timestamp_nanos = chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0);
+        let event_kind = EventKind::BlocklistDhcp as i32;
+        let random_bits: u32 = 12345;
+        let key_i128: i128 = (i128::from(timestamp_nanos) << 64)
+            | (i128::from(event_kind) << 32)
+            | i128::from(random_bits);
+        let key_bytes = key_i128.to_be_bytes();
+
+        // Store in default column family (where events are stored)
+        db.put(key_bytes, &serialized).unwrap();
+        drop(db);
+
+        // Run the migration
+        super::migrate_blocklist_dhcp_events(db_dir.path()).unwrap();
+
+        // Verify the migration by reading back and checking new format
+        let db: rocksdb::OptimisticTransactionDB<rocksdb::SingleThreaded> =
+            rocksdb::OptimisticTransactionDB::open_cf(&opts, &db_path, crate::tables::MAP_NAMES)
+                .unwrap();
+
+        let value = db.get(key_bytes).unwrap().unwrap();
+        let new_event: BlocklistDhcpFields =
+            bincode::DefaultOptions::new().deserialize(&value).unwrap();
+
+        // Verify the options field was added as an empty vector
+        assert!(new_event.options.is_empty());
+        assert_eq!(new_event.sensor, "test-sensor");
+        assert_eq!(new_event.orig_port, 68);
+        assert_eq!(new_event.resp_port, 67);
+        assert_eq!(new_event.msg_type, 1);
+        assert_eq!(new_event.lease_time, 3600);
+    }
+
+    #[test]
+    fn test_migrate_blocklist_dhcp_events_empty_db() {
+        // Test that migration succeeds when there are no BlocklistDhcp events
+        let db_dir = tempfile::tempdir().unwrap();
+        let db_path = db_dir.path().join("states.db");
+
+        let mut opts = rocksdb::Options::default();
+        opts.create_if_missing(true);
+        opts.create_missing_column_families(true);
+
+        let db: rocksdb::OptimisticTransactionDB<rocksdb::SingleThreaded> =
+            rocksdb::OptimisticTransactionDB::open_cf(&opts, &db_path, crate::tables::MAP_NAMES)
+                .unwrap();
+        drop(db);
+
+        // Run the migration - should succeed with no events
+        let result = super::migrate_blocklist_dhcp_events(db_dir.path());
+        assert!(result.is_ok());
     }
 }

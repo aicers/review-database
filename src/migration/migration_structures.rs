@@ -58,12 +58,12 @@ use chrono::serde::ts_nanoseconds;
 
 use crate::EventCategory;
 
-/// `BlocklistDhcpFields` structure from version 0.44.x (before `options` field was added)
+/// `BlocklistDhcpFields` structure from version 0.42.x (before `options` field was added)
 ///
-/// In 0.44.x, `BlocklistDhcpFields` did not have an `options` field.
-/// From the next version, `options: Vec<(u8, Vec<u8>)>` was added.
+/// In 0.42.x, `BlocklistDhcpFields` did not have an `options` field.
+/// From 0.44.x, `options: Vec<(u8, Vec<u8>)>` was added.
 #[derive(Debug, Deserialize, Serialize)]
-pub(crate) struct BlocklistDhcpFieldsV0_44 {
+pub(crate) struct BlocklistDhcpFieldsV0_42 {
     pub sensor: String,
     pub orig_addr: IpAddr,
     pub orig_port: u16,

@@ -60,10 +60,10 @@ macro_rules! find_dhcp_attr_by_kind {
     }};
 }
 
-pub type BlocklistDhcpFields = BlocklistDhcpFieldsV0_42;
+pub type BlocklistDhcpFields = BlocklistDhcpFieldsV0_44;
 
 #[derive(Serialize, Deserialize)]
-pub struct BlocklistDhcpFieldsV0_42 {
+pub struct BlocklistDhcpFieldsV0_44 {
     pub sensor: String,
     pub orig_addr: IpAddr,
     pub orig_port: u16,
