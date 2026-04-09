@@ -1715,10 +1715,8 @@ impl From<BlocklistDceRpcFieldsV0_43> for BlocklistDceRpcFields {
             resp_pkts: old.resp_pkts,
             orig_l2_bytes: old.orig_l2_bytes,
             resp_l2_bytes: old.resp_l2_bytes,
-            rtt: old.rtt,
-            named_pipe: old.named_pipe,
-            endpoint: old.endpoint,
-            operation: old.operation,
+            context: Vec::new(),
+            request: Vec::new(),
             confidence: old.confidence,
             category: old.category,
         }
