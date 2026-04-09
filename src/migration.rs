@@ -285,9 +285,11 @@ fn migrate_0_43_to_0_44(
 
     // Migrate event fields to add country codes and convert HttpThreat cluster_id
     // from Option<usize> to Option<u32>, using Store abstraction
-    let store = crate::Store::new(data_dir, backup_dir)
-        .context("Failed to open Store for event migration")?;
-    migrate_event_country_codes(&store, locator)?;
+    {
+        let store = crate::Store::new(data_dir, backup_dir)
+            .context("Failed to open Store for event migration")?;
+        migrate_event_country_codes(&store, locator)?;
+    }
 
     // Migrate BlocklistDceRpc events: replace rtt/named_pipe/endpoint/operation
     // with context (Vec<DceRpcContext>) and request (Vec<String>)
@@ -1252,7 +1254,7 @@ macro_rules! impl_resolve_country_codes {
 // =============================================================================
 
 use crate::event::{
-    BlocklistBootpFields, BlocklistConnFields, BlocklistDceRpcFields, BlocklistDhcpFields,
+    BlocklistBootpFields, BlocklistConnFields, BlocklistDhcpFields,
     BlocklistDnsFields, BlocklistKerberosFields, BlocklistMalformedDnsFields, BlocklistMqttFields,
     BlocklistNfsFields, BlocklistNtlmFields, BlocklistRadiusFields, BlocklistRdpFields,
     BlocklistSmbFields, BlocklistSmtpFields, BlocklistSshFields, BlocklistTlsFields,
@@ -1544,8 +1546,10 @@ fn migrate_blocklist_dcerpc_fields(value: &[u8]) -> Option<Vec<u8>> {
         sensor: old.sensor,
         orig_addr: old.orig_addr,
         orig_port: old.orig_port,
+        orig_country_code: *b"XX",
         resp_addr: old.resp_addr,
         resp_port: old.resp_port,
+        resp_country_code: *b"XX",
         proto: old.proto,
         start_time: old.start_time,
         duration: old.duration,

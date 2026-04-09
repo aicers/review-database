@@ -10,14 +10,12 @@ use crate::event::common::{AttrValue, triage_scores_to_string};
 pub type BlocklistDceRpcFields = BlocklistDceRpcFieldsV0_44;
 
 #[derive(Serialize, Deserialize)]
-pub struct BlocklistDceRpcFieldsV0_44 {
+pub struct BlocklistDceRpcFieldsV0_42 {
     pub sensor: String,
     pub orig_addr: IpAddr,
     pub orig_port: u16,
-    pub orig_country_code: [u8; 2],
     pub resp_addr: IpAddr,
     pub resp_port: u16,
-    pub resp_country_code: [u8; 2],
     pub proto: u8,
     /// Timestamp in nanoseconds since the Unix epoch (UTC).
     pub start_time: i64,
@@ -52,8 +50,10 @@ pub struct BlocklistDceRpcFieldsV0_44 {
     pub sensor: String,
     pub orig_addr: IpAddr,
     pub orig_port: u16,
+    pub orig_country_code: [u8; 2],
     pub resp_addr: IpAddr,
     pub resp_port: u16,
+    pub resp_country_code: [u8; 2],
     pub proto: u8,
     /// Timestamp in nanoseconds since the Unix epoch (UTC).
     pub start_time: i64,
