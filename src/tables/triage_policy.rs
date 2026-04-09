@@ -478,16 +478,8 @@ impl PartialOrd for Confidence {
 }
 
 impl Ord for Confidence {
-    /// Ordering: `threat_category` first (None < Some, delegating to
-    /// `EventCategory::cmp` for two `Some` values), then `threat_kind`,
-    /// `confidence`, and `weight`.
     fn cmp(&self, other: &Self) -> Ordering {
-        let first = match (self.threat_category, other.threat_category) {
-            (None, None) => Ordering::Equal,
-            (None, Some(_)) => Ordering::Less,
-            (Some(_), None) => Ordering::Greater,
-            (Some(a), Some(b)) => a.cmp(&b),
-        };
+        let first = self.threat_category.cmp(&other.threat_category);
         if first != Ordering::Equal {
             return first;
         }
