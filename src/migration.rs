@@ -2921,13 +2921,55 @@ mod tests {
         let new_event: BlocklistDhcpFields =
             bincode::DefaultOptions::new().deserialize(&value).unwrap();
 
-        // Verify the options field was added as an empty vector
+        // Verify all fields were correctly migrated
         assert!(new_event.options.is_empty());
         assert_eq!(new_event.sensor, "test-sensor");
+        assert_eq!(
+            new_event.orig_addr,
+            "192.168.1.1".parse::<IpAddr>().unwrap()
+        );
         assert_eq!(new_event.orig_port, 68);
+        assert_eq!(new_event.resp_addr, "10.0.0.1".parse::<IpAddr>().unwrap());
         assert_eq!(new_event.resp_port, 67);
+        assert_eq!(new_event.proto, 17);
+        assert_eq!(new_event.start_time, 1000);
+        assert_eq!(new_event.duration, 100);
+        assert_eq!(new_event.orig_pkts, 1);
+        assert_eq!(new_event.resp_pkts, 1);
+        assert_eq!(new_event.orig_l2_bytes, 300);
+        assert_eq!(new_event.resp_l2_bytes, 300);
         assert_eq!(new_event.msg_type, 1);
+        assert_eq!(new_event.ciaddr, "0.0.0.0".parse::<IpAddr>().unwrap());
+        assert_eq!(new_event.yiaddr, "192.168.1.100".parse::<IpAddr>().unwrap());
+        assert_eq!(new_event.siaddr, "10.0.0.1".parse::<IpAddr>().unwrap());
+        assert_eq!(new_event.giaddr, "0.0.0.0".parse::<IpAddr>().unwrap());
+        assert_eq!(
+            new_event.subnet_mask,
+            "255.255.255.0".parse::<IpAddr>().unwrap()
+        );
+        assert_eq!(
+            new_event.router,
+            vec!["10.0.0.1".parse::<IpAddr>().unwrap()]
+        );
+        assert_eq!(
+            new_event.domain_name_server,
+            vec!["8.8.8.8".parse::<IpAddr>().unwrap()]
+        );
+        assert_eq!(
+            new_event.req_ip_addr,
+            "192.168.1.100".parse::<IpAddr>().unwrap()
+        );
         assert_eq!(new_event.lease_time, 3600);
+        assert_eq!(new_event.server_id, "10.0.0.1".parse::<IpAddr>().unwrap());
+        assert_eq!(new_event.param_req_list, vec![1, 3, 6]);
+        assert!(new_event.message.is_empty());
+        assert_eq!(new_event.renewal_time, 1800);
+        assert_eq!(new_event.rebinding_time, 3150);
+        assert!(new_event.class_id.is_empty());
+        assert_eq!(new_event.client_id_type, 1);
+        assert_eq!(new_event.client_id, vec![0xaa, 0xbb, 0xcc]);
+        assert!((new_event.confidence - 0.8).abs() < f32::EPSILON);
+        assert!(new_event.category.is_none());
     }
 
     #[test]
