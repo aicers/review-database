@@ -340,14 +340,22 @@ pub fn vector_to_string<T: ToString>(v: &[T]) -> String {
 /// Each option is represented as `code:hex_data` where the data is
 /// hex-encoded. Options are comma-separated.
 pub fn dhcp_options_to_string(options: &[(u8, Vec<u8>)]) -> String {
+    use std::fmt::Write;
+
     if options.is_empty() {
         return String::new();
     }
-    let parts: Vec<String> = options
-        .iter()
-        .map(|(code, data)| format!("{code}:{}", hex::encode(data)))
-        .collect();
-    parts.join(",")
+    let mut buf = String::new();
+    for (i, (code, data)) in options.iter().enumerate() {
+        if i > 0 {
+            buf.push(',');
+        }
+        write!(buf, "{code}:").ok();
+        for byte in data {
+            write!(buf, "{byte:02x}").ok();
+        }
+    }
+    buf
 }
 
 /// Converts a hardware address to a colon-separated string.
