@@ -1254,7 +1254,7 @@ macro_rules! impl_resolve_country_codes {
 // =============================================================================
 
 use crate::event::{
-    BlocklistBootpFields, BlocklistConnFields, BlocklistDhcpFields, BlocklistDnsFields,
+    BlocklistBootpFields, BlocklistConnFields, BlocklistDnsFields,
     BlocklistKerberosFields, BlocklistMalformedDnsFields, BlocklistMqttFields, BlocklistNfsFields,
     BlocklistNtlmFields, BlocklistRadiusFields, BlocklistRdpFields, BlocklistSmbFields,
     BlocklistSmtpFields, BlocklistSshFields, BlocklistTlsFields, CryptocurrencyMiningPoolFields,
@@ -1579,8 +1579,10 @@ fn migrate_blocklist_dhcp_fields(value: &[u8]) -> Option<Vec<u8>> {
         sensor: old.sensor,
         orig_addr: old.orig_addr,
         orig_port: old.orig_port,
+        orig_country_code: *b"ZZ",
         resp_addr: old.resp_addr,
         resp_port: old.resp_port,
+        resp_country_code: *b"ZZ",
         proto: old.proto,
         start_time: old.start_time,
         duration: old.duration,

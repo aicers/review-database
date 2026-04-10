@@ -1692,6 +1692,7 @@ impl From<BlocklistDhcpFieldsV0_43> for BlocklistDhcpFields {
             class_id: old.class_id,
             client_id_type: old.client_id_type,
             client_id: old.client_id,
+            options: vec![],
             confidence: old.confidence,
             category: old.category,
         }
