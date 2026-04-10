@@ -7,6 +7,14 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [0.44.1] - 2026-04-16
 
+### Changed
+
+- **BREAKING**: `Confidence::threat_category` is now
+  `Option<EventCategory>`. `None` matches only events whose
+  category is absent; `Some(category)` preserves existing
+  behavior. A migration converts persisted records so previous
+  category values become `Some(...)`.
+
 ### Fixed
 
 - Fixed event migration failure introduced in 0.44.0 where
@@ -42,11 +50,6 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   `request: Vec<String>` to support multiple DCE/RPC
   contexts and requests. Added `DceRpcContext` struct.
   Includes migration from the old format.
-- **BREAKING**: `Confidence::threat_category` is now
-  `Option<EventCategory>`. `None` matches only events whose
-  category is absent; `Some(category)` preserves existing
-  behavior. A migration converts persisted records so previous
-  category values become `Some(...)`.
 - **BREAKING**: Replaced hardcoded `NonZeroU8` threat level
   constants with `review-protocol`'s `ThreatLevel` enum.
   `EventFilter::levels` now uses `Vec<ThreatLevel>` instead of
