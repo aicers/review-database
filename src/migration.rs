@@ -1254,14 +1254,13 @@ macro_rules! impl_resolve_country_codes {
 // =============================================================================
 
 use crate::event::{
-    BlocklistBootpFields, BlocklistConnFields, BlocklistDnsFields,
-    BlocklistKerberosFields, BlocklistMalformedDnsFields, BlocklistMqttFields, BlocklistNfsFields,
-    BlocklistNtlmFields, BlocklistRadiusFields, BlocklistRdpFields, BlocklistSmbFields,
-    BlocklistSmtpFields, BlocklistSshFields, BlocklistTlsFields, CryptocurrencyMiningPoolFields,
-    DgaFields, DnsEventFields, ExternalDdosFields, FtpBruteForceFields, FtpEventFields,
-    HttpEventFields, LdapBruteForceFields, LdapEventFields, MultiHostPortScanFields, NetworkThreat,
-    PortScanFields, RdpBruteForceFields, RepeatedHttpSessionsFields,
-    UnusualDestinationPatternFields,
+    BlocklistBootpFields, BlocklistConnFields, BlocklistDnsFields, BlocklistKerberosFields,
+    BlocklistMalformedDnsFields, BlocklistMqttFields, BlocklistNfsFields, BlocklistNtlmFields,
+    BlocklistRadiusFields, BlocklistRdpFields, BlocklistSmbFields, BlocklistSmtpFields,
+    BlocklistSshFields, BlocklistTlsFields, CryptocurrencyMiningPoolFields, DgaFields,
+    DnsEventFields, ExternalDdosFields, FtpBruteForceFields, FtpEventFields, HttpEventFields,
+    LdapBruteForceFields, LdapEventFields, MultiHostPortScanFields, NetworkThreat, PortScanFields,
+    RdpBruteForceFields, RepeatedHttpSessionsFields, UnusualDestinationPatternFields,
 };
 
 impl_resolve_country_codes!(
