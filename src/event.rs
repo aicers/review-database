@@ -3981,6 +3981,7 @@ mod tests {
             class_id: "MSFT 5.0".as_bytes().to_vec(),
             client_id_type: 1,
             client_id: vec![7, 8, 9],
+            options: vec![(1, vec![1, 2, 3]), (3, vec![10, 11, 12])],
             confidence: 1.0,
             category: Some(EventCategory::InitialAccess),
         }
@@ -4000,7 +4001,7 @@ mod tests {
         let (_, _, syslog_message) = message.unwrap();
         assert_eq!(
             &syslog_message,
-            r#"time="1970-01-01T01:01:01+00:00" event_kind="BlocklistDhcp" category="InitialAccess" sensor="collector1" orig_addr="127.0.0.1" orig_port="68" resp_addr="127.0.0.2" resp_port="67" proto="17" start_time="1970-01-01T00:00:00+00:00" duration="0" orig_pkts="0" resp_pkts="0" orig_l2_bytes="0" resp_l2_bytes="0" msg_type="1" ciaddr="127.0.0.5" yiaddr="127.0.0.6" siaddr="127.0.0.7" giaddr="127.0.0.8" subnet_mask="255.255.255.0" router="127.0.0.1" domain_name_server="127.0.0.1" req_ip_addr="127.0.0.100" lease_time="100" server_id="127.0.0.1" param_req_list="1,2,3" message="message" renewal_time="100" rebinding_time="200" class_id="MSFT 5.0" client_id_type="1" client_id="07:08:09" confidence="1""#,
+            r#"time="1970-01-01T01:01:01+00:00" event_kind="BlocklistDhcp" category="InitialAccess" sensor="collector1" orig_addr="127.0.0.1" orig_port="68" resp_addr="127.0.0.2" resp_port="67" proto="17" start_time="1970-01-01T00:00:00+00:00" duration="0" orig_pkts="0" resp_pkts="0" orig_l2_bytes="0" resp_l2_bytes="0" msg_type="1" ciaddr="127.0.0.5" yiaddr="127.0.0.6" siaddr="127.0.0.7" giaddr="127.0.0.8" subnet_mask="255.255.255.0" router="127.0.0.1" domain_name_server="127.0.0.1" req_ip_addr="127.0.0.100" lease_time="100" server_id="127.0.0.1" param_req_list="1,2,3" message="message" renewal_time="100" rebinding_time="200" class_id="MSFT 5.0" client_id_type="1" client_id="07:08:09" options="1:010203,3:0a0b0c" confidence="1""#,
         );
 
         let blocklist_dhcp = Event::Blocklist(RecordType::Dhcp(BlocklistDhcp::new(
@@ -4011,7 +4012,7 @@ mod tests {
 
         assert_eq!(
             &blocklist_dhcp,
-            r#"time="1970-01-01T01:01:01+00:00" event_kind="BlocklistDhcp" category="InitialAccess" sensor="collector1" orig_addr="127.0.0.1" orig_port="68" resp_addr="127.0.0.2" resp_port="67" proto="17" start_time="1970-01-01T00:00:00+00:00" duration="0" orig_pkts="0" resp_pkts="0" orig_l2_bytes="0" resp_l2_bytes="0" msg_type="1" ciaddr="127.0.0.5" yiaddr="127.0.0.6" siaddr="127.0.0.7" giaddr="127.0.0.8" subnet_mask="255.255.255.0" router="127.0.0.1" domain_name_server="127.0.0.1" req_ip_addr="127.0.0.100" lease_time="100" server_id="127.0.0.1" param_req_list="1,2,3" message="message" renewal_time="100" rebinding_time="200" class_id="MSFT 5.0" client_id_type="1" client_id="07:08:09" triage_scores="""#
+            r#"time="1970-01-01T01:01:01+00:00" event_kind="BlocklistDhcp" category="InitialAccess" sensor="collector1" orig_addr="127.0.0.1" orig_port="68" resp_addr="127.0.0.2" resp_port="67" proto="17" start_time="1970-01-01T00:00:00+00:00" duration="0" orig_pkts="0" resp_pkts="0" orig_l2_bytes="0" resp_l2_bytes="0" msg_type="1" ciaddr="127.0.0.5" yiaddr="127.0.0.6" siaddr="127.0.0.7" giaddr="127.0.0.8" subnet_mask="255.255.255.0" router="127.0.0.1" domain_name_server="127.0.0.1" req_ip_addr="127.0.0.100" lease_time="100" server_id="127.0.0.1" param_req_list="1,2,3" message="message" renewal_time="100" rebinding_time="200" class_id="MSFT 5.0" client_id_type="1" client_id="07:08:09" options="1:010203,3:0a0b0c" triage_scores="""#
         );
     }
 
