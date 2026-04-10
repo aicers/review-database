@@ -55,9 +55,9 @@ pub(crate) struct NetworkValueV0_43 {
 
 use crate::{PacketAttr, Response};
 
-/// `Confidence` structure from version 0.43.x (before `threat_category` became
-/// optional). In 0.43.x, `threat_category` was `EventCategory`. From 0.44.x
-/// alpha.3, it changed to `Option<EventCategory>`.
+/// `Confidence` structure from versions 0.43.x–0.44.0 (before `threat_category`
+/// became optional). In these versions, `threat_category` was `EventCategory`.
+/// From 0.45.0-alpha.1, it changed to `Option<EventCategory>`.
 #[derive(Clone, Deserialize, Serialize)]
 pub(crate) struct ConfidenceV0_43 {
     pub(crate) threat_category: EventCategory,
@@ -66,8 +66,8 @@ pub(crate) struct ConfidenceV0_43 {
     pub(crate) weight: Option<f64>,
 }
 
-/// `TriagePolicy` structure from version 0.43.x, containing `ConfidenceV0_43`
-/// with non-optional `threat_category`.
+/// `TriagePolicy` structure from versions 0.43.x–0.44.0, containing
+/// `ConfidenceV0_43` with non-optional `threat_category`.
 #[derive(Clone, Deserialize, Serialize)]
 pub(crate) struct TriagePolicyV0_43 {
     pub(crate) id: u32,
