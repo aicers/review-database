@@ -30,6 +30,8 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [0.44.0] - 2026-04-10
 
+## Unreleased
+
 ### Added
 
 - Added `event_retention_period` and `set_event_retention_period`
@@ -39,6 +41,11 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 - Added `EventDb::remove_before` method to delete all detected
   events older than a given timestamp. This enables periodic
   cleanup of expired events based on the retention policy.
+
+## [0.44.0] - 2026-04-10
+
+### Added
+
 - Added `init_backup_config`, `update_backup_config`, and `backup_config`
   methods to `Store` for managing backup configuration in the config table.
   This aligns with the `AccountPolicy` pattern where configuration is stored
