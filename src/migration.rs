@@ -281,7 +281,7 @@ fn migrate_triage_policy_confidence(dir: &Path) -> Result<()> {
     use bincode::Options;
 
     use crate::Indexable;
-    use crate::migration::migration_structures::TriagePolicyV0_43;
+    use crate::migration::migration_structures::TriagePolicyV0_44;
 
     let db_path = dir.join("states.db");
     let mut opts = rocksdb::Options::default();
@@ -306,7 +306,7 @@ fn migrate_triage_policy_confidence(dir: &Path) -> Result<()> {
             continue;
         }
 
-        let old: TriagePolicyV0_43 = bincode::DefaultOptions::new()
+        let old: TriagePolicyV0_44 = bincode::DefaultOptions::new()
             .deserialize(value.as_ref())
             .context("failed to deserialize old triage policy")?;
         let new = crate::TriagePolicy::from(old);
@@ -2898,7 +2898,7 @@ mod tests {
     fn migrate_triage_policy_confidence_wraps_category() {
         use bincode::Options;
 
-        use super::migration_structures::{ConfidenceV0_43, TriagePolicyV0_43};
+        use super::migration_structures::{ConfidenceV0_44, TriagePolicyV0_44};
         use crate::EventCategory;
 
         let db_dir = tempfile::tempdir().unwrap();
@@ -2915,19 +2915,19 @@ mod tests {
 
         let cf = db.cf_handle(crate::tables::TRIAGE_POLICY).unwrap();
 
-        let old_policy = TriagePolicyV0_43 {
+        let old_policy = TriagePolicyV0_44 {
             id: 1,
             name: "test_policy".to_string(),
             triage_exclusion_id: vec![],
             packet_attr: vec![],
             confidence: vec![
-                ConfidenceV0_43 {
+                ConfidenceV0_44 {
                     threat_category: EventCategory::Reconnaissance,
                     threat_kind: "scan".to_string(),
                     confidence: 0.9,
                     weight: Some(2.0),
                 },
-                ConfidenceV0_43 {
+                ConfidenceV0_44 {
                     threat_category: EventCategory::Exfiltration,
                     threat_kind: "dns_tunnel".to_string(),
                     confidence: 0.5,

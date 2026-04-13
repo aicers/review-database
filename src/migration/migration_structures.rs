@@ -55,33 +55,33 @@ pub(crate) struct NetworkValueV0_43 {
 
 use crate::{PacketAttr, Response};
 
-/// `Confidence` structure from versions 0.43.x–0.44.0 (before `threat_category`
-/// became optional). In these versions, `threat_category` was `EventCategory`.
+/// `Confidence` structure from version 0.44.0 (before `threat_category`
+/// became optional). In this version, `threat_category` was `EventCategory`.
 /// From 0.45.0-alpha.1, it changed to `Option<EventCategory>`.
 #[derive(Clone, Deserialize, Serialize)]
-pub(crate) struct ConfidenceV0_43 {
+pub(crate) struct ConfidenceV0_44 {
     pub(crate) threat_category: EventCategory,
     pub(crate) threat_kind: String,
     pub(crate) confidence: f64,
     pub(crate) weight: Option<f64>,
 }
 
-/// `TriagePolicy` structure from versions 0.43.x–0.44.0, containing
-/// `ConfidenceV0_43` with non-optional `threat_category`.
+/// `TriagePolicy` structure from version 0.44.0, containing
+/// `ConfidenceV0_44` with non-optional `threat_category`.
 #[derive(Clone, Deserialize, Serialize)]
-pub(crate) struct TriagePolicyV0_43 {
+pub(crate) struct TriagePolicyV0_44 {
     pub(crate) id: u32,
     pub(crate) name: String,
     pub(crate) triage_exclusion_id: Vec<u32>,
     pub(crate) packet_attr: Vec<PacketAttr>,
-    pub(crate) confidence: Vec<ConfidenceV0_43>,
+    pub(crate) confidence: Vec<ConfidenceV0_44>,
     pub(crate) response: Vec<Response>,
     pub(crate) creation_time: DateTime<Utc>,
     pub(crate) customer_id: Option<u32>,
 }
 
-impl From<TriagePolicyV0_43> for crate::TriagePolicy {
-    fn from(old: TriagePolicyV0_43) -> Self {
+impl From<TriagePolicyV0_44> for crate::TriagePolicy {
+    fn from(old: TriagePolicyV0_44) -> Self {
         Self {
             id: old.id,
             name: old.name,
