@@ -5,6 +5,19 @@ file is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), and
 this project adheres to [Semantic
 Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- Fixed event migration failure introduced in 0.44.0 where
+  `migrate_http_threat_fields`, `migrate_blocklist_dcerpc_fields`, and
+  `migrate_blocklist_dhcp_fields` used `bincode::DefaultOptions` (varint
+  encoding) to deserialize records that were stored with `bincode::serialize`
+  (fixint encoding). The mismatch caused all records to fail deserialization
+  and be counted as skipped, resulting in 0 events migrated. The migration
+  functions now consistently use `bincode::serialize`/`bincode::deserialize`
+  to match the runtime event storage path.
+
 ## [0.44.0] - 2026-04-10
 
 ### Added
@@ -1377,6 +1390,7 @@ AsRef<[u8]>`). This change accommodates scenarios where the information stored
 - Modified `FtpBruteForce` by adding an `is_internal` field which is a boolean
   indicating whether it is internal or not.
 
+[Unreleased]: https://github.com/petabi/review-database/compare/0.44.0...main
 [0.44.0]: https://github.com/petabi/review-database/compare/0.43.0...0.44.0
 [0.43.0]: https://github.com/petabi/review-database/compare/0.42.0...0.43.0
 [0.42.0]: https://github.com/petabi/review-database/compare/0.41.0...0.42.0

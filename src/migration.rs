@@ -11,7 +11,7 @@ use std::{
 use anyhow::{Context, Result, anyhow};
 use bincode::Options;
 use semver::{Version, VersionReq};
-use tracing::info;
+use tracing::{info, warn};
 
 use crate::{
     AllowNetwork, BlockNetwork, Customer,
@@ -948,8 +948,12 @@ fn migrate_http_threat_events(dir: &Path) -> Result<()> {
 
 /// Migrates `HttpThreatFields` from Option<usize> to Option<u32> for `cluster_id`.
 fn migrate_http_threat_fields(value: &[u8]) -> Option<Vec<u8>> {
-    // Try to deserialize with old format
-    let old: HttpThreatFieldsV0_43 = bincode::DefaultOptions::new().deserialize(value).ok()?;
+    // Try to deserialize with old format. Production events are stored using
+    // `bincode::serialize` (fixint encoding), so we must use the matching
+    // `bincode::deserialize` here rather than `DefaultOptions` (varint).
+    let old: HttpThreatFieldsV0_43 = bincode::deserialize(value)
+        .map_err(|e| warn!("failed to deserialize HttpThreatFieldsV0_43: {e}"))
+        .ok()?;
 
     // Convert to new format
     let new = HttpThreatFields {
@@ -995,7 +999,9 @@ fn migrate_http_threat_fields(value: &[u8]) -> Option<Vec<u8>> {
         category: old.category,
     };
 
-    bincode::DefaultOptions::new().serialize(&new).ok()
+    bincode::serialize(&new)
+        .map_err(|e| warn!("failed to serialize HttpThreatFields: {e}"))
+        .ok()
 }
 
 fn migrate_blocklist_dcerpc_events(dir: &Path) -> Result<()> {
@@ -1076,7 +1082,10 @@ fn migrate_blocklist_dcerpc_events(dir: &Path) -> Result<()> {
 }
 
 fn migrate_blocklist_dcerpc_fields(value: &[u8]) -> Option<Vec<u8>> {
-    let old: BlocklistDceRpcFieldsV0_42 = bincode::DefaultOptions::new().deserialize(value).ok()?;
+    // Production events are stored using `bincode::serialize` (fixint encoding).
+    let old: BlocklistDceRpcFieldsV0_42 = bincode::deserialize(value)
+        .map_err(|e| warn!("failed to deserialize BlocklistDceRpcFieldsV0_42: {e}"))
+        .ok()?;
 
     let new = BlocklistDceRpcFields {
         sensor: old.sensor,
@@ -1097,7 +1106,9 @@ fn migrate_blocklist_dcerpc_fields(value: &[u8]) -> Option<Vec<u8>> {
         category: old.category,
     };
 
-    bincode::DefaultOptions::new().serialize(&new).ok()
+    bincode::serialize(&new)
+        .map_err(|e| warn!("failed to serialize BlocklistDceRpcFields: {e}"))
+        .ok()
 }
 
 /// Migrates `BlocklistDhcp` events to add the new `options` field.
@@ -1183,7 +1194,10 @@ fn migrate_blocklist_dhcp_events(dir: &Path) -> Result<()> {
 
 /// Migrates a single `BlocklistDhcpFields` record by adding an empty `options` field.
 fn migrate_blocklist_dhcp_fields(value: &[u8]) -> Option<Vec<u8>> {
-    let old: BlocklistDhcpFieldsV0_42 = bincode::DefaultOptions::new().deserialize(value).ok()?;
+    // Production events are stored using `bincode::serialize` (fixint encoding).
+    let old: BlocklistDhcpFieldsV0_42 = bincode::deserialize(value)
+        .map_err(|e| warn!("failed to deserialize BlocklistDhcpFieldsV0_42: {e}"))
+        .ok()?;
 
     let new = BlocklistDhcpFields {
         sensor: old.sensor,
@@ -1221,7 +1235,9 @@ fn migrate_blocklist_dhcp_fields(value: &[u8]) -> Option<Vec<u8>> {
         category: old.category,
     };
 
-    bincode::DefaultOptions::new().serialize(&new).ok()
+    bincode::serialize(&new)
+        .map_err(|e| warn!("failed to serialize BlocklistDhcpFields: {e}"))
+        .ok()
 }
 
 /// Recursively creates `path` if not existed, creates the VERSION file
@@ -2598,8 +2614,6 @@ mod tests {
     fn test_migrate_http_threat_events() {
         use std::net::IpAddr;
 
-        use bincode::Options;
-
         use super::migration_structures::HttpThreatFieldsV0_43;
         use crate::event::{EventKind, HttpThreatFields};
 
@@ -2659,10 +2673,8 @@ mod tests {
             category: None,
         };
 
-        // Serialize old-format value
-        let serialized = bincode::DefaultOptions::new()
-            .serialize(&old_event)
-            .unwrap();
+        // Serialize old-format value using the same encoder as production code.
+        let serialized = bincode::serialize(&old_event).unwrap();
 
         // Create event key: (timestamp_nanos << 64) | (event_kind << 32) | random_bits
         // EventKind::HttpThreat = 1
@@ -2687,8 +2699,7 @@ mod tests {
                 .unwrap();
 
         let value = db.get(key_bytes).unwrap().unwrap();
-        let new_event: HttpThreatFields =
-            bincode::DefaultOptions::new().deserialize(&value).unwrap();
+        let new_event: HttpThreatFields = bincode::deserialize(&value).unwrap();
 
         // Verify the cluster_id was migrated from Option<usize> to Option<u32>
         assert_eq!(new_event.cluster_id, Some(42_u32));
@@ -2720,8 +2731,6 @@ mod tests {
     #[test]
     fn test_migrate_blocklist_dcerpc_events() {
         use std::net::IpAddr;
-
-        use bincode::Options;
 
         use crate::event::BlocklistDceRpcFieldsV0_42;
         use crate::event::{BlocklistDceRpcFields, EventKind};
@@ -2758,9 +2767,7 @@ mod tests {
             category: None,
         };
 
-        let serialized = bincode::DefaultOptions::new()
-            .serialize(&old_event)
-            .unwrap();
+        let serialized = bincode::serialize(&old_event).unwrap();
 
         let timestamp_nanos = chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0);
         let event_kind = EventKind::BlocklistDceRpc as i32;
@@ -2780,8 +2787,7 @@ mod tests {
                 .unwrap();
 
         let value = db.get(key_bytes).unwrap().unwrap();
-        let new_event: BlocklistDceRpcFields =
-            bincode::DefaultOptions::new().deserialize(&value).unwrap();
+        let new_event: BlocklistDceRpcFields = bincode::deserialize(&value).unwrap();
 
         assert_eq!(new_event.sensor, "test-sensor");
         assert_eq!(new_event.orig_port, 12345);
@@ -2794,8 +2800,6 @@ mod tests {
     #[test]
     fn test_migrate_blocklist_dcerpc_fields_empty_strings() {
         use std::net::IpAddr;
-
-        use bincode::Options;
 
         use crate::event::BlocklistDceRpcFields;
         use crate::event::BlocklistDceRpcFieldsV0_42;
@@ -2821,14 +2825,10 @@ mod tests {
             category: None,
         };
 
-        let serialized = bincode::DefaultOptions::new()
-            .serialize(&old_event)
-            .unwrap();
+        let serialized = bincode::serialize(&old_event).unwrap();
 
         let new_val = super::migrate_blocklist_dcerpc_fields(&serialized).unwrap();
-        let new_event: BlocklistDceRpcFields = bincode::DefaultOptions::new()
-            .deserialize(&new_val)
-            .unwrap();
+        let new_event: BlocklistDceRpcFields = bincode::deserialize(&new_val).unwrap();
 
         assert!(new_event.context.is_empty());
         assert!(new_event.request.is_empty());
@@ -2837,8 +2837,6 @@ mod tests {
     #[test]
     fn test_migrate_blocklist_dhcp_events() {
         use std::net::IpAddr;
-
-        use bincode::Options;
 
         use super::migration_structures::BlocklistDhcpFieldsV0_42;
         use crate::event::{BlocklistDhcpFields, EventKind};
@@ -2891,10 +2889,8 @@ mod tests {
             category: None,
         };
 
-        // Serialize old-format value
-        let serialized = bincode::DefaultOptions::new()
-            .serialize(&old_event)
-            .unwrap();
+        // Serialize old-format value using the same encoder as production code.
+        let serialized = bincode::serialize(&old_event).unwrap();
 
         // Create event key: (timestamp_nanos << 64) | (event_kind << 32) | random_bits
         let timestamp_nanos = chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0);
@@ -2918,8 +2914,7 @@ mod tests {
                 .unwrap();
 
         let value = db.get(key_bytes).unwrap().unwrap();
-        let new_event: BlocklistDhcpFields =
-            bincode::DefaultOptions::new().deserialize(&value).unwrap();
+        let new_event: BlocklistDhcpFields = bincode::deserialize(&value).unwrap();
 
         // Verify all fields were correctly migrated
         assert!(new_event.options.is_empty());
