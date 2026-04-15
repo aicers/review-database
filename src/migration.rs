@@ -296,29 +296,28 @@ fn migrate_triage_policy_confidence(dir: &Path) -> Result<()> {
         .cf_handle(crate::tables::TRIAGE_POLICY)
         .context("triage policy column family not found")?;
 
-    let mut migrated = 0usize;
-    let iter = db.iterator_cf(&cf, rocksdb::IteratorMode::Start);
-    for item in iter {
-        let (key, value) = item.context("failed to read triage policy entry")?;
+    let entries: Vec<(Vec<u8>, Vec<u8>)> = db
+        .iterator_cf(&cf, rocksdb::IteratorMode::Start)
+        .filter_map(|item| match item {
+            Ok((key, value)) if !key.is_empty() => Some(Ok((key.to_vec(), value.to_vec()))),
+            Ok(_) => None,
+            Err(e) => Some(Err(e)),
+        })
+        .collect::<Result<_, _>>()
+        .context("failed to read triage policy entries")?;
 
-        // Skip the index entry (empty key) used by IndexedMap metadata
-        if key.is_empty() {
-            continue;
-        }
-
+    for (key, value) in &entries {
         let old: TriagePolicyV0_44 = bincode::DefaultOptions::new()
-            .deserialize(value.as_ref())
+            .deserialize(value)
             .context("failed to deserialize old triage policy")?;
         let new = crate::TriagePolicy::from(old);
-        let new_value = new.value();
-        db.put_cf(&cf, &key, &new_value)
+        db.put_cf(&cf, key, new.value())
             .context("failed to write migrated triage policy")?;
-        migrated += 1;
     }
 
     info!(
         "Migrated {} triage policy records (Confidence.threat_category -> Option)",
-        migrated
+        entries.len()
     );
     Ok(())
 }
