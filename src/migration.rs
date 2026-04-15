@@ -306,14 +306,17 @@ fn migrate_triage_policy_confidence(dir: &Path) -> Result<()> {
         .collect::<Result<_, _>>()
         .context("failed to read triage policy entries")?;
 
+    let txn = db.transaction();
     for (key, value) in &entries {
         let old: TriagePolicyV0_44 = bincode::DefaultOptions::new()
             .deserialize(value)
             .context("failed to deserialize old triage policy")?;
         let new = crate::TriagePolicy::from(old);
-        db.put_cf(&cf, key, new.value())
+        txn.put_cf(&cf, key, new.value())
             .context("failed to write migrated triage policy")?;
     }
+    txn.commit()
+        .context("failed to commit triage policy migration")?;
 
     info!(
         "Migrated {} triage policy records (Confidence.threat_category -> Option)",
