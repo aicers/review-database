@@ -283,20 +283,18 @@ fn migrate_0_43_to_0_44(
     // Migrate Network table to enforce global name uniqueness
     migrate_network_cf(data_dir)?;
 
-    // Migrate event fields to add country codes and convert HttpThreat cluster_id
-    // from Option<usize> to Option<u32>, using Store abstraction
+    // Migrate event fields in a single pass over the events database:
+    // - HttpThreat: cluster_id from Option<usize> to Option<u32>
+    // - BlocklistDceRpc: replace rtt/named_pipe/endpoint/operation with context/request
+    // - BlocklistDhcp: add the new `options` field
+    migrate_event_fields(data_dir)?;
+
+    // Migrate event fields to add country codes (V0_43 -> V0_44), using Store abstraction
     {
         let store = crate::Store::new(data_dir, backup_dir)
             .context("Failed to open Store for event migration")?;
         migrate_event_country_codes(&store, locator)?;
     }
-
-    // Migrate BlocklistDceRpc events: replace rtt/named_pipe/endpoint/operation
-    // with context (Vec<DceRpcContext>) and request (Vec<String>)
-    migrate_blocklist_dcerpc_events(data_dir)?;
-
-    // Migrate BlocklistDhcp events to add the new `options` field
-    migrate_blocklist_dhcp_events(data_dir)?;
 
     Ok(())
 }
@@ -1458,7 +1456,14 @@ where
     bincode::serialize(&new_fields).context("failed to serialize new event fields")
 }
 
-fn migrate_blocklist_dcerpc_events(dir: &Path) -> Result<()> {
+/// Migrates event fields in a single pass over the events database.
+///
+/// Handles three event kinds:
+/// - `HttpThreat`: `cluster_id` from `Option<usize>` to `Option<u32>`
+/// - `BlocklistDceRpc`: replace `rtt`/`named_pipe`/`endpoint`/`operation` with
+///   `context` (`Vec<DceRpcContext>`) and `request` (`Vec<String>`)
+/// - `BlocklistDhcp`: add the new `options` field
+fn migrate_event_fields(dir: &Path) -> Result<()> {
     use num_traits::FromPrimitive;
 
     const BATCH_SIZE: usize = 100;
@@ -1471,10 +1476,14 @@ fn migrate_blocklist_dcerpc_events(dir: &Path) -> Result<()> {
 
     let db: rocksdb::OptimisticTransactionDB<rocksdb::SingleThreaded> =
         rocksdb::OptimisticTransactionDB::open_cf(&opts, &db_path, crate::tables::MAP_NAMES)
-            .context("Failed to open database for BlocklistDceRpc event migration")?;
+            .context("Failed to open database for event migration")?;
 
-    let mut migrated_count = 0usize;
-    let mut errors = 0usize;
+    let mut http_threat_migrated = 0usize;
+    let mut http_threat_errors = 0usize;
+    let mut dcerpc_migrated = 0usize;
+    let mut dcerpc_errors = 0usize;
+    let mut dhcp_migrated = 0usize;
+    let mut dhcp_errors = 0usize;
     let mut batch: Vec<(Vec<u8>, Vec<u8>)> = Vec::with_capacity(BATCH_SIZE);
 
     for item in db.iterator(rocksdb::IteratorMode::Start) {
@@ -1491,21 +1500,47 @@ fn migrate_blocklist_dcerpc_events(dir: &Path) -> Result<()> {
             continue;
         };
 
-        if event_kind == EventKind::BlocklistDceRpc {
-            if let Some(new_val) = migrate_blocklist_dcerpc_fields(&value) {
-                batch.push((key.to_vec(), new_val));
-                migrated_count += 1;
-
-                if batch.len() >= BATCH_SIZE {
-                    let txn = db.transaction();
-                    for (k, v) in batch.drain(..) {
-                        txn.put(&k, &v)?;
-                    }
-                    txn.commit()
-                        .context("failed to commit BlocklistDceRpc event migration batch")?;
+        let migrated = match event_kind {
+            EventKind::HttpThreat => {
+                if let Some(new_val) = migrate_http_threat_fields(&value) {
+                    http_threat_migrated += 1;
+                    Some(new_val)
+                } else {
+                    http_threat_errors += 1;
+                    None
                 }
-            } else {
-                errors += 1;
+            }
+            EventKind::BlocklistDceRpc => {
+                if let Some(new_val) = migrate_blocklist_dcerpc_fields(&value) {
+                    dcerpc_migrated += 1;
+                    Some(new_val)
+                } else {
+                    dcerpc_errors += 1;
+                    None
+                }
+            }
+            EventKind::BlocklistDhcp => {
+                if let Some(new_val) = migrate_blocklist_dhcp_fields(&value) {
+                    dhcp_migrated += 1;
+                    Some(new_val)
+                } else {
+                    dhcp_errors += 1;
+                    None
+                }
+            }
+            _ => None,
+        };
+
+        if let Some(new_val) = migrated {
+            batch.push((key.to_vec(), new_val));
+
+            if batch.len() >= BATCH_SIZE {
+                let txn = db.transaction();
+                for (k, v) in batch.drain(..) {
+                    txn.put(&k, &v)?;
+                }
+                txn.commit()
+                    .context("failed to commit event migration batch")?;
             }
         }
     }
@@ -1516,23 +1551,80 @@ fn migrate_blocklist_dcerpc_events(dir: &Path) -> Result<()> {
             txn.put(&k, &v)?;
         }
         txn.commit()
-            .context("failed to commit final BlocklistDceRpc event migration batch")?;
+            .context("failed to commit final event migration batch")?;
     }
 
-    if errors > 0 {
-        info!(
-            "BlocklistDceRpc event migration: migrated {} events, \
-             {} events skipped (possibly already migrated)",
-            migrated_count, errors
-        );
-    } else {
-        info!(
-            "Migrated {} BlocklistDceRpc events to new context/request format",
-            migrated_count
-        );
-    }
+    info!(
+        "Event migration complete: HttpThreat({} migrated, {} skipped), \
+         BlocklistDceRpc({} migrated, {} skipped), \
+         BlocklistDhcp({} migrated, {} skipped)",
+        http_threat_migrated,
+        http_threat_errors,
+        dcerpc_migrated,
+        dcerpc_errors,
+        dhcp_migrated,
+        dhcp_errors,
+    );
 
     Ok(())
+}
+
+/// Migrates `HttpThreatFields` from `V0_43` (`cluster_id` `Option<usize>`, no country codes)
+/// to the current format (`cluster_id` `Option<u32>`, with country codes set to "ZZ").
+fn migrate_http_threat_fields(value: &[u8]) -> Option<Vec<u8>> {
+    // Production events are stored using `bincode::serialize` (fixint encoding).
+    let old: HttpThreatFieldsV0_43 = bincode::deserialize(value)
+        .map_err(|e| warn!("failed to deserialize HttpThreatFieldsV0_43: {e}"))
+        .ok()?;
+
+    let new = HttpThreatFields {
+        time: old.time,
+        sensor: old.sensor,
+        orig_addr: old.orig_addr,
+        orig_port: old.orig_port,
+        orig_country_code: *b"ZZ",
+        resp_addr: old.resp_addr,
+        resp_port: old.resp_port,
+        resp_country_code: *b"ZZ",
+        proto: old.proto,
+        start_time: old.start_time,
+        duration: old.duration,
+        orig_pkts: old.orig_pkts,
+        resp_pkts: old.resp_pkts,
+        orig_l2_bytes: old.orig_l2_bytes,
+        resp_l2_bytes: old.resp_l2_bytes,
+        method: old.method,
+        host: old.host,
+        uri: old.uri,
+        referer: old.referer,
+        version: old.version,
+        user_agent: old.user_agent,
+        request_len: old.request_len,
+        response_len: old.response_len,
+        status_code: old.status_code,
+        status_msg: old.status_msg,
+        username: old.username,
+        password: old.password,
+        cookie: old.cookie,
+        content_encoding: old.content_encoding,
+        content_type: old.content_type,
+        cache_control: old.cache_control,
+        filenames: old.filenames,
+        mime_types: old.mime_types,
+        body: old.body,
+        state: old.state,
+        db_name: old.db_name,
+        rule_id: old.rule_id,
+        matched_to: old.matched_to,
+        cluster_id: old.cluster_id.and_then(|v| u32::try_from(v).ok()),
+        attack_kind: old.attack_kind,
+        confidence: old.confidence,
+        category: old.category,
+    };
+
+    bincode::serialize(&new)
+        .map_err(|e| warn!("failed to serialize HttpThreatFields: {e}"))
+        .ok()
 }
 
 fn migrate_blocklist_dcerpc_fields(value: &[u8]) -> Option<Vec<u8>> {
@@ -3416,7 +3508,7 @@ mod tests {
         drop(db);
 
         // Run the migration - should succeed with no events
-        let result = super::migrate_blocklist_dhcp_events(db_dir.path());
+        let result = super::migrate_event_fields(db_dir.path());
         assert!(result.is_ok());
     }
 
