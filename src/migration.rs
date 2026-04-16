@@ -2830,5 +2830,4 @@ mod tests {
         assert!((new_event.confidence - 0.8).abs() < f32::EPSILON);
         assert!(new_event.category.is_none());
     }
-
 }
