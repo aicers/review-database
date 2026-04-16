@@ -5,7 +5,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use super::{EventCategory, LearningMethod, ThreatLevel, TriageScore, common::Match};
-use crate::event::common::{AttrValue, triage_scores_to_string};
+use crate::event::common::{AttrValue, define_fields_stored, triage_scores_to_string};
 
 macro_rules! find_kerberos_attr_by_kind {
     ($event: expr, $raw_event_attr: expr) => {{
@@ -70,6 +70,34 @@ pub struct BlocklistKerberosFieldsV0_42 {
     pub service_name: Vec<String>,
     pub confidence: f32,
     pub category: Option<EventCategory>,
+}
+
+define_fields_stored! {
+    BlocklistKerberosFieldsStored from BlocklistKerberosFields {
+        pub sensor: String,
+        pub orig_addr: IpAddr,
+        pub orig_port: u16,
+        pub resp_addr: IpAddr,
+        pub resp_port: u16,
+        pub proto: u8,
+        pub start_time: i64,
+        pub duration: i64,
+        pub orig_pkts: u64,
+        pub resp_pkts: u64,
+        pub orig_l2_bytes: u64,
+        pub resp_l2_bytes: u64,
+        pub client_time: i64,
+        pub server_time: i64,
+        pub error_code: u32,
+        pub client_realm: String,
+        pub cname_type: u8,
+        pub client_name: Vec<String>,
+        pub realm: String,
+        pub sname_type: u8,
+        pub service_name: Vec<String>,
+        pub confidence: f32,
+        pub category: Option<EventCategory>,
+    }
 }
 
 impl BlocklistKerberosFields {

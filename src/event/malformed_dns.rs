@@ -5,7 +5,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use super::{EventCategory, LearningMethod, ThreatLevel, TriageScore, common::Match};
-use crate::event::common::{AttrValue, triage_scores_to_string};
+use crate::event::common::{AttrValue, define_fields_stored, triage_scores_to_string};
 
 macro_rules! find_malformed_dns_attr_by_kind {
     ($event: expr, $raw_event_attr: expr) => {{
@@ -59,6 +59,37 @@ pub struct BlocklistMalformedDnsFields {
     pub resp_body: Vec<Vec<u8>>,
     pub confidence: f32,
     pub category: Option<EventCategory>,
+}
+
+define_fields_stored! {
+    BlocklistMalformedDnsFieldsStored from BlocklistMalformedDnsFields {
+        pub sensor: String,
+        pub orig_addr: IpAddr,
+        pub orig_port: u16,
+        pub resp_addr: IpAddr,
+        pub resp_port: u16,
+        pub proto: u8,
+        pub start_time: i64,
+        pub duration: i64,
+        pub orig_pkts: u64,
+        pub resp_pkts: u64,
+        pub orig_l2_bytes: u64,
+        pub resp_l2_bytes: u64,
+        pub trans_id: u16,
+        pub flags: u16,
+        pub question_count: u16,
+        pub answer_count: u16,
+        pub authority_count: u16,
+        pub additional_count: u16,
+        pub query_count: u32,
+        pub resp_count: u32,
+        pub query_bytes: u64,
+        pub resp_bytes: u64,
+        pub query_body: Vec<Vec<u8>>,
+        pub resp_body: Vec<Vec<u8>>,
+        pub confidence: f32,
+        pub category: Option<EventCategory>,
+    }
 }
 
 impl BlocklistMalformedDnsFields {

@@ -5,7 +5,9 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use super::{EventCategory, LearningMethod, ThreatLevel, TriageScore, common::Match};
-use crate::event::common::{AttrValue, triage_scores_to_string, vector_to_string};
+use crate::event::common::{
+    AttrValue, define_fields_stored, triage_scores_to_string, vector_to_string,
+};
 
 #[macro_export]
 macro_rules! find_conn_attr_by_kind {
@@ -50,6 +52,20 @@ pub struct PortScanFieldsV0_42 {
     pub proto: u8,
     pub confidence: f32,
     pub category: Option<EventCategory>,
+}
+
+define_fields_stored! {
+    PortScanFieldsStored from PortScanFields {
+        pub sensor: String,
+        pub orig_addr: IpAddr,
+        pub resp_addr: IpAddr,
+        pub resp_ports: Vec<u16>,
+        pub start_time: i64,
+        pub end_time: i64,
+        pub proto: u8,
+        pub confidence: f32,
+        pub category: Option<EventCategory>,
+    }
 }
 
 impl PortScanFields {
@@ -210,6 +226,20 @@ pub struct MultiHostPortScanFieldsV0_42 {
     pub category: Option<EventCategory>,
 }
 
+define_fields_stored! {
+    MultiHostPortScanFieldsStored from MultiHostPortScanFields {
+        pub sensor: String,
+        pub orig_addr: IpAddr,
+        pub resp_port: u16,
+        pub resp_addrs: Vec<IpAddr>,
+        pub proto: u8,
+        pub start_time: i64,
+        pub end_time: i64,
+        pub confidence: f32,
+        pub category: Option<EventCategory>,
+    }
+}
+
 impl MultiHostPortScanFields {
     #[must_use]
     pub fn syslog_rfc5424(&self) -> String {
@@ -366,6 +396,19 @@ pub struct ExternalDdosFieldsV0_42 {
     pub end_time: i64,
     pub confidence: f32,
     pub category: Option<EventCategory>,
+}
+
+define_fields_stored! {
+    ExternalDdosFieldsStored from ExternalDdosFields {
+        pub sensor: String,
+        pub orig_addrs: Vec<IpAddr>,
+        pub resp_addr: IpAddr,
+        pub proto: u8,
+        pub start_time: i64,
+        pub end_time: i64,
+        pub confidence: f32,
+        pub category: Option<EventCategory>,
+    }
 }
 
 impl ExternalDdosFields {
@@ -528,6 +571,29 @@ pub struct BlocklistConnFieldsV0_42 {
     pub resp_l2_bytes: u64,
     pub confidence: f32,
     pub category: Option<EventCategory>,
+}
+
+define_fields_stored! {
+    BlocklistConnFieldsStored from BlocklistConnFields {
+        pub sensor: String,
+        pub orig_addr: IpAddr,
+        pub orig_port: u16,
+        pub resp_addr: IpAddr,
+        pub resp_port: u16,
+        pub proto: u8,
+        pub conn_state: String,
+        pub start_time: i64,
+        pub duration: i64,
+        pub service: String,
+        pub orig_bytes: u64,
+        pub resp_bytes: u64,
+        pub orig_pkts: u64,
+        pub resp_pkts: u64,
+        pub orig_l2_bytes: u64,
+        pub resp_l2_bytes: u64,
+        pub confidence: f32,
+        pub category: Option<EventCategory>,
+    }
 }
 
 impl BlocklistConnFields {
