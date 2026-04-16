@@ -5,7 +5,9 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use super::{EventCategory, LearningMethod, ThreatLevel, TriageScore, common::Match};
-use crate::event::common::{AttrValue, to_hardware_address, triage_scores_to_string};
+use crate::event::common::{
+    AttrValue, define_fields_stored, to_hardware_address, triage_scores_to_string,
+};
 
 macro_rules! find_bootp_attr_by_kind {
     ($event: expr, $raw_event_attr: expr) => {{
@@ -108,6 +110,36 @@ pub struct BlocklistBootpFieldsV0_42 {
     pub file: String,
     pub confidence: f32,
     pub category: Option<EventCategory>,
+}
+
+define_fields_stored! {
+    BlocklistBootpFieldsStored from BlocklistBootpFields {
+        pub sensor: String,
+        pub orig_addr: IpAddr,
+        pub orig_port: u16,
+        pub resp_addr: IpAddr,
+        pub resp_port: u16,
+        pub proto: u8,
+        pub start_time: i64,
+        pub duration: i64,
+        pub orig_pkts: u64,
+        pub resp_pkts: u64,
+        pub orig_l2_bytes: u64,
+        pub resp_l2_bytes: u64,
+        pub op: u8,
+        pub htype: u8,
+        pub hops: u8,
+        pub xid: u32,
+        pub ciaddr: IpAddr,
+        pub yiaddr: IpAddr,
+        pub siaddr: IpAddr,
+        pub giaddr: IpAddr,
+        pub chaddr: Vec<u8>,
+        pub sname: String,
+        pub file: String,
+        pub confidence: f32,
+        pub category: Option<EventCategory>,
+    }
 }
 
 #[allow(clippy::module_name_repetitions)]

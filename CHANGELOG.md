@@ -77,6 +77,17 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [0.44.1] - 2026-04-16
 
+- Introduced an explicit producer/storage boundary for event fields. The
+  producer-facing `*Fields` types are still the public interface consumed by
+  ingestion clients, but each family now also defines a repository-local
+  `*FieldsStored` type. `EventDb::put` converts the incoming producer bytes
+  into the stored representation before persistence, and `EventIterator`
+  converts stored bytes back to the producer schema on read. The two schemas
+  are byte-identical today (so no database migration is required), but may
+  diverge in the future without changing the producer interface. The
+  `NetworkThreat`, `ExtraThreat`, and `WindowsThreat` kinds are not yet split
+  and continue to pass through unchanged.
+
 ### Fixed
 
 - Fixed event migration failure introduced in 0.44.0 where

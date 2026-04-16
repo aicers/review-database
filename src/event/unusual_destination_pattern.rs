@@ -5,7 +5,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use super::{EventCategory, LearningMethod, ThreatLevel, TriageScore, common::Match};
-use crate::event::common::{AttrValue, triage_scores_to_string};
+use crate::event::common::{AttrValue, define_fields_stored, triage_scores_to_string};
 
 #[derive(Serialize, Deserialize)]
 pub struct UnusualDestinationPatternFields {
@@ -19,6 +19,21 @@ pub struct UnusualDestinationPatternFields {
     pub z_score: f64,
     pub confidence: f32,
     pub category: Option<EventCategory>,
+}
+
+define_fields_stored! {
+    UnusualDestinationPatternFieldsStored from UnusualDestinationPatternFields {
+        pub sensor: String,
+        pub start_time: i64,
+        pub end_time: i64,
+        pub destination_ips: Vec<IpAddr>,
+        pub count: usize,
+        pub expected_mean: f64,
+        pub std_deviation: f64,
+        pub z_score: f64,
+        pub confidence: f32,
+        pub category: Option<EventCategory>,
+    }
 }
 
 impl UnusualDestinationPatternFields {

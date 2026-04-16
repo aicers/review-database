@@ -6,7 +6,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use super::{EventCategory, LearningMethod, ThreatLevel, TriageScore, common::Match};
-use crate::event::common::{AttrValue, triage_scores_to_string};
+use crate::event::common::{AttrValue, define_fields_stored, triage_scores_to_string};
 
 macro_rules! find_ldap_attr_by_kind {
     ($event: expr, $raw_event_attr: expr) => {{
@@ -63,6 +63,21 @@ pub struct LdapBruteForceFieldsV0_42 {
     pub end_time: i64,
     pub confidence: f32,
     pub category: Option<EventCategory>,
+}
+
+define_fields_stored! {
+    LdapBruteForceFieldsStored from LdapBruteForceFields {
+        pub sensor: String,
+        pub orig_addr: IpAddr,
+        pub resp_addr: IpAddr,
+        pub resp_port: u16,
+        pub proto: u8,
+        pub user_pw_list: Vec<(String, String)>,
+        pub start_time: i64,
+        pub end_time: i64,
+        pub confidence: f32,
+        pub category: Option<EventCategory>,
+    }
 }
 
 impl LdapBruteForceFields {
@@ -246,6 +261,32 @@ pub struct LdapEventFieldsV0_42 {
     pub argument: Vec<String>,
     pub confidence: f32,
     pub category: Option<EventCategory>,
+}
+
+define_fields_stored! {
+    LdapEventFieldsStored from LdapEventFields {
+        pub sensor: String,
+        pub orig_addr: IpAddr,
+        pub orig_port: u16,
+        pub resp_addr: IpAddr,
+        pub resp_port: u16,
+        pub proto: u8,
+        pub start_time: i64,
+        pub duration: i64,
+        pub orig_pkts: u64,
+        pub resp_pkts: u64,
+        pub orig_l2_bytes: u64,
+        pub resp_l2_bytes: u64,
+        pub message_id: u32,
+        pub version: u8,
+        pub opcode: Vec<String>,
+        pub result: Vec<String>,
+        pub diagnostic_message: Vec<String>,
+        pub object: Vec<String>,
+        pub argument: Vec<String>,
+        pub confidence: f32,
+        pub category: Option<EventCategory>,
+    }
 }
 
 impl LdapEventFields {
