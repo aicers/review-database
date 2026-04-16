@@ -283,20 +283,18 @@ fn migrate_0_43_to_0_44(
     // Migrate Network table to enforce global name uniqueness
     migrate_network_cf(data_dir)?;
 
-    // Migrate event fields to add country codes and convert HttpThreat cluster_id
-    // from Option<usize> to Option<u32>, using Store abstraction
+    // Migrate event fields in a single pass over the events database:
+    // - HttpThreat: cluster_id from Option<usize> to Option<u32>
+    // - BlocklistDceRpc: replace rtt/named_pipe/endpoint/operation with context/request
+    // - BlocklistDhcp: add the new `options` field
+    migrate_event_fields(data_dir)?;
+
+    // Migrate event fields to add country codes (V0_43 -> V0_44), using Store abstraction
     {
         let store = crate::Store::new(data_dir, backup_dir)
             .context("Failed to open Store for event migration")?;
         migrate_event_country_codes(&store, locator)?;
     }
-
-    // Migrate BlocklistDceRpc events: replace rtt/named_pipe/endpoint/operation
-    // with context (Vec<DceRpcContext>) and request (Vec<String>)
-    migrate_blocklist_dcerpc_events(data_dir)?;
-
-    // Migrate BlocklistDhcp events to add the new `options` field
-    migrate_blocklist_dhcp_events(data_dir)?;
 
     Ok(())
 }
@@ -1458,7 +1456,14 @@ where
     bincode::serialize(&new_fields).context("failed to serialize new event fields")
 }
 
-fn migrate_blocklist_dcerpc_events(dir: &Path) -> Result<()> {
+/// Migrates event fields in a single pass over the events database.
+///
+/// Handles three event kinds:
+/// - `HttpThreat`: `cluster_id` from `Option<usize>` to `Option<u32>`
+/// - `BlocklistDceRpc`: replace `rtt`/`named_pipe`/`endpoint`/`operation` with
+///   `context` (`Vec<DceRpcContext>`) and `request` (`Vec<String>`)
+/// - `BlocklistDhcp`: add the new `options` field
+fn migrate_event_fields(dir: &Path) -> Result<()> {
     use num_traits::FromPrimitive;
 
     const BATCH_SIZE: usize = 100;
@@ -1471,10 +1476,14 @@ fn migrate_blocklist_dcerpc_events(dir: &Path) -> Result<()> {
 
     let db: rocksdb::OptimisticTransactionDB<rocksdb::SingleThreaded> =
         rocksdb::OptimisticTransactionDB::open_cf(&opts, &db_path, crate::tables::MAP_NAMES)
-            .context("Failed to open database for BlocklistDceRpc event migration")?;
+            .context("Failed to open database for event migration")?;
 
-    let mut migrated_count = 0usize;
-    let mut errors = 0usize;
+    let mut http_threat_migrated = 0usize;
+    let mut http_threat_errors = 0usize;
+    let mut dcerpc_migrated = 0usize;
+    let mut dcerpc_errors = 0usize;
+    let mut dhcp_migrated = 0usize;
+    let mut dhcp_errors = 0usize;
     let mut batch: Vec<(Vec<u8>, Vec<u8>)> = Vec::with_capacity(BATCH_SIZE);
 
     for item in db.iterator(rocksdb::IteratorMode::Start) {
@@ -1491,98 +1500,47 @@ fn migrate_blocklist_dcerpc_events(dir: &Path) -> Result<()> {
             continue;
         };
 
-        if event_kind == EventKind::BlocklistDceRpc {
-            if let Some(new_val) = migrate_blocklist_dcerpc_fields(&value) {
-                batch.push((key.to_vec(), new_val));
-                migrated_count += 1;
-
-                if batch.len() >= BATCH_SIZE {
-                    let txn = db.transaction();
-                    for (k, v) in batch.drain(..) {
-                        txn.put(&k, &v)?;
-                    }
-                    txn.commit()
-                        .context("failed to commit BlocklistDceRpc event migration batch")?;
+        let migrated = match event_kind {
+            EventKind::HttpThreat => {
+                if let Some(new_val) = migrate_http_threat_fields(&value) {
+                    http_threat_migrated += 1;
+                    Some(new_val)
+                } else {
+                    http_threat_errors += 1;
+                    None
                 }
-            } else {
-                errors += 1;
             }
-        }
-    }
-
-    if !batch.is_empty() {
-        let txn = db.transaction();
-        for (k, v) in batch.drain(..) {
-            txn.put(&k, &v)?;
-        }
-        txn.commit()
-            .context("failed to commit final BlocklistDceRpc event migration batch")?;
-    }
-
-    if errors > 0 {
-        info!(
-            "BlocklistDceRpc event migration: migrated {} events, \
-             {} events skipped (possibly already migrated)",
-            migrated_count, errors
-        );
-    } else {
-        info!(
-            "Migrated {} BlocklistDceRpc events to new context/request format",
-            migrated_count
-        );
-    }
-
-    Ok(())
-}
-
-fn migrate_blocklist_dhcp_events(dir: &Path) -> Result<()> {
-    use num_traits::FromPrimitive;
-
-    const BATCH_SIZE: usize = 100;
-
-    let db_path = dir.join("states.db");
-
-    let mut opts = rocksdb::Options::default();
-    opts.create_if_missing(false);
-    opts.create_missing_column_families(false);
-
-    let db: rocksdb::OptimisticTransactionDB<rocksdb::SingleThreaded> =
-        rocksdb::OptimisticTransactionDB::open_cf(&opts, &db_path, crate::tables::MAP_NAMES)
-            .context("Failed to open database for BlocklistDhcp event migration")?;
-
-    let mut migrated_count = 0usize;
-    let mut errors = 0usize;
-    let mut batch: Vec<(Vec<u8>, Vec<u8>)> = Vec::with_capacity(BATCH_SIZE);
-
-    for item in db.iterator(rocksdb::IteratorMode::Start) {
-        let (key, value) = item.context("failed to read event entry")?;
-
-        if key.len() != 16 {
-            continue;
-        }
-
-        let key_i128 = i128::from_be_bytes(key.as_ref().try_into().unwrap_or([0; 16]));
-        let event_kind_val = ((key_i128 >> 32) & 0xFFFF_FFFF) as i32;
-
-        let Some(event_kind) = EventKind::from_i32(event_kind_val) else {
-            continue;
+            EventKind::BlocklistDceRpc => {
+                if let Some(new_val) = migrate_blocklist_dcerpc_fields(&value) {
+                    dcerpc_migrated += 1;
+                    Some(new_val)
+                } else {
+                    dcerpc_errors += 1;
+                    None
+                }
+            }
+            EventKind::BlocklistDhcp => {
+                if let Some(new_val) = migrate_blocklist_dhcp_fields(&value) {
+                    dhcp_migrated += 1;
+                    Some(new_val)
+                } else {
+                    dhcp_errors += 1;
+                    None
+                }
+            }
+            _ => None,
         };
 
-        if event_kind == EventKind::BlocklistDhcp {
-            if let Some(new_val) = migrate_blocklist_dhcp_fields(&value) {
-                batch.push((key.to_vec(), new_val));
-                migrated_count += 1;
+        if let Some(new_val) = migrated {
+            batch.push((key.to_vec(), new_val));
 
-                if batch.len() >= BATCH_SIZE {
-                    let txn = db.transaction();
-                    for (k, v) in batch.drain(..) {
-                        txn.put(&k, &v)?;
-                    }
-                    txn.commit()
-                        .context("failed to commit BlocklistDhcp event migration batch")?;
+            if batch.len() >= BATCH_SIZE {
+                let txn = db.transaction();
+                for (k, v) in batch.drain(..) {
+                    txn.put(&k, &v)?;
                 }
-            } else {
-                errors += 1;
+                txn.commit()
+                    .context("failed to commit event migration batch")?;
             }
         }
     }
@@ -1593,21 +1551,20 @@ fn migrate_blocklist_dhcp_events(dir: &Path) -> Result<()> {
             txn.put(&k, &v)?;
         }
         txn.commit()
-            .context("failed to commit final BlocklistDhcp event migration batch")?;
+            .context("failed to commit final event migration batch")?;
     }
 
-    if errors > 0 {
-        info!(
-            "BlocklistDhcp event migration: migrated {} events, \
-             {} events skipped (possibly already migrated)",
-            migrated_count, errors
-        );
-    } else {
-        info!(
-            "Migrated {} BlocklistDhcp events to add options field",
-            migrated_count
-        );
-    }
+    info!(
+        "Event migration complete: HttpThreat({} migrated, {} skipped), \
+         BlocklistDceRpc({} migrated, {} skipped), \
+         BlocklistDhcp({} migrated, {} skipped)",
+        http_threat_migrated,
+        http_threat_errors,
+        dcerpc_migrated,
+        dcerpc_errors,
+        dhcp_migrated,
+        dhcp_errors,
+    );
 
     Ok(())
 }
@@ -1680,10 +1637,8 @@ fn migrate_blocklist_dcerpc_fields(value: &[u8]) -> Option<Vec<u8>> {
         sensor: old.sensor,
         orig_addr: old.orig_addr,
         orig_port: old.orig_port,
-        orig_country_code: *b"XX",
         resp_addr: old.resp_addr,
         resp_port: old.resp_port,
-        resp_country_code: *b"XX",
         proto: old.proto,
         start_time: old.start_time,
         duration: old.duration,
@@ -1714,10 +1669,8 @@ fn migrate_blocklist_dhcp_fields(value: &[u8]) -> Option<Vec<u8>> {
         sensor: old.sensor,
         orig_addr: old.orig_addr,
         orig_port: old.orig_port,
-        orig_country_code: *b"ZZ",
         resp_addr: old.resp_addr,
         resp_port: old.resp_port,
-        resp_country_code: *b"ZZ",
         proto: old.proto,
         start_time: old.start_time,
         duration: old.duration,
@@ -3671,7 +3624,7 @@ mod tests {
         drop(db);
 
         // Run the migration - should succeed with no events
-        let result = super::migrate_blocklist_dhcp_events(db_dir.path());
+        let result = super::migrate_event_fields(db_dir.path());
         assert!(result.is_ok());
     }
 
