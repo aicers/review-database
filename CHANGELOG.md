@@ -17,6 +17,16 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [0.44.1] - 2026-04-16
 
+### Added
+
+- Added `event_retention_period` and `set_event_retention_period`
+  methods to `Store` for managing event retention configuration.
+  `None` means unlimited retention (key absent); `Some(days)` sets
+  a retention period in days.
+- Added `EventDb::remove_before` method to delete all detected
+  events older than a given timestamp. This enables periodic
+  cleanup of expired events based on the retention policy.
+
 ### Fixed
 
 - Fixed event migration failure introduced in 0.44.0 where
@@ -27,20 +37,6 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   and be counted as skipped, resulting in 0 events migrated. The migration
   functions now consistently use `bincode::serialize`/`bincode::deserialize`
   to match the runtime event storage path.
-
-## [0.44.0] - 2026-04-10
-
-## Unreleased
-
-### Added
-
-- Added `event_retention_period` and `set_event_retention_period`
-  methods to `Store` for managing event retention configuration.
-  `None` means unlimited retention (key absent); `Some(days)` sets
-  a retention period in days.
-- Added `EventDb::remove_before` method to delete all detected
-  events older than a given timestamp. This enables periodic
-  cleanup of expired events based on the retention policy.
 
 ## [0.44.0] - 2026-04-10
 
