@@ -5,6 +5,23 @@ file is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), and
 this project adheres to [Semantic
 Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Added `EventDb::put_external` as the ingestion entrypoint for events
+  received from external producers. The method interprets the
+  `EventMessage.fields` payload as the external wire-format representation,
+  converts it into the internal `*Fields` type, and persists the internal
+  representation via `EventDb::put`.
+- Added `*FieldsExternal` type aliases (e.g., `DnsEventFieldsExternal`,
+  `BlocklistBootpFieldsExternal`) in a new `event::external` module to make
+  the external/internal ingestion boundary explicit in the public API.
+  Today each external type is an alias of its internal counterpart, so the
+  conversion is an identity; when the schemas diverge, only the `From`
+  impls need to be updated without touching ingestion plumbing or external
+  callers.
+
 ## [0.44.0] - 2026-04-10
 
 ### Added
@@ -1377,6 +1394,7 @@ AsRef<[u8]>`). This change accommodates scenarios where the information stored
 - Modified `FtpBruteForce` by adding an `is_internal` field which is a boolean
   indicating whether it is internal or not.
 
+[Unreleased]: https://github.com/petabi/review-database/compare/0.44.0...main
 [0.44.0]: https://github.com/petabi/review-database/compare/0.43.0...0.44.0
 [0.43.0]: https://github.com/petabi/review-database/compare/0.42.0...0.43.0
 [0.42.0]: https://github.com/petabi/review-database/compare/0.41.0...0.42.0
