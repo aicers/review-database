@@ -11,7 +11,7 @@ use std::{
 use anyhow::{Context, Result, anyhow};
 use bincode::Options;
 use semver::{Version, VersionReq};
-use tracing::info;
+use tracing::{info, warn};
 
 use crate::{
     AllowNetwork, BlockNetwork, Customer,
@@ -253,20 +253,11 @@ fn migrate_0_43_to_0_44(data_dir: &Path) -> Result<()> {
     // Migrate Network table to enforce global name uniqueness
     migrate_network_cf(data_dir)?;
 
-    // Migrate HttpThreat events with cluster_id from Option<usize> to Option<u32>
-    // Note: Cluster and TimeSeries table migrations are not needed because the
-    // big-endian byte representation is identical between i32 and u32 for non-negative
-    // values, and the unsupervised engine never produces negative cluster_id values.
-    // Other event types (ExtraThreat, WindowsThreat, NetworkThreat) are not generated
-    // on production servers, so only HttpThreat migration is needed.
-    migrate_http_threat_events(data_dir)?;
-
-    // Migrate BlocklistDceRpc events: replace rtt/named_pipe/endpoint/operation
-    // with context (Vec<DceRpcContext>) and request (Vec<String>)
-    migrate_blocklist_dcerpc_events(data_dir)?;
-
-    // Migrate BlocklistDhcp events to add the new `options` field
-    migrate_blocklist_dhcp_events(data_dir)?;
+    // Migrate event fields in a single pass over the events database:
+    // - HttpThreat: cluster_id from Option<usize> to Option<u32>
+    // - BlocklistDceRpc: replace rtt/named_pipe/endpoint/operation with context/request
+    // - BlocklistDhcp: add the new `options` field
+    migrate_event_fields(data_dir)?;
 
     Ok(())
 }
@@ -859,7 +850,14 @@ fn migrate_network_cf_inner(
 ///
 /// Note: Other event types (`ExtraThreat`, `WindowsThreat`, `NetworkThreat`) are not generated
 /// on production servers, so their migration is unnecessary.
-fn migrate_http_threat_events(dir: &Path) -> Result<()> {
+/// Migrates event fields in a single pass over the events database.
+///
+/// Handles three event kinds:
+/// - `HttpThreat`: `cluster_id` from `Option<usize>` to `Option<u32>`
+/// - `BlocklistDceRpc`: replace `rtt`/`named_pipe`/`endpoint`/`operation` with
+///   `context` (`Vec<DceRpcContext>`) and `request` (`Vec<String>`)
+/// - `BlocklistDhcp`: add the new `options` field
+fn migrate_event_fields(dir: &Path) -> Result<()> {
     use num_traits::FromPrimitive;
 
     /// Number of records to commit per transaction batch to bound memory usage.
@@ -873,11 +871,14 @@ fn migrate_http_threat_events(dir: &Path) -> Result<()> {
 
     let db: rocksdb::OptimisticTransactionDB<rocksdb::SingleThreaded> =
         rocksdb::OptimisticTransactionDB::open_cf(&opts, &db_path, crate::tables::MAP_NAMES)
-            .context("Failed to open database for HttpThreat event migration")?;
+            .context("Failed to open database for event migration")?;
 
-    // Events are stored in the default column family
-    let mut migrated_count = 0usize;
-    let mut errors = 0usize;
+    let mut http_threat_migrated = 0usize;
+    let mut http_threat_errors = 0usize;
+    let mut dcerpc_migrated = 0usize;
+    let mut dcerpc_errors = 0usize;
+    let mut dhcp_migrated = 0usize;
+    let mut dhcp_errors = 0usize;
     let mut batch: Vec<(Vec<u8>, Vec<u8>)> = Vec::with_capacity(BATCH_SIZE);
 
     for item in db.iterator(rocksdb::IteratorMode::Start) {
@@ -893,30 +894,51 @@ fn migrate_http_threat_events(dir: &Path) -> Result<()> {
         let key_i128 = i128::from_be_bytes(key.as_ref().try_into().unwrap_or([0; 16]));
         let event_kind_val = ((key_i128 >> 32) & 0xFFFF_FFFF) as i32;
 
-        // Try to convert to EventKind
         let Some(event_kind) = EventKind::from_i32(event_kind_val) else {
             continue;
         };
 
-        // Only migrate HttpThreat events
-        if event_kind == EventKind::HttpThreat {
-            if let Some(new_val) = migrate_http_threat_fields(&value) {
-                batch.push((key.to_vec(), new_val));
-                migrated_count += 1;
-
-                // Commit batch when it reaches BATCH_SIZE
-                if batch.len() >= BATCH_SIZE {
-                    let txn = db.transaction();
-                    for (k, v) in batch.drain(..) {
-                        txn.put(&k, &v)?;
-                    }
-                    txn.commit()
-                        .context("failed to commit HttpThreat event migration batch")?;
+        let migrated = match event_kind {
+            EventKind::HttpThreat => {
+                if let Some(new_val) = migrate_http_threat_fields(&value) {
+                    http_threat_migrated += 1;
+                    Some(new_val)
+                } else {
+                    http_threat_errors += 1;
+                    None
                 }
-            } else {
-                // If we couldn't migrate, it might already be in the new format
-                // or there was an error. We'll count it but not fail the migration.
-                errors += 1;
+            }
+            EventKind::BlocklistDceRpc => {
+                if let Some(new_val) = migrate_blocklist_dcerpc_fields(&value) {
+                    dcerpc_migrated += 1;
+                    Some(new_val)
+                } else {
+                    dcerpc_errors += 1;
+                    None
+                }
+            }
+            EventKind::BlocklistDhcp => {
+                if let Some(new_val) = migrate_blocklist_dhcp_fields(&value) {
+                    dhcp_migrated += 1;
+                    Some(new_val)
+                } else {
+                    dhcp_errors += 1;
+                    None
+                }
+            }
+            _ => None,
+        };
+
+        if let Some(new_val) = migrated {
+            batch.push((key.to_vec(), new_val));
+
+            if batch.len() >= BATCH_SIZE {
+                let txn = db.transaction();
+                for (k, v) in batch.drain(..) {
+                    txn.put(&k, &v)?;
+                }
+                txn.commit()
+                    .context("failed to commit event migration batch")?;
             }
         }
     }
@@ -928,28 +950,32 @@ fn migrate_http_threat_events(dir: &Path) -> Result<()> {
             txn.put(&k, &v)?;
         }
         txn.commit()
-            .context("failed to commit final HttpThreat event migration batch")?;
+            .context("failed to commit final event migration batch")?;
     }
 
-    if errors > 0 {
-        info!(
-            "HttpThreat event migration: migrated {} events, {} events skipped (possibly already migrated)",
-            migrated_count, errors
-        );
-    } else {
-        info!(
-            "Migrated {} HttpThreat events with cluster_id type change",
-            migrated_count
-        );
-    }
+    info!(
+        "Event migration complete: HttpThreat({} migrated, {} skipped), \
+         BlocklistDceRpc({} migrated, {} skipped), \
+         BlocklistDhcp({} migrated, {} skipped)",
+        http_threat_migrated,
+        http_threat_errors,
+        dcerpc_migrated,
+        dcerpc_errors,
+        dhcp_migrated,
+        dhcp_errors,
+    );
 
     Ok(())
 }
 
 /// Migrates `HttpThreatFields` from Option<usize> to Option<u32> for `cluster_id`.
 fn migrate_http_threat_fields(value: &[u8]) -> Option<Vec<u8>> {
-    // Try to deserialize with old format
-    let old: HttpThreatFieldsV0_43 = bincode::DefaultOptions::new().deserialize(value).ok()?;
+    // Try to deserialize with old format. Production events are stored using
+    // `bincode::serialize` (fixint encoding), so we must use the matching
+    // `bincode::deserialize` here rather than `DefaultOptions` (varint).
+    let old: HttpThreatFieldsV0_43 = bincode::deserialize(value)
+        .map_err(|e| warn!("failed to deserialize HttpThreatFieldsV0_43: {e}"))
+        .ok()?;
 
     // Convert to new format
     let new = HttpThreatFields {
@@ -995,88 +1021,16 @@ fn migrate_http_threat_fields(value: &[u8]) -> Option<Vec<u8>> {
         category: old.category,
     };
 
-    bincode::DefaultOptions::new().serialize(&new).ok()
-}
-
-fn migrate_blocklist_dcerpc_events(dir: &Path) -> Result<()> {
-    use num_traits::FromPrimitive;
-
-    const BATCH_SIZE: usize = 100;
-
-    let db_path = dir.join("states.db");
-
-    let mut opts = rocksdb::Options::default();
-    opts.create_if_missing(false);
-    opts.create_missing_column_families(false);
-
-    let db: rocksdb::OptimisticTransactionDB<rocksdb::SingleThreaded> =
-        rocksdb::OptimisticTransactionDB::open_cf(&opts, &db_path, crate::tables::MAP_NAMES)
-            .context("Failed to open database for BlocklistDceRpc event migration")?;
-
-    let mut migrated_count = 0usize;
-    let mut errors = 0usize;
-    let mut batch: Vec<(Vec<u8>, Vec<u8>)> = Vec::with_capacity(BATCH_SIZE);
-
-    for item in db.iterator(rocksdb::IteratorMode::Start) {
-        let (key, value) = item.context("failed to read event entry")?;
-
-        if key.len() != 16 {
-            continue;
-        }
-
-        let key_i128 = i128::from_be_bytes(key.as_ref().try_into().unwrap_or([0; 16]));
-        let event_kind_val = ((key_i128 >> 32) & 0xFFFF_FFFF) as i32;
-
-        let Some(event_kind) = EventKind::from_i32(event_kind_val) else {
-            continue;
-        };
-
-        if event_kind == EventKind::BlocklistDceRpc {
-            if let Some(new_val) = migrate_blocklist_dcerpc_fields(&value) {
-                batch.push((key.to_vec(), new_val));
-                migrated_count += 1;
-
-                if batch.len() >= BATCH_SIZE {
-                    let txn = db.transaction();
-                    for (k, v) in batch.drain(..) {
-                        txn.put(&k, &v)?;
-                    }
-                    txn.commit()
-                        .context("failed to commit BlocklistDceRpc event migration batch")?;
-                }
-            } else {
-                errors += 1;
-            }
-        }
-    }
-
-    if !batch.is_empty() {
-        let txn = db.transaction();
-        for (k, v) in batch.drain(..) {
-            txn.put(&k, &v)?;
-        }
-        txn.commit()
-            .context("failed to commit final BlocklistDceRpc event migration batch")?;
-    }
-
-    if errors > 0 {
-        info!(
-            "BlocklistDceRpc event migration: migrated {} events, \
-             {} events skipped (possibly already migrated)",
-            migrated_count, errors
-        );
-    } else {
-        info!(
-            "Migrated {} BlocklistDceRpc events to new context/request format",
-            migrated_count
-        );
-    }
-
-    Ok(())
+    bincode::serialize(&new)
+        .map_err(|e| warn!("failed to serialize HttpThreatFields: {e}"))
+        .ok()
 }
 
 fn migrate_blocklist_dcerpc_fields(value: &[u8]) -> Option<Vec<u8>> {
-    let old: BlocklistDceRpcFieldsV0_42 = bincode::DefaultOptions::new().deserialize(value).ok()?;
+    // Production events are stored using `bincode::serialize` (fixint encoding).
+    let old: BlocklistDceRpcFieldsV0_42 = bincode::deserialize(value)
+        .map_err(|e| warn!("failed to deserialize BlocklistDceRpcFieldsV0_42: {e}"))
+        .ok()?;
 
     let new = BlocklistDceRpcFields {
         sensor: old.sensor,
@@ -1097,93 +1051,17 @@ fn migrate_blocklist_dcerpc_fields(value: &[u8]) -> Option<Vec<u8>> {
         category: old.category,
     };
 
-    bincode::DefaultOptions::new().serialize(&new).ok()
-}
-
-/// Migrates `BlocklistDhcp` events to add the new `options` field.
-///
-/// Old records serialized without `options` are deserialized using
-/// `BlocklistDhcpFieldsV0_42` and re-serialized with `options: vec![]`.
-fn migrate_blocklist_dhcp_events(dir: &Path) -> Result<()> {
-    use num_traits::FromPrimitive;
-
-    const BATCH_SIZE: usize = 100;
-
-    let db_path = dir.join("states.db");
-
-    let mut opts = rocksdb::Options::default();
-    opts.create_if_missing(false);
-    opts.create_missing_column_families(false);
-
-    let db: rocksdb::OptimisticTransactionDB<rocksdb::SingleThreaded> =
-        rocksdb::OptimisticTransactionDB::open_cf(&opts, &db_path, crate::tables::MAP_NAMES)
-            .context("Failed to open database for BlocklistDhcp event migration")?;
-
-    let mut migrated_count = 0usize;
-    let mut errors = 0usize;
-    let mut batch: Vec<(Vec<u8>, Vec<u8>)> = Vec::with_capacity(BATCH_SIZE);
-
-    for item in db.iterator(rocksdb::IteratorMode::Start) {
-        let (key, value) = item.context("failed to read event entry")?;
-
-        if key.len() != 16 {
-            continue;
-        }
-
-        let key_i128 = i128::from_be_bytes(key.as_ref().try_into().unwrap_or([0; 16]));
-        let event_kind_val = ((key_i128 >> 32) & 0xFFFF_FFFF) as i32;
-
-        let Some(event_kind) = EventKind::from_i32(event_kind_val) else {
-            continue;
-        };
-
-        if event_kind == EventKind::BlocklistDhcp {
-            if let Some(new_val) = migrate_blocklist_dhcp_fields(&value) {
-                batch.push((key.to_vec(), new_val));
-                migrated_count += 1;
-
-                if batch.len() >= BATCH_SIZE {
-                    let txn = db.transaction();
-                    for (k, v) in batch.drain(..) {
-                        txn.put(&k, &v)?;
-                    }
-                    txn.commit()
-                        .context("failed to commit BlocklistDhcp event migration batch")?;
-                }
-            } else {
-                errors += 1;
-            }
-        }
-    }
-
-    if !batch.is_empty() {
-        let txn = db.transaction();
-        for (k, v) in batch.drain(..) {
-            txn.put(&k, &v)?;
-        }
-        txn.commit()
-            .context("failed to commit final BlocklistDhcp event migration batch")?;
-    }
-
-    if errors > 0 {
-        info!(
-            "BlocklistDhcp event migration: migrated {} events, {} events skipped \
-             (possibly already migrated)",
-            migrated_count, errors
-        );
-    } else {
-        info!(
-            "Migrated {} BlocklistDhcp events to add options field",
-            migrated_count
-        );
-    }
-
-    Ok(())
+    bincode::serialize(&new)
+        .map_err(|e| warn!("failed to serialize BlocklistDceRpcFields: {e}"))
+        .ok()
 }
 
 /// Migrates a single `BlocklistDhcpFields` record by adding an empty `options` field.
 fn migrate_blocklist_dhcp_fields(value: &[u8]) -> Option<Vec<u8>> {
-    let old: BlocklistDhcpFieldsV0_42 = bincode::DefaultOptions::new().deserialize(value).ok()?;
+    // Production events are stored using `bincode::serialize` (fixint encoding).
+    let old: BlocklistDhcpFieldsV0_42 = bincode::deserialize(value)
+        .map_err(|e| warn!("failed to deserialize BlocklistDhcpFieldsV0_42: {e}"))
+        .ok()?;
 
     let new = BlocklistDhcpFields {
         sensor: old.sensor,
@@ -1221,7 +1099,9 @@ fn migrate_blocklist_dhcp_fields(value: &[u8]) -> Option<Vec<u8>> {
         category: old.category,
     };
 
-    bincode::DefaultOptions::new().serialize(&new).ok()
+    bincode::serialize(&new)
+        .map_err(|e| warn!("failed to serialize BlocklistDhcpFields: {e}"))
+        .ok()
 }
 
 /// Recursively creates `path` if not existed, creates the VERSION file
@@ -2598,8 +2478,6 @@ mod tests {
     fn test_migrate_http_threat_events() {
         use std::net::IpAddr;
 
-        use bincode::Options;
-
         use super::migration_structures::HttpThreatFieldsV0_43;
         use crate::event::{EventKind, HttpThreatFields};
 
@@ -2659,10 +2537,8 @@ mod tests {
             category: None,
         };
 
-        // Serialize old-format value
-        let serialized = bincode::DefaultOptions::new()
-            .serialize(&old_event)
-            .unwrap();
+        // Serialize old-format value using the same encoder as production code.
+        let serialized = bincode::serialize(&old_event).unwrap();
 
         // Create event key: (timestamp_nanos << 64) | (event_kind << 32) | random_bits
         // EventKind::HttpThreat = 1
@@ -2679,7 +2555,7 @@ mod tests {
         drop(db);
 
         // Run the migration
-        super::migrate_http_threat_events(db_dir.path()).unwrap();
+        super::migrate_event_fields(db_dir.path()).unwrap();
 
         // Verify the migration by reading back and checking new format
         let db: rocksdb::OptimisticTransactionDB<rocksdb::SingleThreaded> =
@@ -2687,8 +2563,7 @@ mod tests {
                 .unwrap();
 
         let value = db.get(key_bytes).unwrap().unwrap();
-        let new_event: HttpThreatFields =
-            bincode::DefaultOptions::new().deserialize(&value).unwrap();
+        let new_event: HttpThreatFields = bincode::deserialize(&value).unwrap();
 
         // Verify the cluster_id was migrated from Option<usize> to Option<u32>
         assert_eq!(new_event.cluster_id, Some(42_u32));
@@ -2698,8 +2573,8 @@ mod tests {
     }
 
     #[test]
-    fn test_migrate_http_threat_events_empty_db() {
-        // Test that migration succeeds when there are no HttpThreat events
+    fn test_migrate_event_fields_empty_db() {
+        // Test that migration succeeds when there are no events to migrate
         let db_dir = tempfile::tempdir().unwrap();
         let db_path = db_dir.path().join("states.db");
 
@@ -2713,15 +2588,13 @@ mod tests {
         drop(db);
 
         // Run the migration - should succeed with no events
-        let result = super::migrate_http_threat_events(db_dir.path());
+        let result = super::migrate_event_fields(db_dir.path());
         assert!(result.is_ok());
     }
 
     #[test]
     fn test_migrate_blocklist_dcerpc_events() {
         use std::net::IpAddr;
-
-        use bincode::Options;
 
         use crate::event::BlocklistDceRpcFieldsV0_42;
         use crate::event::{BlocklistDceRpcFields, EventKind};
@@ -2758,9 +2631,7 @@ mod tests {
             category: None,
         };
 
-        let serialized = bincode::DefaultOptions::new()
-            .serialize(&old_event)
-            .unwrap();
+        let serialized = bincode::serialize(&old_event).unwrap();
 
         let timestamp_nanos = chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0);
         let event_kind = EventKind::BlocklistDceRpc as i32;
@@ -2773,15 +2644,14 @@ mod tests {
         db.put(key_bytes, &serialized).unwrap();
         drop(db);
 
-        super::migrate_blocklist_dcerpc_events(db_dir.path()).unwrap();
+        super::migrate_event_fields(db_dir.path()).unwrap();
 
         let db: rocksdb::OptimisticTransactionDB<rocksdb::SingleThreaded> =
             rocksdb::OptimisticTransactionDB::open_cf(&opts, &db_path, crate::tables::MAP_NAMES)
                 .unwrap();
 
         let value = db.get(key_bytes).unwrap().unwrap();
-        let new_event: BlocklistDceRpcFields =
-            bincode::DefaultOptions::new().deserialize(&value).unwrap();
+        let new_event: BlocklistDceRpcFields = bincode::deserialize(&value).unwrap();
 
         assert_eq!(new_event.sensor, "test-sensor");
         assert_eq!(new_event.orig_port, 12345);
@@ -2794,8 +2664,6 @@ mod tests {
     #[test]
     fn test_migrate_blocklist_dcerpc_fields_empty_strings() {
         use std::net::IpAddr;
-
-        use bincode::Options;
 
         use crate::event::BlocklistDceRpcFields;
         use crate::event::BlocklistDceRpcFieldsV0_42;
@@ -2821,14 +2689,10 @@ mod tests {
             category: None,
         };
 
-        let serialized = bincode::DefaultOptions::new()
-            .serialize(&old_event)
-            .unwrap();
+        let serialized = bincode::serialize(&old_event).unwrap();
 
         let new_val = super::migrate_blocklist_dcerpc_fields(&serialized).unwrap();
-        let new_event: BlocklistDceRpcFields = bincode::DefaultOptions::new()
-            .deserialize(&new_val)
-            .unwrap();
+        let new_event: BlocklistDceRpcFields = bincode::deserialize(&new_val).unwrap();
 
         assert!(new_event.context.is_empty());
         assert!(new_event.request.is_empty());
@@ -2837,8 +2701,6 @@ mod tests {
     #[test]
     fn test_migrate_blocklist_dhcp_events() {
         use std::net::IpAddr;
-
-        use bincode::Options;
 
         use super::migration_structures::BlocklistDhcpFieldsV0_42;
         use crate::event::{BlocklistDhcpFields, EventKind};
@@ -2891,10 +2753,8 @@ mod tests {
             category: None,
         };
 
-        // Serialize old-format value
-        let serialized = bincode::DefaultOptions::new()
-            .serialize(&old_event)
-            .unwrap();
+        // Serialize old-format value using the same encoder as production code.
+        let serialized = bincode::serialize(&old_event).unwrap();
 
         // Create event key: (timestamp_nanos << 64) | (event_kind << 32) | random_bits
         let timestamp_nanos = chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0);
@@ -2910,7 +2770,7 @@ mod tests {
         drop(db);
 
         // Run the migration
-        super::migrate_blocklist_dhcp_events(db_dir.path()).unwrap();
+        super::migrate_event_fields(db_dir.path()).unwrap();
 
         // Verify the migration by reading back and checking new format
         let db: rocksdb::OptimisticTransactionDB<rocksdb::SingleThreaded> =
@@ -2918,8 +2778,7 @@ mod tests {
                 .unwrap();
 
         let value = db.get(key_bytes).unwrap().unwrap();
-        let new_event: BlocklistDhcpFields =
-            bincode::DefaultOptions::new().deserialize(&value).unwrap();
+        let new_event: BlocklistDhcpFields = bincode::deserialize(&value).unwrap();
 
         // Verify all fields were correctly migrated
         assert!(new_event.options.is_empty());
@@ -2970,25 +2829,5 @@ mod tests {
         assert_eq!(new_event.client_id, vec![0xaa, 0xbb, 0xcc]);
         assert!((new_event.confidence - 0.8).abs() < f32::EPSILON);
         assert!(new_event.category.is_none());
-    }
-
-    #[test]
-    fn test_migrate_blocklist_dhcp_events_empty_db() {
-        // Test that migration succeeds when there are no BlocklistDhcp events
-        let db_dir = tempfile::tempdir().unwrap();
-        let db_path = db_dir.path().join("states.db");
-
-        let mut opts = rocksdb::Options::default();
-        opts.create_if_missing(true);
-        opts.create_missing_column_families(true);
-
-        let db: rocksdb::OptimisticTransactionDB<rocksdb::SingleThreaded> =
-            rocksdb::OptimisticTransactionDB::open_cf(&opts, &db_path, crate::tables::MAP_NAMES)
-                .unwrap();
-        drop(db);
-
-        // Run the migration - should succeed with no events
-        let result = super::migrate_blocklist_dhcp_events(db_dir.path());
-        assert!(result.is_ok());
     }
 }
