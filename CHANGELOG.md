@@ -27,6 +27,20 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [0.44.1] - 2026-04-16
 
+### Added
+
+- Added `clear_retention_config` method to `Store` for returning the retention
+  configuration to its disabled (unset) state. This complements
+  `init_retention_config`/`update_retention_config`, which only move between
+  positive day counts.
+
+### Changed
+
+- `Table::<ColumnStats>::remove_older_than` now deletes expired entries in
+  bounded batches so that memory usage and per-transaction size stay constant
+  regardless of how many stale entries exist. It also propagates iteration
+  errors instead of silently skipping unreadable rows.
+
 ### Fixed
 
 - Fixed event migration failure introduced in 0.44.0 where

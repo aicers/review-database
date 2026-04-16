@@ -101,6 +101,15 @@ impl<'d> Table<'d, String> {
         self.map.update_compare_multi(&updates)
     }
 
+    /// Deletes a config value by key.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database operation fails.
+    pub fn delete(&self, key: &str) -> Result<()> {
+        self.map.delete(key.as_bytes())
+    }
+
     /// Returns the current account policy expiry period,
     /// or `None` if it hasn't been initialized.
     ///
@@ -1019,6 +1028,31 @@ mod tests {
         // Verify value unchanged
         let read_config = store.retention_config().unwrap();
         assert_eq!(read_config, Some(config));
+    }
+
+    #[test]
+    fn clear_retention_config_removes_existing() {
+        let (_permit, store) = setup_store();
+
+        let config = RetentionConfig::new(90).unwrap();
+        store.init_retention_config(&config).unwrap();
+        assert_eq!(store.retention_config().unwrap(), Some(config.clone()));
+
+        store.clear_retention_config().unwrap();
+        assert!(store.retention_config().unwrap().is_none());
+
+        // After clearing, re-initialization must succeed again.
+        store.init_retention_config(&config).unwrap();
+        assert_eq!(store.retention_config().unwrap(), Some(config));
+    }
+
+    #[test]
+    fn clear_retention_config_when_unset_is_noop() {
+        let (_permit, store) = setup_store();
+
+        assert!(store.retention_config().unwrap().is_none());
+        store.clear_retention_config().unwrap();
+        assert!(store.retention_config().unwrap().is_none());
     }
 
     #[test]

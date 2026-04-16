@@ -403,6 +403,25 @@ impl Store {
         Ok(())
     }
 
+    /// Clears the retention configuration, returning it to the disabled
+    /// (unset) state.
+    ///
+    /// After calling this, [`Store::purge_old_column_stats`] will return
+    /// `Ok(None)` until a new configuration is initialized.
+    ///
+    /// This is a no-op when no retention configuration is currently set.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database operation fails.
+    pub fn clear_retention_config(&self) -> Result<()> {
+        let config_map = self.config_map();
+        if config_map.current(tables::KEY_RETENTION_PERIOD)?.is_some() {
+            config_map.delete(tables::KEY_RETENTION_PERIOD)?;
+        }
+        Ok(())
+    }
+
     /// Returns the current retention configuration from the config table.
     ///
     /// Returns `Ok(None)` if the retention configuration has not been
