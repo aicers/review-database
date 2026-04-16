@@ -6,7 +6,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use super::{EventCategory, LearningMethod, ThreatLevel, TriageScore, common::Match};
-use crate::event::common::{AttrValue, triage_scores_to_string};
+use crate::event::common::{AttrValue, define_fields_stored, triage_scores_to_string};
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct FtpCommand {
@@ -200,6 +200,22 @@ pub struct FtpBruteForceFieldsV0_42 {
     pub category: Option<EventCategory>,
 }
 
+define_fields_stored! {
+    FtpBruteForceFieldsStored from FtpBruteForceFields {
+        pub sensor: String,
+        pub orig_addr: IpAddr,
+        pub resp_addr: IpAddr,
+        pub resp_port: u16,
+        pub proto: u8,
+        pub user_list: Vec<String>,
+        pub start_time: i64,
+        pub end_time: i64,
+        pub is_internal: bool,
+        pub confidence: f32,
+        pub category: Option<EventCategory>,
+    }
+}
+
 #[derive(Serialize, Deserialize)]
 pub struct FtpBruteForce {
     pub sensor: String,
@@ -384,6 +400,28 @@ pub struct FtpEventFieldsV0_42 {
     pub commands: Vec<FtpCommand>,
     pub confidence: f32,
     pub category: Option<EventCategory>,
+}
+
+define_fields_stored! {
+    FtpEventFieldsStored from FtpEventFields {
+        pub sensor: String,
+        pub orig_addr: IpAddr,
+        pub orig_port: u16,
+        pub resp_addr: IpAddr,
+        pub resp_port: u16,
+        pub proto: u8,
+        pub start_time: i64,
+        pub duration: i64,
+        pub orig_pkts: u64,
+        pub resp_pkts: u64,
+        pub orig_l2_bytes: u64,
+        pub resp_l2_bytes: u64,
+        pub user: String,
+        pub password: String,
+        pub commands: Vec<FtpCommand>,
+        pub confidence: f32,
+        pub category: Option<EventCategory>,
+    }
 }
 
 #[derive(Deserialize, Serialize)]

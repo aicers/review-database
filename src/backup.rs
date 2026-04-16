@@ -96,7 +96,6 @@ mod tests {
         sync::Arc,
     };
 
-    use bincode::Options;
     use chrono::{TimeZone, Utc};
 
     use crate::test::acquire_db_permit;
@@ -106,7 +105,6 @@ mod tests {
     };
 
     fn example_message() -> EventMessage {
-        let codec = bincode::DefaultOptions::new();
         let fields = DnsEventFields {
             sensor: "collector1".to_string(),
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
@@ -142,7 +140,7 @@ mod tests {
         EventMessage {
             time: Utc::now(),
             kind: EventKind::DnsCovertChannel,
-            fields: codec.serialize(&fields).expect("serializable"),
+            fields: bincode::serialize(&fields).expect("serializable"),
         }
     }
 

@@ -19,6 +19,41 @@ use crate::{AttrCmpKind, Confidence, PacketAttr, TriageExclusion, ValueKind};
 /// Epsilon value for inclusive confidence comparisons
 const CONFIDENCE_EPSILON: f32 = 1e-6;
 
+/// Defines a repository-local stored mirror struct for a producer-facing
+/// `*Fields` type along with bidirectional `From` conversions.
+///
+/// The stored type's field list mirrors the producer-facing schema so the
+/// on-disk bincode representation is byte-identical today, but the two
+/// schemas can diverge in the future without changing the producer
+/// interface. Conversion happens at the ingestion boundary in
+/// [`crate::event::EventDb::put`] and at the retrieval boundary in
+/// [`crate::event::EventIterator`].
+macro_rules! define_fields_stored {
+    (
+        $stored:ident from $shared:ty {
+            $( pub $field:ident: $ty:ty ),* $(,)?
+        }
+    ) => {
+        #[derive(::serde::Deserialize, ::serde::Serialize)]
+        pub(crate) struct $stored {
+            $( pub $field: $ty, )*
+        }
+
+        impl ::std::convert::From<$shared> for $stored {
+            fn from(value: $shared) -> Self {
+                Self { $( $field: value.$field, )* }
+            }
+        }
+
+        impl ::std::convert::From<$stored> for $shared {
+            fn from(value: $stored) -> Self {
+                Self { $( $field: value.$field, )* }
+            }
+        }
+    };
+}
+pub(crate) use define_fields_stored;
+
 // TODO: Make new Match trait to support Windows Events
 
 pub(super) trait Match {

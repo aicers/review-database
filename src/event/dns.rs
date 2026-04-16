@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use super::{EventCategory, LearningMethod, ThreatLevel, TriageScore, common::Match};
 use crate::{
     TriageExclusion,
-    event::common::{AttrValue, triage_scores_to_string, vector_to_string},
+    event::common::{AttrValue, define_fields_stored, triage_scores_to_string, vector_to_string},
 };
 
 macro_rules! find_dns_attr_by_kind {
@@ -78,6 +78,37 @@ pub struct DnsEventFieldsV0_42 {
     pub ttl: Vec<i32>,
     pub confidence: f32,
     pub category: Option<EventCategory>,
+}
+
+define_fields_stored! {
+    DnsEventFieldsStored from DnsEventFields {
+        pub sensor: String,
+        pub orig_addr: IpAddr,
+        pub orig_port: u16,
+        pub resp_addr: IpAddr,
+        pub resp_port: u16,
+        pub proto: u8,
+        pub start_time: i64,
+        pub duration: i64,
+        pub orig_pkts: u64,
+        pub resp_pkts: u64,
+        pub orig_l2_bytes: u64,
+        pub resp_l2_bytes: u64,
+        pub query: String,
+        pub answer: Vec<String>,
+        pub trans_id: u16,
+        pub rtt: i64,
+        pub qclass: u16,
+        pub qtype: u16,
+        pub rcode: u16,
+        pub aa_flag: bool,
+        pub tc_flag: bool,
+        pub rd_flag: bool,
+        pub ra_flag: bool,
+        pub ttl: Vec<i32>,
+        pub confidence: f32,
+        pub category: Option<EventCategory>,
+    }
 }
 
 impl DnsEventFields {
@@ -511,6 +542,38 @@ pub struct CryptocurrencyMiningPoolFieldsV0_42 {
     pub category: Option<EventCategory>,
 }
 
+define_fields_stored! {
+    CryptocurrencyMiningPoolFieldsStored from CryptocurrencyMiningPoolFields {
+        pub sensor: String,
+        pub orig_addr: IpAddr,
+        pub orig_port: u16,
+        pub resp_addr: IpAddr,
+        pub resp_port: u16,
+        pub proto: u8,
+        pub start_time: i64,
+        pub duration: i64,
+        pub orig_pkts: u64,
+        pub resp_pkts: u64,
+        pub orig_l2_bytes: u64,
+        pub resp_l2_bytes: u64,
+        pub query: String,
+        pub answer: Vec<String>,
+        pub trans_id: u16,
+        pub rtt: i64,
+        pub qclass: u16,
+        pub qtype: u16,
+        pub rcode: u16,
+        pub aa_flag: bool,
+        pub tc_flag: bool,
+        pub rd_flag: bool,
+        pub ra_flag: bool,
+        pub ttl: Vec<i32>,
+        pub coins: Vec<String>,
+        pub confidence: f32,
+        pub category: Option<EventCategory>,
+    }
+}
+
 impl CryptocurrencyMiningPoolFields {
     #[must_use]
     pub fn syslog_rfc5424(&self) -> String {
@@ -763,6 +826,37 @@ pub struct BlocklistDnsFieldsV0_42 {
     pub ttl: Vec<i32>,
     pub confidence: f32,
     pub category: Option<EventCategory>,
+}
+
+define_fields_stored! {
+    BlocklistDnsFieldsStored from BlocklistDnsFields {
+        pub sensor: String,
+        pub orig_addr: IpAddr,
+        pub orig_port: u16,
+        pub resp_addr: IpAddr,
+        pub resp_port: u16,
+        pub proto: u8,
+        pub start_time: i64,
+        pub duration: i64,
+        pub orig_pkts: u64,
+        pub resp_pkts: u64,
+        pub orig_l2_bytes: u64,
+        pub resp_l2_bytes: u64,
+        pub query: String,
+        pub answer: Vec<String>,
+        pub trans_id: u16,
+        pub rtt: i64,
+        pub qclass: u16,
+        pub qtype: u16,
+        pub rcode: u16,
+        pub aa_flag: bool,
+        pub tc_flag: bool,
+        pub rd_flag: bool,
+        pub ra_flag: bool,
+        pub ttl: Vec<i32>,
+        pub confidence: f32,
+        pub category: Option<EventCategory>,
+    }
 }
 
 impl BlocklistDnsFields {
