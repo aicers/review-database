@@ -306,6 +306,54 @@ impl Store {
         }
     }
 
+    /// Returns the current event retention period in days, or `None` if
+    /// retention is unlimited (key absent).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the stored value cannot be parsed or if the
+    /// database operation fails.
+    pub fn event_retention_period(&self) -> Result<Option<u32>> {
+        let config = self.config_map();
+        match config.current(tables::KEY_EVENT_RETENTION_PERIOD_DAYS)? {
+            Some(v) => {
+                let days: u32 = v.parse()?;
+                Ok(Some(days))
+            }
+            None => Ok(None),
+        }
+    }
+
+    /// Sets the event retention period in days.
+    ///
+    /// Pass `Some(days)` to set a retention period (must be >= 1), or
+    /// `None` to remove the key and indicate unlimited retention.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `days` is `Some(0)` or if the database
+    /// operation fails.
+    pub fn set_event_retention_period(&self, days: Option<u32>) -> Result<()> {
+        match days {
+            Some(0) => Err(anyhow!("event retention period must be >= 1 day")),
+            Some(d) => self
+                .config_map()
+                .update(tables::KEY_EVENT_RETENTION_PERIOD_DAYS, &d.to_string()),
+            None => {
+                let config = self.config_map();
+                // Only delete if the key exists; absence already means unlimited.
+                if config
+                    .current(tables::KEY_EVENT_RETENTION_PERIOD_DAYS)?
+                    .is_some()
+                {
+                    config.delete(tables::KEY_EVENT_RETENTION_PERIOD_DAYS)
+                } else {
+                    Ok(())
+                }
+            }
+        }
+    }
+
     /// Initializes account policy settings in the config table.
     ///
     /// # Errors
