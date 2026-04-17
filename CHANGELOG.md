@@ -74,19 +74,24 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   `node` field normalized to the node's `id`. Callers no longer
   need to issue a follow-up `get_by_id` read to observe the
   post-update state.
+- Introduced an explicit producer/storage boundary for event fields. The
+  producer-facing `*Fields` types remain the public ingestion interface, but
+  each event family now also defines a repository-local `*FieldsStored` (or
+  `*Stored`) type that is the sole schema written to disk and consumed on
+  read. `EventDb::put` converts incoming producer bytes into the stored
+  representation before persistence via an explicit
+  `From<*Fields> for *FieldsStored` conversion, and `EventIterator` builds
+  domain events directly from the stored representation without re-crossing
+  the producer schema. Domain constructors (`BlocklistBootp::new`,
+  `DnsCovertChannel::new`, `HttpThreat::new`, `TorConnection::new`, etc.)
+  now accept `*FieldsStored`. The stored schemas can evolve independently
+  of the producer interface. `ExtraThreat`, `NetworkThreat`, and
+  `WindowsThreat` follow the same split: a producer-facing shared struct and
+  a storage `*Stored` companion that owns `Display`, `syslog_rfc5424`,
+  `Match`, `threat_level`, and `triage_scores`, with the `Event` enum
+  variants holding the `*Stored` form.
 
 ## [0.44.1] - 2026-04-16
-
-- Introduced an explicit producer/storage boundary for event fields. The
-  producer-facing `*Fields` types are still the public interface consumed by
-  ingestion clients, but each family now also defines a repository-local
-  `*FieldsStored` type. `EventDb::put` converts the incoming producer bytes
-  into the stored representation before persistence, and `EventIterator`
-  converts stored bytes back to the producer schema on read. The two schemas
-  are byte-identical today (so no database migration is required), but may
-  diverge in the future without changing the producer interface. The
-  `NetworkThreat`, `ExtraThreat`, and `WindowsThreat` kinds are not yet split
-  and continue to pass through unchanged.
 
 ### Fixed
 

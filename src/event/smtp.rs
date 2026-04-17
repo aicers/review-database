@@ -5,7 +5,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use super::{EventCategory, LearningMethod, ThreatLevel, TriageScore, common::Match};
-use crate::event::common::{AttrValue, define_fields_stored, triage_scores_to_string};
+use crate::event::common::{AttrValue, triage_scores_to_string};
 
 macro_rules! find_smtp_attr_by_kind {
     ($event: expr, $raw_event_attr: expr) => {{
@@ -64,29 +64,56 @@ pub struct BlocklistSmtpFieldsV0_42 {
     pub category: Option<EventCategory>,
 }
 
-define_fields_stored! {
-    BlocklistSmtpFieldsStored from BlocklistSmtpFields {
-        pub sensor: String,
-        pub orig_addr: IpAddr,
-        pub orig_port: u16,
-        pub resp_addr: IpAddr,
-        pub resp_port: u16,
-        pub proto: u8,
-        pub start_time: i64,
-        pub duration: i64,
-        pub orig_pkts: u64,
-        pub resp_pkts: u64,
-        pub orig_l2_bytes: u64,
-        pub resp_l2_bytes: u64,
-        pub mailfrom: String,
-        pub date: String,
-        pub from: String,
-        pub to: String,
-        pub subject: String,
-        pub agent: String,
-        pub state: String,
-        pub confidence: f32,
-        pub category: Option<EventCategory>,
+#[derive(Deserialize, Serialize)]
+pub(crate) struct BlocklistSmtpFieldsStored {
+    pub sensor: String,
+    pub orig_addr: IpAddr,
+    pub orig_port: u16,
+    pub resp_addr: IpAddr,
+    pub resp_port: u16,
+    pub proto: u8,
+    pub start_time: i64,
+    pub duration: i64,
+    pub orig_pkts: u64,
+    pub resp_pkts: u64,
+    pub orig_l2_bytes: u64,
+    pub resp_l2_bytes: u64,
+    pub mailfrom: String,
+    pub date: String,
+    pub from: String,
+    pub to: String,
+    pub subject: String,
+    pub agent: String,
+    pub state: String,
+    pub confidence: f32,
+    pub category: Option<EventCategory>,
+}
+
+impl From<BlocklistSmtpFields> for BlocklistSmtpFieldsStored {
+    fn from(value: BlocklistSmtpFields) -> Self {
+        Self {
+            sensor: value.sensor,
+            orig_addr: value.orig_addr,
+            orig_port: value.orig_port,
+            resp_addr: value.resp_addr,
+            resp_port: value.resp_port,
+            proto: value.proto,
+            start_time: value.start_time,
+            duration: value.duration,
+            orig_pkts: value.orig_pkts,
+            resp_pkts: value.resp_pkts,
+            orig_l2_bytes: value.orig_l2_bytes,
+            resp_l2_bytes: value.resp_l2_bytes,
+            mailfrom: value.mailfrom,
+            date: value.date,
+            from: value.from,
+            to: value.to,
+            subject: value.subject,
+            agent: value.agent,
+            state: value.state,
+            confidence: value.confidence,
+            category: value.category,
+        }
     }
 }
 
@@ -180,7 +207,7 @@ impl fmt::Display for BlocklistSmtp {
 }
 
 impl BlocklistSmtp {
-    pub(super) fn new(time: DateTime<Utc>, fields: BlocklistSmtpFields) -> Self {
+    pub(super) fn new(time: DateTime<Utc>, fields: BlocklistSmtpFieldsStored) -> Self {
         Self {
             time,
             sensor: fields.sensor,

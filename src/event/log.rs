@@ -25,10 +25,45 @@ pub struct ExtraThreat {
     pub attack_kind: String,
     pub confidence: f32,
     pub category: Option<EventCategory>,
+}
+
+#[derive(Deserialize, Serialize)]
+pub struct ExtraThreatStored {
+    #[serde(with = "ts_nanoseconds")]
+    pub time: DateTime<Utc>,
+    pub sensor: String,
+    pub service: String,
+    pub content: String,
+    pub db_name: String,
+    pub rule_id: u32,
+    pub matched_to: String,
+    pub cluster_id: Option<u32>,
+    pub attack_kind: String,
+    pub confidence: f32,
+    pub category: Option<EventCategory>,
     pub triage_scores: Option<Vec<TriageScore>>,
 }
 
-impl ExtraThreat {
+impl From<ExtraThreat> for ExtraThreatStored {
+    fn from(value: ExtraThreat) -> Self {
+        Self {
+            time: value.time,
+            sensor: value.sensor,
+            service: value.service,
+            content: value.content,
+            db_name: value.db_name,
+            rule_id: value.rule_id,
+            matched_to: value.matched_to,
+            cluster_id: value.cluster_id,
+            attack_kind: value.attack_kind,
+            confidence: value.confidence,
+            category: value.category,
+            triage_scores: None,
+        }
+    }
+}
+
+impl ExtraThreatStored {
     #[must_use]
     pub fn syslog_rfc5424(&self) -> String {
         format!(
@@ -50,7 +85,7 @@ impl ExtraThreat {
     }
 }
 
-impl fmt::Display for ExtraThreat {
+impl fmt::Display for ExtraThreatStored {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
@@ -69,14 +104,14 @@ impl fmt::Display for ExtraThreat {
     }
 }
 
-impl ExtraThreat {
+impl ExtraThreatStored {
     #[must_use]
     pub fn threat_level() -> ThreatLevel {
         ThreatLevel::Medium
     }
 }
 
-impl Match for ExtraThreat {
+impl Match for ExtraThreatStored {
     fn src_addrs(&self) -> &[IpAddr] {
         std::slice::from_ref(&IpAddr::V4(Ipv4Addr::UNSPECIFIED))
     }
