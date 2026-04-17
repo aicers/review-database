@@ -43,6 +43,30 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   `BlocklistDhcpFields` and `BlocklistDhcp` to support all
   DHCP option values. Existing records are migrated with an
   empty options list.
+- Added `src_country_code` and `dst_country_code` fields to all event-specific
+  `*Fields` structs and `NetworkThreat`. These fields store 2-letter ISO country
+  codes as `[u8; 2]`, enabling geographic filtering and analysis of
+  security events. Country codes can be resolved from IP addresses using an
+  ip2location database during event creation.
+- Added `orig_country_code` and `resp_country_code` fields to event-related
+  structs that contain origin and response IP addresses. These fields store
+  2-letter ISO country codes as `[u8; 2]`, enabling geographic filtering and
+  analysis of security events.
+- Updated `migrate_data_dir` function signature to accept an optional
+  `ip2location::DB` parameter for resolving country codes during migration
+  from older database formats.
+- Introduced a dual-type schema architecture separating external and internal
+  event representations. External types (e.g. `DnsEventFieldsExternal`) match
+  the wire format sent by external applications and do not include
+  country-code fields. Internal types (e.g. `DnsEventFields`) are the
+  DB-layer representation that include country-code fields. All `V0_43`
+  event-field structs are now public and re-exported with `External` suffix
+  aliases (e.g. `DnsEventFieldsExternal`).
+- Added `EventDb::put_external` method that accepts an `EventMessage` whose
+  fields are in the external (no country code) format, converts them to the
+  internal format (defaulting country codes to `"ZZ"`), and stores the
+  result. This allows ingestion-time schema transformation for events produced
+  by external applications.
 
 ### Changed
 
