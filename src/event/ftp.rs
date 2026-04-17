@@ -6,7 +6,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use super::{EventCategory, LearningMethod, ThreatLevel, TriageScore, common::Match};
-use crate::event::common::{AttrValue, define_fields_stored, triage_scores_to_string};
+use crate::event::common::{AttrValue, triage_scores_to_string};
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct FtpCommand {
@@ -183,7 +183,7 @@ impl FtpBruteForceFields {
     }
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct FtpBruteForceFieldsV0_42 {
     pub sensor: String,
     pub orig_addr: IpAddr,
@@ -200,19 +200,36 @@ pub struct FtpBruteForceFieldsV0_42 {
     pub category: Option<EventCategory>,
 }
 
-define_fields_stored! {
-    FtpBruteForceFieldsStored from FtpBruteForceFields {
-        pub sensor: String,
-        pub orig_addr: IpAddr,
-        pub resp_addr: IpAddr,
-        pub resp_port: u16,
-        pub proto: u8,
-        pub user_list: Vec<String>,
-        pub start_time: i64,
-        pub end_time: i64,
-        pub is_internal: bool,
-        pub confidence: f32,
-        pub category: Option<EventCategory>,
+#[derive(Deserialize, Serialize)]
+pub(crate) struct FtpBruteForceFieldsStored {
+    pub sensor: String,
+    pub orig_addr: IpAddr,
+    pub resp_addr: IpAddr,
+    pub resp_port: u16,
+    pub proto: u8,
+    pub user_list: Vec<String>,
+    pub start_time: i64,
+    pub end_time: i64,
+    pub is_internal: bool,
+    pub confidence: f32,
+    pub category: Option<EventCategory>,
+}
+
+impl From<FtpBruteForceFields> for FtpBruteForceFieldsStored {
+    fn from(value: FtpBruteForceFields) -> Self {
+        Self {
+            sensor: value.sensor,
+            orig_addr: value.orig_addr,
+            resp_addr: value.resp_addr,
+            resp_port: value.resp_port,
+            proto: value.proto,
+            user_list: value.user_list,
+            start_time: value.start_time,
+            end_time: value.end_time,
+            is_internal: value.is_internal,
+            confidence: value.confidence,
+            category: value.category,
+        }
     }
 }
 
@@ -252,7 +269,7 @@ impl fmt::Display for FtpBruteForce {
 }
 
 impl FtpBruteForce {
-    pub(super) fn new(time: DateTime<Utc>, fields: &FtpBruteForceFields) -> Self {
+    pub(super) fn new(time: DateTime<Utc>, fields: &FtpBruteForceFieldsStored) -> Self {
         FtpBruteForce {
             sensor: fields.sensor.clone(),
             time,
@@ -402,25 +419,48 @@ pub struct FtpEventFieldsV0_42 {
     pub category: Option<EventCategory>,
 }
 
-define_fields_stored! {
-    FtpEventFieldsStored from FtpEventFields {
-        pub sensor: String,
-        pub orig_addr: IpAddr,
-        pub orig_port: u16,
-        pub resp_addr: IpAddr,
-        pub resp_port: u16,
-        pub proto: u8,
-        pub start_time: i64,
-        pub duration: i64,
-        pub orig_pkts: u64,
-        pub resp_pkts: u64,
-        pub orig_l2_bytes: u64,
-        pub resp_l2_bytes: u64,
-        pub user: String,
-        pub password: String,
-        pub commands: Vec<FtpCommand>,
-        pub confidence: f32,
-        pub category: Option<EventCategory>,
+#[derive(Deserialize, Serialize)]
+pub(crate) struct FtpEventFieldsStored {
+    pub sensor: String,
+    pub orig_addr: IpAddr,
+    pub orig_port: u16,
+    pub resp_addr: IpAddr,
+    pub resp_port: u16,
+    pub proto: u8,
+    pub start_time: i64,
+    pub duration: i64,
+    pub orig_pkts: u64,
+    pub resp_pkts: u64,
+    pub orig_l2_bytes: u64,
+    pub resp_l2_bytes: u64,
+    pub user: String,
+    pub password: String,
+    pub commands: Vec<FtpCommand>,
+    pub confidence: f32,
+    pub category: Option<EventCategory>,
+}
+
+impl From<FtpEventFields> for FtpEventFieldsStored {
+    fn from(value: FtpEventFields) -> Self {
+        Self {
+            sensor: value.sensor,
+            orig_addr: value.orig_addr,
+            orig_port: value.orig_port,
+            resp_addr: value.resp_addr,
+            resp_port: value.resp_port,
+            proto: value.proto,
+            start_time: value.start_time,
+            duration: value.duration,
+            orig_pkts: value.orig_pkts,
+            resp_pkts: value.resp_pkts,
+            orig_l2_bytes: value.orig_l2_bytes,
+            resp_l2_bytes: value.resp_l2_bytes,
+            user: value.user,
+            password: value.password,
+            commands: value.commands,
+            confidence: value.confidence,
+            category: value.category,
+        }
     }
 }
 
@@ -480,7 +520,7 @@ impl fmt::Display for FtpPlainText {
 }
 
 impl FtpPlainText {
-    pub(super) fn new(time: DateTime<Utc>, fields: FtpEventFields) -> Self {
+    pub(super) fn new(time: DateTime<Utc>, fields: FtpEventFieldsStored) -> Self {
         Self {
             time,
             sensor: fields.sensor,
@@ -618,7 +658,7 @@ impl fmt::Display for BlocklistFtp {
 }
 
 impl BlocklistFtp {
-    pub(super) fn new(time: DateTime<Utc>, fields: FtpEventFields) -> Self {
+    pub(super) fn new(time: DateTime<Utc>, fields: FtpEventFieldsStored) -> Self {
         Self {
             time,
             sensor: fields.sensor,

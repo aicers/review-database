@@ -8,8 +8,8 @@ use super::{EventCategory, LearningMethod, ThreatLevel, TriageScore, common::Mat
 use crate::TriageExclusion;
 use crate::event::{
     common::{AttrValue, triage_scores_to_string},
-    conn::{BlocklistConnFields, find_conn_attr_by_kind},
-    http::{find_http_attr_by_kind, get_post_body},
+    conn::{BlocklistConnFieldsStored, find_conn_attr_by_kind},
+    http::{HttpEventFieldsStored, find_http_attr_by_kind, get_post_body},
 };
 
 #[allow(clippy::module_name_repetitions)]
@@ -96,7 +96,7 @@ impl fmt::Display for TorConnection {
 }
 
 impl TorConnection {
-    pub(super) fn new(time: DateTime<Utc>, fields: &super::HttpEventFields) -> Self {
+    pub(super) fn new(time: DateTime<Utc>, fields: &HttpEventFieldsStored) -> Self {
         TorConnection {
             time,
             sensor: fields.sensor.clone(),
@@ -260,7 +260,7 @@ impl fmt::Display for TorConnectionConn {
 }
 
 impl TorConnectionConn {
-    pub(super) fn new(time: DateTime<Utc>, fields: BlocklistConnFields) -> Self {
+    pub(super) fn new(time: DateTime<Utc>, fields: BlocklistConnFieldsStored) -> Self {
         Self {
             time,
             sensor: fields.sensor,
@@ -352,16 +352,17 @@ mod tests {
 
     use super::{Match, TorConnectionConn};
     use crate::event::{
-        EventCategory, LearningMethod, ThreatLevel, common::AttrValue, conn::BlocklistConnFields,
+        EventCategory, LearningMethod, ThreatLevel, common::AttrValue,
+        conn::BlocklistConnFieldsStored,
     };
 
-    fn tor_connection_conn_fields() -> BlocklistConnFields {
+    fn tor_connection_conn_fields() -> BlocklistConnFieldsStored {
         let start_time = Utc
             .with_ymd_and_hms(2023, 1, 1, 12, 0, 0)
             .unwrap()
             .timestamp_nanos_opt()
             .unwrap();
-        BlocklistConnFields {
+        BlocklistConnFieldsStored {
             sensor: "test-sensor".to_string(),
             orig_addr: "192.168.1.100".parse().unwrap(),
             orig_port: 12345,

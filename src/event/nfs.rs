@@ -5,7 +5,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use super::{EventCategory, LearningMethod, ThreatLevel, TriageScore, common::Match};
-use crate::event::common::{AttrValue, define_fields_stored, triage_scores_to_string};
+use crate::event::common::{AttrValue, triage_scores_to_string};
 
 macro_rules! find_nfs_attr_by_kind {
     ($event: expr, $raw_event_attr: expr) => {{
@@ -58,24 +58,46 @@ pub struct BlocklistNfsFieldsV0_42 {
     pub category: Option<EventCategory>,
 }
 
-define_fields_stored! {
-    BlocklistNfsFieldsStored from BlocklistNfsFields {
-        pub sensor: String,
-        pub orig_addr: IpAddr,
-        pub orig_port: u16,
-        pub resp_addr: IpAddr,
-        pub resp_port: u16,
-        pub proto: u8,
-        pub start_time: i64,
-        pub duration: i64,
-        pub orig_pkts: u64,
-        pub resp_pkts: u64,
-        pub orig_l2_bytes: u64,
-        pub resp_l2_bytes: u64,
-        pub read_files: Vec<String>,
-        pub write_files: Vec<String>,
-        pub confidence: f32,
-        pub category: Option<EventCategory>,
+#[derive(Deserialize, Serialize)]
+pub(crate) struct BlocklistNfsFieldsStored {
+    pub sensor: String,
+    pub orig_addr: IpAddr,
+    pub orig_port: u16,
+    pub resp_addr: IpAddr,
+    pub resp_port: u16,
+    pub proto: u8,
+    pub start_time: i64,
+    pub duration: i64,
+    pub orig_pkts: u64,
+    pub resp_pkts: u64,
+    pub orig_l2_bytes: u64,
+    pub resp_l2_bytes: u64,
+    pub read_files: Vec<String>,
+    pub write_files: Vec<String>,
+    pub confidence: f32,
+    pub category: Option<EventCategory>,
+}
+
+impl From<BlocklistNfsFields> for BlocklistNfsFieldsStored {
+    fn from(value: BlocklistNfsFields) -> Self {
+        Self {
+            sensor: value.sensor,
+            orig_addr: value.orig_addr,
+            orig_port: value.orig_port,
+            resp_addr: value.resp_addr,
+            resp_port: value.resp_port,
+            proto: value.proto,
+            start_time: value.start_time,
+            duration: value.duration,
+            orig_pkts: value.orig_pkts,
+            resp_pkts: value.resp_pkts,
+            orig_l2_bytes: value.orig_l2_bytes,
+            resp_l2_bytes: value.resp_l2_bytes,
+            read_files: value.read_files,
+            write_files: value.write_files,
+            confidence: value.confidence,
+            category: value.category,
+        }
     }
 }
 
@@ -154,7 +176,7 @@ impl fmt::Display for BlocklistNfs {
 }
 
 impl BlocklistNfs {
-    pub(super) fn new(time: DateTime<Utc>, fields: BlocklistNfsFields) -> Self {
+    pub(super) fn new(time: DateTime<Utc>, fields: BlocklistNfsFieldsStored) -> Self {
         Self {
             time,
             sensor: fields.sensor,
