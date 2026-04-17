@@ -19,17 +19,18 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
-- Added `clear_retention_config` method to `Store` for returning the retention
-  configuration to its disabled (unset) state. This complements
-  `init_retention_config`/`update_retention_config`, which only move between
-  positive day counts.
-
-### Changed
-
-- `Table::<ColumnStats>::remove_older_than` now deletes expired entries in
-  bounded batches so that memory usage and per-transaction size stay constant
+- Added retention option for cluster statistics (column statistics) data. New
+  `RetentionConfig` and `RetentionConfigUpdate` structs with
+  `init_retention_config`, `update_retention_config`, `retention_config`, and
+  `clear_retention_config` methods on `Store` for managing the retention
+  period. Added `purge_old_column_stats` method to `Store` that deletes column
+  statistics older than the configured retention period.
+  `Table::<ColumnStats>::remove_older_than` deletes expired entries in bounded
+  batches so that memory usage and per-transaction size stay constant
   regardless of how many stale entries exist. It also propagates iteration
   errors instead of silently skipping unreadable rows.
+
+## [0.44.1] - 2026-04-16
 
 ### Fixed
 
@@ -46,13 +47,6 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
-- Added retention option for cluster statistics (column statistics)
-  data. New `RetentionConfig` and `RetentionConfigUpdate` structs
-  with `init_retention_config`, `update_retention_config`, and
-  `retention_config` methods on `Store` for managing the retention
-  period. Added `purge_old_column_stats` method to `Store` that
-  deletes column statistics older than the configured retention
-  period.
 - Added `init_backup_config`, `update_backup_config`, and `backup_config`
   methods to `Store` for managing backup configuration in the config table.
   This aligns with the `AccountPolicy` pattern where configuration is stored
