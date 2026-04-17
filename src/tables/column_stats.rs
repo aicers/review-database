@@ -242,8 +242,8 @@ impl<'d> Table<'d, ColumnStats> {
             );
 
             for counts in clusters.values_mut() {
-                counts.sort_unstable_by(|a, b| b.0.cmp(&a.0));
-                counts.sort_unstable_by(|a, b| b.1.cmp(&a.1));
+                counts.sort_unstable_by_key(|b| std::cmp::Reverse(b.0));
+                counts.sort_unstable_by_key(|b| std::cmp::Reverse(b.1));
             }
 
             let mut clusters: Vec<_> = clusters.into_iter().map(|(k, val)| (k, val[0])).collect();

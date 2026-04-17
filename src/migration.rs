@@ -179,7 +179,7 @@ pub fn migrate_data_dir<P: AsRef<Path>>(data_dir: P, backup_dir: P) -> Result<()
         }
     }
 
-    Err(anyhow!("migration from {version} is not supported",))
+    Err(anyhow!("migration from {version} is not supported"))
 }
 
 /// Column family names for version 0.42 (includes the deprecated "account policy" column family)
