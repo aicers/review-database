@@ -17,6 +17,21 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [0.44.1] - 2026-04-16
 
+### Added
+
+- Added retention option for cluster statistics (column statistics) data. New
+  `RetentionConfig` and `RetentionConfigUpdate` structs with
+  `init_retention_config`, `update_retention_config`, `retention_config`, and
+  `clear_retention_config` methods on `Store` for managing the retention
+  period. Added `purge_old_column_stats` method to `Store` that deletes column
+  statistics older than the configured retention period.
+  `Table::<ColumnStats>::remove_older_than` deletes expired entries in bounded
+  batches so that memory usage and per-transaction size stay constant
+  regardless of how many stale entries exist. It also propagates iteration
+  errors instead of silently skipping unreadable rows.
+
+## [0.44.1] - 2026-04-16
+
 ### Fixed
 
 - Fixed event migration failure introduced in 0.44.0 where
