@@ -72,6 +72,63 @@ pub struct BlocklistKerberosFieldsV0_42 {
     pub category: Option<EventCategory>,
 }
 
+#[derive(Deserialize, Serialize)]
+pub(crate) struct BlocklistKerberosFieldsStored {
+    pub sensor: String,
+    pub orig_addr: IpAddr,
+    pub orig_port: u16,
+    pub resp_addr: IpAddr,
+    pub resp_port: u16,
+    pub proto: u8,
+    pub start_time: i64,
+    pub duration: i64,
+    pub orig_pkts: u64,
+    pub resp_pkts: u64,
+    pub orig_l2_bytes: u64,
+    pub resp_l2_bytes: u64,
+    pub client_time: i64,
+    pub server_time: i64,
+    pub error_code: u32,
+    pub client_realm: String,
+    pub cname_type: u8,
+    pub client_name: Vec<String>,
+    pub realm: String,
+    pub sname_type: u8,
+    pub service_name: Vec<String>,
+    pub confidence: f32,
+    pub category: Option<EventCategory>,
+}
+
+impl From<BlocklistKerberosFields> for BlocklistKerberosFieldsStored {
+    fn from(value: BlocklistKerberosFields) -> Self {
+        Self {
+            sensor: value.sensor,
+            orig_addr: value.orig_addr,
+            orig_port: value.orig_port,
+            resp_addr: value.resp_addr,
+            resp_port: value.resp_port,
+            proto: value.proto,
+            start_time: value.start_time,
+            duration: value.duration,
+            orig_pkts: value.orig_pkts,
+            resp_pkts: value.resp_pkts,
+            orig_l2_bytes: value.orig_l2_bytes,
+            resp_l2_bytes: value.resp_l2_bytes,
+            client_time: value.client_time,
+            server_time: value.server_time,
+            error_code: value.error_code,
+            client_realm: value.client_realm,
+            cname_type: value.cname_type,
+            client_name: value.client_name,
+            realm: value.realm,
+            sname_type: value.sname_type,
+            service_name: value.service_name,
+            confidence: value.confidence,
+            category: value.category,
+        }
+    }
+}
+
 impl BlocklistKerberosFields {
     #[must_use]
     pub fn syslog_rfc5424(&self) -> String {
@@ -169,7 +226,7 @@ impl fmt::Display for BlocklistKerberos {
 }
 
 impl BlocklistKerberos {
-    pub(super) fn new(time: DateTime<Utc>, fields: BlocklistKerberosFields) -> Self {
+    pub(super) fn new(time: DateTime<Utc>, fields: BlocklistKerberosFieldsStored) -> Self {
         Self {
             time,
             sensor: fields.sensor,

@@ -60,6 +60,55 @@ pub struct BlocklistNtlmFieldsV0_42 {
     pub category: Option<EventCategory>,
 }
 
+#[derive(Deserialize, Serialize)]
+pub(crate) struct BlocklistNtlmFieldsStored {
+    pub sensor: String,
+    pub orig_addr: IpAddr,
+    pub orig_port: u16,
+    pub resp_addr: IpAddr,
+    pub resp_port: u16,
+    pub proto: u8,
+    pub start_time: i64,
+    pub duration: i64,
+    pub orig_pkts: u64,
+    pub resp_pkts: u64,
+    pub orig_l2_bytes: u64,
+    pub resp_l2_bytes: u64,
+    pub protocol: String,
+    pub username: String,
+    pub hostname: String,
+    pub domainname: String,
+    pub success: String,
+    pub confidence: f32,
+    pub category: Option<EventCategory>,
+}
+
+impl From<BlocklistNtlmFields> for BlocklistNtlmFieldsStored {
+    fn from(value: BlocklistNtlmFields) -> Self {
+        Self {
+            sensor: value.sensor,
+            orig_addr: value.orig_addr,
+            orig_port: value.orig_port,
+            resp_addr: value.resp_addr,
+            resp_port: value.resp_port,
+            proto: value.proto,
+            start_time: value.start_time,
+            duration: value.duration,
+            orig_pkts: value.orig_pkts,
+            resp_pkts: value.resp_pkts,
+            orig_l2_bytes: value.orig_l2_bytes,
+            resp_l2_bytes: value.resp_l2_bytes,
+            protocol: value.protocol,
+            username: value.username,
+            hostname: value.hostname,
+            domainname: value.domainname,
+            success: value.success,
+            confidence: value.confidence,
+            category: value.category,
+        }
+    }
+}
+
 impl BlocklistNtlmFields {
     #[must_use]
     pub fn syslog_rfc5424(&self) -> String {
@@ -143,7 +192,7 @@ impl fmt::Display for BlocklistNtlm {
     }
 }
 impl BlocklistNtlm {
-    pub(super) fn new(time: DateTime<Utc>, fields: BlocklistNtlmFields) -> Self {
+    pub(super) fn new(time: DateTime<Utc>, fields: BlocklistNtlmFieldsStored) -> Self {
         Self {
             time,
             sensor: fields.sensor,

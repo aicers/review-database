@@ -70,7 +70,7 @@ macro_rules! find_tls_attr_by_kind {
 
 pub type BlocklistTlsFields = BlocklistTlsFieldsV0_42;
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct BlocklistTlsFieldsV0_42 {
     pub sensor: String,
     pub orig_addr: IpAddr,
@@ -108,6 +108,87 @@ pub struct BlocklistTlsFieldsV0_42 {
     pub last_alert: u8,
     pub confidence: f32,
     pub category: Option<EventCategory>,
+}
+
+#[derive(Deserialize, Serialize)]
+pub(crate) struct BlocklistTlsFieldsStored {
+    pub sensor: String,
+    pub orig_addr: IpAddr,
+    pub orig_port: u16,
+    pub resp_addr: IpAddr,
+    pub resp_port: u16,
+    pub proto: u8,
+    pub start_time: i64,
+    pub duration: i64,
+    pub orig_pkts: u64,
+    pub resp_pkts: u64,
+    pub orig_l2_bytes: u64,
+    pub resp_l2_bytes: u64,
+    pub server_name: String,
+    pub alpn_protocol: String,
+    pub ja3: String,
+    pub version: String,
+    pub client_cipher_suites: Vec<u16>,
+    pub client_extensions: Vec<u16>,
+    pub cipher: u16,
+    pub extensions: Vec<u16>,
+    pub ja3s: String,
+    pub serial: String,
+    pub subject_country: String,
+    pub subject_org_name: String,
+    pub subject_common_name: String,
+    pub validity_not_before: i64,
+    pub validity_not_after: i64,
+    pub subject_alt_name: String,
+    pub issuer_country: String,
+    pub issuer_org_name: String,
+    pub issuer_org_unit_name: String,
+    pub issuer_common_name: String,
+    pub last_alert: u8,
+    pub confidence: f32,
+    pub category: Option<EventCategory>,
+}
+
+impl From<BlocklistTlsFields> for BlocklistTlsFieldsStored {
+    fn from(value: BlocklistTlsFields) -> Self {
+        Self {
+            sensor: value.sensor,
+            orig_addr: value.orig_addr,
+            orig_port: value.orig_port,
+            resp_addr: value.resp_addr,
+            resp_port: value.resp_port,
+            proto: value.proto,
+            start_time: value.start_time,
+            duration: value.duration,
+            orig_pkts: value.orig_pkts,
+            resp_pkts: value.resp_pkts,
+            orig_l2_bytes: value.orig_l2_bytes,
+            resp_l2_bytes: value.resp_l2_bytes,
+            server_name: value.server_name,
+            alpn_protocol: value.alpn_protocol,
+            ja3: value.ja3,
+            version: value.version,
+            client_cipher_suites: value.client_cipher_suites,
+            client_extensions: value.client_extensions,
+            cipher: value.cipher,
+            extensions: value.extensions,
+            ja3s: value.ja3s,
+            serial: value.serial,
+            subject_country: value.subject_country,
+            subject_org_name: value.subject_org_name,
+            subject_common_name: value.subject_common_name,
+            validity_not_before: value.validity_not_before,
+            validity_not_after: value.validity_not_after,
+            subject_alt_name: value.subject_alt_name,
+            issuer_country: value.issuer_country,
+            issuer_org_name: value.issuer_org_name,
+            issuer_org_unit_name: value.issuer_org_unit_name,
+            issuer_common_name: value.issuer_common_name,
+            last_alert: value.last_alert,
+            confidence: value.confidence,
+            category: value.category,
+        }
+    }
 }
 
 impl BlocklistTlsFields {
@@ -244,7 +325,7 @@ impl fmt::Display for BlocklistTls {
 }
 
 impl BlocklistTls {
-    pub(super) fn new(time: DateTime<Utc>, fields: BlocklistTlsFields) -> Self {
+    pub(super) fn new(time: DateTime<Utc>, fields: BlocklistTlsFieldsStored) -> Self {
         Self {
             time,
             sensor: fields.sensor,
@@ -429,7 +510,7 @@ impl fmt::Display for SuspiciousTlsTraffic {
 }
 
 impl SuspiciousTlsTraffic {
-    pub(super) fn new(time: DateTime<Utc>, fields: BlocklistTlsFields) -> Self {
+    pub(super) fn new(time: DateTime<Utc>, fields: BlocklistTlsFieldsStored) -> Self {
         Self {
             time,
             sensor: fields.sensor,

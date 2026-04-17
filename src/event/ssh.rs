@@ -78,6 +78,71 @@ pub struct BlocklistSshFieldsV0_42 {
     pub category: Option<EventCategory>,
 }
 
+#[derive(Deserialize, Serialize)]
+pub(crate) struct BlocklistSshFieldsStored {
+    pub sensor: String,
+    pub orig_addr: IpAddr,
+    pub orig_port: u16,
+    pub resp_addr: IpAddr,
+    pub resp_port: u16,
+    pub proto: u8,
+    pub start_time: i64,
+    pub duration: i64,
+    pub orig_pkts: u64,
+    pub resp_pkts: u64,
+    pub orig_l2_bytes: u64,
+    pub resp_l2_bytes: u64,
+    pub client: String,
+    pub server: String,
+    pub cipher_alg: String,
+    pub mac_alg: String,
+    pub compression_alg: String,
+    pub kex_alg: String,
+    pub host_key_alg: String,
+    pub hassh_algorithms: String,
+    pub hassh: String,
+    pub hassh_server_algorithms: String,
+    pub hassh_server: String,
+    pub client_shka: String,
+    pub server_shka: String,
+    pub confidence: f32,
+    pub category: Option<EventCategory>,
+}
+
+impl From<BlocklistSshFields> for BlocklistSshFieldsStored {
+    fn from(value: BlocklistSshFields) -> Self {
+        Self {
+            sensor: value.sensor,
+            orig_addr: value.orig_addr,
+            orig_port: value.orig_port,
+            resp_addr: value.resp_addr,
+            resp_port: value.resp_port,
+            proto: value.proto,
+            start_time: value.start_time,
+            duration: value.duration,
+            orig_pkts: value.orig_pkts,
+            resp_pkts: value.resp_pkts,
+            orig_l2_bytes: value.orig_l2_bytes,
+            resp_l2_bytes: value.resp_l2_bytes,
+            client: value.client,
+            server: value.server,
+            cipher_alg: value.cipher_alg,
+            mac_alg: value.mac_alg,
+            compression_alg: value.compression_alg,
+            kex_alg: value.kex_alg,
+            host_key_alg: value.host_key_alg,
+            hassh_algorithms: value.hassh_algorithms,
+            hassh: value.hassh,
+            hassh_server_algorithms: value.hassh_server_algorithms,
+            hassh_server: value.hassh_server,
+            client_shka: value.client_shka,
+            server_shka: value.server_shka,
+            confidence: value.confidence,
+            category: value.category,
+        }
+    }
+}
+
 impl BlocklistSshFields {
     #[must_use]
     pub fn syslog_rfc5424(&self) -> String {
@@ -186,7 +251,7 @@ impl fmt::Display for BlocklistSsh {
 }
 
 impl BlocklistSsh {
-    pub(super) fn new(time: DateTime<Utc>, fields: BlocklistSshFields) -> Self {
+    pub(super) fn new(time: DateTime<Utc>, fields: BlocklistSshFieldsStored) -> Self {
         Self {
             time,
             sensor: fields.sensor,

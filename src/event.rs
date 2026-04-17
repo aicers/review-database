@@ -44,7 +44,35 @@ use rocksdb::IteratorMode;
 use serde::{Deserialize, Serialize};
 use tracing::warn;
 
-use self::common::Match;
+use self::{
+    bootp::BlocklistBootpFieldsStored,
+    common::Match,
+    conn::{
+        BlocklistConnFieldsStored, ExternalDdosFieldsStored, MultiHostPortScanFieldsStored,
+        PortScanFieldsStored,
+    },
+    dcerpc::BlocklistDceRpcFieldsStored,
+    dhcp::BlocklistDhcpFieldsStored,
+    dns::{BlocklistDnsFieldsStored, CryptocurrencyMiningPoolFieldsStored, DnsEventFieldsStored},
+    ftp::{FtpBruteForceFieldsStored, FtpEventFieldsStored},
+    http::{
+        BlocklistHttpFieldsStored, DgaFieldsStored, HttpEventFieldsStored, HttpThreatFieldsStored,
+        RepeatedHttpSessionsFieldsStored,
+    },
+    kerberos::BlocklistKerberosFieldsStored,
+    ldap::{LdapBruteForceFieldsStored, LdapEventFieldsStored},
+    malformed_dns::BlocklistMalformedDnsFieldsStored,
+    mqtt::BlocklistMqttFieldsStored,
+    nfs::BlocklistNfsFieldsStored,
+    ntlm::BlocklistNtlmFieldsStored,
+    radius::BlocklistRadiusFieldsStored,
+    rdp::{BlocklistRdpFieldsStored, RdpBruteForceFieldsStored},
+    smb::BlocklistSmbFieldsStored,
+    smtp::BlocklistSmtpFieldsStored,
+    ssh::BlocklistSshFieldsStored,
+    tls::BlocklistTlsFieldsStored,
+    unusual_destination_pattern::UnusualDestinationPatternFieldsStored,
+};
 pub use self::{
     bootp::{BlocklistBootp, BlocklistBootpFields},
     common::TriageScore,
@@ -67,10 +95,10 @@ pub use self::{
     },
     kerberos::{BlocklistKerberos, BlocklistKerberosFields},
     ldap::{BlocklistLdap, LdapBruteForce, LdapBruteForceFields, LdapEventFields, LdapPlainText},
-    log::ExtraThreat,
+    log::{ExtraThreat, ExtraThreatStored},
     malformed_dns::{BlocklistMalformedDns, BlocklistMalformedDnsFields},
     mqtt::{BlocklistMqtt, BlocklistMqttFields},
-    network::NetworkThreat,
+    network::{NetworkThreat, NetworkThreatStored},
     nfs::{BlocklistNfs, BlocklistNfsFields},
     ntlm::{BlocklistNtlm, BlocklistNtlmFields},
     radius::{BlocklistRadius, BlocklistRadiusFields},
@@ -78,7 +106,7 @@ pub use self::{
     smb::{BlocklistSmb, BlocklistSmbFields},
     smtp::{BlocklistSmtp, BlocklistSmtpFields},
     ssh::{BlocklistSsh, BlocklistSshFields},
-    sysmon::WindowsThreat,
+    sysmon::{WindowsThreat, WindowsThreatStored},
     tls::{BlocklistTls, BlocklistTlsFields, SuspiciousTlsTraffic},
     tor::{TorConnection, TorConnectionConn},
     unusual_destination_pattern::{UnusualDestinationPattern, UnusualDestinationPatternFields},
@@ -166,11 +194,11 @@ pub enum Event {
 
     Blocklist(RecordType),
 
-    WindowsThreat(WindowsThreat),
+    WindowsThreat(WindowsThreatStored),
 
-    NetworkThreat(NetworkThreat),
+    NetworkThreat(NetworkThreatStored),
 
-    ExtraThreat(ExtraThreat),
+    ExtraThreat(ExtraThreatStored),
 
     LockyRansomware(LockyRansomware),
 
@@ -2344,11 +2372,11 @@ impl EventMessage {
                 .map(|fields| fields.syslog_rfc5424()),
             EventKind::BlocklistTls => bincode::deserialize::<BlocklistTlsFields>(&self.fields)
                 .map(|fields| fields.syslog_rfc5424()),
-            EventKind::WindowsThreat => bincode::deserialize::<WindowsThreat>(&self.fields)
+            EventKind::WindowsThreat => bincode::deserialize::<WindowsThreatStored>(&self.fields)
                 .map(|fields| fields.syslog_rfc5424()),
-            EventKind::NetworkThreat => bincode::deserialize::<NetworkThreat>(&self.fields)
+            EventKind::NetworkThreat => bincode::deserialize::<NetworkThreatStored>(&self.fields)
                 .map(|fields| fields.syslog_rfc5424()),
-            EventKind::ExtraThreat => bincode::deserialize::<ExtraThreat>(&self.fields)
+            EventKind::ExtraThreat => bincode::deserialize::<ExtraThreatStored>(&self.fields)
                 .map(|fields| fields.syslog_rfc5424()),
             EventKind::LockyRansomware => bincode::deserialize::<DnsEventFields>(&self.fields)
                 .map(|fields| fields.syslog_rfc5424()),
@@ -2381,6 +2409,119 @@ impl EventMessage {
     }
 }
 
+/// Converts producer-facing `*Fields` bytes into the on-disk
+/// `*FieldsStored` representation for the given [`EventKind`].
+fn convert_for_storage(kind: EventKind, bytes: &[u8]) -> Result<Vec<u8>> {
+    fn reserialize<S, T>(bytes: &[u8]) -> Result<Vec<u8>>
+    where
+        S: for<'de> Deserialize<'de>,
+        T: Serialize + From<S>,
+    {
+        let shared: S = bincode::deserialize(bytes)
+            .context("failed to deserialize event fields as the producer-facing schema")?;
+        let stored: T = shared.into();
+        bincode::serialize(&stored).context("failed to serialize event fields for storage")
+    }
+
+    match kind {
+        EventKind::BlocklistBootp => {
+            reserialize::<BlocklistBootpFields, BlocklistBootpFieldsStored>(bytes)
+        }
+        EventKind::BlocklistConn | EventKind::TorConnectionConn => {
+            reserialize::<BlocklistConnFields, BlocklistConnFieldsStored>(bytes)
+        }
+        EventKind::BlocklistDceRpc => {
+            reserialize::<BlocklistDceRpcFields, BlocklistDceRpcFieldsStored>(bytes)
+        }
+        EventKind::BlocklistDhcp => {
+            reserialize::<BlocklistDhcpFields, BlocklistDhcpFieldsStored>(bytes)
+        }
+        EventKind::BlocklistDns => {
+            reserialize::<BlocklistDnsFields, BlocklistDnsFieldsStored>(bytes)
+        }
+        EventKind::BlocklistFtp | EventKind::FtpPlainText => {
+            reserialize::<FtpEventFields, FtpEventFieldsStored>(bytes)
+        }
+        EventKind::BlocklistHttp => {
+            reserialize::<BlocklistHttpFields, BlocklistHttpFieldsStored>(bytes)
+        }
+        EventKind::BlocklistKerberos => {
+            reserialize::<BlocklistKerberosFields, BlocklistKerberosFieldsStored>(bytes)
+        }
+        EventKind::BlocklistLdap | EventKind::LdapPlainText => {
+            reserialize::<LdapEventFields, LdapEventFieldsStored>(bytes)
+        }
+        EventKind::BlocklistMalformedDns => {
+            reserialize::<BlocklistMalformedDnsFields, BlocklistMalformedDnsFieldsStored>(bytes)
+        }
+        EventKind::BlocklistMqtt => {
+            reserialize::<BlocklistMqttFields, BlocklistMqttFieldsStored>(bytes)
+        }
+        EventKind::BlocklistNfs => {
+            reserialize::<BlocklistNfsFields, BlocklistNfsFieldsStored>(bytes)
+        }
+        EventKind::BlocklistNtlm => {
+            reserialize::<BlocklistNtlmFields, BlocklistNtlmFieldsStored>(bytes)
+        }
+        EventKind::BlocklistRadius => {
+            reserialize::<BlocklistRadiusFields, BlocklistRadiusFieldsStored>(bytes)
+        }
+        EventKind::BlocklistRdp => {
+            reserialize::<BlocklistRdpFields, BlocklistRdpFieldsStored>(bytes)
+        }
+        EventKind::BlocklistSmb => {
+            reserialize::<BlocklistSmbFields, BlocklistSmbFieldsStored>(bytes)
+        }
+        EventKind::BlocklistSmtp => {
+            reserialize::<BlocklistSmtpFields, BlocklistSmtpFieldsStored>(bytes)
+        }
+        EventKind::BlocklistSsh => {
+            reserialize::<BlocklistSshFields, BlocklistSshFieldsStored>(bytes)
+        }
+        EventKind::BlocklistTls | EventKind::SuspiciousTlsTraffic => {
+            reserialize::<BlocklistTlsFields, BlocklistTlsFieldsStored>(bytes)
+        }
+        EventKind::CryptocurrencyMiningPool => reserialize::<
+            CryptocurrencyMiningPoolFields,
+            CryptocurrencyMiningPoolFieldsStored,
+        >(bytes),
+        EventKind::DnsCovertChannel | EventKind::LockyRansomware => {
+            reserialize::<DnsEventFields, DnsEventFieldsStored>(bytes)
+        }
+        EventKind::DomainGenerationAlgorithm => reserialize::<DgaFields, DgaFieldsStored>(bytes),
+        EventKind::ExternalDdos => {
+            reserialize::<ExternalDdosFields, ExternalDdosFieldsStored>(bytes)
+        }
+        EventKind::FtpBruteForce => {
+            reserialize::<FtpBruteForceFields, FtpBruteForceFieldsStored>(bytes)
+        }
+        EventKind::HttpThreat => reserialize::<HttpThreatFields, HttpThreatFieldsStored>(bytes),
+        EventKind::LdapBruteForce => {
+            reserialize::<LdapBruteForceFields, LdapBruteForceFieldsStored>(bytes)
+        }
+        EventKind::MultiHostPortScan => {
+            reserialize::<MultiHostPortScanFields, MultiHostPortScanFieldsStored>(bytes)
+        }
+        EventKind::NonBrowser | EventKind::TorConnection => {
+            reserialize::<HttpEventFields, HttpEventFieldsStored>(bytes)
+        }
+        EventKind::PortScan => reserialize::<PortScanFields, PortScanFieldsStored>(bytes),
+        EventKind::RdpBruteForce => {
+            reserialize::<RdpBruteForceFields, RdpBruteForceFieldsStored>(bytes)
+        }
+        EventKind::RepeatedHttpSessions => {
+            reserialize::<RepeatedHttpSessionsFields, RepeatedHttpSessionsFieldsStored>(bytes)
+        }
+        EventKind::UnusualDestinationPattern => reserialize::<
+            UnusualDestinationPatternFields,
+            UnusualDestinationPatternFieldsStored,
+        >(bytes),
+        EventKind::ExtraThreat => reserialize::<ExtraThreat, ExtraThreatStored>(bytes),
+        EventKind::NetworkThreat => reserialize::<NetworkThreat, NetworkThreatStored>(bytes),
+        EventKind::WindowsThreat => reserialize::<WindowsThreat, WindowsThreatStored>(bytes),
+    }
+}
+
 #[allow(clippy::module_name_repetitions)]
 pub struct EventDb<'a> {
     inner: &'a rocksdb::OptimisticTransactionDB,
@@ -2410,11 +2551,17 @@ impl<'a> EventDb<'a> {
 
     /// Stores a new event into the database.
     ///
+    /// Converts the producer-facing `*Fields` bytes into the repository-local
+    /// `*FieldsStored` representation so that the on-disk schema can evolve
+    /// independently of the ingestion schema.
+    ///
     /// # Errors
     ///
-    /// Returns an error if a database operation fails.
+    /// Returns an error if the fields cannot be deserialized as the
+    /// producer-facing schema or if a database operation fails.
     pub fn put(&self, event: &EventMessage) -> Result<i128> {
         use anyhow::anyhow;
+        let stored_fields = convert_for_storage(event.kind, &event.fields)?;
         let mut key = (i128::from(event.time.timestamp_nanos_opt().unwrap_or(i64::MAX)) << 64)
             | (event
                 .kind
@@ -2443,7 +2590,7 @@ impl<'a> EventDb<'a> {
                     key = key & 0xffff_ffff_ffff_ffff_ffff_ffff_0000_0000_u128 as i128 | next;
                 }
             }
-            txn.put(key.to_be_bytes(), event.fields.as_slice())
+            txn.put(key.to_be_bytes(), stored_fields.as_slice())
                 .context("cannot write event")?;
             match txn.commit() {
                 Ok(()) => break,
@@ -2531,367 +2678,393 @@ impl Iterator for EventIterator<'_> {
         };
         match kind {
             EventKind::BlocklistBootp => {
-                let Ok(fields) = bincode::deserialize::<BlocklistBootpFields>(v.as_ref()) else {
+                let Ok(stored) = bincode::deserialize::<BlocklistBootpFieldsStored>(v.as_ref())
+                else {
                     return Some(Err(InvalidEvent::Value(v)));
                 };
                 Some(Ok((
                     key,
-                    Event::Blocklist(RecordType::Bootp(BlocklistBootp::new(time, fields))),
+                    Event::Blocklist(RecordType::Bootp(BlocklistBootp::new(time, stored))),
                 )))
             }
             EventKind::BlocklistConn => {
-                let Ok(fields) = bincode::deserialize::<BlocklistConnFields>(v.as_ref()) else {
+                let Ok(stored) = bincode::deserialize::<BlocklistConnFieldsStored>(v.as_ref())
+                else {
                     return Some(Err(InvalidEvent::Value(v)));
                 };
                 Some(Ok((
                     key,
-                    Event::Blocklist(RecordType::Conn(BlocklistConn::new(time, fields))),
+                    Event::Blocklist(RecordType::Conn(BlocklistConn::new(time, stored))),
                 )))
             }
             EventKind::BlocklistDceRpc => {
-                let Ok(fields) = bincode::deserialize::<BlocklistDceRpcFields>(v.as_ref()) else {
+                let Ok(stored) = bincode::deserialize::<BlocklistDceRpcFieldsStored>(v.as_ref())
+                else {
                     return Some(Err(InvalidEvent::Value(v)));
                 };
                 Some(Ok((
                     key,
-                    Event::Blocklist(RecordType::DceRpc(BlocklistDceRpc::new(time, fields))),
+                    Event::Blocklist(RecordType::DceRpc(BlocklistDceRpc::new(time, stored))),
                 )))
             }
             EventKind::BlocklistDhcp => {
-                let Ok(fields) = bincode::deserialize::<BlocklistDhcpFields>(v.as_ref()) else {
+                let Ok(stored) = bincode::deserialize::<BlocklistDhcpFieldsStored>(v.as_ref())
+                else {
                     return Some(Err(InvalidEvent::Value(v)));
                 };
                 Some(Ok((
                     key,
-                    Event::Blocklist(RecordType::Dhcp(BlocklistDhcp::new(time, fields))),
+                    Event::Blocklist(RecordType::Dhcp(BlocklistDhcp::new(time, stored))),
                 )))
             }
             EventKind::BlocklistDns => {
-                let Ok(fields) = bincode::deserialize::<BlocklistDnsFields>(v.as_ref()) else {
+                let Ok(stored) = bincode::deserialize::<BlocklistDnsFieldsStored>(v.as_ref())
+                else {
                     return Some(Err(InvalidEvent::Value(v)));
                 };
                 Some(Ok((
                     key,
-                    Event::Blocklist(RecordType::Dns(BlocklistDns::new(time, fields))),
+                    Event::Blocklist(RecordType::Dns(BlocklistDns::new(time, stored))),
                 )))
             }
             EventKind::BlocklistFtp => {
-                let Ok(fields) = bincode::deserialize::<FtpEventFields>(v.as_ref()) else {
+                let Ok(stored) = bincode::deserialize::<FtpEventFieldsStored>(v.as_ref()) else {
                     return Some(Err(InvalidEvent::Value(v)));
                 };
                 Some(Ok((
                     key,
-                    Event::Blocklist(RecordType::Ftp(BlocklistFtp::new(time, fields))),
+                    Event::Blocklist(RecordType::Ftp(BlocklistFtp::new(time, stored))),
                 )))
             }
             EventKind::BlocklistHttp => {
-                let Ok(fields) = bincode::deserialize::<BlocklistHttpFields>(v.as_ref()) else {
+                let Ok(stored) = bincode::deserialize::<BlocklistHttpFieldsStored>(v.as_ref())
+                else {
                     return Some(Err(InvalidEvent::Value(v)));
                 };
                 Some(Ok((
                     key,
-                    Event::Blocklist(RecordType::Http(BlocklistHttp::new(time, fields))),
+                    Event::Blocklist(RecordType::Http(BlocklistHttp::new(time, stored))),
                 )))
             }
             EventKind::BlocklistKerberos => {
-                let Ok(fields) = bincode::deserialize::<BlocklistKerberosFields>(v.as_ref()) else {
+                let Ok(stored) = bincode::deserialize::<BlocklistKerberosFieldsStored>(v.as_ref())
+                else {
                     return Some(Err(InvalidEvent::Value(v)));
                 };
                 Some(Ok((
                     key,
-                    Event::Blocklist(RecordType::Kerberos(BlocklistKerberos::new(time, fields))),
+                    Event::Blocklist(RecordType::Kerberos(BlocklistKerberos::new(time, stored))),
                 )))
             }
             EventKind::BlocklistLdap => {
-                let Ok(fields) = bincode::deserialize::<LdapEventFields>(v.as_ref()) else {
+                let Ok(stored) = bincode::deserialize::<LdapEventFieldsStored>(v.as_ref()) else {
                     return Some(Err(InvalidEvent::Value(v)));
                 };
                 Some(Ok((
                     key,
-                    Event::Blocklist(RecordType::Ldap(BlocklistLdap::new(time, fields))),
+                    Event::Blocklist(RecordType::Ldap(BlocklistLdap::new(time, stored))),
                 )))
             }
             EventKind::BlocklistMalformedDns => {
-                let Ok(fields) = bincode::deserialize::<BlocklistMalformedDnsFields>(v.as_ref())
+                let Ok(stored) =
+                    bincode::deserialize::<BlocklistMalformedDnsFieldsStored>(v.as_ref())
                 else {
                     return Some(Err(InvalidEvent::Value(v)));
                 };
                 Some(Ok((
                     key,
                     Event::Blocklist(RecordType::MalformedDns(BlocklistMalformedDns::new(
-                        time, fields,
+                        time, stored,
                     ))),
                 )))
             }
             EventKind::BlocklistMqtt => {
-                let Ok(fields) = bincode::deserialize::<BlocklistMqttFields>(v.as_ref()) else {
+                let Ok(stored) = bincode::deserialize::<BlocklistMqttFieldsStored>(v.as_ref())
+                else {
                     return Some(Err(InvalidEvent::Value(v)));
                 };
                 Some(Ok((
                     key,
-                    Event::Blocklist(RecordType::Mqtt(BlocklistMqtt::new(time, fields))),
+                    Event::Blocklist(RecordType::Mqtt(BlocklistMqtt::new(time, stored))),
                 )))
             }
             EventKind::BlocklistNfs => {
-                let Ok(fields) = bincode::deserialize::<BlocklistNfsFields>(v.as_ref()) else {
+                let Ok(stored) = bincode::deserialize::<BlocklistNfsFieldsStored>(v.as_ref())
+                else {
                     return Some(Err(InvalidEvent::Value(v)));
                 };
                 Some(Ok((
                     key,
-                    Event::Blocklist(RecordType::Nfs(BlocklistNfs::new(time, fields))),
+                    Event::Blocklist(RecordType::Nfs(BlocklistNfs::new(time, stored))),
                 )))
             }
             EventKind::BlocklistNtlm => {
-                let Ok(fields) = bincode::deserialize::<BlocklistNtlmFields>(v.as_ref()) else {
+                let Ok(stored) = bincode::deserialize::<BlocklistNtlmFieldsStored>(v.as_ref())
+                else {
                     return Some(Err(InvalidEvent::Value(v)));
                 };
                 Some(Ok((
                     key,
-                    Event::Blocklist(RecordType::Ntlm(BlocklistNtlm::new(time, fields))),
+                    Event::Blocklist(RecordType::Ntlm(BlocklistNtlm::new(time, stored))),
                 )))
             }
             EventKind::BlocklistRadius => {
-                let Ok(fields) = bincode::deserialize::<BlocklistRadiusFields>(v.as_ref()) else {
+                let Ok(stored) = bincode::deserialize::<BlocklistRadiusFieldsStored>(v.as_ref())
+                else {
                     return Some(Err(InvalidEvent::Value(v)));
                 };
                 Some(Ok((
                     key,
-                    Event::Blocklist(RecordType::Radius(BlocklistRadius::new(time, fields))),
+                    Event::Blocklist(RecordType::Radius(BlocklistRadius::new(time, stored))),
                 )))
             }
             EventKind::BlocklistRdp => {
-                let Ok(fields) = bincode::deserialize::<BlocklistRdpFields>(v.as_ref()) else {
+                let Ok(stored) = bincode::deserialize::<BlocklistRdpFieldsStored>(v.as_ref())
+                else {
                     return Some(Err(InvalidEvent::Value(v)));
                 };
                 Some(Ok((
                     key,
-                    Event::Blocklist(RecordType::Rdp(BlocklistRdp::new(time, fields))),
+                    Event::Blocklist(RecordType::Rdp(BlocklistRdp::new(time, stored))),
                 )))
             }
             EventKind::BlocklistSmb => {
-                let Ok(fields) = bincode::deserialize::<BlocklistSmbFields>(v.as_ref()) else {
+                let Ok(stored) = bincode::deserialize::<BlocklistSmbFieldsStored>(v.as_ref())
+                else {
                     return Some(Err(InvalidEvent::Value(v)));
                 };
                 Some(Ok((
                     key,
-                    Event::Blocklist(RecordType::Smb(BlocklistSmb::new(time, fields))),
+                    Event::Blocklist(RecordType::Smb(BlocklistSmb::new(time, stored))),
                 )))
             }
             EventKind::BlocklistSmtp => {
-                let Ok(fields) = bincode::deserialize::<BlocklistSmtpFields>(v.as_ref()) else {
+                let Ok(stored) = bincode::deserialize::<BlocklistSmtpFieldsStored>(v.as_ref())
+                else {
                     return Some(Err(InvalidEvent::Value(v)));
                 };
                 Some(Ok((
                     key,
-                    Event::Blocklist(RecordType::Smtp(BlocklistSmtp::new(time, fields))),
+                    Event::Blocklist(RecordType::Smtp(BlocklistSmtp::new(time, stored))),
                 )))
             }
             EventKind::BlocklistSsh => {
-                let Ok(fields) = bincode::deserialize::<BlocklistSshFields>(v.as_ref()) else {
+                let Ok(stored) = bincode::deserialize::<BlocklistSshFieldsStored>(v.as_ref())
+                else {
                     return Some(Err(InvalidEvent::Value(v)));
                 };
                 Some(Ok((
                     key,
-                    Event::Blocklist(RecordType::Ssh(BlocklistSsh::new(time, fields))),
+                    Event::Blocklist(RecordType::Ssh(BlocklistSsh::new(time, stored))),
                 )))
             }
             EventKind::BlocklistTls => {
-                let Ok(fields) = bincode::deserialize::<BlocklistTlsFields>(v.as_ref()) else {
+                let Ok(stored) = bincode::deserialize::<BlocklistTlsFieldsStored>(v.as_ref())
+                else {
                     return Some(Err(InvalidEvent::Value(v)));
                 };
                 Some(Ok((
                     key,
-                    Event::Blocklist(RecordType::Tls(BlocklistTls::new(time, fields))),
+                    Event::Blocklist(RecordType::Tls(BlocklistTls::new(time, stored))),
                 )))
             }
             EventKind::CryptocurrencyMiningPool => {
-                let Ok(fields) = bincode::deserialize::<CryptocurrencyMiningPoolFields>(v.as_ref())
+                let Ok(stored) =
+                    bincode::deserialize::<CryptocurrencyMiningPoolFieldsStored>(v.as_ref())
                 else {
                     return Some(Err(InvalidEvent::Value(v)));
                 };
                 Some(Ok((
                     key,
-                    Event::CryptocurrencyMiningPool(CryptocurrencyMiningPool::new(time, fields)),
+                    Event::CryptocurrencyMiningPool(CryptocurrencyMiningPool::new(time, stored)),
                 )))
             }
             EventKind::DnsCovertChannel => {
-                let Ok(fields) = bincode::deserialize::<DnsEventFields>(v.as_ref()) else {
+                let Ok(stored) = bincode::deserialize::<DnsEventFieldsStored>(v.as_ref()) else {
                     return Some(Err(InvalidEvent::Value(v)));
                 };
                 Some(Ok((
                     key,
-                    Event::DnsCovertChannel(DnsCovertChannel::new(time, fields)),
+                    Event::DnsCovertChannel(DnsCovertChannel::new(time, stored)),
                 )))
             }
             EventKind::DomainGenerationAlgorithm => {
-                let Ok(fields) = bincode::deserialize::<DgaFields>(v.as_ref()) else {
+                let Ok(stored) = bincode::deserialize::<DgaFieldsStored>(v.as_ref()) else {
                     return Some(Err(InvalidEvent::Value(v)));
                 };
                 Some(Ok((
                     key,
-                    Event::DomainGenerationAlgorithm(DomainGenerationAlgorithm::new(time, fields)),
+                    Event::DomainGenerationAlgorithm(DomainGenerationAlgorithm::new(time, stored)),
                 )))
             }
             EventKind::ExternalDdos => {
-                let Ok(fields) = bincode::deserialize::<ExternalDdosFields>(v.as_ref()) else {
-                    return Some(Err(InvalidEvent::Value(v)));
-                };
-                Some(Ok((
-                    key,
-                    Event::ExternalDdos(ExternalDdos::new(time, &fields)),
-                )))
-            }
-            EventKind::ExtraThreat => {
-                let Ok(fields) = bincode::deserialize::<ExtraThreat>(v.as_ref()) else {
-                    return Some(Err(InvalidEvent::Value(v)));
-                };
-                Some(Ok((key, Event::ExtraThreat(fields))))
-            }
-            EventKind::FtpBruteForce => {
-                let Ok(fields) = bincode::deserialize::<FtpBruteForceFields>(v.as_ref()) else {
-                    return Some(Err(InvalidEvent::Value(v)));
-                };
-                Some(Ok((
-                    key,
-                    Event::FtpBruteForce(FtpBruteForce::new(time, &fields)),
-                )))
-            }
-            EventKind::FtpPlainText => {
-                let Ok(fields) = bincode::deserialize::<FtpEventFields>(v.as_ref()) else {
-                    return Some(Err(InvalidEvent::Value(v)));
-                };
-                Some(Ok((
-                    key,
-                    Event::FtpPlainText(FtpPlainText::new(time, fields)),
-                )))
-            }
-            EventKind::HttpThreat => {
-                let Ok(fields) = bincode::deserialize::<HttpThreatFields>(v.as_ref()) else {
-                    return Some(Err(InvalidEvent::Value(v)));
-                };
-                Some(Ok((
-                    key,
-                    Event::HttpThreat(HttpThreat::new(fields.time, fields)),
-                )))
-            }
-            EventKind::LdapBruteForce => {
-                let Ok(fields) = bincode::deserialize::<LdapBruteForceFields>(v.as_ref()) else {
-                    return Some(Err(InvalidEvent::Value(v)));
-                };
-                Some(Ok((
-                    key,
-                    Event::LdapBruteForce(LdapBruteForce::new(time, &fields)),
-                )))
-            }
-            EventKind::LdapPlainText => {
-                let Ok(fields) = bincode::deserialize::<LdapEventFields>(v.as_ref()) else {
-                    return Some(Err(InvalidEvent::Value(v)));
-                };
-                Some(Ok((
-                    key,
-                    Event::LdapPlainText(LdapPlainText::new(time, fields)),
-                )))
-            }
-            EventKind::LockyRansomware => {
-                let Ok(fields) = bincode::deserialize::<DnsEventFields>(v.as_ref()) else {
-                    return Some(Err(InvalidEvent::Value(v)));
-                };
-                Some(Ok((
-                    key,
-                    Event::LockyRansomware(LockyRansomware::new(time, fields)),
-                )))
-            }
-            EventKind::MultiHostPortScan => {
-                let Ok(fields) = bincode::deserialize::<MultiHostPortScanFields>(v.as_ref()) else {
-                    return Some(Err(InvalidEvent::Value(v)));
-                };
-                Some(Ok((
-                    key,
-                    Event::MultiHostPortScan(MultiHostPortScan::new(time, &fields)),
-                )))
-            }
-            EventKind::NetworkThreat => {
-                let Ok(fields) = bincode::deserialize::<NetworkThreat>(v.as_ref()) else {
-                    return Some(Err(InvalidEvent::Value(v)));
-                };
-                Some(Ok((key, Event::NetworkThreat(fields))))
-            }
-            EventKind::NonBrowser => {
-                let Ok(fields) = bincode::deserialize::<HttpEventFields>(v.as_ref()) else {
-                    return Some(Err(InvalidEvent::Value(v)));
-                };
-                Some(Ok((key, Event::NonBrowser(NonBrowser::new(time, &fields)))))
-            }
-            EventKind::PortScan => {
-                let Ok(fields) = bincode::deserialize::<PortScanFields>(v.as_ref()) else {
-                    return Some(Err(InvalidEvent::Value(v)));
-                };
-                Some(Ok((key, Event::PortScan(PortScan::new(time, &fields)))))
-            }
-            EventKind::RdpBruteForce => {
-                let Ok(fields) = bincode::deserialize::<RdpBruteForceFields>(v.as_ref()) else {
-                    return Some(Err(InvalidEvent::Value(v)));
-                };
-                Some(Ok((
-                    key,
-                    Event::RdpBruteForce(RdpBruteForce::new(time, &fields)),
-                )))
-            }
-            EventKind::RepeatedHttpSessions => {
-                let Ok(fields) = bincode::deserialize::<RepeatedHttpSessionsFields>(v.as_ref())
+                let Ok(stored) = bincode::deserialize::<ExternalDdosFieldsStored>(v.as_ref())
                 else {
                     return Some(Err(InvalidEvent::Value(v)));
                 };
                 Some(Ok((
                     key,
-                    Event::RepeatedHttpSessions(RepeatedHttpSessions::new(time, &fields)),
+                    Event::ExternalDdos(ExternalDdos::new(time, &stored)),
                 )))
             }
-            EventKind::SuspiciousTlsTraffic => {
-                let Ok(fields) = bincode::deserialize::<BlocklistTlsFields>(v.as_ref()) else {
+            EventKind::ExtraThreat => {
+                let Ok(stored) = bincode::deserialize::<ExtraThreatStored>(v.as_ref()) else {
+                    return Some(Err(InvalidEvent::Value(v)));
+                };
+                Some(Ok((key, Event::ExtraThreat(stored))))
+            }
+            EventKind::FtpBruteForce => {
+                let Ok(stored) = bincode::deserialize::<FtpBruteForceFieldsStored>(v.as_ref())
+                else {
                     return Some(Err(InvalidEvent::Value(v)));
                 };
                 Some(Ok((
                     key,
-                    Event::SuspiciousTlsTraffic(SuspiciousTlsTraffic::new(time, fields)),
+                    Event::FtpBruteForce(FtpBruteForce::new(time, &stored)),
+                )))
+            }
+            EventKind::FtpPlainText => {
+                let Ok(stored) = bincode::deserialize::<FtpEventFieldsStored>(v.as_ref()) else {
+                    return Some(Err(InvalidEvent::Value(v)));
+                };
+                Some(Ok((
+                    key,
+                    Event::FtpPlainText(FtpPlainText::new(time, stored)),
+                )))
+            }
+            EventKind::HttpThreat => {
+                let Ok(stored) = bincode::deserialize::<HttpThreatFieldsStored>(v.as_ref()) else {
+                    return Some(Err(InvalidEvent::Value(v)));
+                };
+                Some(Ok((
+                    key,
+                    Event::HttpThreat(HttpThreat::new(stored.time, stored)),
+                )))
+            }
+            EventKind::LdapBruteForce => {
+                let Ok(stored) = bincode::deserialize::<LdapBruteForceFieldsStored>(v.as_ref())
+                else {
+                    return Some(Err(InvalidEvent::Value(v)));
+                };
+                Some(Ok((
+                    key,
+                    Event::LdapBruteForce(LdapBruteForce::new(time, &stored)),
+                )))
+            }
+            EventKind::LdapPlainText => {
+                let Ok(stored) = bincode::deserialize::<LdapEventFieldsStored>(v.as_ref()) else {
+                    return Some(Err(InvalidEvent::Value(v)));
+                };
+                Some(Ok((
+                    key,
+                    Event::LdapPlainText(LdapPlainText::new(time, stored)),
+                )))
+            }
+            EventKind::LockyRansomware => {
+                let Ok(stored) = bincode::deserialize::<DnsEventFieldsStored>(v.as_ref()) else {
+                    return Some(Err(InvalidEvent::Value(v)));
+                };
+                Some(Ok((
+                    key,
+                    Event::LockyRansomware(LockyRansomware::new(time, stored)),
+                )))
+            }
+            EventKind::MultiHostPortScan => {
+                let Ok(stored) = bincode::deserialize::<MultiHostPortScanFieldsStored>(v.as_ref())
+                else {
+                    return Some(Err(InvalidEvent::Value(v)));
+                };
+                Some(Ok((
+                    key,
+                    Event::MultiHostPortScan(MultiHostPortScan::new(time, &stored)),
+                )))
+            }
+            EventKind::NetworkThreat => {
+                let Ok(stored) = bincode::deserialize::<NetworkThreatStored>(v.as_ref()) else {
+                    return Some(Err(InvalidEvent::Value(v)));
+                };
+                Some(Ok((key, Event::NetworkThreat(stored))))
+            }
+            EventKind::NonBrowser => {
+                let Ok(stored) = bincode::deserialize::<HttpEventFieldsStored>(v.as_ref()) else {
+                    return Some(Err(InvalidEvent::Value(v)));
+                };
+                Some(Ok((key, Event::NonBrowser(NonBrowser::new(time, &stored)))))
+            }
+            EventKind::PortScan => {
+                let Ok(stored) = bincode::deserialize::<PortScanFieldsStored>(v.as_ref()) else {
+                    return Some(Err(InvalidEvent::Value(v)));
+                };
+                Some(Ok((key, Event::PortScan(PortScan::new(time, &stored)))))
+            }
+            EventKind::RdpBruteForce => {
+                let Ok(stored) = bincode::deserialize::<RdpBruteForceFieldsStored>(v.as_ref())
+                else {
+                    return Some(Err(InvalidEvent::Value(v)));
+                };
+                Some(Ok((
+                    key,
+                    Event::RdpBruteForce(RdpBruteForce::new(time, &stored)),
+                )))
+            }
+            EventKind::RepeatedHttpSessions => {
+                let Ok(stored) =
+                    bincode::deserialize::<RepeatedHttpSessionsFieldsStored>(v.as_ref())
+                else {
+                    return Some(Err(InvalidEvent::Value(v)));
+                };
+                Some(Ok((
+                    key,
+                    Event::RepeatedHttpSessions(RepeatedHttpSessions::new(time, &stored)),
+                )))
+            }
+            EventKind::SuspiciousTlsTraffic => {
+                let Ok(stored) = bincode::deserialize::<BlocklistTlsFieldsStored>(v.as_ref())
+                else {
+                    return Some(Err(InvalidEvent::Value(v)));
+                };
+                Some(Ok((
+                    key,
+                    Event::SuspiciousTlsTraffic(SuspiciousTlsTraffic::new(time, stored)),
                 )))
             }
             EventKind::UnusualDestinationPattern => {
-                let Ok(fields) =
-                    bincode::deserialize::<UnusualDestinationPatternFields>(v.as_ref())
+                let Ok(stored) =
+                    bincode::deserialize::<UnusualDestinationPatternFieldsStored>(v.as_ref())
                 else {
                     return Some(Err(InvalidEvent::Value(v)));
                 };
                 Some(Ok((
                     key,
                     Event::Blocklist(RecordType::UnusualDestinationPattern(
-                        UnusualDestinationPattern::new(time, fields),
+                        UnusualDestinationPattern::new(time, stored),
                     )),
                 )))
             }
             EventKind::TorConnection => {
-                let Ok(fields) = bincode::deserialize::<HttpEventFields>(v.as_ref()) else {
+                let Ok(stored) = bincode::deserialize::<HttpEventFieldsStored>(v.as_ref()) else {
                     return Some(Err(InvalidEvent::Value(v)));
                 };
                 Some(Ok((
                     key,
-                    Event::TorConnection(TorConnection::new(time, &fields)),
+                    Event::TorConnection(TorConnection::new(time, &stored)),
                 )))
             }
             EventKind::TorConnectionConn => {
-                let Ok(fields) = bincode::deserialize::<BlocklistConnFields>(v.as_ref()) else {
+                let Ok(stored) = bincode::deserialize::<BlocklistConnFieldsStored>(v.as_ref())
+                else {
                     return Some(Err(InvalidEvent::Value(v)));
                 };
                 Some(Ok((
                     key,
-                    Event::TorConnectionConn(TorConnectionConn::new(time, fields)),
+                    Event::TorConnectionConn(TorConnectionConn::new(time, stored)),
                 )))
             }
             EventKind::WindowsThreat => {
-                let Ok(fields) = bincode::deserialize::<WindowsThreat>(v.as_ref()) else {
+                let Ok(stored) = bincode::deserialize::<WindowsThreatStored>(v.as_ref()) else {
                     return Some(Err(InvalidEvent::Value(v)));
                 };
-                Some(Ok((key, Event::WindowsThreat(fields))))
+                Some(Ok((key, Event::WindowsThreat(stored))))
             }
         }
     }
@@ -2966,13 +3139,14 @@ mod tests {
             BlocklistSshFields, BlocklistTls, BlocklistTlsFields, CryptocurrencyMiningPool,
             CryptocurrencyMiningPoolFields, DceRpcContext, DgaFields, DnsCovertChannel,
             DnsEventFields, DomainGenerationAlgorithm, Event, EventFilter, EventKind, EventMessage,
-            ExternalDdos, ExternalDdosFields, ExtraThreat, FtpBruteForce, FtpBruteForceFields,
-            FtpEventFields, FtpPlainText, HttpEventFields, HttpThreat, HttpThreatFields,
-            LOCKY_RANSOMWARE, LdapBruteForce, LdapBruteForceFields, LdapEventFields, LdapPlainText,
-            LockyRansomware, MultiHostPortScan, MultiHostPortScanFields, NetworkThreat, NonBrowser,
-            PortScan, PortScanFields, RdpBruteForce, RdpBruteForceFields, RecordType,
-            RepeatedHttpSessions, RepeatedHttpSessionsFields, SuspiciousTlsTraffic, TorConnection,
-            TriageScore, WindowsThreat,
+            ExternalDdos, ExternalDdosFields, ExtraThreatStored, FtpBruteForce,
+            FtpBruteForceFields, FtpEventFields, FtpPlainText, HttpEventFields, HttpThreat,
+            HttpThreatFields, LOCKY_RANSOMWARE, LdapBruteForce, LdapBruteForceFields,
+            LdapEventFields, LdapPlainText, LockyRansomware, MultiHostPortScan,
+            MultiHostPortScanFields, NetworkThreatStored, NonBrowser, PortScan, PortScanFields,
+            RdpBruteForce, RdpBruteForceFields, RecordType, RepeatedHttpSessions,
+            RepeatedHttpSessionsFields, SuspiciousTlsTraffic, TorConnection, TriageScore,
+            WindowsThreatStored,
         },
         types::EventCategory,
     };
@@ -3045,6 +3219,35 @@ mod tests {
         assert!(iter.next().is_some());
         assert!(iter.next().is_some());
         assert!(iter.next().is_none());
+    }
+
+    #[test]
+    fn event_boundary_rejects_invalid_producer_bytes() {
+        use super::convert_for_storage;
+
+        // Garbage bytes for a kind that owns a shared/stored split must fail
+        // at ingestion, not silently reach the store.
+        let err = convert_for_storage(EventKind::DnsCovertChannel, &[0x01, 0x02]);
+        assert!(err.is_err());
+    }
+
+    #[test]
+    fn event_boundary_round_trip_through_db() {
+        let (_permit, store) = setup_store();
+        let db = store.events();
+        let msg = example_message(
+            EventKind::DnsCovertChannel,
+            EventCategory::CommandAndControl,
+        );
+        db.put(&msg).unwrap();
+        let (_key, event) = db.iter_forward().next().unwrap().unwrap();
+        let Event::DnsCovertChannel(covert) = event else {
+            panic!("expected DnsCovertChannel");
+        };
+        assert_eq!(covert.sensor, "collector1");
+        assert_eq!(covert.query, "foo.com");
+        assert!((covert.confidence - 0.8).abs() < f32::EPSILON);
+        assert_eq!(covert.category, Some(EventCategory::CommandAndControl));
     }
 
     #[test]
@@ -3156,7 +3359,7 @@ mod tests {
 
         let dga = DomainGenerationAlgorithm::new(
             Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap(),
-            fields,
+            fields.into(),
         );
         let event = Event::DomainGenerationAlgorithm(dga);
         let dga_display = format!("{event}");
@@ -3314,8 +3517,10 @@ mod tests {
             )
         );
 
-        let http_threat =
-            HttpThreat::new(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap(), fields);
+        let http_threat = HttpThreat::new(
+            Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap(),
+            fields.into(),
+        );
         let event = Event::HttpThreat(http_threat);
         let http_threat_display = format!("{event}");
         assert!(http_threat_display.contains("body=\"1234567890...\""));
@@ -3381,7 +3586,7 @@ mod tests {
 
         let non_browser = Event::NonBrowser(NonBrowser::new(
             Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap(),
-            &fields,
+            &fields.clone().into(),
         ))
         .to_string();
         assert!(non_browser.contains("body=\"1234567890...\""));
@@ -3447,7 +3652,7 @@ mod tests {
 
         let blocklist_http = Event::Blocklist(RecordType::Http(BlocklistHttp::new(
             Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap(),
-            fields,
+            fields.into(),
         )))
         .to_string();
 
@@ -3506,7 +3711,7 @@ mod tests {
 
         let locky_ransomware = Event::LockyRansomware(LockyRansomware::new(
             Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap(),
-            fields,
+            fields.into(),
         ))
         .to_string();
         assert!(locky_ransomware.contains("sensor=\"collector1\""));
@@ -3554,7 +3759,7 @@ mod tests {
 
         let port_scan = Event::PortScan(PortScan::new(
             Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap(),
-            &fields,
+            &fields.clone().into(),
         ))
         .to_string();
         assert_eq!(
@@ -3604,7 +3809,7 @@ mod tests {
 
         let multi_host_port_scan = Event::MultiHostPortScan(MultiHostPortScan::new(
             Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap(),
-            &fields,
+            &fields.clone().into(),
         ))
         .to_string();
         assert_eq!(
@@ -3652,7 +3857,7 @@ mod tests {
 
         let external_ddos = Event::ExternalDdos(ExternalDdos::new(
             Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap(),
-            &fields,
+            &fields.clone().into(),
         ))
         .to_string();
         assert_eq!(
@@ -3714,7 +3919,7 @@ mod tests {
         );
         let blocklist_bootp = Event::Blocklist(RecordType::Bootp(BlocklistBootp::new(
             Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap(),
-            fields,
+            fields.into(),
         )))
         .to_string();
 
@@ -3834,7 +4039,7 @@ mod tests {
 
         let blocklist_conn = Event::Blocklist(RecordType::Conn(BlocklistConn::new(
             Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap(),
-            fields,
+            fields.into(),
         )))
         .to_string();
         assert_eq!(
@@ -3917,7 +4122,7 @@ mod tests {
 
         let blocklist_dce_rpc = Event::Blocklist(RecordType::DceRpc(BlocklistDceRpc::new(
             Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap(),
-            fields,
+            fields.into(),
         )))
         .to_string();
         assert_eq!(
@@ -4006,7 +4211,7 @@ mod tests {
 
         let blocklist_dhcp = Event::Blocklist(RecordType::Dhcp(BlocklistDhcp::new(
             Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap(),
-            fields,
+            fields.into(),
         )))
         .to_string();
 
@@ -4138,7 +4343,7 @@ mod tests {
         }];
         let mut dns_covert_channel = Event::DnsCovertChannel(DnsCovertChannel::new(
             Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap(),
-            fields,
+            fields.into(),
         ));
         dns_covert_channel.set_triage_scores(triage_scores);
         let dns_covert_channel = dns_covert_channel.to_string();
@@ -4202,7 +4407,7 @@ mod tests {
         let cryptocurrency_mining_pool =
             Event::CryptocurrencyMiningPool(CryptocurrencyMiningPool::new(
                 Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap(),
-                fields,
+                fields.into(),
             ))
             .to_string();
         assert_eq!(
@@ -4261,7 +4466,7 @@ mod tests {
         );
         let blocklist_dns = Event::Blocklist(RecordType::Dns(BlocklistDns::new(
             Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap(),
-            fields,
+            fields.into(),
         )))
         .to_string();
         assert_eq!(
@@ -4310,7 +4515,7 @@ mod tests {
 
         let ftp_brute_force = Event::FtpBruteForce(FtpBruteForce::new(
             Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap(),
-            &fields,
+            &fields.clone().into(),
         ))
         .to_string();
 
@@ -4377,7 +4582,7 @@ mod tests {
 
         let ftp_plain_text = Event::FtpPlainText(FtpPlainText::new(
             Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap(),
-            fields,
+            fields.into(),
         ))
         .to_string();
         assert_eq!(
@@ -4447,7 +4652,7 @@ mod tests {
 
         let blocklist_ftp = Event::Blocklist(RecordType::Ftp(BlocklistFtp::new(
             Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap(),
-            fields,
+            fields.into(),
         )))
         .to_string();
 
@@ -4559,7 +4764,7 @@ mod tests {
         );
         let repeated_http_sessions = Event::RepeatedHttpSessions(RepeatedHttpSessions::new(
             Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap(),
-            &fields,
+            &fields.clone().into(),
         ))
         .to_string();
         assert_eq!(
@@ -4616,7 +4821,7 @@ mod tests {
 
         let blocklist_kerberos = Event::Blocklist(RecordType::Kerberos(BlocklistKerberos::new(
             Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap(),
-            fields,
+            fields.into(),
         )))
         .to_string();
 
@@ -4668,7 +4873,7 @@ mod tests {
 
         let ldap_brute_force = Event::LdapBruteForce(LdapBruteForce::new(
             Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap(),
-            &fields,
+            &fields.clone().into(),
         ))
         .to_string();
 
@@ -4724,7 +4929,7 @@ mod tests {
 
         let ldap_plain_text = Event::LdapPlainText(LdapPlainText::new(
             Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap(),
-            fields,
+            fields.into(),
         ))
         .to_string();
 
@@ -4784,7 +4989,7 @@ mod tests {
 
         let blocklist_ldap = Event::Blocklist(RecordType::Ldap(BlocklistLdap::new(
             Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap(),
-            fields,
+            fields.into(),
         )))
         .to_string();
 
@@ -4963,7 +5168,7 @@ mod tests {
 
     #[test]
     fn syslog_for_extrathreat() {
-        let fields = ExtraThreat {
+        let fields = ExtraThreatStored {
             time: Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap(),
             sensor: "collector1".to_string(),
             service: "service".to_string(),
@@ -5038,7 +5243,7 @@ mod tests {
 
         let blocklist_mqtt = Event::Blocklist(RecordType::Mqtt(BlocklistMqtt::new(
             Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap(),
-            fields,
+            fields.into(),
         )))
         .to_string();
 
@@ -5050,7 +5255,7 @@ mod tests {
 
     #[test]
     fn syslog_for_networkthreat() {
-        let fields = NetworkThreat {
+        let fields = NetworkThreatStored {
             time: Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap(),
             sensor: "collector1".to_string(),
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
@@ -5132,7 +5337,7 @@ mod tests {
 
         let blocklist_nfs = Event::Blocklist(RecordType::Nfs(BlocklistNfs::new(
             Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap(),
-            fields,
+            fields.into(),
         )))
         .to_string();
 
@@ -5186,7 +5391,7 @@ mod tests {
 
         let blocklist_ntlm = Event::Blocklist(RecordType::Ntlm(BlocklistNtlm::new(
             Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap(),
-            fields,
+            fields.into(),
         )))
         .to_string();
 
@@ -5216,7 +5421,7 @@ mod tests {
 
         let blocklist_radius = Event::Blocklist(RecordType::Radius(BlocklistRadius::new(
             Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap(),
-            fields,
+            fields.into(),
         )))
         .to_string();
 
@@ -5346,10 +5551,12 @@ mod tests {
             r#"time="1970-01-01T01:01:01+00:00" event_kind="BlocklistMalformedDns" category="InitialAccess" sensor="collector1" orig_addr="127.0.0.1" orig_port="10000" resp_addr="127.0.0.2" resp_port="53" proto="17" start_time="1970-01-01T00:00:00+00:00" duration="1000000000" orig_pkts="10" resp_pkts="5" orig_l2_bytes="500" resp_l2_bytes="300" trans_id="1234" flags="33152" question_count="1" answer_count="1" authority_count="0" additional_count="0" query_count="1" resp_count="1" query_bytes="50" resp_bytes="100" query_body="example.com" resp_body="192.0.2.1" confidence="0.95""#
         );
 
-        let blocklist_malformed_dns = Event::Blocklist(RecordType::MalformedDns(
-            BlocklistMalformedDns::new(Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap(), fields),
-        ))
-        .to_string();
+        let blocklist_malformed_dns =
+            Event::Blocklist(RecordType::MalformedDns(BlocklistMalformedDns::new(
+                Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap(),
+                fields.into(),
+            )))
+            .to_string();
 
         assert_eq!(
             &blocklist_malformed_dns,
@@ -5397,7 +5604,7 @@ mod tests {
 
         let rdp_brute_force = Event::RdpBruteForce(RdpBruteForce::new(
             Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap(),
-            &fields,
+            &fields.clone().into(),
         ))
         .to_string();
 
@@ -5447,7 +5654,7 @@ mod tests {
 
         let blocklist_rdp = Event::Blocklist(RecordType::Rdp(BlocklistRdp::new(
             Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap(),
-            fields,
+            fields.into(),
         )))
         .to_string();
 
@@ -5507,7 +5714,7 @@ mod tests {
 
         let blocklist_smb = Event::Blocklist(RecordType::Smb(BlocklistSmb::new(
             Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap(),
-            fields,
+            fields.into(),
         )))
         .to_string();
 
@@ -5563,7 +5770,7 @@ mod tests {
 
         let blocklist_smtp = Event::Blocklist(RecordType::Smtp(BlocklistSmtp::new(
             Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap(),
-            fields,
+            fields.into(),
         )))
         .to_string();
 
@@ -5625,7 +5832,7 @@ mod tests {
 
         let blocklist_ssh = Event::Blocklist(RecordType::Ssh(BlocklistSsh::new(
             Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap(),
-            fields,
+            fields.into(),
         )))
         .to_string();
 
@@ -5637,7 +5844,7 @@ mod tests {
 
     #[test]
     fn syslog_for_windowsthreat() {
-        let fields = WindowsThreat {
+        let fields = WindowsThreatStored {
             time: Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap(),
             sensor: "collector1".to_string(),
             service: "notepad".to_string(),
@@ -5749,7 +5956,7 @@ mod tests {
 
         let blocklist_tls = Event::Blocklist(RecordType::Tls(BlocklistTls::new(
             Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap(),
-            fields,
+            fields.clone().into(),
         )))
         .to_string();
 
@@ -5822,7 +6029,7 @@ mod tests {
 
         let tor_connection = Event::TorConnection(TorConnection::new(
             Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap(),
-            &fields,
+            &fields.clone().into(),
         ))
         .to_string();
 
@@ -5962,8 +6169,10 @@ mod tests {
             r#"time="1970-01-01T01:01:01+00:00" event_kind="SuspiciousTlsTraffic" category="InitialAccess" sensor="collector1" orig_addr="127.0.0.1" orig_port="10000" resp_addr="127.0.0.2" resp_port="443" proto="6" start_time="1970-01-01T00:00:00+00:00" duration="0" orig_pkts="0" resp_pkts="0" orig_l2_bytes="0" resp_l2_bytes="0" server_name="server" alpn_protocol="alpn" ja3="ja3" version="version" client_cipher_suites="1,2,3" client_extensions="4,5,6" cipher="1" extensions="7,8,9" ja3s="ja3s" serial="serial" subject_country="country" subject_org_name="org" subject_common_name="common" validity_not_before="100" validity_not_after="200" subject_alt_name="alt" issuer_country="country" issuer_org_name="org" issuer_org_unit_name="unit" issuer_common_name="common" last_alert="1" confidence="0.9""#
         );
 
-        let suspicious_tls_traffic =
-            SuspiciousTlsTraffic::new(Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap(), fields);
+        let suspicious_tls_traffic = SuspiciousTlsTraffic::new(
+            Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap(),
+            fields.into(),
+        );
         assert_eq!(
             suspicious_tls_traffic.src_addrs(),
             &[IpAddr::V4(Ipv4Addr::LOCALHOST)]

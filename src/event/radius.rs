@@ -75,6 +75,73 @@ pub struct BlocklistRadiusFields {
     pub category: Option<EventCategory>,
 }
 
+#[derive(Deserialize, Serialize)]
+pub(crate) struct BlocklistRadiusFieldsStored {
+    pub sensor: String,
+    pub orig_addr: IpAddr,
+    pub orig_port: u16,
+    pub resp_addr: IpAddr,
+    pub resp_port: u16,
+    pub proto: u8,
+    pub start_time: i64,
+    pub duration: i64,
+    pub orig_pkts: u64,
+    pub resp_pkts: u64,
+    pub orig_l2_bytes: u64,
+    pub resp_l2_bytes: u64,
+    pub id: u8,
+    pub code: u8,
+    pub resp_code: u8,
+    pub auth: String,
+    pub resp_auth: String,
+    pub user_name: Vec<u8>,
+    pub user_passwd: Vec<u8>,
+    pub chap_passwd: Vec<u8>,
+    pub nas_ip: IpAddr,
+    pub nas_port: u32,
+    pub state: Vec<u8>,
+    pub nas_id: Vec<u8>,
+    pub nas_port_type: u32,
+    pub message: String,
+    pub confidence: f32,
+    pub category: Option<EventCategory>,
+}
+
+impl From<BlocklistRadiusFields> for BlocklistRadiusFieldsStored {
+    fn from(value: BlocklistRadiusFields) -> Self {
+        Self {
+            sensor: value.sensor,
+            orig_addr: value.orig_addr,
+            orig_port: value.orig_port,
+            resp_addr: value.resp_addr,
+            resp_port: value.resp_port,
+            proto: value.proto,
+            start_time: value.start_time,
+            duration: value.duration,
+            orig_pkts: value.orig_pkts,
+            resp_pkts: value.resp_pkts,
+            orig_l2_bytes: value.orig_l2_bytes,
+            resp_l2_bytes: value.resp_l2_bytes,
+            id: value.id,
+            code: value.code,
+            resp_code: value.resp_code,
+            auth: value.auth,
+            resp_auth: value.resp_auth,
+            user_name: value.user_name,
+            user_passwd: value.user_passwd,
+            chap_passwd: value.chap_passwd,
+            nas_ip: value.nas_ip,
+            nas_port: value.nas_port,
+            state: value.state,
+            nas_id: value.nas_id,
+            nas_port_type: value.nas_port_type,
+            message: value.message,
+            confidence: value.confidence,
+            category: value.category,
+        }
+    }
+}
+
 impl BlocklistRadiusFields {
     #[must_use]
     pub fn syslog_rfc5424(&self) -> String {
@@ -188,7 +255,7 @@ impl fmt::Display for BlocklistRadius {
 }
 
 impl BlocklistRadius {
-    pub(super) fn new(time: DateTime<Utc>, fields: BlocklistRadiusFields) -> Self {
+    pub(super) fn new(time: DateTime<Utc>, fields: BlocklistRadiusFieldsStored) -> Self {
         Self {
             time,
             sensor: fields.sensor,

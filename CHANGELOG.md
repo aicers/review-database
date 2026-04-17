@@ -14,6 +14,22 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   category is absent; `Some(category)` preserves existing
   behavior. A migration converts persisted records so previous
   category values become `Some(...)`.
+- Introduced an explicit producer/storage boundary for event fields. The
+  producer-facing `*Fields` types remain the public ingestion interface, but
+  each event family now also defines a repository-local `*FieldsStored` (or
+  `*Stored`) type that is the sole schema written to disk and consumed on
+  read. `EventDb::put` converts incoming producer bytes into the stored
+  representation before persistence via an explicit
+  `From<*Fields> for *FieldsStored` conversion, and `EventIterator` builds
+  domain events directly from the stored representation without re-crossing
+  the producer schema. Domain constructors (`BlocklistBootp::new`,
+  `DnsCovertChannel::new`, `HttpThreat::new`, `TorConnection::new`, etc.)
+  now accept `*FieldsStored`. The stored schemas can evolve independently
+  of the producer interface. `ExtraThreat`, `NetworkThreat`, and
+  `WindowsThreat` follow the same split: a producer-facing shared struct and
+  a storage `*Stored` companion that owns `Display`, `syslog_rfc5424`,
+  `Match`, `threat_level`, and `triage_scores`, with the `Event` enum
+  variants holding the `*Stored` form.
 
 ## [0.44.1] - 2026-04-16
 
