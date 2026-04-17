@@ -299,7 +299,11 @@ fn migrate_0_43_to_0_44(
     Ok(())
 }
 
-fn migrate_0_44_to_0_45(data_dir: &Path) -> Result<()> {
+fn migrate_0_44_to_0_45(
+    data_dir: &Path,
+    _backup_dir: &Path,
+    _locator: Option<&ip2location::DB>,
+) -> Result<()> {
     // Migrate triage policy Confidence.threat_category from EventCategory to
     // Option<EventCategory>, wrapping old values in Some(...)
     migrate_triage_policy_confidence(data_dir)?;
