@@ -4,7 +4,7 @@ This crate provides a permanent storage solution for data collected and
 maintained by REview, a cybersecurity analysis system. It offers a robust and
 flexible database interface for efficient data management.
 
-[![Coverage Status](https://codecov.io/gh/petabi/review-database/branch/main/graphs/badge.svg)](https://codecov.io/gh/petabi/review-database)
+[![Coverage Status](https://codecov.io/gh/aicers/review-database/branch/main/graphs/badge.svg)](https://codecov.io/gh/aicers/review-database)
 
 ## Features
 
