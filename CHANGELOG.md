@@ -22,10 +22,6 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   `clear_retention_config` methods on `Store` for managing the retention
   period. Added `purge_old_column_stats` method to `Store` that deletes column
   statistics older than the configured retention period.
-  `Table::<ColumnStats>::remove_older_than` deletes expired entries in bounded
-  batches so that memory usage and per-transaction size stay constant
-  regardless of how many stale entries exist. It also propagates iteration
-  errors instead of silently skipping unreadable rows.
 
 ### Changed
 
