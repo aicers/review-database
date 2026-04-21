@@ -35,10 +35,8 @@ macro_rules! find_nfs_attr_by_kind {
     }};
 }
 
-pub type BlocklistNfsFields = BlocklistNfsFieldsV0_42;
-
 #[derive(Serialize, Deserialize)]
-pub struct BlocklistNfsFieldsV0_42 {
+pub struct BlocklistNfsFields {
     pub sensor: String,
     pub orig_addr: IpAddr,
     pub orig_port: u16,

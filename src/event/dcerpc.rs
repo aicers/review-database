@@ -7,8 +7,6 @@ use serde::{Deserialize, Serialize};
 use super::{EventCategory, LearningMethod, ThreatLevel, TriageScore, common::Match};
 use crate::event::common::{AttrValue, triage_scores_to_string};
 
-pub type BlocklistDceRpcFields = BlocklistDceRpcFieldsV0_44;
-
 #[derive(Serialize, Deserialize)]
 pub struct BlocklistDceRpcFieldsV0_42 {
     pub sensor: String,
@@ -46,7 +44,7 @@ pub struct DceRpcContext {
 }
 
 #[derive(Serialize, Deserialize)]
-pub struct BlocklistDceRpcFieldsV0_44 {
+pub struct BlocklistDceRpcFields {
     pub sensor: String,
     pub orig_addr: IpAddr,
     pub orig_port: u16,

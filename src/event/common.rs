@@ -857,13 +857,13 @@ mod tests {
         ));
         unsupervised_events.push(http_threat_event);
 
-        let extra_threat_event = Event::ExtraThreat(extra_threat());
+        let extra_threat_event = Event::ExtraThreat(extra_threat().into());
         unsupervised_events.push(extra_threat_event);
 
-        let network_threat_event = Event::NetworkThreat(network_threat());
+        let network_threat_event = Event::NetworkThreat(network_threat().into());
         unsupervised_events.push(network_threat_event);
 
-        let windows_threat_event = Event::WindowsThreat(windows_threat());
+        let windows_threat_event = Event::WindowsThreat(windows_threat().into());
         unsupervised_events.push(windows_threat_event);
 
         let mut filter = event_filter();
@@ -1054,7 +1054,7 @@ mod tests {
         let http_threat_event = Event::HttpThreat(HttpThreat::new(time, http_threat_fields()));
         single_address_events.push(http_threat_event);
 
-        let network_threat_event = Event::NetworkThreat(network_threat());
+        let network_threat_event = Event::NetworkThreat(network_threat().into());
         single_address_events.push(network_threat_event);
 
         // Filtering success.
@@ -1191,10 +1191,10 @@ mod tests {
 
         let mut no_address_events = Vec::new();
 
-        let extra_threat_event = Event::ExtraThreat(extra_threat());
+        let extra_threat_event = Event::ExtraThreat(extra_threat().into());
         no_address_events.push(extra_threat_event);
 
-        let windows_threat_event = Event::WindowsThreat(windows_threat());
+        let windows_threat_event = Event::WindowsThreat(windows_threat().into());
         no_address_events.push(windows_threat_event);
 
         // `ExtraThreat`, `WindowsThreat` always fails filtering by address.

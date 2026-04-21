@@ -194,11 +194,11 @@ pub enum Event {
 
     Blocklist(RecordType),
 
-    WindowsThreat(WindowsThreatStored),
+    WindowsThreat(WindowsThreat),
 
-    NetworkThreat(NetworkThreatStored),
+    NetworkThreat(NetworkThreat),
 
-    ExtraThreat(ExtraThreatStored),
+    ExtraThreat(ExtraThreat),
 
     LockyRansomware(LockyRansomware),
 
@@ -2373,11 +2373,11 @@ impl EventMessage {
             EventKind::BlocklistTls => bincode::deserialize::<BlocklistTlsFields>(&self.fields)
                 .map(|fields| fields.syslog_rfc5424()),
             EventKind::WindowsThreat => bincode::deserialize::<WindowsThreatStored>(&self.fields)
-                .map(|fields| fields.syslog_rfc5424()),
+                .map(|stored| WindowsThreat::from(stored).syslog_rfc5424()),
             EventKind::NetworkThreat => bincode::deserialize::<NetworkThreatStored>(&self.fields)
-                .map(|fields| fields.syslog_rfc5424()),
+                .map(|stored| NetworkThreat::from(stored).syslog_rfc5424()),
             EventKind::ExtraThreat => bincode::deserialize::<ExtraThreatStored>(&self.fields)
-                .map(|fields| fields.syslog_rfc5424()),
+                .map(|stored| ExtraThreat::from(stored).syslog_rfc5424()),
             EventKind::LockyRansomware => bincode::deserialize::<DnsEventFields>(&self.fields)
                 .map(|fields| fields.syslog_rfc5424()),
             EventKind::SuspiciousTlsTraffic => {
@@ -2977,7 +2977,7 @@ impl Iterator for EventIterator<'_> {
                 let Ok(stored) = bincode::deserialize::<ExtraThreatStored>(v.as_ref()) else {
                     return Some(Err(InvalidEvent::Value(v)));
                 };
-                Some(Ok((key, Event::ExtraThreat(stored))))
+                Some(Ok((key, Event::ExtraThreat(stored.into()))))
             }
             EventKind::FtpBruteForce => {
                 let Ok(stored) = bincode::deserialize::<FtpBruteForceFieldsStored>(v.as_ref())
@@ -3049,7 +3049,7 @@ impl Iterator for EventIterator<'_> {
                 let Ok(stored) = bincode::deserialize::<NetworkThreatStored>(v.as_ref()) else {
                     return Some(Err(InvalidEvent::Value(v)));
                 };
-                Some(Ok((key, Event::NetworkThreat(stored))))
+                Some(Ok((key, Event::NetworkThreat(stored.into()))))
             }
             EventKind::NonBrowser => {
                 let Ok(stored) = bincode::deserialize::<HttpEventFieldsStored>(v.as_ref()) else {
@@ -3130,7 +3130,7 @@ impl Iterator for EventIterator<'_> {
                 let Ok(stored) = bincode::deserialize::<WindowsThreatStored>(v.as_ref()) else {
                     return Some(Err(InvalidEvent::Value(v)));
                 };
-                Some(Ok((key, Event::WindowsThreat(stored))))
+                Some(Ok((key, Event::WindowsThreat(stored.into()))))
             }
         }
     }
@@ -3652,7 +3652,7 @@ mod tests {
 
         let non_browser = Event::NonBrowser(NonBrowser::new(
             Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap(),
-            &fields.clone().into(),
+            &fields.into(),
         ))
         .to_string();
         assert!(non_browser.contains("body=\"1234567890...\""));
@@ -3825,7 +3825,7 @@ mod tests {
 
         let port_scan = Event::PortScan(PortScan::new(
             Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap(),
-            &fields.clone().into(),
+            &fields.into(),
         ))
         .to_string();
         assert_eq!(
@@ -3875,7 +3875,7 @@ mod tests {
 
         let multi_host_port_scan = Event::MultiHostPortScan(MultiHostPortScan::new(
             Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap(),
-            &fields.clone().into(),
+            &fields.into(),
         ))
         .to_string();
         assert_eq!(
@@ -3923,7 +3923,7 @@ mod tests {
 
         let external_ddos = Event::ExternalDdos(ExternalDdos::new(
             Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap(),
-            &fields.clone().into(),
+            &fields.into(),
         ))
         .to_string();
         assert_eq!(
@@ -4581,7 +4581,7 @@ mod tests {
 
         let ftp_brute_force = Event::FtpBruteForce(FtpBruteForce::new(
             Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap(),
-            &fields.clone().into(),
+            &fields.into(),
         ))
         .to_string();
 
@@ -4830,7 +4830,7 @@ mod tests {
         );
         let repeated_http_sessions = Event::RepeatedHttpSessions(RepeatedHttpSessions::new(
             Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap(),
-            &fields.clone().into(),
+            &fields.into(),
         ))
         .to_string();
         assert_eq!(
@@ -4939,7 +4939,7 @@ mod tests {
 
         let ldap_brute_force = Event::LdapBruteForce(LdapBruteForce::new(
             Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap(),
-            &fields.clone().into(),
+            &fields.into(),
         ))
         .to_string();
 
@@ -5670,7 +5670,7 @@ mod tests {
 
         let rdp_brute_force = Event::RdpBruteForce(RdpBruteForce::new(
             Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap(),
-            &fields.clone().into(),
+            &fields.into(),
         ))
         .to_string();
 
@@ -5950,7 +5950,7 @@ mod tests {
                 .contains("content=\"cmd /c \"vssadmin.exe Delete Shadows /all /quiet\"\"")
         );
 
-        let windows_threat = Event::WindowsThreat(fields).to_string();
+        let windows_threat = Event::WindowsThreat(fields.into()).to_string();
         assert_eq!(
             &windows_threat,
             "time=\"1970-01-01T00:01:01+00:00\" event_kind=\"WindowsThreat\" category=\"Impact\" sensor=\"collector1\" service=\"notepad\" agent_name=\"win64\" agent_id=\"e7e2386a-5485-4da9-b388-b3e50ee7cbb0\" process_guid=\"{bac98147-6b03-64d4-8200-000000000700}\" process_id=\"2972\" image=\"C:\\Users\\vboxuser\\Desktop\\mal_bazaar\\ransomware\\918504.exe\" user=\"WIN64\\vboxuser\" content=\"cmd /c \"vssadmin.exe Delete Shadows /all /quiet\"\" db_name=\"db\" rule_id=\"100\" matched_to=\"match\" cluster_id=\"900\" attack_kind=\"Ransomware_Alcatraz\" confidence=\"0.9\" triage_scores=\"\""
@@ -6022,7 +6022,7 @@ mod tests {
 
         let blocklist_tls = Event::Blocklist(RecordType::Tls(BlocklistTls::new(
             Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap(),
-            fields.clone().into(),
+            fields.into(),
         )))
         .to_string();
 
@@ -6095,7 +6095,7 @@ mod tests {
 
         let tor_connection = Event::TorConnection(TorConnection::new(
             Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap(),
-            &fields.clone().into(),
+            &fields.into(),
         ))
         .to_string();
 

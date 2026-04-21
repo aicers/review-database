@@ -156,8 +156,6 @@ macro_rules! find_ftp_attr_by_kind {
     }};
 }
 
-pub type FtpBruteForceFields = FtpBruteForceFieldsV0_42;
-
 impl FtpBruteForceFields {
     #[must_use]
     pub fn syslog_rfc5424(&self) -> String {
@@ -183,8 +181,8 @@ impl FtpBruteForceFields {
     }
 }
 
-#[derive(Clone, Serialize, Deserialize)]
-pub struct FtpBruteForceFieldsV0_42 {
+#[derive(Serialize, Deserialize)]
+pub struct FtpBruteForceFields {
     pub sensor: String,
     pub orig_addr: IpAddr,
     pub resp_addr: IpAddr,
@@ -358,8 +356,6 @@ impl Match for FtpBruteForce {
     }
 }
 
-pub type FtpEventFields = FtpEventFieldsV0_42;
-
 impl FtpEventFields {
     #[must_use]
     pub fn syslog_rfc5424(&self) -> String {
@@ -398,7 +394,7 @@ impl FtpEventFields {
 }
 
 #[derive(Debug, Deserialize, Serialize)]
-pub struct FtpEventFieldsV0_42 {
+pub struct FtpEventFields {
     pub sensor: String,
     pub orig_addr: IpAddr,
     pub orig_port: u16,

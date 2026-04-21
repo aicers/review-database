@@ -47,10 +47,8 @@ macro_rules! find_dns_attr_by_kind {
     }};
 }
 
-pub type DnsEventFields = DnsEventFieldsV0_42;
-
 #[derive(Deserialize, Serialize)]
-pub struct DnsEventFieldsV0_42 {
+pub struct DnsEventFields {
     pub sensor: String,
     pub orig_addr: IpAddr,
     pub orig_port: u16,
@@ -540,10 +538,8 @@ impl Match for LockyRansomware {
     }
 }
 
-pub type CryptocurrencyMiningPoolFields = CryptocurrencyMiningPoolFieldsV0_42;
-
 #[derive(Deserialize, Serialize)]
-pub struct CryptocurrencyMiningPoolFieldsV0_42 {
+pub struct CryptocurrencyMiningPoolFields {
     pub sensor: String,
     pub orig_addr: IpAddr,
     pub orig_port: u16,
@@ -860,10 +856,8 @@ impl Match for CryptocurrencyMiningPool {
     }
 }
 
-pub type BlocklistDnsFields = BlocklistDnsFieldsV0_42;
-
 #[derive(Deserialize, Serialize)]
-pub struct BlocklistDnsFieldsV0_42 {
+pub struct BlocklistDnsFields {
     pub sensor: String,
     pub orig_addr: IpAddr,
     pub orig_port: u16,

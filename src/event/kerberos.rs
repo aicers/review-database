@@ -42,10 +42,8 @@ macro_rules! find_kerberos_attr_by_kind {
     }};
 }
 
-pub type BlocklistKerberosFields = BlocklistKerberosFieldsV0_42;
-
 #[derive(Serialize, Deserialize)]
-pub struct BlocklistKerberosFieldsV0_42 {
+pub struct BlocklistKerberosFields {
     pub sensor: String,
     pub orig_addr: IpAddr,
     pub orig_port: u16,

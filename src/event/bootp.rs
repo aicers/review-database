@@ -40,8 +40,6 @@ macro_rules! find_bootp_attr_by_kind {
     }};
 }
 
-pub type BlocklistBootpFields = BlocklistBootpFieldsV0_42;
-
 impl BlocklistBootpFields {
     #[must_use]
     pub fn syslog_rfc5424(&self) -> String {
@@ -81,7 +79,7 @@ impl BlocklistBootpFields {
 }
 
 #[derive(Serialize, Deserialize)]
-pub struct BlocklistBootpFieldsV0_42 {
+pub struct BlocklistBootpFields {
     pub sensor: String,
     pub orig_addr: IpAddr,
     pub orig_port: u16,

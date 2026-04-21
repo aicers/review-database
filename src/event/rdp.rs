@@ -35,10 +35,8 @@ macro_rules! find_rdp_attr_by_kind {
     }};
 }
 
-pub type RdpBruteForceFields = RdpBruteForceFieldsV0_42;
-
-#[derive(Clone, Serialize, Deserialize)]
-pub struct RdpBruteForceFieldsV0_42 {
+#[derive(Serialize, Deserialize)]
+pub struct RdpBruteForceFields {
     pub sensor: String,
     pub orig_addr: IpAddr,
     pub resp_addrs: Vec<IpAddr>,
@@ -214,10 +212,8 @@ impl Match for RdpBruteForce {
     }
 }
 
-pub type BlocklistRdpFields = BlocklistRdpFieldsV0_42;
-
 #[derive(Serialize, Deserialize)]
-pub struct BlocklistRdpFieldsV0_42 {
+pub struct BlocklistRdpFields {
     pub sensor: String,
     pub orig_addr: IpAddr,
     pub orig_port: u16,

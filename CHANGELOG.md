@@ -34,12 +34,9 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   domain events directly from the stored representation without re-crossing
   the producer schema. Domain constructors (`BlocklistBootp::new`,
   `DnsCovertChannel::new`, `HttpThreat::new`, `TorConnection::new`, etc.)
-  now accept `*FieldsStored`. The stored schemas can evolve independently
-  of the producer interface. `ExtraThreat`, `NetworkThreat`, and
-  `WindowsThreat` follow the same split: a producer-facing shared struct and
-  a storage `*Stored` companion that owns `Display`, `syslog_rfc5424`,
-  `Match`, `threat_level`, and `triage_scores`, with the `Event` enum
-  variants holding the `*Stored` form.
+  now accept `*FieldsStored`. Shared and stored schemas are structurally
+  identical in this change; the split is scaffolding so the stored schemas
+  can evolve independently of the producer interface in future releases.
 
 ## [0.44.1] - 2026-04-16
 
