@@ -16,19 +16,6 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 - Added `EventDb::remove_before` method to delete all detected
   events older than a given timestamp. This enables periodic
   cleanup of expired events based on the retention policy.
-
-### Changed
-
-- **BREAKING**: `Confidence::threat_category` is now
-  `Option<EventCategory>`. `None` matches only events whose
-  category is absent; `Some(category)` preserves existing
-  behavior. A migration converts persisted records so previous
-  category values become `Some(...)`.
-
-## [0.44.1] - 2026-04-16
-
-### Added
-
 - Added retention option for cluster statistics (column statistics) data. New
   `RetentionConfig` and `RetentionConfigUpdate` structs with
   `init_retention_config`, `update_retention_config`, `retention_config`, and
@@ -39,6 +26,14 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   batches so that memory usage and per-transaction size stay constant
   regardless of how many stale entries exist. It also propagates iteration
   errors instead of silently skipping unreadable rows.
+
+### Changed
+
+- **BREAKING**: `Confidence::threat_category` is now
+  `Option<EventCategory>`. `None` matches only events whose
+  category is absent; `Some(category)` preserves existing
+  behavior. A migration converts persisted records so previous
+  category values become `Some(...)`.
 
 ## [0.44.1] - 2026-04-16
 

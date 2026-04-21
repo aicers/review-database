@@ -124,16 +124,6 @@ impl<'d> Table<'d, String> {
             .map(|p| String::from_utf8(p.as_ref().to_owned()).map_err(|e| anyhow!("{e}")))
             .transpose()
     }
-
-    /// Deletes a config key.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the key does not exist or the database operation
-    /// fails.
-    pub fn delete(&self, key: &str) -> Result<()> {
-        self.map.delete(key.as_bytes())
-    }
 }
 
 #[cfg(test)]
