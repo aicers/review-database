@@ -7,6 +7,16 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- Added `event_retention_period` and `set_event_retention_period`
+  methods to `Store` for managing event retention configuration.
+  `None` means unlimited retention (key absent); `Some(days)` sets
+  a retention period in days.
+- Added `EventDb::remove_before` method to delete all detected
+  events older than a given timestamp. This enables periodic
+  cleanup of expired events based on the retention policy.
+
 ### Changed
 
 - **BREAKING**: `Confidence::threat_category` is now
