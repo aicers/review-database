@@ -7,16 +7,6 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-### Changed
-
-- **BREAKING**: `Confidence::threat_category` is now
-  `Option<EventCategory>`. `None` matches only events whose
-  category is absent; `Some(category)` preserves existing
-  behavior. A migration converts persisted records so previous
-  category values become `Some(...)`.
-
-## [0.44.1] - 2026-04-16
-
 ### Added
 
 - Added `event_retention_period` and `set_event_retention_period`
@@ -26,6 +16,16 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 - Added `EventDb::remove_before` method to delete all detected
   events older than a given timestamp. This enables periodic
   cleanup of expired events based on the retention policy.
+
+### Changed
+
+- **BREAKING**: `Confidence::threat_category` is now
+  `Option<EventCategory>`. `None` matches only events whose
+  category is absent; `Some(category)` preserves existing
+  behavior. A migration converts persisted records so previous
+  category values become `Some(...)`.
+
+## [0.44.1] - 2026-04-16
 
 ### Fixed
 
