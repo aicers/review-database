@@ -43,10 +43,8 @@ macro_rules! find_mqtt_attr_by_kind {
     }};
 }
 
-pub type BlocklistMqttFields = BlocklistMqttFieldsV0_42;
-
 #[derive(Serialize, Deserialize)]
-pub struct BlocklistMqttFieldsV0_42 {
+pub struct BlocklistMqttFields {
     pub sensor: String,
     pub orig_addr: IpAddr,
     pub orig_port: u16,

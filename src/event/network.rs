@@ -59,6 +59,7 @@ pub struct NetworkThreat {
     pub attack_kind: String,
     pub confidence: f32,
     pub category: Option<EventCategory>,
+    pub triage_scores: Option<Vec<TriageScore>>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -115,12 +116,42 @@ impl From<NetworkThreat> for NetworkThreatStored {
             attack_kind: value.attack_kind,
             confidence: value.confidence,
             category: value.category,
-            triage_scores: None,
+            triage_scores: value.triage_scores,
         }
     }
 }
 
-impl NetworkThreatStored {
+impl From<NetworkThreatStored> for NetworkThreat {
+    fn from(value: NetworkThreatStored) -> Self {
+        Self {
+            time: value.time,
+            sensor: value.sensor,
+            orig_addr: value.orig_addr,
+            orig_port: value.orig_port,
+            resp_addr: value.resp_addr,
+            resp_port: value.resp_port,
+            proto: value.proto,
+            service: value.service,
+            start_time: value.start_time,
+            duration: value.duration,
+            orig_pkts: value.orig_pkts,
+            resp_pkts: value.resp_pkts,
+            orig_l2_bytes: value.orig_l2_bytes,
+            resp_l2_bytes: value.resp_l2_bytes,
+            content: value.content,
+            db_name: value.db_name,
+            rule_id: value.rule_id,
+            matched_to: value.matched_to,
+            cluster_id: value.cluster_id,
+            attack_kind: value.attack_kind,
+            confidence: value.confidence,
+            category: value.category,
+            triage_scores: value.triage_scores,
+        }
+    }
+}
+
+impl NetworkThreat {
     #[must_use]
     pub fn syslog_rfc5424(&self) -> String {
         format!(
@@ -153,7 +184,7 @@ impl NetworkThreatStored {
     }
 }
 
-impl fmt::Display for NetworkThreatStored {
+impl fmt::Display for NetworkThreat {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
@@ -183,14 +214,14 @@ impl fmt::Display for NetworkThreatStored {
     }
 }
 
-impl NetworkThreatStored {
+impl NetworkThreat {
     #[must_use]
     pub fn threat_level() -> ThreatLevel {
         ThreatLevel::Medium
     }
 }
 
-impl Match for NetworkThreatStored {
+impl Match for NetworkThreat {
     fn src_addrs(&self) -> &[IpAddr] {
         std::slice::from_ref(&self.orig_addr)
     }

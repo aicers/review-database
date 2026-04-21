@@ -47,10 +47,8 @@ macro_rules! find_ldap_attr_by_kind {
     }};
 }
 
-pub type LdapBruteForceFields = LdapBruteForceFieldsV0_42;
-
-#[derive(Clone, Serialize, Deserialize)]
-pub struct LdapBruteForceFieldsV0_42 {
+#[derive(Serialize, Deserialize)]
+pub struct LdapBruteForceFields {
     pub sensor: String,
     pub orig_addr: IpAddr,
     pub resp_addr: IpAddr,
@@ -251,10 +249,8 @@ impl Match for LdapBruteForce {
     }
 }
 
-pub type LdapEventFields = LdapEventFieldsV0_42;
-
 #[derive(Serialize, Deserialize)]
-pub struct LdapEventFieldsV0_42 {
+pub struct LdapEventFields {
     pub sensor: String,
     pub orig_addr: IpAddr,
     pub orig_port: u16,

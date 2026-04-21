@@ -44,10 +44,8 @@ macro_rules! find_ssh_attr_by_kind {
     }};
 }
 
-pub type BlocklistSshFields = BlocklistSshFieldsV0_42;
-
 #[derive(Serialize, Deserialize)]
-pub struct BlocklistSshFieldsV0_42 {
+pub struct BlocklistSshFields {
     pub sensor: String,
     pub orig_addr: IpAddr,
     pub orig_port: u16,
