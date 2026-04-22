@@ -16,6 +16,12 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 - Added `EventDb::remove_before` method to delete all detected
   events older than a given timestamp. This enables periodic
   cleanup of expired events based on the retention policy.
+- Added retention option for cluster statistics (column statistics) data. New
+  `RetentionConfig` and `RetentionConfigUpdate` structs with
+  `init_retention_config`, `update_retention_config`, `retention_config`, and
+  `clear_retention_config` methods on `Store` for managing the retention
+  period. Added `purge_old_column_stats` method to `Store` that deletes column
+  statistics older than the configured retention period.
 
 ### Changed
 

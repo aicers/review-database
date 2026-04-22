@@ -77,6 +77,55 @@ impl<'d> Table<'d, ColumnStats> {
         Ok(())
     }
 
+    /// Removes all column statistics with `batch_ts` strictly before the
+    /// given `cutoff` timestamp.
+    ///
+    /// Deletions are committed in bounded batches so that memory usage and
+    /// per-transaction size stay constant regardless of how many expired
+    /// entries exist.
+    ///
+    /// Returns the number of entries removed.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if iteration fails to decode an entry or if the
+    /// database operation fails.
+    pub fn remove_older_than(&self, cutoff: NaiveDateTime) -> Result<usize> {
+        const BATCH_SIZE: usize = 1024;
+
+        let cutoff_ts = from_naive_utc(cutoff);
+        let mut total = 0;
+        let mut batch: Vec<Vec<u8>> = Vec::with_capacity(BATCH_SIZE);
+
+        for result in self.iter(Direction::Forward, None) {
+            let stats = result?;
+            if stats.batch_ts < cutoff_ts {
+                batch.push(stats.unique_key());
+                if batch.len() >= BATCH_SIZE {
+                    self.delete_keys_in_transaction(&batch)?;
+                    total += batch.len();
+                    batch.clear();
+                }
+            }
+        }
+
+        if !batch.is_empty() {
+            self.delete_keys_in_transaction(&batch)?;
+            total += batch.len();
+        }
+
+        Ok(total)
+    }
+
+    fn delete_keys_in_transaction(&self, keys: &[Vec<u8>]) -> Result<()> {
+        let txn = self.transaction();
+        for key in keys {
+            self.delete_with_transaction(key, &txn)?;
+        }
+        txn.commit()?;
+        Ok(())
+    }
+
     /// Returns the column statistics for the given cluster and time.
     ///
     /// # Errors
@@ -1291,6 +1340,337 @@ mod tests {
 
         let counts: Vec<_> = column_result.counts.iter().map(|e| e.count).collect();
         assert_eq!(counts, vec![30, 20]);
+    }
+
+    #[test]
+    fn test_remove_older_than() {
+        let (_permit, store) = setup_store();
+        let table = store.column_stats_map();
+
+        let old_ts = NaiveDate::from_ymd_opt(2023, 1, 1)
+            .unwrap()
+            .and_hms_opt(0, 0, 0)
+            .unwrap();
+        let recent_ts = NaiveDate::from_ymd_opt(2025, 6, 1)
+            .unwrap()
+            .and_hms_opt(0, 0, 0)
+            .unwrap();
+        let cutoff = NaiveDate::from_ymd_opt(2024, 1, 1)
+            .unwrap()
+            .and_hms_opt(0, 0, 0)
+            .unwrap();
+
+        // Insert old stats
+        let old_stats = vec![(
+            1u32,
+            vec![structured::ColumnStatistics {
+                description: Description::default(),
+                n_largest_count: NLargestCount::default(),
+            }],
+        )];
+        table
+            .insert_column_statistics(old_stats, 1, old_ts)
+            .unwrap();
+
+        // Insert recent stats
+        let recent_stats = vec![(
+            1u32,
+            vec![structured::ColumnStatistics {
+                description: Description::default(),
+                n_largest_count: NLargestCount::default(),
+            }],
+        )];
+        table
+            .insert_column_statistics(recent_stats, 1, recent_ts)
+            .unwrap();
+
+        // Verify both exist
+        let all: Vec<_> = table
+            .iter(Direction::Forward, None)
+            .collect::<Result<Vec<_>>>()
+            .unwrap();
+        assert_eq!(all.len(), 2);
+
+        // Remove entries older than cutoff
+        let removed = table.remove_older_than(cutoff).unwrap();
+        assert_eq!(removed, 1);
+
+        // Only recent entry should remain
+        let remaining: Vec<_> = table
+            .iter(Direction::Forward, None)
+            .collect::<Result<Vec<_>>>()
+            .unwrap();
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].batch_ts, from_naive_utc(recent_ts));
+    }
+
+    #[test]
+    fn test_remove_older_than_none_to_remove() {
+        let (_permit, store) = setup_store();
+        let table = store.column_stats_map();
+
+        let recent_ts = NaiveDate::from_ymd_opt(2025, 6, 1)
+            .unwrap()
+            .and_hms_opt(0, 0, 0)
+            .unwrap();
+        let cutoff = NaiveDate::from_ymd_opt(2024, 1, 1)
+            .unwrap()
+            .and_hms_opt(0, 0, 0)
+            .unwrap();
+
+        let stats = vec![(
+            1u32,
+            vec![structured::ColumnStatistics {
+                description: Description::default(),
+                n_largest_count: NLargestCount::default(),
+            }],
+        )];
+        table.insert_column_statistics(stats, 1, recent_ts).unwrap();
+
+        let removed = table.remove_older_than(cutoff).unwrap();
+        assert_eq!(removed, 0);
+
+        let remaining: Vec<_> = table
+            .iter(Direction::Forward, None)
+            .collect::<Result<Vec<_>>>()
+            .unwrap();
+        assert_eq!(remaining.len(), 1);
+    }
+
+    #[test]
+    fn test_purge_old_column_stats_no_config() {
+        let (_permit, store) = setup_store();
+
+        // Without retention config, purge returns None
+        let result = store.purge_old_column_stats().unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_purge_old_column_stats_with_config() {
+        let (_permit, store) = setup_store();
+
+        // Set retention to 1 day
+        let config = crate::RetentionConfig::new(1).unwrap();
+        store.init_retention_config(&config).unwrap();
+
+        let table = store.column_stats_map();
+
+        // Insert old stats (well in the past)
+        let old_ts = NaiveDate::from_ymd_opt(2020, 1, 1)
+            .unwrap()
+            .and_hms_opt(0, 0, 0)
+            .unwrap();
+        let old_stats = vec![(
+            1u32,
+            vec![structured::ColumnStatistics {
+                description: Description::default(),
+                n_largest_count: NLargestCount::default(),
+            }],
+        )];
+        table
+            .insert_column_statistics(old_stats, 1, old_ts)
+            .unwrap();
+
+        // Insert recent stats (now)
+        let recent_ts = chrono::Utc::now().naive_utc();
+        let recent_stats = vec![(
+            2u32,
+            vec![structured::ColumnStatistics {
+                description: Description::default(),
+                n_largest_count: NLargestCount::default(),
+            }],
+        )];
+        table
+            .insert_column_statistics(recent_stats, 1, recent_ts)
+            .unwrap();
+
+        // Purge should remove only old stats
+        let removed = store.purge_old_column_stats().unwrap();
+        assert_eq!(removed, Some(1));
+
+        // Only recent entry should remain
+        let remaining: Vec<_> = table
+            .iter(Direction::Forward, None)
+            .collect::<Result<Vec<_>>>()
+            .unwrap();
+        assert_eq!(remaining.len(), 1);
+    }
+
+    #[test]
+    fn test_remove_older_than_exact_cutoff_boundary() {
+        let (_permit, store) = setup_store();
+        let table = store.column_stats_map();
+
+        let cutoff = NaiveDate::from_ymd_opt(2024, 1, 1)
+            .unwrap()
+            .and_hms_opt(0, 0, 0)
+            .unwrap();
+        let just_before = cutoff - chrono::Duration::nanoseconds(1);
+        let at_cutoff = cutoff;
+        let just_after = cutoff + chrono::Duration::nanoseconds(1);
+
+        for (model_id, ts) in [(1u32, just_before), (2, at_cutoff), (3, just_after)] {
+            let stats = vec![(
+                1u32,
+                vec![structured::ColumnStatistics {
+                    description: Description::default(),
+                    n_largest_count: NLargestCount::default(),
+                }],
+            )];
+            table.insert_column_statistics(stats, model_id, ts).unwrap();
+        }
+
+        // `remove_older_than` is strictly less than: only `just_before` removed.
+        let removed = table.remove_older_than(cutoff).unwrap();
+        assert_eq!(removed, 1);
+
+        let remaining: Vec<_> = table
+            .iter(Direction::Forward, None)
+            .collect::<Result<Vec<_>>>()
+            .unwrap();
+        let mut remaining_ts: Vec<_> = remaining.iter().map(|s| s.batch_ts).collect();
+        remaining_ts.sort_unstable();
+        assert_eq!(
+            remaining_ts,
+            vec![from_naive_utc(at_cutoff), from_naive_utc(just_after)]
+        );
+    }
+
+    #[test]
+    fn test_remove_older_than_large_batched_deletion() {
+        let (_permit, store) = setup_store();
+        let table = store.column_stats_map();
+
+        // Insert more entries than the internal batch size (1024) to exercise
+        // the bounded-batch code path.
+        let old_ts = NaiveDate::from_ymd_opt(2023, 1, 1)
+            .unwrap()
+            .and_hms_opt(0, 0, 0)
+            .unwrap();
+        let recent_ts = NaiveDate::from_ymd_opt(2025, 6, 1)
+            .unwrap()
+            .and_hms_opt(0, 0, 0)
+            .unwrap();
+        let cutoff = NaiveDate::from_ymd_opt(2024, 1, 1)
+            .unwrap()
+            .and_hms_opt(0, 0, 0)
+            .unwrap();
+
+        let old_count = 2500u32;
+        let recent_count = 5u32;
+
+        for model_id in 0..old_count {
+            let stats = vec![(
+                1u32,
+                vec![structured::ColumnStatistics {
+                    description: Description::default(),
+                    n_largest_count: NLargestCount::default(),
+                }],
+            )];
+            table
+                .insert_column_statistics(stats, model_id, old_ts)
+                .unwrap();
+        }
+        for model_id in old_count..(old_count + recent_count) {
+            let stats = vec![(
+                1u32,
+                vec![structured::ColumnStatistics {
+                    description: Description::default(),
+                    n_largest_count: NLargestCount::default(),
+                }],
+            )];
+            table
+                .insert_column_statistics(stats, model_id, recent_ts)
+                .unwrap();
+        }
+
+        let removed = table.remove_older_than(cutoff).unwrap();
+        assert_eq!(removed, old_count as usize);
+
+        let remaining: Vec<_> = table
+            .iter(Direction::Forward, None)
+            .collect::<Result<Vec<_>>>()
+            .unwrap();
+        assert_eq!(remaining.len(), recent_count as usize);
+        for stats in &remaining {
+            assert_eq!(stats.batch_ts, from_naive_utc(recent_ts));
+        }
+    }
+
+    #[test]
+    fn test_purge_old_column_stats_reconfigure() {
+        let (_permit, store) = setup_store();
+        let table = store.column_stats_map();
+
+        // Insert a single aged entry.
+        let old_ts = chrono::Utc::now().naive_utc() - chrono::Duration::days(30);
+        let stats = vec![(
+            1u32,
+            vec![structured::ColumnStatistics {
+                description: Description::default(),
+                n_largest_count: NLargestCount::default(),
+            }],
+        )];
+        table.insert_column_statistics(stats, 1, old_ts).unwrap();
+
+        // With no retention configured, purge is a no-op.
+        assert!(store.purge_old_column_stats().unwrap().is_none());
+        assert_eq!(
+            table
+                .iter(Direction::Forward, None)
+                .collect::<Result<Vec<_>>>()
+                .unwrap()
+                .len(),
+            1
+        );
+
+        // Configure a long retention: the entry is still within the window.
+        let long = crate::RetentionConfig::new(365).unwrap();
+        store.init_retention_config(&long).unwrap();
+        assert_eq!(store.purge_old_column_stats().unwrap(), Some(0));
+        assert_eq!(
+            table
+                .iter(Direction::Forward, None)
+                .collect::<Result<Vec<_>>>()
+                .unwrap()
+                .len(),
+            1
+        );
+
+        // Shorten retention: the entry now falls outside the window.
+        let update = crate::RetentionConfigUpdate {
+            period_in_days: Some(1),
+        };
+        store.update_retention_config(&long, &update).unwrap();
+        assert_eq!(store.purge_old_column_stats().unwrap(), Some(1));
+        assert!(
+            table
+                .iter(Direction::Forward, None)
+                .collect::<Result<Vec<_>>>()
+                .unwrap()
+                .is_empty()
+        );
+
+        // Re-insert and then clear retention: purge becomes a no-op again.
+        let stats = vec![(
+            1u32,
+            vec![structured::ColumnStatistics {
+                description: Description::default(),
+                n_largest_count: NLargestCount::default(),
+            }],
+        )];
+        table.insert_column_statistics(stats, 1, old_ts).unwrap();
+        store.clear_retention_config().unwrap();
+        assert!(store.purge_old_column_stats().unwrap().is_none());
+        assert_eq!(
+            table
+                .iter(Direction::Forward, None)
+                .collect::<Result<Vec<_>>>()
+                .unwrap()
+                .len(),
+            1
+        );
     }
 
     fn setup_store() -> (DbGuard<'static>, Arc<Store>) {
