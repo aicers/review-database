@@ -78,8 +78,10 @@ pub struct DnsEventFields {
     pub category: Option<EventCategory>,
 }
 
+pub(crate) type DnsEventFieldsStored = DnsEventFieldsStoredV0_42;
+
 #[derive(Deserialize, Serialize)]
-pub(crate) struct DnsEventFieldsStored {
+pub(crate) struct DnsEventFieldsStoredV0_42 {
     pub sensor: String,
     pub orig_addr: IpAddr,
     pub orig_port: u16,
@@ -570,8 +572,10 @@ pub struct CryptocurrencyMiningPoolFields {
     pub category: Option<EventCategory>,
 }
 
+pub(crate) type CryptocurrencyMiningPoolFieldsStored = CryptocurrencyMiningPoolFieldsStoredV0_42;
+
 #[derive(Deserialize, Serialize)]
-pub(crate) struct CryptocurrencyMiningPoolFieldsStored {
+pub(crate) struct CryptocurrencyMiningPoolFieldsStoredV0_42 {
     pub sensor: String,
     pub orig_addr: IpAddr,
     pub orig_port: u16,
@@ -887,8 +891,10 @@ pub struct BlocklistDnsFields {
     pub category: Option<EventCategory>,
 }
 
+pub(crate) type BlocklistDnsFieldsStored = BlocklistDnsFieldsStoredV0_42;
+
 #[derive(Deserialize, Serialize)]
-pub(crate) struct BlocklistDnsFieldsStored {
+pub(crate) struct BlocklistDnsFieldsStoredV0_42 {
     pub sensor: String,
     pub orig_addr: IpAddr,
     pub orig_port: u16,

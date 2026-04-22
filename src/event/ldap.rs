@@ -63,8 +63,10 @@ pub struct LdapBruteForceFields {
     pub category: Option<EventCategory>,
 }
 
+pub(crate) type LdapBruteForceFieldsStored = LdapBruteForceFieldsStoredV0_42;
+
 #[derive(Deserialize, Serialize)]
-pub(crate) struct LdapBruteForceFieldsStored {
+pub(crate) struct LdapBruteForceFieldsStoredV0_42 {
     pub sensor: String,
     pub orig_addr: IpAddr,
     pub resp_addr: IpAddr,
@@ -275,8 +277,10 @@ pub struct LdapEventFields {
     pub category: Option<EventCategory>,
 }
 
+pub(crate) type LdapEventFieldsStored = LdapEventFieldsStoredV0_42;
+
 #[derive(Deserialize, Serialize)]
-pub(crate) struct LdapEventFieldsStored {
+pub(crate) struct LdapEventFieldsStoredV0_42 {
     pub sensor: String,
     pub orig_addr: IpAddr,
     pub orig_port: u16,

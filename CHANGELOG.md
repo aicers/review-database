@@ -37,6 +37,15 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   now accept `*FieldsStored`. Shared and stored schemas are structurally
   identical in this change; the split is scaffolding so the stored schemas
   can evolve independently of the producer interface in future releases.
+  Repository-local versioning is preserved on the stored side: each
+  `*FieldsStored` (or `*Stored`) name is a stable alias for a versioned
+  concrete struct (for example `BlocklistBootpFieldsStoredV0_42`) so schema
+  evolution can add new versioned variants without renaming the alias used
+  throughout the crate. For the `ExtraThreat`, `NetworkThreat`, and
+  `WindowsThreat` families, only `syslog_rfc5424` remains on the shared
+  type (the message-boundary formatter used by `EventMessage`); the
+  `Display`, `Match`, and `threat_level` implementations now live on the
+  stored type, and the `Event` enum carries the stored variant directly.
 
 ## [0.44.1] - 2026-04-16
 

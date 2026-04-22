@@ -62,8 +62,10 @@ pub struct BlocklistSmtpFields {
     pub category: Option<EventCategory>,
 }
 
+pub(crate) type BlocklistSmtpFieldsStored = BlocklistSmtpFieldsStoredV0_42;
+
 #[derive(Deserialize, Serialize)]
-pub(crate) struct BlocklistSmtpFieldsStored {
+pub(crate) struct BlocklistSmtpFieldsStoredV0_42 {
     pub sensor: String,
     pub orig_addr: IpAddr,
     pub orig_port: u16,

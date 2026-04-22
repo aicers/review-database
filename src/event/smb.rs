@@ -72,8 +72,10 @@ pub struct BlocklistSmbFieldsV0_42 {
     pub category: Option<EventCategory>,
 }
 
+pub(crate) type BlocklistSmbFieldsStored = BlocklistSmbFieldsStoredV0_42;
+
 #[derive(Deserialize, Serialize)]
-pub(crate) struct BlocklistSmbFieldsStored {
+pub(crate) struct BlocklistSmbFieldsStoredV0_42 {
     pub sensor: String,
     pub orig_addr: IpAddr,
     pub orig_port: u16,
