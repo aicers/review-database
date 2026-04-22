@@ -56,8 +56,10 @@ pub struct WindowsThreat {
     pub triage_scores: Option<Vec<TriageScore>>,
 }
 
+pub type WindowsThreatStored = WindowsThreatStoredV0_42;
+
 #[derive(Deserialize, Serialize)]
-pub struct WindowsThreatStored {
+pub struct WindowsThreatStoredV0_42 {
     #[serde(with = "ts_nanoseconds")]
     pub time: DateTime<Utc>,
     pub sensor: String,
@@ -158,7 +160,7 @@ impl WindowsThreat {
     }
 }
 
-impl fmt::Display for WindowsThreat {
+impl fmt::Display for WindowsThreatStored {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
@@ -183,7 +185,7 @@ impl fmt::Display for WindowsThreat {
     }
 }
 
-impl WindowsThreat {
+impl WindowsThreatStored {
     #[must_use]
     pub fn threat_level() -> ThreatLevel {
         ThreatLevel::Medium
@@ -191,7 +193,7 @@ impl WindowsThreat {
 }
 
 // TODO: Make new Match trait for Windows threat events
-impl Match for WindowsThreat {
+impl Match for WindowsThreatStored {
     fn sensor(&self) -> &str {
         &self.sensor
     }

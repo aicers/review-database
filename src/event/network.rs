@@ -62,8 +62,10 @@ pub struct NetworkThreat {
     pub triage_scores: Option<Vec<TriageScore>>,
 }
 
+pub type NetworkThreatStored = NetworkThreatStoredV0_42;
+
 #[derive(Deserialize, Serialize)]
-pub struct NetworkThreatStored {
+pub struct NetworkThreatStoredV0_42 {
     #[serde(with = "ts_nanoseconds")]
     pub time: DateTime<Utc>,
     pub sensor: String,
@@ -184,7 +186,7 @@ impl NetworkThreat {
     }
 }
 
-impl fmt::Display for NetworkThreat {
+impl fmt::Display for NetworkThreatStored {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
@@ -214,14 +216,14 @@ impl fmt::Display for NetworkThreat {
     }
 }
 
-impl NetworkThreat {
+impl NetworkThreatStored {
     #[must_use]
     pub fn threat_level() -> ThreatLevel {
         ThreatLevel::Medium
     }
 }
 
-impl Match for NetworkThreat {
+impl Match for NetworkThreatStored {
     fn src_addrs(&self) -> &[IpAddr] {
         std::slice::from_ref(&self.orig_addr)
     }

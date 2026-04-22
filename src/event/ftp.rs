@@ -198,8 +198,10 @@ pub struct FtpBruteForceFields {
     pub category: Option<EventCategory>,
 }
 
+pub(crate) type FtpBruteForceFieldsStored = FtpBruteForceFieldsStoredV0_42;
+
 #[derive(Deserialize, Serialize)]
-pub(crate) struct FtpBruteForceFieldsStored {
+pub(crate) struct FtpBruteForceFieldsStoredV0_42 {
     pub sensor: String,
     pub orig_addr: IpAddr,
     pub resp_addr: IpAddr,
@@ -415,8 +417,10 @@ pub struct FtpEventFields {
     pub category: Option<EventCategory>,
 }
 
+pub(crate) type FtpEventFieldsStored = FtpEventFieldsStoredV0_42;
+
 #[derive(Deserialize, Serialize)]
-pub(crate) struct FtpEventFieldsStored {
+pub(crate) struct FtpEventFieldsStoredV0_42 {
     pub sensor: String,
     pub orig_addr: IpAddr,
     pub orig_port: u16,

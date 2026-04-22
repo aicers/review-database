@@ -49,8 +49,10 @@ pub struct RdpBruteForceFields {
     pub category: Option<EventCategory>,
 }
 
+pub(crate) type RdpBruteForceFieldsStored = RdpBruteForceFieldsStoredV0_42;
+
 #[derive(Deserialize, Serialize)]
-pub(crate) struct RdpBruteForceFieldsStored {
+pub(crate) struct RdpBruteForceFieldsStoredV0_42 {
     pub sensor: String,
     pub orig_addr: IpAddr,
     pub resp_addrs: Vec<IpAddr>,
@@ -232,8 +234,10 @@ pub struct BlocklistRdpFields {
     pub category: Option<EventCategory>,
 }
 
+pub(crate) type BlocklistRdpFieldsStored = BlocklistRdpFieldsStoredV0_42;
+
 #[derive(Deserialize, Serialize)]
-pub(crate) struct BlocklistRdpFieldsStored {
+pub(crate) struct BlocklistRdpFieldsStoredV0_42 {
     pub sensor: String,
     pub orig_addr: IpAddr,
     pub orig_port: u16,

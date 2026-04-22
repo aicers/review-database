@@ -28,8 +28,10 @@ pub struct ExtraThreat {
     pub triage_scores: Option<Vec<TriageScore>>,
 }
 
+pub type ExtraThreatStored = ExtraThreatStoredV0_42;
+
 #[derive(Deserialize, Serialize)]
-pub struct ExtraThreatStored {
+pub struct ExtraThreatStoredV0_42 {
     #[serde(with = "ts_nanoseconds")]
     pub time: DateTime<Utc>,
     pub sensor: String,
@@ -105,7 +107,7 @@ impl ExtraThreat {
     }
 }
 
-impl fmt::Display for ExtraThreat {
+impl fmt::Display for ExtraThreatStored {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
@@ -124,14 +126,14 @@ impl fmt::Display for ExtraThreat {
     }
 }
 
-impl ExtraThreat {
+impl ExtraThreatStored {
     #[must_use]
     pub fn threat_level() -> ThreatLevel {
         ThreatLevel::Medium
     }
 }
 
-impl Match for ExtraThreat {
+impl Match for ExtraThreatStored {
     fn src_addrs(&self) -> &[IpAddr] {
         std::slice::from_ref(&IpAddr::V4(Ipv4Addr::UNSPECIFIED))
     }

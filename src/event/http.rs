@@ -98,8 +98,10 @@ pub struct HttpEventFields {
     pub category: Option<EventCategory>,
 }
 
+pub(crate) type HttpEventFieldsStored = HttpEventFieldsStoredV0_42;
+
 #[derive(Deserialize, Serialize)]
-pub(crate) struct HttpEventFieldsStored {
+pub(crate) struct HttpEventFieldsStoredV0_42 {
     pub sensor: String,
     pub orig_addr: IpAddr,
     pub orig_port: u16,
@@ -240,8 +242,10 @@ pub struct RepeatedHttpSessionsFields {
     pub category: Option<EventCategory>,
 }
 
+pub(crate) type RepeatedHttpSessionsFieldsStored = RepeatedHttpSessionsFieldsStoredV0_42;
+
 #[derive(Deserialize, Serialize)]
-pub(crate) struct RepeatedHttpSessionsFieldsStored {
+pub(crate) struct RepeatedHttpSessionsFieldsStoredV0_42 {
     pub sensor: String,
     pub orig_addr: IpAddr,
     pub orig_port: u16,
@@ -463,8 +467,10 @@ pub struct HttpThreatFields {
     pub category: Option<EventCategory>,
 }
 
+pub(crate) type HttpThreatFieldsStored = HttpThreatFieldsStoredV0_42;
+
 #[derive(::serde::Deserialize, ::serde::Serialize)]
-pub(crate) struct HttpThreatFieldsStored {
+pub(crate) struct HttpThreatFieldsStoredV0_42 {
     #[serde(with = "ts_nanoseconds")]
     pub time: DateTime<Utc>,
     pub sensor: String,
@@ -901,8 +907,10 @@ pub struct DgaFields {
     pub category: Option<EventCategory>,
 }
 
+pub(crate) type DgaFieldsStored = DgaFieldsStoredV0_42;
+
 #[derive(Deserialize, Serialize)]
-pub(crate) struct DgaFieldsStored {
+pub(crate) struct DgaFieldsStoredV0_42 {
     pub sensor: String,
     pub orig_addr: IpAddr,
     pub orig_port: u16,

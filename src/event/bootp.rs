@@ -108,8 +108,10 @@ pub struct BlocklistBootpFields {
     pub category: Option<EventCategory>,
 }
 
+pub(crate) type BlocklistBootpFieldsStored = BlocklistBootpFieldsStoredV0_42;
+
 #[derive(Deserialize, Serialize)]
-pub(crate) struct BlocklistBootpFieldsStored {
+pub(crate) struct BlocklistBootpFieldsStoredV0_42 {
     pub sensor: String,
     pub orig_addr: IpAddr,
     pub orig_port: u16,

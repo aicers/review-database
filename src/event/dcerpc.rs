@@ -64,8 +64,10 @@ pub struct BlocklistDceRpcFields {
     pub category: Option<EventCategory>,
 }
 
+pub(crate) type BlocklistDceRpcFieldsStored = BlocklistDceRpcFieldsStoredV0_44;
+
 #[derive(Deserialize, Serialize)]
-pub(crate) struct BlocklistDceRpcFieldsStored {
+pub(crate) struct BlocklistDceRpcFieldsStoredV0_44 {
     pub sensor: String,
     pub orig_addr: IpAddr,
     pub orig_port: u16,

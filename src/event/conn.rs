@@ -50,8 +50,10 @@ pub struct PortScanFields {
     pub category: Option<EventCategory>,
 }
 
+pub(crate) type PortScanFieldsStored = PortScanFieldsStoredV0_42;
+
 #[derive(Deserialize, Serialize)]
-pub(crate) struct PortScanFieldsStored {
+pub(crate) struct PortScanFieldsStoredV0_42 {
     pub sensor: String,
     pub orig_addr: IpAddr,
     pub resp_addr: IpAddr,
@@ -235,8 +237,10 @@ pub struct MultiHostPortScanFields {
     pub category: Option<EventCategory>,
 }
 
+pub(crate) type MultiHostPortScanFieldsStored = MultiHostPortScanFieldsStoredV0_42;
+
 #[derive(Deserialize, Serialize)]
-pub(crate) struct MultiHostPortScanFieldsStored {
+pub(crate) struct MultiHostPortScanFieldsStoredV0_42 {
     pub sensor: String,
     pub orig_addr: IpAddr,
     pub resp_port: u16,
@@ -420,8 +424,10 @@ pub struct ExternalDdosFields {
     pub category: Option<EventCategory>,
 }
 
+pub(crate) type ExternalDdosFieldsStored = ExternalDdosFieldsStoredV0_42;
+
 #[derive(Deserialize, Serialize)]
-pub(crate) struct ExternalDdosFieldsStored {
+pub(crate) struct ExternalDdosFieldsStoredV0_42 {
     pub sensor: String,
     pub orig_addrs: Vec<IpAddr>,
     pub resp_addr: IpAddr,
@@ -607,8 +613,10 @@ pub struct BlocklistConnFields {
     pub category: Option<EventCategory>,
 }
 
+pub(crate) type BlocklistConnFieldsStored = BlocklistConnFieldsStoredV0_42;
+
 #[derive(Deserialize, Serialize)]
-pub(crate) struct BlocklistConnFieldsStored {
+pub(crate) struct BlocklistConnFieldsStoredV0_42 {
     pub sensor: String,
     pub orig_addr: IpAddr,
     pub orig_port: u16,

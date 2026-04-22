@@ -194,11 +194,11 @@ pub enum Event {
 
     Blocklist(RecordType),
 
-    WindowsThreat(WindowsThreat),
+    WindowsThreat(WindowsThreatStored),
 
-    NetworkThreat(NetworkThreat),
+    NetworkThreat(NetworkThreatStored),
 
-    ExtraThreat(ExtraThreat),
+    ExtraThreat(ExtraThreatStored),
 
     LockyRansomware(LockyRansomware),
 
@@ -3098,7 +3098,7 @@ impl Iterator for EventIterator<'_> {
                 let Ok(stored) = bincode::deserialize::<ExtraThreatStored>(v.as_ref()) else {
                     return Some(Err(InvalidEvent::Value(v)));
                 };
-                Some(Ok((key, Event::ExtraThreat(stored.into()))))
+                Some(Ok((key, Event::ExtraThreat(stored))))
             }
             EventKind::FtpBruteForce => {
                 let Ok(stored) = bincode::deserialize::<FtpBruteForceFieldsStored>(v.as_ref())
@@ -3170,7 +3170,7 @@ impl Iterator for EventIterator<'_> {
                 let Ok(stored) = bincode::deserialize::<NetworkThreatStored>(v.as_ref()) else {
                     return Some(Err(InvalidEvent::Value(v)));
                 };
-                Some(Ok((key, Event::NetworkThreat(stored.into()))))
+                Some(Ok((key, Event::NetworkThreat(stored))))
             }
             EventKind::NonBrowser => {
                 let Ok(stored) = bincode::deserialize::<HttpEventFieldsStored>(v.as_ref()) else {
@@ -3251,7 +3251,7 @@ impl Iterator for EventIterator<'_> {
                 let Ok(stored) = bincode::deserialize::<WindowsThreatStored>(v.as_ref()) else {
                     return Some(Err(InvalidEvent::Value(v)));
                 };
-                Some(Ok((key, Event::WindowsThreat(stored.into()))))
+                Some(Ok((key, Event::WindowsThreat(stored))))
             }
         }
     }
@@ -6071,7 +6071,7 @@ mod tests {
                 .contains("content=\"cmd /c \"vssadmin.exe Delete Shadows /all /quiet\"\"")
         );
 
-        let windows_threat = Event::WindowsThreat(fields.into()).to_string();
+        let windows_threat = Event::WindowsThreat(fields).to_string();
         assert_eq!(
             &windows_threat,
             "time=\"1970-01-01T00:01:01+00:00\" event_kind=\"WindowsThreat\" category=\"Impact\" sensor=\"collector1\" service=\"notepad\" agent_name=\"win64\" agent_id=\"e7e2386a-5485-4da9-b388-b3e50ee7cbb0\" process_guid=\"{bac98147-6b03-64d4-8200-000000000700}\" process_id=\"2972\" image=\"C:\\Users\\vboxuser\\Desktop\\mal_bazaar\\ransomware\\918504.exe\" user=\"WIN64\\vboxuser\" content=\"cmd /c \"vssadmin.exe Delete Shadows /all /quiet\"\" db_name=\"db\" rule_id=\"100\" matched_to=\"match\" cluster_id=\"900\" attack_kind=\"Ransomware_Alcatraz\" confidence=\"0.9\" triage_scores=\"\""
