@@ -35,10 +35,8 @@ macro_rules! find_conn_attr_by_kind {
 }
 pub(crate) use find_conn_attr_by_kind;
 
-pub type PortScanFields = PortScanFieldsV0_42;
-
 #[derive(Serialize, Deserialize)]
-pub struct PortScanFieldsV0_42 {
+pub struct PortScanFields {
     pub sensor: String,
     pub orig_addr: IpAddr,
     pub resp_addr: IpAddr,
@@ -50,6 +48,37 @@ pub struct PortScanFieldsV0_42 {
     pub proto: u8,
     pub confidence: f32,
     pub category: Option<EventCategory>,
+}
+
+pub(crate) type PortScanFieldsStored = PortScanFieldsStoredV0_42;
+
+#[derive(Deserialize, Serialize)]
+pub(crate) struct PortScanFieldsStoredV0_42 {
+    pub sensor: String,
+    pub orig_addr: IpAddr,
+    pub resp_addr: IpAddr,
+    pub resp_ports: Vec<u16>,
+    pub start_time: i64,
+    pub end_time: i64,
+    pub proto: u8,
+    pub confidence: f32,
+    pub category: Option<EventCategory>,
+}
+
+impl From<PortScanFields> for PortScanFieldsStored {
+    fn from(value: PortScanFields) -> Self {
+        Self {
+            sensor: value.sensor,
+            orig_addr: value.orig_addr,
+            resp_addr: value.resp_addr,
+            resp_ports: value.resp_ports,
+            start_time: value.start_time,
+            end_time: value.end_time,
+            proto: value.proto,
+            confidence: value.confidence,
+            category: value.category,
+        }
+    }
 }
 
 impl PortScanFields {
@@ -108,7 +137,7 @@ impl fmt::Display for PortScan {
 }
 
 impl PortScan {
-    pub(super) fn new(time: DateTime<Utc>, fields: &PortScanFields) -> Self {
+    pub(super) fn new(time: DateTime<Utc>, fields: &PortScanFieldsStored) -> Self {
         PortScan {
             sensor: fields.sensor.clone(),
             time,
@@ -193,10 +222,8 @@ impl Match for PortScan {
     }
 }
 
-pub type MultiHostPortScanFields = MultiHostPortScanFieldsV0_42;
-
 #[derive(Serialize, Deserialize)]
-pub struct MultiHostPortScanFieldsV0_42 {
+pub struct MultiHostPortScanFields {
     pub sensor: String,
     pub orig_addr: IpAddr,
     pub resp_port: u16,
@@ -208,6 +235,37 @@ pub struct MultiHostPortScanFieldsV0_42 {
     pub end_time: i64,
     pub confidence: f32,
     pub category: Option<EventCategory>,
+}
+
+pub(crate) type MultiHostPortScanFieldsStored = MultiHostPortScanFieldsStoredV0_42;
+
+#[derive(Deserialize, Serialize)]
+pub(crate) struct MultiHostPortScanFieldsStoredV0_42 {
+    pub sensor: String,
+    pub orig_addr: IpAddr,
+    pub resp_port: u16,
+    pub resp_addrs: Vec<IpAddr>,
+    pub proto: u8,
+    pub start_time: i64,
+    pub end_time: i64,
+    pub confidence: f32,
+    pub category: Option<EventCategory>,
+}
+
+impl From<MultiHostPortScanFields> for MultiHostPortScanFieldsStored {
+    fn from(value: MultiHostPortScanFields) -> Self {
+        Self {
+            sensor: value.sensor,
+            orig_addr: value.orig_addr,
+            resp_port: value.resp_port,
+            resp_addrs: value.resp_addrs,
+            proto: value.proto,
+            start_time: value.start_time,
+            end_time: value.end_time,
+            confidence: value.confidence,
+            category: value.category,
+        }
+    }
 }
 
 impl MultiHostPortScanFields {
@@ -266,7 +324,7 @@ impl fmt::Display for MultiHostPortScan {
 }
 
 impl MultiHostPortScan {
-    pub(super) fn new(time: DateTime<Utc>, fields: &MultiHostPortScanFields) -> Self {
+    pub(super) fn new(time: DateTime<Utc>, fields: &MultiHostPortScanFieldsStored) -> Self {
         MultiHostPortScan {
             sensor: fields.sensor.clone(),
             time,
@@ -352,10 +410,8 @@ impl Match for MultiHostPortScan {
     }
 }
 
-pub type ExternalDdosFields = ExternalDdosFieldsV0_42;
-
 #[derive(Serialize, Deserialize)]
-pub struct ExternalDdosFieldsV0_42 {
+pub struct ExternalDdosFields {
     pub sensor: String,
     pub orig_addrs: Vec<IpAddr>,
     pub resp_addr: IpAddr,
@@ -366,6 +422,35 @@ pub struct ExternalDdosFieldsV0_42 {
     pub end_time: i64,
     pub confidence: f32,
     pub category: Option<EventCategory>,
+}
+
+pub(crate) type ExternalDdosFieldsStored = ExternalDdosFieldsStoredV0_42;
+
+#[derive(Deserialize, Serialize)]
+pub(crate) struct ExternalDdosFieldsStoredV0_42 {
+    pub sensor: String,
+    pub orig_addrs: Vec<IpAddr>,
+    pub resp_addr: IpAddr,
+    pub proto: u8,
+    pub start_time: i64,
+    pub end_time: i64,
+    pub confidence: f32,
+    pub category: Option<EventCategory>,
+}
+
+impl From<ExternalDdosFields> for ExternalDdosFieldsStored {
+    fn from(value: ExternalDdosFields) -> Self {
+        Self {
+            sensor: value.sensor,
+            orig_addrs: value.orig_addrs,
+            resp_addr: value.resp_addr,
+            proto: value.proto,
+            start_time: value.start_time,
+            end_time: value.end_time,
+            confidence: value.confidence,
+            category: value.category,
+        }
+    }
 }
 
 impl ExternalDdosFields {
@@ -421,7 +506,7 @@ impl fmt::Display for ExternalDdos {
 }
 
 impl ExternalDdos {
-    pub(super) fn new(time: DateTime<Utc>, fields: &ExternalDdosFields) -> Self {
+    pub(super) fn new(time: DateTime<Utc>, fields: &ExternalDdosFieldsStored) -> Self {
         ExternalDdos {
             sensor: fields.sensor.clone(),
             time,
@@ -505,10 +590,8 @@ impl Match for ExternalDdos {
     }
 }
 
-pub type BlocklistConnFields = BlocklistConnFieldsV0_42;
-
 #[derive(Deserialize, Serialize)]
-pub struct BlocklistConnFieldsV0_42 {
+pub struct BlocklistConnFields {
     pub sensor: String,
     pub orig_addr: IpAddr,
     pub orig_port: u16,
@@ -528,6 +611,55 @@ pub struct BlocklistConnFieldsV0_42 {
     pub resp_l2_bytes: u64,
     pub confidence: f32,
     pub category: Option<EventCategory>,
+}
+
+pub(crate) type BlocklistConnFieldsStored = BlocklistConnFieldsStoredV0_42;
+
+#[derive(Deserialize, Serialize)]
+pub(crate) struct BlocklistConnFieldsStoredV0_42 {
+    pub sensor: String,
+    pub orig_addr: IpAddr,
+    pub orig_port: u16,
+    pub resp_addr: IpAddr,
+    pub resp_port: u16,
+    pub proto: u8,
+    pub conn_state: String,
+    pub start_time: i64,
+    pub duration: i64,
+    pub service: String,
+    pub orig_bytes: u64,
+    pub resp_bytes: u64,
+    pub orig_pkts: u64,
+    pub resp_pkts: u64,
+    pub orig_l2_bytes: u64,
+    pub resp_l2_bytes: u64,
+    pub confidence: f32,
+    pub category: Option<EventCategory>,
+}
+
+impl From<BlocklistConnFields> for BlocklistConnFieldsStored {
+    fn from(value: BlocklistConnFields) -> Self {
+        Self {
+            sensor: value.sensor,
+            orig_addr: value.orig_addr,
+            orig_port: value.orig_port,
+            resp_addr: value.resp_addr,
+            resp_port: value.resp_port,
+            proto: value.proto,
+            conn_state: value.conn_state,
+            start_time: value.start_time,
+            duration: value.duration,
+            service: value.service,
+            orig_bytes: value.orig_bytes,
+            resp_bytes: value.resp_bytes,
+            orig_pkts: value.orig_pkts,
+            resp_pkts: value.resp_pkts,
+            orig_l2_bytes: value.orig_l2_bytes,
+            resp_l2_bytes: value.resp_l2_bytes,
+            confidence: value.confidence,
+            category: value.category,
+        }
+    }
 }
 
 impl BlocklistConnFields {
@@ -613,7 +745,7 @@ impl fmt::Display for BlocklistConn {
 }
 
 impl BlocklistConn {
-    pub(super) fn new(time: DateTime<Utc>, fields: BlocklistConnFields) -> Self {
+    pub(super) fn new(time: DateTime<Utc>, fields: BlocklistConnFieldsStored) -> Self {
         Self {
             time,
             sensor: fields.sensor,

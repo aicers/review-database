@@ -105,7 +105,7 @@ impl From<TriagePolicyV0_44> for crate::TriagePolicy {
 }
 
 // ============================================================================
-// Old event structures for migration (cluster_id: Option<usize> -> Option<u32>)
+// Old event structures for migration
 // ============================================================================
 
 use std::net::IpAddr;
@@ -114,12 +114,36 @@ use chrono::serde::ts_nanoseconds;
 
 use crate::EventCategory;
 
-/// `BlocklistDhcpFields` structure from version 0.42.x (before `options` field was added)
+/// `BlocklistDceRpcFieldsStored` structure from version 0.42.x.
+#[derive(Serialize, Deserialize)]
+pub(crate) struct BlocklistDceRpcFieldsStoredV0_42 {
+    pub sensor: String,
+    pub orig_addr: IpAddr,
+    pub orig_port: u16,
+    pub resp_addr: IpAddr,
+    pub resp_port: u16,
+    pub proto: u8,
+    pub start_time: i64,
+    pub duration: i64,
+    pub orig_pkts: u64,
+    pub resp_pkts: u64,
+    pub orig_l2_bytes: u64,
+    pub resp_l2_bytes: u64,
+    pub rtt: i64,
+    pub named_pipe: String,
+    pub endpoint: String,
+    pub operation: String,
+    pub confidence: f32,
+    pub category: Option<EventCategory>,
+}
+
+/// `BlocklistDhcpFieldsStored` structure from version 0.42.x
+/// (before `options` field was added)
 ///
-/// In 0.42.x, `BlocklistDhcpFields` did not have an `options` field.
-/// From 0.44.x, `options: Vec<(u8, Vec<u8>)>` was added.
+/// In 0.42.x, `BlocklistDhcpFieldsStored` did not have an `options` field.
+/// From 0.44.x, `options: Vec<(u8, Vec<u8>)>` was added to the stored schema.
 #[derive(Debug, Deserialize, Serialize)]
-pub(crate) struct BlocklistDhcpFieldsV0_42 {
+pub(crate) struct BlocklistDhcpFieldsStoredV0_42 {
     pub sensor: String,
     pub orig_addr: IpAddr,
     pub orig_port: u16,
@@ -154,13 +178,15 @@ pub(crate) struct BlocklistDhcpFieldsV0_42 {
     pub category: Option<EventCategory>,
 }
 
-/// `HttpThreatFields` structure from version 0.43.x (before `cluster_id` type change)
-/// In 0.43.x, `cluster_id` was `Option<usize>`. From 0.44.x, it changed to `Option<u32>`.
+/// `HttpThreatFieldsStored` structure from version 0.43.x
+/// (before `cluster_id` type change).
+/// In 0.43.x, `cluster_id` was `Option<usize>`. From 0.44.x, it changed to
+/// `Option<u32>` in the stored schema.
 ///
 /// Note: Other event types (`NetworkThreat`, `WindowsThreat`, `ExtraThreat`) are not generated
 /// on production servers, so their migration structures are not needed.
 #[derive(Debug, Deserialize, Serialize)]
-pub(crate) struct HttpThreatFieldsV0_43 {
+pub(crate) struct HttpThreatFieldsStoredV0_43 {
     #[serde(with = "ts_nanoseconds")]
     pub time: DateTime<Utc>,
     pub sensor: String,

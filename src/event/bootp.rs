@@ -40,8 +40,6 @@ macro_rules! find_bootp_attr_by_kind {
     }};
 }
 
-pub type BlocklistBootpFields = BlocklistBootpFieldsV0_42;
-
 impl BlocklistBootpFields {
     #[must_use]
     pub fn syslog_rfc5424(&self) -> String {
@@ -81,7 +79,7 @@ impl BlocklistBootpFields {
 }
 
 #[derive(Serialize, Deserialize)]
-pub struct BlocklistBootpFieldsV0_42 {
+pub struct BlocklistBootpFields {
     pub sensor: String,
     pub orig_addr: IpAddr,
     pub orig_port: u16,
@@ -108,6 +106,69 @@ pub struct BlocklistBootpFieldsV0_42 {
     pub file: String,
     pub confidence: f32,
     pub category: Option<EventCategory>,
+}
+
+pub(crate) type BlocklistBootpFieldsStored = BlocklistBootpFieldsStoredV0_42;
+
+#[derive(Deserialize, Serialize)]
+pub(crate) struct BlocklistBootpFieldsStoredV0_42 {
+    pub sensor: String,
+    pub orig_addr: IpAddr,
+    pub orig_port: u16,
+    pub resp_addr: IpAddr,
+    pub resp_port: u16,
+    pub proto: u8,
+    pub start_time: i64,
+    pub duration: i64,
+    pub orig_pkts: u64,
+    pub resp_pkts: u64,
+    pub orig_l2_bytes: u64,
+    pub resp_l2_bytes: u64,
+    pub op: u8,
+    pub htype: u8,
+    pub hops: u8,
+    pub xid: u32,
+    pub ciaddr: IpAddr,
+    pub yiaddr: IpAddr,
+    pub siaddr: IpAddr,
+    pub giaddr: IpAddr,
+    pub chaddr: Vec<u8>,
+    pub sname: String,
+    pub file: String,
+    pub confidence: f32,
+    pub category: Option<EventCategory>,
+}
+
+impl From<BlocklistBootpFields> for BlocklistBootpFieldsStored {
+    fn from(value: BlocklistBootpFields) -> Self {
+        Self {
+            sensor: value.sensor,
+            orig_addr: value.orig_addr,
+            orig_port: value.orig_port,
+            resp_addr: value.resp_addr,
+            resp_port: value.resp_port,
+            proto: value.proto,
+            start_time: value.start_time,
+            duration: value.duration,
+            orig_pkts: value.orig_pkts,
+            resp_pkts: value.resp_pkts,
+            orig_l2_bytes: value.orig_l2_bytes,
+            resp_l2_bytes: value.resp_l2_bytes,
+            op: value.op,
+            htype: value.htype,
+            hops: value.hops,
+            xid: value.xid,
+            ciaddr: value.ciaddr,
+            yiaddr: value.yiaddr,
+            siaddr: value.siaddr,
+            giaddr: value.giaddr,
+            chaddr: value.chaddr,
+            sname: value.sname,
+            file: value.file,
+            confidence: value.confidence,
+            category: value.category,
+        }
+    }
 }
 
 #[allow(clippy::module_name_repetitions)]
@@ -174,7 +235,7 @@ impl fmt::Display for BlocklistBootp {
 }
 
 impl BlocklistBootp {
-    pub(super) fn new(time: DateTime<Utc>, fields: BlocklistBootpFields) -> Self {
+    pub(super) fn new(time: DateTime<Utc>, fields: BlocklistBootpFieldsStored) -> Self {
         Self {
             time,
             sensor: fields.sensor,

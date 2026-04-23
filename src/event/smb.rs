@@ -40,10 +40,8 @@ macro_rules! find_smb_attr_by_kind {
     }};
 }
 
-pub type BlocklistSmbFields = BlocklistSmbFieldsV0_42;
-
 #[derive(Serialize, Deserialize)]
-pub struct BlocklistSmbFieldsV0_42 {
+pub struct BlocklistSmbFields {
     pub sensor: String,
     pub orig_addr: IpAddr,
     pub orig_port: u16,
@@ -70,6 +68,69 @@ pub struct BlocklistSmbFieldsV0_42 {
     pub change_time: i64,
     pub confidence: f32,
     pub category: Option<EventCategory>,
+}
+
+pub(crate) type BlocklistSmbFieldsStored = BlocklistSmbFieldsStoredV0_42;
+
+#[derive(Deserialize, Serialize)]
+pub(crate) struct BlocklistSmbFieldsStoredV0_42 {
+    pub sensor: String,
+    pub orig_addr: IpAddr,
+    pub orig_port: u16,
+    pub resp_addr: IpAddr,
+    pub resp_port: u16,
+    pub proto: u8,
+    pub start_time: i64,
+    pub duration: i64,
+    pub orig_pkts: u64,
+    pub resp_pkts: u64,
+    pub orig_l2_bytes: u64,
+    pub resp_l2_bytes: u64,
+    pub command: u8,
+    pub path: String,
+    pub service: String,
+    pub file_name: String,
+    pub file_size: u64,
+    pub resource_type: u16,
+    pub fid: u16,
+    pub create_time: i64,
+    pub access_time: i64,
+    pub write_time: i64,
+    pub change_time: i64,
+    pub confidence: f32,
+    pub category: Option<EventCategory>,
+}
+
+impl From<BlocklistSmbFields> for BlocklistSmbFieldsStored {
+    fn from(value: BlocklistSmbFields) -> Self {
+        Self {
+            sensor: value.sensor,
+            orig_addr: value.orig_addr,
+            orig_port: value.orig_port,
+            resp_addr: value.resp_addr,
+            resp_port: value.resp_port,
+            proto: value.proto,
+            start_time: value.start_time,
+            duration: value.duration,
+            orig_pkts: value.orig_pkts,
+            resp_pkts: value.resp_pkts,
+            orig_l2_bytes: value.orig_l2_bytes,
+            resp_l2_bytes: value.resp_l2_bytes,
+            command: value.command,
+            path: value.path,
+            service: value.service,
+            file_name: value.file_name,
+            file_size: value.file_size,
+            resource_type: value.resource_type,
+            fid: value.fid,
+            create_time: value.create_time,
+            access_time: value.access_time,
+            write_time: value.write_time,
+            change_time: value.change_time,
+            confidence: value.confidence,
+            category: value.category,
+        }
+    }
 }
 
 impl BlocklistSmbFields {
@@ -173,7 +234,7 @@ impl fmt::Display for BlocklistSmb {
     }
 }
 impl BlocklistSmb {
-    pub(super) fn new(time: DateTime<Utc>, fields: BlocklistSmbFields) -> Self {
+    pub(super) fn new(time: DateTime<Utc>, fields: BlocklistSmbFieldsStored) -> Self {
         Self {
             time,
             sensor: fields.sensor,

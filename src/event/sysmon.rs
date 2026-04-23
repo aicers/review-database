@@ -56,6 +56,54 @@ pub struct WindowsThreat {
     pub triage_scores: Option<Vec<TriageScore>>,
 }
 
+#[derive(Deserialize, Serialize)]
+pub struct WindowsThreatStored {
+    #[serde(with = "ts_nanoseconds")]
+    pub time: DateTime<Utc>,
+    pub sensor: String,
+    pub service: String,
+    pub agent_name: String,
+    pub agent_id: String,
+    pub process_guid: String,
+    pub process_id: u32,
+    pub image: String,
+    pub user: String,
+    pub content: String,
+    pub db_name: String,
+    pub rule_id: u32,
+    pub matched_to: String,
+    pub cluster_id: Option<u32>,
+    pub attack_kind: String,
+    pub confidence: f32,
+    pub category: Option<EventCategory>,
+    pub triage_scores: Option<Vec<TriageScore>>,
+}
+
+impl From<WindowsThreat> for WindowsThreatStored {
+    fn from(value: WindowsThreat) -> Self {
+        Self {
+            time: value.time,
+            sensor: value.sensor,
+            service: value.service,
+            agent_name: value.agent_name,
+            agent_id: value.agent_id,
+            process_guid: value.process_guid,
+            process_id: value.process_id,
+            image: value.image,
+            user: value.user,
+            content: value.content,
+            db_name: value.db_name,
+            rule_id: value.rule_id,
+            matched_to: value.matched_to,
+            cluster_id: value.cluster_id,
+            attack_kind: value.attack_kind,
+            confidence: value.confidence,
+            category: value.category,
+            triage_scores: value.triage_scores,
+        }
+    }
+}
+
 // image, user, content field enclosed with double quotes(\") instead of "{:?}"
 impl WindowsThreat {
     #[must_use]
@@ -85,7 +133,7 @@ impl WindowsThreat {
     }
 }
 
-impl fmt::Display for WindowsThreat {
+impl fmt::Display for WindowsThreatStored {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
@@ -110,7 +158,7 @@ impl fmt::Display for WindowsThreat {
     }
 }
 
-impl WindowsThreat {
+impl WindowsThreatStored {
     #[must_use]
     pub fn threat_level() -> ThreatLevel {
         ThreatLevel::Medium
@@ -118,7 +166,7 @@ impl WindowsThreat {
 }
 
 // TODO: Make new Match trait for Windows threat events
-impl Match for WindowsThreat {
+impl Match for WindowsThreatStored {
     fn sensor(&self) -> &str {
         &self.sensor
     }

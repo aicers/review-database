@@ -24,6 +24,9 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   category is absent; `Some(category)` preserves existing
   behavior. A migration converts persisted records so previous
   category values become `Some(...)`.
+- Refactored internal event storage and migration paths to keep producer-facing
+  event schemas separate from on-disk stored schemas. No external wire-format
+  change is intended.
 
 ## [0.44.1] - 2026-04-16
 

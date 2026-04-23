@@ -16,11 +16,11 @@ use tracing::{info, warn};
 use crate::{
     AllowNetwork, BlockNetwork, Customer,
     event::{
-        BlocklistDceRpcFields, BlocklistDceRpcFieldsV0_42, BlocklistDhcpFields, EventKind,
-        HttpThreatFields,
+        BlocklistDceRpcFieldsStored, BlocklistDhcpFieldsStored, EventKind, HttpThreatFieldsStored,
     },
     migration::migration_structures::{
-        AllowNetworkV0_42, BlockNetworkV0_42, BlocklistDhcpFieldsV0_42, HttpThreatFieldsV0_43,
+        AllowNetworkV0_42, BlockNetworkV0_42, BlocklistDceRpcFieldsStoredV0_42,
+        BlocklistDhcpFieldsStoredV0_42, HttpThreatFieldsStoredV0_43,
     },
     tables::NETWORK_TAGS,
 };
@@ -1031,17 +1031,17 @@ fn migrate_event_fields(dir: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Migrates `HttpThreatFields` from Option<usize> to Option<u32> for `cluster_id`.
+/// Migrates stored `HttpThreatFields` from `Option<usize>` to `Option<u32>`
+/// for `cluster_id`.
 fn migrate_http_threat_fields(value: &[u8]) -> Option<Vec<u8>> {
     // Try to deserialize with old format. Production events are stored using
     // `bincode::serialize` (fixint encoding), so we must use the matching
     // `bincode::deserialize` here rather than `DefaultOptions` (varint).
-    let old: HttpThreatFieldsV0_43 = bincode::deserialize(value)
-        .map_err(|e| warn!("failed to deserialize HttpThreatFieldsV0_43: {e}"))
+    let old: HttpThreatFieldsStoredV0_43 = bincode::deserialize(value)
+        .map_err(|e| warn!("failed to deserialize HttpThreatFieldsStoredV0_43: {e}"))
         .ok()?;
 
-    // Convert to new format
-    let new = HttpThreatFields {
+    let new = HttpThreatFieldsStored {
         time: old.time,
         sensor: old.sensor,
         orig_addr: old.orig_addr,
@@ -1085,17 +1085,17 @@ fn migrate_http_threat_fields(value: &[u8]) -> Option<Vec<u8>> {
     };
 
     bincode::serialize(&new)
-        .map_err(|e| warn!("failed to serialize HttpThreatFields: {e}"))
+        .map_err(|e| warn!("failed to serialize HttpThreatFieldsStored: {e}"))
         .ok()
 }
 
 fn migrate_blocklist_dcerpc_fields(value: &[u8]) -> Option<Vec<u8>> {
     // Production events are stored using `bincode::serialize` (fixint encoding).
-    let old: BlocklistDceRpcFieldsV0_42 = bincode::deserialize(value)
-        .map_err(|e| warn!("failed to deserialize BlocklistDceRpcFieldsV0_42: {e}"))
+    let old: BlocklistDceRpcFieldsStoredV0_42 = bincode::deserialize(value)
+        .map_err(|e| warn!("failed to deserialize BlocklistDceRpcFieldsStoredV0_42: {e}"))
         .ok()?;
 
-    let new = BlocklistDceRpcFields {
+    let new = BlocklistDceRpcFieldsStored {
         sensor: old.sensor,
         orig_addr: old.orig_addr,
         orig_port: old.orig_port,
@@ -1115,18 +1115,19 @@ fn migrate_blocklist_dcerpc_fields(value: &[u8]) -> Option<Vec<u8>> {
     };
 
     bincode::serialize(&new)
-        .map_err(|e| warn!("failed to serialize BlocklistDceRpcFields: {e}"))
+        .map_err(|e| warn!("failed to serialize BlocklistDceRpcFieldsStored: {e}"))
         .ok()
 }
 
-/// Migrates a single `BlocklistDhcpFields` record by adding an empty `options` field.
+/// Migrates a single stored `BlocklistDhcpFields` record by adding an empty
+/// `options` field.
 fn migrate_blocklist_dhcp_fields(value: &[u8]) -> Option<Vec<u8>> {
     // Production events are stored using `bincode::serialize` (fixint encoding).
-    let old: BlocklistDhcpFieldsV0_42 = bincode::deserialize(value)
-        .map_err(|e| warn!("failed to deserialize BlocklistDhcpFieldsV0_42: {e}"))
+    let old: BlocklistDhcpFieldsStoredV0_42 = bincode::deserialize(value)
+        .map_err(|e| warn!("failed to deserialize BlocklistDhcpFieldsStoredV0_42: {e}"))
         .ok()?;
 
-    let new = BlocklistDhcpFields {
+    let new = BlocklistDhcpFieldsStored {
         sensor: old.sensor,
         orig_addr: old.orig_addr,
         orig_port: old.orig_port,
@@ -1163,7 +1164,7 @@ fn migrate_blocklist_dhcp_fields(value: &[u8]) -> Option<Vec<u8>> {
     };
 
     bincode::serialize(&new)
-        .map_err(|e| warn!("failed to serialize BlocklistDhcpFields: {e}"))
+        .map_err(|e| warn!("failed to serialize BlocklistDhcpFieldsStored: {e}"))
         .ok()
 }
 
@@ -2541,8 +2542,8 @@ mod tests {
     fn test_migrate_http_threat_events() {
         use std::net::IpAddr;
 
-        use super::migration_structures::HttpThreatFieldsV0_43;
-        use crate::event::{EventKind, HttpThreatFields};
+        use super::migration_structures::HttpThreatFieldsStoredV0_43;
+        use crate::event::{EventKind, HttpThreatFieldsStored};
 
         // Create test directory and database
         let db_dir = tempfile::tempdir().unwrap();
@@ -2556,8 +2557,8 @@ mod tests {
             rocksdb::OptimisticTransactionDB::open_cf(&opts, &db_path, crate::tables::MAP_NAMES)
                 .unwrap();
 
-        // Create old-format HttpThreatFields with Option<usize> cluster_id
-        let old_event = HttpThreatFieldsV0_43 {
+        // Create old-format stored HttpThreatFields with Option<usize> cluster_id
+        let old_event = HttpThreatFieldsStoredV0_43 {
             time: chrono::Utc::now(),
             sensor: "test-sensor".to_string(),
             orig_addr: "192.168.1.1".parse::<IpAddr>().unwrap(),
@@ -2626,7 +2627,7 @@ mod tests {
                 .unwrap();
 
         let value = db.get(key_bytes).unwrap().unwrap();
-        let new_event: HttpThreatFields = bincode::deserialize(&value).unwrap();
+        let new_event: HttpThreatFieldsStored = bincode::deserialize(&value).unwrap();
 
         // Verify the cluster_id was migrated from Option<usize> to Option<u32>
         assert_eq!(new_event.cluster_id, Some(42_u32));
@@ -2659,8 +2660,8 @@ mod tests {
     fn test_migrate_blocklist_dcerpc_events() {
         use std::net::IpAddr;
 
-        use crate::event::BlocklistDceRpcFieldsV0_42;
-        use crate::event::{BlocklistDceRpcFields, EventKind};
+        use super::migration_structures::BlocklistDceRpcFieldsStoredV0_42;
+        use crate::event::{BlocklistDceRpcFieldsStored, EventKind};
 
         let db_dir = tempfile::tempdir().unwrap();
         let db_path = db_dir.path().join("states.db");
@@ -2673,7 +2674,7 @@ mod tests {
             rocksdb::OptimisticTransactionDB::open_cf(&opts, &db_path, crate::tables::MAP_NAMES)
                 .unwrap();
 
-        let old_event = BlocklistDceRpcFieldsV0_42 {
+        let old_event = BlocklistDceRpcFieldsStoredV0_42 {
             sensor: "test-sensor".to_string(),
             orig_addr: "192.168.1.1".parse::<IpAddr>().unwrap(),
             orig_port: 12345,
@@ -2714,7 +2715,7 @@ mod tests {
                 .unwrap();
 
         let value = db.get(key_bytes).unwrap().unwrap();
-        let new_event: BlocklistDceRpcFields = bincode::deserialize(&value).unwrap();
+        let new_event: BlocklistDceRpcFieldsStored = bincode::deserialize(&value).unwrap();
 
         assert_eq!(new_event.sensor, "test-sensor");
         assert_eq!(new_event.orig_port, 12345);
@@ -2728,10 +2729,10 @@ mod tests {
     fn test_migrate_blocklist_dcerpc_fields_empty_strings() {
         use std::net::IpAddr;
 
-        use crate::event::BlocklistDceRpcFields;
-        use crate::event::BlocklistDceRpcFieldsV0_42;
+        use super::migration_structures::BlocklistDceRpcFieldsStoredV0_42;
+        use crate::event::BlocklistDceRpcFieldsStored;
 
-        let old_event = BlocklistDceRpcFieldsV0_42 {
+        let old_event = BlocklistDceRpcFieldsStoredV0_42 {
             sensor: "sensor".to_string(),
             orig_addr: "127.0.0.1".parse::<IpAddr>().unwrap(),
             orig_port: 1000,
@@ -2755,7 +2756,7 @@ mod tests {
         let serialized = bincode::serialize(&old_event).unwrap();
 
         let new_val = super::migrate_blocklist_dcerpc_fields(&serialized).unwrap();
-        let new_event: BlocklistDceRpcFields = bincode::deserialize(&new_val).unwrap();
+        let new_event: BlocklistDceRpcFieldsStored = bincode::deserialize(&new_val).unwrap();
 
         assert!(new_event.context.is_empty());
         assert!(new_event.request.is_empty());
@@ -2765,8 +2766,8 @@ mod tests {
     fn test_migrate_blocklist_dhcp_events() {
         use std::net::IpAddr;
 
-        use super::migration_structures::BlocklistDhcpFieldsV0_42;
-        use crate::event::{BlocklistDhcpFields, EventKind};
+        use super::migration_structures::BlocklistDhcpFieldsStoredV0_42;
+        use crate::event::{BlocklistDhcpFieldsStored, EventKind};
 
         // Create test directory and database
         let db_dir = tempfile::tempdir().unwrap();
@@ -2780,8 +2781,8 @@ mod tests {
             rocksdb::OptimisticTransactionDB::open_cf(&opts, &db_path, crate::tables::MAP_NAMES)
                 .unwrap();
 
-        // Create old-format BlocklistDhcpFields without `options` field
-        let old_event = BlocklistDhcpFieldsV0_42 {
+        // Create old-format stored BlocklistDhcpFields without `options` field
+        let old_event = BlocklistDhcpFieldsStoredV0_42 {
             sensor: "test-sensor".to_string(),
             orig_addr: "192.168.1.1".parse::<IpAddr>().unwrap(),
             orig_port: 68,
@@ -2841,7 +2842,7 @@ mod tests {
                 .unwrap();
 
         let value = db.get(key_bytes).unwrap().unwrap();
-        let new_event: BlocklistDhcpFields = bincode::deserialize(&value).unwrap();
+        let new_event: BlocklistDhcpFieldsStored = bincode::deserialize(&value).unwrap();
 
         // Verify all fields were correctly migrated
         assert!(new_event.options.is_empty());

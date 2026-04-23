@@ -61,6 +61,69 @@ pub struct BlocklistMalformedDnsFields {
     pub category: Option<EventCategory>,
 }
 
+#[derive(Deserialize, Serialize)]
+pub(crate) struct BlocklistMalformedDnsFieldsStored {
+    pub sensor: String,
+    pub orig_addr: IpAddr,
+    pub orig_port: u16,
+    pub resp_addr: IpAddr,
+    pub resp_port: u16,
+    pub proto: u8,
+    pub start_time: i64,
+    pub duration: i64,
+    pub orig_pkts: u64,
+    pub resp_pkts: u64,
+    pub orig_l2_bytes: u64,
+    pub resp_l2_bytes: u64,
+    pub trans_id: u16,
+    pub flags: u16,
+    pub question_count: u16,
+    pub answer_count: u16,
+    pub authority_count: u16,
+    pub additional_count: u16,
+    pub query_count: u32,
+    pub resp_count: u32,
+    pub query_bytes: u64,
+    pub resp_bytes: u64,
+    pub query_body: Vec<Vec<u8>>,
+    pub resp_body: Vec<Vec<u8>>,
+    pub confidence: f32,
+    pub category: Option<EventCategory>,
+}
+
+impl From<BlocklistMalformedDnsFields> for BlocklistMalformedDnsFieldsStored {
+    fn from(value: BlocklistMalformedDnsFields) -> Self {
+        Self {
+            sensor: value.sensor,
+            orig_addr: value.orig_addr,
+            orig_port: value.orig_port,
+            resp_addr: value.resp_addr,
+            resp_port: value.resp_port,
+            proto: value.proto,
+            start_time: value.start_time,
+            duration: value.duration,
+            orig_pkts: value.orig_pkts,
+            resp_pkts: value.resp_pkts,
+            orig_l2_bytes: value.orig_l2_bytes,
+            resp_l2_bytes: value.resp_l2_bytes,
+            trans_id: value.trans_id,
+            flags: value.flags,
+            question_count: value.question_count,
+            answer_count: value.answer_count,
+            authority_count: value.authority_count,
+            additional_count: value.additional_count,
+            query_count: value.query_count,
+            resp_count: value.resp_count,
+            query_bytes: value.query_bytes,
+            resp_bytes: value.resp_bytes,
+            query_body: value.query_body,
+            resp_body: value.resp_body,
+            confidence: value.confidence,
+            category: value.category,
+        }
+    }
+}
+
 impl BlocklistMalformedDnsFields {
     #[must_use]
     pub fn syslog_rfc5424(&self) -> String {
@@ -176,7 +239,7 @@ impl fmt::Display for BlocklistMalformedDns {
 }
 
 impl BlocklistMalformedDns {
-    pub(super) fn new(time: DateTime<Utc>, fields: BlocklistMalformedDnsFields) -> Self {
+    pub(super) fn new(time: DateTime<Utc>, fields: BlocklistMalformedDnsFieldsStored) -> Self {
         Self {
             time,
             sensor: fields.sensor,

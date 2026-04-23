@@ -603,24 +603,27 @@ mod tests {
         AttrCmpKind, Customer, CustomerNetwork, EventCategory, HostNetworkGroup, PacketAttr,
         ValueKind,
         event::{
-            BlocklistBootp, BlocklistBootpFields, BlocklistConn, BlocklistConnFields,
-            BlocklistDceRpc, BlocklistDceRpcFields, BlocklistDhcp, BlocklistDhcpFields,
-            BlocklistDns, BlocklistDnsFields, BlocklistFtp, BlocklistHttp, BlocklistHttpFields,
-            BlocklistKerberos, BlocklistKerberosFields, BlocklistLdap, BlocklistMalformedDns,
-            BlocklistMalformedDnsFields, BlocklistMqtt, BlocklistMqttFields, BlocklistNfs,
-            BlocklistNfsFields, BlocklistNtlm, BlocklistNtlmFields, BlocklistRadius,
-            BlocklistRadiusFields, BlocklistRdp, BlocklistRdpFields, BlocklistSmb,
-            BlocklistSmbFields, BlocklistSmtp, BlocklistSmtpFields, BlocklistSsh,
-            BlocklistSshFields, BlocklistTls, BlocklistTlsFields, CryptocurrencyMiningPool,
-            CryptocurrencyMiningPoolFields, DgaFields, DnsCovertChannel, DnsEventFields,
-            DomainGenerationAlgorithm, Event, EventFilter, ExternalDdos, ExternalDdosFields,
-            ExtraThreat, FlowKind, FtpBruteForce, FtpBruteForceFields, FtpEventFields,
-            FtpPlainText, HttpEventFields, HttpThreat, HttpThreatFields, LdapBruteForce,
-            LdapBruteForceFields, LdapEventFields, LdapPlainText, LearningMethod, LockyRansomware,
-            MultiHostPortScan, MultiHostPortScanFields, NetworkThreat, NetworkType, NonBrowser,
-            PortScan, PortScanFields, RdpBruteForce, RdpBruteForceFields, RecordType,
-            RepeatedHttpSessions, RepeatedHttpSessionsFields, SuspiciousTlsTraffic, TorConnection,
-            UnusualDestinationPattern, UnusualDestinationPatternFields, WindowsThreat,
+            BlocklistBootp, BlocklistBootpFieldsStored, BlocklistConn, BlocklistConnFieldsStored,
+            BlocklistDceRpc, BlocklistDceRpcFieldsStored, BlocklistDhcp, BlocklistDhcpFieldsStored,
+            BlocklistDns, BlocklistDnsFieldsStored, BlocklistFtp, BlocklistHttp,
+            BlocklistHttpFieldsStored, BlocklistKerberos, BlocklistKerberosFieldsStored,
+            BlocklistLdap, BlocklistMalformedDns, BlocklistMalformedDnsFieldsStored, BlocklistMqtt,
+            BlocklistMqttFieldsStored, BlocklistNfs, BlocklistNfsFieldsStored, BlocklistNtlm,
+            BlocklistNtlmFieldsStored, BlocklistRadius, BlocklistRadiusFieldsStored, BlocklistRdp,
+            BlocklistRdpFieldsStored, BlocklistSmb, BlocklistSmbFieldsStored, BlocklistSmtp,
+            BlocklistSmtpFieldsStored, BlocklistSsh, BlocklistSshFieldsStored, BlocklistTls,
+            BlocklistTlsFieldsStored, CryptocurrencyMiningPool,
+            CryptocurrencyMiningPoolFieldsStored, DgaFieldsStored, DnsCovertChannel,
+            DnsEventFieldsStored, DomainGenerationAlgorithm, Event, EventFilter, ExternalDdos,
+            ExternalDdosFieldsStored, ExtraThreatStored, FlowKind, FtpBruteForce,
+            FtpBruteForceFieldsStored, FtpEventFieldsStored, FtpPlainText, HttpEventFieldsStored,
+            HttpThreat, HttpThreatFieldsStored, LdapBruteForce, LdapBruteForceFieldsStored,
+            LdapEventFieldsStored, LdapPlainText, LearningMethod, LockyRansomware,
+            MultiHostPortScan, MultiHostPortScanFieldsStored, NetworkThreatStored, NetworkType,
+            NonBrowser, PortScan, PortScanFieldsStored, RdpBruteForce, RdpBruteForceFieldsStored,
+            RecordType, RepeatedHttpSessions, RepeatedHttpSessionsFieldsStored,
+            SuspiciousTlsTraffic, TorConnection, UnusualDestinationPattern,
+            UnusualDestinationPatternFieldsStored, WindowsThreatStored,
         },
         types::Endpoint,
     };
@@ -1630,8 +1633,8 @@ mod tests {
         }
     }
 
-    fn blocklist_bootp_fields() -> BlocklistBootpFields {
-        BlocklistBootpFields {
+    fn blocklist_bootp_fields() -> BlocklistBootpFieldsStored {
+        BlocklistBootpFieldsStored {
             sensor: "sensor".to_string(),
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             orig_port: 68,
@@ -1664,8 +1667,8 @@ mod tests {
         }
     }
 
-    fn blocklist_conn_fields() -> BlocklistConnFields {
-        BlocklistConnFields {
+    fn blocklist_conn_fields() -> BlocklistConnFieldsStored {
+        BlocklistConnFieldsStored {
             sensor: "collector1".to_string(),
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             orig_port: 10000,
@@ -1691,8 +1694,8 @@ mod tests {
         }
     }
 
-    fn blocklist_dcerpc_fields() -> BlocklistDceRpcFields {
-        BlocklistDceRpcFields {
+    fn blocklist_dcerpc_fields() -> BlocklistDceRpcFieldsStored {
+        BlocklistDceRpcFieldsStored {
             sensor: "sensor".to_string(),
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             orig_port: 10000,
@@ -1716,8 +1719,8 @@ mod tests {
         }
     }
 
-    fn blocklist_dhcp_fields() -> BlocklistDhcpFields {
-        BlocklistDhcpFields {
+    fn blocklist_dhcp_fields() -> BlocklistDhcpFieldsStored {
+        BlocklistDhcpFieldsStored {
             sensor: "sensor".to_string(),
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             orig_port: 68,
@@ -1759,8 +1762,8 @@ mod tests {
         }
     }
 
-    fn blocklist_dns_fields() -> BlocklistDnsFields {
-        BlocklistDnsFields {
+    fn blocklist_dns_fields() -> BlocklistDnsFieldsStored {
+        BlocklistDnsFieldsStored {
             sensor: "sensor".to_string(),
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             orig_port: 10000,
@@ -1794,8 +1797,8 @@ mod tests {
         }
     }
 
-    fn blocklist_http_fields() -> BlocklistHttpFields {
-        BlocklistHttpFields {
+    fn blocklist_http_fields() -> BlocklistHttpFieldsStored {
+        BlocklistHttpFieldsStored {
             sensor: "sensor".to_string(),
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             orig_port: 10000,
@@ -1837,8 +1840,8 @@ mod tests {
         }
     }
 
-    fn blocklist_kerberos_fields() -> BlocklistKerberosFields {
-        BlocklistKerberosFields {
+    fn blocklist_kerberos_fields() -> BlocklistKerberosFieldsStored {
+        BlocklistKerberosFieldsStored {
             sensor: "sensor".to_string(),
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             orig_port: 10000,
@@ -1869,8 +1872,8 @@ mod tests {
         }
     }
 
-    fn blocklist_mqtt_fields() -> BlocklistMqttFields {
-        BlocklistMqttFields {
+    fn blocklist_mqtt_fields() -> BlocklistMqttFieldsStored {
+        BlocklistMqttFieldsStored {
             sensor: "sensor".to_string(),
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             orig_port: 10000,
@@ -1898,8 +1901,8 @@ mod tests {
         }
     }
 
-    fn blocklist_nfs_fields() -> BlocklistNfsFields {
-        BlocklistNfsFields {
+    fn blocklist_nfs_fields() -> BlocklistNfsFieldsStored {
+        BlocklistNfsFieldsStored {
             sensor: "sensor".to_string(),
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             orig_port: 10000,
@@ -1923,8 +1926,8 @@ mod tests {
         }
     }
 
-    fn blocklist_ntlm_fields() -> BlocklistNtlmFields {
-        BlocklistNtlmFields {
+    fn blocklist_ntlm_fields() -> BlocklistNtlmFieldsStored {
+        BlocklistNtlmFieldsStored {
             sensor: "sensor".to_string(),
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             orig_port: 10000,
@@ -1951,8 +1954,8 @@ mod tests {
         }
     }
 
-    fn blocklist_rdp_fields() -> BlocklistRdpFields {
-        BlocklistRdpFields {
+    fn blocklist_rdp_fields() -> BlocklistRdpFieldsStored {
+        BlocklistRdpFieldsStored {
             sensor: "sensor".to_string(),
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             orig_port: 10000,
@@ -1975,8 +1978,8 @@ mod tests {
         }
     }
 
-    fn blocklist_smb_fields() -> BlocklistSmbFields {
-        BlocklistSmbFields {
+    fn blocklist_smb_fields() -> BlocklistSmbFieldsStored {
+        BlocklistSmbFieldsStored {
             sensor: "sensor".to_string(),
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             orig_port: 10000,
@@ -2009,8 +2012,8 @@ mod tests {
         }
     }
 
-    fn blocklist_smtp_fields() -> BlocklistSmtpFields {
-        BlocklistSmtpFields {
+    fn blocklist_smtp_fields() -> BlocklistSmtpFieldsStored {
+        BlocklistSmtpFieldsStored {
             sensor: "sensor".to_string(),
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             orig_port: 10000,
@@ -2039,8 +2042,8 @@ mod tests {
         }
     }
 
-    fn blocklist_ssh_fields() -> BlocklistSshFields {
-        BlocklistSshFields {
+    fn blocklist_ssh_fields() -> BlocklistSshFieldsStored {
+        BlocklistSshFieldsStored {
             sensor: "sensor".to_string(),
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             orig_port: 10000,
@@ -2075,8 +2078,8 @@ mod tests {
         }
     }
 
-    fn blocklist_tls_fields() -> BlocklistTlsFields {
-        BlocklistTlsFields {
+    fn blocklist_tls_fields() -> BlocklistTlsFieldsStored {
+        BlocklistTlsFieldsStored {
             sensor: "sensor".to_string(),
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             orig_port: 10000,
@@ -2119,8 +2122,8 @@ mod tests {
         }
     }
 
-    fn ldap_event_fields() -> LdapEventFields {
-        LdapEventFields {
+    fn ldap_event_fields() -> LdapEventFieldsStored {
+        LdapEventFieldsStored {
             sensor: "sensor".to_string(),
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             orig_port: 10000,
@@ -2149,7 +2152,7 @@ mod tests {
         }
     }
 
-    fn ftp_event_fields() -> FtpEventFields {
+    fn ftp_event_fields() -> FtpEventFieldsStored {
         use crate::event::ftp::FtpCommand;
 
         let command = FtpCommand {
@@ -2165,7 +2168,7 @@ mod tests {
             file_id: "123".to_string(),
         };
 
-        FtpEventFields {
+        FtpEventFieldsStored {
             sensor: "collector1".to_string(),
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             orig_port: 10000,
@@ -2190,8 +2193,8 @@ mod tests {
         }
     }
 
-    fn port_scan_fields() -> PortScanFields {
-        PortScanFields {
+    fn port_scan_fields() -> PortScanFieldsStored {
+        PortScanFieldsStored {
             sensor: String::new(),
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
@@ -2212,8 +2215,8 @@ mod tests {
         }
     }
 
-    fn multi_host_port_scan_fields() -> MultiHostPortScanFields {
-        MultiHostPortScanFields {
+    fn multi_host_port_scan_fields() -> MultiHostPortScanFieldsStored {
+        MultiHostPortScanFieldsStored {
             sensor: String::new(),
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             resp_addrs: vec![
@@ -2237,8 +2240,8 @@ mod tests {
         }
     }
 
-    fn external_ddos_fields() -> ExternalDdosFields {
-        ExternalDdosFields {
+    fn external_ddos_fields() -> ExternalDdosFieldsStored {
+        ExternalDdosFieldsStored {
             sensor: String::new(),
             orig_addrs: vec![
                 IpAddr::V4(Ipv4Addr::LOCALHOST),
@@ -2261,8 +2264,8 @@ mod tests {
         }
     }
 
-    fn crypto_miining_pool_fields() -> CryptocurrencyMiningPoolFields {
-        CryptocurrencyMiningPoolFields {
+    fn crypto_miining_pool_fields() -> CryptocurrencyMiningPoolFieldsStored {
+        CryptocurrencyMiningPoolFieldsStored {
             sensor: "sensro".to_string(),
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             orig_port: 10000,
@@ -2297,8 +2300,8 @@ mod tests {
         }
     }
 
-    fn ftp_brute_force_fields() -> FtpBruteForceFields {
-        FtpBruteForceFields {
+    fn ftp_brute_force_fields() -> FtpBruteForceFieldsStored {
+        FtpBruteForceFieldsStored {
             sensor: String::new(),
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
@@ -2321,9 +2324,9 @@ mod tests {
         }
     }
 
-    fn repeated_http_sessions_fiedls() -> RepeatedHttpSessionsFields {
+    fn repeated_http_sessions_fiedls() -> RepeatedHttpSessionsFieldsStored {
         let now = chrono::Utc::now().timestamp_nanos_opt().unwrap();
-        RepeatedHttpSessionsFields {
+        RepeatedHttpSessionsFieldsStored {
             sensor: "sensor".to_string(),
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             orig_port: 10000,
@@ -2337,8 +2340,8 @@ mod tests {
         }
     }
 
-    fn dga_fields() -> DgaFields {
-        DgaFields {
+    fn dga_fields() -> DgaFieldsStored {
+        DgaFieldsStored {
             sensor: "sensor".to_string(),
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             orig_port: 10000,
@@ -2380,8 +2383,8 @@ mod tests {
         }
     }
 
-    fn http_event_fields() -> HttpEventFields {
-        HttpEventFields {
+    fn http_event_fields() -> HttpEventFieldsStored {
+        HttpEventFieldsStored {
             sensor: "sensor".to_string(),
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             orig_port: 10000,
@@ -2423,8 +2426,8 @@ mod tests {
         }
     }
 
-    fn ldap_brute_force_fields() -> LdapBruteForceFields {
-        LdapBruteForceFields {
+    fn ldap_brute_force_fields() -> LdapBruteForceFieldsStored {
+        LdapBruteForceFieldsStored {
             sensor: String::new(),
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
@@ -2449,8 +2452,8 @@ mod tests {
         }
     }
 
-    fn rdp_brute_force_fields() -> RdpBruteForceFields {
-        RdpBruteForceFields {
+    fn rdp_brute_force_fields() -> RdpBruteForceFieldsStored {
+        RdpBruteForceFieldsStored {
             sensor: String::new(),
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             resp_addrs: vec![
@@ -2473,8 +2476,8 @@ mod tests {
         }
     }
 
-    fn dns_event_fields() -> DnsEventFields {
-        DnsEventFields {
+    fn dns_event_fields() -> DnsEventFieldsStored {
+        DnsEventFieldsStored {
             sensor: "sensor".to_string(),
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             orig_port: 10000,
@@ -2508,8 +2511,8 @@ mod tests {
         }
     }
 
-    fn network_threat() -> NetworkThreat {
-        NetworkThreat {
+    fn network_threat() -> NetworkThreatStored {
+        NetworkThreatStored {
             time: Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap(),
             sensor: "sensor".to_string(),
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
@@ -2536,8 +2539,8 @@ mod tests {
         }
     }
 
-    fn extra_threat() -> ExtraThreat {
-        ExtraThreat {
+    fn extra_threat() -> ExtraThreatStored {
+        ExtraThreatStored {
             time: Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap(),
             sensor: "sensor".to_string(),
             service: "service".to_string(),
@@ -2553,8 +2556,8 @@ mod tests {
         }
     }
 
-    fn windows_threat() -> WindowsThreat {
-        WindowsThreat {
+    fn windows_threat() -> WindowsThreatStored {
+        WindowsThreatStored {
             time: Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap(),
             sensor: "sensor".to_string(),
             service: "notepad".to_string(),
@@ -2576,8 +2579,8 @@ mod tests {
         }
     }
 
-    fn http_threat_fields() -> HttpThreatFields {
-        HttpThreatFields {
+    fn http_threat_fields() -> HttpThreatFieldsStored {
+        HttpThreatFieldsStored {
             time: Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap(),
             sensor: "sensor".to_string(),
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
@@ -2624,8 +2627,8 @@ mod tests {
             category: Some(EventCategory::Reconnaissance),
         }
     }
-    fn blocklist_radius_fields() -> BlocklistRadiusFields {
-        BlocklistRadiusFields {
+    fn blocklist_radius_fields() -> BlocklistRadiusFieldsStored {
+        BlocklistRadiusFieldsStored {
             sensor: "sensor".to_string(),
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             orig_port: 10000,
@@ -2661,8 +2664,8 @@ mod tests {
         }
     }
 
-    fn blocklist_malformed_dns_fields() -> BlocklistMalformedDnsFields {
-        BlocklistMalformedDnsFields {
+    fn blocklist_malformed_dns_fields() -> BlocklistMalformedDnsFieldsStored {
+        BlocklistMalformedDnsFieldsStored {
             sensor: "sensor".to_string(),
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             orig_port: 10000,
@@ -2696,8 +2699,8 @@ mod tests {
         }
     }
 
-    fn unusual_destination_pattern_fields() -> UnusualDestinationPatternFields {
-        UnusualDestinationPatternFields {
+    fn unusual_destination_pattern_fields() -> UnusualDestinationPatternFieldsStored {
+        UnusualDestinationPatternFieldsStored {
             sensor: "sensor".to_string(),
             start_time: Utc
                 .with_ymd_and_hms(1970, 1, 1, 0, 0, 0)

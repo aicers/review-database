@@ -43,10 +43,8 @@ macro_rules! find_mqtt_attr_by_kind {
     }};
 }
 
-pub type BlocklistMqttFields = BlocklistMqttFieldsV0_42;
-
 #[derive(Serialize, Deserialize)]
-pub struct BlocklistMqttFieldsV0_42 {
+pub struct BlocklistMqttFields {
     pub sensor: String,
     pub orig_addr: IpAddr,
     pub orig_port: u16,
@@ -68,6 +66,59 @@ pub struct BlocklistMqttFieldsV0_42 {
     pub suback_reason: Vec<u8>,
     pub confidence: f32,
     pub category: Option<EventCategory>,
+}
+
+pub(crate) type BlocklistMqttFieldsStored = BlocklistMqttFieldsStoredV0_42;
+
+#[derive(Deserialize, Serialize)]
+pub(crate) struct BlocklistMqttFieldsStoredV0_42 {
+    pub sensor: String,
+    pub orig_addr: IpAddr,
+    pub orig_port: u16,
+    pub resp_addr: IpAddr,
+    pub resp_port: u16,
+    pub proto: u8,
+    pub start_time: i64,
+    pub duration: i64,
+    pub orig_pkts: u64,
+    pub resp_pkts: u64,
+    pub orig_l2_bytes: u64,
+    pub resp_l2_bytes: u64,
+    pub protocol: String,
+    pub version: u8,
+    pub client_id: String,
+    pub connack_reason: u8,
+    pub subscribe: Vec<String>,
+    pub suback_reason: Vec<u8>,
+    pub confidence: f32,
+    pub category: Option<EventCategory>,
+}
+
+impl From<BlocklistMqttFields> for BlocklistMqttFieldsStored {
+    fn from(value: BlocklistMqttFields) -> Self {
+        Self {
+            sensor: value.sensor,
+            orig_addr: value.orig_addr,
+            orig_port: value.orig_port,
+            resp_addr: value.resp_addr,
+            resp_port: value.resp_port,
+            proto: value.proto,
+            start_time: value.start_time,
+            duration: value.duration,
+            orig_pkts: value.orig_pkts,
+            resp_pkts: value.resp_pkts,
+            orig_l2_bytes: value.orig_l2_bytes,
+            resp_l2_bytes: value.resp_l2_bytes,
+            protocol: value.protocol,
+            version: value.version,
+            client_id: value.client_id,
+            connack_reason: value.connack_reason,
+            subscribe: value.subscribe,
+            suback_reason: value.suback_reason,
+            confidence: value.confidence,
+            category: value.category,
+        }
+    }
 }
 
 impl BlocklistMqttFields {
@@ -159,7 +210,7 @@ impl fmt::Display for BlocklistMqtt {
 }
 
 impl BlocklistMqtt {
-    pub(super) fn new(time: DateTime<Utc>, fields: BlocklistMqttFields) -> Self {
+    pub(super) fn new(time: DateTime<Utc>, fields: BlocklistMqttFieldsStored) -> Self {
         Self {
             time,
             sensor: fields.sensor,
