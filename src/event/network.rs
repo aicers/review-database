@@ -62,10 +62,8 @@ pub struct NetworkThreat {
     pub triage_scores: Option<Vec<TriageScore>>,
 }
 
-pub type NetworkThreatStored = NetworkThreatStoredV0_42;
-
 #[derive(Deserialize, Serialize)]
-pub struct NetworkThreatStoredV0_42 {
+pub struct NetworkThreatStored {
     #[serde(with = "ts_nanoseconds")]
     pub time: DateTime<Utc>,
     pub sensor: String,
@@ -95,36 +93,6 @@ pub struct NetworkThreatStoredV0_42 {
 
 impl From<NetworkThreat> for NetworkThreatStored {
     fn from(value: NetworkThreat) -> Self {
-        Self {
-            time: value.time,
-            sensor: value.sensor,
-            orig_addr: value.orig_addr,
-            orig_port: value.orig_port,
-            resp_addr: value.resp_addr,
-            resp_port: value.resp_port,
-            proto: value.proto,
-            service: value.service,
-            start_time: value.start_time,
-            duration: value.duration,
-            orig_pkts: value.orig_pkts,
-            resp_pkts: value.resp_pkts,
-            orig_l2_bytes: value.orig_l2_bytes,
-            resp_l2_bytes: value.resp_l2_bytes,
-            content: value.content,
-            db_name: value.db_name,
-            rule_id: value.rule_id,
-            matched_to: value.matched_to,
-            cluster_id: value.cluster_id,
-            attack_kind: value.attack_kind,
-            confidence: value.confidence,
-            category: value.category,
-            triage_scores: value.triage_scores,
-        }
-    }
-}
-
-impl From<NetworkThreatStored> for NetworkThreat {
-    fn from(value: NetworkThreatStored) -> Self {
         Self {
             time: value.time,
             sensor: value.sensor,

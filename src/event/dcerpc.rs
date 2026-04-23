@@ -7,29 +7,6 @@ use serde::{Deserialize, Serialize};
 use super::{EventCategory, LearningMethod, ThreatLevel, TriageScore, common::Match};
 use crate::event::common::{AttrValue, triage_scores_to_string};
 
-#[derive(Serialize, Deserialize)]
-pub struct BlocklistDceRpcFieldsV0_42 {
-    pub sensor: String,
-    pub orig_addr: IpAddr,
-    pub orig_port: u16,
-    pub resp_addr: IpAddr,
-    pub resp_port: u16,
-    pub proto: u8,
-    /// Timestamp in nanoseconds since the Unix epoch (UTC).
-    pub start_time: i64,
-    pub duration: i64,
-    pub orig_pkts: u64,
-    pub resp_pkts: u64,
-    pub orig_l2_bytes: u64,
-    pub resp_l2_bytes: u64,
-    pub rtt: i64,
-    pub named_pipe: String,
-    pub endpoint: String,
-    pub operation: String,
-    pub confidence: f32,
-    pub category: Option<EventCategory>,
-}
-
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct DceRpcContext {
     pub id: u16,

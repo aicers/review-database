@@ -28,10 +28,8 @@ pub struct ExtraThreat {
     pub triage_scores: Option<Vec<TriageScore>>,
 }
 
-pub type ExtraThreatStored = ExtraThreatStoredV0_42;
-
 #[derive(Deserialize, Serialize)]
-pub struct ExtraThreatStoredV0_42 {
+pub struct ExtraThreatStored {
     #[serde(with = "ts_nanoseconds")]
     pub time: DateTime<Utc>,
     pub sensor: String,
@@ -49,25 +47,6 @@ pub struct ExtraThreatStoredV0_42 {
 
 impl From<ExtraThreat> for ExtraThreatStored {
     fn from(value: ExtraThreat) -> Self {
-        Self {
-            time: value.time,
-            sensor: value.sensor,
-            service: value.service,
-            content: value.content,
-            db_name: value.db_name,
-            rule_id: value.rule_id,
-            matched_to: value.matched_to,
-            cluster_id: value.cluster_id,
-            attack_kind: value.attack_kind,
-            confidence: value.confidence,
-            category: value.category,
-            triage_scores: value.triage_scores,
-        }
-    }
-}
-
-impl From<ExtraThreatStored> for ExtraThreat {
-    fn from(value: ExtraThreatStored) -> Self {
         Self {
             time: value.time,
             sensor: value.sensor,
