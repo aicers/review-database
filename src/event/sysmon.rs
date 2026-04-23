@@ -56,10 +56,8 @@ pub struct WindowsThreat {
     pub triage_scores: Option<Vec<TriageScore>>,
 }
 
-pub type WindowsThreatStored = WindowsThreatStoredV0_42;
-
 #[derive(Deserialize, Serialize)]
-pub struct WindowsThreatStoredV0_42 {
+pub struct WindowsThreatStored {
     #[serde(with = "ts_nanoseconds")]
     pub time: DateTime<Utc>,
     pub sensor: String,
@@ -83,31 +81,6 @@ pub struct WindowsThreatStoredV0_42 {
 
 impl From<WindowsThreat> for WindowsThreatStored {
     fn from(value: WindowsThreat) -> Self {
-        Self {
-            time: value.time,
-            sensor: value.sensor,
-            service: value.service,
-            agent_name: value.agent_name,
-            agent_id: value.agent_id,
-            process_guid: value.process_guid,
-            process_id: value.process_id,
-            image: value.image,
-            user: value.user,
-            content: value.content,
-            db_name: value.db_name,
-            rule_id: value.rule_id,
-            matched_to: value.matched_to,
-            cluster_id: value.cluster_id,
-            attack_kind: value.attack_kind,
-            confidence: value.confidence,
-            category: value.category,
-            triage_scores: value.triage_scores,
-        }
-    }
-}
-
-impl From<WindowsThreatStored> for WindowsThreat {
-    fn from(value: WindowsThreatStored) -> Self {
         Self {
             time: value.time,
             sensor: value.sensor,

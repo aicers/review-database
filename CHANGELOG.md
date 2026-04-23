@@ -96,6 +96,9 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   type (the message-boundary formatter used by `EventMessage`); the
   `Display`, `Match`, and `threat_level` implementations now live on the
   stored type, and the `Event` enum carries the stored variant directly.
+- Refactored internal event storage and migration paths to keep producer-facing
+  event schemas separate from on-disk stored schemas. No external wire-format
+  change is intended.
 
 ## [0.44.1] - 2026-04-16
 
