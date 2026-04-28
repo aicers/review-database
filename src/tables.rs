@@ -22,6 +22,7 @@ mod network;
 mod node;
 mod outlier_info;
 mod qualifier;
+mod retention_config;
 mod sampling_policy;
 mod scores;
 mod status;
@@ -49,7 +50,7 @@ pub use self::cluster::Cluster;
 pub use self::column_stats::{ColumnStats, TopColumnsOfCluster, TopMultimaps};
 pub use self::config::{
     KEY_BACKUP_DURATION, KEY_BACKUP_TIME, KEY_EVENT_RETENTION_PERIOD_DAYS, KEY_EXPIRY_PERIOD,
-    KEY_LOCKOUT_DURATION, KEY_LOCKOUT_THRESHOLD, KEY_NUM_OF_BACKUPS_TO_KEEP,
+    KEY_LOCKOUT_DURATION, KEY_LOCKOUT_THRESHOLD, KEY_NUM_OF_BACKUPS_TO_KEEP, KEY_RETENTION_PERIOD,
     KEY_SUSPENSION_THRESHOLD,
 };
 pub use self::csv_column_extra::CsvColumnExtra;
@@ -71,6 +72,7 @@ pub use self::node::{
     Update as NodeUpdate,
 };
 pub use self::outlier_info::{Key as OutlierInfoKey, OutlierInfo, Value as OutlierInfoValue};
+pub use self::retention_config::{RetentionConfig, RetentionConfigUpdate};
 pub use self::sampling_policy::{
     Interval as SamplingInterval, Kind as SamplingKind, Period as SamplingPeriod, SamplingPolicy,
     Update as SamplingPolicyUpdate,
