@@ -5,6 +5,22 @@ file is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), and
 this project adheres to [Semantic
 Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- **BREAKING**: Renamed `TrafficFilter.agent` field to `host_fqdn` to
+  reflect that it stores a host fully-qualified domain name. The
+  on-disk serialization key remains `agent` via `#[serde(rename)]`,
+  so no migration is required. Method parameters previously named
+  `agent`/`agents` on `Table<'_, TrafficFilter>` are now named
+  `host_fqdn`/`host_fqdns`.
+- **BREAKING**: Renamed `ExternalService.node` field to `node_id` to
+  clarify that it holds a node identifier. The on-disk RocksDB key
+  is unchanged, so no migration is required. The `node` parameter
+  on `Table::<ExternalService>::get` and `Table::<ExternalService>::delete`
+  is now named `node_id`.
+
 ## [0.45.0] - 2026-05-09
 
 ### Added

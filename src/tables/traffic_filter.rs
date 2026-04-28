@@ -13,7 +13,8 @@ use crate::{Iterable, Map, Table, UniqueKey, types::FromKeyValue};
 
 #[derive(Clone, Deserialize, Serialize)]
 pub struct TrafficFilter {
-    pub agent: String,
+    #[serde(rename = "agent")]
+    pub host_fqdn: String,
     pub rules: HashMap<IpNet, ProtocolPorts>,
     pub last_modification_time: DateTime<Utc>,
     pub update_time: Option<DateTime<Utc>>,
@@ -30,7 +31,7 @@ impl UniqueKey for TrafficFilter {
     type AsBytes<'a> = &'a [u8];
 
     fn unique_key(&self) -> &[u8] {
-        self.agent.as_bytes()
+        self.host_fqdn.as_bytes()
     }
 }
 
@@ -47,7 +48,7 @@ type RuleList = Vec<(IpNet, Option<Vec<u16>>, Option<Vec<u16>>)>;
 impl TrafficFilter {
     #[must_use]
     pub fn new(
-        agent: &str,
+        host_fqdn: &str,
         net: IpNet,
         tcp_ports: Option<Vec<u16>>,
         udp_ports: Option<Vec<u16>>,
@@ -62,7 +63,7 @@ impl TrafficFilter {
             },
         );
         Self {
-            agent: agent.to_string(),
+            host_fqdn: host_fqdn.to_string(),
             rules,
             last_modification_time: Utc::now(),
             update_time: None,
@@ -146,20 +147,20 @@ impl<'d> Table<'d, TrafficFilter> {
         Map::open(db, super::TRAFFIC_FILTER_RULES).map(Table::new)
     }
 
-    /// Returns `traffic_filter` given `agent`
+    /// Returns `traffic_filter` for the given `host_fqdn`.
     ///
     /// # Errors
     ///
     /// * Return an error if it fails to get rules from database
     /// * Return an error if it fails to decode rules
-    pub fn get(&self, agent: &str) -> Result<Option<TrafficFilter>> {
+    pub fn get(&self, host_fqdn: &str) -> Result<Option<TrafficFilter>> {
         self.map
-            .get(agent.as_bytes())?
-            .map(|value| TrafficFilter::from_key_value(agent.as_bytes(), value.as_ref()))
+            .get(host_fqdn.as_bytes())?
+            .map(|value| TrafficFilter::from_key_value(host_fqdn.as_bytes(), value.as_ref()))
             .transpose()
     }
 
-    /// Returns `traffic_filter`s available in the database from `Some(agents)`
+    /// Returns `traffic_filter`s available in the database from `Some(host_fqdns)`
     /// or all the traffic filters in the database when None is supplied.
     ///
     /// # Errors
@@ -168,18 +169,18 @@ impl<'d> Table<'d, TrafficFilter> {
     /// * Return an error if it fails to decode rules
     pub fn get_list<S: AsRef<str>>(
         &self,
-        agents: &Option<Vec<S>>,
+        host_fqdns: &Option<Vec<S>>,
     ) -> Result<Option<Vec<TrafficFilter>>> {
-        let Some(agents) = agents else {
+        let Some(host_fqdns) = host_fqdns else {
             return self
                 .iter(Direction::Forward, None)
                 .collect::<Result<Vec<_>>>()
                 .map(|list| if list.is_empty() { None } else { Some(list) });
         };
 
-        agents
+        host_fqdns
             .iter()
-            .filter_map(|agent| self.get(agent.as_ref()).transpose())
+            .filter_map(|host_fqdn| self.get(host_fqdn.as_ref()).transpose())
             .collect::<Result<Vec<_>>>()
             .map(|list| if list.is_empty() { None } else { Some(list) })
     }
@@ -194,14 +195,14 @@ impl<'d> Table<'d, TrafficFilter> {
     /// * Returns an error if it fails to insert rule in database
     pub fn add_rules(
         &self,
-        agent: &str,
+        host_fqdn: &str,
         network: IpNet,
         tcp_ports: Option<Vec<u16>>,
         udp_ports: Option<Vec<u16>>,
         description: Option<String>,
     ) -> Result<usize> {
-        let Some(mut entry) = self.get(agent)? else {
-            let entry = TrafficFilter::new(agent, network, tcp_ports, udp_ports, description);
+        let Some(mut entry) = self.get(host_fqdn)? else {
+            let entry = TrafficFilter::new(host_fqdn, network, tcp_ports, udp_ports, description);
             return self.put(&entry).map(|()| entry.len());
         };
         if let Some(net) = entry.check_duplicate(network) {
@@ -223,19 +224,19 @@ impl<'d> Table<'d, TrafficFilter> {
     /// # Errors
     ///
     /// * Returns an error if it fails to open database
-    /// * Returns an error if agent is not exist in database
-    /// * Returns an error if network of agent is not exist in the rules of agent
+    /// * Returns an error if `host_fqdn` is not exist in database
+    /// * Returns an error if network of `host_fqdn` is not exist in the rules
     /// * Returns an error if it fails to write updated rules in database
     pub fn update(
         &self,
-        agent: &str,
+        host_fqdn: &str,
         network: IpNet,
         tcp_ports: Option<Vec<u16>>,
         udp_ports: Option<Vec<u16>>,
         description: Option<String>,
     ) -> Result<usize> {
-        let Some(mut entry) = self.get(agent)? else {
-            bail!("Agent not found");
+        let Some(mut entry) = self.get(host_fqdn)? else {
+            bail!("Host not found");
         };
         if let Some(ports) = entry.rules.get_mut(&network) {
             ports.update(tcp_ports, udp_ports);
@@ -249,15 +250,15 @@ impl<'d> Table<'d, TrafficFilter> {
         self.put(&entry).map(|()| entry.len())
     }
 
-    /// Removes some rules. Agent will be removed if rules is empty
+    /// Removes some rules. The entry will be removed if rules become empty.
     ///
     /// # Errors
     ///
     /// * Returns an error if it fails to open database
     /// * Returns an error if rule is not exist
     /// * Returns an error if it fails to write updated rules in database
-    pub fn remove_rules(&self, agent: &str, networks: &[IpNet]) -> Result<usize> {
-        let Some(mut entry) = self.get(agent)? else {
+    pub fn remove_rules(&self, host_fqdn: &str, networks: &[IpNet]) -> Result<usize> {
+        let Some(mut entry) = self.get(host_fqdn)? else {
             return Ok(0);
         };
         for network in networks {
@@ -265,21 +266,21 @@ impl<'d> Table<'d, TrafficFilter> {
         }
         entry.last_modification_time = Utc::now();
         if entry.rules.is_empty() {
-            self.remove(agent).map(|()| 0)
+            self.remove(host_fqdn).map(|()| 0)
         } else {
             self.put(&entry).map(|()| entry.len())
         }
     }
 
-    /// Updates `update_time` for given `agent`
+    /// Updates `update_time` for the given `host_fqdn`.
     ///
     /// # Errors
     ///
     /// * Returns an error if it fails to open database
     /// * Returns an error if rule is not exist
     /// * Returns an error if it fails to write updated rules in database
-    pub fn update_time(&self, agent: &str) -> Result<()> {
-        let Some(mut entry) = self.get(agent)? else {
+    pub fn update_time(&self, host_fqdn: &str) -> Result<()> {
+        let Some(mut entry) = self.get(host_fqdn)? else {
             return Ok(());
         };
         entry.update_time = Some(Utc::now());
@@ -287,13 +288,13 @@ impl<'d> Table<'d, TrafficFilter> {
         self.put(&entry)
     }
 
-    /// Removes a `traffic_filter` with the given `agent`.
+    /// Removes a `traffic_filter` with the given `host_fqdn`.
     ///
     /// # Errors
     ///
     /// Returns an error if the database operation fails.
-    pub fn remove(&self, agent: &str) -> Result<()> {
-        self.map.delete(agent.as_bytes())
+    pub fn remove(&self, host_fqdn: &str) -> Result<()> {
+        self.map.delete(host_fqdn.as_bytes())
     }
 }
 
@@ -313,22 +314,22 @@ mod test {
 
         assert_eq!(table.iter(Direction::Forward, None).count(), 0);
 
-        let agent = "piglet@node1";
+        let host_fqdn = "node1.example.com";
         let network = "172.30.1.0/24";
         let tcp_ports = Some(vec![80, 8000]);
 
-        let entry = create_entry(agent, network, tcp_ports);
+        let entry = create_entry(host_fqdn, network, tcp_ports);
 
         assert!(table.insert(&entry).is_ok());
         assert_eq!(table.iter(Direction::Forward, None).count(), 1);
 
-        let res = table.get(agent);
+        let res = table.get(host_fqdn);
         assert!(res.is_ok());
         if let Ok(tf) = res {
             assert!(tf.is_some());
             if let Some(tf) = tf {
                 assert!(tf.update_time.is_none());
-                assert_eq!(&tf.agent, agent);
+                assert_eq!(&tf.host_fqdn, host_fqdn);
                 assert!(tf.rules.contains_key(&network.parse().unwrap()));
             }
         }
@@ -339,7 +340,9 @@ mod test {
 
         assert_eq!(table.remove_rules("something else", &[]).ok(), Some(0));
         assert_eq!(
-            table.remove_rules(agent, &[network.parse().unwrap()]).ok(),
+            table
+                .remove_rules(host_fqdn, &[network.parse().unwrap()])
+                .ok(),
             Some(0)
         );
         assert_eq!(table.iter(Direction::Forward, None).count(), 0);
@@ -352,27 +355,27 @@ mod test {
 
         assert!(table.get("unknown_host").unwrap().is_none());
 
-        let agent = "node1";
+        let host_fqdn = "node1.example.com";
         let any = "0.0.0.0/0";
         let tcp = Some(vec![80, 8000]);
-        let entry = create_entry(agent, any, tcp.clone());
+        let entry = create_entry(host_fqdn, any, tcp.clone());
         assert!(table.insert(&entry).is_ok());
 
         assert!(
             table
-                .add_rules(agent, any.parse().unwrap(), Some(vec![80]), None, None)
+                .add_rules(host_fqdn, any.parse().unwrap(), Some(vec![80]), None, None)
                 .is_err()
         );
 
         let network = "172.30.0.0/16".parse().unwrap();
-        assert!(table.add_rules(agent, network, tcp, None, None).is_ok());
+        assert!(table.add_rules(host_fqdn, network, tcp, None, None).is_ok());
 
         let new_tcp_ports = vec![8080, 8888];
         let subnet_network = "172.30.1.0/24".parse().unwrap();
         assert!(
             table
                 .add_rules(
-                    agent,
+                    host_fqdn,
                     subnet_network,
                     Some(new_tcp_ports.clone()),
                     None,
@@ -383,11 +386,11 @@ mod test {
 
         assert!(
             table
-                .update(agent, network, Some(new_tcp_ports), None, None)
+                .update(host_fqdn, network, Some(new_tcp_ports), None, None)
                 .is_ok()
         );
 
-        let r = table.get(agent);
+        let r = table.get(host_fqdn);
         assert!(r.is_ok());
         if let Ok(Some(tf)) = r
             && let Some(rule) = tf.rules.get(&network)
