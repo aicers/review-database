@@ -4779,10 +4779,10 @@ mod tests {
             error_code: 0,
             client_realm: "EXAMPLE.COM".to_string(),
             cname_type: 1,
-            client_name: vec!["user1".to_string()],
+            cname: vec!["user1".to_string()],
             realm: "EXAMPLE.COM".to_string(),
             sname_type: 1,
-            service_name: vec!["krbtgt/EXAMPLE.COM".to_string()],
+            sname: vec!["krbtgt/EXAMPLE.COM".to_string()],
             confidence: 1.0,
             category: Some(EventCategory::InitialAccess),
         };
@@ -4798,7 +4798,7 @@ mod tests {
         let (_, _, syslog_message) = message.unwrap();
         assert_eq!(
             &syslog_message,
-            r#"time="1970-01-01T01:01:01+00:00" event_kind="BlocklistKerberos" category="InitialAccess" sensor="collector1" orig_addr="127.0.0.1" orig_port="10000" resp_addr="127.0.0.2" resp_port="88" proto="17" start_time="1970-01-01T00:00:00+00:00" duration="0" orig_pkts="0" resp_pkts="0" orig_l2_bytes="0" resp_l2_bytes="0" client_time="100" server_time="101" error_code="0" client_realm="EXAMPLE.COM" cname_type="1" client_name="user1" realm="EXAMPLE.COM" sname_type="1" service_name="krbtgt/EXAMPLE.COM" confidence="1""#
+            r#"time="1970-01-01T01:01:01+00:00" event_kind="BlocklistKerberos" category="InitialAccess" sensor="collector1" orig_addr="127.0.0.1" orig_port="10000" resp_addr="127.0.0.2" resp_port="88" proto="17" start_time="1970-01-01T00:00:00+00:00" duration="0" orig_pkts="0" resp_pkts="0" orig_l2_bytes="0" resp_l2_bytes="0" client_time="100" server_time="101" error_code="0" client_realm="EXAMPLE.COM" cname_type="1" cname="user1" realm="EXAMPLE.COM" sname_type="1" sname="krbtgt/EXAMPLE.COM" confidence="1""#
         );
 
         let blocklist_kerberos = Event::Blocklist(RecordType::Kerberos(BlocklistKerberos::new(
@@ -4809,7 +4809,7 @@ mod tests {
 
         assert_eq!(
             &blocklist_kerberos,
-            r#"time="1970-01-01T01:01:01+00:00" event_kind="BlocklistKerberos" category="InitialAccess" sensor="collector1" orig_addr="127.0.0.1" orig_port="10000" resp_addr="127.0.0.2" resp_port="88" proto="17" start_time="1970-01-01T00:00:00+00:00" duration="0" orig_pkts="0" resp_pkts="0" orig_l2_bytes="0" resp_l2_bytes="0" client_time="100" server_time="101" error_code="0" client_realm="EXAMPLE.COM" cname_type="1" client_name="user1" realm="EXAMPLE.COM" sname_type="1" service_name="krbtgt/EXAMPLE.COM" triage_scores="""#
+            r#"time="1970-01-01T01:01:01+00:00" event_kind="BlocklistKerberos" category="InitialAccess" sensor="collector1" orig_addr="127.0.0.1" orig_port="10000" resp_addr="127.0.0.2" resp_port="88" proto="17" start_time="1970-01-01T00:00:00+00:00" duration="0" orig_pkts="0" resp_pkts="0" orig_l2_bytes="0" resp_l2_bytes="0" client_time="100" server_time="101" error_code="0" client_realm="EXAMPLE.COM" cname_type="1" cname="user1" realm="EXAMPLE.COM" sname_type="1" sname="krbtgt/EXAMPLE.COM" triage_scores="""#
         );
     }
 

@@ -36,7 +36,7 @@ pub enum AgentKind {
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct Agent {
-    pub node: u32,
+    pub node_id: u32,
     pub key: String,
     pub kind: AgentKind,
     pub status: AgentStatus,
@@ -49,7 +49,7 @@ impl Agent {
     ///
     /// Returns an error if `config` fails to be `validate`-ed.
     pub fn new(
-        node: u32,
+        node_id: u32,
         key: String,
         kind: AgentKind,
         status: AgentStatus,
@@ -59,7 +59,7 @@ impl Agent {
         let config = config.map(TryInto::try_into).transpose()?;
         let draft = draft.map(TryInto::try_into).transpose()?;
         Ok(Self {
-            node,
+            node_id,
             key,
             kind,
             status,
@@ -73,14 +73,14 @@ impl FromKeyValue for Agent {
     fn from_key_value(key: &[u8], value: &[u8]) -> Result<Self> {
         let value: Value = super::deserialize(value)?;
 
-        let (node, key) = key.split_at(size_of::<u32>());
+        let (node_id, key) = key.split_at(size_of::<u32>());
         let mut buf = [0; size_of::<u32>()];
-        buf.copy_from_slice(node);
-        let node = u32::from_be_bytes(buf);
+        buf.copy_from_slice(node_id);
+        let node_id = u32::from_be_bytes(buf);
         let key = std::str::from_utf8(key)?.to_string();
 
         Ok(Self {
-            node,
+            node_id,
             key,
             kind: value.kind,
             status: value.status,
@@ -94,7 +94,7 @@ impl UniqueKey for Agent {
     type AsBytes<'a> = Vec<u8>;
 
     fn unique_key(&self) -> Vec<u8> {
-        let mut buf = self.node.to_be_bytes().to_vec();
+        let mut buf = self.node_id.to_be_bytes().to_vec();
         buf.extend(self.key.as_bytes());
         buf
     }
@@ -136,13 +136,13 @@ impl<'d> Table<'d, Agent> {
         &self.map
     }
 
-    /// Returns an agent with the given `node` and `id`.
+    /// Returns an agent with the given `node_id` and `id`.
     ///
     /// # Errors
     ///
     /// Returns an error if the agent does not exist or the database operation fails.
-    pub fn get(&self, node: u32, id: &str) -> Result<Option<Agent>> {
-        let mut key = node.to_be_bytes().to_vec();
+    pub fn get(&self, node_id: u32, id: &str) -> Result<Option<Agent>> {
+        let mut key = node_id.to_be_bytes().to_vec();
         key.extend(id.as_bytes());
         let Some(value) = self.map.get(&key)? else {
             return Ok(None);
@@ -150,13 +150,13 @@ impl<'d> Table<'d, Agent> {
         Ok(Some(Agent::from_key_value(&key, value.as_ref())?))
     }
 
-    /// Deletes the agent with given `node` and `id`.
+    /// Deletes the agent with given `node_id` and `id`.
     ///
     /// # Errors
     ///
     /// Returns `None` if the table does not exist.
-    pub fn delete(&self, node: u32, id: &str) -> Result<()> {
-        let mut key = node.to_be_bytes().to_vec();
+    pub fn delete(&self, node_id: u32, id: &str) -> Result<()> {
+        let mut key = node_id.to_be_bytes().to_vec();
         key.extend(id.as_bytes());
         self.map.delete(&key)
     }
@@ -192,14 +192,14 @@ mod test {
     }
 
     fn create_agent(
-        node: u32,
+        node_id: u32,
         key: &str,
         kind: AgentKind,
         config: Option<&str>,
         draft: Option<&str>,
     ) -> Agent {
         Agent::new(
-            node,
+            node_id,
             key.to_string(),
             kind,
             AgentStatus::Enabled,
@@ -218,7 +218,7 @@ mod test {
             Some(VALID_TOML),
             Some(VALID_TOML),
         );
-        assert_eq!(agent.node, 1);
+        assert_eq!(agent.node_id, 1);
         assert_eq!(agent.key, "test_key");
         assert_eq!(agent.kind, AgentKind::Unsupervised);
         assert_eq!(agent.config.as_ref().unwrap().as_ref(), VALID_TOML);

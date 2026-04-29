@@ -13,7 +13,6 @@ use crate::{Iterable, Map, Table, UniqueKey, types::FromKeyValue};
 
 #[derive(Clone, Deserialize, Serialize)]
 pub struct TrafficFilter {
-    #[serde(rename = "agent")]
     pub host_fqdn: String,
     pub rules: HashMap<IpNet, ProtocolPorts>,
     pub last_modification_time: DateTime<Utc>,

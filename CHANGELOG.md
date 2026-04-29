@@ -10,16 +10,27 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 ### Changed
 
 - **BREAKING**: Renamed `TrafficFilter.agent` field to `host_fqdn` to
-  reflect that it stores a host fully-qualified domain name. The
-  on-disk serialization key remains `agent` via `#[serde(rename)]`,
-  so no migration is required. Method parameters previously named
-  `agent`/`agents` on `Table<'_, TrafficFilter>` are now named
+  reflect that it stores a host fully-qualified domain name. Because
+  `TrafficFilter` is persisted with `bincode`, which does not encode
+  field names, no migration is required. Method parameters previously
+  named `agent`/`agents` on `Table<'_, TrafficFilter>` are now named
   `host_fqdn`/`host_fqdns`.
 - **BREAKING**: Renamed `ExternalService.node` field to `node_id` to
   clarify that it holds a node identifier. The on-disk RocksDB key
   is unchanged, so no migration is required. The `node` parameter
   on `Table::<ExternalService>::get` and `Table::<ExternalService>::delete`
   is now named `node_id`.
+- **BREAKING**: Renamed `Agent.node` field to `node_id` to align with
+  `ExternalService.node_id`. Because `Agent` is persisted with `bincode`
+  (and the value-side struct does not include this field), no migration
+  is required. The `node` parameter on `Table::<Agent>::get` and
+  `Table::<Agent>::delete` is now named `node_id`.
+- **BREAKING**: Renamed `BlocklistKerberos` and `BlocklistKerberosFields`
+  fields `client_name` to `cname` and `service_name` to `sname` to match
+  the Kerberos protocol terminology already used by the sibling
+  `cname_type`/`sname_type` fields. Because these events are persisted
+  with `bincode`, which does not encode field names, no migration is
+  required.
 
 ## [0.45.0] - 2026-05-09
 

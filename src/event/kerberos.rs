@@ -27,12 +27,12 @@ macro_rules! find_kerberos_attr_by_kind {
                 KerberosAttr::ClientRealm => AttrValue::String(&$event.client_realm),
                 KerberosAttr::CnameType => AttrValue::UInt($event.cname_type.into()),
                 KerberosAttr::ClientName => {
-                    AttrValue::VecString(std::borrow::Cow::Borrowed(&$event.client_name))
+                    AttrValue::VecString(std::borrow::Cow::Borrowed(&$event.cname))
                 }
                 KerberosAttr::Realm => AttrValue::String(&$event.realm),
                 KerberosAttr::SnameType => AttrValue::UInt($event.sname_type.into()),
                 KerberosAttr::ServiceName => {
-                    AttrValue::VecString(std::borrow::Cow::Borrowed(&$event.service_name))
+                    AttrValue::VecString(std::borrow::Cow::Borrowed(&$event.sname))
                 }
             };
             Some(target_value)
@@ -64,10 +64,10 @@ pub struct BlocklistKerberosFieldsV0_42 {
     pub error_code: u32,
     pub client_realm: String,
     pub cname_type: u8,
-    pub client_name: Vec<String>,
+    pub cname: Vec<String>,
     pub realm: String,
     pub sname_type: u8,
-    pub service_name: Vec<String>,
+    pub sname: Vec<String>,
     pub confidence: f32,
     pub category: Option<EventCategory>,
 }
@@ -77,7 +77,7 @@ impl BlocklistKerberosFields {
     pub fn syslog_rfc5424(&self) -> String {
         let start_time_dt = DateTime::from_timestamp_nanos(self.start_time);
         format!(
-            "category={:?} sensor={:?} orig_addr={:?} orig_port={:?} resp_addr={:?} resp_port={:?} proto={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} client_time={:?} server_time={:?} error_code={:?} client_realm={:?} cname_type={:?} client_name={:?} realm={:?} sname_type={:?} service_name={:?} confidence={:?}",
+            "category={:?} sensor={:?} orig_addr={:?} orig_port={:?} resp_addr={:?} resp_port={:?} proto={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} client_time={:?} server_time={:?} error_code={:?} client_realm={:?} cname_type={:?} cname={:?} realm={:?} sname_type={:?} sname={:?} confidence={:?}",
             self.category.as_ref().map_or_else(
                 || "Unspecified".to_string(),
                 std::string::ToString::to_string
@@ -99,10 +99,10 @@ impl BlocklistKerberosFields {
             self.error_code.to_string(),
             self.client_realm,
             self.cname_type.to_string(),
-            self.client_name.join(","),
+            self.cname.join(","),
             self.realm,
             self.sname_type.to_string(),
-            self.service_name.join(","),
+            self.sname.join(","),
             self.confidence.to_string()
         )
     }
@@ -128,10 +128,10 @@ pub struct BlocklistKerberos {
     pub error_code: u32,
     pub client_realm: String,
     pub cname_type: u8,
-    pub client_name: Vec<String>,
+    pub cname: Vec<String>,
     pub realm: String,
     pub sname_type: u8,
-    pub service_name: Vec<String>,
+    pub sname: Vec<String>,
     pub confidence: f32,
     pub category: Option<EventCategory>,
     pub triage_scores: Option<Vec<TriageScore>>,
@@ -141,7 +141,7 @@ impl fmt::Display for BlocklistKerberos {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "sensor={:?} orig_addr={:?} orig_port={:?} resp_addr={:?} resp_port={:?} proto={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} client_time={:?} server_time={:?} error_code={:?} client_realm={:?} cname_type={:?} client_name={:?} realm={:?} sname_type={:?} service_name={:?} triage_scores={:?}",
+            "sensor={:?} orig_addr={:?} orig_port={:?} resp_addr={:?} resp_port={:?} proto={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} client_time={:?} server_time={:?} error_code={:?} client_realm={:?} cname_type={:?} cname={:?} realm={:?} sname_type={:?} sname={:?} triage_scores={:?}",
             self.sensor,
             self.orig_addr.to_string(),
             self.orig_port.to_string(),
@@ -159,10 +159,10 @@ impl fmt::Display for BlocklistKerberos {
             self.error_code.to_string(),
             self.client_realm,
             self.cname_type.to_string(),
-            self.client_name.join(","),
+            self.cname.join(","),
             self.realm,
             self.sname_type.to_string(),
-            self.service_name.join(","),
+            self.sname.join(","),
             triage_scores_to_string(self.triage_scores.as_ref())
         )
     }
@@ -189,10 +189,10 @@ impl BlocklistKerberos {
             error_code: fields.error_code,
             client_realm: fields.client_realm,
             cname_type: fields.cname_type,
-            client_name: fields.client_name,
+            cname: fields.cname,
             realm: fields.realm,
             sname_type: fields.sname_type,
-            service_name: fields.service_name,
+            sname: fields.sname,
             confidence: fields.confidence,
             category: fields.category,
             triage_scores: None,

@@ -1907,10 +1907,10 @@ mod tests {
             error_code: 0,
             client_realm: "EXAMPLE.COM".to_string(),
             cname_type: 1,
-            client_name: vec!["user1".to_string()],
+            cname: vec!["user1".to_string()],
             realm: "EXAMPLE.COM".to_string(),
             sname_type: 1,
-            service_name: vec!["krbtgt/EXAMPLE.COM".to_string()],
+            sname: vec!["krbtgt/EXAMPLE.COM".to_string()],
             confidence: 1.0,
             category: Some(EventCategory::InitialAccess),
         }
