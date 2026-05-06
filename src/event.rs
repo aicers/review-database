@@ -93,10 +93,10 @@ pub use self::{
     },
     kerberos::{BlocklistKerberos, BlocklistKerberosFields},
     ldap::{BlocklistLdap, LdapBruteForce, LdapBruteForceFields, LdapEventFields, LdapPlainText},
-    log::{ExtraThreat, ExtraThreatStored},
+    log::{ExtraThreat, ExtraThreatFields},
     malformed_dns::{BlocklistMalformedDns, BlocklistMalformedDnsFields},
     mqtt::{BlocklistMqtt, BlocklistMqttFields},
-    network::{NetworkThreat, NetworkThreatStored},
+    network::{NetworkThreat, NetworkThreatFields},
     nfs::{BlocklistNfs, BlocklistNfsFields},
     ntlm::{BlocklistNtlm, BlocklistNtlmFields},
     radius::{BlocklistRadius, BlocklistRadiusFields},
@@ -104,14 +104,15 @@ pub use self::{
     smb::{BlocklistSmb, BlocklistSmbFields},
     smtp::{BlocklistSmtp, BlocklistSmtpFields},
     ssh::{BlocklistSsh, BlocklistSshFields},
-    sysmon::{WindowsThreat, WindowsThreatStored},
+    sysmon::{WindowsThreat, WindowsThreatFields},
     tls::{BlocklistTls, BlocklistTlsFields, SuspiciousTlsTraffic},
     tor::{TorConnection, TorConnectionConn},
     unusual_destination_pattern::{UnusualDestinationPattern, UnusualDestinationPatternFields},
 };
 pub(crate) use self::{
     dcerpc::BlocklistDceRpcFieldsStored, dhcp::BlocklistDhcpFieldsStored,
-    http::HttpThreatFieldsStored,
+    http::HttpThreatFieldsStored, log::ExtraThreatFieldsStored, network::NetworkThreatFieldsStored,
+    sysmon::WindowsThreatFieldsStored,
 };
 use super::{
     Customer, EventCategory, Network, TriageExclusion, TriagePolicyInput,
@@ -196,11 +197,11 @@ pub enum Event {
 
     Blocklist(RecordType),
 
-    WindowsThreat(WindowsThreatStored),
+    WindowsThreat(WindowsThreat),
 
-    NetworkThreat(NetworkThreatStored),
+    NetworkThreat(NetworkThreat),
 
-    ExtraThreat(ExtraThreatStored),
+    ExtraThreat(ExtraThreat),
 
     LockyRansomware(LockyRansomware),
 
@@ -2495,11 +2496,11 @@ impl EventMessage {
                 .map(|fields| fields.syslog_rfc5424()),
             EventKind::BlocklistTls => bincode::deserialize::<BlocklistTlsFields>(&self.fields)
                 .map(|fields| fields.syslog_rfc5424()),
-            EventKind::WindowsThreat => bincode::deserialize::<WindowsThreat>(&self.fields)
+            EventKind::WindowsThreat => bincode::deserialize::<WindowsThreatFields>(&self.fields)
                 .map(|fields| fields.syslog_rfc5424()),
-            EventKind::NetworkThreat => bincode::deserialize::<NetworkThreat>(&self.fields)
+            EventKind::NetworkThreat => bincode::deserialize::<NetworkThreatFields>(&self.fields)
                 .map(|fields| fields.syslog_rfc5424()),
-            EventKind::ExtraThreat => bincode::deserialize::<ExtraThreat>(&self.fields)
+            EventKind::ExtraThreat => bincode::deserialize::<ExtraThreatFields>(&self.fields)
                 .map(|fields| fields.syslog_rfc5424()),
             EventKind::LockyRansomware => bincode::deserialize::<DnsEventFields>(&self.fields)
                 .map(|fields| fields.syslog_rfc5424()),
@@ -2639,9 +2640,13 @@ fn convert_for_storage(kind: EventKind, bytes: &[u8]) -> Result<Vec<u8>> {
             UnusualDestinationPatternFields,
             UnusualDestinationPatternFieldsStored,
         >(bytes),
-        EventKind::ExtraThreat => reserialize::<ExtraThreat, ExtraThreatStored>(bytes),
-        EventKind::NetworkThreat => reserialize::<NetworkThreat, NetworkThreatStored>(bytes),
-        EventKind::WindowsThreat => reserialize::<WindowsThreat, WindowsThreatStored>(bytes),
+        EventKind::ExtraThreat => reserialize::<ExtraThreatFields, ExtraThreatFieldsStored>(bytes),
+        EventKind::NetworkThreat => {
+            reserialize::<NetworkThreatFields, NetworkThreatFieldsStored>(bytes)
+        }
+        EventKind::WindowsThreat => {
+            reserialize::<WindowsThreatFields, WindowsThreatFieldsStored>(bytes)
+        }
     }
 }
 
@@ -3097,10 +3102,13 @@ impl Iterator for EventIterator<'_> {
                 )))
             }
             EventKind::ExtraThreat => {
-                let Ok(fields) = bincode::deserialize::<ExtraThreatStored>(v.as_ref()) else {
+                let Ok(fields) = bincode::deserialize::<ExtraThreatFieldsStored>(v.as_ref()) else {
                     return Some(Err(InvalidEvent::Value(v)));
                 };
-                Some(Ok((key, Event::ExtraThreat(fields))))
+                Some(Ok((
+                    key,
+                    Event::ExtraThreat(ExtraThreat::new(time, fields)),
+                )))
             }
             EventKind::FtpBruteForce => {
                 let Ok(fields) = bincode::deserialize::<FtpBruteForceFieldsStored>(v.as_ref())
@@ -3169,10 +3177,14 @@ impl Iterator for EventIterator<'_> {
                 )))
             }
             EventKind::NetworkThreat => {
-                let Ok(fields) = bincode::deserialize::<NetworkThreatStored>(v.as_ref()) else {
+                let Ok(fields) = bincode::deserialize::<NetworkThreatFieldsStored>(v.as_ref())
+                else {
                     return Some(Err(InvalidEvent::Value(v)));
                 };
-                Some(Ok((key, Event::NetworkThreat(fields))))
+                Some(Ok((
+                    key,
+                    Event::NetworkThreat(NetworkThreat::new(time, fields)),
+                )))
             }
             EventKind::NonBrowser => {
                 let Ok(fields) = bincode::deserialize::<HttpEventFieldsStored>(v.as_ref()) else {
@@ -3250,10 +3262,14 @@ impl Iterator for EventIterator<'_> {
                 )))
             }
             EventKind::WindowsThreat => {
-                let Ok(fields) = bincode::deserialize::<WindowsThreatStored>(v.as_ref()) else {
+                let Ok(fields) = bincode::deserialize::<WindowsThreatFieldsStored>(v.as_ref())
+                else {
                     return Some(Err(InvalidEvent::Value(v)));
                 };
-                Some(Ok((key, Event::WindowsThreat(fields))))
+                Some(Ok((
+                    key,
+                    Event::WindowsThreat(WindowsThreat::new(time, fields)),
+                )))
             }
         }
     }
@@ -3328,14 +3344,14 @@ mod tests {
             BlocklistSshFields, BlocklistTls, BlocklistTlsFields, CryptocurrencyMiningPool,
             CryptocurrencyMiningPoolFields, DceRpcContext, DgaFields, DnsCovertChannel,
             DnsEventFields, DomainGenerationAlgorithm, Event, EventFilter, EventKind, EventMessage,
-            ExternalDdos, ExternalDdosFields, ExtraThreatStored, FtpBruteForce,
+            ExternalDdos, ExternalDdosFields, ExtraThreat, ExtraThreatFields, FtpBruteForce,
             FtpBruteForceFields, FtpEventFields, FtpPlainText, HttpEventFields, HttpThreat,
             HttpThreatFields, LOCKY_RANSOMWARE, LdapBruteForce, LdapBruteForceFields,
             LdapEventFields, LdapPlainText, LockyRansomware, MultiHostPortScan,
-            MultiHostPortScanFields, NetworkThreatStored, NonBrowser, PortScan, PortScanFields,
-            RdpBruteForce, RdpBruteForceFields, RecordType, RepeatedHttpSessions,
+            MultiHostPortScanFields, NetworkThreat, NetworkThreatFields, NonBrowser, PortScan,
+            PortScanFields, RdpBruteForce, RdpBruteForceFields, RecordType, RepeatedHttpSessions,
             RepeatedHttpSessionsFields, SuspiciousTlsTraffic, TorConnection, TriageScore,
-            WindowsThreatStored,
+            WindowsThreat, WindowsThreatFields,
         },
         types::EventCategory,
     };
@@ -3437,6 +3453,245 @@ mod tests {
         assert_eq!(covert.query, "foo.com");
         assert!((covert.confidence - 0.8).abs() < f32::EPSILON);
         assert_eq!(covert.category, Some(EventCategory::CommandAndControl));
+    }
+
+    fn extra_threat_message() -> EventMessage {
+        let fields = ExtraThreatFields {
+            time: Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap(),
+            sensor: "collector1".to_string(),
+            service: "service".to_string(),
+            content: "content".to_string(),
+            db_name: "db_name".to_string(),
+            rule_id: 1,
+            matched_to: "matched_to".to_string(),
+            cluster_id: Some(1),
+            attack_kind: "attack_kind".to_string(),
+            confidence: 0.9,
+            category: Some(EventCategory::Reconnaissance),
+            triage_scores: None,
+        };
+        EventMessage {
+            time: Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap(),
+            kind: EventKind::ExtraThreat,
+            fields: bincode::serialize(&fields).expect("serializable"),
+        }
+    }
+
+    fn network_threat_message() -> EventMessage {
+        let fields = NetworkThreatFields {
+            time: Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap(),
+            sensor: "collector1".to_string(),
+            orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
+            orig_port: 10000,
+            resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
+            resp_port: 80,
+            proto: 6,
+            service: "http".to_string(),
+            start_time: Utc.with_ymd_and_hms(1970, 1, 1, 0, 0, 0).unwrap(),
+            duration: 0,
+            orig_pkts: 0,
+            resp_pkts: 0,
+            orig_l2_bytes: 0,
+            resp_l2_bytes: 0,
+            content: "content".to_string(),
+            db_name: "db_name".to_string(),
+            rule_id: 1,
+            matched_to: "matched_to".to_string(),
+            cluster_id: Some(1),
+            attack_kind: "attack_kind".to_string(),
+            confidence: 0.9,
+            category: Some(EventCategory::Reconnaissance),
+            triage_scores: None,
+        };
+        EventMessage {
+            time: Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap(),
+            kind: EventKind::NetworkThreat,
+            fields: bincode::serialize(&fields).expect("serializable"),
+        }
+    }
+
+    fn windows_threat_message() -> EventMessage {
+        let fields = WindowsThreatFields {
+            time: Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap(),
+            sensor: "collector1".to_string(),
+            service: "notepad".to_string(),
+            agent_name: "win64".to_string(),
+            agent_id: "agent_id".to_string(),
+            process_guid: "process_guid".to_string(),
+            process_id: 2972,
+            image: "image".to_string(),
+            user: "user".to_string(),
+            content: "content".to_string(),
+            db_name: "db".to_string(),
+            rule_id: 100,
+            matched_to: "match".to_string(),
+            cluster_id: Some(900),
+            attack_kind: "attack_kind".to_string(),
+            confidence: 0.9,
+            category: Some(EventCategory::Impact),
+            triage_scores: None,
+        };
+        EventMessage {
+            time: Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap(),
+            kind: EventKind::WindowsThreat,
+            fields: bincode::serialize(&fields).expect("serializable"),
+        }
+    }
+
+    #[test]
+    fn extra_threat_boundary_rejects_invalid_producer_bytes() {
+        use super::convert_for_storage;
+
+        let err = convert_for_storage(EventKind::ExtraThreat, &[0x01, 0x02]);
+        assert!(err.is_err());
+    }
+
+    #[test]
+    fn extra_threat_boundary_round_trip_through_db() {
+        let (_permit, store) = setup_store();
+        let db = store.events();
+        db.put(&extra_threat_message()).unwrap();
+        let (_key, event) = db.iter_forward().next().unwrap().unwrap();
+        let Event::ExtraThreat(threat) = event else {
+            panic!("expected ExtraThreat");
+        };
+        assert_eq!(threat.sensor, "collector1");
+        assert_eq!(threat.service, "service");
+        assert_eq!(threat.content, "content");
+        assert_eq!(threat.category, Some(EventCategory::Reconnaissance));
+    }
+
+    #[test]
+    fn network_threat_boundary_rejects_invalid_producer_bytes() {
+        use super::convert_for_storage;
+
+        let err = convert_for_storage(EventKind::NetworkThreat, &[0x01, 0x02]);
+        assert!(err.is_err());
+    }
+
+    #[test]
+    fn network_threat_boundary_round_trip_through_db() {
+        let (_permit, store) = setup_store();
+        let db = store.events();
+        db.put(&network_threat_message()).unwrap();
+        let (_key, event) = db.iter_forward().next().unwrap().unwrap();
+        let Event::NetworkThreat(threat) = event else {
+            panic!("expected NetworkThreat");
+        };
+        assert_eq!(threat.sensor, "collector1");
+        assert_eq!(threat.orig_addr, IpAddr::V4(Ipv4Addr::LOCALHOST));
+        assert_eq!(threat.resp_addr, IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)));
+        assert_eq!(threat.service, "http");
+        assert_eq!(threat.category, Some(EventCategory::Reconnaissance));
+    }
+
+    #[test]
+    fn windows_threat_boundary_rejects_invalid_producer_bytes() {
+        use super::convert_for_storage;
+
+        let err = convert_for_storage(EventKind::WindowsThreat, &[0x01, 0x02]);
+        assert!(err.is_err());
+    }
+
+    #[test]
+    fn windows_threat_boundary_round_trip_through_db() {
+        let (_permit, store) = setup_store();
+        let db = store.events();
+        db.put(&windows_threat_message()).unwrap();
+        let (_key, event) = db.iter_forward().next().unwrap().unwrap();
+        let Event::WindowsThreat(threat) = event else {
+            panic!("expected WindowsThreat");
+        };
+        assert_eq!(threat.sensor, "collector1");
+        assert_eq!(threat.service, "notepad");
+        assert_eq!(threat.agent_name, "win64");
+        assert_eq!(threat.attack_kind, "attack_kind");
+        assert_eq!(threat.category, Some(EventCategory::Impact));
+    }
+
+    #[test]
+    fn threat_families_runtime_constructors_share_stored_layout() {
+        // The three threat families now expose a shared/stored/runtime layering
+        // similar to other event families. Verify the bridge: stored bytes
+        // produced from `*Fields` deserialize as `*FieldsStored`, and the
+        // runtime constructor copies through unchanged.
+        let extra_fields = ExtraThreatFields {
+            time: Utc.with_ymd_and_hms(1970, 1, 1, 0, 0, 0).unwrap(),
+            sensor: "s".to_string(),
+            service: "svc".to_string(),
+            content: "c".to_string(),
+            db_name: "d".to_string(),
+            rule_id: 7,
+            matched_to: "m".to_string(),
+            cluster_id: Some(1),
+            attack_kind: "a".to_string(),
+            confidence: 0.5,
+            category: Some(EventCategory::Reconnaissance),
+            triage_scores: None,
+        };
+        let stored: super::ExtraThreatFieldsStored = extra_fields.into();
+        let runtime = ExtraThreat::new(Utc.with_ymd_and_hms(1970, 1, 1, 0, 0, 0).unwrap(), stored);
+        assert_eq!(runtime.sensor, "s");
+        assert!((runtime.confidence - 0.5).abs() < f32::EPSILON);
+
+        let net_fields = NetworkThreatFields {
+            time: Utc.with_ymd_and_hms(1970, 1, 1, 0, 0, 0).unwrap(),
+            sensor: "s".to_string(),
+            orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
+            orig_port: 1,
+            resp_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
+            resp_port: 2,
+            proto: 6,
+            service: "http".to_string(),
+            start_time: Utc.with_ymd_and_hms(1970, 1, 1, 0, 0, 0).unwrap(),
+            duration: 0,
+            orig_pkts: 0,
+            resp_pkts: 0,
+            orig_l2_bytes: 0,
+            resp_l2_bytes: 0,
+            content: "c".to_string(),
+            db_name: "d".to_string(),
+            rule_id: 1,
+            matched_to: "m".to_string(),
+            cluster_id: None,
+            attack_kind: "a".to_string(),
+            confidence: 0.1,
+            category: None,
+            triage_scores: None,
+        };
+        let net_stored: super::NetworkThreatFieldsStored = net_fields.into();
+        let net_runtime = NetworkThreat::new(
+            Utc.with_ymd_and_hms(1970, 1, 1, 0, 0, 0).unwrap(),
+            net_stored,
+        );
+        assert_eq!(net_runtime.service, "http");
+
+        let win_fields = WindowsThreatFields {
+            time: Utc.with_ymd_and_hms(1970, 1, 1, 0, 0, 0).unwrap(),
+            sensor: "s".to_string(),
+            service: "svc".to_string(),
+            agent_name: "an".to_string(),
+            agent_id: "ai".to_string(),
+            process_guid: "pg".to_string(),
+            process_id: 1,
+            image: "img".to_string(),
+            user: "u".to_string(),
+            content: "c".to_string(),
+            db_name: "d".to_string(),
+            rule_id: 1,
+            matched_to: "m".to_string(),
+            cluster_id: None,
+            attack_kind: "a".to_string(),
+            confidence: 0.2,
+            category: None,
+            triage_scores: None,
+        };
+        let win_stored: super::WindowsThreatFieldsStored = win_fields.into();
+        let win_runtime = WindowsThreat::new(
+            Utc.with_ymd_and_hms(1970, 1, 1, 0, 0, 0).unwrap(),
+            win_stored,
+        );
+        assert_eq!(win_runtime.process_id, 1);
     }
 
     #[test]
@@ -5357,7 +5612,7 @@ mod tests {
 
     #[test]
     fn syslog_for_extrathreat() {
-        let fields = ExtraThreatStored {
+        let fields = ExtraThreatFields {
             time: Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap(),
             sensor: "collector1".to_string(),
             service: "service".to_string(),
@@ -5444,7 +5699,7 @@ mod tests {
 
     #[test]
     fn syslog_for_networkthreat() {
-        let fields = NetworkThreatStored {
+        let fields = NetworkThreatFields {
             time: Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap(),
             sensor: "collector1".to_string(),
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
@@ -6033,7 +6288,7 @@ mod tests {
 
     #[test]
     fn syslog_for_windowsthreat() {
-        let fields = WindowsThreatStored {
+        let fields = WindowsThreatFields {
             time: Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap(),
             sensor: "collector1".to_string(),
             service: "notepad".to_string(),
@@ -6073,7 +6328,11 @@ mod tests {
                 .contains("content=\"cmd /c \"vssadmin.exe Delete Shadows /all /quiet\"\"")
         );
 
-        let windows_threat = Event::WindowsThreat(fields).to_string();
+        let runtime = WindowsThreat::new(
+            Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap(),
+            fields.into(),
+        );
+        let windows_threat = Event::WindowsThreat(runtime).to_string();
         assert_eq!(
             &windows_threat,
             "time=\"1970-01-01T00:01:01+00:00\" event_kind=\"WindowsThreat\" category=\"Impact\" sensor=\"collector1\" service=\"notepad\" agent_name=\"win64\" agent_id=\"e7e2386a-5485-4da9-b388-b3e50ee7cbb0\" process_guid=\"{bac98147-6b03-64d4-8200-000000000700}\" process_id=\"2972\" image=\"C:\\Users\\vboxuser\\Desktop\\mal_bazaar\\ransomware\\918504.exe\" user=\"WIN64\\vboxuser\" content=\"cmd /c \"vssadmin.exe Delete Shadows /all /quiet\"\" db_name=\"db\" rule_id=\"100\" matched_to=\"match\" cluster_id=\"900\" attack_kind=\"Ransomware_Alcatraz\" confidence=\"0.9\" triage_scores=\"\""

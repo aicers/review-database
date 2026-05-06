@@ -34,7 +34,7 @@ macro_rules! find_network_attr_by_kind {
 }
 
 #[derive(Serialize, Deserialize)]
-pub struct NetworkThreat {
+pub struct NetworkThreatFields {
     #[serde(with = "ts_nanoseconds")]
     pub time: DateTime<Utc>,
     pub sensor: String,
@@ -63,7 +63,7 @@ pub struct NetworkThreat {
 }
 
 #[derive(Deserialize, Serialize)]
-pub struct NetworkThreatStored {
+pub struct NetworkThreatFieldsStored {
     #[serde(with = "ts_nanoseconds")]
     pub time: DateTime<Utc>,
     pub sensor: String,
@@ -91,8 +91,8 @@ pub struct NetworkThreatStored {
     pub triage_scores: Option<Vec<TriageScore>>,
 }
 
-impl From<NetworkThreat> for NetworkThreatStored {
-    fn from(value: NetworkThreat) -> Self {
+impl From<NetworkThreatFields> for NetworkThreatFieldsStored {
+    fn from(value: NetworkThreatFields) -> Self {
         Self {
             time: value.time,
             sensor: value.sensor,
@@ -121,7 +121,7 @@ impl From<NetworkThreat> for NetworkThreatStored {
     }
 }
 
-impl NetworkThreat {
+impl NetworkThreatFields {
     #[must_use]
     pub fn syslog_rfc5424(&self) -> String {
         format!(
@@ -154,7 +154,68 @@ impl NetworkThreat {
     }
 }
 
-impl fmt::Display for NetworkThreatStored {
+pub struct NetworkThreat {
+    pub time: DateTime<Utc>,
+    pub sensor: String,
+    pub orig_addr: IpAddr,
+    pub orig_port: u16,
+    pub resp_addr: IpAddr,
+    pub resp_port: u16,
+    pub proto: u8,
+    pub service: String,
+    pub start_time: DateTime<Utc>,
+    pub duration: i64,
+    pub orig_pkts: u64,
+    pub resp_pkts: u64,
+    pub orig_l2_bytes: u64,
+    pub resp_l2_bytes: u64,
+    pub content: String,
+    pub db_name: String,
+    pub rule_id: u32,
+    pub matched_to: String,
+    pub cluster_id: Option<u32>,
+    pub attack_kind: String,
+    pub confidence: f32,
+    pub category: Option<EventCategory>,
+    pub triage_scores: Option<Vec<TriageScore>>,
+}
+
+impl NetworkThreat {
+    pub(super) fn new(time: DateTime<Utc>, fields: NetworkThreatFieldsStored) -> Self {
+        Self {
+            time,
+            sensor: fields.sensor,
+            orig_addr: fields.orig_addr,
+            orig_port: fields.orig_port,
+            resp_addr: fields.resp_addr,
+            resp_port: fields.resp_port,
+            proto: fields.proto,
+            service: fields.service,
+            start_time: fields.start_time,
+            duration: fields.duration,
+            orig_pkts: fields.orig_pkts,
+            resp_pkts: fields.resp_pkts,
+            orig_l2_bytes: fields.orig_l2_bytes,
+            resp_l2_bytes: fields.resp_l2_bytes,
+            content: fields.content,
+            db_name: fields.db_name,
+            rule_id: fields.rule_id,
+            matched_to: fields.matched_to,
+            cluster_id: fields.cluster_id,
+            attack_kind: fields.attack_kind,
+            confidence: fields.confidence,
+            category: fields.category,
+            triage_scores: fields.triage_scores,
+        }
+    }
+
+    #[must_use]
+    pub fn threat_level() -> ThreatLevel {
+        ThreatLevel::Medium
+    }
+}
+
+impl fmt::Display for NetworkThreat {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
@@ -184,14 +245,7 @@ impl fmt::Display for NetworkThreatStored {
     }
 }
 
-impl NetworkThreatStored {
-    #[must_use]
-    pub fn threat_level() -> ThreatLevel {
-        ThreatLevel::Medium
-    }
-}
-
-impl Match for NetworkThreatStored {
+impl Match for NetworkThreat {
     fn src_addrs(&self) -> &[IpAddr] {
         std::slice::from_ref(&self.orig_addr)
     }

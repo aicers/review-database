@@ -662,15 +662,15 @@ mod tests {
             BlocklistTlsFieldsStored, CryptocurrencyMiningPool,
             CryptocurrencyMiningPoolFieldsStored, DgaFieldsStored, DnsCovertChannel,
             DnsEventFieldsStored, DomainGenerationAlgorithm, Event, EventFilter, ExternalDdos,
-            ExternalDdosFieldsStored, ExtraThreatStored, FlowKind, FtpBruteForce,
+            ExternalDdosFieldsStored, ExtraThreat, FlowKind, FtpBruteForce,
             FtpBruteForceFieldsStored, FtpEventFieldsStored, FtpPlainText, HttpEventFieldsStored,
             HttpThreat, HttpThreatFieldsStored, LdapBruteForce, LdapBruteForceFieldsStored,
             LdapEventFieldsStored, LdapPlainText, LearningMethod, LockyRansomware,
-            MultiHostPortScan, MultiHostPortScanFieldsStored, NetworkThreatStored, NetworkType,
+            MultiHostPortScan, MultiHostPortScanFieldsStored, NetworkThreat, NetworkType,
             NonBrowser, PortScan, PortScanFieldsStored, RdpBruteForce, RdpBruteForceFieldsStored,
             RecordType, RepeatedHttpSessions, RepeatedHttpSessionsFieldsStored,
             SuspiciousTlsTraffic, TorConnection, UnusualDestinationPattern,
-            UnusualDestinationPatternFieldsStored, WindowsThreatStored,
+            UnusualDestinationPatternFieldsStored, WindowsThreat,
         },
         types::Endpoint,
     };
@@ -2558,8 +2558,8 @@ mod tests {
         }
     }
 
-    fn network_threat() -> NetworkThreatStored {
-        NetworkThreatStored {
+    fn network_threat() -> NetworkThreat {
+        NetworkThreat {
             time: Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap(),
             sensor: "sensor".to_string(),
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
@@ -2586,8 +2586,8 @@ mod tests {
         }
     }
 
-    fn extra_threat() -> ExtraThreatStored {
-        ExtraThreatStored {
+    fn extra_threat() -> ExtraThreat {
+        ExtraThreat {
             time: Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap(),
             sensor: "sensor".to_string(),
             service: "service".to_string(),
@@ -2603,8 +2603,8 @@ mod tests {
         }
     }
 
-    fn windows_threat() -> WindowsThreatStored {
-        WindowsThreatStored {
+    fn windows_threat() -> WindowsThreat {
+        WindowsThreat {
             time: Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap(),
             sensor: "sensor".to_string(),
             service: "notepad".to_string(),

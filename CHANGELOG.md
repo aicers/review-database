@@ -99,6 +99,10 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 - Refactored internal event storage and migration paths to keep producer-facing
   event schemas separate from on-disk stored schemas. No external wire-format
   change is intended.
+- Aligned the `ExtraThreat`, `NetworkThreat`, and `WindowsThreat` event families
+  with the rest of the public model so each carries a runtime/domain payload.
+  Their producer-facing schemas are now `*Fields` types and their `Event`
+  variants now expose the runtime types instead of stored schemas.
 
 ## [0.44.1] - 2026-04-16
 

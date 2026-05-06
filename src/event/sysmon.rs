@@ -34,7 +34,7 @@ macro_rules! find_window_attr_by_kind {
 }
 
 #[derive(Serialize, Deserialize)]
-pub struct WindowsThreat {
+pub struct WindowsThreatFields {
     #[serde(with = "ts_nanoseconds")]
     pub time: DateTime<Utc>,
     pub sensor: String,
@@ -57,7 +57,7 @@ pub struct WindowsThreat {
 }
 
 #[derive(Deserialize, Serialize)]
-pub struct WindowsThreatStored {
+pub struct WindowsThreatFieldsStored {
     #[serde(with = "ts_nanoseconds")]
     pub time: DateTime<Utc>,
     pub sensor: String,
@@ -79,8 +79,8 @@ pub struct WindowsThreatStored {
     pub triage_scores: Option<Vec<TriageScore>>,
 }
 
-impl From<WindowsThreat> for WindowsThreatStored {
-    fn from(value: WindowsThreat) -> Self {
+impl From<WindowsThreatFields> for WindowsThreatFieldsStored {
+    fn from(value: WindowsThreatFields) -> Self {
         Self {
             time: value.time,
             sensor: value.sensor,
@@ -105,7 +105,7 @@ impl From<WindowsThreat> for WindowsThreatStored {
 }
 
 // image, user, content field enclosed with double quotes(\") instead of "{:?}"
-impl WindowsThreat {
+impl WindowsThreatFields {
     #[must_use]
     pub fn syslog_rfc5424(&self) -> String {
         format!(
@@ -133,7 +133,58 @@ impl WindowsThreat {
     }
 }
 
-impl fmt::Display for WindowsThreatStored {
+pub struct WindowsThreat {
+    pub time: DateTime<Utc>,
+    pub sensor: String,
+    pub service: String,
+    pub agent_name: String,
+    pub agent_id: String,
+    pub process_guid: String,
+    pub process_id: u32,
+    pub image: String,
+    pub user: String,
+    pub content: String,
+    pub db_name: String,
+    pub rule_id: u32,
+    pub matched_to: String,
+    pub cluster_id: Option<u32>,
+    pub attack_kind: String,
+    pub confidence: f32,
+    pub category: Option<EventCategory>,
+    pub triage_scores: Option<Vec<TriageScore>>,
+}
+
+impl WindowsThreat {
+    pub(super) fn new(time: DateTime<Utc>, fields: WindowsThreatFieldsStored) -> Self {
+        Self {
+            time,
+            sensor: fields.sensor,
+            service: fields.service,
+            agent_name: fields.agent_name,
+            agent_id: fields.agent_id,
+            process_guid: fields.process_guid,
+            process_id: fields.process_id,
+            image: fields.image,
+            user: fields.user,
+            content: fields.content,
+            db_name: fields.db_name,
+            rule_id: fields.rule_id,
+            matched_to: fields.matched_to,
+            cluster_id: fields.cluster_id,
+            attack_kind: fields.attack_kind,
+            confidence: fields.confidence,
+            category: fields.category,
+            triage_scores: fields.triage_scores,
+        }
+    }
+
+    #[must_use]
+    pub fn threat_level() -> ThreatLevel {
+        ThreatLevel::Medium
+    }
+}
+
+impl fmt::Display for WindowsThreat {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
@@ -158,15 +209,8 @@ impl fmt::Display for WindowsThreatStored {
     }
 }
 
-impl WindowsThreatStored {
-    #[must_use]
-    pub fn threat_level() -> ThreatLevel {
-        ThreatLevel::Medium
-    }
-}
-
 // TODO: Make new Match trait for Windows threat events
-impl Match for WindowsThreatStored {
+impl Match for WindowsThreat {
     fn sensor(&self) -> &str {
         &self.sensor
     }
