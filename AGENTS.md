@@ -111,3 +111,5 @@ before generating code.
 * Before pushing or opening a PR, ensure all CI jobs pass: `check`,
   `test` (on both `ubuntu-latest` and `macOS-latest`), and `coverage`.
   Locally run `cargo test --all-features` to mirror the `test` job.
+  The `coverage` job is not expected to be run locally; it runs only
+  on CI.
