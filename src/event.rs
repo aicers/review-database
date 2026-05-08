@@ -84,7 +84,7 @@ pub use self::{
     unusual_destination_pattern::{UnusualDestinationPattern, UnusualDestinationPatternFields},
 };
 use super::{
-    Customer, EventCategory, Network, TriagePolicyInput,
+    Customer, EventCategory, Network, TriageExclusion, TriagePolicyInput,
     types::{Endpoint, HostNetworkGroup},
 };
 
@@ -561,6 +561,127 @@ impl Event {
             Event::ExtraThreat(event) => event.matches(locator, filter),
             Event::LockyRansomware(event) => event.matches(locator, filter),
             Event::SuspiciousTlsTraffic(event) => event.matches(locator, filter),
+        }
+    }
+
+    /// Returns whether any of `exclusions` matches this event.
+    ///
+    /// Dispatches through each event variant's `score_by_triage_exclusion`
+    /// override so per-event semantics (DNS domain/hostname, HTTP URI/host,
+    /// Tor domain, etc.) are preserved. The default implementation handles
+    /// the `IpAddress` variant only; richer exclusion shapes for events
+    /// without an override are not currently matched.
+    #[must_use]
+    pub fn matches_exclusion(&self, exclusions: &[TriageExclusion]) -> bool {
+        match self {
+            Event::DnsCovertChannel(event) => event.matched_any_exclusion(exclusions),
+            Event::HttpThreat(event) => event.matched_any_exclusion(exclusions),
+            Event::RdpBruteForce(event) => event.matched_any_exclusion(exclusions),
+            Event::RepeatedHttpSessions(event) => event.matched_any_exclusion(exclusions),
+            Event::TorConnection(event) => event.matched_any_exclusion(exclusions),
+            Event::TorConnectionConn(event) => event.matched_any_exclusion(exclusions),
+            Event::DomainGenerationAlgorithm(event) => event.matched_any_exclusion(exclusions),
+            Event::FtpBruteForce(event) => event.matched_any_exclusion(exclusions),
+            Event::FtpPlainText(event) => event.matched_any_exclusion(exclusions),
+            Event::PortScan(event) => event.matched_any_exclusion(exclusions),
+            Event::MultiHostPortScan(event) => event.matched_any_exclusion(exclusions),
+            Event::ExternalDdos(event) => event.matched_any_exclusion(exclusions),
+            Event::NonBrowser(event) => event.matched_any_exclusion(exclusions),
+            Event::LdapBruteForce(event) => event.matched_any_exclusion(exclusions),
+            Event::LdapPlainText(event) => event.matched_any_exclusion(exclusions),
+            Event::CryptocurrencyMiningPool(event) => event.matched_any_exclusion(exclusions),
+            Event::Blocklist(record_type) => match record_type {
+                RecordType::Bootp(event) => event.matched_any_exclusion(exclusions),
+                RecordType::Conn(event) => event.matched_any_exclusion(exclusions),
+                RecordType::DceRpc(event) => event.matched_any_exclusion(exclusions),
+                RecordType::Dhcp(event) => event.matched_any_exclusion(exclusions),
+                RecordType::Dns(event) => event.matched_any_exclusion(exclusions),
+                RecordType::Ftp(event) => event.matched_any_exclusion(exclusions),
+                RecordType::Http(event) => event.matched_any_exclusion(exclusions),
+                RecordType::Kerberos(event) => event.matched_any_exclusion(exclusions),
+                RecordType::Ldap(event) => event.matched_any_exclusion(exclusions),
+                RecordType::MalformedDns(event) => event.matched_any_exclusion(exclusions),
+                RecordType::Mqtt(event) => event.matched_any_exclusion(exclusions),
+                RecordType::Nfs(event) => event.matched_any_exclusion(exclusions),
+                RecordType::Ntlm(event) => event.matched_any_exclusion(exclusions),
+                RecordType::Radius(event) => event.matched_any_exclusion(exclusions),
+                RecordType::Rdp(event) => event.matched_any_exclusion(exclusions),
+                RecordType::Smb(event) => event.matched_any_exclusion(exclusions),
+                RecordType::Smtp(event) => event.matched_any_exclusion(exclusions),
+                RecordType::Ssh(event) => event.matched_any_exclusion(exclusions),
+                RecordType::Tls(event) => event.matched_any_exclusion(exclusions),
+                RecordType::UnusualDestinationPattern(event) => {
+                    event.matched_any_exclusion(exclusions)
+                }
+            },
+            Event::WindowsThreat(event) => event.matched_any_exclusion(exclusions),
+            Event::NetworkThreat(event) => event.matched_any_exclusion(exclusions),
+            Event::ExtraThreat(event) => event.matched_any_exclusion(exclusions),
+            Event::LockyRansomware(event) => event.matched_any_exclusion(exclusions),
+            Event::SuspiciousTlsTraffic(event) => event.matched_any_exclusion(exclusions),
+        }
+    }
+
+    /// Computes inline triage scores for this event against each of `policies`.
+    ///
+    /// Each policy contributes a `TriageScore` only when
+    /// `score_by_attr + score_by_confidence` reaches at least one of the
+    /// policy's `response.minimum_score` thresholds; policies whose
+    /// `response` is empty contribute nothing. Each policy's
+    /// `triage_exclusion` is treated as already applied by the caller and
+    /// must be empty (asserted in debug builds).
+    #[must_use]
+    pub fn score_against_policies(&self, policies: &[TriagePolicyInput]) -> Vec<TriageScore> {
+        match self {
+            Event::DnsCovertChannel(event) => event.inline_scores_against_policies(policies),
+            Event::HttpThreat(event) => event.inline_scores_against_policies(policies),
+            Event::RdpBruteForce(event) => event.inline_scores_against_policies(policies),
+            Event::RepeatedHttpSessions(event) => event.inline_scores_against_policies(policies),
+            Event::TorConnection(event) => event.inline_scores_against_policies(policies),
+            Event::TorConnectionConn(event) => event.inline_scores_against_policies(policies),
+            Event::DomainGenerationAlgorithm(event) => {
+                event.inline_scores_against_policies(policies)
+            }
+            Event::FtpBruteForce(event) => event.inline_scores_against_policies(policies),
+            Event::FtpPlainText(event) => event.inline_scores_against_policies(policies),
+            Event::PortScan(event) => event.inline_scores_against_policies(policies),
+            Event::MultiHostPortScan(event) => event.inline_scores_against_policies(policies),
+            Event::ExternalDdos(event) => event.inline_scores_against_policies(policies),
+            Event::NonBrowser(event) => event.inline_scores_against_policies(policies),
+            Event::LdapBruteForce(event) => event.inline_scores_against_policies(policies),
+            Event::LdapPlainText(event) => event.inline_scores_against_policies(policies),
+            Event::CryptocurrencyMiningPool(event) => {
+                event.inline_scores_against_policies(policies)
+            }
+            Event::Blocklist(record_type) => match record_type {
+                RecordType::Bootp(event) => event.inline_scores_against_policies(policies),
+                RecordType::Conn(event) => event.inline_scores_against_policies(policies),
+                RecordType::DceRpc(event) => event.inline_scores_against_policies(policies),
+                RecordType::Dhcp(event) => event.inline_scores_against_policies(policies),
+                RecordType::Dns(event) => event.inline_scores_against_policies(policies),
+                RecordType::Ftp(event) => event.inline_scores_against_policies(policies),
+                RecordType::Http(event) => event.inline_scores_against_policies(policies),
+                RecordType::Kerberos(event) => event.inline_scores_against_policies(policies),
+                RecordType::Ldap(event) => event.inline_scores_against_policies(policies),
+                RecordType::MalformedDns(event) => event.inline_scores_against_policies(policies),
+                RecordType::Mqtt(event) => event.inline_scores_against_policies(policies),
+                RecordType::Nfs(event) => event.inline_scores_against_policies(policies),
+                RecordType::Ntlm(event) => event.inline_scores_against_policies(policies),
+                RecordType::Radius(event) => event.inline_scores_against_policies(policies),
+                RecordType::Rdp(event) => event.inline_scores_against_policies(policies),
+                RecordType::Smb(event) => event.inline_scores_against_policies(policies),
+                RecordType::Smtp(event) => event.inline_scores_against_policies(policies),
+                RecordType::Ssh(event) => event.inline_scores_against_policies(policies),
+                RecordType::Tls(event) => event.inline_scores_against_policies(policies),
+                RecordType::UnusualDestinationPattern(event) => {
+                    event.inline_scores_against_policies(policies)
+                }
+            },
+            Event::WindowsThreat(event) => event.inline_scores_against_policies(policies),
+            Event::NetworkThreat(event) => event.inline_scores_against_policies(policies),
+            Event::ExtraThreat(event) => event.inline_scores_against_policies(policies),
+            Event::LockyRansomware(event) => event.inline_scores_against_policies(policies),
+            Event::SuspiciousTlsTraffic(event) => event.inline_scores_against_policies(policies),
         }
     }
 
