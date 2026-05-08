@@ -22,6 +22,12 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   `clear_retention_config` methods on `Store` for managing the retention
   period. Added `purge_old_column_stats` method to `Store` that deletes column
   statistics older than the configured retention period.
+- Added `Event::matches_exclusion` and `Event::score_against_policies` public
+  helpers so callers can perform inline triage exclusion matching and inline
+  policy scoring without going through the full `Event::matches` filter
+  pipeline. `score_against_policies` sums only `score_by_attr +
+  score_by_confidence` and assumes exclusions have already been applied by the
+  caller; policies whose `response` is empty contribute no score.
 
 ### Changed
 

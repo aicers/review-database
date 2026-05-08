@@ -14,7 +14,9 @@ use super::{
     EventCategory, EventFilter, FlowKind, LearningMethod, ThreatLevel, TrafficDirection,
     eq_ip_country,
 };
-use crate::{AttrCmpKind, Confidence, PacketAttr, TriageExclusion, ValueKind};
+use crate::{
+    AttrCmpKind, Confidence, PacketAttr, Response, TriageExclusion, TriagePolicyInput, ValueKind,
+};
 
 /// Epsilon value for inclusive confidence comparisons
 const CONFIDENCE_EPSILON: f32 = 1e-6;
@@ -254,14 +256,7 @@ pub(super) trait Match {
                     let score = self.score_by_triage_exclusion(&triage.triage_exclusion)
                         + self.score_by_attr(&triage.packet_attr)
                         + self.score_by_confidence(&triage.confidence);
-                    if triage.response.iter().any(|r| score >= r.minimum_score) {
-                        Some(TriageScore {
-                            policy_id: triage.id,
-                            score,
-                        })
-                    } else {
-                        None
-                    }
+                    self.build_triage_score(triage.id, score, &triage.response)
                 })
                 .collect::<Vec<_>>();
             if triage_scores.is_empty() {
@@ -283,6 +278,58 @@ pub(super) trait Match {
             }
         });
         if matched { f64::MIN } else { 0.0 }
+    }
+
+    /// Returns whether any of `exclusions` matches this event.
+    ///
+    /// Hides the `f64::MIN` sentinel returned by `score_by_triage_exclusion`
+    /// so callers don't have to know that internal contract.
+    fn matched_any_exclusion(&self, exclusions: &[TriageExclusion]) -> bool {
+        // `score_by_triage_exclusion` returns the bit-exact constant `f64::MIN`
+        // as a sentinel; this is a deliberate equality check, not an
+        // approximate comparison.
+        #[allow(clippy::float_cmp)]
+        {
+            self.score_by_triage_exclusion(exclusions) == f64::MIN
+        }
+    }
+
+    /// Builds a `TriageScore` if `score` reaches at least one threshold in
+    /// `response`. Returns `None` when `response` is empty or when no
+    /// threshold is met.
+    fn build_triage_score(
+        &self,
+        policy_id: u32,
+        score: f64,
+        response: &[Response],
+    ) -> Option<TriageScore> {
+        if response.iter().any(|r| score >= r.minimum_score) {
+            Some(TriageScore { policy_id, score })
+        } else {
+            None
+        }
+    }
+
+    /// Computes inline triage scores for `policies`, treating each policy's
+    /// `triage_exclusion` as already applied by the caller.
+    ///
+    /// Each policy contributes a `TriageScore` only when
+    /// `score_by_attr + score_by_confidence` reaches at least one
+    /// `response.minimum_score` threshold. Policies whose `response` is
+    /// empty contribute no score.
+    fn inline_scores_against_policies(&self, policies: &[TriagePolicyInput]) -> Vec<TriageScore> {
+        policies
+            .iter()
+            .filter_map(|p| {
+                debug_assert!(
+                    p.triage_exclusion.is_empty(),
+                    "inline scoring expects exclusions to have been applied by the caller"
+                );
+                let score =
+                    self.score_by_attr(&p.packet_attr) + self.score_by_confidence(&p.confidence);
+                self.build_triage_score(p.id, score, &p.response)
+            })
+            .collect()
     }
 
     fn score_by_confidence(&self, confidence: &[Confidence]) -> f64 {
@@ -2793,5 +2840,155 @@ mod tests {
                 .partial_cmp(&0.0),
             Some(Ordering::Equal)
         );
+    }
+
+    fn dns_covert_channel_event() -> Event {
+        let time = Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap();
+        Event::DnsCovertChannel(DnsCovertChannel::new(time, dns_event_fields()))
+    }
+
+    fn blocklist_http_event() -> Event {
+        let time = Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap();
+        Event::Blocklist(RecordType::Http(BlocklistHttp::new(
+            time,
+            blocklist_http_fields(),
+        )))
+    }
+
+    fn confidence_for_dns_covert_channel(weight: f64) -> crate::Confidence {
+        make_confidence(
+            Some(EventCategory::CommandAndControl),
+            "dns covert channel",
+            0.0,
+            Some(weight),
+        )
+    }
+
+    fn make_policy(
+        id: u32,
+        confidence: Vec<crate::Confidence>,
+        response: Vec<crate::Response>,
+    ) -> crate::TriagePolicyInput {
+        crate::TriagePolicyInput {
+            id,
+            name: format!("policy-{id}"),
+            creation_time: Utc.with_ymd_and_hms(1970, 1, 1, 0, 0, 0).unwrap(),
+            triage_exclusion: Vec::new(),
+            packet_attr: Vec::new(),
+            confidence,
+            response,
+        }
+    }
+
+    fn make_response(minimum_score: f64) -> crate::Response {
+        crate::Response {
+            minimum_score,
+            kind: crate::ResponseKind::Manual,
+        }
+    }
+
+    #[test]
+    fn matches_exclusion_dns_covert_channel_match_and_non_match() {
+        let event = dns_covert_channel_event();
+
+        // dns_event_fields() uses query "foo.com"; the per-event override
+        // splits at the first dot, leaving "foo" as the hostname label.
+        let matching = vec![crate::TriageExclusion::Hostname(vec!["foo".to_string()])];
+        let non_matching = vec![crate::TriageExclusion::Hostname(vec![
+            "nomatch".to_string(),
+        ])];
+
+        assert!(event.matches_exclusion(&matching));
+        assert!(!event.matches_exclusion(&non_matching));
+        assert!(!event.matches_exclusion(&[]));
+    }
+
+    #[test]
+    fn matches_exclusion_blocklist_http_uri() {
+        let event = blocklist_http_event();
+
+        // blocklist_http_fields() uses uri "/uri/path".
+        let matching = vec![crate::TriageExclusion::Uri(vec!["/uri/path".to_string()])];
+        let non_matching = vec![crate::TriageExclusion::Uri(vec!["/other".to_string()])];
+
+        assert!(event.matches_exclusion(&matching));
+        assert!(!event.matches_exclusion(&non_matching));
+    }
+
+    #[test]
+    fn score_against_policies_empty_slice_returns_empty() {
+        let event = dns_covert_channel_event();
+        assert!(event.score_against_policies(&[]).is_empty());
+    }
+
+    #[test]
+    fn score_against_policies_only_passing_policy_returned() {
+        let event = dns_covert_channel_event();
+
+        // Both policies score weight=10 from confidence; the first
+        // policy's threshold is met, the second is not.
+        let passing = make_policy(
+            1,
+            vec![confidence_for_dns_covert_channel(10.0)],
+            vec![make_response(5.0)],
+        );
+        let failing = make_policy(
+            2,
+            vec![confidence_for_dns_covert_channel(10.0)],
+            vec![make_response(100.0)],
+        );
+
+        let scores = event.score_against_policies(&[passing, failing]);
+        assert_eq!(scores.len(), 1);
+        assert_eq!(scores[0].policy_id, 1);
+        assert_eq!(scores[0].score.partial_cmp(&10.0), Some(Ordering::Equal));
+    }
+
+    #[test]
+    fn score_against_policies_empty_response_drops_score() {
+        let event = dns_covert_channel_event();
+
+        let policy = make_policy(
+            42,
+            vec![confidence_for_dns_covert_channel(10.0)],
+            Vec::new(),
+        );
+
+        assert!(event.score_against_policies(&[policy]).is_empty());
+    }
+
+    #[test]
+    fn legacy_matches_drops_event_when_no_policy_passes() {
+        let event = dns_covert_channel_event();
+
+        // The legacy formula sums score_by_triage_exclusion +
+        // score_by_attr + score_by_confidence and threshold-filters by
+        // response.minimum_score. None of the policies below should pass.
+        let unreachable_policy = make_policy(
+            1,
+            vec![confidence_for_dns_covert_channel(1.0)],
+            vec![make_response(1_000.0)],
+        );
+
+        let filter = EventFilter {
+            customers: None,
+            endpoints: None,
+            directions: None,
+            source: None,
+            destination: None,
+            countries: None,
+            categories: None,
+            levels: None,
+            kinds: None,
+            learning_methods: None,
+            sensors: None,
+            confidence_min: None,
+            confidence_max: None,
+            triage_policies: Some(vec![unreachable_policy]),
+        };
+
+        let (matched, scores) = event.matches(None, &filter).unwrap();
+        assert!(!matched);
+        assert!(scores.is_none());
     }
 }
