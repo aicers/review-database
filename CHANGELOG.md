@@ -36,6 +36,23 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   category is absent; `Some(category)` preserves existing
   behavior. A migration converts persisted records so previous
   category values become `Some(...)`.
+- **BREAKING**: `tables::node::Table::update` is now fully atomic
+  across the Node, Agent, and ExternalService tables. All Node,
+  Agent, and ExternalService write operations execute inside a
+  single optimistic transaction, so either the entire update
+  commits or no state change is observable. Callers that relied
+  on observing intermediate partial-update states are no longer
+  supported.
+- **BREAKING**: `tables::node::Table::update`'s return type changed
+  from `Result<()>` to `Result<Node>`. The returned `Node` is
+  assembled inside the successfully-committed transaction
+  attempt: `creation_time` comes from the existing record;
+  `name`, `name_draft`, `profile`, and `profile_draft` come from
+  the applied update; and `agents` / `external_services` come
+  from `new.agents` / `new.external_services` with each element's
+  `node` field normalized to the node's `id`. Callers no longer
+  need to issue a follow-up `get_by_id` read to observe the
+  post-update state.
 
 ## [0.44.1] - 2026-04-16
 

@@ -820,6 +820,23 @@ impl<'d, R> IndexedTable<'d, R> {
         self.indexed_map.get_by_id(id)
     }
 
+    /// Gets a record with the given ID within a transaction, acquiring an
+    /// exclusive lock on the entry.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database operation fails.
+    pub fn get_by_id_in_transaction(
+        &self,
+        id: u32,
+        txn: &rocksdb::Transaction<rocksdb::OptimisticTransactionDB>,
+    ) -> Result<Option<R>>
+    where
+        R: Indexable + FromKeyValue,
+    {
+        self.indexed_map.get_by_id_in_transaction(id, txn)
+    }
+
     /// Deactivates a key-value pair with the given ID.
     ///
     /// # Errors

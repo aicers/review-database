@@ -313,6 +313,28 @@ pub trait Indexed {
             .transpose()
     }
 
+    /// Gets an entry corresponding to the given index within a transaction,
+    /// acquiring an exclusive lock on the entry.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the index is invalid or cannot be read.
+    fn get_by_id_in_transaction<T: Indexable + FromKeyValue>(
+        &self,
+        id: u32,
+        txn: &rocksdb::Transaction<rocksdb::OptimisticTransactionDB>,
+    ) -> Result<Option<T>> {
+        let index = self.index_in_transaction(txn)?;
+        let Some(key) = index.get(id).context("invalid ID")? else {
+            return Ok(None);
+        };
+        let key = T::make_indexed_key(Cow::Borrowed(key), id);
+        txn.get_for_update_cf(self.cf(), &key, super::EXCLUSIVE)
+            .context("cannot read entry")?
+            .map(|value| T::from_key_value(&key, &value))
+            .transpose()
+    }
+
     /// Inserts a new key-value pair.
     ///
     /// # Errors
