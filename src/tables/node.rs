@@ -447,16 +447,47 @@ impl<'d> Table<'d> {
     ///  in both `old.agents` and `new.agents`, as well as each external service in both
     /// `old.external_services` and `new.external_services`, will be disregarded.
     ///
+    /// All `Node`, `Agent`, and `ExternalService` writes execute inside a single optimistic
+    /// transaction; either the entire update commits or no state change is observable.
+    /// Returns the post-update `Node` constructed from the successfully-committed
+    /// transaction attempt, with `creation_time` preserved from the existing record.
+    ///
     /// # Errors
     ///
     /// Returns an error if the `id` is invalid, the database operation fails, or if the hostname is already in use.
     #[allow(clippy::too_many_lines)]
-    pub fn update(&mut self, id: u32, old: &Update, new: &Update) -> Result<()> {
-        // Use optimistic transaction to atomically check hostname uniqueness and update the node
-        loop {
+    pub fn update(&mut self, id: u32, old: &Update, new: &Update) -> Result<Node> {
+        use crate::collections::Indexed;
+
+        let old_inner = InnerUpdate {
+            name: old.name.clone(),
+            name_draft: old.name_draft.clone(),
+            profile: old.profile.clone(),
+            profile_draft: old.profile_draft.clone(),
+            agents: old.agents.iter().map(|a| a.key.clone()).collect(),
+            external_services: old
+                .external_services
+                .iter()
+                .map(|a| a.key.clone())
+                .collect(),
+        };
+        let new_inner = InnerUpdate {
+            name: new.name.clone(),
+            name_draft: new.name_draft.clone(),
+            profile: new.profile.clone(),
+            profile_draft: new.profile_draft.clone(),
+            agents: new.agents.iter().map(|a| a.key.clone()).collect(),
+            external_services: new
+                .external_services
+                .iter()
+                .map(|a| a.key.clone())
+                .collect(),
+        };
+
+        'outer: loop {
             let txn = self.node.raw().db().transaction();
 
-            // Check hostname uniqueness within transaction
+            // Check hostname uniqueness within the transaction
             if let Some(new_profile) = &new.profile
                 && self.is_hostname_in_use_except_transaction(&txn, &new_profile.hostname, id)?
             {
@@ -479,31 +510,11 @@ impl<'d> Table<'d> {
                 );
             }
 
-            // Update Node within the transaction
-            let old_inner = InnerUpdate {
-                name: old.name.clone(),
-                name_draft: old.name_draft.clone(),
-                profile: old.profile.clone(),
-                profile_draft: old.profile_draft.clone(),
-                agents: old.agents.iter().map(|a| a.key.clone()).collect(),
-                external_services: old
-                    .external_services
-                    .iter()
-                    .map(|a| a.key.clone())
-                    .collect(),
-            };
-
-            let new_inner = InnerUpdate {
-                name: new.name.clone(),
-                name_draft: new.name_draft.clone(),
-                profile: new.profile.clone(),
-                profile_draft: new.profile_draft.clone(),
-                agents: new.agents.iter().map(|a| a.key.clone()).collect(),
-                external_services: new
-                    .external_services
-                    .iter()
-                    .map(|a| a.key.clone())
-                    .collect(),
+            // Read the existing inner record under this transaction so the returned
+            // Node observes the same snapshot that ultimately commits.
+            let existing_inner: Inner = match self.node.get_by_id_in_transaction(id, &txn)? {
+                Some(inner) => inner,
+                None => bail!("no such id"),
             };
 
             if let Err(e) = self
@@ -511,14 +522,160 @@ impl<'d> Table<'d> {
                 .update_with_transaction(id, &old_inner, &new_inner, &txn)
             {
                 if e.to_string().contains("Resource busy") {
-                    continue;
+                    continue 'outer;
                 }
                 return Err(e);
             }
 
-            // Commit the hostname check and node update transaction atomically
+            // Process Agent diffs within the same transaction
+            let mut old_agents: HashMap<_, _> = old.agents.iter().map(|a| (&a.key, a)).collect();
+            let mut new_agents: HashMap<_, _> = new.agents.iter().map(|a| (&a.key, a)).collect();
+
+            for to_remove in old_agents.keys().filter(|k| !new_agents.contains_key(*k)) {
+                let mut key = id.to_be_bytes().to_vec();
+                key.extend(to_remove.as_bytes());
+                if let Err(e) = self.agent.delete_with_transaction(&key, &txn) {
+                    if e.to_string().contains("Resource busy") {
+                        continue 'outer;
+                    }
+                    return Err(e);
+                }
+            }
+            old_agents.retain(|&k, _| new_agents.contains_key(k));
+
+            for to_insert in new_agents
+                .values()
+                .filter(|v| !old_agents.contains_key(&v.key))
+            {
+                let mut to_insert: Agent = (*to_insert).clone();
+                to_insert.node = id;
+                if let Err(e) = self.agent.put_with_transaction(&to_insert, &txn) {
+                    if e.to_string().contains("Resource busy") {
+                        continue 'outer;
+                    }
+                    return Err(e);
+                }
+            }
+            new_agents.retain(|&k, _| old_agents.contains_key(k));
+
+            let mut old_agents_v: Vec<_> = old_agents.values().collect();
+            old_agents_v.sort_unstable_by_key(|a| a.key.clone());
+            let mut new_agents_v: Vec<_> = new_agents.values().collect();
+            new_agents_v.sort_unstable_by_key(|a| a.key.clone());
+            for (old_a, new_a) in old_agents_v
+                .into_iter()
+                .zip(new_agents_v)
+                .filter(|(o, n)| **o != **n)
+            {
+                let mut old_a = (*old_a).clone();
+                old_a.node = id;
+                let mut new_a = (*new_a).clone();
+                new_a.node = id;
+                if let Err(e) = self.agent.update_with_transaction(&old_a, &new_a, &txn) {
+                    if e.to_string().contains("Resource busy") {
+                        continue 'outer;
+                    }
+                    return Err(e);
+                }
+            }
+
+            // Process ExternalService diffs within the same transaction
+            let mut old_external_services: HashMap<_, _> =
+                old.external_services.iter().map(|a| (&a.key, a)).collect();
+            let mut new_external_services: HashMap<_, _> =
+                new.external_services.iter().map(|a| (&a.key, a)).collect();
+
+            for to_remove in old_external_services
+                .keys()
+                .filter(|k| !new_external_services.contains_key(*k))
+            {
+                let mut key = id.to_be_bytes().to_vec();
+                key.extend(to_remove.as_bytes());
+                if let Err(e) = self.external_service.delete_with_transaction(&key, &txn) {
+                    if e.to_string().contains("Resource busy") {
+                        continue 'outer;
+                    }
+                    return Err(e);
+                }
+            }
+            old_external_services.retain(|&k, _| new_external_services.contains_key(k));
+
+            for to_insert in new_external_services
+                .values()
+                .filter(|v| !old_external_services.contains_key(&v.key))
+            {
+                let mut to_insert: ExternalService = (*to_insert).clone();
+                to_insert.node = id;
+                if let Err(e) = self.external_service.put_with_transaction(&to_insert, &txn) {
+                    if e.to_string().contains("Resource busy") {
+                        continue 'outer;
+                    }
+                    return Err(e);
+                }
+            }
+            new_external_services.retain(|&k, _| old_external_services.contains_key(k));
+
+            let mut old_es_v: Vec<_> = old_external_services.values().collect();
+            old_es_v.sort_unstable_by_key(|a| a.key.clone());
+            let mut new_es_v: Vec<_> = new_external_services.values().collect();
+            new_es_v.sort_unstable_by_key(|a| a.key.clone());
+            for (old_es, new_es) in old_es_v
+                .into_iter()
+                .zip(new_es_v)
+                .filter(|(o, n)| **o != **n)
+            {
+                let mut old_es = (*old_es).clone();
+                old_es.node = id;
+                let mut new_es = (*new_es).clone();
+                new_es.node = id;
+                if let Err(e) = self
+                    .external_service
+                    .update_with_transaction(&old_es, &new_es, &txn)
+                {
+                    if e.to_string().contains("Resource busy") {
+                        continue 'outer;
+                    }
+                    return Err(e);
+                }
+            }
+
+            // Commit all writes atomically
             match txn.commit() {
-                Ok(()) => break,
+                Ok(()) => {
+                    // Build the post-update Node from this committed attempt's snapshot.
+                    let final_name = new
+                        .name
+                        .clone()
+                        .unwrap_or_else(|| existing_inner.name.clone());
+                    let final_agents: Vec<Agent> = new
+                        .agents
+                        .iter()
+                        .map(|a| {
+                            let mut a = a.clone();
+                            a.node = id;
+                            a
+                        })
+                        .collect();
+                    let final_external_services: Vec<ExternalService> = new
+                        .external_services
+                        .iter()
+                        .map(|a| {
+                            let mut a = a.clone();
+                            a.node = id;
+                            a
+                        })
+                        .collect();
+                    return Ok(Node {
+                        id,
+                        name: final_name,
+                        name_draft: new.name_draft.clone(),
+                        profile: new.profile.clone(),
+                        profile_draft: new.profile_draft.clone(),
+                        agents: final_agents,
+                        external_services: final_external_services,
+                        creation_time: existing_inner.creation_time,
+                    });
+                }
                 Err(e) => {
                     if !e.as_ref().starts_with("Resource busy:") {
                         return Err(e).context("failed to update node");
@@ -527,83 +684,6 @@ impl<'d> Table<'d> {
                 }
             }
         }
-
-        // Update Agent operations (outside the hostname transaction)
-        let mut old_agents: HashMap<_, _> = old.agents.iter().map(|a| (&a.key, a)).collect();
-        let mut new_agents: HashMap<_, _> = new.agents.iter().map(|a| (&a.key, a)).collect();
-
-        for to_remove in old_agents.keys().filter(|k| !new_agents.contains_key(*k)) {
-            self.agent.delete(id, to_remove)?;
-        }
-        old_agents.retain(|&k, _| new_agents.contains_key(k));
-
-        for (_k, to_insert) in new_agents
-            .iter()
-            .filter(|(k, _v)| !old_agents.contains_key(*k))
-        {
-            let mut to_insert: Agent = (*to_insert).clone();
-            to_insert.node = id;
-            self.agent.put(&to_insert)?;
-        }
-        new_agents.retain(|&k, _| old_agents.contains_key(k));
-
-        let mut old_agents: Vec<_> = old_agents.values().collect();
-        old_agents.sort_unstable_by_key(|a| a.key.clone());
-        let mut new_agents: Vec<_> = new_agents.values().collect();
-        new_agents.sort_unstable_by_key(|a| a.key.clone());
-        for (old, new) in old_agents
-            .into_iter()
-            .zip(new_agents)
-            .filter(|(o, n)| **o != **n)
-        {
-            let mut old = (*old).clone();
-            old.node = id;
-            let mut new = (*new).clone();
-            new.node = id;
-            self.agent.update(&old, &new)?;
-        }
-
-        // Update ExternalService operations (outside the hostname transaction)
-        let mut old_external_services: HashMap<_, _> =
-            old.external_services.iter().map(|a| (&a.key, a)).collect();
-        let mut new_external_services: HashMap<_, _> =
-            new.external_services.iter().map(|a| (&a.key, a)).collect();
-
-        for to_remove in old_external_services
-            .keys()
-            .filter(|k| !new_external_services.contains_key(*k))
-        {
-            self.external_service.delete(id, to_remove)?;
-        }
-        old_external_services.retain(|&k, _| new_external_services.contains_key(k));
-
-        for (_k, to_insert) in new_external_services
-            .iter()
-            .filter(|(k, _v)| !old_external_services.contains_key(*k))
-        {
-            let mut to_insert: ExternalService = (*to_insert).clone();
-            to_insert.node = id;
-            self.external_service.put(&to_insert)?;
-        }
-        new_external_services.retain(|&k, _| old_external_services.contains_key(k));
-
-        let mut old_external_services: Vec<_> = old_external_services.values().collect();
-        old_external_services.sort_unstable_by_key(|a| a.key.clone());
-        let mut new_external_services: Vec<_> = new_external_services.values().collect();
-        new_external_services.sort_unstable_by_key(|a| a.key.clone());
-        for (old, new) in old_external_services
-            .into_iter()
-            .zip(new_external_services)
-            .filter(|(o, n)| **o != **n)
-        {
-            let mut old = (*old).clone();
-            old.node = id;
-            let mut new = (*new).clone();
-            new.node = id;
-            self.external_service.update(&old, &new)?;
-        }
-
-        Ok(())
     }
 
     /// Updates the status of an agent specified by `agent_key`, which belongs to the node whose
@@ -1216,7 +1296,7 @@ mod test {
         };
         let old = node.clone().into();
 
-        assert!(node_table.update(id, &old, &update).is_ok());
+        let returned = node_table.update(id, &old, &update).unwrap();
 
         let updated = node_table.get_by_id(id).unwrap();
         assert!(updated.is_some());
@@ -1232,6 +1312,7 @@ mod test {
         node.external_services = node.external_services.into_iter().skip(1).collect();
 
         assert_eq!(updated, node);
+        assert_eq!(returned, node);
     }
 
     #[test]
@@ -1647,5 +1728,236 @@ mod test {
         assert!(invalid_external_services.is_empty());
 
         assert_eq!(updated.external_services, update.external_services);
+    }
+
+    #[test]
+    fn update_returns_node_with_added_agent() {
+        let (_permit, store) = setup_store();
+
+        let initial_kinds = vec![AgentKind::Unsupervised];
+        let initial_configs = create_agent_configs(&initial_kinds);
+        let initial_drafts = vec![None];
+        let profile = Profile::default();
+        let agents = create_agents(0, &initial_kinds, &initial_configs, &initial_drafts);
+
+        let mut node = create_node(0, "test", None, Some(profile), None, agents, vec![]);
+        let mut node_table = store.node_map();
+        let id = node_table.put(&node).unwrap();
+        node.id = id;
+        node.agents.iter_mut().for_each(|a| a.node = id);
+
+        let old: Update = node.clone().into();
+        let added_kinds = vec![AgentKind::Sensor];
+        let added_configs = create_agent_configs(&added_kinds);
+        let added_drafts = vec![None];
+        let added = create_agents(id, &added_kinds, &added_configs, &added_drafts);
+
+        let mut new_agents = node.agents.clone();
+        new_agents.extend(added.clone());
+        let new = Update {
+            name: Some(node.name.clone()),
+            name_draft: node.name_draft.clone(),
+            profile: node.profile.clone(),
+            profile_draft: node.profile_draft.clone(),
+            agents: new_agents.clone(),
+            external_services: vec![],
+        };
+
+        let returned = node_table.update(id, &old, &new).unwrap();
+        assert_eq!(returned.agents, new_agents);
+    }
+
+    #[test]
+    fn update_returns_node_with_removed_agent() {
+        let (_permit, store) = setup_store();
+
+        let kinds = vec![AgentKind::Unsupervised, AgentKind::Sensor];
+        let configs = create_agent_configs(&kinds);
+        let drafts = vec![None, None];
+        let profile = Profile::default();
+        let agents = create_agents(0, &kinds, &configs, &drafts);
+
+        let mut node = create_node(0, "test", None, Some(profile), None, agents, vec![]);
+        let mut node_table = store.node_map();
+        let id = node_table.put(&node).unwrap();
+        node.id = id;
+        node.agents.iter_mut().for_each(|a| a.node = id);
+
+        let old: Update = node.clone().into();
+        let kept_agents: Vec<_> = node.agents.iter().take(1).cloned().collect();
+        let new = Update {
+            name: Some(node.name.clone()),
+            name_draft: node.name_draft.clone(),
+            profile: node.profile.clone(),
+            profile_draft: node.profile_draft.clone(),
+            agents: kept_agents.clone(),
+            external_services: vec![],
+        };
+
+        let returned = node_table.update(id, &old, &new).unwrap();
+        assert_eq!(returned.agents, kept_agents);
+        assert_eq!(returned.agents.len(), 1);
+    }
+
+    #[test]
+    fn update_returns_node_with_changed_profile() {
+        let (_permit, store) = setup_store();
+
+        let initial_profile = Profile {
+            customer_id: 1,
+            description: "initial".to_string(),
+            hostname: "initial-host".to_string(),
+        };
+        let mut node = create_node(
+            0,
+            "test",
+            None,
+            Some(initial_profile.clone()),
+            None,
+            vec![],
+            vec![],
+        );
+        let mut node_table = store.node_map();
+        let id = node_table.put(&node).unwrap();
+        node.id = id;
+
+        let new_profile = Profile {
+            customer_id: 1,
+            description: "updated".to_string(),
+            hostname: "updated-host".to_string(),
+        };
+
+        let old: Update = node.clone().into();
+        let new = Update {
+            name: Some(node.name.clone()),
+            name_draft: None,
+            profile: Some(new_profile.clone()),
+            profile_draft: None,
+            agents: vec![],
+            external_services: vec![],
+        };
+
+        let returned = node_table.update(id, &old, &new).unwrap();
+        assert_eq!(returned.profile, Some(new_profile));
+    }
+
+    #[test]
+    fn update_preserves_creation_time() {
+        let (_permit, store) = setup_store();
+
+        let profile = Profile::default();
+        let mut node = create_node(0, "test", None, Some(profile), None, vec![], vec![]);
+        let original_creation_time = node.creation_time;
+
+        let mut node_table = store.node_map();
+        let id = node_table.put(&node).unwrap();
+        node.id = id;
+
+        let old: Update = node.clone().into();
+        let new = Update {
+            name: Some(node.name.clone()),
+            name_draft: Some("draft".to_string()),
+            profile: node.profile.clone(),
+            profile_draft: None,
+            agents: vec![],
+            external_services: vec![],
+        };
+
+        let returned = node_table.update(id, &old, &new).unwrap();
+        assert_eq!(returned.creation_time, original_creation_time);
+    }
+
+    #[test]
+    fn update_noop_returns_unchanged_node() {
+        let (_permit, store) = setup_store();
+
+        let kinds = vec![AgentKind::Unsupervised];
+        let configs = create_agent_configs(&kinds);
+        let drafts = vec![None];
+        let profile = Profile::default();
+        let agents = create_agents(0, &kinds, &configs, &drafts);
+        let mut node = create_node(
+            0,
+            "test",
+            Some("draft"),
+            Some(profile),
+            None,
+            agents,
+            vec![],
+        );
+
+        let mut node_table = store.node_map();
+        let id = node_table.put(&node).unwrap();
+        node.id = id;
+        node.agents.iter_mut().for_each(|a| a.node = id);
+
+        let old: Update = node.clone().into();
+        let new: Update = node.clone().into();
+
+        let returned = node_table.update(id, &old, &new).unwrap();
+        assert_eq!(returned, node);
+    }
+
+    #[test]
+    fn update_atomic_rollback_on_agent_failure() {
+        let (_permit, store) = setup_store();
+
+        let kinds = vec![AgentKind::Sensor];
+        let configs = create_agent_configs(&kinds);
+        let drafts = vec![None];
+        let profile = Profile {
+            customer_id: 1,
+            description: "original".to_string(),
+            hostname: "original-host".to_string(),
+        };
+        let agents = create_agents(0, &kinds, &configs, &drafts);
+        let mut node = create_node(0, "test", None, Some(profile.clone()), None, agents, vec![]);
+
+        let mut node_table = store.node_map();
+        let id = node_table.put(&node).unwrap();
+        node.id = id;
+        node.agents.iter_mut().for_each(|a| a.node = id);
+
+        // Construct an `old` with a stale agent value (different draft) so the
+        // agent.update_with_transaction step fails with "old value mismatch"
+        // *after* the node-inner update has already been staged within the txn.
+        let stale_drafts: Vec<Option<Config>> =
+            vec![Some("stale_key=1".to_string().try_into().unwrap())];
+        let stale_agents = create_agents(id, &kinds, &configs, &stale_drafts);
+
+        let old = Update {
+            name: Some(node.name.clone()),
+            name_draft: None,
+            profile: Some(profile.clone()),
+            profile_draft: None,
+            agents: stale_agents,
+            external_services: vec![],
+        };
+        let new_profile = Profile {
+            customer_id: 1,
+            description: "modified".to_string(),
+            hostname: "modified-host".to_string(),
+        };
+        let new_drafts: Vec<Option<Config>> =
+            vec![Some("new_key=2".to_string().try_into().unwrap())];
+        let new_agents = create_agents(id, &kinds, &configs, &new_drafts);
+        let new = Update {
+            name: Some(node.name.clone()),
+            name_draft: None,
+            profile: Some(new_profile),
+            profile_draft: None,
+            agents: new_agents,
+            external_services: vec![],
+        };
+
+        let result = node_table.update(id, &old, &new);
+        assert!(result.is_err());
+
+        // Verify that no state change occurred — the node and its agent still
+        // reflect the pre-update state.
+        let (after, invalid_agents, _) = node_table.get_by_id(id).unwrap().unwrap();
+        assert!(invalid_agents.is_empty());
+        assert_eq!(after.profile, Some(profile));
+        assert_eq!(after.agents, node.agents);
     }
 }
