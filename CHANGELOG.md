@@ -9,11 +9,11 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
-- **BREAKING**: Renamed `TrafficFilter.agent` to `host_fqdn` to clarify
+- **BREAKING**: Renamed `TrafficFilter::agent` to `host_fqdn` to clarify
   that it stores a host fully-qualified domain name. Related
   `Table<'_, TrafficFilter>` method parameters were also renamed from
   `agent`/`agents` to `host_fqdn`/`host_fqdns`.
-- **BREAKING**: Renamed `ExternalService.node` to `node_id` to clarify
+- **BREAKING**: Renamed `ExternalService::node` to `node_id` to clarify
   that it holds a node identifier. Related `Table::<ExternalService>::get`
   and `Table::<ExternalService>::delete` parameters were also renamed
   from `node` to `node_id`.
@@ -1460,6 +1460,7 @@ AsRef<[u8]>`). This change accommodates scenarios where the information stored
 - Modified `FtpBruteForce` by adding an `is_internal` field which is a boolean
   indicating whether it is internal or not.
 
+[Unreleased]: https://github.com/aicers/review-database/compare/0.45.0...main
 [0.45.0]: https://github.com/aicers/review-database/compare/0.44.1...0.45.0
 [0.44.1]: https://github.com/aicers/review-database/compare/0.44.0...0.44.1
 [0.44.0]: https://github.com/aicers/review-database/compare/0.43.0...0.44.0

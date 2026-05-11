@@ -249,12 +249,14 @@ impl<'d> Table<'d, TrafficFilter> {
         self.put(&entry).map(|()| entry.len())
     }
 
-    /// Removes some rules. The entry will be removed if rules become empty.
+    /// Removes the given networks from the host's rules. Networks that are not
+    /// present are ignored. The entry is removed entirely if its rules become
+    /// empty. Returns the number of remaining rules, or `0` if the host is
+    /// absent.
     ///
     /// # Errors
     ///
     /// * Returns an error if it fails to open database
-    /// * Returns an error if rule is not exist
     /// * Returns an error if it fails to write updated rules in database
     pub fn remove_rules(&self, host_fqdn: &str, networks: &[IpNet]) -> Result<usize> {
         let Some(mut entry) = self.get(host_fqdn)? else {
@@ -271,12 +273,12 @@ impl<'d> Table<'d, TrafficFilter> {
         }
     }
 
-    /// Updates `update_time` for the given `host_fqdn`.
+    /// Updates `update_time` for the given `host_fqdn`. Does nothing and
+    /// returns `Ok(())` if the host is absent.
     ///
     /// # Errors
     ///
     /// * Returns an error if it fails to open database
-    /// * Returns an error if rule is not exist
     /// * Returns an error if it fails to write updated rules in database
     pub fn update_time(&self, host_fqdn: &str) -> Result<()> {
         let Some(mut entry) = self.get(host_fqdn)? else {
