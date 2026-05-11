@@ -5,6 +5,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use super::{EventCategory, LearningMethod, ThreatLevel, TriageScore, common::Match};
+use crate::TriageExclusion;
 use crate::event::common::{AttrValue, triage_scores_to_string, vector_to_string};
 
 macro_rules! find_tls_attr_by_kind {
@@ -342,6 +343,20 @@ impl Match for BlocklistTls {
     fn find_attr_by_kind(&self, raw_event_attr: RawEventAttrKind) -> Option<AttrValue<'_>> {
         find_tls_attr_by_kind!(self, raw_event_attr)
     }
+
+    fn score_by_triage_exclusion(&self, triage_exclusion: &[TriageExclusion]) -> f64 {
+        let matched = triage_exclusion.iter().any(|ti| match ti {
+            TriageExclusion::IpAddress(filter) => self
+                .src_addrs()
+                .iter()
+                .chain(self.dst_addrs().iter())
+                .any(|&ip| filter.contains(ip)),
+            TriageExclusion::Domain(regex_set) => regex_set.is_match(&self.server_name),
+            TriageExclusion::Hostname(hostnames) => hostnames.contains(&self.server_name),
+            TriageExclusion::Uri(_) => false, // TLS records don't carry URIs
+        });
+        if matched { f64::MIN } else { 0.0 }
+    }
 }
 
 pub struct SuspiciousTlsTraffic {
@@ -526,5 +541,150 @@ impl Match for SuspiciousTlsTraffic {
 
     fn find_attr_by_kind(&self, raw_event_attr: RawEventAttrKind) -> Option<AttrValue<'_>> {
         find_tls_attr_by_kind!(self, raw_event_attr)
+    }
+
+    fn score_by_triage_exclusion(&self, triage_exclusion: &[TriageExclusion]) -> f64 {
+        let matched = triage_exclusion.iter().any(|ti| match ti {
+            TriageExclusion::IpAddress(filter) => self
+                .src_addrs()
+                .iter()
+                .chain(self.dst_addrs().iter())
+                .any(|&ip| filter.contains(ip)),
+            TriageExclusion::Domain(regex_set) => regex_set.is_match(&self.server_name),
+            TriageExclusion::Hostname(hostnames) => hostnames.contains(&self.server_name),
+            TriageExclusion::Uri(_) => false, // TLS records don't carry URIs
+        });
+        if matched { f64::MIN } else { 0.0 }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::net::{IpAddr, Ipv4Addr};
+
+    use chrono::{TimeZone, Utc};
+
+    use super::{BlocklistTls, BlocklistTlsFields, Match, SuspiciousTlsTraffic};
+    use crate::event::EventCategory;
+    use crate::tables::{ExclusionReason, TriageExclusion};
+    use crate::types::HostNetworkGroup;
+
+    fn tls_fields(server_name: &str) -> BlocklistTlsFields {
+        BlocklistTlsFields {
+            sensor: "sensor".to_string(),
+            orig_addr: IpAddr::V4(Ipv4Addr::new(192, 168, 1, 100)),
+            orig_port: 12345,
+            resp_addr: IpAddr::V4(Ipv4Addr::new(198, 51, 100, 1)),
+            resp_port: 443,
+            proto: 6,
+            start_time: Utc
+                .with_ymd_and_hms(2023, 1, 1, 12, 0, 0)
+                .unwrap()
+                .timestamp_nanos_opt()
+                .unwrap(),
+            duration: 1_000_000_000,
+            orig_pkts: 10,
+            resp_pkts: 15,
+            orig_l2_bytes: 1100,
+            resp_l2_bytes: 2200,
+            server_name: server_name.to_string(),
+            alpn_protocol: "h2".to_string(),
+            ja3: "ja3".to_string(),
+            version: "TLSv1.3".to_string(),
+            client_cipher_suites: vec![],
+            client_extensions: vec![],
+            cipher: 0,
+            extensions: vec![],
+            ja3s: "ja3s".to_string(),
+            serial: "serial".to_string(),
+            subject_country: "US".to_string(),
+            subject_org_name: "org".to_string(),
+            subject_common_name: "common".to_string(),
+            validity_not_before: 0,
+            validity_not_after: 0,
+            subject_alt_name: "alt".to_string(),
+            issuer_country: "US".to_string(),
+            issuer_org_name: "org".to_string(),
+            issuer_org_unit_name: "unit".to_string(),
+            issuer_common_name: "common".to_string(),
+            last_alert: 0,
+            confidence: 0.9,
+            category: Some(EventCategory::InitialAccess),
+        }
+    }
+
+    fn ip_exclusion(addr: &str) -> TriageExclusion {
+        TriageExclusion::from(ExclusionReason::IpAddress(HostNetworkGroup::new(
+            vec![addr.parse().unwrap()],
+            vec![],
+            vec![],
+        )))
+    }
+
+    fn domain_exclusion(domain: &str) -> TriageExclusion {
+        TriageExclusion::from(ExclusionReason::Domain(vec![domain.to_string()]))
+    }
+
+    fn hostname_exclusion(hostname: &str) -> TriageExclusion {
+        TriageExclusion::from(ExclusionReason::Hostname(vec![hostname.to_string()]))
+    }
+
+    fn uri_exclusion(uri: &str) -> TriageExclusion {
+        TriageExclusion::from(ExclusionReason::Uri(vec![uri.to_string()]))
+    }
+
+    #[test]
+    fn blocklist_tls_exclusion_matches_ip_address() {
+        let time = Utc.with_ymd_and_hms(2023, 1, 1, 12, 0, 0).unwrap();
+        let event = BlocklistTls::new(time, tls_fields("internal-cert.example.com"));
+
+        assert!(event.matched_any_exclusion(&[ip_exclusion("192.168.1.100")]));
+        assert!(event.matched_any_exclusion(&[ip_exclusion("198.51.100.1")]));
+        assert!(!event.matched_any_exclusion(&[ip_exclusion("10.0.0.1")]));
+    }
+
+    #[test]
+    fn blocklist_tls_exclusion_matches_domain_via_server_name() {
+        let time = Utc.with_ymd_and_hms(2023, 1, 1, 12, 0, 0).unwrap();
+        let event = BlocklistTls::new(time, tls_fields("internal-cert.example.com"));
+
+        // Subdomain match: "example.com" matches "internal-cert.example.com".
+        assert!(event.matched_any_exclusion(&[domain_exclusion("example.com")]));
+        // Exact match.
+        assert!(event.matched_any_exclusion(&[domain_exclusion("internal-cert.example.com")]));
+        // Non-match.
+        assert!(!event.matched_any_exclusion(&[domain_exclusion("other.com")]));
+    }
+
+    #[test]
+    fn blocklist_tls_exclusion_matches_hostname_exact() {
+        let time = Utc.with_ymd_and_hms(2023, 1, 1, 12, 0, 0).unwrap();
+        let event = BlocklistTls::new(time, tls_fields("internal-cert.example.com"));
+
+        assert!(event.matched_any_exclusion(&[hostname_exclusion("internal-cert.example.com")]));
+        // Hostname matching is exact equality, not substring.
+        assert!(!event.matched_any_exclusion(&[hostname_exclusion("example.com")]));
+        assert!(!event.matched_any_exclusion(&[hostname_exclusion("other")]));
+    }
+
+    #[test]
+    fn blocklist_tls_exclusion_does_not_match_uri() {
+        let time = Utc.with_ymd_and_hms(2023, 1, 1, 12, 0, 0).unwrap();
+        let event = BlocklistTls::new(time, tls_fields("internal-cert.example.com"));
+
+        assert!(!event.matched_any_exclusion(&[uri_exclusion("/anything")]));
+        assert!(!event.matched_any_exclusion(&[uri_exclusion("internal-cert.example.com")]));
+    }
+
+    #[test]
+    fn suspicious_tls_traffic_exclusion_matches_all_kinds() {
+        let time = Utc.with_ymd_and_hms(2023, 1, 1, 12, 0, 0).unwrap();
+        let event = SuspiciousTlsTraffic::new(time, tls_fields("internal-cert.example.com"));
+
+        assert!(event.matched_any_exclusion(&[ip_exclusion("192.168.1.100")]));
+        assert!(event.matched_any_exclusion(&[domain_exclusion("example.com")]));
+        assert!(event.matched_any_exclusion(&[hostname_exclusion("internal-cert.example.com")]));
+        assert!(!event.matched_any_exclusion(&[uri_exclusion("/anything")]));
+        assert!(!event.matched_any_exclusion(&[]));
     }
 }
