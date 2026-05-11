@@ -25,6 +25,35 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   fields `client_name` to `cname` and `service_name` to `sname` to match
   Kerberos protocol terminology and align with the existing
   `cname_type`/`sname_type` fields.
+- Introduced an explicit producer/storage boundary for event fields. The
+  producer-facing `*Fields` types remain the public ingestion interface, but
+  each event family now also defines a repository-local `*FieldsStored` (or
+  `*Stored`) type that is the sole schema written to disk and consumed on
+  read. `EventDb::put` converts incoming producer bytes into the stored
+  representation before persistence via an explicit
+  `From<*Fields> for *FieldsStored` conversion, and `EventIterator` builds
+  domain events directly from the stored representation without re-crossing
+  the producer schema. Domain constructors (`BlocklistBootp::new`,
+  `DnsCovertChannel::new`, `HttpThreat::new`, `TorConnection::new`, etc.)
+  now accept `*FieldsStored`. Shared and stored schemas are structurally
+  identical in this change; the split is scaffolding so the stored schemas
+  can evolve independently of the producer interface in future releases.
+  Repository-local versioning is preserved on the stored side: each
+  `*FieldsStored` (or `*Stored`) name is a stable alias for a versioned
+  concrete struct (for example `BlocklistBootpFieldsStoredV0_42`) so schema
+  evolution can add new versioned variants without renaming the alias used
+  throughout the crate. For the `ExtraThreat`, `NetworkThreat`, and
+  `WindowsThreat` families, only `syslog_rfc5424` remains on the shared
+  type (the message-boundary formatter used by `EventMessage`); the
+  `Display`, `Match`, and `threat_level` implementations now live on the
+  stored type, and the `Event` enum carries the stored variant directly.
+- Refactored internal event storage and migration paths to keep producer-facing
+  event schemas separate from on-disk stored schemas. No external wire-format
+  change is intended.
+- Aligned the `ExtraThreat`, `NetworkThreat`, and `WindowsThreat` event families
+  with the rest of the public model so each carries a runtime/domain payload.
+  Their producer-facing schemas are now `*Fields` types and their `Event`
+  variants now expose the runtime types instead of stored schemas.
 
 ## [0.45.0] - 2026-05-09
 
@@ -74,35 +103,6 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   `node` field normalized to the node's `id`. Callers no longer
   need to issue a follow-up `get_by_id` read to observe the
   post-update state.
-- Introduced an explicit producer/storage boundary for event fields. The
-  producer-facing `*Fields` types remain the public ingestion interface, but
-  each event family now also defines a repository-local `*FieldsStored` (or
-  `*Stored`) type that is the sole schema written to disk and consumed on
-  read. `EventDb::put` converts incoming producer bytes into the stored
-  representation before persistence via an explicit
-  `From<*Fields> for *FieldsStored` conversion, and `EventIterator` builds
-  domain events directly from the stored representation without re-crossing
-  the producer schema. Domain constructors (`BlocklistBootp::new`,
-  `DnsCovertChannel::new`, `HttpThreat::new`, `TorConnection::new`, etc.)
-  now accept `*FieldsStored`. Shared and stored schemas are structurally
-  identical in this change; the split is scaffolding so the stored schemas
-  can evolve independently of the producer interface in future releases.
-  Repository-local versioning is preserved on the stored side: each
-  `*FieldsStored` (or `*Stored`) name is a stable alias for a versioned
-  concrete struct (for example `BlocklistBootpFieldsStoredV0_42`) so schema
-  evolution can add new versioned variants without renaming the alias used
-  throughout the crate. For the `ExtraThreat`, `NetworkThreat`, and
-  `WindowsThreat` families, only `syslog_rfc5424` remains on the shared
-  type (the message-boundary formatter used by `EventMessage`); the
-  `Display`, `Match`, and `threat_level` implementations now live on the
-  stored type, and the `Event` enum carries the stored variant directly.
-- Refactored internal event storage and migration paths to keep producer-facing
-  event schemas separate from on-disk stored schemas. No external wire-format
-  change is intended.
-- Aligned the `ExtraThreat`, `NetworkThreat`, and `WindowsThreat` event families
-  with the rest of the public model so each carries a runtime/domain payload.
-  Their producer-facing schemas are now `*Fields` types and their `Event`
-  variants now expose the runtime types instead of stored schemas.
 
 ## [0.44.1] - 2026-04-16
 
