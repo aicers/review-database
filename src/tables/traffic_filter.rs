@@ -251,7 +251,7 @@ impl<'d> Table<'d, TrafficFilter> {
 
     /// Removes the given networks from the host's rules. Networks that are not
     /// present are ignored. The entry is removed entirely if its rules become
-    /// empty. Returns the number of remaining rules, or `0` if the host is
+    /// empty. Returns the number of remaining rules, or `0` if the rule is
     /// absent.
     ///
     /// # Errors
