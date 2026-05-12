@@ -274,7 +274,7 @@ impl<'d> Table<'d, TrafficFilter> {
     }
 
     /// Updates `update_time` for the given `host_fqdn`. Does nothing and
-    /// returns `Ok(())` if the host is absent.
+    /// returns `Ok(())` if the rule is absent.
     ///
     /// # Errors
     ///
