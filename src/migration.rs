@@ -4672,10 +4672,10 @@ mod tests {
             error_code: 0,
             client_realm: "EXAMPLE.COM".to_string(),
             cname_type: 1,
-            client_name: vec!["user".to_string()],
+            cname: vec!["user".to_string()],
             realm: "EXAMPLE.COM".to_string(),
             sname_type: 2,
-            service_name: vec!["krbtgt".to_string()],
+            sname: vec!["krbtgt".to_string()],
             confidence: 0.8,
             category: None,
         };
