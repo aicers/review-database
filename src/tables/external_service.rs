@@ -34,7 +34,7 @@ pub enum ExternalServiceKind {
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct ExternalService {
-    pub node: u32,
+    pub node_id: u32,
     pub key: String,
     pub kind: ExternalServiceKind,
     pub status: ExternalServiceStatus,
@@ -46,7 +46,7 @@ impl ExternalService {
     ///
     /// Returns an error if `config` fails to be `validate`-ed.
     pub fn new(
-        node: u32,
+        node_id: u32,
         key: String,
         kind: ExternalServiceKind,
         status: ExternalServiceStatus,
@@ -54,7 +54,7 @@ impl ExternalService {
     ) -> Result<Self> {
         let draft = draft.map(TryInto::try_into).transpose()?;
         Ok(Self {
-            node,
+            node_id,
             key,
             kind,
             status,
@@ -67,14 +67,14 @@ impl FromKeyValue for ExternalService {
     fn from_key_value(key: &[u8], value: &[u8]) -> Result<Self> {
         let value: Value = super::deserialize(value)?;
 
-        let (node, key) = key.split_at(size_of::<u32>());
+        let (node_id, key) = key.split_at(size_of::<u32>());
         let mut buf = [0; size_of::<u32>()];
-        buf.copy_from_slice(node);
-        let node = u32::from_be_bytes(buf);
+        buf.copy_from_slice(node_id);
+        let node_id = u32::from_be_bytes(buf);
         let key = std::str::from_utf8(key)?.to_string();
 
         Ok(Self {
-            node,
+            node_id,
             key,
             kind: value.kind,
             status: value.status,
@@ -87,7 +87,7 @@ impl UniqueKey for ExternalService {
     type AsBytes<'a> = Vec<u8>;
 
     fn unique_key(&self) -> Vec<u8> {
-        let mut buf = self.node.to_be_bytes().to_vec();
+        let mut buf = self.node_id.to_be_bytes().to_vec();
         buf.extend(self.key.as_bytes());
         buf
     }
@@ -122,13 +122,13 @@ impl<'d> Table<'d, ExternalService> {
         Map::open(db, super::EXTERNAL_SERVICES).map(Table::new)
     }
 
-    /// Returns an external service with the given `node` and `id`.
+    /// Returns an external service with the given `node_id` and `id`.
     ///
     /// # Errors
     ///
     /// Returns an error if the external service does not exist or the database operation fails.
-    pub fn get(&self, node: u32, id: &str) -> Result<Option<ExternalService>> {
-        let mut key = node.to_be_bytes().to_vec();
+    pub fn get(&self, node_id: u32, id: &str) -> Result<Option<ExternalService>> {
+        let mut key = node_id.to_be_bytes().to_vec();
         key.extend(id.as_bytes());
         let Some(value) = self.map.get(&key)? else {
             return Ok(None);
@@ -136,13 +136,13 @@ impl<'d> Table<'d, ExternalService> {
         Ok(Some(ExternalService::from_key_value(&key, value.as_ref())?))
     }
 
-    /// Deletes the external service with given `node` and `id`.
+    /// Deletes the external service with given `node_id` and `id`.
     ///
     /// # Errors
     ///
     /// Returns `None` if the table does not exist.
-    pub fn delete(&self, node: u32, id: &str) -> Result<()> {
-        let mut key = node.to_be_bytes().to_vec();
+    pub fn delete(&self, node_id: u32, id: &str) -> Result<()> {
+        let mut key = node_id.to_be_bytes().to_vec();
         key.extend(id.as_bytes());
         self.map.delete(&key)
     }
@@ -178,13 +178,13 @@ mod test {
     }
 
     fn create_external_service(
-        node: u32,
+        node_id: u32,
         key: &str,
         kind: ExternalServiceKind,
         draft: Option<&str>,
     ) -> ExternalService {
         ExternalService::new(
-            node,
+            node_id,
             key.to_string(),
             kind,
             ExternalServiceStatus::Enabled,
@@ -201,7 +201,7 @@ mod test {
             ExternalServiceKind::DataStore,
             Some(VALID_TOML),
         );
-        assert_eq!(external_service.node, 1);
+        assert_eq!(external_service.node_id, 1);
         assert_eq!(external_service.key, "test_key");
         assert_eq!(external_service.kind, ExternalServiceKind::DataStore);
         assert_eq!(

@@ -366,7 +366,7 @@ impl<'d> Table<'d> {
             // Insert agents within the same transaction
             for agent in &entry.agents {
                 let mut agent = agent.clone();
-                agent.node = node_id;
+                agent.node_id = node_id;
                 if let Err(e) = self.agent.put_with_transaction(&agent, &txn) {
                     if e.to_string().contains("Resource busy")
                         || e.to_string().contains("already exists")
@@ -380,7 +380,7 @@ impl<'d> Table<'d> {
             // Insert external services within the same transaction
             for external_service in &entry.external_services {
                 let mut external_service = external_service.clone();
-                external_service.node = node_id;
+                external_service.node_id = node_id;
                 if let Err(e) = self
                     .external_service
                     .put_with_transaction(&external_service, &txn)
@@ -443,8 +443,8 @@ impl<'d> Table<'d> {
     }
 
     /// Updates the `Node` from `old` to `new` using the specified `id`. The `id` is used for both
-    /// the `Agent::node` and `ExternalService::node` fields, meaning the `node` field of each agent
-    ///  in both `old.agents` and `new.agents`, as well as each external service in both
+    /// the `Agent::node_id` and `ExternalService::node_id` fields, meaning those fields on each agent
+    /// in both `old.agents` and `new.agents`, as well as each external service in both
     /// `old.external_services` and `new.external_services`, will be disregarded.
     ///
     /// All `Node`, `Agent`, and `ExternalService` writes execute inside a single optimistic
@@ -548,7 +548,7 @@ impl<'d> Table<'d> {
                 .filter(|v| !old_agents.contains_key(&v.key))
             {
                 let mut to_insert: Agent = (*to_insert).clone();
-                to_insert.node = id;
+                to_insert.node_id = id;
                 if let Err(e) = self.agent.put_with_transaction(&to_insert, &txn) {
                     if e.to_string().contains("Resource busy") {
                         continue 'outer;
@@ -568,9 +568,9 @@ impl<'d> Table<'d> {
                 .filter(|(o, n)| **o != **n)
             {
                 let mut old_a = (*old_a).clone();
-                old_a.node = id;
+                old_a.node_id = id;
                 let mut new_a = (*new_a).clone();
-                new_a.node = id;
+                new_a.node_id = id;
                 if let Err(e) = self.agent.update_with_transaction(&old_a, &new_a, &txn) {
                     if e.to_string().contains("Resource busy") {
                         continue 'outer;
@@ -605,7 +605,7 @@ impl<'d> Table<'d> {
                 .filter(|v| !old_external_services.contains_key(&v.key))
             {
                 let mut to_insert: ExternalService = (*to_insert).clone();
-                to_insert.node = id;
+                to_insert.node_id = id;
                 if let Err(e) = self.external_service.put_with_transaction(&to_insert, &txn) {
                     if e.to_string().contains("Resource busy") {
                         continue 'outer;
@@ -625,9 +625,9 @@ impl<'d> Table<'d> {
                 .filter(|(o, n)| **o != **n)
             {
                 let mut old_es = (*old_es).clone();
-                old_es.node = id;
+                old_es.node_id = id;
                 let mut new_es = (*new_es).clone();
-                new_es.node = id;
+                new_es.node_id = id;
                 if let Err(e) = self
                     .external_service
                     .update_with_transaction(&old_es, &new_es, &txn)
@@ -652,7 +652,7 @@ impl<'d> Table<'d> {
                         .iter()
                         .map(|a| {
                             let mut a = a.clone();
-                            a.node = id;
+                            a.node_id = id;
                             a
                         })
                         .collect();
@@ -661,7 +661,7 @@ impl<'d> Table<'d> {
                         .iter()
                         .map(|a| {
                             let mut a = a.clone();
-                            a.node = id;
+                            a.node_id = id;
                             a
                         })
                         .collect();
@@ -971,7 +971,7 @@ mod test {
     }
 
     fn create_agents(
-        node: u32,
+        node_id: u32,
         kinds: &[AgentKind],
         configs: &[Option<Config>],
         drafts: &[Option<Config>],
@@ -981,7 +981,7 @@ mod test {
             .zip(configs)
             .zip(drafts)
             .map(|((kind, config), draft)| Agent {
-                node,
+                node_id,
                 key: kind.to_u32().unwrap().to_string(),
                 kind: *kind,
                 status: Status::Enabled,
@@ -992,7 +992,7 @@ mod test {
     }
 
     fn create_external_services(
-        node: u32,
+        node_id: u32,
         kinds: &[ExternalServiceKind],
         drafts: &[Option<Config>],
     ) -> Vec<ExternalService> {
@@ -1000,7 +1000,7 @@ mod test {
             .iter()
             .zip(drafts)
             .map(|(kind, draft)| ExternalService {
-                node,
+                node_id,
                 key: kind.to_u32().unwrap().to_string(),
                 kind: *kind,
                 status: Status::Enabled,
@@ -1151,10 +1151,10 @@ mod test {
 
         // update node id to the actual id in database.
         node.id = res.unwrap();
-        node.agents.iter_mut().for_each(|a| a.node = node.id);
+        node.agents.iter_mut().for_each(|a| a.node_id = node.id);
         node.external_services
             .iter_mut()
-            .for_each(|a| a.node = node.id);
+            .for_each(|a| a.node_id = node.id);
 
         let res = node_table.get_by_id(node.id).unwrap();
         assert!(res.is_some());
@@ -1212,10 +1212,10 @@ mod test {
 
         // update node id to the actual id in database.
         node.id = res.unwrap();
-        node.agents.iter_mut().for_each(|a| a.node = node.id);
+        node.agents.iter_mut().for_each(|a| a.node_id = node.id);
         node.external_services
             .iter_mut()
-            .for_each(|a| a.node = node.id);
+            .for_each(|a| a.node_id = node.id);
 
         assert_eq!(node_table.count().unwrap(), 1);
         assert_eq!(store.agents_map().iter(Direction::Forward, None).count(), 3);
@@ -1279,10 +1279,10 @@ mod test {
 
         // update node id to the actual id in database.
         node.id = res.unwrap();
-        node.agents.iter_mut().for_each(|a| a.node = node.id);
+        node.agents.iter_mut().for_each(|a| a.node_id = node.id);
         node.external_services
             .iter_mut()
-            .for_each(|a| a.node = node.id);
+            .for_each(|a| a.node_id = node.id);
 
         let id = node.id;
 
@@ -1350,10 +1350,10 @@ mod test {
 
         // update node id to the actual id in database.
         node.id = res.unwrap();
-        node.agents.iter_mut().for_each(|a| a.node = node.id);
+        node.agents.iter_mut().for_each(|a| a.node_id = node.id);
         node.external_services
             .iter_mut()
-            .for_each(|a| a.node = node.id);
+            .for_each(|a| a.node_id = node.id);
 
         let id = node.id;
 
@@ -1423,7 +1423,7 @@ mod test {
         assert!(res.is_ok());
 
         node.id = res.unwrap();
-        node.agents.iter_mut().for_each(|a| a.node = node.id);
+        node.agents.iter_mut().for_each(|a| a.node_id = node.id);
 
         let id = node.id;
 
@@ -1697,10 +1697,10 @@ mod test {
 
         // update node id to the actual id in database.
         node.id = res.unwrap();
-        node.agents.iter_mut().for_each(|a| a.node = node.id);
+        node.agents.iter_mut().for_each(|a| a.node_id = node.id);
         node.external_services
             .iter_mut()
-            .for_each(|a| a.node = node.id);
+            .for_each(|a| a.node_id = node.id);
 
         let id = node.id;
 
@@ -1744,7 +1744,7 @@ mod test {
         let mut node_table = store.node_map();
         let id = node_table.put(&node).unwrap();
         node.id = id;
-        node.agents.iter_mut().for_each(|a| a.node = id);
+        node.agents.iter_mut().for_each(|a| a.node_id = id);
 
         let old: Update = node.clone().into();
         let added_kinds = vec![AgentKind::Sensor];
@@ -1781,7 +1781,7 @@ mod test {
         let mut node_table = store.node_map();
         let id = node_table.put(&node).unwrap();
         node.id = id;
-        node.agents.iter_mut().for_each(|a| a.node = id);
+        node.agents.iter_mut().for_each(|a| a.node_id = id);
 
         let old: Update = node.clone().into();
         let kept_agents: Vec<_> = node.agents.iter().take(1).cloned().collect();
@@ -1889,7 +1889,7 @@ mod test {
         let mut node_table = store.node_map();
         let id = node_table.put(&node).unwrap();
         node.id = id;
-        node.agents.iter_mut().for_each(|a| a.node = id);
+        node.agents.iter_mut().for_each(|a| a.node_id = id);
 
         let old: Update = node.clone().into();
         let new: Update = node.clone().into();
@@ -1916,7 +1916,7 @@ mod test {
         let mut node_table = store.node_map();
         let id = node_table.put(&node).unwrap();
         node.id = id;
-        node.agents.iter_mut().for_each(|a| a.node = id);
+        node.agents.iter_mut().for_each(|a| a.node_id = id);
 
         // Construct an `old` with a stale agent value (different draft) so the
         // agent.update_with_transaction step fails with "old value mismatch"

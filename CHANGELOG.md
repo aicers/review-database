@@ -5,6 +5,27 @@ file is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), and
 this project adheres to [Semantic
 Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- **BREAKING**: Renamed `TrafficFilter::agent` to `host_fqdn` to clarify
+  that it stores a host fully-qualified domain name. Related
+  `Table<'_, TrafficFilter>` method parameters were also renamed from
+  `agent`/`agents` to `host_fqdn`/`host_fqdns`.
+- **BREAKING**: Renamed `ExternalService::node` to `node_id` to clarify
+  that it holds a node identifier. Related `Table::<ExternalService>::get`
+  and `Table::<ExternalService>::delete` parameters were also renamed
+  from `node` to `node_id`.
+- **BREAKING**: Renamed `Agent.node` to `node_id` to align with
+  `ExternalService.node_id`. Related `Table::<Agent>::get` and
+  `Table::<Agent>::delete` parameters were also renamed from `node`
+  to `node_id`.
+- **BREAKING**: Renamed `BlocklistKerberos` and `BlocklistKerberosFields`
+  fields `client_name` to `cname` and `service_name` to `sname` to match
+  Kerberos protocol terminology and align with the existing
+  `cname_type`/`sname_type` fields.
+
 ## [0.45.0] - 2026-05-09
 
 ### Added
@@ -1439,6 +1460,7 @@ AsRef<[u8]>`). This change accommodates scenarios where the information stored
 - Modified `FtpBruteForce` by adding an `is_internal` field which is a boolean
   indicating whether it is internal or not.
 
+[Unreleased]: https://github.com/aicers/review-database/compare/0.45.0...main
 [0.45.0]: https://github.com/aicers/review-database/compare/0.44.1...0.45.0
 [0.44.1]: https://github.com/aicers/review-database/compare/0.44.0...0.44.1
 [0.44.0]: https://github.com/aicers/review-database/compare/0.43.0...0.44.0
