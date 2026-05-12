@@ -59,8 +59,10 @@ use self::{
     },
     kerberos::BlocklistKerberosFieldsStored,
     ldap::{LdapBruteForceFieldsStored, LdapEventFieldsStored},
+    log::ExtraThreatFieldsStored,
     malformed_dns::BlocklistMalformedDnsFieldsStored,
     mqtt::BlocklistMqttFieldsStored,
+    network::NetworkThreatFieldsStored,
     nfs::BlocklistNfsFieldsStored,
     ntlm::BlocklistNtlmFieldsStored,
     radius::BlocklistRadiusFieldsStored,
@@ -68,6 +70,7 @@ use self::{
     smb::BlocklistSmbFieldsStored,
     smtp::BlocklistSmtpFieldsStored,
     ssh::BlocklistSshFieldsStored,
+    sysmon::WindowsThreatFieldsStored,
     tls::BlocklistTlsFieldsStored,
     unusual_destination_pattern::UnusualDestinationPatternFieldsStored,
 };
@@ -111,8 +114,7 @@ pub use self::{
 };
 pub(crate) use self::{
     dcerpc::BlocklistDceRpcFieldsStored, dhcp::BlocklistDhcpFieldsStored,
-    http::HttpThreatFieldsStored, log::ExtraThreatFieldsStored, network::NetworkThreatFieldsStored,
-    sysmon::WindowsThreatFieldsStored,
+    http::HttpThreatFieldsStored,
 };
 use super::{
     Customer, EventCategory, Network, TriageExclusion, TriagePolicyInput,
@@ -3107,7 +3109,7 @@ impl Iterator for EventIterator<'_> {
                 };
                 Some(Ok((
                     key,
-                    Event::ExtraThreat(ExtraThreat::new(time, fields)),
+                    Event::ExtraThreat(ExtraThreat::new(fields.time, fields)),
                 )))
             }
             EventKind::FtpBruteForce => {
@@ -3183,7 +3185,7 @@ impl Iterator for EventIterator<'_> {
                 };
                 Some(Ok((
                     key,
-                    Event::NetworkThreat(NetworkThreat::new(time, fields)),
+                    Event::NetworkThreat(NetworkThreat::new(fields.time, fields)),
                 )))
             }
             EventKind::NonBrowser => {
@@ -3268,7 +3270,7 @@ impl Iterator for EventIterator<'_> {
                 };
                 Some(Ok((
                     key,
-                    Event::WindowsThreat(WindowsThreat::new(time, fields)),
+                    Event::WindowsThreat(WindowsThreat::new(fields.time, fields)),
                 )))
             }
         }
