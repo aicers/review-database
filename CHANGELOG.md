@@ -26,6 +26,17 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   Kerberos protocol terminology and align with the existing
   `cname_type`/`sname_type` fields.
 
+### Fixed
+
+- Domain and Hostname triage exclusions now apply to TLS events. Previously
+  these exclusion kinds were silently ignored for TLS records, so a Domain or
+  Hostname rule (e.g. `internal-cert.example.com`) had no effect on matching
+  TLS events. Both kinds now match against the TLS `server_name` (SNI):
+  Domain via subdomain-aware regex, Hostname via exact equality. URI
+  exclusions remain unmatched for TLS, since TLS records do not carry URIs.
+  NTLM remains intentionally out of scope: its `hostname` and `domainname`
+  fields are NetBIOS-style identifiers, not DNS names.
+
 ## [0.45.0] - 2026-05-09
 
 ### Added
