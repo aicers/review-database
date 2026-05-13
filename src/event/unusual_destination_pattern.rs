@@ -21,6 +21,37 @@ pub struct UnusualDestinationPatternFields {
     pub category: Option<EventCategory>,
 }
 
+#[derive(Deserialize, Serialize)]
+pub(crate) struct UnusualDestinationPatternFieldsStored {
+    pub sensor: String,
+    pub start_time: i64,
+    pub end_time: i64,
+    pub destination_ips: Vec<IpAddr>,
+    pub count: usize,
+    pub expected_mean: f64,
+    pub std_deviation: f64,
+    pub z_score: f64,
+    pub confidence: f32,
+    pub category: Option<EventCategory>,
+}
+
+impl From<UnusualDestinationPatternFields> for UnusualDestinationPatternFieldsStored {
+    fn from(value: UnusualDestinationPatternFields) -> Self {
+        Self {
+            sensor: value.sensor,
+            start_time: value.start_time,
+            end_time: value.end_time,
+            destination_ips: value.destination_ips,
+            count: value.count,
+            expected_mean: value.expected_mean,
+            std_deviation: value.std_deviation,
+            z_score: value.z_score,
+            confidence: value.confidence,
+            category: value.category,
+        }
+    }
+}
+
 impl UnusualDestinationPatternFields {
     #[must_use]
     pub fn syslog_rfc5424(&self) -> String {
@@ -87,7 +118,7 @@ impl fmt::Display for UnusualDestinationPattern {
 }
 
 impl UnusualDestinationPattern {
-    pub(super) fn new(time: DateTime<Utc>, fields: UnusualDestinationPatternFields) -> Self {
+    pub(super) fn new(time: DateTime<Utc>, fields: UnusualDestinationPatternFieldsStored) -> Self {
         Self {
             time,
             sensor: fields.sensor,

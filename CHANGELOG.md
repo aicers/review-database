@@ -25,6 +25,16 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   fields `client_name` to `cname` and `service_name` to `sname` to match
   Kerberos protocol terminology and align with the existing
   `cname_type`/`sname_type` fields.
+- Separated producer-facing event field schemas from on-disk storage schemas.
+  The producer-facing `*Fields` types remain the public ingestion interface,
+  while new repository-local `*FieldsStored` types are the schema written to
+  disk and consumed on read. No external wire-format change is intended;
+  the split is scaffolding so the stored schemas can evolve independently
+  of the producer interface in future releases.
+- Aligned the `ExtraThreat`, `NetworkThreat`, and `WindowsThreat` event
+  families with the rest of the public event model: their producer-facing
+  schemas are now `*Fields` types, and their `Event` variants expose
+  runtime domain types.
 
 ## [0.45.0] - 2026-05-09
 

@@ -60,10 +60,8 @@ macro_rules! find_dhcp_attr_by_kind {
     }};
 }
 
-pub type BlocklistDhcpFields = BlocklistDhcpFieldsV0_44;
-
 #[derive(Serialize, Deserialize)]
-pub struct BlocklistDhcpFieldsV0_44 {
+pub struct BlocklistDhcpFields {
     pub sensor: String,
     pub orig_addr: IpAddr,
     pub orig_port: u16,
@@ -98,6 +96,85 @@ pub struct BlocklistDhcpFieldsV0_44 {
     pub options: Vec<(u8, Vec<u8>)>,
     pub confidence: f32,
     pub category: Option<EventCategory>,
+}
+
+pub(crate) type BlocklistDhcpFieldsStored = BlocklistDhcpFieldsStoredV0_44;
+
+#[derive(Deserialize, Serialize)]
+pub(crate) struct BlocklistDhcpFieldsStoredV0_44 {
+    pub sensor: String,
+    pub orig_addr: IpAddr,
+    pub orig_port: u16,
+    pub resp_addr: IpAddr,
+    pub resp_port: u16,
+    pub proto: u8,
+    pub start_time: i64,
+    pub duration: i64,
+    pub orig_pkts: u64,
+    pub resp_pkts: u64,
+    pub orig_l2_bytes: u64,
+    pub resp_l2_bytes: u64,
+    pub msg_type: u8,
+    pub ciaddr: IpAddr,
+    pub yiaddr: IpAddr,
+    pub siaddr: IpAddr,
+    pub giaddr: IpAddr,
+    pub subnet_mask: IpAddr,
+    pub router: Vec<IpAddr>,
+    pub domain_name_server: Vec<IpAddr>,
+    pub req_ip_addr: IpAddr,
+    pub lease_time: u32,
+    pub server_id: IpAddr,
+    pub param_req_list: Vec<u8>,
+    pub message: String,
+    pub renewal_time: u32,
+    pub rebinding_time: u32,
+    pub class_id: Vec<u8>,
+    pub client_id_type: u8,
+    pub client_id: Vec<u8>,
+    pub options: Vec<(u8, Vec<u8>)>,
+    pub confidence: f32,
+    pub category: Option<EventCategory>,
+}
+
+impl From<BlocklistDhcpFields> for BlocklistDhcpFieldsStored {
+    fn from(value: BlocklistDhcpFields) -> Self {
+        Self {
+            sensor: value.sensor,
+            orig_addr: value.orig_addr,
+            orig_port: value.orig_port,
+            resp_addr: value.resp_addr,
+            resp_port: value.resp_port,
+            proto: value.proto,
+            start_time: value.start_time,
+            duration: value.duration,
+            orig_pkts: value.orig_pkts,
+            resp_pkts: value.resp_pkts,
+            orig_l2_bytes: value.orig_l2_bytes,
+            resp_l2_bytes: value.resp_l2_bytes,
+            msg_type: value.msg_type,
+            ciaddr: value.ciaddr,
+            yiaddr: value.yiaddr,
+            siaddr: value.siaddr,
+            giaddr: value.giaddr,
+            subnet_mask: value.subnet_mask,
+            router: value.router,
+            domain_name_server: value.domain_name_server,
+            req_ip_addr: value.req_ip_addr,
+            lease_time: value.lease_time,
+            server_id: value.server_id,
+            param_req_list: value.param_req_list,
+            message: value.message,
+            renewal_time: value.renewal_time,
+            rebinding_time: value.rebinding_time,
+            class_id: value.class_id,
+            client_id_type: value.client_id_type,
+            client_id: value.client_id,
+            options: value.options,
+            confidence: value.confidence,
+            category: value.category,
+        }
+    }
 }
 
 // TODO: DHCP client identifier type.
@@ -235,7 +312,7 @@ impl fmt::Display for BlocklistDhcp {
 }
 
 impl BlocklistDhcp {
-    pub(super) fn new(time: DateTime<Utc>, fields: BlocklistDhcpFields) -> Self {
+    pub(super) fn new(time: DateTime<Utc>, fields: BlocklistDhcpFieldsStored) -> Self {
         Self {
             time,
             sensor: fields.sensor,

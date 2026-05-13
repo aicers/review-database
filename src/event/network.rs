@@ -34,7 +34,7 @@ macro_rules! find_network_attr_by_kind {
 }
 
 #[derive(Serialize, Deserialize)]
-pub struct NetworkThreat {
+pub struct NetworkThreatFields {
     #[serde(with = "ts_nanoseconds")]
     pub time: DateTime<Utc>,
     pub sensor: String,
@@ -62,7 +62,66 @@ pub struct NetworkThreat {
     pub triage_scores: Option<Vec<TriageScore>>,
 }
 
-impl NetworkThreat {
+#[derive(Deserialize, Serialize)]
+pub struct NetworkThreatFieldsStored {
+    #[serde(with = "ts_nanoseconds")]
+    pub time: DateTime<Utc>,
+    pub sensor: String,
+    pub orig_addr: IpAddr,
+    pub orig_port: u16,
+    pub resp_addr: IpAddr,
+    pub resp_port: u16,
+    pub proto: u8,
+    pub service: String,
+    #[serde(with = "ts_nanoseconds")]
+    pub start_time: DateTime<Utc>,
+    pub duration: i64,
+    pub orig_pkts: u64,
+    pub resp_pkts: u64,
+    pub orig_l2_bytes: u64,
+    pub resp_l2_bytes: u64,
+    pub content: String,
+    pub db_name: String,
+    pub rule_id: u32,
+    pub matched_to: String,
+    pub cluster_id: Option<u32>,
+    pub attack_kind: String,
+    pub confidence: f32,
+    pub category: Option<EventCategory>,
+    pub triage_scores: Option<Vec<TriageScore>>,
+}
+
+impl From<NetworkThreatFields> for NetworkThreatFieldsStored {
+    fn from(value: NetworkThreatFields) -> Self {
+        Self {
+            time: value.time,
+            sensor: value.sensor,
+            orig_addr: value.orig_addr,
+            orig_port: value.orig_port,
+            resp_addr: value.resp_addr,
+            resp_port: value.resp_port,
+            proto: value.proto,
+            service: value.service,
+            start_time: value.start_time,
+            duration: value.duration,
+            orig_pkts: value.orig_pkts,
+            resp_pkts: value.resp_pkts,
+            orig_l2_bytes: value.orig_l2_bytes,
+            resp_l2_bytes: value.resp_l2_bytes,
+            content: value.content,
+            db_name: value.db_name,
+            rule_id: value.rule_id,
+            matched_to: value.matched_to,
+            cluster_id: value.cluster_id,
+            attack_kind: value.attack_kind,
+            confidence: value.confidence,
+            category: value.category,
+            triage_scores: value.triage_scores,
+        }
+    }
+}
+
+impl NetworkThreatFields {
     #[must_use]
     pub fn syslog_rfc5424(&self) -> String {
         format!(
@@ -95,6 +154,67 @@ impl NetworkThreat {
     }
 }
 
+pub struct NetworkThreat {
+    pub time: DateTime<Utc>,
+    pub sensor: String,
+    pub orig_addr: IpAddr,
+    pub orig_port: u16,
+    pub resp_addr: IpAddr,
+    pub resp_port: u16,
+    pub proto: u8,
+    pub service: String,
+    pub start_time: DateTime<Utc>,
+    pub duration: i64,
+    pub orig_pkts: u64,
+    pub resp_pkts: u64,
+    pub orig_l2_bytes: u64,
+    pub resp_l2_bytes: u64,
+    pub content: String,
+    pub db_name: String,
+    pub rule_id: u32,
+    pub matched_to: String,
+    pub cluster_id: Option<u32>,
+    pub attack_kind: String,
+    pub confidence: f32,
+    pub category: Option<EventCategory>,
+    pub triage_scores: Option<Vec<TriageScore>>,
+}
+
+impl NetworkThreat {
+    pub(super) fn new(time: DateTime<Utc>, fields: NetworkThreatFieldsStored) -> Self {
+        Self {
+            time,
+            sensor: fields.sensor,
+            orig_addr: fields.orig_addr,
+            orig_port: fields.orig_port,
+            resp_addr: fields.resp_addr,
+            resp_port: fields.resp_port,
+            proto: fields.proto,
+            service: fields.service,
+            start_time: fields.start_time,
+            duration: fields.duration,
+            orig_pkts: fields.orig_pkts,
+            resp_pkts: fields.resp_pkts,
+            orig_l2_bytes: fields.orig_l2_bytes,
+            resp_l2_bytes: fields.resp_l2_bytes,
+            content: fields.content,
+            db_name: fields.db_name,
+            rule_id: fields.rule_id,
+            matched_to: fields.matched_to,
+            cluster_id: fields.cluster_id,
+            attack_kind: fields.attack_kind,
+            confidence: fields.confidence,
+            category: fields.category,
+            triage_scores: fields.triage_scores,
+        }
+    }
+
+    #[must_use]
+    pub fn threat_level() -> ThreatLevel {
+        ThreatLevel::Medium
+    }
+}
+
 impl fmt::Display for NetworkThreat {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
@@ -122,13 +242,6 @@ impl fmt::Display for NetworkThreat {
             self.confidence.to_string(),
             triage_scores_to_string(self.triage_scores.as_ref())
         )
-    }
-}
-
-impl NetworkThreat {
-    #[must_use]
-    pub fn threat_level() -> ThreatLevel {
-        ThreatLevel::Medium
     }
 }
 

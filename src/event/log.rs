@@ -12,7 +12,7 @@ use super::{EventCategory, LearningMethod, ThreatLevel, TriageScore, common::Mat
 use crate::event::common::{AttrValue, triage_scores_to_string};
 
 #[derive(Serialize, Deserialize)]
-pub struct ExtraThreat {
+pub struct ExtraThreatFields {
     #[serde(with = "ts_nanoseconds")]
     pub time: DateTime<Utc>,
     pub sensor: String,
@@ -28,7 +28,43 @@ pub struct ExtraThreat {
     pub triage_scores: Option<Vec<TriageScore>>,
 }
 
-impl ExtraThreat {
+#[derive(Deserialize, Serialize)]
+pub struct ExtraThreatFieldsStored {
+    #[serde(with = "ts_nanoseconds")]
+    pub time: DateTime<Utc>,
+    pub sensor: String,
+    pub service: String,
+    pub content: String,
+    pub db_name: String,
+    pub rule_id: u32,
+    pub matched_to: String,
+    pub cluster_id: Option<u32>,
+    pub attack_kind: String,
+    pub confidence: f32,
+    pub category: Option<EventCategory>,
+    pub triage_scores: Option<Vec<TriageScore>>,
+}
+
+impl From<ExtraThreatFields> for ExtraThreatFieldsStored {
+    fn from(value: ExtraThreatFields) -> Self {
+        Self {
+            time: value.time,
+            sensor: value.sensor,
+            service: value.service,
+            content: value.content,
+            db_name: value.db_name,
+            rule_id: value.rule_id,
+            matched_to: value.matched_to,
+            cluster_id: value.cluster_id,
+            attack_kind: value.attack_kind,
+            confidence: value.confidence,
+            category: value.category,
+            triage_scores: value.triage_scores,
+        }
+    }
+}
+
+impl ExtraThreatFields {
     #[must_use]
     pub fn syslog_rfc5424(&self) -> String {
         format!(
@@ -50,6 +86,45 @@ impl ExtraThreat {
     }
 }
 
+pub struct ExtraThreat {
+    pub time: DateTime<Utc>,
+    pub sensor: String,
+    pub service: String,
+    pub content: String,
+    pub db_name: String,
+    pub rule_id: u32,
+    pub matched_to: String,
+    pub cluster_id: Option<u32>,
+    pub attack_kind: String,
+    pub confidence: f32,
+    pub category: Option<EventCategory>,
+    pub triage_scores: Option<Vec<TriageScore>>,
+}
+
+impl ExtraThreat {
+    pub(super) fn new(time: DateTime<Utc>, fields: ExtraThreatFieldsStored) -> Self {
+        Self {
+            time,
+            sensor: fields.sensor,
+            service: fields.service,
+            content: fields.content,
+            db_name: fields.db_name,
+            rule_id: fields.rule_id,
+            matched_to: fields.matched_to,
+            cluster_id: fields.cluster_id,
+            attack_kind: fields.attack_kind,
+            confidence: fields.confidence,
+            category: fields.category,
+            triage_scores: fields.triage_scores,
+        }
+    }
+
+    #[must_use]
+    pub fn threat_level() -> ThreatLevel {
+        ThreatLevel::Medium
+    }
+}
+
 impl fmt::Display for ExtraThreat {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
@@ -66,13 +141,6 @@ impl fmt::Display for ExtraThreat {
             self.confidence.to_string(),
             triage_scores_to_string(self.triage_scores.as_ref())
         )
-    }
-}
-
-impl ExtraThreat {
-    #[must_use]
-    pub fn threat_level() -> ThreatLevel {
-        ThreatLevel::Medium
     }
 }
 

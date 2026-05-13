@@ -47,10 +47,8 @@ macro_rules! find_dns_attr_by_kind {
     }};
 }
 
-pub type DnsEventFields = DnsEventFieldsV0_42;
-
 #[derive(Deserialize, Serialize)]
-pub struct DnsEventFieldsV0_42 {
+pub struct DnsEventFields {
     pub sensor: String,
     pub orig_addr: IpAddr,
     pub orig_port: u16,
@@ -78,6 +76,71 @@ pub struct DnsEventFieldsV0_42 {
     pub ttl: Vec<i32>,
     pub confidence: f32,
     pub category: Option<EventCategory>,
+}
+
+pub(crate) type DnsEventFieldsStored = DnsEventFieldsStoredV0_42;
+
+#[derive(Deserialize, Serialize)]
+pub(crate) struct DnsEventFieldsStoredV0_42 {
+    pub sensor: String,
+    pub orig_addr: IpAddr,
+    pub orig_port: u16,
+    pub resp_addr: IpAddr,
+    pub resp_port: u16,
+    pub proto: u8,
+    pub start_time: i64,
+    pub duration: i64,
+    pub orig_pkts: u64,
+    pub resp_pkts: u64,
+    pub orig_l2_bytes: u64,
+    pub resp_l2_bytes: u64,
+    pub query: String,
+    pub answer: Vec<String>,
+    pub trans_id: u16,
+    pub rtt: i64,
+    pub qclass: u16,
+    pub qtype: u16,
+    pub rcode: u16,
+    pub aa_flag: bool,
+    pub tc_flag: bool,
+    pub rd_flag: bool,
+    pub ra_flag: bool,
+    pub ttl: Vec<i32>,
+    pub confidence: f32,
+    pub category: Option<EventCategory>,
+}
+
+impl From<DnsEventFields> for DnsEventFieldsStored {
+    fn from(value: DnsEventFields) -> Self {
+        Self {
+            sensor: value.sensor,
+            orig_addr: value.orig_addr,
+            orig_port: value.orig_port,
+            resp_addr: value.resp_addr,
+            resp_port: value.resp_port,
+            proto: value.proto,
+            start_time: value.start_time,
+            duration: value.duration,
+            orig_pkts: value.orig_pkts,
+            resp_pkts: value.resp_pkts,
+            orig_l2_bytes: value.orig_l2_bytes,
+            resp_l2_bytes: value.resp_l2_bytes,
+            query: value.query,
+            answer: value.answer,
+            trans_id: value.trans_id,
+            rtt: value.rtt,
+            qclass: value.qclass,
+            qtype: value.qtype,
+            rcode: value.rcode,
+            aa_flag: value.aa_flag,
+            tc_flag: value.tc_flag,
+            rd_flag: value.rd_flag,
+            ra_flag: value.ra_flag,
+            ttl: value.ttl,
+            confidence: value.confidence,
+            category: value.category,
+        }
+    }
 }
 
 impl DnsEventFields {
@@ -187,7 +250,7 @@ impl fmt::Display for DnsCovertChannel {
 }
 
 impl DnsCovertChannel {
-    pub(super) fn new(time: DateTime<Utc>, fields: DnsEventFields) -> Self {
+    pub(super) fn new(time: DateTime<Utc>, fields: DnsEventFieldsStored) -> Self {
         Self {
             time,
             sensor: fields.sensor,
@@ -366,7 +429,7 @@ impl fmt::Display for LockyRansomware {
 }
 
 impl LockyRansomware {
-    pub(super) fn new(time: DateTime<Utc>, fields: DnsEventFields) -> Self {
+    pub(super) fn new(time: DateTime<Utc>, fields: DnsEventFieldsStored) -> Self {
         Self {
             time,
             sensor: fields.sensor,
@@ -477,10 +540,8 @@ impl Match for LockyRansomware {
     }
 }
 
-pub type CryptocurrencyMiningPoolFields = CryptocurrencyMiningPoolFieldsV0_42;
-
 #[derive(Deserialize, Serialize)]
-pub struct CryptocurrencyMiningPoolFieldsV0_42 {
+pub struct CryptocurrencyMiningPoolFields {
     pub sensor: String,
     pub orig_addr: IpAddr,
     pub orig_port: u16,
@@ -509,6 +570,73 @@ pub struct CryptocurrencyMiningPoolFieldsV0_42 {
     pub coins: Vec<String>,
     pub confidence: f32,
     pub category: Option<EventCategory>,
+}
+
+pub(crate) type CryptocurrencyMiningPoolFieldsStored = CryptocurrencyMiningPoolFieldsStoredV0_42;
+
+#[derive(Deserialize, Serialize)]
+pub(crate) struct CryptocurrencyMiningPoolFieldsStoredV0_42 {
+    pub sensor: String,
+    pub orig_addr: IpAddr,
+    pub orig_port: u16,
+    pub resp_addr: IpAddr,
+    pub resp_port: u16,
+    pub proto: u8,
+    pub start_time: i64,
+    pub duration: i64,
+    pub orig_pkts: u64,
+    pub resp_pkts: u64,
+    pub orig_l2_bytes: u64,
+    pub resp_l2_bytes: u64,
+    pub query: String,
+    pub answer: Vec<String>,
+    pub trans_id: u16,
+    pub rtt: i64,
+    pub qclass: u16,
+    pub qtype: u16,
+    pub rcode: u16,
+    pub aa_flag: bool,
+    pub tc_flag: bool,
+    pub rd_flag: bool,
+    pub ra_flag: bool,
+    pub ttl: Vec<i32>,
+    pub coins: Vec<String>,
+    pub confidence: f32,
+    pub category: Option<EventCategory>,
+}
+
+impl From<CryptocurrencyMiningPoolFields> for CryptocurrencyMiningPoolFieldsStored {
+    fn from(value: CryptocurrencyMiningPoolFields) -> Self {
+        Self {
+            sensor: value.sensor,
+            orig_addr: value.orig_addr,
+            orig_port: value.orig_port,
+            resp_addr: value.resp_addr,
+            resp_port: value.resp_port,
+            proto: value.proto,
+            start_time: value.start_time,
+            duration: value.duration,
+            orig_pkts: value.orig_pkts,
+            resp_pkts: value.resp_pkts,
+            orig_l2_bytes: value.orig_l2_bytes,
+            resp_l2_bytes: value.resp_l2_bytes,
+            query: value.query,
+            answer: value.answer,
+            trans_id: value.trans_id,
+            rtt: value.rtt,
+            qclass: value.qclass,
+            qtype: value.qtype,
+            rcode: value.rcode,
+            aa_flag: value.aa_flag,
+            tc_flag: value.tc_flag,
+            rd_flag: value.rd_flag,
+            ra_flag: value.ra_flag,
+            ttl: value.ttl,
+            coins: value.coins,
+            confidence: value.confidence,
+            category: value.category,
+        }
+    }
 }
 
 impl CryptocurrencyMiningPoolFields {
@@ -620,7 +748,7 @@ impl fmt::Display for CryptocurrencyMiningPool {
 }
 
 impl CryptocurrencyMiningPool {
-    pub(super) fn new(time: DateTime<Utc>, fields: CryptocurrencyMiningPoolFields) -> Self {
+    pub(super) fn new(time: DateTime<Utc>, fields: CryptocurrencyMiningPoolFieldsStored) -> Self {
         Self {
             time,
             sensor: fields.sensor,
@@ -732,10 +860,8 @@ impl Match for CryptocurrencyMiningPool {
     }
 }
 
-pub type BlocklistDnsFields = BlocklistDnsFieldsV0_42;
-
 #[derive(Deserialize, Serialize)]
-pub struct BlocklistDnsFieldsV0_42 {
+pub struct BlocklistDnsFields {
     pub sensor: String,
     pub orig_addr: IpAddr,
     pub orig_port: u16,
@@ -763,6 +889,71 @@ pub struct BlocklistDnsFieldsV0_42 {
     pub ttl: Vec<i32>,
     pub confidence: f32,
     pub category: Option<EventCategory>,
+}
+
+pub(crate) type BlocklistDnsFieldsStored = BlocklistDnsFieldsStoredV0_42;
+
+#[derive(Deserialize, Serialize)]
+pub(crate) struct BlocklistDnsFieldsStoredV0_42 {
+    pub sensor: String,
+    pub orig_addr: IpAddr,
+    pub orig_port: u16,
+    pub resp_addr: IpAddr,
+    pub resp_port: u16,
+    pub proto: u8,
+    pub start_time: i64,
+    pub duration: i64,
+    pub orig_pkts: u64,
+    pub resp_pkts: u64,
+    pub orig_l2_bytes: u64,
+    pub resp_l2_bytes: u64,
+    pub query: String,
+    pub answer: Vec<String>,
+    pub trans_id: u16,
+    pub rtt: i64,
+    pub qclass: u16,
+    pub qtype: u16,
+    pub rcode: u16,
+    pub aa_flag: bool,
+    pub tc_flag: bool,
+    pub rd_flag: bool,
+    pub ra_flag: bool,
+    pub ttl: Vec<i32>,
+    pub confidence: f32,
+    pub category: Option<EventCategory>,
+}
+
+impl From<BlocklistDnsFields> for BlocklistDnsFieldsStored {
+    fn from(value: BlocklistDnsFields) -> Self {
+        Self {
+            sensor: value.sensor,
+            orig_addr: value.orig_addr,
+            orig_port: value.orig_port,
+            resp_addr: value.resp_addr,
+            resp_port: value.resp_port,
+            proto: value.proto,
+            start_time: value.start_time,
+            duration: value.duration,
+            orig_pkts: value.orig_pkts,
+            resp_pkts: value.resp_pkts,
+            orig_l2_bytes: value.orig_l2_bytes,
+            resp_l2_bytes: value.resp_l2_bytes,
+            query: value.query,
+            answer: value.answer,
+            trans_id: value.trans_id,
+            rtt: value.rtt,
+            qclass: value.qclass,
+            qtype: value.qtype,
+            rcode: value.rcode,
+            aa_flag: value.aa_flag,
+            tc_flag: value.tc_flag,
+            rd_flag: value.rd_flag,
+            ra_flag: value.ra_flag,
+            ttl: value.ttl,
+            confidence: value.confidence,
+            category: value.category,
+        }
+    }
 }
 
 impl BlocklistDnsFields {
@@ -871,7 +1062,7 @@ impl fmt::Display for BlocklistDns {
 }
 
 impl BlocklistDns {
-    pub(super) fn new(time: DateTime<Utc>, fields: BlocklistDnsFields) -> Self {
+    pub(super) fn new(time: DateTime<Utc>, fields: BlocklistDnsFieldsStored) -> Self {
         Self {
             time,
             sensor: fields.sensor,
