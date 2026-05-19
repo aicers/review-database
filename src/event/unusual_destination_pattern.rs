@@ -134,13 +134,14 @@ impl fmt::Display for UnusualDestinationPattern {
 
 impl UnusualDestinationPattern {
     pub(super) fn new(time: DateTime<Utc>, fields: UnusualDestinationPatternFieldsStored) -> Self {
+        let destination_count = fields.destination_ips.len();
         Self {
             time,
             sensor: fields.sensor,
             start_time: DateTime::from_timestamp_nanos(fields.start_time),
             end_time: DateTime::from_timestamp_nanos(fields.end_time),
             destination_ips: fields.destination_ips,
-            resp_country_codes: fields.resp_country_codes,
+            resp_country_codes: vec![*b"XX"; destination_count],
             count: fields.count,
             expected_mean: fields.expected_mean,
             std_deviation: fields.std_deviation,

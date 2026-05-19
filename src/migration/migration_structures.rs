@@ -2039,9 +2039,9 @@ pub struct NetworkThreatV0_43 {
     pub triage_scores: Option<Vec<crate::event::TriageScore>>,
 }
 
-use crate::event::NetworkThreat;
+use crate::event::NetworkThreatFields;
 
-impl From<NetworkThreatV0_43> for NetworkThreat {
+impl From<NetworkThreatV0_43> for NetworkThreatFields {
     fn from(old: NetworkThreatV0_43) -> Self {
         Self {
             time: old.time,

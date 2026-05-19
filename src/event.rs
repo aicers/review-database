@@ -2877,7 +2877,9 @@ impl<'a> EventDb<'a> {
             EventKind::BlocklistTls | EventKind::SuspiciousTlsTraffic => {
                 convert_fields!(BlocklistTlsFieldsV0_43, BlocklistTlsFields)
             }
-            EventKind::NetworkThreat => convert_fields!(NetworkThreatV0_43, NetworkThreat),
+            EventKind::NetworkThreat => {
+                convert_fields!(NetworkThreatV0_43, NetworkThreatFields)
+            }
             EventKind::UnusualDestinationPattern => {
                 convert_fields!(
                     UnusualDestinationPatternFieldsV0_43,
@@ -3513,6 +3515,7 @@ mod tests {
 
     use chrono::{DateTime, TimeZone, Utc};
 
+    use super::Direction;
     use crate::test::{DbGuard, acquire_db_permit};
     use crate::{
         Store,
@@ -3669,8 +3672,10 @@ mod tests {
             sensor: "collector1".to_string(),
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             orig_port: 10000,
+            orig_country_code: *b"XX",
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
             resp_port: 80,
+            resp_country_code: *b"XX",
             proto: 6,
             service: "http".to_string(),
             start_time: Utc.with_ymd_and_hms(1970, 1, 1, 0, 0, 0).unwrap(),
@@ -3825,8 +3830,10 @@ mod tests {
             sensor: "s".to_string(),
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             orig_port: 1,
+            orig_country_code: *b"XX",
             resp_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             resp_port: 2,
+            resp_country_code: *b"XX",
             proto: 6,
             service: "http".to_string(),
             start_time: Utc.with_ymd_and_hms(1970, 1, 1, 0, 0, 0).unwrap(),
@@ -3928,17 +3935,22 @@ mod tests {
         };
 
         // put_external should succeed and convert to internal format
-        db.put_external(&ext_message).unwrap();
+        let key = db.put_external(&ext_message).unwrap();
 
-        // Verify the stored event can be deserialized as internal format (with country codes).
-        // raw_iter_forward returns (key_bytes, value_bytes) where value_bytes == the fields.
-        let mut iter = db.raw_iter_forward();
-        let (_key, fields_bytes) = iter.next().expect("should have an entry");
-        let internal_fields = bincode::deserialize::<DnsEventFields>(&fields_bytes)
-            .expect("should deserialize as internal format with country codes");
-        assert_eq!(internal_fields.orig_country_code, *b"ZZ");
-        assert_eq!(internal_fields.resp_country_code, *b"ZZ");
-        assert_eq!(internal_fields.sensor, "collector1");
+        // On disk, country codes are stripped to the stored representation; verify the
+        // round-trip through the runtime event type still exposes default country codes.
+        let mut iter = db.iter_from(key, Direction::Forward);
+        let (_key, event) = iter
+            .next()
+            .expect("should have an entry")
+            .expect("valid event");
+        let Event::DnsCovertChannel(dns_event) = event else {
+            panic!("expected DnsCovertChannel event");
+        };
+        assert_eq!(dns_event.orig_country_code, *b"XX");
+        assert_eq!(dns_event.resp_country_code, *b"XX");
+        assert_eq!(dns_event.sensor, "collector1");
+        assert_eq!(dns_event.query, "foo.com");
     }
 
     #[test]

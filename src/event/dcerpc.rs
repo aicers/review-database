@@ -88,6 +88,31 @@ impl From<BlocklistDceRpcFields> for BlocklistDceRpcFieldsStored {
     }
 }
 
+impl From<BlocklistDceRpcFieldsStored> for BlocklistDceRpcFields {
+    fn from(value: BlocklistDceRpcFieldsStored) -> Self {
+        Self {
+            sensor: value.sensor,
+            orig_addr: value.orig_addr,
+            orig_port: value.orig_port,
+            orig_country_code: *b"ZZ",
+            resp_addr: value.resp_addr,
+            resp_port: value.resp_port,
+            resp_country_code: *b"ZZ",
+            proto: value.proto,
+            start_time: value.start_time,
+            duration: value.duration,
+            orig_pkts: value.orig_pkts,
+            resp_pkts: value.resp_pkts,
+            orig_l2_bytes: value.orig_l2_bytes,
+            resp_l2_bytes: value.resp_l2_bytes,
+            context: value.context,
+            request: value.request,
+            confidence: value.confidence,
+            category: value.category,
+        }
+    }
+}
+
 impl BlocklistDceRpcFields {
     #[must_use]
     pub fn syslog_rfc5424(&self) -> String {

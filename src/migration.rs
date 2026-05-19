@@ -957,17 +957,17 @@ fn migrate_event_country_codes(
         RdpBruteForceFields, RepeatedHttpSessionsFields, UnusualDestinationPatternFields,
     };
     use crate::migration::migration_structures::{
-        BlocklistBootpFieldsV0_43, BlocklistConnFieldsV0_43, BlocklistDceRpcFieldsV0_43,
-        BlocklistDhcpFieldsV0_43, BlocklistDnsFieldsV0_43, BlocklistKerberosFieldsV0_43,
-        BlocklistMalformedDnsFieldsV0_43, BlocklistMqttFieldsV0_43, BlocklistNfsFieldsV0_43,
-        BlocklistNtlmFieldsV0_43, BlocklistRadiusFieldsV0_43, BlocklistRdpFieldsV0_43,
-        BlocklistSmbFieldsV0_43, BlocklistSmtpFieldsV0_43, BlocklistSshFieldsV0_43,
-        BlocklistTlsFieldsV0_43, CryptocurrencyMiningPoolFieldsV0_43, DgaFieldsV0_43,
-        DnsEventFieldsV0_43, ExternalDdosFieldsV0_43, FtpBruteForceFieldsV0_43,
-        FtpEventFieldsV0_43, HttpEventFieldsV0_43, HttpThreatFieldsV0_43,
-        LdapBruteForceFieldsV0_43, LdapEventFieldsV0_43, MultiHostPortScanFieldsV0_43,
-        NetworkThreatV0_43, PortScanFieldsV0_43, RdpBruteForceFieldsV0_43,
-        RepeatedHttpSessionsFieldsV0_43, UnusualDestinationPatternFieldsV0_43,
+        BlocklistBootpFieldsV0_43, BlocklistConnFieldsV0_43, BlocklistDhcpFieldsV0_43,
+        BlocklistDnsFieldsV0_43, BlocklistKerberosFieldsV0_43, BlocklistMalformedDnsFieldsV0_43,
+        BlocklistMqttFieldsV0_43, BlocklistNfsFieldsV0_43, BlocklistNtlmFieldsV0_43,
+        BlocklistRadiusFieldsV0_43, BlocklistRdpFieldsV0_43, BlocklistSmbFieldsV0_43,
+        BlocklistSmtpFieldsV0_43, BlocklistSshFieldsV0_43, BlocklistTlsFieldsV0_43,
+        CryptocurrencyMiningPoolFieldsV0_43, DgaFieldsV0_43, DnsEventFieldsV0_43,
+        ExternalDdosFieldsV0_43, FtpBruteForceFieldsV0_43, FtpEventFieldsV0_43,
+        HttpEventFieldsV0_43, HttpThreatFieldsV0_43, LdapBruteForceFieldsV0_43,
+        LdapEventFieldsV0_43, MultiHostPortScanFieldsV0_43, NetworkThreatV0_43,
+        PortScanFieldsV0_43, RdpBruteForceFieldsV0_43, RepeatedHttpSessionsFieldsV0_43,
+        UnusualDestinationPatternFieldsV0_43,
     };
 
     info!("Migrating event fields to add country codes");
@@ -1080,7 +1080,7 @@ fn migrate_event_country_codes(
                 BlocklistBootpFields,
             >(value, locator)?,
             EventKind::BlocklistDceRpc => migrate_event_with_country_code::<
-                BlocklistDceRpcFieldsV0_43,
+                BlocklistDceRpcFieldsStored,
                 BlocklistDceRpcFields,
             >(value, locator)?,
             EventKind::BlocklistDhcp => migrate_event_with_country_code::<
@@ -1142,7 +1142,7 @@ fn migrate_event_country_codes(
             >(value, locator)?,
             EventKind::NetworkThreat => migrate_event_with_country_code::<
                 NetworkThreatV0_43,
-                NetworkThreat,
+                NetworkThreatFields,
             >(value, locator)?,
             // These event types don't have country code fields or use different structures
             EventKind::WindowsThreat | EventKind::ExtraThreat => {
@@ -1256,12 +1256,13 @@ macro_rules! impl_resolve_country_codes {
 // =============================================================================
 
 use crate::event::{
-    BlocklistBootpFields, BlocklistConnFields, BlocklistDnsFields, BlocklistKerberosFields,
-    BlocklistMalformedDnsFields, BlocklistMqttFields, BlocklistNfsFields, BlocklistNtlmFields,
-    BlocklistRadiusFields, BlocklistRdpFields, BlocklistSmbFields, BlocklistSmtpFields,
-    BlocklistSshFields, BlocklistTlsFields, CryptocurrencyMiningPoolFields, DgaFields,
-    DnsEventFields, ExternalDdosFields, FtpBruteForceFields, FtpEventFields, HttpEventFields,
-    LdapBruteForceFields, LdapEventFields, MultiHostPortScanFields, NetworkThreat, PortScanFields,
+    BlocklistBootpFields, BlocklistConnFields, BlocklistDceRpcFields, BlocklistDhcpFields,
+    BlocklistDnsFields, BlocklistKerberosFields, BlocklistMalformedDnsFields, BlocklistMqttFields,
+    BlocklistNfsFields, BlocklistNtlmFields, BlocklistRadiusFields, BlocklistRdpFields,
+    BlocklistSmbFields, BlocklistSmtpFields, BlocklistSshFields, BlocklistTlsFields,
+    CryptocurrencyMiningPoolFields, DgaFields, DnsEventFields, ExternalDdosFields,
+    FtpBruteForceFields, FtpEventFields, HttpEventFields, HttpThreatFields, LdapBruteForceFields,
+    LdapEventFields, MultiHostPortScanFields, NetworkThreatFields, PortScanFields,
     RdpBruteForceFields, RepeatedHttpSessionsFields, UnusualDestinationPatternFields,
 };
 
@@ -1416,7 +1417,7 @@ impl_resolve_country_codes!(
     resp: single (resp_addr => resp_country_code),
 );
 impl_resolve_country_codes!(
-    NetworkThreat,
+    NetworkThreatFields,
     orig: single (orig_addr => orig_country_code),
     resp: single (resp_addr => resp_country_code),
 );
@@ -1772,17 +1773,17 @@ mod tests {
     use semver::{Version, VersionReq};
 
     use super::migration_structures::{
-        BlocklistBootpFieldsV0_43, BlocklistConnFieldsV0_43, BlocklistDceRpcFieldsV0_43,
-        BlocklistDhcpFieldsV0_43, BlocklistDnsFieldsV0_43, BlocklistKerberosFieldsV0_43,
-        BlocklistMalformedDnsFieldsV0_43, BlocklistMqttFieldsV0_43, BlocklistNfsFieldsV0_43,
-        BlocklistNtlmFieldsV0_43, BlocklistRadiusFieldsV0_43, BlocklistRdpFieldsV0_43,
-        BlocklistSmbFieldsV0_43, BlocklistSmtpFieldsV0_43, BlocklistSshFieldsV0_43,
-        BlocklistTlsFieldsV0_43, CryptocurrencyMiningPoolFieldsV0_43, DgaFieldsV0_43,
-        DnsEventFieldsV0_43, ExternalDdosFieldsV0_43, FtpBruteForceFieldsV0_43,
-        FtpEventFieldsV0_43, HttpEventFieldsV0_43, HttpThreatFieldsV0_43,
-        LdapBruteForceFieldsV0_43, LdapEventFieldsV0_43, MultiHostPortScanFieldsV0_43,
-        NetworkThreatV0_43, PortScanFieldsV0_43, RdpBruteForceFieldsV0_43,
-        RepeatedHttpSessionsFieldsV0_43, UnusualDestinationPatternFieldsV0_43,
+        BlocklistBootpFieldsV0_43, BlocklistConnFieldsV0_43, BlocklistDhcpFieldsV0_43,
+        BlocklistDnsFieldsV0_43, BlocklistKerberosFieldsV0_43, BlocklistMalformedDnsFieldsV0_43,
+        BlocklistMqttFieldsV0_43, BlocklistNfsFieldsV0_43, BlocklistNtlmFieldsV0_43,
+        BlocklistRadiusFieldsV0_43, BlocklistRdpFieldsV0_43, BlocklistSmbFieldsV0_43,
+        BlocklistSmtpFieldsV0_43, BlocklistSshFieldsV0_43, BlocklistTlsFieldsV0_43,
+        CryptocurrencyMiningPoolFieldsV0_43, DgaFieldsV0_43, DnsEventFieldsV0_43,
+        ExternalDdosFieldsV0_43, FtpBruteForceFieldsV0_43, FtpEventFieldsV0_43,
+        HttpEventFieldsV0_43, HttpThreatFieldsV0_43, LdapBruteForceFieldsV0_43,
+        LdapEventFieldsV0_43, MultiHostPortScanFieldsV0_43, NetworkThreatV0_43,
+        PortScanFieldsV0_43, RdpBruteForceFieldsV0_43, RepeatedHttpSessionsFieldsV0_43,
+        UnusualDestinationPatternFieldsV0_43,
     };
     use super::{
         COMPATIBLE_VERSION_REQ, create_version_file, migrate_data_dir, migrate_event_country_codes,
@@ -1796,7 +1797,7 @@ mod tests {
         BlocklistTlsFields, CryptocurrencyMiningPoolFields, DgaFields, DnsEventFields, EventKind,
         EventMessage, ExternalDdosFields, FtpBruteForceFields, FtpEventFields, HttpEventFields,
         HttpThreatFields, LdapBruteForceFields, LdapEventFields, MultiHostPortScanFields,
-        NetworkThreat, PortScanFields, RdpBruteForceFields, RepeatedHttpSessionsFields,
+        NetworkThreatFields, PortScanFields, RdpBruteForceFields, RepeatedHttpSessionsFields,
         UnusualDestinationPatternFields,
     };
     use crate::tables::NETWORK_TAGS;
@@ -3226,7 +3227,6 @@ mod tests {
         assert!(result.is_ok());
     }
 
-
     #[test]
     fn migrate_event_country_codes_sets_default_country_codes() {
         let schema = TestSchema::new();
@@ -3271,7 +3271,7 @@ mod tests {
             fields: serialized,
         };
         let event_db = schema.store.events();
-        event_db.put(&message).unwrap();
+        event_db.put_external(&message).unwrap();
 
         migrate_event_country_codes(&schema.store, None).unwrap();
 
@@ -3661,7 +3661,7 @@ mod tests {
             kind: EventKind::PortScan,
             fields: serialized,
         };
-        schema.store.events().put(&message).unwrap();
+        schema.store.events().put_external(&message).unwrap();
 
         migrate_event_country_codes(&schema.store, None).unwrap();
 
@@ -3697,7 +3697,7 @@ mod tests {
             kind: EventKind::MultiHostPortScan,
             fields: serialized,
         };
-        schema.store.events().put(&message).unwrap();
+        schema.store.events().put_external(&message).unwrap();
 
         migrate_event_country_codes(&schema.store, None).unwrap();
 
@@ -3731,7 +3731,7 @@ mod tests {
             kind: EventKind::ExternalDdos,
             fields: serialized,
         };
-        schema.store.events().put(&message).unwrap();
+        schema.store.events().put_external(&message).unwrap();
 
         migrate_event_country_codes(&schema.store, None).unwrap();
 
@@ -3765,7 +3765,7 @@ mod tests {
             kind: EventKind::RdpBruteForce,
             fields: serialized,
         };
-        schema.store.events().put(&message).unwrap();
+        schema.store.events().put_external(&message).unwrap();
 
         migrate_event_country_codes(&schema.store, None).unwrap();
 
@@ -3805,7 +3805,7 @@ mod tests {
             kind: EventKind::UnusualDestinationPattern,
             fields: serialized,
         };
-        schema.store.events().put(&message).unwrap();
+        schema.store.events().put_external(&message).unwrap();
 
         migrate_event_country_codes(&schema.store, None).unwrap();
 
@@ -3862,7 +3862,7 @@ mod tests {
             kind: EventKind::DnsCovertChannel,
             fields: serialized,
         };
-        schema.store.events().put(&message).unwrap();
+        schema.store.events().put_external(&message).unwrap();
 
         // First migration
         migrate_event_country_codes(&schema.store, None).unwrap();
@@ -3883,11 +3883,11 @@ mod tests {
 
     #[test]
     fn migrate_windows_threat_is_skipped() {
-        use crate::event::WindowsThreat;
+        use crate::event::WindowsThreatFields;
 
         let schema = TestSchema::new();
         let event_time = Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 6).unwrap();
-        let wt = WindowsThreat {
+        let wt = WindowsThreatFields {
             time: event_time,
             sensor: "s1".to_string(),
             service: "svc".to_string(),
@@ -3913,7 +3913,7 @@ mod tests {
             kind: EventKind::WindowsThreat,
             fields: serialized.clone(),
         };
-        schema.store.events().put(&message).unwrap();
+        schema.store.events().put_external(&message).unwrap();
 
         migrate_event_country_codes(&schema.store, None).unwrap();
 
@@ -3922,7 +3922,7 @@ mod tests {
         let mut iter = events.raw_iter_forward();
         let (_, value) = iter.next().expect("event exists");
         // Should still deserialize as the original type (unchanged)
-        let deserialized: WindowsThreat = bincode::deserialize(&value).unwrap();
+        let deserialized: WindowsThreatFields = bincode::deserialize(&value).unwrap();
         assert_eq!(deserialized.sensor, "s1");
         drop(iter);
         let _ = schema.close();
@@ -3965,7 +3965,7 @@ mod tests {
         schema
             .store
             .events()
-            .put(&EventMessage {
+            .put_external(&EventMessage {
                 time: event_time,
                 kind: EventKind::DnsCovertChannel,
                 fields: bincode::serialize(&dns).unwrap(),
@@ -3988,7 +3988,7 @@ mod tests {
         schema
             .store
             .events()
-            .put(&EventMessage {
+            .put_external(&EventMessage {
                 time: event_time2,
                 kind: EventKind::PortScan,
                 fields: bincode::serialize(&ps).unwrap(),
@@ -4010,7 +4010,7 @@ mod tests {
         schema
             .store
             .events()
-            .put(&EventMessage {
+            .put_external(&EventMessage {
                 time: event_time3,
                 kind: EventKind::ExternalDdos,
                 fields: bincode::serialize(&ddos).unwrap(),
@@ -4081,7 +4081,7 @@ mod tests {
         schema
             .store
             .events()
-            .put(&EventMessage {
+            .put_external(&EventMessage {
                 time: event_time,
                 kind: EventKind::HttpThreat,
                 fields: serialized,
@@ -4120,7 +4120,7 @@ mod tests {
         schema
             .store
             .events()
-            .put(&EventMessage {
+            .put_external(&EventMessage {
                 time: event_time,
                 kind: EventKind::RepeatedHttpSessions,
                 fields: serialized,
@@ -4183,7 +4183,7 @@ mod tests {
         schema
             .store
             .events()
-            .put(&EventMessage {
+            .put_external(&EventMessage {
                 time: event_time,
                 kind: EventKind::TorConnection,
                 fields: serialized,
@@ -4230,7 +4230,7 @@ mod tests {
         schema
             .store
             .events()
-            .put(&EventMessage {
+            .put_external(&EventMessage {
                 time: event_time,
                 kind: EventKind::BlocklistConn,
                 fields: serialized,
@@ -4293,7 +4293,7 @@ mod tests {
         schema
             .store
             .events()
-            .put(&EventMessage {
+            .put_external(&EventMessage {
                 time: event_time,
                 kind: EventKind::DomainGenerationAlgorithm,
                 fields: serialized,
@@ -4333,7 +4333,7 @@ mod tests {
         schema
             .store
             .events()
-            .put(&EventMessage {
+            .put_external(&EventMessage {
                 time: event_time,
                 kind: EventKind::FtpBruteForce,
                 fields: serialized,
@@ -4384,7 +4384,7 @@ mod tests {
         schema
             .store
             .events()
-            .put(&EventMessage {
+            .put_external(&EventMessage {
                 time: event_time,
                 kind: EventKind::FtpPlainText,
                 fields: serialized,
@@ -4423,7 +4423,7 @@ mod tests {
         schema
             .store
             .events()
-            .put(&EventMessage {
+            .put_external(&EventMessage {
                 time: event_time,
                 kind: EventKind::LdapBruteForce,
                 fields: serialized,
@@ -4473,7 +4473,7 @@ mod tests {
         schema
             .store
             .events()
-            .put(&EventMessage {
+            .put_external(&EventMessage {
                 time: event_time,
                 kind: EventKind::LdapPlainText,
                 fields: serialized,
@@ -4529,7 +4529,7 @@ mod tests {
         schema
             .store
             .events()
-            .put(&EventMessage {
+            .put_external(&EventMessage {
                 time: event_time,
                 kind: EventKind::CryptocurrencyMiningPool,
                 fields: serialized,
@@ -4584,7 +4584,7 @@ mod tests {
         schema
             .store
             .events()
-            .put(&EventMessage {
+            .put_external(&EventMessage {
                 time: event_time,
                 kind: EventKind::BlocklistDns,
                 fields: serialized,
@@ -4628,7 +4628,7 @@ mod tests {
         schema
             .store
             .events()
-            .put(&EventMessage {
+            .put_external(&EventMessage {
                 time: event_time,
                 kind: EventKind::BlocklistRdp,
                 fields: serialized,
@@ -4684,7 +4684,7 @@ mod tests {
         schema
             .store
             .events()
-            .put(&EventMessage {
+            .put_external(&EventMessage {
                 time: event_time,
                 kind: EventKind::BlocklistSsh,
                 fields: serialized,
@@ -4748,7 +4748,7 @@ mod tests {
         schema
             .store
             .events()
-            .put(&EventMessage {
+            .put_external(&EventMessage {
                 time: event_time,
                 kind: EventKind::BlocklistTls,
                 fields: serialized,
@@ -4800,7 +4800,7 @@ mod tests {
         schema
             .store
             .events()
-            .put(&EventMessage {
+            .put_external(&EventMessage {
                 time: event_time,
                 kind: EventKind::BlocklistKerberos,
                 fields: serialized,
@@ -4850,7 +4850,7 @@ mod tests {
         schema
             .store
             .events()
-            .put(&EventMessage {
+            .put_external(&EventMessage {
                 time: event_time,
                 kind: EventKind::BlocklistSmtp,
                 fields: serialized,
@@ -4895,7 +4895,7 @@ mod tests {
         schema
             .store
             .events()
-            .put(&EventMessage {
+            .put_external(&EventMessage {
                 time: event_time,
                 kind: EventKind::BlocklistNfs,
                 fields: serialized,
@@ -4956,7 +4956,7 @@ mod tests {
         schema
             .store
             .events()
-            .put(&EventMessage {
+            .put_external(&EventMessage {
                 time: event_time,
                 kind: EventKind::BlocklistDhcp,
                 fields: serialized,
@@ -4977,8 +4977,10 @@ mod tests {
 
     #[test]
     fn migrate_blocklist_dcerpc_event() {
+        use crate::event::BlocklistDceRpcFieldsStored;
+
         let schema = TestSchema::new();
-        let old = BlocklistDceRpcFieldsV0_43 {
+        let old = BlocklistDceRpcFieldsStored {
             sensor: "s1".to_string(),
             orig_addr: "10.0.0.1".parse().unwrap(),
             orig_port: 12345,
@@ -4991,14 +4993,13 @@ mod tests {
             resp_pkts: 5,
             orig_l2_bytes: 1000,
             resp_l2_bytes: 500,
-            rtt: 10,
-            named_pipe: "\\pipe\\test".to_string(),
-            endpoint: "test_endpoint".to_string(),
-            operation: "op".to_string(),
+            context: Vec::new(),
+            request: Vec::new(),
             confidence: 0.8,
             category: None,
         };
-        let serialized = bincode::serialize(&old).unwrap();
+        let fields: BlocklistDceRpcFields = old.into();
+        let serialized = bincode::serialize(&fields).unwrap();
         let event_time = Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap();
         schema
             .store
@@ -5051,7 +5052,7 @@ mod tests {
         schema
             .store
             .events()
-            .put(&EventMessage {
+            .put_external(&EventMessage {
                 time: event_time,
                 kind: EventKind::BlocklistNtlm,
                 fields: serialized,
@@ -5105,7 +5106,7 @@ mod tests {
         schema
             .store
             .events()
-            .put(&EventMessage {
+            .put_external(&EventMessage {
                 time: event_time,
                 kind: EventKind::BlocklistSmb,
                 fields: serialized,
@@ -5154,7 +5155,7 @@ mod tests {
         schema
             .store
             .events()
-            .put(&EventMessage {
+            .put_external(&EventMessage {
                 time: event_time,
                 kind: EventKind::BlocklistMqtt,
                 fields: serialized,
@@ -5208,7 +5209,7 @@ mod tests {
         schema
             .store
             .events()
-            .put(&EventMessage {
+            .put_external(&EventMessage {
                 time: event_time,
                 kind: EventKind::BlocklistBootp,
                 fields: serialized,
@@ -5265,7 +5266,7 @@ mod tests {
         schema
             .store
             .events()
-            .put(&EventMessage {
+            .put_external(&EventMessage {
                 time: event_time,
                 kind: EventKind::BlocklistRadius,
                 fields: serialized,
@@ -5320,7 +5321,7 @@ mod tests {
         schema
             .store
             .events()
-            .put(&EventMessage {
+            .put_external(&EventMessage {
                 time: event_time,
                 kind: EventKind::BlocklistMalformedDns,
                 fields: serialized,
@@ -5372,7 +5373,7 @@ mod tests {
         schema
             .store
             .events()
-            .put(&EventMessage {
+            .put_external(&EventMessage {
                 time: event_time,
                 kind: EventKind::NetworkThreat,
                 fields: serialized,
@@ -5384,7 +5385,7 @@ mod tests {
         let events = schema.store.events();
         let mut iter = events.raw_iter_forward();
         let (_, value) = iter.next().expect("migrated event");
-        let migrated: NetworkThreat = bincode::deserialize(&value).unwrap();
+        let migrated: NetworkThreatFields = bincode::deserialize(&value).unwrap();
         assert_eq!(migrated.orig_country_code, *b"ZZ");
         assert_eq!(migrated.resp_country_code, *b"ZZ");
         drop(iter);
