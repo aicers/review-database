@@ -31,19 +31,14 @@ macro_rules! find_malformed_dns_attr_by_kind {
     }};
 }
 
-pub type BlocklistMalformedDnsFields = BlocklistMalformedDnsFieldsV0_44;
-
 #[derive(Serialize, Deserialize)]
-pub struct BlocklistMalformedDnsFieldsV0_44 {
+pub struct BlocklistMalformedDnsFields {
     pub sensor: String,
     pub orig_addr: IpAddr,
     pub orig_port: u16,
-    pub orig_country_code: [u8; 2],
     pub resp_addr: IpAddr,
     pub resp_port: u16,
-    pub resp_country_code: [u8; 2],
     pub proto: u8,
-    /// Timestamp in nanoseconds since the Unix epoch (UTC).
     pub start_time: i64,
     pub duration: i64,
     pub orig_pkts: u64,
@@ -67,7 +62,7 @@ pub struct BlocklistMalformedDnsFieldsV0_44 {
 }
 
 #[derive(Deserialize, Serialize)]
-pub(crate) struct BlocklistMalformedDnsFieldsStored {
+pub(crate) struct BlocklistMalformedDnsFieldsStoredV0_45 {
     pub sensor: String,
     pub orig_addr: IpAddr,
     pub orig_port: u16,
@@ -94,6 +89,75 @@ pub(crate) struct BlocklistMalformedDnsFieldsStored {
     pub resp_body: Vec<Vec<u8>>,
     pub confidence: f32,
     pub category: Option<EventCategory>,
+}
+
+#[derive(Deserialize, Serialize)]
+pub(crate) struct BlocklistMalformedDnsFieldsStoredV0_46 {
+    pub sensor: String,
+    pub orig_addr: IpAddr,
+    pub orig_port: u16,
+    pub orig_country_code: [u8; 2],
+    pub resp_addr: IpAddr,
+    pub resp_port: u16,
+    pub resp_country_code: [u8; 2],
+    pub proto: u8,
+    pub start_time: i64,
+    pub duration: i64,
+    pub orig_pkts: u64,
+    pub resp_pkts: u64,
+    pub orig_l2_bytes: u64,
+    pub resp_l2_bytes: u64,
+    pub trans_id: u16,
+    pub flags: u16,
+    pub question_count: u16,
+    pub answer_count: u16,
+    pub authority_count: u16,
+    pub additional_count: u16,
+    pub query_count: u32,
+    pub resp_count: u32,
+    pub query_bytes: u64,
+    pub resp_bytes: u64,
+    pub query_body: Vec<Vec<u8>>,
+    pub resp_body: Vec<Vec<u8>>,
+    pub confidence: f32,
+    pub category: Option<EventCategory>,
+}
+
+pub(crate) type BlocklistMalformedDnsFieldsStored = BlocklistMalformedDnsFieldsStoredV0_46;
+
+impl From<BlocklistMalformedDnsFieldsStoredV0_45> for BlocklistMalformedDnsFieldsStored {
+    fn from(old: BlocklistMalformedDnsFieldsStoredV0_45) -> Self {
+        Self {
+            sensor: old.sensor,
+            orig_addr: old.orig_addr,
+            orig_port: old.orig_port,
+            orig_country_code: crate::util::UNRESOLVED_COUNTRY_CODE,
+            resp_addr: old.resp_addr,
+            resp_port: old.resp_port,
+            resp_country_code: crate::util::UNRESOLVED_COUNTRY_CODE,
+            proto: old.proto,
+            start_time: old.start_time,
+            duration: old.duration,
+            orig_pkts: old.orig_pkts,
+            resp_pkts: old.resp_pkts,
+            orig_l2_bytes: old.orig_l2_bytes,
+            resp_l2_bytes: old.resp_l2_bytes,
+            trans_id: old.trans_id,
+            flags: old.flags,
+            question_count: old.question_count,
+            answer_count: old.answer_count,
+            authority_count: old.authority_count,
+            additional_count: old.additional_count,
+            query_count: old.query_count,
+            resp_count: old.resp_count,
+            query_bytes: old.query_bytes,
+            resp_bytes: old.resp_bytes,
+            query_body: old.query_body,
+            resp_body: old.resp_body,
+            confidence: old.confidence,
+            category: old.category,
+        }
+    }
 }
 
 impl From<BlocklistMalformedDnsFields> for BlocklistMalformedDnsFieldsStored {
@@ -125,6 +189,8 @@ impl From<BlocklistMalformedDnsFields> for BlocklistMalformedDnsFieldsStored {
             resp_body: value.resp_body,
             confidence: value.confidence,
             category: value.category,
+            orig_country_code: crate::util::UNRESOLVED_COUNTRY_CODE,
+            resp_country_code: crate::util::UNRESOLVED_COUNTRY_CODE,
         }
     }
 }
@@ -134,7 +200,7 @@ impl BlocklistMalformedDnsFields {
     pub fn syslog_rfc5424(&self) -> String {
         let start_time_dt = DateTime::from_timestamp_nanos(self.start_time);
         format!(
-            "category={:?} sensor={:?} orig_addr={:?} orig_port={:?} orig_country_code={:?} resp_addr={:?} resp_port={:?} resp_country_code={:?} proto={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} trans_id={:?} flags={:?} question_count={:?} answer_count={:?} authority_count={:?} additional_count={:?} query_count={:?} resp_count={:?} query_bytes={:?} resp_bytes={:?} query_body={:?} resp_body={:?} confidence={:?}",
+            "category={:?} sensor={:?} orig_addr={:?} orig_port={:?} resp_addr={:?} resp_port={:?} proto={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} trans_id={:?} flags={:?} question_count={:?} answer_count={:?} authority_count={:?} additional_count={:?} query_count={:?} resp_count={:?} query_bytes={:?} resp_bytes={:?} query_body={:?} resp_body={:?} confidence={:?}",
             self.category.as_ref().map_or_else(
                 || "Unspecified".to_string(),
                 std::string::ToString::to_string
@@ -142,10 +208,8 @@ impl BlocklistMalformedDnsFields {
             self.sensor,
             self.orig_addr.to_string(),
             self.orig_port.to_string(),
-            std::str::from_utf8(&self.orig_country_code).unwrap_or("XX"),
             self.resp_addr.to_string(),
             self.resp_port.to_string(),
-            std::str::from_utf8(&self.resp_country_code).unwrap_or("XX"),
             self.proto.to_string(),
             start_time_dt.to_rfc3339(),
             self.duration.to_string(),
@@ -256,10 +320,10 @@ impl BlocklistMalformedDns {
             sensor: fields.sensor,
             orig_addr: fields.orig_addr,
             orig_port: fields.orig_port,
-            orig_country_code: *b"XX",
+            orig_country_code: fields.orig_country_code,
             resp_addr: fields.resp_addr,
             resp_port: fields.resp_port,
-            resp_country_code: *b"XX",
+            resp_country_code: fields.resp_country_code,
             proto: fields.proto,
             start_time: DateTime::from_timestamp_nanos(fields.start_time),
             duration: fields.duration,

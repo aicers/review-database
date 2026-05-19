@@ -5,6 +5,9 @@ use std::net::IpAddr;
 /// The unknown country code, used when lookup fails or returns an invalid code.
 pub const UNKNOWN_COUNTRY_CODE: &str = "XX";
 
+/// Country code indicating geolocation lookup has not been performed yet.
+pub const UNRESOLVED_COUNTRY_CODE: [u8; 2] = *b"ZZ";
+
 /// Looks up the country code for the given IP address.
 ///
 /// # Arguments

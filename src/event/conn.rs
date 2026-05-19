@@ -40,10 +40,8 @@ pub(crate) use find_conn_attr_by_kind;
 pub struct PortScanFields {
     pub sensor: String,
     pub orig_addr: IpAddr,
-    pub orig_country_code: [u8; 2],
     pub resp_addr: IpAddr,
     pub resp_ports: Vec<u16>,
-    pub resp_country_code: [u8; 2],
     /// Timestamp in nanoseconds since the Unix epoch (UTC).
     pub start_time: i64,
     /// Timestamp in nanoseconds since the Unix epoch (UTC).
@@ -53,7 +51,7 @@ pub struct PortScanFields {
     pub category: Option<EventCategory>,
 }
 
-pub(crate) type PortScanFieldsStored = PortScanFieldsStoredV0_42;
+pub(crate) type PortScanFieldsStored = PortScanFieldsStoredV0_46;
 
 #[derive(Deserialize, Serialize)]
 pub(crate) struct PortScanFieldsStoredV0_42 {
@@ -68,6 +66,39 @@ pub(crate) struct PortScanFieldsStoredV0_42 {
     pub category: Option<EventCategory>,
 }
 
+#[derive(Deserialize, Serialize)]
+pub(crate) struct PortScanFieldsStoredV0_46 {
+    pub sensor: String,
+    pub orig_addr: IpAddr,
+    pub orig_country_code: [u8; 2],
+    pub resp_addr: IpAddr,
+    pub resp_country_code: [u8; 2],
+    pub resp_ports: Vec<u16>,
+    pub start_time: i64,
+    pub end_time: i64,
+    pub proto: u8,
+    pub confidence: f32,
+    pub category: Option<EventCategory>,
+}
+
+impl From<PortScanFieldsStoredV0_42> for PortScanFieldsStored {
+    fn from(old: PortScanFieldsStoredV0_42) -> Self {
+        Self {
+            sensor: old.sensor,
+            orig_addr: old.orig_addr,
+            resp_addr: old.resp_addr,
+            resp_ports: old.resp_ports,
+            start_time: old.start_time,
+            end_time: old.end_time,
+            proto: old.proto,
+            confidence: old.confidence,
+            category: old.category,
+            orig_country_code: crate::util::UNRESOLVED_COUNTRY_CODE,
+            resp_country_code: crate::util::UNRESOLVED_COUNTRY_CODE,
+        }
+    }
+}
+
 impl From<PortScanFields> for PortScanFieldsStored {
     fn from(value: PortScanFields) -> Self {
         Self {
@@ -80,6 +111,8 @@ impl From<PortScanFields> for PortScanFieldsStored {
             proto: value.proto,
             confidence: value.confidence,
             category: value.category,
+            orig_country_code: crate::util::UNRESOLVED_COUNTRY_CODE,
+            resp_country_code: crate::util::UNRESOLVED_COUNTRY_CODE,
         }
     }
 }
@@ -90,17 +123,15 @@ impl PortScanFields {
         let start_time_dt = DateTime::from_timestamp_nanos(self.start_time);
         let end_time_dt = DateTime::from_timestamp_nanos(self.end_time);
         format!(
-            "category={:?} sensor={:?} orig_addr={:?} orig_country_code={:?} resp_addr={:?} resp_ports={:?} resp_country_code={:?} start_time={:?} end_time={:?} proto={:?} confidence={:?}",
+            "category={:?} sensor={:?} orig_addr={:?} resp_addr={:?} resp_ports={:?} start_time={:?} end_time={:?} proto={:?} confidence={:?}",
             self.category.as_ref().map_or_else(
                 || "Unspecified".to_string(),
                 std::string::ToString::to_string
             ),
             self.sensor,
             self.orig_addr.to_string(),
-            std::str::from_utf8(&self.orig_country_code).unwrap_or("XX"),
             self.resp_addr.to_string(),
             vector_to_string(&self.resp_ports),
-            std::str::from_utf8(&self.resp_country_code).unwrap_or("XX"),
             start_time_dt.to_rfc3339(),
             end_time_dt.to_rfc3339(),
             self.proto.to_string(),
@@ -151,10 +182,10 @@ impl PortScan {
             sensor: fields.sensor.clone(),
             time,
             orig_addr: fields.orig_addr,
-            orig_country_code: *b"XX",
+            orig_country_code: fields.orig_country_code,
             resp_addr: fields.resp_addr,
             resp_ports: fields.resp_ports.clone(),
-            resp_country_code: *b"XX",
+            resp_country_code: fields.resp_country_code,
             proto: fields.proto,
             start_time: DateTime::from_timestamp_nanos(fields.start_time),
             end_time: DateTime::from_timestamp_nanos(fields.end_time),
@@ -237,10 +268,8 @@ impl Match for PortScan {
 pub struct MultiHostPortScanFields {
     pub sensor: String,
     pub orig_addr: IpAddr,
-    pub orig_country_code: [u8; 2],
-    pub resp_addrs: Vec<IpAddr>,
     pub resp_port: u16,
-    pub resp_country_codes: Vec<[u8; 2]>,
+    pub resp_addrs: Vec<IpAddr>,
     pub proto: u8,
     /// Timestamp in nanoseconds since the Unix epoch (UTC).
     pub start_time: i64,
@@ -250,7 +279,7 @@ pub struct MultiHostPortScanFields {
     pub category: Option<EventCategory>,
 }
 
-pub(crate) type MultiHostPortScanFieldsStored = MultiHostPortScanFieldsStoredV0_42;
+pub(crate) type MultiHostPortScanFieldsStored = MultiHostPortScanFieldsStoredV0_46;
 
 #[derive(Deserialize, Serialize)]
 pub(crate) struct MultiHostPortScanFieldsStoredV0_42 {
@@ -265,13 +294,50 @@ pub(crate) struct MultiHostPortScanFieldsStoredV0_42 {
     pub category: Option<EventCategory>,
 }
 
+#[derive(Deserialize, Serialize)]
+pub(crate) struct MultiHostPortScanFieldsStoredV0_46 {
+    pub sensor: String,
+    pub orig_addr: IpAddr,
+    pub orig_country_code: [u8; 2],
+    pub resp_port: u16,
+    pub resp_addrs: Vec<IpAddr>,
+    pub resp_country_codes: Vec<[u8; 2]>,
+    pub proto: u8,
+    pub start_time: i64,
+    pub end_time: i64,
+    pub confidence: f32,
+    pub category: Option<EventCategory>,
+}
+
+impl From<MultiHostPortScanFieldsStoredV0_42> for MultiHostPortScanFieldsStored {
+    fn from(old: MultiHostPortScanFieldsStoredV0_42) -> Self {
+        let resp_country_codes = vec![crate::util::UNRESOLVED_COUNTRY_CODE; old.resp_addrs.len()];
+        Self {
+            sensor: old.sensor,
+            orig_addr: old.orig_addr,
+            orig_country_code: crate::util::UNRESOLVED_COUNTRY_CODE,
+            resp_addrs: old.resp_addrs,
+            resp_port: old.resp_port,
+            resp_country_codes,
+            proto: old.proto,
+            start_time: old.start_time,
+            end_time: old.end_time,
+            confidence: old.confidence,
+            category: old.category,
+        }
+    }
+}
+
 impl From<MultiHostPortScanFields> for MultiHostPortScanFieldsStored {
     fn from(value: MultiHostPortScanFields) -> Self {
+        let resp_country_codes = vec![crate::util::UNRESOLVED_COUNTRY_CODE; value.resp_addrs.len()];
         Self {
             sensor: value.sensor,
             orig_addr: value.orig_addr,
+            orig_country_code: crate::util::UNRESOLVED_COUNTRY_CODE,
             resp_port: value.resp_port,
             resp_addrs: value.resp_addrs,
+            resp_country_codes,
             proto: value.proto,
             start_time: value.start_time,
             end_time: value.end_time,
@@ -287,20 +353,15 @@ impl MultiHostPortScanFields {
         let start_time_dt = DateTime::from_timestamp_nanos(self.start_time);
         let end_time_dt = DateTime::from_timestamp_nanos(self.end_time);
         format!(
-            "category={:?} sensor={:?} orig_addr={:?} orig_country_code={:?} resp_addrs={:?} resp_port={:?} resp_country_codes={:?} proto={:?} start_time={:?} end_time={:?} confidence={:?}",
+            "category={:?} sensor={:?} orig_addr={:?} resp_addrs={:?} resp_port={:?} proto={:?} start_time={:?} end_time={:?} confidence={:?}",
             self.category.as_ref().map_or_else(
                 || "Unspecified".to_string(),
                 std::string::ToString::to_string
             ),
             self.sensor,
             self.orig_addr.to_string(),
-            std::str::from_utf8(&self.orig_country_code).unwrap_or("XX"),
             vector_to_string(&self.resp_addrs),
             self.resp_port.to_string(),
-            self.resp_country_codes
-                .iter()
-                .map(|code| std::str::from_utf8(code).unwrap_or("XX"))
-                .join(","),
             self.proto.to_string(),
             start_time_dt.to_rfc3339(),
             end_time_dt.to_rfc3339(),
@@ -354,10 +415,10 @@ impl MultiHostPortScan {
             sensor: fields.sensor.clone(),
             time,
             orig_addr: fields.orig_addr,
-            orig_country_code: *b"XX",
+            orig_country_code: fields.orig_country_code,
             resp_addrs: fields.resp_addrs.clone(),
             resp_port: fields.resp_port,
-            resp_country_codes: vec![*b"XX"; fields.resp_addrs.len()],
+            resp_country_codes: fields.resp_country_codes.clone(),
             proto: fields.proto,
             start_time: DateTime::from_timestamp_nanos(fields.start_time),
             end_time: DateTime::from_timestamp_nanos(fields.end_time),
@@ -441,9 +502,7 @@ impl Match for MultiHostPortScan {
 pub struct ExternalDdosFields {
     pub sensor: String,
     pub orig_addrs: Vec<IpAddr>,
-    pub orig_country_codes: Vec<[u8; 2]>,
     pub resp_addr: IpAddr,
-    pub resp_country_code: [u8; 2],
     pub proto: u8,
     /// Timestamp in nanoseconds since the Unix epoch (UTC).
     pub start_time: i64,
@@ -453,7 +512,7 @@ pub struct ExternalDdosFields {
     pub category: Option<EventCategory>,
 }
 
-pub(crate) type ExternalDdosFieldsStored = ExternalDdosFieldsStoredV0_42;
+pub(crate) type ExternalDdosFieldsStored = ExternalDdosFieldsStoredV0_46;
 
 #[derive(Deserialize, Serialize)]
 pub(crate) struct ExternalDdosFieldsStoredV0_42 {
@@ -467,12 +526,47 @@ pub(crate) struct ExternalDdosFieldsStoredV0_42 {
     pub category: Option<EventCategory>,
 }
 
+#[derive(Deserialize, Serialize)]
+pub(crate) struct ExternalDdosFieldsStoredV0_46 {
+    pub sensor: String,
+    pub orig_addrs: Vec<IpAddr>,
+    pub orig_country_codes: Vec<[u8; 2]>,
+    pub resp_addr: IpAddr,
+    pub resp_country_code: [u8; 2],
+    pub proto: u8,
+    pub start_time: i64,
+    pub end_time: i64,
+    pub confidence: f32,
+    pub category: Option<EventCategory>,
+}
+
+impl From<ExternalDdosFieldsStoredV0_42> for ExternalDdosFieldsStored {
+    fn from(old: ExternalDdosFieldsStoredV0_42) -> Self {
+        let orig_country_codes = vec![crate::util::UNRESOLVED_COUNTRY_CODE; old.orig_addrs.len()];
+        Self {
+            sensor: old.sensor,
+            orig_addrs: old.orig_addrs,
+            orig_country_codes,
+            resp_addr: old.resp_addr,
+            resp_country_code: crate::util::UNRESOLVED_COUNTRY_CODE,
+            proto: old.proto,
+            start_time: old.start_time,
+            end_time: old.end_time,
+            confidence: old.confidence,
+            category: old.category,
+        }
+    }
+}
+
 impl From<ExternalDdosFields> for ExternalDdosFieldsStored {
     fn from(value: ExternalDdosFields) -> Self {
+        let orig_country_codes = vec![crate::util::UNRESOLVED_COUNTRY_CODE; value.orig_addrs.len()];
         Self {
             sensor: value.sensor,
             orig_addrs: value.orig_addrs,
+            orig_country_codes,
             resp_addr: value.resp_addr,
+            resp_country_code: crate::util::UNRESOLVED_COUNTRY_CODE,
             proto: value.proto,
             start_time: value.start_time,
             end_time: value.end_time,
@@ -488,19 +582,14 @@ impl ExternalDdosFields {
         let start_time_dt = DateTime::from_timestamp_nanos(self.start_time);
         let end_time_dt = DateTime::from_timestamp_nanos(self.end_time);
         format!(
-            "category={:?} sensor={:?} orig_addrs={:?} orig_country_codes={:?} resp_addr={:?} resp_country_code={:?} proto={:?} start_time={:?} end_time={:?} confidence={:?}",
+            "category={:?} sensor={:?} orig_addrs={:?} resp_addr={:?} proto={:?} start_time={:?} end_time={:?} confidence={:?}",
             self.category.as_ref().map_or_else(
                 || "Unspecified".to_string(),
                 std::string::ToString::to_string
             ),
             self.sensor,
             vector_to_string(&self.orig_addrs),
-            self.orig_country_codes
-                .iter()
-                .map(|code| std::str::from_utf8(code).unwrap_or("XX"))
-                .join(","),
             self.resp_addr.to_string(),
-            std::str::from_utf8(&self.resp_country_code).unwrap_or("XX"),
             self.proto.to_string(),
             start_time_dt.to_rfc3339(),
             end_time_dt.to_rfc3339(),
@@ -552,9 +641,9 @@ impl ExternalDdos {
             sensor: fields.sensor.clone(),
             time,
             orig_addrs: fields.orig_addrs.clone(),
-            orig_country_codes: vec![*b"XX"; fields.orig_addrs.len()],
+            orig_country_codes: fields.orig_country_codes.clone(),
             resp_addr: fields.resp_addr,
-            resp_country_code: *b"XX",
+            resp_country_code: fields.resp_country_code,
             proto: fields.proto,
             start_time: DateTime::from_timestamp_nanos(fields.start_time),
             end_time: DateTime::from_timestamp_nanos(fields.end_time),
@@ -638,10 +727,8 @@ pub struct BlocklistConnFields {
     pub sensor: String,
     pub orig_addr: IpAddr,
     pub orig_port: u16,
-    pub orig_country_code: [u8; 2],
     pub resp_addr: IpAddr,
     pub resp_port: u16,
-    pub resp_country_code: [u8; 2],
     pub proto: u8,
     pub conn_state: String,
     /// Timestamp in nanoseconds since the Unix epoch (UTC).
@@ -658,7 +745,7 @@ pub struct BlocklistConnFields {
     pub category: Option<EventCategory>,
 }
 
-pub(crate) type BlocklistConnFieldsStored = BlocklistConnFieldsStoredV0_42;
+pub(crate) type BlocklistConnFieldsStored = BlocklistConnFieldsStoredV0_46;
 
 #[derive(Deserialize, Serialize)]
 pub(crate) struct BlocklistConnFieldsStoredV0_42 {
@@ -682,6 +769,57 @@ pub(crate) struct BlocklistConnFieldsStoredV0_42 {
     pub category: Option<EventCategory>,
 }
 
+#[derive(Deserialize, Serialize)]
+pub(crate) struct BlocklistConnFieldsStoredV0_46 {
+    pub sensor: String,
+    pub orig_addr: IpAddr,
+    pub orig_country_code: [u8; 2],
+    pub orig_port: u16,
+    pub resp_addr: IpAddr,
+    pub resp_country_code: [u8; 2],
+    pub resp_port: u16,
+    pub proto: u8,
+    pub conn_state: String,
+    pub start_time: i64,
+    pub duration: i64,
+    pub service: String,
+    pub orig_bytes: u64,
+    pub resp_bytes: u64,
+    pub orig_pkts: u64,
+    pub resp_pkts: u64,
+    pub orig_l2_bytes: u64,
+    pub resp_l2_bytes: u64,
+    pub confidence: f32,
+    pub category: Option<EventCategory>,
+}
+
+impl From<BlocklistConnFieldsStoredV0_42> for BlocklistConnFieldsStored {
+    fn from(old: BlocklistConnFieldsStoredV0_42) -> Self {
+        Self {
+            sensor: old.sensor,
+            orig_addr: old.orig_addr,
+            orig_port: old.orig_port,
+            resp_addr: old.resp_addr,
+            resp_port: old.resp_port,
+            proto: old.proto,
+            conn_state: old.conn_state,
+            start_time: old.start_time,
+            duration: old.duration,
+            service: old.service,
+            orig_bytes: old.orig_bytes,
+            resp_bytes: old.resp_bytes,
+            orig_pkts: old.orig_pkts,
+            resp_pkts: old.resp_pkts,
+            orig_l2_bytes: old.orig_l2_bytes,
+            resp_l2_bytes: old.resp_l2_bytes,
+            confidence: old.confidence,
+            category: old.category,
+            orig_country_code: crate::util::UNRESOLVED_COUNTRY_CODE,
+            resp_country_code: crate::util::UNRESOLVED_COUNTRY_CODE,
+        }
+    }
+}
+
 impl From<BlocklistConnFields> for BlocklistConnFieldsStored {
     fn from(value: BlocklistConnFields) -> Self {
         Self {
@@ -703,6 +841,8 @@ impl From<BlocklistConnFields> for BlocklistConnFieldsStored {
             resp_l2_bytes: value.resp_l2_bytes,
             confidence: value.confidence,
             category: value.category,
+            orig_country_code: crate::util::UNRESOLVED_COUNTRY_CODE,
+            resp_country_code: crate::util::UNRESOLVED_COUNTRY_CODE,
         }
     }
 }
@@ -713,7 +853,7 @@ impl BlocklistConnFields {
         let start_time_dt = DateTime::from_timestamp_nanos(self.start_time);
 
         format!(
-            "category={:?} sensor={:?} orig_addr={:?} orig_port={:?} orig_country_code={:?} resp_addr={:?} resp_port={:?} resp_country_code={:?} proto={:?} conn_state={:?} start_time={:?} duration={:?} service={:?} orig_bytes={:?} resp_bytes={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} confidence={:?}",
+            "category={:?} sensor={:?} orig_addr={:?} orig_port={:?} resp_addr={:?} resp_port={:?} proto={:?} conn_state={:?} start_time={:?} duration={:?} service={:?} orig_bytes={:?} resp_bytes={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} confidence={:?}",
             self.category.as_ref().map_or_else(
                 || "Unspecified".to_string(),
                 std::string::ToString::to_string
@@ -721,10 +861,8 @@ impl BlocklistConnFields {
             self.sensor,
             self.orig_addr.to_string(),
             self.orig_port.to_string(),
-            std::str::from_utf8(&self.orig_country_code).unwrap_or("XX"),
             self.resp_addr.to_string(),
             self.resp_port.to_string(),
-            std::str::from_utf8(&self.resp_country_code).unwrap_or("XX"),
             self.proto.to_string(),
             self.conn_state,
             start_time_dt.to_rfc3339(),
@@ -802,10 +940,10 @@ impl BlocklistConn {
             sensor: fields.sensor,
             orig_addr: fields.orig_addr,
             orig_port: fields.orig_port,
-            orig_country_code: *b"XX",
+            orig_country_code: fields.orig_country_code,
             resp_addr: fields.resp_addr,
             resp_port: fields.resp_port,
-            resp_country_code: *b"XX",
+            resp_country_code: fields.resp_country_code,
             proto: fields.proto,
             conn_state: fields.conn_state,
             start_time: DateTime::from_timestamp_nanos(fields.start_time),

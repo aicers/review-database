@@ -25,10 +25,8 @@ pub struct BlocklistDceRpcFields {
     pub sensor: String,
     pub orig_addr: IpAddr,
     pub orig_port: u16,
-    pub orig_country_code: [u8; 2],
     pub resp_addr: IpAddr,
     pub resp_port: u16,
-    pub resp_country_code: [u8; 2],
     pub proto: u8,
     /// Timestamp in nanoseconds since the Unix epoch (UTC).
     pub start_time: i64,
@@ -43,7 +41,7 @@ pub struct BlocklistDceRpcFields {
     pub category: Option<EventCategory>,
 }
 
-pub(crate) type BlocklistDceRpcFieldsStored = BlocklistDceRpcFieldsStoredV0_44;
+pub(crate) type BlocklistDceRpcFieldsStored = BlocklistDceRpcFieldsStoredV0_46;
 
 #[derive(Deserialize, Serialize)]
 pub(crate) struct BlocklistDceRpcFieldsStoredV0_44 {
@@ -65,6 +63,53 @@ pub(crate) struct BlocklistDceRpcFieldsStoredV0_44 {
     pub category: Option<EventCategory>,
 }
 
+#[derive(Deserialize, Serialize)]
+pub(crate) struct BlocklistDceRpcFieldsStoredV0_46 {
+    pub sensor: String,
+    pub orig_addr: IpAddr,
+    pub orig_port: u16,
+    pub orig_country_code: [u8; 2],
+    pub resp_addr: IpAddr,
+    pub resp_port: u16,
+    pub resp_country_code: [u8; 2],
+    pub proto: u8,
+    pub start_time: i64,
+    pub duration: i64,
+    pub orig_pkts: u64,
+    pub resp_pkts: u64,
+    pub orig_l2_bytes: u64,
+    pub resp_l2_bytes: u64,
+    pub context: Vec<DceRpcContext>,
+    pub request: Vec<String>,
+    pub confidence: f32,
+    pub category: Option<EventCategory>,
+}
+
+impl From<BlocklistDceRpcFieldsStoredV0_44> for BlocklistDceRpcFieldsStored {
+    fn from(old: BlocklistDceRpcFieldsStoredV0_44) -> Self {
+        Self {
+            sensor: old.sensor,
+            orig_addr: old.orig_addr,
+            orig_port: old.orig_port,
+            resp_addr: old.resp_addr,
+            resp_port: old.resp_port,
+            proto: old.proto,
+            start_time: old.start_time,
+            duration: old.duration,
+            orig_pkts: old.orig_pkts,
+            resp_pkts: old.resp_pkts,
+            orig_l2_bytes: old.orig_l2_bytes,
+            resp_l2_bytes: old.resp_l2_bytes,
+            context: old.context,
+            request: old.request,
+            confidence: old.confidence,
+            category: old.category,
+            orig_country_code: crate::util::UNRESOLVED_COUNTRY_CODE,
+            resp_country_code: crate::util::UNRESOLVED_COUNTRY_CODE,
+        }
+    }
+}
+
 impl From<BlocklistDceRpcFields> for BlocklistDceRpcFieldsStored {
     fn from(value: BlocklistDceRpcFields) -> Self {
         Self {
@@ -84,31 +129,8 @@ impl From<BlocklistDceRpcFields> for BlocklistDceRpcFieldsStored {
             request: value.request,
             confidence: value.confidence,
             category: value.category,
-        }
-    }
-}
-
-impl From<BlocklistDceRpcFieldsStored> for BlocklistDceRpcFields {
-    fn from(value: BlocklistDceRpcFieldsStored) -> Self {
-        Self {
-            sensor: value.sensor,
-            orig_addr: value.orig_addr,
-            orig_port: value.orig_port,
-            orig_country_code: *b"ZZ",
-            resp_addr: value.resp_addr,
-            resp_port: value.resp_port,
-            resp_country_code: *b"ZZ",
-            proto: value.proto,
-            start_time: value.start_time,
-            duration: value.duration,
-            orig_pkts: value.orig_pkts,
-            resp_pkts: value.resp_pkts,
-            orig_l2_bytes: value.orig_l2_bytes,
-            resp_l2_bytes: value.resp_l2_bytes,
-            context: value.context,
-            request: value.request,
-            confidence: value.confidence,
-            category: value.category,
+            orig_country_code: crate::util::UNRESOLVED_COUNTRY_CODE,
+            resp_country_code: crate::util::UNRESOLVED_COUNTRY_CODE,
         }
     }
 }
@@ -141,8 +163,7 @@ impl BlocklistDceRpcFields {
         let request_str = self.request.join(",");
         format!(
             "category={:?} sensor={:?} orig_addr={:?} orig_port={:?} \
-             orig_country_code={:?} resp_addr={:?} resp_port={:?} \
-             resp_country_code={:?} proto={:?} start_time={:?} \
+             resp_addr={:?} resp_port={:?} proto={:?} start_time={:?} \
              duration={:?} orig_pkts={:?} resp_pkts={:?} \
              orig_l2_bytes={:?} resp_l2_bytes={:?} \
              context={:?} request={:?} confidence={:?}",
@@ -153,10 +174,8 @@ impl BlocklistDceRpcFields {
             self.sensor,
             self.orig_addr.to_string(),
             self.orig_port.to_string(),
-            std::str::from_utf8(&self.orig_country_code).unwrap_or("XX"),
             self.resp_addr.to_string(),
             self.resp_port.to_string(),
-            std::str::from_utf8(&self.resp_country_code).unwrap_or("XX"),
             self.proto.to_string(),
             start_time_dt.to_rfc3339(),
             self.duration.to_string(),
@@ -254,10 +273,10 @@ impl BlocklistDceRpc {
             sensor: fields.sensor,
             orig_addr: fields.orig_addr,
             orig_port: fields.orig_port,
-            orig_country_code: *b"XX",
+            orig_country_code: fields.orig_country_code,
             resp_addr: fields.resp_addr,
             resp_port: fields.resp_port,
-            resp_country_code: *b"XX",
+            resp_country_code: fields.resp_country_code,
             proto: fields.proto,
             start_time: DateTime::from_timestamp_nanos(fields.start_time),
             duration: fields.duration,

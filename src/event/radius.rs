@@ -43,17 +43,13 @@ macro_rules! find_radius_attr_by_kind {
     }};
 }
 
-pub type BlocklistRadiusFields = BlocklistRadiusFieldsV0_44;
-
 #[derive(Serialize, Deserialize)]
-pub struct BlocklistRadiusFieldsV0_44 {
+pub struct BlocklistRadiusFields {
     pub sensor: String,
     pub orig_addr: IpAddr,
     pub orig_port: u16,
-    pub orig_country_code: [u8; 2],
     pub resp_addr: IpAddr,
     pub resp_port: u16,
-    pub resp_country_code: [u8; 2],
     pub proto: u8,
     /// Timestamp in nanoseconds since the Unix epoch (UTC).
     pub start_time: i64,
@@ -80,13 +76,49 @@ pub struct BlocklistRadiusFieldsV0_44 {
     pub category: Option<EventCategory>,
 }
 
+pub(crate) type BlocklistRadiusFieldsStored = BlocklistRadiusFieldsStoredV0_46;
+
 #[derive(Deserialize, Serialize)]
-pub(crate) struct BlocklistRadiusFieldsStored {
+pub(crate) struct BlocklistRadiusFieldsStoredV0_45 {
     pub sensor: String,
     pub orig_addr: IpAddr,
     pub orig_port: u16,
     pub resp_addr: IpAddr,
     pub resp_port: u16,
+    pub proto: u8,
+    pub start_time: i64,
+    pub duration: i64,
+    pub orig_pkts: u64,
+    pub resp_pkts: u64,
+    pub orig_l2_bytes: u64,
+    pub resp_l2_bytes: u64,
+    pub id: u8,
+    pub code: u8,
+    pub resp_code: u8,
+    pub auth: String,
+    pub resp_auth: String,
+    pub user_name: Vec<u8>,
+    pub user_passwd: Vec<u8>,
+    pub chap_passwd: Vec<u8>,
+    pub nas_ip: IpAddr,
+    pub nas_port: u32,
+    pub state: Vec<u8>,
+    pub nas_id: Vec<u8>,
+    pub nas_port_type: u32,
+    pub message: String,
+    pub confidence: f32,
+    pub category: Option<EventCategory>,
+}
+
+#[derive(Deserialize, Serialize)]
+pub(crate) struct BlocklistRadiusFieldsStoredV0_46 {
+    pub sensor: String,
+    pub orig_addr: IpAddr,
+    pub orig_port: u16,
+    pub orig_country_code: [u8; 2],
+    pub resp_addr: IpAddr,
+    pub resp_port: u16,
+    pub resp_country_code: [u8; 2],
     pub proto: u8,
     pub start_time: i64,
     pub duration: i64,
@@ -118,8 +150,10 @@ impl From<BlocklistRadiusFields> for BlocklistRadiusFieldsStored {
             sensor: value.sensor,
             orig_addr: value.orig_addr,
             orig_port: value.orig_port,
+            orig_country_code: crate::util::UNRESOLVED_COUNTRY_CODE,
             resp_addr: value.resp_addr,
             resp_port: value.resp_port,
+            resp_country_code: crate::util::UNRESOLVED_COUNTRY_CODE,
             proto: value.proto,
             start_time: value.start_time,
             duration: value.duration,
@@ -147,12 +181,49 @@ impl From<BlocklistRadiusFields> for BlocklistRadiusFieldsStored {
     }
 }
 
+impl From<BlocklistRadiusFieldsStoredV0_45> for BlocklistRadiusFieldsStored {
+    fn from(old: BlocklistRadiusFieldsStoredV0_45) -> Self {
+        Self {
+            sensor: old.sensor,
+            orig_addr: old.orig_addr,
+            orig_port: old.orig_port,
+            orig_country_code: crate::util::UNRESOLVED_COUNTRY_CODE,
+            resp_addr: old.resp_addr,
+            resp_port: old.resp_port,
+            resp_country_code: crate::util::UNRESOLVED_COUNTRY_CODE,
+            proto: old.proto,
+            start_time: old.start_time,
+            duration: old.duration,
+            orig_pkts: old.orig_pkts,
+            resp_pkts: old.resp_pkts,
+            orig_l2_bytes: old.orig_l2_bytes,
+            resp_l2_bytes: old.resp_l2_bytes,
+            id: old.id,
+            code: old.code,
+            resp_code: old.resp_code,
+            auth: old.auth,
+            resp_auth: old.resp_auth,
+            user_name: old.user_name,
+            user_passwd: old.user_passwd,
+            chap_passwd: old.chap_passwd,
+            nas_ip: old.nas_ip,
+            nas_port: old.nas_port,
+            state: old.state,
+            nas_id: old.nas_id,
+            nas_port_type: old.nas_port_type,
+            message: old.message,
+            confidence: old.confidence,
+            category: old.category,
+        }
+    }
+}
+
 impl BlocklistRadiusFields {
     #[must_use]
     pub fn syslog_rfc5424(&self) -> String {
         let start_time_dt = DateTime::from_timestamp_nanos(self.start_time);
         format!(
-            "category={:?} sensor={:?} orig_addr={:?} orig_port={:?} orig_country_code={:?} resp_addr={:?} resp_port={:?} resp_country_code={:?} proto={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} id={:?} code={:?} resp_code={:?} auth={:?} resp_auth={:?} user_name={:?} user_passwd={:?} chap_passwd={:?} nas_ip={:?} nas_port={:?} state={:?} nas_id={:?} nas_port_type={:?} message={:?} confidence={:?}",
+            "category={:?} sensor={:?} orig_addr={:?} orig_port={:?} resp_addr={:?} resp_port={:?} proto={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} id={:?} code={:?} resp_code={:?} auth={:?} resp_auth={:?} user_name={:?} user_passwd={:?} chap_passwd={:?} nas_ip={:?} nas_port={:?} state={:?} nas_id={:?} nas_port_type={:?} message={:?} confidence={:?}",
             self.category.as_ref().map_or_else(
                 || "Unspecified".to_string(),
                 std::string::ToString::to_string
@@ -160,10 +231,8 @@ impl BlocklistRadiusFields {
             self.sensor,
             self.orig_addr.to_string(),
             self.orig_port.to_string(),
-            std::str::from_utf8(&self.orig_country_code).unwrap_or("XX"),
             self.resp_addr.to_string(),
             self.resp_port.to_string(),
-            std::str::from_utf8(&self.resp_country_code).unwrap_or("XX"),
             self.proto.to_string(),
             start_time_dt.to_rfc3339(),
             self.duration.to_string(),
@@ -272,10 +341,10 @@ impl BlocklistRadius {
             sensor: fields.sensor,
             orig_addr: fields.orig_addr,
             orig_port: fields.orig_port,
-            orig_country_code: *b"XX",
+            orig_country_code: fields.orig_country_code,
             resp_addr: fields.resp_addr,
             resp_port: fields.resp_port,
-            resp_country_code: *b"XX",
+            resp_country_code: fields.resp_country_code,
             proto: fields.proto,
             start_time: DateTime::from_timestamp_nanos(fields.start_time),
             duration: fields.duration,

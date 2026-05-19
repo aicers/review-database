@@ -7,6 +7,18 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- Added `orig_country_code` and `resp_country_code` (or multi-address
+  equivalents) to detected-event runtime types and repository-local
+  `*FieldsStored` schemas. Values are 2-letter country codes (`[u8; 2]`);
+  newly stored events use `ZZ` when no lookup has been performed.
+- Added `EventDb::put_external` to accept `EventMessage` values serialized
+  with producer-facing `*Fields` (without country codes) and persist them
+  using the stored representation.
+- Added an optional `ip2location::DB` argument to `migrate_data_dir` to
+  resolve country codes when upgrading databases from 0.45.x to 0.46.x.
+
 ### Changed
 
 - **BREAKING**: Renamed `TrafficFilter::agent` to `host_fqdn` to clarify
@@ -25,12 +37,15 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   fields `client_name` to `cname` and `service_name` to `sname` to match
   Kerberos protocol terminology and align with the existing
   `cname_type`/`sname_type` fields.
+- **BREAKING**: Database compatible version range is now
+  `>=0.46.0-alpha, <0.47.0-alpha`. A `0.45 -> 0.46` migration step backfills
+  country codes on stored events when an `ip2location::DB` is supplied.
 - Separated producer-facing event field schemas from on-disk storage schemas.
-  The producer-facing `*Fields` types remain the public ingestion interface,
-  while new repository-local `*FieldsStored` types are the schema written to
-  disk and consumed on read. No external wire-format change is intended;
-  the split is scaffolding so the stored schemas can evolve independently
-  of the producer interface in future releases.
+  Producer-facing `*Fields` types (re-exported as `*FieldsExternal`) remain
+  the ingestion interface and do not include country-code fields.
+  Repository-local `*FieldsStored` types are written to disk and consumed on
+  read, including country codes. No external ingest wire-format change is
+  intended.
 - Aligned the `ExtraThreat`, `NetworkThreat`, and `WindowsThreat` event
   families with the rest of the public event model: their producer-facing
   schemas are now `*Fields` types, and their `Event` variants expose
@@ -113,30 +128,6 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   `BlocklistDhcpFields` and `BlocklistDhcp` to support all
   DHCP option values. Existing records are migrated with an
   empty options list.
-- Added `src_country_code` and `dst_country_code` fields to all event-specific
-  `*Fields` structs and `NetworkThreat`. These fields store 2-letter ISO country
-  codes as `[u8; 2]`, enabling geographic filtering and analysis of
-  security events. Country codes can be resolved from IP addresses using an
-  ip2location database during event creation.
-- Added `orig_country_code` and `resp_country_code` fields to event-related
-  structs that contain origin and response IP addresses. These fields store
-  2-letter ISO country codes as `[u8; 2]`, enabling geographic filtering and
-  analysis of security events.
-- Updated `migrate_data_dir` function signature to accept an optional
-  `ip2location::DB` parameter for resolving country codes during migration
-  from older database formats.
-- Introduced a dual-type schema architecture separating external and internal
-  event representations. External types (e.g. `DnsEventFieldsExternal`) match
-  the wire format sent by external applications and do not include
-  country-code fields. Internal types (e.g. `DnsEventFields`) are the
-  DB-layer representation that include country-code fields. All `V0_43`
-  event-field structs are now public and re-exported with `External` suffix
-  aliases (e.g. `DnsEventFieldsExternal`).
-- Added `EventDb::put_external` method that accepts an `EventMessage` whose
-  fields are in the external (no country code) format, converts them to the
-  internal format (defaulting country codes to `"ZZ"`), and stores the
-  result. This allows ingestion-time schema transformation for events produced
-  by external applications.
 
 ### Changed
 

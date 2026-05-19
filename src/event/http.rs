@@ -64,10 +64,8 @@ pub struct HttpEventFields {
     pub sensor: String,
     pub orig_addr: IpAddr,
     pub orig_port: u16,
-    pub orig_country_code: [u8; 2],
     pub resp_addr: IpAddr,
     pub resp_port: u16,
-    pub resp_country_code: [u8; 2],
     pub proto: u8,
     /// Timestamp in nanoseconds since the Unix epoch (UTC).
     pub start_time: i64,
@@ -100,7 +98,7 @@ pub struct HttpEventFields {
     pub category: Option<EventCategory>,
 }
 
-pub(crate) type HttpEventFieldsStored = HttpEventFieldsStoredV0_42;
+pub(crate) type HttpEventFieldsStored = HttpEventFieldsStoredV0_46;
 
 #[derive(Deserialize, Serialize)]
 pub(crate) struct HttpEventFieldsStoredV0_42 {
@@ -140,6 +138,89 @@ pub(crate) struct HttpEventFieldsStoredV0_42 {
     pub category: Option<EventCategory>,
 }
 
+#[derive(Deserialize, Serialize)]
+pub(crate) struct HttpEventFieldsStoredV0_46 {
+    pub sensor: String,
+    pub orig_addr: IpAddr,
+    pub orig_port: u16,
+    pub orig_country_code: [u8; 2],
+    pub resp_addr: IpAddr,
+    pub resp_port: u16,
+    pub resp_country_code: [u8; 2],
+    pub proto: u8,
+    pub start_time: i64,
+    pub duration: i64,
+    pub orig_pkts: u64,
+    pub resp_pkts: u64,
+    pub orig_l2_bytes: u64,
+    pub resp_l2_bytes: u64,
+    pub method: String,
+    pub host: String,
+    pub uri: String,
+    pub referer: String,
+    pub version: String,
+    pub user_agent: String,
+    pub request_len: usize,
+    pub response_len: usize,
+    pub status_code: u16,
+    pub status_msg: String,
+    pub username: String,
+    pub password: String,
+    pub cookie: String,
+    pub content_encoding: String,
+    pub content_type: String,
+    pub cache_control: String,
+    pub filenames: Vec<String>,
+    pub mime_types: Vec<String>,
+    pub body: Vec<u8>,
+    pub state: String,
+    pub confidence: f32,
+    pub category: Option<EventCategory>,
+}
+
+impl From<HttpEventFieldsStoredV0_42> for HttpEventFieldsStored {
+    fn from(old: HttpEventFieldsStoredV0_42) -> Self {
+        Self {
+            sensor: old.sensor,
+            orig_addr: old.orig_addr,
+            orig_port: old.orig_port,
+            resp_addr: old.resp_addr,
+            resp_port: old.resp_port,
+            proto: old.proto,
+            start_time: old.start_time,
+            duration: old.duration,
+            orig_pkts: old.orig_pkts,
+            resp_pkts: old.resp_pkts,
+            orig_l2_bytes: old.orig_l2_bytes,
+            resp_l2_bytes: old.resp_l2_bytes,
+            method: old.method,
+            host: old.host,
+            uri: old.uri,
+            referer: old.referer,
+            version: old.version,
+            user_agent: old.user_agent,
+            request_len: old.request_len,
+            response_len: old.response_len,
+            status_code: old.status_code,
+            status_msg: old.status_msg,
+            username: old.username,
+            password: old.password,
+            cookie: old.cookie,
+            content_encoding: old.content_encoding,
+            content_type: old.content_type,
+            cache_control: old.cache_control,
+            filenames: old.filenames,
+            mime_types: old.mime_types,
+            body: old.body,
+            state: old.state,
+            confidence: old.confidence,
+            category: old.category,
+            orig_country_code: crate::util::UNRESOLVED_COUNTRY_CODE,
+            resp_country_code: crate::util::UNRESOLVED_COUNTRY_CODE,
+        }
+    }
+}
+
 impl From<HttpEventFields> for HttpEventFieldsStored {
     fn from(value: HttpEventFields) -> Self {
         Self {
@@ -177,6 +258,8 @@ impl From<HttpEventFields> for HttpEventFieldsStored {
             state: value.state,
             confidence: value.confidence,
             category: value.category,
+            orig_country_code: crate::util::UNRESOLVED_COUNTRY_CODE,
+            resp_country_code: crate::util::UNRESOLVED_COUNTRY_CODE,
         }
     }
 }
@@ -186,7 +269,7 @@ impl HttpEventFields {
     pub fn syslog_rfc5424(&self) -> String {
         let start_time_dt = DateTime::from_timestamp_nanos(self.start_time);
         format!(
-            "category={:?} sensor={:?} orig_addr={:?} orig_port={:?} orig_country_code={:?} resp_addr={:?} resp_port={:?} resp_country_code={:?} proto={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} method={:?} host={:?} uri={:?} referer={:?} version={:?} user_agent={:?} request_len={:?} response_len={:?} status_code={:?} status_msg={:?} username={:?} password={:?} cookie={:?} content_encoding={:?} content_type={:?} cache_control={:?} filenames={:?} mime_types={:?} body={:?} state={:?} confidence={:?}",
+            "category={:?} sensor={:?} orig_addr={:?} orig_port={:?} resp_addr={:?} resp_port={:?} proto={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} method={:?} host={:?} uri={:?} referer={:?} version={:?} user_agent={:?} request_len={:?} response_len={:?} status_code={:?} status_msg={:?} username={:?} password={:?} cookie={:?} content_encoding={:?} content_type={:?} cache_control={:?} filenames={:?} mime_types={:?} body={:?} state={:?} confidence={:?}",
             self.category.as_ref().map_or_else(
                 || "Unspecified".to_string(),
                 std::string::ToString::to_string
@@ -194,10 +277,8 @@ impl HttpEventFields {
             self.sensor,
             self.orig_addr.to_string(),
             self.orig_port.to_string(),
-            std::str::from_utf8(&self.orig_country_code).unwrap_or("XX"),
             self.resp_addr.to_string(),
             self.resp_port.to_string(),
-            std::str::from_utf8(&self.resp_country_code).unwrap_or("XX"),
             self.proto.to_string(),
             start_time_dt.to_rfc3339(),
             self.duration.to_string(),
@@ -235,10 +316,8 @@ pub struct RepeatedHttpSessionsFields {
     pub sensor: String,
     pub orig_addr: IpAddr,
     pub orig_port: u16,
-    pub orig_country_code: [u8; 2],
     pub resp_addr: IpAddr,
     pub resp_port: u16,
-    pub resp_country_code: [u8; 2],
     pub proto: u8,
     /// Timestamp in nanoseconds since the Unix epoch (UTC).
     pub start_time: i64,
@@ -248,7 +327,7 @@ pub struct RepeatedHttpSessionsFields {
     pub category: Option<EventCategory>,
 }
 
-pub(crate) type RepeatedHttpSessionsFieldsStored = RepeatedHttpSessionsFieldsStoredV0_42;
+pub(crate) type RepeatedHttpSessionsFieldsStored = RepeatedHttpSessionsFieldsStoredV0_46;
 
 #[derive(Deserialize, Serialize)]
 pub(crate) struct RepeatedHttpSessionsFieldsStoredV0_42 {
@@ -264,6 +343,41 @@ pub(crate) struct RepeatedHttpSessionsFieldsStoredV0_42 {
     pub category: Option<EventCategory>,
 }
 
+#[derive(Deserialize, Serialize)]
+pub(crate) struct RepeatedHttpSessionsFieldsStoredV0_46 {
+    pub sensor: String,
+    pub orig_addr: IpAddr,
+    pub orig_port: u16,
+    pub orig_country_code: [u8; 2],
+    pub resp_addr: IpAddr,
+    pub resp_port: u16,
+    pub resp_country_code: [u8; 2],
+    pub proto: u8,
+    pub start_time: i64,
+    pub end_time: i64,
+    pub confidence: f32,
+    pub category: Option<EventCategory>,
+}
+
+impl From<RepeatedHttpSessionsFieldsStoredV0_42> for RepeatedHttpSessionsFieldsStored {
+    fn from(old: RepeatedHttpSessionsFieldsStoredV0_42) -> Self {
+        Self {
+            sensor: old.sensor,
+            orig_addr: old.orig_addr,
+            orig_port: old.orig_port,
+            resp_addr: old.resp_addr,
+            resp_port: old.resp_port,
+            proto: old.proto,
+            start_time: old.start_time,
+            end_time: old.end_time,
+            confidence: old.confidence,
+            category: old.category,
+            orig_country_code: crate::util::UNRESOLVED_COUNTRY_CODE,
+            resp_country_code: crate::util::UNRESOLVED_COUNTRY_CODE,
+        }
+    }
+}
+
 impl From<RepeatedHttpSessionsFields> for RepeatedHttpSessionsFieldsStored {
     fn from(value: RepeatedHttpSessionsFields) -> Self {
         Self {
@@ -277,6 +391,8 @@ impl From<RepeatedHttpSessionsFields> for RepeatedHttpSessionsFieldsStored {
             end_time: value.end_time,
             confidence: value.confidence,
             category: value.category,
+            orig_country_code: crate::util::UNRESOLVED_COUNTRY_CODE,
+            resp_country_code: crate::util::UNRESOLVED_COUNTRY_CODE,
         }
     }
 }
@@ -287,7 +403,7 @@ impl RepeatedHttpSessionsFields {
         let start_time_dt = DateTime::from_timestamp_nanos(self.start_time);
         let end_time_dt = DateTime::from_timestamp_nanos(self.end_time);
         format!(
-            "category={:?} sensor={:?} orig_addr={:?} orig_port={:?} orig_country_code={:?} resp_addr={:?} resp_port={:?} resp_country_code={:?} proto={:?} start_time={:?} end_time={:?} confidence={:?}",
+            "category={:?} sensor={:?} orig_addr={:?} orig_port={:?} resp_addr={:?} resp_port={:?} proto={:?} start_time={:?} end_time={:?} confidence={:?}",
             self.category.as_ref().map_or_else(
                 || "Unspecified".to_string(),
                 std::string::ToString::to_string
@@ -295,10 +411,8 @@ impl RepeatedHttpSessionsFields {
             self.sensor,
             self.orig_addr.to_string(),
             self.orig_port.to_string(),
-            std::str::from_utf8(&self.orig_country_code).unwrap_or("XX"),
             self.resp_addr.to_string(),
             self.resp_port.to_string(),
-            std::str::from_utf8(&self.resp_country_code).unwrap_or("XX"),
             self.proto.to_string(),
             start_time_dt.to_rfc3339(),
             end_time_dt.to_rfc3339(),
@@ -352,10 +466,10 @@ impl RepeatedHttpSessions {
             sensor: fields.sensor.clone(),
             orig_addr: fields.orig_addr,
             orig_port: fields.orig_port,
-            orig_country_code: *b"XX",
+            orig_country_code: fields.orig_country_code,
             resp_addr: fields.resp_addr,
             resp_port: fields.resp_port,
-            resp_country_code: *b"XX",
+            resp_country_code: fields.resp_country_code,
             proto: fields.proto,
             start_time: DateTime::from_timestamp_nanos(fields.start_time),
             end_time: DateTime::from_timestamp_nanos(fields.end_time),
@@ -442,10 +556,8 @@ pub struct HttpThreatFields {
     pub sensor: String,
     pub orig_addr: IpAddr,
     pub orig_port: u16,
-    pub orig_country_code: [u8; 2],
     pub resp_addr: IpAddr,
     pub resp_port: u16,
-    pub resp_country_code: [u8; 2],
     pub proto: u8,
     /// Timestamp in nanoseconds since the Unix epoch (UTC).
     pub start_time: i64,
@@ -483,7 +595,7 @@ pub struct HttpThreatFields {
     pub category: Option<EventCategory>,
 }
 
-pub(crate) type HttpThreatFieldsStored = HttpThreatFieldsStoredV0_42;
+pub(crate) type HttpThreatFieldsStored = HttpThreatFieldsStoredV0_46;
 
 #[derive(::serde::Deserialize, ::serde::Serialize)]
 pub(crate) struct HttpThreatFieldsStoredV0_42 {
@@ -530,6 +642,102 @@ pub(crate) struct HttpThreatFieldsStoredV0_42 {
     pub category: Option<EventCategory>,
 }
 
+#[derive(Deserialize, Serialize)]
+pub(crate) struct HttpThreatFieldsStoredV0_46 {
+    #[serde(with = "ts_nanoseconds")]
+    pub time: DateTime<Utc>,
+    pub sensor: String,
+    pub orig_addr: IpAddr,
+    pub orig_port: u16,
+    pub orig_country_code: [u8; 2],
+    pub resp_addr: IpAddr,
+    pub resp_port: u16,
+    pub resp_country_code: [u8; 2],
+    pub proto: u8,
+    pub start_time: i64,
+    pub duration: i64,
+    pub orig_pkts: u64,
+    pub resp_pkts: u64,
+    pub orig_l2_bytes: u64,
+    pub resp_l2_bytes: u64,
+    pub method: String,
+    pub host: String,
+    pub uri: String,
+    pub referer: String,
+    pub version: String,
+    pub user_agent: String,
+    pub request_len: usize,
+    pub response_len: usize,
+    pub status_code: u16,
+    pub status_msg: String,
+    pub username: String,
+    pub password: String,
+    pub cookie: String,
+    pub content_encoding: String,
+    pub content_type: String,
+    pub cache_control: String,
+    pub filenames: Vec<String>,
+    pub mime_types: Vec<String>,
+    pub body: Vec<u8>,
+    pub state: String,
+    pub db_name: String,
+    pub rule_id: u32,
+    pub matched_to: String,
+    pub cluster_id: Option<u32>,
+    pub attack_kind: String,
+    pub confidence: f32,
+    pub category: Option<EventCategory>,
+}
+
+impl From<HttpThreatFieldsStoredV0_42> for HttpThreatFieldsStored {
+    fn from(old: HttpThreatFieldsStoredV0_42) -> Self {
+        Self {
+            time: old.time,
+            sensor: old.sensor,
+            orig_addr: old.orig_addr,
+            orig_port: old.orig_port,
+            resp_addr: old.resp_addr,
+            resp_port: old.resp_port,
+            proto: old.proto,
+            start_time: old.start_time,
+            duration: old.duration,
+            orig_pkts: old.orig_pkts,
+            resp_pkts: old.resp_pkts,
+            orig_l2_bytes: old.orig_l2_bytes,
+            resp_l2_bytes: old.resp_l2_bytes,
+            method: old.method,
+            host: old.host,
+            uri: old.uri,
+            referer: old.referer,
+            version: old.version,
+            user_agent: old.user_agent,
+            request_len: old.request_len,
+            response_len: old.response_len,
+            status_code: old.status_code,
+            status_msg: old.status_msg,
+            username: old.username,
+            password: old.password,
+            cookie: old.cookie,
+            content_encoding: old.content_encoding,
+            content_type: old.content_type,
+            cache_control: old.cache_control,
+            filenames: old.filenames,
+            mime_types: old.mime_types,
+            body: old.body,
+            state: old.state,
+            db_name: old.db_name,
+            rule_id: old.rule_id,
+            matched_to: old.matched_to,
+            cluster_id: old.cluster_id,
+            attack_kind: old.attack_kind,
+            confidence: old.confidence,
+            category: old.category,
+            orig_country_code: crate::util::UNRESOLVED_COUNTRY_CODE,
+            resp_country_code: crate::util::UNRESOLVED_COUNTRY_CODE,
+        }
+    }
+}
+
 impl From<HttpThreatFields> for HttpThreatFieldsStored {
     fn from(value: HttpThreatFields) -> Self {
         Self {
@@ -573,6 +781,8 @@ impl From<HttpThreatFields> for HttpThreatFieldsStored {
             attack_kind: value.attack_kind,
             confidence: value.confidence,
             category: value.category,
+            orig_country_code: crate::util::UNRESOLVED_COUNTRY_CODE,
+            resp_country_code: crate::util::UNRESOLVED_COUNTRY_CODE,
         }
     }
 }
@@ -582,7 +792,7 @@ impl HttpThreatFields {
     pub fn syslog_rfc5424(&self) -> String {
         let start_time_dt = DateTime::from_timestamp_nanos(self.start_time);
         format!(
-            "category={:?} sensor={:?} orig_addr={:?} orig_port={:?} orig_country_code={:?} resp_addr={:?} resp_port={:?} resp_country_code={:?} proto={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} method={:?} host={:?} uri={:?} referer={:?} version={:?} user_agent={:?} request_len={:?} response_len={:?} status_code={:?} status_msg={:?} username={:?} password={:?} cookie={:?} content_encoding={:?} content_type={:?} cache_control={:?} filenames={:?} mime_types={:?} body={:?} state={:?} db_name={:?} rule_id={:?} matched_to={:?} cluster_id={:?} attack_kind={:?} confidence={:?}",
+            "category={:?} sensor={:?} orig_addr={:?} orig_port={:?} resp_addr={:?} resp_port={:?} proto={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} method={:?} host={:?} uri={:?} referer={:?} version={:?} user_agent={:?} request_len={:?} response_len={:?} status_code={:?} status_msg={:?} username={:?} password={:?} cookie={:?} content_encoding={:?} content_type={:?} cache_control={:?} filenames={:?} mime_types={:?} body={:?} state={:?} db_name={:?} rule_id={:?} matched_to={:?} cluster_id={:?} attack_kind={:?} confidence={:?}",
             self.category.as_ref().map_or_else(
                 || "Unspecified".to_string(),
                 std::string::ToString::to_string
@@ -590,10 +800,8 @@ impl HttpThreatFields {
             self.sensor,
             self.orig_addr.to_string(),
             self.orig_port.to_string(),
-            std::str::from_utf8(&self.orig_country_code).unwrap_or("XX"),
             self.resp_addr.to_string(),
             self.resp_port.to_string(),
-            std::str::from_utf8(&self.resp_country_code).unwrap_or("XX"),
             self.proto.to_string(),
             start_time_dt.to_rfc3339(),
             self.duration.to_string(),
@@ -752,10 +960,10 @@ impl HttpThreat {
             sensor: fields.sensor,
             orig_addr: fields.orig_addr,
             orig_port: fields.orig_port,
-            orig_country_code: *b"XX",
+            orig_country_code: fields.orig_country_code,
             resp_addr: fields.resp_addr,
             resp_port: fields.resp_port,
-            resp_country_code: *b"XX",
+            resp_country_code: fields.resp_country_code,
             proto: fields.proto,
             start_time: DateTime::from_timestamp_nanos(fields.start_time),
             duration: fields.duration,
@@ -897,10 +1105,8 @@ pub struct DgaFields {
     pub sensor: String,
     pub orig_addr: IpAddr,
     pub orig_port: u16,
-    pub orig_country_code: [u8; 2],
     pub resp_addr: IpAddr,
     pub resp_port: u16,
-    pub resp_country_code: [u8; 2],
     pub proto: u8,
     /// Timestamp in nanoseconds since the Unix epoch (UTC).
     pub start_time: i64,
@@ -933,7 +1139,7 @@ pub struct DgaFields {
     pub category: Option<EventCategory>,
 }
 
-pub(crate) type DgaFieldsStored = DgaFieldsStoredV0_42;
+pub(crate) type DgaFieldsStored = DgaFieldsStoredV0_46;
 
 #[derive(Deserialize, Serialize)]
 pub(crate) struct DgaFieldsStoredV0_42 {
@@ -973,6 +1179,89 @@ pub(crate) struct DgaFieldsStoredV0_42 {
     pub category: Option<EventCategory>,
 }
 
+#[derive(Deserialize, Serialize)]
+pub(crate) struct DgaFieldsStoredV0_46 {
+    pub sensor: String,
+    pub orig_addr: IpAddr,
+    pub orig_port: u16,
+    pub orig_country_code: [u8; 2],
+    pub resp_addr: IpAddr,
+    pub resp_port: u16,
+    pub resp_country_code: [u8; 2],
+    pub proto: u8,
+    pub start_time: i64,
+    pub duration: i64,
+    pub orig_pkts: u64,
+    pub resp_pkts: u64,
+    pub orig_l2_bytes: u64,
+    pub resp_l2_bytes: u64,
+    pub method: String,
+    pub host: String,
+    pub uri: String,
+    pub referer: String,
+    pub version: String,
+    pub user_agent: String,
+    pub request_len: usize,
+    pub response_len: usize,
+    pub status_code: u16,
+    pub status_msg: String,
+    pub username: String,
+    pub password: String,
+    pub cookie: String,
+    pub content_encoding: String,
+    pub content_type: String,
+    pub cache_control: String,
+    pub filenames: Vec<String>,
+    pub mime_types: Vec<String>,
+    pub body: Vec<u8>,
+    pub state: String,
+    pub confidence: f32,
+    pub category: Option<EventCategory>,
+}
+
+impl From<DgaFieldsStoredV0_42> for DgaFieldsStored {
+    fn from(old: DgaFieldsStoredV0_42) -> Self {
+        Self {
+            sensor: old.sensor,
+            orig_addr: old.orig_addr,
+            orig_port: old.orig_port,
+            resp_addr: old.resp_addr,
+            resp_port: old.resp_port,
+            proto: old.proto,
+            start_time: old.start_time,
+            duration: old.duration,
+            orig_pkts: old.orig_pkts,
+            resp_pkts: old.resp_pkts,
+            orig_l2_bytes: old.orig_l2_bytes,
+            resp_l2_bytes: old.resp_l2_bytes,
+            method: old.method,
+            host: old.host,
+            uri: old.uri,
+            referer: old.referer,
+            version: old.version,
+            user_agent: old.user_agent,
+            request_len: old.request_len,
+            response_len: old.response_len,
+            status_code: old.status_code,
+            status_msg: old.status_msg,
+            username: old.username,
+            password: old.password,
+            cookie: old.cookie,
+            content_encoding: old.content_encoding,
+            content_type: old.content_type,
+            cache_control: old.cache_control,
+            filenames: old.filenames,
+            mime_types: old.mime_types,
+            body: old.body,
+            state: old.state,
+            confidence: old.confidence,
+            category: old.category,
+            orig_country_code: crate::util::UNRESOLVED_COUNTRY_CODE,
+            resp_country_code: crate::util::UNRESOLVED_COUNTRY_CODE,
+        }
+    }
+}
+
 impl From<DgaFields> for DgaFieldsStored {
     fn from(value: DgaFields) -> Self {
         Self {
@@ -1010,6 +1299,8 @@ impl From<DgaFields> for DgaFieldsStored {
             state: value.state,
             confidence: value.confidence,
             category: value.category,
+            orig_country_code: crate::util::UNRESOLVED_COUNTRY_CODE,
+            resp_country_code: crate::util::UNRESOLVED_COUNTRY_CODE,
         }
     }
 }
@@ -1021,7 +1312,7 @@ impl DgaFields {
     pub fn syslog_rfc5424(&self) -> String {
         let start_time_dt = DateTime::from_timestamp_nanos(self.start_time);
         format!(
-            "category={:?} sensor={:?} orig_addr={:?} orig_port={:?} orig_country_code={:?} resp_addr={:?} resp_port={:?} resp_country_code={:?} proto={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} method={:?} host={:?} uri={:?} referer={:?} version={:?} user_agent={:?} request_len={:?} response_len={:?} status_code={:?} status_msg={:?} username={:?} password={:?} cookie={:?} content_encoding={:?} content_type={:?} cache_control={:?} filenames={:?} mime_types={:?} body={:?} state={:?} confidence={:?}",
+            "category={:?} sensor={:?} orig_addr={:?} orig_port={:?} resp_addr={:?} resp_port={:?} proto={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} method={:?} host={:?} uri={:?} referer={:?} version={:?} user_agent={:?} request_len={:?} response_len={:?} status_code={:?} status_msg={:?} username={:?} password={:?} cookie={:?} content_encoding={:?} content_type={:?} cache_control={:?} filenames={:?} mime_types={:?} body={:?} state={:?} confidence={:?}",
             self.category.as_ref().map_or_else(
                 || "Unspecified".to_string(),
                 std::string::ToString::to_string
@@ -1029,10 +1320,8 @@ impl DgaFields {
             self.sensor,
             self.orig_addr.to_string(),
             self.orig_port.to_string(),
-            std::str::from_utf8(&self.orig_country_code).unwrap_or("XX"),
             self.resp_addr.to_string(),
             self.resp_port.to_string(),
-            std::str::from_utf8(&self.resp_country_code).unwrap_or("XX"),
             self.proto.to_string(),
             start_time_dt.to_rfc3339(),
             self.duration.to_string(),
@@ -1160,10 +1449,10 @@ impl DomainGenerationAlgorithm {
             sensor: fields.sensor,
             orig_addr: fields.orig_addr,
             orig_port: fields.orig_port,
-            orig_country_code: *b"XX",
+            orig_country_code: fields.orig_country_code,
             resp_addr: fields.resp_addr,
             resp_port: fields.resp_port,
-            resp_country_code: *b"XX",
+            resp_country_code: fields.resp_country_code,
             proto: fields.proto,
             start_time: DateTime::from_timestamp_nanos(fields.start_time),
             duration: fields.duration,
@@ -1363,10 +1652,10 @@ impl NonBrowser {
             sensor: fields.sensor.clone(),
             orig_addr: fields.orig_addr,
             orig_port: fields.orig_port,
-            orig_country_code: *b"XX",
+            orig_country_code: fields.orig_country_code,
             resp_addr: fields.resp_addr,
             resp_port: fields.resp_port,
-            resp_country_code: *b"XX",
+            resp_country_code: fields.resp_country_code,
             proto: fields.proto,
             start_time: DateTime::from_timestamp_nanos(fields.start_time),
             duration: fields.duration,
@@ -1570,10 +1859,10 @@ impl BlocklistHttp {
             sensor: fields.sensor,
             orig_addr: fields.orig_addr,
             orig_port: fields.orig_port,
-            orig_country_code: *b"XX",
+            orig_country_code: fields.orig_country_code,
             resp_addr: fields.resp_addr,
             resp_port: fields.resp_port,
-            resp_country_code: *b"XX",
+            resp_country_code: fields.resp_country_code,
             proto: fields.proto,
             start_time: DateTime::from_timestamp_nanos(fields.start_time),
             duration: fields.duration,

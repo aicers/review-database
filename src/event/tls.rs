@@ -73,10 +73,8 @@ pub struct BlocklistTlsFields {
     pub sensor: String,
     pub orig_addr: IpAddr,
     pub orig_port: u16,
-    pub orig_country_code: [u8; 2],
     pub resp_addr: IpAddr,
     pub resp_port: u16,
-    pub resp_country_code: [u8; 2],
     pub proto: u8,
     /// Timestamp in nanoseconds since the Unix epoch (UTC).
     pub start_time: i64,
@@ -110,7 +108,7 @@ pub struct BlocklistTlsFields {
     pub category: Option<EventCategory>,
 }
 
-pub(crate) type BlocklistTlsFieldsStored = BlocklistTlsFieldsStoredV0_42;
+pub(crate) type BlocklistTlsFieldsStored = BlocklistTlsFieldsStoredV0_46;
 
 #[derive(Deserialize, Serialize)]
 pub(crate) struct BlocklistTlsFieldsStoredV0_42 {
@@ -151,6 +149,91 @@ pub(crate) struct BlocklistTlsFieldsStoredV0_42 {
     pub category: Option<EventCategory>,
 }
 
+#[derive(Deserialize, Serialize)]
+pub(crate) struct BlocklistTlsFieldsStoredV0_46 {
+    pub sensor: String,
+    pub orig_addr: IpAddr,
+    pub orig_port: u16,
+    pub orig_country_code: [u8; 2],
+    pub resp_addr: IpAddr,
+    pub resp_port: u16,
+    pub resp_country_code: [u8; 2],
+    pub proto: u8,
+    pub start_time: i64,
+    pub duration: i64,
+    pub orig_pkts: u64,
+    pub resp_pkts: u64,
+    pub orig_l2_bytes: u64,
+    pub resp_l2_bytes: u64,
+    pub server_name: String,
+    pub alpn_protocol: String,
+    pub ja3: String,
+    pub version: String,
+    pub client_cipher_suites: Vec<u16>,
+    pub client_extensions: Vec<u16>,
+    pub cipher: u16,
+    pub extensions: Vec<u16>,
+    pub ja3s: String,
+    pub serial: String,
+    pub subject_country: String,
+    pub subject_org_name: String,
+    pub subject_common_name: String,
+    pub validity_not_before: i64,
+    pub validity_not_after: i64,
+    pub subject_alt_name: String,
+    pub issuer_country: String,
+    pub issuer_org_name: String,
+    pub issuer_org_unit_name: String,
+    pub issuer_common_name: String,
+    pub last_alert: u8,
+    pub confidence: f32,
+    pub category: Option<EventCategory>,
+}
+
+impl From<BlocklistTlsFieldsStoredV0_42> for BlocklistTlsFieldsStored {
+    fn from(old: BlocklistTlsFieldsStoredV0_42) -> Self {
+        Self {
+            sensor: old.sensor,
+            orig_addr: old.orig_addr,
+            orig_port: old.orig_port,
+            resp_addr: old.resp_addr,
+            resp_port: old.resp_port,
+            proto: old.proto,
+            start_time: old.start_time,
+            duration: old.duration,
+            orig_pkts: old.orig_pkts,
+            resp_pkts: old.resp_pkts,
+            orig_l2_bytes: old.orig_l2_bytes,
+            resp_l2_bytes: old.resp_l2_bytes,
+            server_name: old.server_name,
+            alpn_protocol: old.alpn_protocol,
+            ja3: old.ja3,
+            version: old.version,
+            client_cipher_suites: old.client_cipher_suites,
+            client_extensions: old.client_extensions,
+            cipher: old.cipher,
+            extensions: old.extensions,
+            ja3s: old.ja3s,
+            serial: old.serial,
+            subject_country: old.subject_country,
+            subject_org_name: old.subject_org_name,
+            subject_common_name: old.subject_common_name,
+            validity_not_before: old.validity_not_before,
+            validity_not_after: old.validity_not_after,
+            subject_alt_name: old.subject_alt_name,
+            issuer_country: old.issuer_country,
+            issuer_org_name: old.issuer_org_name,
+            issuer_org_unit_name: old.issuer_org_unit_name,
+            issuer_common_name: old.issuer_common_name,
+            last_alert: old.last_alert,
+            confidence: old.confidence,
+            category: old.category,
+            orig_country_code: crate::util::UNRESOLVED_COUNTRY_CODE,
+            resp_country_code: crate::util::UNRESOLVED_COUNTRY_CODE,
+        }
+    }
+}
+
 impl From<BlocklistTlsFields> for BlocklistTlsFieldsStored {
     fn from(value: BlocklistTlsFields) -> Self {
         Self {
@@ -189,6 +272,8 @@ impl From<BlocklistTlsFields> for BlocklistTlsFieldsStored {
             last_alert: value.last_alert,
             confidence: value.confidence,
             category: value.category,
+            orig_country_code: crate::util::UNRESOLVED_COUNTRY_CODE,
+            resp_country_code: crate::util::UNRESOLVED_COUNTRY_CODE,
         }
     }
 }
@@ -198,7 +283,7 @@ impl BlocklistTlsFields {
     pub fn syslog_rfc5424(&self) -> String {
         let start_time_dt = DateTime::from_timestamp_nanos(self.start_time);
         format!(
-            "category={:?} sensor={:?} orig_addr={:?} orig_port={:?} orig_country_code={:?} resp_addr={:?} resp_port={:?} resp_country_code={:?} proto={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} server_name={:?} alpn_protocol={:?} ja3={:?} version={:?} client_cipher_suites={:?} client_extensions={:?} cipher={:?} extensions={:?} ja3s={:?} serial={:?} subject_country={:?} subject_org_name={:?} subject_common_name={:?} validity_not_before={:?} validity_not_after={:?} subject_alt_name={:?} issuer_country={:?} issuer_org_name={:?} issuer_org_unit_name={:?} issuer_common_name={:?} last_alert={:?} confidence={:?}",
+            "category={:?} sensor={:?} orig_addr={:?} orig_port={:?} resp_addr={:?} resp_port={:?} proto={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} server_name={:?} alpn_protocol={:?} ja3={:?} version={:?} client_cipher_suites={:?} client_extensions={:?} cipher={:?} extensions={:?} ja3s={:?} serial={:?} subject_country={:?} subject_org_name={:?} subject_common_name={:?} validity_not_before={:?} validity_not_after={:?} subject_alt_name={:?} issuer_country={:?} issuer_org_name={:?} issuer_org_unit_name={:?} issuer_common_name={:?} last_alert={:?} confidence={:?}",
             self.category.as_ref().map_or_else(
                 || "Unspecified".to_string(),
                 std::string::ToString::to_string
@@ -206,10 +291,8 @@ impl BlocklistTlsFields {
             self.sensor,
             self.orig_addr.to_string(),
             self.orig_port.to_string(),
-            std::str::from_utf8(&self.orig_country_code).unwrap_or("XX"),
             self.resp_addr.to_string(),
             self.resp_port.to_string(),
-            std::str::from_utf8(&self.resp_country_code).unwrap_or("XX"),
             self.proto.to_string(),
             start_time_dt.to_rfc3339(),
             self.duration.to_string(),
@@ -339,10 +422,10 @@ impl BlocklistTls {
             sensor: fields.sensor,
             orig_addr: fields.orig_addr,
             orig_port: fields.orig_port,
-            orig_country_code: *b"XX",
+            orig_country_code: fields.orig_country_code,
             resp_addr: fields.resp_addr,
             resp_port: fields.resp_port,
-            resp_country_code: *b"XX",
+            resp_country_code: fields.resp_country_code,
             proto: fields.proto,
             start_time: DateTime::from_timestamp_nanos(fields.start_time),
             duration: fields.duration,
@@ -530,10 +613,10 @@ impl SuspiciousTlsTraffic {
             sensor: fields.sensor,
             orig_addr: fields.orig_addr,
             orig_port: fields.orig_port,
-            orig_country_code: *b"XX",
+            orig_country_code: fields.orig_country_code,
             resp_addr: fields.resp_addr,
             resp_port: fields.resp_port,
-            resp_country_code: *b"XX",
+            resp_country_code: fields.resp_country_code,
             proto: fields.proto,
             start_time: DateTime::from_timestamp_nanos(fields.start_time),
             duration: fields.duration,

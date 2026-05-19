@@ -40,12 +40,8 @@ pub struct NetworkThreatFields {
     pub sensor: String,
     pub orig_addr: IpAddr,
     pub orig_port: u16,
-    #[serde(default)]
-    pub orig_country_code: [u8; 2],
     pub resp_addr: IpAddr,
     pub resp_port: u16,
-    #[serde(default)]
-    pub resp_country_code: [u8; 2],
     pub proto: u8,
     pub service: String,
     #[serde(with = "ts_nanoseconds")]
@@ -66,8 +62,10 @@ pub struct NetworkThreatFields {
     pub triage_scores: Option<Vec<TriageScore>>,
 }
 
+pub(crate) type NetworkThreatFieldsStored = NetworkThreatFieldsStoredV0_46;
+
 #[derive(Deserialize, Serialize)]
-pub struct NetworkThreatFieldsStored {
+pub(crate) struct NetworkThreatFieldsStoredV0_45 {
     #[serde(with = "ts_nanoseconds")]
     pub time: DateTime<Utc>,
     pub sensor: String,
@@ -95,6 +93,37 @@ pub struct NetworkThreatFieldsStored {
     pub triage_scores: Option<Vec<TriageScore>>,
 }
 
+#[derive(Deserialize, Serialize)]
+pub(crate) struct NetworkThreatFieldsStoredV0_46 {
+    #[serde(with = "ts_nanoseconds")]
+    pub time: DateTime<Utc>,
+    pub sensor: String,
+    pub orig_addr: IpAddr,
+    pub orig_port: u16,
+    pub orig_country_code: [u8; 2],
+    pub resp_addr: IpAddr,
+    pub resp_port: u16,
+    pub resp_country_code: [u8; 2],
+    pub proto: u8,
+    pub service: String,
+    #[serde(with = "ts_nanoseconds")]
+    pub start_time: DateTime<Utc>,
+    pub duration: i64,
+    pub orig_pkts: u64,
+    pub resp_pkts: u64,
+    pub orig_l2_bytes: u64,
+    pub resp_l2_bytes: u64,
+    pub content: String,
+    pub db_name: String,
+    pub rule_id: u32,
+    pub matched_to: String,
+    pub cluster_id: Option<u32>,
+    pub attack_kind: String,
+    pub confidence: f32,
+    pub category: Option<EventCategory>,
+    pub triage_scores: Option<Vec<TriageScore>>,
+}
+
 impl From<NetworkThreatFields> for NetworkThreatFieldsStored {
     fn from(value: NetworkThreatFields) -> Self {
         Self {
@@ -102,8 +131,10 @@ impl From<NetworkThreatFields> for NetworkThreatFieldsStored {
             sensor: value.sensor,
             orig_addr: value.orig_addr,
             orig_port: value.orig_port,
+            orig_country_code: crate::util::UNRESOLVED_COUNTRY_CODE,
             resp_addr: value.resp_addr,
             resp_port: value.resp_port,
+            resp_country_code: crate::util::UNRESOLVED_COUNTRY_CODE,
             proto: value.proto,
             service: value.service,
             start_time: value.start_time,
@@ -125,11 +156,43 @@ impl From<NetworkThreatFields> for NetworkThreatFieldsStored {
     }
 }
 
+impl From<NetworkThreatFieldsStoredV0_45> for NetworkThreatFieldsStored {
+    fn from(old: NetworkThreatFieldsStoredV0_45) -> Self {
+        Self {
+            time: old.time,
+            sensor: old.sensor,
+            orig_addr: old.orig_addr,
+            orig_port: old.orig_port,
+            orig_country_code: crate::util::UNRESOLVED_COUNTRY_CODE,
+            resp_addr: old.resp_addr,
+            resp_port: old.resp_port,
+            resp_country_code: crate::util::UNRESOLVED_COUNTRY_CODE,
+            proto: old.proto,
+            service: old.service,
+            start_time: old.start_time,
+            duration: old.duration,
+            orig_pkts: old.orig_pkts,
+            resp_pkts: old.resp_pkts,
+            orig_l2_bytes: old.orig_l2_bytes,
+            resp_l2_bytes: old.resp_l2_bytes,
+            content: old.content,
+            db_name: old.db_name,
+            rule_id: old.rule_id,
+            matched_to: old.matched_to,
+            cluster_id: old.cluster_id,
+            attack_kind: old.attack_kind,
+            confidence: old.confidence,
+            category: old.category,
+            triage_scores: old.triage_scores,
+        }
+    }
+}
+
 impl NetworkThreatFields {
     #[must_use]
     pub fn syslog_rfc5424(&self) -> String {
         format!(
-            "category={:?} sensor={:?} orig_addr={:?} orig_port={:?} orig_country_code={:?} resp_addr={:?} resp_port={:?} resp_country_code={:?} proto={:?} service={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} content={:?} db_name={:?} rule_id={:?} matched_to={:?} cluster_id={:?} attack_kind={:?} confidence={:?}",
+            "category={:?} sensor={:?} orig_addr={:?} orig_port={:?} resp_addr={:?} resp_port={:?} proto={:?} service={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} content={:?} db_name={:?} rule_id={:?} matched_to={:?} cluster_id={:?} attack_kind={:?} confidence={:?}",
             self.category.as_ref().map_or_else(
                 || "Unspecified".to_string(),
                 std::string::ToString::to_string
@@ -137,10 +200,8 @@ impl NetworkThreatFields {
             self.sensor,
             self.orig_addr.to_string(),
             self.orig_port.to_string(),
-            std::str::from_utf8(&self.orig_country_code).unwrap_or("XX"),
             self.resp_addr.to_string(),
             self.resp_port.to_string(),
-            std::str::from_utf8(&self.resp_country_code).unwrap_or("XX"),
             self.proto.to_string(),
             self.service,
             self.start_time.to_rfc3339(),
@@ -195,10 +256,10 @@ impl NetworkThreat {
             sensor: fields.sensor,
             orig_addr: fields.orig_addr,
             orig_port: fields.orig_port,
-            orig_country_code: *b"XX",
+            orig_country_code: fields.orig_country_code,
             resp_addr: fields.resp_addr,
             resp_port: fields.resp_port,
-            resp_country_code: *b"XX",
+            resp_country_code: fields.resp_country_code,
             proto: fields.proto,
             service: fields.service,
             start_time: fields.start_time,

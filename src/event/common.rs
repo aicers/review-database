@@ -1709,6 +1709,8 @@ mod tests {
             chaddr: vec![1, 2, 3, 4, 5, 6],
             sname: "server_name".to_string(),
             file: "boot_file_name".to_string(),
+            orig_country_code: crate::util::UNRESOLVED_COUNTRY_CODE,
+            resp_country_code: crate::util::UNRESOLVED_COUNTRY_CODE,
             confidence: 1.0,
             category: Some(EventCategory::InitialAccess),
         }
@@ -1736,6 +1738,8 @@ mod tests {
             resp_pkts: 1,
             orig_l2_bytes: 122,
             resp_l2_bytes: 122,
+            orig_country_code: crate::util::UNRESOLVED_COUNTRY_CODE,
+            resp_country_code: crate::util::UNRESOLVED_COUNTRY_CODE,
             confidence: 1.0,
             category: Some(EventCategory::InitialAccess),
         }
@@ -1761,6 +1765,8 @@ mod tests {
             resp_l2_bytes: 0,
             context: Vec::new(),
             request: vec!["svcctl".to_string()],
+            orig_country_code: crate::util::UNRESOLVED_COUNTRY_CODE,
+            resp_country_code: crate::util::UNRESOLVED_COUNTRY_CODE,
             confidence: 1.0,
             category: Some(EventCategory::InitialAccess),
         }
@@ -1804,6 +1810,8 @@ mod tests {
             client_id_type: 1,
             client_id: vec![7, 8, 9],
             options: vec![],
+            orig_country_code: crate::util::UNRESOLVED_COUNTRY_CODE,
+            resp_country_code: crate::util::UNRESOLVED_COUNTRY_CODE,
             confidence: 1.0,
             category: Some(EventCategory::InitialAccess),
         }
@@ -1839,6 +1847,8 @@ mod tests {
             rd_flag: false,
             ra_flag: true,
             ttl: vec![120; 5],
+            orig_country_code: crate::util::UNRESOLVED_COUNTRY_CODE,
+            resp_country_code: crate::util::UNRESOLVED_COUNTRY_CODE,
             confidence: 1.0,
             category: Some(EventCategory::InitialAccess),
         }
@@ -1882,6 +1892,8 @@ mod tests {
             mime_types: vec!["b1".to_string(), "b2".to_string()],
             body: "12345678901234567890".to_string().into_bytes(),
             state: String::new(),
+            orig_country_code: crate::util::UNRESOLVED_COUNTRY_CODE,
+            resp_country_code: crate::util::UNRESOLVED_COUNTRY_CODE,
             confidence: 1.0,
             category: Some(EventCategory::InitialAccess),
         }
@@ -1914,6 +1926,8 @@ mod tests {
             realm: "EXAMPLE.COM".to_string(),
             sname_type: 1,
             sname: vec!["krbtgt/EXAMPLE.COM".to_string()],
+            orig_country_code: crate::util::UNRESOLVED_COUNTRY_CODE,
+            resp_country_code: crate::util::UNRESOLVED_COUNTRY_CODE,
             confidence: 1.0,
             category: Some(EventCategory::InitialAccess),
         }
@@ -1943,6 +1957,8 @@ mod tests {
             connack_reason: 0,
             subscribe: vec!["topic".to_string()],
             suback_reason: "error".to_string().into_bytes(),
+            orig_country_code: crate::util::UNRESOLVED_COUNTRY_CODE,
+            resp_country_code: crate::util::UNRESOLVED_COUNTRY_CODE,
             confidence: 1.0,
             category: Some(EventCategory::InitialAccess),
         }
@@ -1968,6 +1984,8 @@ mod tests {
             resp_l2_bytes: 0,
             read_files: vec!["/etc/passwd".to_string()],
             write_files: vec!["/etc/shadow".to_string()],
+            orig_country_code: crate::util::UNRESOLVED_COUNTRY_CODE,
+            resp_country_code: crate::util::UNRESOLVED_COUNTRY_CODE,
             confidence: 1.0,
             category: Some(EventCategory::InitialAccess),
         }
@@ -1996,6 +2014,8 @@ mod tests {
             hostname: "host1".to_string(),
             domainname: "domain1".to_string(),
             success: "true".to_string(),
+            orig_country_code: crate::util::UNRESOLVED_COUNTRY_CODE,
+            resp_country_code: crate::util::UNRESOLVED_COUNTRY_CODE,
             confidence: 1.0,
             category: Some(EventCategory::InitialAccess),
         }
@@ -2020,6 +2040,8 @@ mod tests {
             orig_l2_bytes: 0,
             resp_l2_bytes: 0,
             cookie: "cookie".to_string(),
+            orig_country_code: crate::util::UNRESOLVED_COUNTRY_CODE,
+            resp_country_code: crate::util::UNRESOLVED_COUNTRY_CODE,
             confidence: 1.0,
             category: Some(EventCategory::InitialAccess),
         }
@@ -2054,6 +2076,8 @@ mod tests {
             access_time: 200,
             write_time: 300,
             change_time: 400,
+            orig_country_code: crate::util::UNRESOLVED_COUNTRY_CODE,
+            resp_country_code: crate::util::UNRESOLVED_COUNTRY_CODE,
             confidence: 1.0,
             category: Some(EventCategory::InitialAccess),
         }
@@ -2084,6 +2108,8 @@ mod tests {
             subject: "subject".to_string(),
             agent: "agent".to_string(),
             state: "state".to_string(),
+            orig_country_code: crate::util::UNRESOLVED_COUNTRY_CODE,
+            resp_country_code: crate::util::UNRESOLVED_COUNTRY_CODE,
             confidence: 1.0,
             category: Some(EventCategory::InitialAccess),
         }
@@ -2120,6 +2146,8 @@ mod tests {
             hassh_server: "hassh_server".to_string(),
             client_shka: "client_shka".to_string(),
             server_shka: "server_shka".to_string(),
+            orig_country_code: crate::util::UNRESOLVED_COUNTRY_CODE,
+            resp_country_code: crate::util::UNRESOLVED_COUNTRY_CODE,
             confidence: 1.0,
             category: Some(EventCategory::InitialAccess),
         }
@@ -2164,6 +2192,8 @@ mod tests {
             issuer_org_unit_name: "unit".to_string(),
             issuer_common_name: "common".to_string(),
             last_alert: 1,
+            orig_country_code: crate::util::UNRESOLVED_COUNTRY_CODE,
+            resp_country_code: crate::util::UNRESOLVED_COUNTRY_CODE,
             confidence: 0.6,
             category: Some(EventCategory::InitialAccess),
         }
@@ -2194,6 +2224,8 @@ mod tests {
             diagnostic_message: vec!["msg".to_string()],
             object: vec!["object".to_string()],
             argument: vec!["argument".to_string()],
+            orig_country_code: crate::util::UNRESOLVED_COUNTRY_CODE,
+            resp_country_code: crate::util::UNRESOLVED_COUNTRY_CODE,
             confidence: 1.0,
             category: Some(EventCategory::LateralMovement),
         }
@@ -2235,6 +2267,8 @@ mod tests {
             user: "user1".to_string(),
             password: "password".to_string(),
             commands: vec![command],
+            orig_country_code: crate::util::UNRESOLVED_COUNTRY_CODE,
+            resp_country_code: crate::util::UNRESOLVED_COUNTRY_CODE,
             confidence: 1.0,
             category: Some(EventCategory::LateralMovement),
         }
@@ -2257,6 +2291,8 @@ mod tests {
                 .timestamp_nanos_opt()
                 .unwrap(),
             proto: 6,
+            orig_country_code: crate::util::UNRESOLVED_COUNTRY_CODE,
+            resp_country_code: crate::util::UNRESOLVED_COUNTRY_CODE,
             confidence: 0.3,
             category: Some(EventCategory::Reconnaissance),
         }
@@ -2269,6 +2305,11 @@ mod tests {
             resp_addrs: vec![
                 IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
                 IpAddr::V4(Ipv4Addr::new(127, 0, 0, 3)),
+            ],
+            orig_country_code: crate::util::UNRESOLVED_COUNTRY_CODE,
+            resp_country_codes: vec![
+                crate::util::UNRESOLVED_COUNTRY_CODE,
+                crate::util::UNRESOLVED_COUNTRY_CODE,
             ],
             resp_port: 80,
             start_time: Utc
@@ -2294,6 +2335,11 @@ mod tests {
                 IpAddr::V4(Ipv4Addr::LOCALHOST),
                 IpAddr::V4(Ipv4Addr::new(127, 0, 0, 3)),
             ],
+            orig_country_codes: vec![
+                crate::util::UNRESOLVED_COUNTRY_CODE,
+                crate::util::UNRESOLVED_COUNTRY_CODE,
+            ],
+            resp_country_code: crate::util::UNRESOLVED_COUNTRY_CODE,
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
             start_time: Utc
                 .with_ymd_and_hms(1970, 1, 1, 0, 1, 1)
@@ -2342,6 +2388,8 @@ mod tests {
             ra_flag: true,
             ttl: vec![120; 5],
             coins: vec!["bitcoin".to_string(), "monero".to_string()],
+            orig_country_code: crate::util::UNRESOLVED_COUNTRY_CODE,
+            resp_country_code: crate::util::UNRESOLVED_COUNTRY_CODE,
             confidence: 1.0,
             category: Some(EventCategory::CommandAndControl),
         }
@@ -2366,6 +2414,8 @@ mod tests {
                 .timestamp_nanos_opt()
                 .unwrap(),
             is_internal: true,
+            orig_country_code: crate::util::UNRESOLVED_COUNTRY_CODE,
+            resp_country_code: crate::util::UNRESOLVED_COUNTRY_CODE,
             confidence: 0.3,
             category: Some(EventCategory::CredentialAccess),
         }
@@ -2382,6 +2432,8 @@ mod tests {
             proto: 6,
             start_time: now,
             end_time: now,
+            orig_country_code: crate::util::UNRESOLVED_COUNTRY_CODE,
+            resp_country_code: crate::util::UNRESOLVED_COUNTRY_CODE,
             confidence: 0.3,
             category: Some(EventCategory::Exfiltration),
         }
@@ -2425,6 +2477,8 @@ mod tests {
             mime_types: vec!["b1".to_string(), "b2".to_string()],
             body: "12345678901234567890".to_string().into_bytes(),
             state: String::new(),
+            orig_country_code: crate::util::UNRESOLVED_COUNTRY_CODE,
+            resp_country_code: crate::util::UNRESOLVED_COUNTRY_CODE,
             confidence: 0.8,
             category: Some(EventCategory::CommandAndControl),
         }
@@ -2468,6 +2522,8 @@ mod tests {
             mime_types: vec!["b1".to_string(), "b2".to_string()],
             body: "12345678901234567890".to_string().into_bytes(),
             state: String::new(),
+            orig_country_code: crate::util::UNRESOLVED_COUNTRY_CODE,
+            resp_country_code: crate::util::UNRESOLVED_COUNTRY_CODE,
             confidence: 1.0,
             category: Some(EventCategory::CommandAndControl),
         }
@@ -2494,6 +2550,8 @@ mod tests {
                 .unwrap()
                 .timestamp_nanos_opt()
                 .unwrap(),
+            orig_country_code: crate::util::UNRESOLVED_COUNTRY_CODE,
+            resp_country_code: crate::util::UNRESOLVED_COUNTRY_CODE,
             confidence: 0.3,
             category: Some(EventCategory::CredentialAccess),
         }
@@ -2506,6 +2564,11 @@ mod tests {
             resp_addrs: vec![
                 IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
                 IpAddr::V4(Ipv4Addr::new(127, 0, 0, 3)),
+            ],
+            orig_country_code: crate::util::UNRESOLVED_COUNTRY_CODE,
+            resp_country_codes: vec![
+                crate::util::UNRESOLVED_COUNTRY_CODE,
+                crate::util::UNRESOLVED_COUNTRY_CODE,
             ],
             start_time: Utc
                 .with_ymd_and_hms(1970, 1, 1, 0, 1, 1)
@@ -2553,6 +2616,8 @@ mod tests {
             rd_flag: false,
             ra_flag: false,
             ttl: vec![1, 3, 5, 7],
+            orig_country_code: crate::util::UNRESOLVED_COUNTRY_CODE,
+            resp_country_code: crate::util::UNRESOLVED_COUNTRY_CODE,
             confidence: 0.8,
             category: Some(EventCategory::CommandAndControl),
         }
@@ -2672,6 +2737,8 @@ mod tests {
             cluster_id: Some(1111),
             matched_to: "match".to_string(),
             attack_kind: "attack".to_string(),
+            orig_country_code: crate::util::UNRESOLVED_COUNTRY_CODE,
+            resp_country_code: crate::util::UNRESOLVED_COUNTRY_CODE,
             confidence: 0.8,
             category: Some(EventCategory::Reconnaissance),
         }
@@ -2708,6 +2775,8 @@ mod tests {
             nas_id: vec![],
             nas_port_type: 0,
             message: "msg".to_string(),
+            orig_country_code: crate::util::UNRESOLVED_COUNTRY_CODE,
+            resp_country_code: crate::util::UNRESOLVED_COUNTRY_CODE,
             confidence: 1.0,
             category: Some(EventCategory::InitialAccess),
         }
@@ -2743,6 +2812,8 @@ mod tests {
             resp_bytes: 0,
             query_body: vec![],
             resp_body: vec![],
+            orig_country_code: crate::util::UNRESOLVED_COUNTRY_CODE,
+            resp_country_code: crate::util::UNRESOLVED_COUNTRY_CODE,
             confidence: 1.0,
             category: Some(EventCategory::InitialAccess),
         }
@@ -2762,6 +2833,7 @@ mod tests {
                 .timestamp_nanos_opt()
                 .unwrap(),
             destination_ips: vec![IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1))],
+            resp_country_codes: vec![crate::util::UNRESOLVED_COUNTRY_CODE],
             count: 1,
             expected_mean: 0.0,
             std_deviation: 0.0,

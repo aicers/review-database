@@ -17,7 +17,17 @@ use tracing::{info, warn};
 use crate::{
     AllowNetwork, BlockNetwork, Customer,
     event::{
-        BlocklistDceRpcFieldsStored, BlocklistDhcpFieldsStored, EventKind, HttpThreatFieldsStored,
+        BlocklistBootpFieldsStored, BlocklistConnFieldsStored, BlocklistDceRpcFieldsStored,
+        BlocklistDhcpFieldsStored, BlocklistDnsFieldsStored, BlocklistKerberosFieldsStored,
+        BlocklistMalformedDnsFieldsStored, BlocklistMqttFieldsStored, BlocklistNfsFieldsStored,
+        BlocklistNtlmFieldsStored, BlocklistRadiusFieldsStored, BlocklistRdpFieldsStored,
+        BlocklistSmbFieldsStored, BlocklistSmtpFieldsStored, BlocklistSshFieldsStored,
+        BlocklistTlsFieldsStored, CryptocurrencyMiningPoolFieldsStored, DgaFieldsStored,
+        DnsEventFieldsStored, EventKind, ExternalDdosFieldsStored, FtpBruteForceFieldsStored,
+        FtpEventFieldsStored, HttpEventFieldsStored, HttpThreatFieldsStored,
+        LdapBruteForceFieldsStored, LdapEventFieldsStored, MultiHostPortScanFieldsStored,
+        NetworkThreatFieldsStored, PortScanFieldsStored, RdpBruteForceFieldsStored,
+        RepeatedHttpSessionsFieldsStored, UnusualDestinationPatternFieldsStored,
     },
     migration::migration_structures::{
         AllowNetworkV0_42, BlockNetworkV0_42, BlocklistDceRpcFieldsStoredV0_42,
@@ -107,7 +117,7 @@ use crate::{
 /// // release that involves database format change) to 3.5.0, including
 /// // all alpha changes finalized in 3.5.0.
 /// ```
-const COMPATIBLE_VERSION_REQ: &str = ">=0.45.0,<0.46.0-alpha";
+const COMPATIBLE_VERSION_REQ: &str = ">=0.46.0-alpha, <0.47.0-alpha";
 
 /// Migrates the data directory to the up-to-date format if necessary.
 ///
@@ -184,6 +194,11 @@ pub fn migrate_data_dir<P: AsRef<Path>>(
             VersionReq::parse(">=0.44.0,<0.45.0")?,
             Version::parse("0.45.0")?,
             migrate_0_44_to_0_45,
+        ),
+        (
+            VersionReq::parse(">=0.45.0,<0.46.0")?,
+            Version::parse("0.46.0")?,
+            migrate_0_45_to_0_46,
         ),
     ];
 
@@ -273,8 +288,8 @@ fn migrate_0_42_to_0_43(
 
 fn migrate_0_43_to_0_44(
     data_dir: &Path,
-    backup_dir: &Path,
-    locator: Option<&ip2location::DB>,
+    _backup_dir: &Path,
+    _locator: Option<&ip2location::DB>,
 ) -> Result<()> {
     // Migrate network tags to customer-scoped format
     // This requires direct database access for low-level meta column family operations
@@ -289,13 +304,6 @@ fn migrate_0_43_to_0_44(
     // - BlocklistDhcp: add the new `options` field
     migrate_event_fields(data_dir)?;
 
-    // Migrate event fields to add country codes (V0_43 -> V0_44), using Store abstraction
-    {
-        let store = crate::Store::new(data_dir, backup_dir)
-            .context("Failed to open Store for event migration")?;
-        migrate_event_country_codes(&store, locator)?;
-    }
-
     Ok(())
 }
 
@@ -307,6 +315,18 @@ fn migrate_0_44_to_0_45(
     // Migrate triage policy Confidence.threat_category from EventCategory to
     // Option<EventCategory>, wrapping old values in Some(...)
     migrate_triage_policy_confidence(data_dir)?;
+
+    Ok(())
+}
+
+fn migrate_0_45_to_0_46(
+    data_dir: &Path,
+    backup_dir: &Path,
+    locator: Option<&ip2location::DB>,
+) -> Result<()> {
+    let store = crate::Store::new(data_dir, backup_dir)
+        .context("Failed to open Store for event migration")?;
+    migrate_event_country_codes(&store, locator)?;
 
     Ok(())
 }
@@ -936,10 +956,10 @@ fn migrate_network_cf_inner(
     Ok(())
 }
 
-/// Migrates event fields from `V0_43` format (without country codes) to `V0_44` format
-/// (with country codes). Also converts `HttpThreat` `cluster_id` from Option<usize> to Option<u32>.
+/// Migrates stored event fields from the 0.45 on-disk format (without country codes)
+/// to the 0.46 format (with country codes).
 /// If a locator is provided, country codes are resolved from IP addresses.
-/// Otherwise, country codes are set to "ZZ" (unknown).
+/// Otherwise, country codes are set to "ZZ" (lookup not performed).
 fn migrate_event_country_codes(
     store: &crate::Store,
     locator: Option<&ip2location::DB>,
@@ -947,27 +967,30 @@ fn migrate_event_country_codes(
     use num_traits::FromPrimitive;
 
     use crate::event::{
-        BlocklistBootpFields, BlocklistConnFields, BlocklistDceRpcFields, BlocklistDhcpFields,
-        BlocklistDnsFields, BlocklistKerberosFields, BlocklistMalformedDnsFields,
-        BlocklistMqttFields, BlocklistNfsFields, BlocklistNtlmFields, BlocklistRadiusFields,
-        BlocklistRdpFields, BlocklistSmbFields, BlocklistSmtpFields, BlocklistSshFields,
-        BlocklistTlsFields, CryptocurrencyMiningPoolFields, DgaFields, DnsEventFields,
-        ExternalDdosFields, FtpBruteForceFields, FtpEventFields, HttpEventFields, HttpThreatFields,
-        LdapBruteForceFields, LdapEventFields, MultiHostPortScanFields, PortScanFields,
-        RdpBruteForceFields, RepeatedHttpSessionsFields, UnusualDestinationPatternFields,
-    };
-    use crate::migration::migration_structures::{
-        BlocklistBootpFieldsV0_43, BlocklistConnFieldsV0_43, BlocklistDhcpFieldsV0_43,
-        BlocklistDnsFieldsV0_43, BlocklistKerberosFieldsV0_43, BlocklistMalformedDnsFieldsV0_43,
-        BlocklistMqttFieldsV0_43, BlocklistNfsFieldsV0_43, BlocklistNtlmFieldsV0_43,
-        BlocklistRadiusFieldsV0_43, BlocklistRdpFieldsV0_43, BlocklistSmbFieldsV0_43,
-        BlocklistSmtpFieldsV0_43, BlocklistSshFieldsV0_43, BlocklistTlsFieldsV0_43,
-        CryptocurrencyMiningPoolFieldsV0_43, DgaFieldsV0_43, DnsEventFieldsV0_43,
-        ExternalDdosFieldsV0_43, FtpBruteForceFieldsV0_43, FtpEventFieldsV0_43,
-        HttpEventFieldsV0_43, HttpThreatFieldsV0_43, LdapBruteForceFieldsV0_43,
-        LdapEventFieldsV0_43, MultiHostPortScanFieldsV0_43, NetworkThreatV0_43,
-        PortScanFieldsV0_43, RdpBruteForceFieldsV0_43, RepeatedHttpSessionsFieldsV0_43,
-        UnusualDestinationPatternFieldsV0_43,
+        BlocklistBootpFieldsStored, BlocklistBootpFieldsStoredV0_42, BlocklistConnFieldsStored,
+        BlocklistConnFieldsStoredV0_42, BlocklistDceRpcFieldsStored,
+        BlocklistDceRpcFieldsStoredV0_44, BlocklistDhcpFieldsStored,
+        BlocklistDhcpFieldsStoredV0_44, BlocklistDnsFieldsStored, BlocklistDnsFieldsStoredV0_42,
+        BlocklistKerberosFieldsStored, BlocklistKerberosFieldsStoredV0_42,
+        BlocklistMalformedDnsFieldsStored, BlocklistMalformedDnsFieldsStoredV0_45,
+        BlocklistMqttFieldsStored, BlocklistMqttFieldsStoredV0_42, BlocklistNfsFieldsStored,
+        BlocklistNfsFieldsStoredV0_42, BlocklistNtlmFieldsStored, BlocklistNtlmFieldsStoredV0_42,
+        BlocklistRadiusFieldsStored, BlocklistRadiusFieldsStoredV0_45, BlocklistRdpFieldsStored,
+        BlocklistRdpFieldsStoredV0_42, BlocklistSmbFieldsStored, BlocklistSmbFieldsStoredV0_42,
+        BlocklistSmtpFieldsStored, BlocklistSmtpFieldsStoredV0_42, BlocklistSshFieldsStored,
+        BlocklistSshFieldsStoredV0_42, BlocklistTlsFieldsStored, BlocklistTlsFieldsStoredV0_42,
+        CryptocurrencyMiningPoolFieldsStored, CryptocurrencyMiningPoolFieldsStoredV0_42,
+        DgaFieldsStored, DgaFieldsStoredV0_42, DnsEventFieldsStored, DnsEventFieldsStoredV0_42,
+        ExternalDdosFieldsStored, ExternalDdosFieldsStoredV0_42, FtpBruteForceFieldsStored,
+        FtpBruteForceFieldsStoredV0_42, FtpEventFieldsStored, FtpEventFieldsStoredV0_42,
+        HttpEventFieldsStored, HttpEventFieldsStoredV0_42, HttpThreatFieldsStored,
+        HttpThreatFieldsStoredV0_42, LdapBruteForceFieldsStored, LdapBruteForceFieldsStoredV0_42,
+        LdapEventFieldsStored, LdapEventFieldsStoredV0_42, MultiHostPortScanFieldsStored,
+        MultiHostPortScanFieldsStoredV0_42, NetworkThreatFieldsStored,
+        NetworkThreatFieldsStoredV0_45, PortScanFieldsStored, PortScanFieldsStoredV0_42,
+        RdpBruteForceFieldsStored, RdpBruteForceFieldsStoredV0_42,
+        RepeatedHttpSessionsFieldsStored, RepeatedHttpSessionsFieldsStoredV0_42,
+        UnusualDestinationPatternFieldsStored, UnusualDestinationPatternFieldsStoredV0_45,
     };
 
     info!("Migrating event fields to add country codes");
@@ -1013,136 +1036,139 @@ fn migrate_event_country_codes(
         // Events store raw field bytes directly (not EventMessage wrapper)
         let new_fields: Vec<u8> = match kind {
             EventKind::DnsCovertChannel | EventKind::LockyRansomware => {
-                migrate_event_with_country_code::<DnsEventFieldsV0_43, DnsEventFields>(
+                migrate_event_with_country_code::<DnsEventFieldsStoredV0_42, DnsEventFieldsStored>(
                     value, locator,
                 )?
             }
             EventKind::HttpThreat => migrate_event_with_country_code::<
-                HttpThreatFieldsV0_43,
-                HttpThreatFields,
+                HttpThreatFieldsStoredV0_42,
+                HttpThreatFieldsStored,
             >(value, locator)?,
             EventKind::RdpBruteForce => migrate_event_with_country_code::<
-                RdpBruteForceFieldsV0_43,
-                RdpBruteForceFields,
+                RdpBruteForceFieldsStoredV0_42,
+                RdpBruteForceFieldsStored,
             >(value, locator)?,
             EventKind::RepeatedHttpSessions => migrate_event_with_country_code::<
-                RepeatedHttpSessionsFieldsV0_43,
-                RepeatedHttpSessionsFields,
+                RepeatedHttpSessionsFieldsStoredV0_42,
+                RepeatedHttpSessionsFieldsStored,
             >(value, locator)?,
             EventKind::TorConnection | EventKind::NonBrowser | EventKind::BlocklistHttp => {
-                migrate_event_with_country_code::<HttpEventFieldsV0_43, HttpEventFields>(
+                migrate_event_with_country_code::<HttpEventFieldsStoredV0_42, HttpEventFieldsStored>(
                     value, locator,
                 )?
             }
             EventKind::TorConnectionConn | EventKind::BlocklistConn => {
-                migrate_event_with_country_code::<BlocklistConnFieldsV0_43, BlocklistConnFields>(
-                    value, locator,
-                )?
+                migrate_event_with_country_code::<
+                    BlocklistConnFieldsStoredV0_42,
+                    BlocklistConnFieldsStored,
+                >(value, locator)?
             }
-            EventKind::DomainGenerationAlgorithm => {
-                migrate_event_with_country_code::<DgaFieldsV0_43, DgaFields>(value, locator)?
-            }
+            EventKind::DomainGenerationAlgorithm => migrate_event_with_country_code::<
+                DgaFieldsStoredV0_42,
+                DgaFieldsStored,
+            >(value, locator)?,
             EventKind::FtpBruteForce => migrate_event_with_country_code::<
-                FtpBruteForceFieldsV0_43,
-                FtpBruteForceFields,
+                FtpBruteForceFieldsStoredV0_42,
+                FtpBruteForceFieldsStored,
             >(value, locator)?,
             EventKind::FtpPlainText | EventKind::BlocklistFtp => migrate_event_with_country_code::<
-                FtpEventFieldsV0_43,
-                FtpEventFields,
+                FtpEventFieldsStoredV0_42,
+                FtpEventFieldsStored,
             >(value, locator)?,
             EventKind::PortScan => migrate_event_with_country_code::<
-                PortScanFieldsV0_43,
-                PortScanFields,
+                PortScanFieldsStoredV0_42,
+                PortScanFieldsStored,
             >(value, locator)?,
             EventKind::MultiHostPortScan => migrate_event_with_country_code::<
-                MultiHostPortScanFieldsV0_43,
-                MultiHostPortScanFields,
+                MultiHostPortScanFieldsStoredV0_42,
+                MultiHostPortScanFieldsStored,
             >(value, locator)?,
             EventKind::ExternalDdos => migrate_event_with_country_code::<
-                ExternalDdosFieldsV0_43,
-                ExternalDdosFields,
+                ExternalDdosFieldsStoredV0_42,
+                ExternalDdosFieldsStored,
             >(value, locator)?,
             EventKind::LdapBruteForce => migrate_event_with_country_code::<
-                LdapBruteForceFieldsV0_43,
-                LdapBruteForceFields,
+                LdapBruteForceFieldsStoredV0_42,
+                LdapBruteForceFieldsStored,
             >(value, locator)?,
             EventKind::LdapPlainText | EventKind::BlocklistLdap => {
-                migrate_event_with_country_code::<LdapEventFieldsV0_43, LdapEventFields>(
+                migrate_event_with_country_code::<LdapEventFieldsStoredV0_42, LdapEventFieldsStored>(
                     value, locator,
                 )?
             }
             EventKind::CryptocurrencyMiningPool => migrate_event_with_country_code::<
-                CryptocurrencyMiningPoolFieldsV0_43,
-                CryptocurrencyMiningPoolFields,
+                CryptocurrencyMiningPoolFieldsStoredV0_42,
+                CryptocurrencyMiningPoolFieldsStored,
             >(value, locator)?,
             EventKind::BlocklistBootp => migrate_event_with_country_code::<
-                BlocklistBootpFieldsV0_43,
-                BlocklistBootpFields,
+                BlocklistBootpFieldsStoredV0_42,
+                BlocklistBootpFieldsStored,
             >(value, locator)?,
             EventKind::BlocklistDceRpc => migrate_event_with_country_code::<
+                BlocklistDceRpcFieldsStoredV0_44,
                 BlocklistDceRpcFieldsStored,
-                BlocklistDceRpcFields,
             >(value, locator)?,
             EventKind::BlocklistDhcp => migrate_event_with_country_code::<
-                BlocklistDhcpFieldsV0_43,
-                BlocklistDhcpFields,
+                BlocklistDhcpFieldsStoredV0_44,
+                BlocklistDhcpFieldsStored,
             >(value, locator)?,
             EventKind::BlocklistDns => migrate_event_with_country_code::<
-                BlocklistDnsFieldsV0_43,
-                BlocklistDnsFields,
+                BlocklistDnsFieldsStoredV0_42,
+                BlocklistDnsFieldsStored,
             >(value, locator)?,
             EventKind::BlocklistKerberos => migrate_event_with_country_code::<
-                BlocklistKerberosFieldsV0_43,
-                BlocklistKerberosFields,
+                BlocklistKerberosFieldsStoredV0_42,
+                BlocklistKerberosFieldsStored,
             >(value, locator)?,
             EventKind::BlocklistMalformedDns => migrate_event_with_country_code::<
-                BlocklistMalformedDnsFieldsV0_43,
-                BlocklistMalformedDnsFields,
+                BlocklistMalformedDnsFieldsStoredV0_45,
+                BlocklistMalformedDnsFieldsStored,
             >(value, locator)?,
             EventKind::BlocklistMqtt => migrate_event_with_country_code::<
-                BlocklistMqttFieldsV0_43,
-                BlocklistMqttFields,
+                BlocklistMqttFieldsStoredV0_42,
+                BlocklistMqttFieldsStored,
             >(value, locator)?,
             EventKind::BlocklistNfs => migrate_event_with_country_code::<
-                BlocklistNfsFieldsV0_43,
-                BlocklistNfsFields,
+                BlocklistNfsFieldsStoredV0_42,
+                BlocklistNfsFieldsStored,
             >(value, locator)?,
             EventKind::BlocklistNtlm => migrate_event_with_country_code::<
-                BlocklistNtlmFieldsV0_43,
-                BlocklistNtlmFields,
+                BlocklistNtlmFieldsStoredV0_42,
+                BlocklistNtlmFieldsStored,
             >(value, locator)?,
             EventKind::BlocklistRadius => migrate_event_with_country_code::<
-                BlocklistRadiusFieldsV0_43,
-                BlocklistRadiusFields,
+                BlocklistRadiusFieldsStoredV0_45,
+                BlocklistRadiusFieldsStored,
             >(value, locator)?,
             EventKind::BlocklistRdp => migrate_event_with_country_code::<
-                BlocklistRdpFieldsV0_43,
-                BlocklistRdpFields,
+                BlocklistRdpFieldsStoredV0_42,
+                BlocklistRdpFieldsStored,
             >(value, locator)?,
             EventKind::BlocklistSmb => migrate_event_with_country_code::<
-                BlocklistSmbFieldsV0_43,
-                BlocklistSmbFields,
+                BlocklistSmbFieldsStoredV0_42,
+                BlocklistSmbFieldsStored,
             >(value, locator)?,
             EventKind::BlocklistSmtp => migrate_event_with_country_code::<
-                BlocklistSmtpFieldsV0_43,
-                BlocklistSmtpFields,
+                BlocklistSmtpFieldsStoredV0_42,
+                BlocklistSmtpFieldsStored,
             >(value, locator)?,
             EventKind::BlocklistSsh => migrate_event_with_country_code::<
-                BlocklistSshFieldsV0_43,
-                BlocklistSshFields,
+                BlocklistSshFieldsStoredV0_42,
+                BlocklistSshFieldsStored,
             >(value, locator)?,
             EventKind::BlocklistTls | EventKind::SuspiciousTlsTraffic => {
-                migrate_event_with_country_code::<BlocklistTlsFieldsV0_43, BlocklistTlsFields>(
-                    value, locator,
-                )?
+                migrate_event_with_country_code::<
+                    BlocklistTlsFieldsStoredV0_42,
+                    BlocklistTlsFieldsStored,
+                >(value, locator)?
             }
             EventKind::UnusualDestinationPattern => migrate_event_with_country_code::<
-                UnusualDestinationPatternFieldsV0_43,
-                UnusualDestinationPatternFields,
+                UnusualDestinationPatternFieldsStoredV0_45,
+                UnusualDestinationPatternFieldsStored,
             >(value, locator)?,
             EventKind::NetworkThreat => migrate_event_with_country_code::<
-                NetworkThreatV0_43,
-                NetworkThreatFields,
+                NetworkThreatFieldsStoredV0_45,
+                NetworkThreatFieldsStored,
             >(value, locator)?,
             // These event types don't have country code fields or use different structures
             EventKind::WindowsThreat | EventKind::ExtraThreat => {
@@ -1255,174 +1281,163 @@ macro_rules! impl_resolve_country_codes {
 // ResolveCountryCodes implementations for event field types
 // =============================================================================
 
-use crate::event::{
-    BlocklistBootpFields, BlocklistConnFields, BlocklistDceRpcFields, BlocklistDhcpFields,
-    BlocklistDnsFields, BlocklistKerberosFields, BlocklistMalformedDnsFields, BlocklistMqttFields,
-    BlocklistNfsFields, BlocklistNtlmFields, BlocklistRadiusFields, BlocklistRdpFields,
-    BlocklistSmbFields, BlocklistSmtpFields, BlocklistSshFields, BlocklistTlsFields,
-    CryptocurrencyMiningPoolFields, DgaFields, DnsEventFields, ExternalDdosFields,
-    FtpBruteForceFields, FtpEventFields, HttpEventFields, HttpThreatFields, LdapBruteForceFields,
-    LdapEventFields, MultiHostPortScanFields, NetworkThreatFields, PortScanFields,
-    RdpBruteForceFields, RepeatedHttpSessionsFields, UnusualDestinationPatternFields,
-};
-
 impl_resolve_country_codes!(
-    PortScanFields,
+    PortScanFieldsStored,
     orig: single (orig_addr => orig_country_code),
     resp: single (resp_addr => resp_country_code),
 );
 impl_resolve_country_codes!(
-    MultiHostPortScanFields,
+    MultiHostPortScanFieldsStored,
     orig: single (orig_addr => orig_country_code),
     resp: multi (resp_addrs => resp_country_codes),
 );
 impl_resolve_country_codes!(
-    ExternalDdosFields,
+    ExternalDdosFieldsStored,
     orig: multi (orig_addrs => orig_country_codes),
     resp: single (resp_addr => resp_country_code),
 );
 impl_resolve_country_codes!(
-    BlocklistConnFields,
+    BlocklistConnFieldsStored,
     orig: single (orig_addr => orig_country_code),
     resp: single (resp_addr => resp_country_code),
 );
 impl_resolve_country_codes!(
-    DnsEventFields,
+    DnsEventFieldsStored,
     orig: single (orig_addr => orig_country_code),
     resp: single (resp_addr => resp_country_code),
 );
 impl_resolve_country_codes!(
-    CryptocurrencyMiningPoolFields,
+    CryptocurrencyMiningPoolFieldsStored,
     orig: single (orig_addr => orig_country_code),
     resp: single (resp_addr => resp_country_code),
 );
 impl_resolve_country_codes!(
-    BlocklistDnsFields,
+    BlocklistDnsFieldsStored,
     orig: single (orig_addr => orig_country_code),
     resp: single (resp_addr => resp_country_code),
 );
 impl_resolve_country_codes!(
-    HttpEventFields,
+    HttpEventFieldsStored,
     orig: single (orig_addr => orig_country_code),
     resp: single (resp_addr => resp_country_code),
 );
 impl_resolve_country_codes!(
-    RepeatedHttpSessionsFields,
+    RepeatedHttpSessionsFieldsStored,
     orig: single (orig_addr => orig_country_code),
     resp: single (resp_addr => resp_country_code),
 );
 impl_resolve_country_codes!(
-    HttpThreatFields,
+    HttpThreatFieldsStored,
     orig: single (orig_addr => orig_country_code),
     resp: single (resp_addr => resp_country_code),
 );
 impl_resolve_country_codes!(
-    DgaFields,
+    DgaFieldsStored,
     orig: single (orig_addr => orig_country_code),
     resp: single (resp_addr => resp_country_code),
 );
 impl_resolve_country_codes!(
-    RdpBruteForceFields,
+    RdpBruteForceFieldsStored,
     orig: single (orig_addr => orig_country_code),
     resp: multi (resp_addrs => resp_country_codes),
 );
 impl_resolve_country_codes!(
-    BlocklistRdpFields,
+    BlocklistRdpFieldsStored,
     orig: single (orig_addr => orig_country_code),
     resp: single (resp_addr => resp_country_code),
 );
 impl_resolve_country_codes!(
-    FtpBruteForceFields,
+    FtpBruteForceFieldsStored,
     orig: single (orig_addr => orig_country_code),
     resp: single (resp_addr => resp_country_code),
 );
 impl_resolve_country_codes!(
-    FtpEventFields,
+    FtpEventFieldsStored,
     orig: single (orig_addr => orig_country_code),
     resp: single (resp_addr => resp_country_code),
 );
 impl_resolve_country_codes!(
-    LdapBruteForceFields,
+    LdapBruteForceFieldsStored,
     orig: single (orig_addr => orig_country_code),
     resp: single (resp_addr => resp_country_code),
 );
 impl_resolve_country_codes!(
-    LdapEventFields,
+    LdapEventFieldsStored,
     orig: single (orig_addr => orig_country_code),
     resp: single (resp_addr => resp_country_code),
 );
 impl_resolve_country_codes!(
-    BlocklistSshFields,
+    BlocklistSshFieldsStored,
     orig: single (orig_addr => orig_country_code),
     resp: single (resp_addr => resp_country_code),
 );
 impl_resolve_country_codes!(
-    BlocklistTlsFields,
+    BlocklistTlsFieldsStored,
     orig: single (orig_addr => orig_country_code),
     resp: single (resp_addr => resp_country_code),
 );
 impl_resolve_country_codes!(
-    BlocklistKerberosFields,
+    BlocklistKerberosFieldsStored,
     orig: single (orig_addr => orig_country_code),
     resp: single (resp_addr => resp_country_code),
 );
 impl_resolve_country_codes!(
-    BlocklistSmtpFields,
+    BlocklistSmtpFieldsStored,
     orig: single (orig_addr => orig_country_code),
     resp: single (resp_addr => resp_country_code),
 );
 impl_resolve_country_codes!(
-    BlocklistNfsFields,
+    BlocklistNfsFieldsStored,
     orig: single (orig_addr => orig_country_code),
     resp: single (resp_addr => resp_country_code),
 );
 impl_resolve_country_codes!(
-    BlocklistDhcpFields,
+    BlocklistDhcpFieldsStored,
     orig: single (orig_addr => orig_country_code),
     resp: single (resp_addr => resp_country_code),
 );
 impl_resolve_country_codes!(
-    BlocklistDceRpcFields,
+    BlocklistDceRpcFieldsStored,
     orig: single (orig_addr => orig_country_code),
     resp: single (resp_addr => resp_country_code),
 );
 impl_resolve_country_codes!(
-    BlocklistNtlmFields,
+    BlocklistNtlmFieldsStored,
     orig: single (orig_addr => orig_country_code),
     resp: single (resp_addr => resp_country_code),
 );
 impl_resolve_country_codes!(
-    BlocklistSmbFields,
+    BlocklistSmbFieldsStored,
     orig: single (orig_addr => orig_country_code),
     resp: single (resp_addr => resp_country_code),
 );
 impl_resolve_country_codes!(
-    BlocklistMqttFields,
+    BlocklistMqttFieldsStored,
     orig: single (orig_addr => orig_country_code),
     resp: single (resp_addr => resp_country_code),
 );
 impl_resolve_country_codes!(
-    BlocklistBootpFields,
+    BlocklistBootpFieldsStored,
     orig: single (orig_addr => orig_country_code),
     resp: single (resp_addr => resp_country_code),
 );
 impl_resolve_country_codes!(
-    BlocklistRadiusFields,
+    BlocklistRadiusFieldsStored,
     orig: single (orig_addr => orig_country_code),
     resp: single (resp_addr => resp_country_code),
 );
 impl_resolve_country_codes!(
-    BlocklistMalformedDnsFields,
+    BlocklistMalformedDnsFieldsStored,
     orig: single (orig_addr => orig_country_code),
     resp: single (resp_addr => resp_country_code),
 );
 impl_resolve_country_codes!(
-    NetworkThreatFields,
+    NetworkThreatFieldsStored,
     orig: single (orig_addr => orig_country_code),
     resp: single (resp_addr => resp_country_code),
 );
 
-impl ResolveCountryCodes for UnusualDestinationPatternFields {
+impl ResolveCountryCodes for UnusualDestinationPatternFieldsStored {
     fn resolve_country_codes(&mut self, locator: &ip2location::DB) {
         self.resp_country_codes = self
             .destination_ips
@@ -1574,7 +1589,7 @@ fn migrate_event_fields(dir: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Migrates stored `HttpThreatFields` from `Option<usize>` to `Option<u32>`
+/// Migrates stored `HttpThreatFieldsStored` from `Option<usize>` to `Option<u32>`
 /// for `cluster_id`.
 fn migrate_http_threat_fields(value: &[u8]) -> Option<Vec<u8>> {
     // Try to deserialize with old format. Production events are stored using
@@ -1625,6 +1640,8 @@ fn migrate_http_threat_fields(value: &[u8]) -> Option<Vec<u8>> {
         attack_kind: old.attack_kind,
         confidence: old.confidence,
         category: old.category,
+        orig_country_code: crate::util::UNRESOLVED_COUNTRY_CODE,
+        resp_country_code: crate::util::UNRESOLVED_COUNTRY_CODE,
     };
 
     bincode::serialize(&new)
@@ -1655,6 +1672,8 @@ fn migrate_blocklist_dcerpc_fields(value: &[u8]) -> Option<Vec<u8>> {
         request: Vec::new(),
         confidence: old.confidence,
         category: old.category,
+        orig_country_code: crate::util::UNRESOLVED_COUNTRY_CODE,
+        resp_country_code: crate::util::UNRESOLVED_COUNTRY_CODE,
     };
 
     bincode::serialize(&new)
@@ -1662,7 +1681,7 @@ fn migrate_blocklist_dcerpc_fields(value: &[u8]) -> Option<Vec<u8>> {
         .ok()
 }
 
-/// Migrates a single stored `BlocklistDhcpFields` record by adding an empty
+/// Migrates a single stored `BlocklistDhcpFieldsStored` record by adding an empty
 /// `options` field.
 fn migrate_blocklist_dhcp_fields(value: &[u8]) -> Option<Vec<u8>> {
     // Production events are stored using `bincode::serialize` (fixint encoding).
@@ -1704,6 +1723,8 @@ fn migrate_blocklist_dhcp_fields(value: &[u8]) -> Option<Vec<u8>> {
         options: vec![],
         confidence: old.confidence,
         category: old.category,
+        orig_country_code: crate::util::UNRESOLVED_COUNTRY_CODE,
+        resp_country_code: crate::util::UNRESOLVED_COUNTRY_CODE,
     };
 
     bincode::serialize(&new)
@@ -1772,33 +1793,35 @@ mod tests {
     use chrono::{TimeZone, Utc};
     use semver::{Version, VersionReq};
 
-    use super::migration_structures::{
-        BlocklistBootpFieldsV0_43, BlocklistConnFieldsV0_43, BlocklistDhcpFieldsV0_43,
-        BlocklistDnsFieldsV0_43, BlocklistKerberosFieldsV0_43, BlocklistMalformedDnsFieldsV0_43,
-        BlocklistMqttFieldsV0_43, BlocklistNfsFieldsV0_43, BlocklistNtlmFieldsV0_43,
-        BlocklistRadiusFieldsV0_43, BlocklistRdpFieldsV0_43, BlocklistSmbFieldsV0_43,
-        BlocklistSmtpFieldsV0_43, BlocklistSshFieldsV0_43, BlocklistTlsFieldsV0_43,
-        CryptocurrencyMiningPoolFieldsV0_43, DgaFieldsV0_43, DnsEventFieldsV0_43,
-        ExternalDdosFieldsV0_43, FtpBruteForceFieldsV0_43, FtpEventFieldsV0_43,
-        HttpEventFieldsV0_43, HttpThreatFieldsV0_43, LdapBruteForceFieldsV0_43,
-        LdapEventFieldsV0_43, MultiHostPortScanFieldsV0_43, NetworkThreatV0_43,
-        PortScanFieldsV0_43, RdpBruteForceFieldsV0_43, RepeatedHttpSessionsFieldsV0_43,
-        UnusualDestinationPatternFieldsV0_43,
-    };
     use super::{
         COMPATIBLE_VERSION_REQ, create_version_file, migrate_data_dir, migrate_event_country_codes,
         read_version_file,
     };
     use crate::event::{
-        BlocklistBootpFields, BlocklistConnFields, BlocklistDceRpcFields, BlocklistDhcpFields,
-        BlocklistDnsFields, BlocklistKerberosFields, BlocklistMalformedDnsFields,
-        BlocklistMqttFields, BlocklistNfsFields, BlocklistNtlmFields, BlocklistRadiusFields,
-        BlocklistRdpFields, BlocklistSmbFields, BlocklistSmtpFields, BlocklistSshFields,
-        BlocklistTlsFields, CryptocurrencyMiningPoolFields, DgaFields, DnsEventFields, EventKind,
-        EventMessage, ExternalDdosFields, FtpBruteForceFields, FtpEventFields, HttpEventFields,
-        HttpThreatFields, LdapBruteForceFields, LdapEventFields, MultiHostPortScanFields,
-        NetworkThreatFields, PortScanFields, RdpBruteForceFields, RepeatedHttpSessionsFields,
-        UnusualDestinationPatternFields,
+        BlocklistBootpFieldsStored, BlocklistBootpFieldsStoredV0_42, BlocklistConnFieldsStored,
+        BlocklistConnFieldsStoredV0_42, BlocklistDceRpcFieldsStored,
+        BlocklistDceRpcFieldsStoredV0_44, BlocklistDhcpFieldsStored,
+        BlocklistDhcpFieldsStoredV0_44, BlocklistDnsFieldsStored, BlocklistDnsFieldsStoredV0_42,
+        BlocklistKerberosFieldsStored, BlocklistKerberosFieldsStoredV0_42,
+        BlocklistMalformedDnsFieldsStored, BlocklistMalformedDnsFieldsStoredV0_45,
+        BlocklistMqttFieldsStored, BlocklistMqttFieldsStoredV0_42, BlocklistNfsFieldsStored,
+        BlocklistNfsFieldsStoredV0_42, BlocklistNtlmFieldsStored, BlocklistNtlmFieldsStoredV0_42,
+        BlocklistRadiusFieldsStored, BlocklistRadiusFieldsStoredV0_45, BlocklistRdpFieldsStored,
+        BlocklistRdpFieldsStoredV0_42, BlocklistSmbFieldsStored, BlocklistSmbFieldsStoredV0_42,
+        BlocklistSmtpFieldsStored, BlocklistSmtpFieldsStoredV0_42, BlocklistSshFieldsStored,
+        BlocklistSshFieldsStoredV0_42, BlocklistTlsFieldsStored, BlocklistTlsFieldsStoredV0_42,
+        CryptocurrencyMiningPoolFieldsStored, CryptocurrencyMiningPoolFieldsStoredV0_42,
+        DgaFieldsStored, DgaFieldsStoredV0_42, DnsEventFieldsStored, DnsEventFieldsStoredV0_42,
+        EventKind, EventMessage, ExternalDdosFieldsStored, ExternalDdosFieldsStoredV0_42,
+        FtpBruteForceFieldsStored, FtpBruteForceFieldsStoredV0_42, FtpEventFieldsStored,
+        FtpEventFieldsStoredV0_42, HttpEventFieldsStored, HttpEventFieldsStoredV0_42,
+        HttpThreatFieldsStored, HttpThreatFieldsStoredV0_42, LdapBruteForceFieldsStored,
+        LdapBruteForceFieldsStoredV0_42, LdapEventFieldsStored, LdapEventFieldsStoredV0_42,
+        MultiHostPortScanFieldsStored, MultiHostPortScanFieldsStoredV0_42,
+        NetworkThreatFieldsStored, NetworkThreatFieldsStoredV0_45, PortScanFieldsStored,
+        PortScanFieldsStoredV0_42, RdpBruteForceFieldsStored, RdpBruteForceFieldsStoredV0_42,
+        RepeatedHttpSessionsFieldsStored, RepeatedHttpSessionsFieldsStoredV0_42,
+        UnusualDestinationPatternFieldsStored, UnusualDestinationPatternFieldsStoredV0_45,
     };
     use crate::tables::NETWORK_TAGS;
     use crate::test::{DbGuard, acquire_db_permit};
@@ -3128,7 +3151,7 @@ mod tests {
             rocksdb::OptimisticTransactionDB::open_cf(&opts, &db_path, crate::tables::MAP_NAMES)
                 .unwrap();
 
-        // Create old-format stored HttpThreatFields with Option<usize> cluster_id
+        // Create old-format stored HttpThreatFieldsStored with Option<usize> cluster_id
         let old_event = HttpThreatFieldsStoredV0_43 {
             time: chrono::Utc::now(),
             sensor: "test-sensor".to_string(),
@@ -3230,7 +3253,7 @@ mod tests {
     #[test]
     fn migrate_event_country_codes_sets_default_country_codes() {
         let schema = TestSchema::new();
-        let old_fields = DnsEventFieldsV0_43 {
+        let old_fields = DnsEventFieldsStoredV0_42 {
             sensor: "collector1".to_string(),
             orig_addr: std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
             orig_port: 10000,
@@ -3278,7 +3301,7 @@ mod tests {
         let event_db = schema.store.events();
         let mut iter = event_db.raw_iter_forward();
         let (_, value) = iter.next().expect("migrated event");
-        let migrated: DnsEventFields = bincode::deserialize(&value).unwrap();
+        let migrated: DnsEventFieldsStored = bincode::deserialize(&value).unwrap();
 
         assert_eq!(migrated.orig_country_code, *b"ZZ");
         assert_eq!(migrated.resp_country_code, *b"ZZ");
@@ -3413,7 +3436,7 @@ mod tests {
             rocksdb::OptimisticTransactionDB::open_cf(&opts, &db_path, crate::tables::MAP_NAMES)
                 .unwrap();
 
-        // Create old-format stored BlocklistDhcpFields without `options` field
+        // Create old-format stored BlocklistDhcpFieldsStored without `options` field
         let old_event = BlocklistDhcpFieldsStoredV0_42 {
             sensor: "test-sensor".to_string(),
             orig_addr: "192.168.1.1".parse::<IpAddr>().unwrap(),
@@ -3643,7 +3666,7 @@ mod tests {
     #[test]
     fn migrate_port_scan_event() {
         let schema = TestSchema::new();
-        let old = PortScanFieldsV0_43 {
+        let old = PortScanFieldsStoredV0_42 {
             sensor: "s1".to_string(),
             orig_addr: "10.0.0.1".parse().unwrap(),
             resp_addr: "10.0.0.2".parse().unwrap(),
@@ -3668,7 +3691,7 @@ mod tests {
         let events = schema.store.events();
         let mut iter = events.raw_iter_forward();
         let (_, value) = iter.next().expect("migrated event");
-        let migrated: PortScanFields = bincode::deserialize(&value).unwrap();
+        let migrated: PortScanFieldsStored = bincode::deserialize(&value).unwrap();
         assert_eq!(migrated.orig_country_code, *b"ZZ");
         assert_eq!(migrated.resp_country_code, *b"ZZ");
         assert_eq!(migrated.resp_ports, vec![80, 443]);
@@ -3679,7 +3702,7 @@ mod tests {
     #[test]
     fn migrate_multi_host_port_scan_event() {
         let schema = TestSchema::new();
-        let old = MultiHostPortScanFieldsV0_43 {
+        let old = MultiHostPortScanFieldsStoredV0_42 {
             sensor: "s1".to_string(),
             orig_addr: "10.0.0.1".parse().unwrap(),
             resp_port: 22,
@@ -3704,7 +3727,7 @@ mod tests {
         let events = schema.store.events();
         let mut iter = events.raw_iter_forward();
         let (_, value) = iter.next().expect("migrated event");
-        let migrated: MultiHostPortScanFields = bincode::deserialize(&value).unwrap();
+        let migrated: MultiHostPortScanFieldsStored = bincode::deserialize(&value).unwrap();
         assert_eq!(migrated.orig_country_code, *b"ZZ");
         assert_eq!(migrated.resp_country_codes, vec![*b"ZZ", *b"ZZ"]);
         drop(iter);
@@ -3714,7 +3737,7 @@ mod tests {
     #[test]
     fn migrate_external_ddos_event() {
         let schema = TestSchema::new();
-        let old = ExternalDdosFieldsV0_43 {
+        let old = ExternalDdosFieldsStoredV0_42 {
             sensor: "s1".to_string(),
             orig_addrs: vec!["10.0.0.1".parse().unwrap(), "10.0.0.2".parse().unwrap()],
             resp_addr: "10.0.0.3".parse().unwrap(),
@@ -3738,7 +3761,7 @@ mod tests {
         let events = schema.store.events();
         let mut iter = events.raw_iter_forward();
         let (_, value) = iter.next().expect("migrated event");
-        let migrated: ExternalDdosFields = bincode::deserialize(&value).unwrap();
+        let migrated: ExternalDdosFieldsStored = bincode::deserialize(&value).unwrap();
         assert_eq!(migrated.orig_country_codes, vec![*b"ZZ", *b"ZZ"]);
         assert_eq!(migrated.resp_country_code, *b"ZZ");
         drop(iter);
@@ -3748,7 +3771,7 @@ mod tests {
     #[test]
     fn migrate_rdp_brute_force_event() {
         let schema = TestSchema::new();
-        let old = RdpBruteForceFieldsV0_43 {
+        let old = RdpBruteForceFieldsStoredV0_42 {
             sensor: "s1".to_string(),
             orig_addr: "10.0.0.1".parse().unwrap(),
             resp_addrs: vec!["10.0.0.2".parse().unwrap()],
@@ -3772,7 +3795,7 @@ mod tests {
         let events = schema.store.events();
         let mut iter = events.raw_iter_forward();
         let (_, value) = iter.next().expect("migrated event");
-        let migrated: RdpBruteForceFields = bincode::deserialize(&value).unwrap();
+        let migrated: RdpBruteForceFieldsStored = bincode::deserialize(&value).unwrap();
         assert_eq!(migrated.orig_country_code, *b"ZZ");
         assert_eq!(migrated.resp_country_codes, vec![*b"ZZ"]);
         drop(iter);
@@ -3782,7 +3805,7 @@ mod tests {
     #[test]
     fn migrate_unusual_destination_pattern_event() {
         let schema = TestSchema::new();
-        let old = UnusualDestinationPatternFieldsV0_43 {
+        let old = UnusualDestinationPatternFieldsStoredV0_45 {
             sensor: "s1".to_string(),
             start_time: 1_000_000_000,
             end_time: 2_000_000_000,
@@ -3812,7 +3835,7 @@ mod tests {
         let events = schema.store.events();
         let mut iter = events.raw_iter_forward();
         let (_, value) = iter.next().expect("migrated event");
-        let migrated: UnusualDestinationPatternFields = bincode::deserialize(&value).unwrap();
+        let migrated: UnusualDestinationPatternFieldsStored = bincode::deserialize(&value).unwrap();
         assert_eq!(migrated.resp_country_codes, vec![*b"ZZ", *b"ZZ", *b"ZZ"]);
         assert_eq!(migrated.destination_ips.len(), 3);
         drop(iter);
@@ -3823,7 +3846,7 @@ mod tests {
     fn migrate_already_migrated_event_is_idempotent() {
         let schema = TestSchema::new();
         // Insert an event in V0_43 format
-        let old_fields = DnsEventFieldsV0_43 {
+        let old_fields = DnsEventFieldsStoredV0_42 {
             sensor: "collector1".to_string(),
             orig_addr: std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
             orig_port: 10000,
@@ -3873,7 +3896,7 @@ mod tests {
         let events = schema.store.events();
         let mut iter = events.raw_iter_forward();
         let (_, value) = iter.next().expect("migrated event");
-        let migrated: DnsEventFields = bincode::deserialize(&value).unwrap();
+        let migrated: DnsEventFieldsStored = bincode::deserialize(&value).unwrap();
         assert_eq!(migrated.orig_country_code, *b"ZZ");
         assert_eq!(migrated.resp_country_code, *b"ZZ");
         assert_eq!(migrated.query, "bar.com");
@@ -3934,7 +3957,7 @@ mod tests {
         let event_time = Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap();
 
         // Insert a DnsCovertChannel event
-        let dns = DnsEventFieldsV0_43 {
+        let dns = DnsEventFieldsStoredV0_42 {
             sensor: "s1".to_string(),
             orig_addr: "10.0.0.1".parse().unwrap(),
             orig_port: 10000,
@@ -3973,7 +3996,7 @@ mod tests {
             .unwrap();
 
         // Insert a PortScan event
-        let ps = PortScanFieldsV0_43 {
+        let ps = PortScanFieldsStoredV0_42 {
             sensor: "s1".to_string(),
             orig_addr: "10.0.0.3".parse().unwrap(),
             resp_addr: "10.0.0.4".parse().unwrap(),
@@ -3996,7 +4019,7 @@ mod tests {
             .unwrap();
 
         // Insert an ExternalDdos event
-        let ddos = ExternalDdosFieldsV0_43 {
+        let ddos = ExternalDdosFieldsStoredV0_42 {
             sensor: "s1".to_string(),
             orig_addrs: vec!["10.0.0.5".parse().unwrap()],
             resp_addr: "10.0.0.6".parse().unwrap(),
@@ -4035,7 +4058,7 @@ mod tests {
     fn migrate_http_threat_event() {
         let schema = TestSchema::new();
         let event_time = Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap();
-        let old = HttpThreatFieldsV0_43 {
+        let old = HttpThreatFieldsStoredV0_42 {
             time: event_time,
             sensor: "s1".to_string(),
             orig_addr: "10.0.0.1".parse().unwrap(),
@@ -4093,7 +4116,7 @@ mod tests {
         let events = schema.store.events();
         let mut iter = events.raw_iter_forward();
         let (_, value) = iter.next().expect("migrated event");
-        let migrated: HttpThreatFields = bincode::deserialize(&value).unwrap();
+        let migrated: HttpThreatFieldsStored = bincode::deserialize(&value).unwrap();
         assert_eq!(migrated.orig_country_code, *b"ZZ");
         assert_eq!(migrated.resp_country_code, *b"ZZ");
         drop(iter);
@@ -4103,7 +4126,7 @@ mod tests {
     #[test]
     fn migrate_repeated_http_sessions_event() {
         let schema = TestSchema::new();
-        let old = RepeatedHttpSessionsFieldsV0_43 {
+        let old = RepeatedHttpSessionsFieldsStoredV0_42 {
             sensor: "s1".to_string(),
             orig_addr: "10.0.0.1".parse().unwrap(),
             orig_port: 12345,
@@ -4132,7 +4155,7 @@ mod tests {
         let events = schema.store.events();
         let mut iter = events.raw_iter_forward();
         let (_, value) = iter.next().expect("migrated event");
-        let migrated: RepeatedHttpSessionsFields = bincode::deserialize(&value).unwrap();
+        let migrated: RepeatedHttpSessionsFieldsStored = bincode::deserialize(&value).unwrap();
         assert_eq!(migrated.orig_country_code, *b"ZZ");
         assert_eq!(migrated.resp_country_code, *b"ZZ");
         drop(iter);
@@ -4142,7 +4165,7 @@ mod tests {
     #[test]
     fn migrate_http_event_fields() {
         let schema = TestSchema::new();
-        let old = HttpEventFieldsV0_43 {
+        let old = HttpEventFieldsStoredV0_42 {
             sensor: "s1".to_string(),
             orig_addr: "10.0.0.1".parse().unwrap(),
             orig_port: 12345,
@@ -4195,7 +4218,7 @@ mod tests {
         let events = schema.store.events();
         let mut iter = events.raw_iter_forward();
         let (_, value) = iter.next().expect("migrated event");
-        let migrated: HttpEventFields = bincode::deserialize(&value).unwrap();
+        let migrated: HttpEventFieldsStored = bincode::deserialize(&value).unwrap();
         assert_eq!(migrated.orig_country_code, *b"ZZ");
         assert_eq!(migrated.resp_country_code, *b"ZZ");
         drop(iter);
@@ -4205,7 +4228,7 @@ mod tests {
     #[test]
     fn migrate_blocklist_conn_event() {
         let schema = TestSchema::new();
-        let old = BlocklistConnFieldsV0_43 {
+        let old = BlocklistConnFieldsStoredV0_42 {
             sensor: "s1".to_string(),
             orig_addr: "10.0.0.1".parse().unwrap(),
             orig_port: 12345,
@@ -4242,7 +4265,7 @@ mod tests {
         let events = schema.store.events();
         let mut iter = events.raw_iter_forward();
         let (_, value) = iter.next().expect("migrated event");
-        let migrated: BlocklistConnFields = bincode::deserialize(&value).unwrap();
+        let migrated: BlocklistConnFieldsStored = bincode::deserialize(&value).unwrap();
         assert_eq!(migrated.orig_country_code, *b"ZZ");
         assert_eq!(migrated.resp_country_code, *b"ZZ");
         drop(iter);
@@ -4252,7 +4275,7 @@ mod tests {
     #[test]
     fn migrate_dga_event() {
         let schema = TestSchema::new();
-        let old = DgaFieldsV0_43 {
+        let old = DgaFieldsStoredV0_42 {
             sensor: "s1".to_string(),
             orig_addr: "10.0.0.1".parse().unwrap(),
             orig_port: 12345,
@@ -4305,7 +4328,7 @@ mod tests {
         let events = schema.store.events();
         let mut iter = events.raw_iter_forward();
         let (_, value) = iter.next().expect("migrated event");
-        let migrated: DgaFields = bincode::deserialize(&value).unwrap();
+        let migrated: DgaFieldsStored = bincode::deserialize(&value).unwrap();
         assert_eq!(migrated.orig_country_code, *b"ZZ");
         assert_eq!(migrated.resp_country_code, *b"ZZ");
         drop(iter);
@@ -4315,7 +4338,7 @@ mod tests {
     #[test]
     fn migrate_ftp_brute_force_event() {
         let schema = TestSchema::new();
-        let old = FtpBruteForceFieldsV0_43 {
+        let old = FtpBruteForceFieldsStoredV0_42 {
             sensor: "s1".to_string(),
             orig_addr: "10.0.0.1".parse().unwrap(),
             resp_addr: "10.0.0.2".parse().unwrap(),
@@ -4345,7 +4368,7 @@ mod tests {
         let events = schema.store.events();
         let mut iter = events.raw_iter_forward();
         let (_, value) = iter.next().expect("migrated event");
-        let migrated: FtpBruteForceFields = bincode::deserialize(&value).unwrap();
+        let migrated: FtpBruteForceFieldsStored = bincode::deserialize(&value).unwrap();
         assert_eq!(migrated.orig_country_code, *b"ZZ");
         assert_eq!(migrated.resp_country_code, *b"ZZ");
         drop(iter);
@@ -4354,9 +4377,9 @@ mod tests {
 
     #[test]
     fn migrate_ftp_event_fields() {
-        use super::migration_structures::FtpCommandV0_43;
+        use crate::event::FtpCommand;
         let schema = TestSchema::new();
-        let old = FtpEventFieldsV0_43 {
+        let old = FtpEventFieldsStoredV0_42 {
             sensor: "s1".to_string(),
             orig_addr: "10.0.0.1".parse().unwrap(),
             orig_port: 12345,
@@ -4371,10 +4394,17 @@ mod tests {
             resp_l2_bytes: 500,
             user: "admin".to_string(),
             password: "pass".to_string(),
-            commands: vec![FtpCommandV0_43 {
+            commands: vec![FtpCommand {
                 command: "LIST".to_string(),
                 reply_code: "150".to_string(),
                 reply_msg: "OK".to_string(),
+                data_passive: false,
+                data_orig_addr: "10.0.0.1".parse().unwrap(),
+                data_resp_addr: "10.0.0.2".parse().unwrap(),
+                data_resp_port: 20,
+                file: String::new(),
+                file_size: 0,
+                file_id: String::new(),
             }],
             confidence: 0.8,
             category: None,
@@ -4396,7 +4426,7 @@ mod tests {
         let events = schema.store.events();
         let mut iter = events.raw_iter_forward();
         let (_, value) = iter.next().expect("migrated event");
-        let migrated: FtpEventFields = bincode::deserialize(&value).unwrap();
+        let migrated: FtpEventFieldsStored = bincode::deserialize(&value).unwrap();
         assert_eq!(migrated.orig_country_code, *b"ZZ");
         assert_eq!(migrated.resp_country_code, *b"ZZ");
         drop(iter);
@@ -4406,7 +4436,7 @@ mod tests {
     #[test]
     fn migrate_ldap_brute_force_event() {
         let schema = TestSchema::new();
-        let old = LdapBruteForceFieldsV0_43 {
+        let old = LdapBruteForceFieldsStoredV0_42 {
             sensor: "s1".to_string(),
             orig_addr: "10.0.0.1".parse().unwrap(),
             resp_addr: "10.0.0.2".parse().unwrap(),
@@ -4435,7 +4465,7 @@ mod tests {
         let events = schema.store.events();
         let mut iter = events.raw_iter_forward();
         let (_, value) = iter.next().expect("migrated event");
-        let migrated: LdapBruteForceFields = bincode::deserialize(&value).unwrap();
+        let migrated: LdapBruteForceFieldsStored = bincode::deserialize(&value).unwrap();
         assert_eq!(migrated.orig_country_code, *b"ZZ");
         assert_eq!(migrated.resp_country_code, *b"ZZ");
         drop(iter);
@@ -4445,7 +4475,7 @@ mod tests {
     #[test]
     fn migrate_ldap_event_fields() {
         let schema = TestSchema::new();
-        let old = LdapEventFieldsV0_43 {
+        let old = LdapEventFieldsStoredV0_42 {
             sensor: "s1".to_string(),
             orig_addr: "10.0.0.1".parse().unwrap(),
             orig_port: 12345,
@@ -4485,7 +4515,7 @@ mod tests {
         let events = schema.store.events();
         let mut iter = events.raw_iter_forward();
         let (_, value) = iter.next().expect("migrated event");
-        let migrated: LdapEventFields = bincode::deserialize(&value).unwrap();
+        let migrated: LdapEventFieldsStored = bincode::deserialize(&value).unwrap();
         assert_eq!(migrated.orig_country_code, *b"ZZ");
         assert_eq!(migrated.resp_country_code, *b"ZZ");
         drop(iter);
@@ -4495,7 +4525,7 @@ mod tests {
     #[test]
     fn migrate_cryptocurrency_mining_pool_event() {
         let schema = TestSchema::new();
-        let old = CryptocurrencyMiningPoolFieldsV0_43 {
+        let old = CryptocurrencyMiningPoolFieldsStoredV0_42 {
             sensor: "s1".to_string(),
             orig_addr: "10.0.0.1".parse().unwrap(),
             orig_port: 12345,
@@ -4541,7 +4571,7 @@ mod tests {
         let events = schema.store.events();
         let mut iter = events.raw_iter_forward();
         let (_, value) = iter.next().expect("migrated event");
-        let migrated: CryptocurrencyMiningPoolFields = bincode::deserialize(&value).unwrap();
+        let migrated: CryptocurrencyMiningPoolFieldsStored = bincode::deserialize(&value).unwrap();
         assert_eq!(migrated.orig_country_code, *b"ZZ");
         assert_eq!(migrated.resp_country_code, *b"ZZ");
         drop(iter);
@@ -4551,7 +4581,7 @@ mod tests {
     #[test]
     fn migrate_blocklist_dns_event() {
         let schema = TestSchema::new();
-        let old = BlocklistDnsFieldsV0_43 {
+        let old = BlocklistDnsFieldsStoredV0_42 {
             sensor: "s1".to_string(),
             orig_addr: "10.0.0.1".parse().unwrap(),
             orig_port: 12345,
@@ -4596,7 +4626,7 @@ mod tests {
         let events = schema.store.events();
         let mut iter = events.raw_iter_forward();
         let (_, value) = iter.next().expect("migrated event");
-        let migrated: BlocklistDnsFields = bincode::deserialize(&value).unwrap();
+        let migrated: BlocklistDnsFieldsStored = bincode::deserialize(&value).unwrap();
         assert_eq!(migrated.orig_country_code, *b"ZZ");
         assert_eq!(migrated.resp_country_code, *b"ZZ");
         drop(iter);
@@ -4606,7 +4636,7 @@ mod tests {
     #[test]
     fn migrate_blocklist_rdp_event() {
         let schema = TestSchema::new();
-        let old = BlocklistRdpFieldsV0_43 {
+        let old = BlocklistRdpFieldsStoredV0_42 {
             sensor: "s1".to_string(),
             orig_addr: "10.0.0.1".parse().unwrap(),
             orig_port: 12345,
@@ -4640,7 +4670,7 @@ mod tests {
         let events = schema.store.events();
         let mut iter = events.raw_iter_forward();
         let (_, value) = iter.next().expect("migrated event");
-        let migrated: BlocklistRdpFields = bincode::deserialize(&value).unwrap();
+        let migrated: BlocklistRdpFieldsStored = bincode::deserialize(&value).unwrap();
         assert_eq!(migrated.orig_country_code, *b"ZZ");
         assert_eq!(migrated.resp_country_code, *b"ZZ");
         drop(iter);
@@ -4650,7 +4680,7 @@ mod tests {
     #[test]
     fn migrate_blocklist_ssh_event() {
         let schema = TestSchema::new();
-        let old = BlocklistSshFieldsV0_43 {
+        let old = BlocklistSshFieldsStoredV0_42 {
             sensor: "s1".to_string(),
             orig_addr: "10.0.0.1".parse().unwrap(),
             orig_port: 12345,
@@ -4696,7 +4726,7 @@ mod tests {
         let events = schema.store.events();
         let mut iter = events.raw_iter_forward();
         let (_, value) = iter.next().expect("migrated event");
-        let migrated: BlocklistSshFields = bincode::deserialize(&value).unwrap();
+        let migrated: BlocklistSshFieldsStored = bincode::deserialize(&value).unwrap();
         assert_eq!(migrated.orig_country_code, *b"ZZ");
         assert_eq!(migrated.resp_country_code, *b"ZZ");
         drop(iter);
@@ -4706,7 +4736,7 @@ mod tests {
     #[test]
     fn migrate_blocklist_tls_event() {
         let schema = TestSchema::new();
-        let old = BlocklistTlsFieldsV0_43 {
+        let old = BlocklistTlsFieldsStoredV0_42 {
             sensor: "s1".to_string(),
             orig_addr: "10.0.0.1".parse().unwrap(),
             orig_port: 12345,
@@ -4760,7 +4790,7 @@ mod tests {
         let events = schema.store.events();
         let mut iter = events.raw_iter_forward();
         let (_, value) = iter.next().expect("migrated event");
-        let migrated: BlocklistTlsFields = bincode::deserialize(&value).unwrap();
+        let migrated: BlocklistTlsFieldsStored = bincode::deserialize(&value).unwrap();
         assert_eq!(migrated.orig_country_code, *b"ZZ");
         assert_eq!(migrated.resp_country_code, *b"ZZ");
         drop(iter);
@@ -4770,7 +4800,7 @@ mod tests {
     #[test]
     fn migrate_blocklist_kerberos_event() {
         let schema = TestSchema::new();
-        let old = BlocklistKerberosFieldsV0_43 {
+        let old = BlocklistKerberosFieldsStoredV0_42 {
             sensor: "s1".to_string(),
             orig_addr: "10.0.0.1".parse().unwrap(),
             orig_port: 12345,
@@ -4812,7 +4842,7 @@ mod tests {
         let events = schema.store.events();
         let mut iter = events.raw_iter_forward();
         let (_, value) = iter.next().expect("migrated event");
-        let migrated: BlocklistKerberosFields = bincode::deserialize(&value).unwrap();
+        let migrated: BlocklistKerberosFieldsStored = bincode::deserialize(&value).unwrap();
         assert_eq!(migrated.orig_country_code, *b"ZZ");
         assert_eq!(migrated.resp_country_code, *b"ZZ");
         drop(iter);
@@ -4822,7 +4852,7 @@ mod tests {
     #[test]
     fn migrate_blocklist_smtp_event() {
         let schema = TestSchema::new();
-        let old = BlocklistSmtpFieldsV0_43 {
+        let old = BlocklistSmtpFieldsStoredV0_42 {
             sensor: "s1".to_string(),
             orig_addr: "10.0.0.1".parse().unwrap(),
             orig_port: 12345,
@@ -4862,7 +4892,7 @@ mod tests {
         let events = schema.store.events();
         let mut iter = events.raw_iter_forward();
         let (_, value) = iter.next().expect("migrated event");
-        let migrated: BlocklistSmtpFields = bincode::deserialize(&value).unwrap();
+        let migrated: BlocklistSmtpFieldsStored = bincode::deserialize(&value).unwrap();
         assert_eq!(migrated.orig_country_code, *b"ZZ");
         assert_eq!(migrated.resp_country_code, *b"ZZ");
         drop(iter);
@@ -4872,7 +4902,7 @@ mod tests {
     #[test]
     fn migrate_blocklist_nfs_event() {
         let schema = TestSchema::new();
-        let old = BlocklistNfsFieldsV0_43 {
+        let old = BlocklistNfsFieldsStoredV0_42 {
             sensor: "s1".to_string(),
             orig_addr: "10.0.0.1".parse().unwrap(),
             orig_port: 12345,
@@ -4907,7 +4937,7 @@ mod tests {
         let events = schema.store.events();
         let mut iter = events.raw_iter_forward();
         let (_, value) = iter.next().expect("migrated event");
-        let migrated: BlocklistNfsFields = bincode::deserialize(&value).unwrap();
+        let migrated: BlocklistNfsFieldsStored = bincode::deserialize(&value).unwrap();
         assert_eq!(migrated.orig_country_code, *b"ZZ");
         assert_eq!(migrated.resp_country_code, *b"ZZ");
         drop(iter);
@@ -4917,7 +4947,7 @@ mod tests {
     #[test]
     fn migrate_blocklist_dhcp_event() {
         let schema = TestSchema::new();
-        let old = BlocklistDhcpFieldsV0_43 {
+        let old = BlocklistDhcpFieldsStoredV0_44 {
             sensor: "s1".to_string(),
             orig_addr: "10.0.0.1".parse().unwrap(),
             orig_port: 68,
@@ -4948,6 +4978,7 @@ mod tests {
             class_id: vec![],
             client_id_type: 1,
             client_id: vec![0x00, 0x11, 0x22, 0x33, 0x44, 0x55],
+            options: vec![],
             confidence: 0.8,
             category: None,
         };
@@ -4968,7 +4999,7 @@ mod tests {
         let events = schema.store.events();
         let mut iter = events.raw_iter_forward();
         let (_, value) = iter.next().expect("migrated event");
-        let migrated: BlocklistDhcpFields = bincode::deserialize(&value).unwrap();
+        let migrated: BlocklistDhcpFieldsStored = bincode::deserialize(&value).unwrap();
         assert_eq!(migrated.orig_country_code, *b"ZZ");
         assert_eq!(migrated.resp_country_code, *b"ZZ");
         drop(iter);
@@ -4977,10 +5008,8 @@ mod tests {
 
     #[test]
     fn migrate_blocklist_dcerpc_event() {
-        use crate::event::BlocklistDceRpcFieldsStored;
-
         let schema = TestSchema::new();
-        let old = BlocklistDceRpcFieldsStored {
+        let old = BlocklistDceRpcFieldsStoredV0_44 {
             sensor: "s1".to_string(),
             orig_addr: "10.0.0.1".parse().unwrap(),
             orig_port: 12345,
@@ -4998,13 +5027,12 @@ mod tests {
             confidence: 0.8,
             category: None,
         };
-        let fields: BlocklistDceRpcFields = old.into();
-        let serialized = bincode::serialize(&fields).unwrap();
+        let serialized = bincode::serialize(&old).unwrap();
         let event_time = Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap();
         schema
             .store
             .events()
-            .put(&EventMessage {
+            .put_external(&EventMessage {
                 time: event_time,
                 kind: EventKind::BlocklistDceRpc,
                 fields: serialized,
@@ -5016,7 +5044,7 @@ mod tests {
         let events = schema.store.events();
         let mut iter = events.raw_iter_forward();
         let (_, value) = iter.next().expect("migrated event");
-        let migrated: BlocklistDceRpcFields = bincode::deserialize(&value).unwrap();
+        let migrated: BlocklistDceRpcFieldsStored = bincode::deserialize(&value).unwrap();
         assert_eq!(migrated.orig_country_code, *b"ZZ");
         assert_eq!(migrated.resp_country_code, *b"ZZ");
         drop(iter);
@@ -5026,7 +5054,7 @@ mod tests {
     #[test]
     fn migrate_blocklist_ntlm_event() {
         let schema = TestSchema::new();
-        let old = BlocklistNtlmFieldsV0_43 {
+        let old = BlocklistNtlmFieldsStoredV0_42 {
             sensor: "s1".to_string(),
             orig_addr: "10.0.0.1".parse().unwrap(),
             orig_port: 12345,
@@ -5064,7 +5092,7 @@ mod tests {
         let events = schema.store.events();
         let mut iter = events.raw_iter_forward();
         let (_, value) = iter.next().expect("migrated event");
-        let migrated: BlocklistNtlmFields = bincode::deserialize(&value).unwrap();
+        let migrated: BlocklistNtlmFieldsStored = bincode::deserialize(&value).unwrap();
         assert_eq!(migrated.orig_country_code, *b"ZZ");
         assert_eq!(migrated.resp_country_code, *b"ZZ");
         drop(iter);
@@ -5074,7 +5102,7 @@ mod tests {
     #[test]
     fn migrate_blocklist_smb_event() {
         let schema = TestSchema::new();
-        let old = BlocklistSmbFieldsV0_43 {
+        let old = BlocklistSmbFieldsStoredV0_42 {
             sensor: "s1".to_string(),
             orig_addr: "10.0.0.1".parse().unwrap(),
             orig_port: 12345,
@@ -5118,7 +5146,7 @@ mod tests {
         let events = schema.store.events();
         let mut iter = events.raw_iter_forward();
         let (_, value) = iter.next().expect("migrated event");
-        let migrated: BlocklistSmbFields = bincode::deserialize(&value).unwrap();
+        let migrated: BlocklistSmbFieldsStored = bincode::deserialize(&value).unwrap();
         assert_eq!(migrated.orig_country_code, *b"ZZ");
         assert_eq!(migrated.resp_country_code, *b"ZZ");
         drop(iter);
@@ -5128,7 +5156,7 @@ mod tests {
     #[test]
     fn migrate_blocklist_mqtt_event() {
         let schema = TestSchema::new();
-        let old = BlocklistMqttFieldsV0_43 {
+        let old = BlocklistMqttFieldsStoredV0_42 {
             sensor: "s1".to_string(),
             orig_addr: "10.0.0.1".parse().unwrap(),
             orig_port: 12345,
@@ -5167,7 +5195,7 @@ mod tests {
         let events = schema.store.events();
         let mut iter = events.raw_iter_forward();
         let (_, value) = iter.next().expect("migrated event");
-        let migrated: BlocklistMqttFields = bincode::deserialize(&value).unwrap();
+        let migrated: BlocklistMqttFieldsStored = bincode::deserialize(&value).unwrap();
         assert_eq!(migrated.orig_country_code, *b"ZZ");
         assert_eq!(migrated.resp_country_code, *b"ZZ");
         drop(iter);
@@ -5177,7 +5205,7 @@ mod tests {
     #[test]
     fn migrate_blocklist_bootp_event() {
         let schema = TestSchema::new();
-        let old = BlocklistBootpFieldsV0_43 {
+        let old = BlocklistBootpFieldsStoredV0_42 {
             sensor: "s1".to_string(),
             orig_addr: "10.0.0.1".parse().unwrap(),
             orig_port: 68,
@@ -5221,7 +5249,7 @@ mod tests {
         let events = schema.store.events();
         let mut iter = events.raw_iter_forward();
         let (_, value) = iter.next().expect("migrated event");
-        let migrated: BlocklistBootpFields = bincode::deserialize(&value).unwrap();
+        let migrated: BlocklistBootpFieldsStored = bincode::deserialize(&value).unwrap();
         assert_eq!(migrated.orig_country_code, *b"ZZ");
         assert_eq!(migrated.resp_country_code, *b"ZZ");
         drop(iter);
@@ -5231,7 +5259,7 @@ mod tests {
     #[test]
     fn migrate_blocklist_radius_event() {
         let schema = TestSchema::new();
-        let old = BlocklistRadiusFieldsV0_43 {
+        let old = BlocklistRadiusFieldsStoredV0_45 {
             sensor: "s1".to_string(),
             orig_addr: "10.0.0.1".parse().unwrap(),
             orig_port: 12345,
@@ -5278,7 +5306,7 @@ mod tests {
         let events = schema.store.events();
         let mut iter = events.raw_iter_forward();
         let (_, value) = iter.next().expect("migrated event");
-        let migrated: BlocklistRadiusFields = bincode::deserialize(&value).unwrap();
+        let migrated: BlocklistRadiusFieldsStored = bincode::deserialize(&value).unwrap();
         assert_eq!(migrated.orig_country_code, *b"ZZ");
         assert_eq!(migrated.resp_country_code, *b"ZZ");
         drop(iter);
@@ -5288,7 +5316,7 @@ mod tests {
     #[test]
     fn migrate_blocklist_malformed_dns_event() {
         let schema = TestSchema::new();
-        let old = BlocklistMalformedDnsFieldsV0_43 {
+        let old = BlocklistMalformedDnsFieldsStoredV0_45 {
             sensor: "s1".to_string(),
             orig_addr: "10.0.0.1".parse().unwrap(),
             orig_port: 12345,
@@ -5333,7 +5361,7 @@ mod tests {
         let events = schema.store.events();
         let mut iter = events.raw_iter_forward();
         let (_, value) = iter.next().expect("migrated event");
-        let migrated: BlocklistMalformedDnsFields = bincode::deserialize(&value).unwrap();
+        let migrated: BlocklistMalformedDnsFieldsStored = bincode::deserialize(&value).unwrap();
         assert_eq!(migrated.orig_country_code, *b"ZZ");
         assert_eq!(migrated.resp_country_code, *b"ZZ");
         drop(iter);
@@ -5344,7 +5372,7 @@ mod tests {
     fn migrate_network_threat_event() {
         let schema = TestSchema::new();
         let event_time = Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap();
-        let old = NetworkThreatV0_43 {
+        let old = NetworkThreatFieldsStoredV0_45 {
             time: event_time,
             sensor: "s1".to_string(),
             orig_addr: "10.0.0.1".parse().unwrap(),
@@ -5385,7 +5413,7 @@ mod tests {
         let events = schema.store.events();
         let mut iter = events.raw_iter_forward();
         let (_, value) = iter.next().expect("migrated event");
-        let migrated: NetworkThreatFields = bincode::deserialize(&value).unwrap();
+        let migrated: NetworkThreatFieldsStored = bincode::deserialize(&value).unwrap();
         assert_eq!(migrated.orig_country_code, *b"ZZ");
         assert_eq!(migrated.resp_country_code, *b"ZZ");
         drop(iter);
