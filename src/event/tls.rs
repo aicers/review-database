@@ -645,12 +645,14 @@ mod tests {
 
     use chrono::{TimeZone, Utc};
 
-    use super::{BlocklistTls, BlocklistTlsFields, Match, SuspiciousTlsTraffic};
+    use super::{
+        BlocklistTls, BlocklistTlsFields, BlocklistTlsFieldsStored, Match, SuspiciousTlsTraffic,
+    };
     use crate::event::EventCategory;
     use crate::tables::{ExclusionReason, TriageExclusion};
     use crate::types::HostNetworkGroup;
 
-    fn tls_fields(server_name: &str) -> BlocklistTlsFields {
+    fn tls_fields(server_name: &str) -> BlocklistTlsFieldsStored {
         BlocklistTlsFields {
             sensor: "sensor".to_string(),
             orig_addr: IpAddr::V4(Ipv4Addr::new(192, 168, 1, 100)),
@@ -692,6 +694,7 @@ mod tests {
             confidence: 0.9,
             category: Some(EventCategory::InitialAccess),
         }
+        .into()
     }
 
     fn ip_exclusion(addr: &str) -> TriageExclusion {
@@ -758,14 +761,53 @@ mod tests {
     }
 
     #[test]
-    fn suspicious_tls_traffic_exclusion_matches_all_kinds() {
+    fn suspicious_tls_traffic_exclusion_matches_ip_address() {
         let time = Utc.with_ymd_and_hms(2023, 1, 1, 12, 0, 0).unwrap();
         let event = SuspiciousTlsTraffic::new(time, tls_fields("internal-cert.example.com"));
 
         assert!(event.matched_any_exclusion(&[ip_exclusion("192.168.1.100")]));
+        assert!(event.matched_any_exclusion(&[ip_exclusion("198.51.100.1")]));
+        assert!(!event.matched_any_exclusion(&[ip_exclusion("10.0.0.1")]));
+    }
+
+    #[test]
+    fn suspicious_tls_traffic_exclusion_matches_domain_via_server_name() {
+        let time = Utc.with_ymd_and_hms(2023, 1, 1, 12, 0, 0).unwrap();
+        let event = SuspiciousTlsTraffic::new(time, tls_fields("internal-cert.example.com"));
+
+        // Subdomain match: "example.com" matches "internal-cert.example.com".
         assert!(event.matched_any_exclusion(&[domain_exclusion("example.com")]));
+        // Exact match.
+        assert!(event.matched_any_exclusion(&[domain_exclusion("internal-cert.example.com")]));
+        // Non-match.
+        assert!(!event.matched_any_exclusion(&[domain_exclusion("other.com")]));
+    }
+
+    #[test]
+    fn suspicious_tls_traffic_exclusion_matches_hostname_exact() {
+        let time = Utc.with_ymd_and_hms(2023, 1, 1, 12, 0, 0).unwrap();
+        let event = SuspiciousTlsTraffic::new(time, tls_fields("internal-cert.example.com"));
+
         assert!(event.matched_any_exclusion(&[hostname_exclusion("internal-cert.example.com")]));
+        // Hostname matching is exact equality, not substring.
+        assert!(!event.matched_any_exclusion(&[hostname_exclusion("example.com")]));
+        assert!(!event.matched_any_exclusion(&[hostname_exclusion("other")]));
+    }
+
+    #[test]
+    fn suspicious_tls_traffic_exclusion_does_not_match_uri() {
+        let time = Utc.with_ymd_and_hms(2023, 1, 1, 12, 0, 0).unwrap();
+        let event = SuspiciousTlsTraffic::new(time, tls_fields("internal-cert.example.com"));
+
         assert!(!event.matched_any_exclusion(&[uri_exclusion("/anything")]));
+        assert!(!event.matched_any_exclusion(&[uri_exclusion("internal-cert.example.com")]));
+    }
+
+    #[test]
+    fn suspicious_tls_traffic_exclusion_does_not_match_empty() {
+        let time = Utc.with_ymd_and_hms(2023, 1, 1, 12, 0, 0).unwrap();
+        let event = SuspiciousTlsTraffic::new(time, tls_fields("internal-cert.example.com"));
+
         assert!(!event.matched_any_exclusion(&[]));
     }
 }
