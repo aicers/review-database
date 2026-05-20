@@ -761,6 +761,14 @@ mod tests {
     }
 
     #[test]
+    fn blocklist_tls_exclusion_does_not_match_empty() {
+        let time = Utc.with_ymd_and_hms(2023, 1, 1, 12, 0, 0).unwrap();
+        let event = BlocklistTls::new(time, tls_fields("internal-cert.example.com"));
+
+        assert!(!event.matched_any_exclusion(&[]));
+    }
+
+    #[test]
     fn suspicious_tls_traffic_exclusion_matches_ip_address() {
         let time = Utc.with_ymd_and_hms(2023, 1, 1, 12, 0, 0).unwrap();
         let event = SuspiciousTlsTraffic::new(time, tls_fields("internal-cert.example.com"));
