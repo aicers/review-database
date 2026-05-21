@@ -108,9 +108,9 @@ impl From<TriagePolicyV0_44> for crate::TriagePolicy {
 }
 
 // =============================================================================
-// Event Fields V0_43 structures (before orig_country_code/resp_country_code)
-// These structs represent event field schemas from version 0.43.x without
-// country code fields. From 0.44.x, country code fields were added.
+// Event Fields structures before orig_country_code/resp_country_code
+// These structs represent old event field schemas without
+// country code fields. From 0.46.x, country code fields are stored internally.
 // Also handles cluster_id type change from Option<usize> to Option<u32>.
 // =============================================================================
 
@@ -122,7 +122,7 @@ pub struct FtpCommandV0_43 {
     pub reply_msg: String,
 }
 
-/// Port scan fields from version 0.43.x (before country codes were added)
+/// Port scan fields from version 0.43.x.
 #[derive(Serialize, Deserialize)]
 pub struct PortScanFieldsV0_43 {
     pub sensor: String,
@@ -401,10 +401,10 @@ pub struct RepeatedHttpSessionsFieldsV0_43 {
     pub category: Option<EventCategory>,
 }
 
-/// `HttpThreatFieldsStored` structure from version 0.43.x (before `cluster_id` type
-/// change and before country codes were added).
-/// In 0.43.x, `cluster_id` was `Option<usize>`. From 0.44.x, it changed to `Option<u32>`
-/// in the stored schema and country code fields were added.
+/// `HttpThreatFieldsStored` structure from version 0.43.x (before the
+/// `cluster_id` type change).
+/// In 0.43.x, `cluster_id` was `Option<usize>`. From 0.44.x, it changed to
+/// `Option<u32>` in the stored schema.
 ///
 /// Note: Other event types (`NetworkThreat`, `WindowsThreat`, `ExtraThreat`) are not generated
 /// on production servers, so their migration structures are not needed.
