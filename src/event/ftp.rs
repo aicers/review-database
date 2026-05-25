@@ -215,6 +215,24 @@ pub(crate) struct FtpBruteForceFieldsStoredV0_42 {
     pub category: Option<EventCategory>,
 }
 
+#[allow(dead_code)]
+#[derive(Deserialize, Serialize)]
+pub(crate) struct FtpBruteForceFieldsStoredV0_45 {
+    pub sensor: String,
+    pub orig_addr: IpAddr,
+    pub orig_country_code: [u8; 2],
+    pub resp_addr: IpAddr,
+    pub resp_port: u16,
+    pub resp_country_code: [u8; 2],
+    pub proto: u8,
+    pub user_list: Vec<String>,
+    pub start_time: i64,
+    pub end_time: i64,
+    pub is_internal: bool,
+    pub confidence: f32,
+    pub category: Option<EventCategory>,
+}
+
 impl From<FtpBruteForceFields> for FtpBruteForceFieldsStored {
     fn from(value: FtpBruteForceFields) -> Self {
         Self {
@@ -238,8 +256,10 @@ pub struct FtpBruteForce {
     pub sensor: String,
     pub time: DateTime<Utc>,
     pub orig_addr: IpAddr,
+    pub orig_country_code: [u8; 2],
     pub resp_addr: IpAddr,
     pub resp_port: u16,
+    pub resp_country_code: [u8; 2],
     pub proto: u8,
     pub user_list: Vec<String>,
     pub start_time: DateTime<Utc>,
@@ -274,8 +294,10 @@ impl FtpBruteForce {
             sensor: fields.sensor.clone(),
             time,
             orig_addr: fields.orig_addr,
+            orig_country_code: super::common::COUNTRY_CODE_ZZ,
             resp_addr: fields.resp_addr,
             resp_port: fields.resp_port,
+            resp_country_code: super::common::COUNTRY_CODE_ZZ,
             proto: fields.proto,
             user_list: fields.user_list.clone(),
             start_time: DateTime::from_timestamp_nanos(fields.start_time),
@@ -440,6 +462,30 @@ pub(crate) struct FtpEventFieldsStoredV0_42 {
     pub category: Option<EventCategory>,
 }
 
+#[allow(dead_code)]
+#[derive(Deserialize, Serialize)]
+pub(crate) struct FtpEventFieldsStoredV0_45 {
+    pub sensor: String,
+    pub orig_addr: IpAddr,
+    pub orig_port: u16,
+    pub orig_country_code: [u8; 2],
+    pub resp_addr: IpAddr,
+    pub resp_port: u16,
+    pub resp_country_code: [u8; 2],
+    pub proto: u8,
+    pub start_time: i64,
+    pub duration: i64,
+    pub orig_pkts: u64,
+    pub resp_pkts: u64,
+    pub orig_l2_bytes: u64,
+    pub resp_l2_bytes: u64,
+    pub user: String,
+    pub password: String,
+    pub commands: Vec<FtpCommand>,
+    pub confidence: f32,
+    pub category: Option<EventCategory>,
+}
+
 impl From<FtpEventFields> for FtpEventFieldsStored {
     fn from(value: FtpEventFields) -> Self {
         Self {
@@ -470,8 +516,10 @@ pub struct FtpPlainText {
     pub sensor: String,
     pub orig_addr: IpAddr,
     pub orig_port: u16,
+    pub orig_country_code: [u8; 2],
     pub resp_addr: IpAddr,
     pub resp_port: u16,
+    pub resp_country_code: [u8; 2],
     pub proto: u8,
     pub start_time: DateTime<Utc>,
     pub duration: i64,
@@ -527,8 +575,10 @@ impl FtpPlainText {
             start_time: DateTime::from_timestamp_nanos(fields.start_time),
             orig_addr: fields.orig_addr,
             orig_port: fields.orig_port,
+            orig_country_code: super::common::COUNTRY_CODE_ZZ,
             resp_addr: fields.resp_addr,
             resp_port: fields.resp_port,
+            resp_country_code: super::common::COUNTRY_CODE_ZZ,
             proto: fields.proto,
             duration: fields.duration,
             orig_pkts: fields.orig_pkts,
@@ -608,8 +658,10 @@ pub struct BlocklistFtp {
     pub sensor: String,
     pub orig_addr: IpAddr,
     pub orig_port: u16,
+    pub orig_country_code: [u8; 2],
     pub resp_addr: IpAddr,
     pub resp_port: u16,
+    pub resp_country_code: [u8; 2],
     pub proto: u8,
     pub start_time: DateTime<Utc>,
     pub duration: i64,
@@ -665,8 +717,10 @@ impl BlocklistFtp {
             start_time: DateTime::from_timestamp_nanos(fields.start_time),
             orig_addr: fields.orig_addr,
             orig_port: fields.orig_port,
+            orig_country_code: super::common::COUNTRY_CODE_ZZ,
             resp_addr: fields.resp_addr,
             resp_port: fields.resp_port,
+            resp_country_code: super::common::COUNTRY_CODE_ZZ,
             proto: fields.proto,
             duration: fields.duration,
             orig_pkts: fields.orig_pkts,

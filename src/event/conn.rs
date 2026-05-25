@@ -65,6 +65,22 @@ pub(crate) struct PortScanFieldsStoredV0_42 {
     pub category: Option<EventCategory>,
 }
 
+#[allow(dead_code)]
+#[derive(Deserialize, Serialize)]
+pub(crate) struct PortScanFieldsStoredV0_45 {
+    pub sensor: String,
+    pub orig_addr: IpAddr,
+    pub orig_country_code: [u8; 2],
+    pub resp_addr: IpAddr,
+    pub resp_ports: Vec<u16>,
+    pub resp_country_code: [u8; 2],
+    pub start_time: i64,
+    pub end_time: i64,
+    pub proto: u8,
+    pub confidence: f32,
+    pub category: Option<EventCategory>,
+}
+
 impl From<PortScanFields> for PortScanFieldsStored {
     fn from(value: PortScanFields) -> Self {
         Self {
@@ -110,8 +126,10 @@ pub struct PortScan {
     pub sensor: String,
     pub time: DateTime<Utc>,
     pub orig_addr: IpAddr,
+    pub orig_country_code: [u8; 2],
     pub resp_addr: IpAddr,
     pub resp_ports: Vec<u16>,
+    pub resp_country_code: [u8; 2],
     pub start_time: DateTime<Utc>,
     pub end_time: DateTime<Utc>,
     pub proto: u8,
@@ -142,7 +160,9 @@ impl PortScan {
             sensor: fields.sensor.clone(),
             time,
             orig_addr: fields.orig_addr,
+            orig_country_code: super::common::COUNTRY_CODE_ZZ,
             resp_addr: fields.resp_addr,
+            resp_country_code: super::common::COUNTRY_CODE_ZZ,
             resp_ports: fields.resp_ports.clone(),
             proto: fields.proto,
             start_time: DateTime::from_timestamp_nanos(fields.start_time),
@@ -252,6 +272,22 @@ pub(crate) struct MultiHostPortScanFieldsStoredV0_42 {
     pub category: Option<EventCategory>,
 }
 
+#[allow(dead_code)]
+#[derive(Deserialize, Serialize)]
+pub(crate) struct MultiHostPortScanFieldsStoredV0_45 {
+    pub sensor: String,
+    pub orig_addr: IpAddr,
+    pub orig_country_code: [u8; 2],
+    pub resp_addrs: Vec<IpAddr>,
+    pub resp_port: u16,
+    pub resp_country_code: Vec<[u8; 2]>,
+    pub proto: u8,
+    pub start_time: i64,
+    pub end_time: i64,
+    pub confidence: f32,
+    pub category: Option<EventCategory>,
+}
+
 impl From<MultiHostPortScanFields> for MultiHostPortScanFieldsStored {
     fn from(value: MultiHostPortScanFields) -> Self {
         Self {
@@ -297,8 +333,10 @@ pub struct MultiHostPortScan {
     pub sensor: String,
     pub time: DateTime<Utc>,
     pub orig_addr: IpAddr,
-    pub resp_port: u16,
+    pub orig_country_code: [u8; 2],
     pub resp_addrs: Vec<IpAddr>,
+    pub resp_port: u16,
+    pub resp_country_code: Vec<[u8; 2]>,
     pub proto: u8,
     pub start_time: DateTime<Utc>,
     pub end_time: DateTime<Utc>,
@@ -329,8 +367,10 @@ impl MultiHostPortScan {
             sensor: fields.sensor.clone(),
             time,
             orig_addr: fields.orig_addr,
+            orig_country_code: super::common::COUNTRY_CODE_ZZ,
             resp_port: fields.resp_port,
             resp_addrs: fields.resp_addrs.clone(),
+            resp_country_code: vec![super::common::COUNTRY_CODE_ZZ; fields.resp_addrs.len()],
             proto: fields.proto,
             start_time: DateTime::from_timestamp_nanos(fields.start_time),
             end_time: DateTime::from_timestamp_nanos(fields.end_time),
@@ -438,6 +478,21 @@ pub(crate) struct ExternalDdosFieldsStoredV0_42 {
     pub category: Option<EventCategory>,
 }
 
+#[allow(dead_code)]
+#[derive(Deserialize, Serialize)]
+pub(crate) struct ExternalDdosFieldsStoredV0_45 {
+    pub sensor: String,
+    pub orig_addrs: Vec<IpAddr>,
+    pub orig_country_code: Vec<[u8; 2]>,
+    pub resp_addr: IpAddr,
+    pub resp_country_code: [u8; 2],
+    pub proto: u8,
+    pub start_time: i64,
+    pub end_time: i64,
+    pub confidence: f32,
+    pub category: Option<EventCategory>,
+}
+
 impl From<ExternalDdosFields> for ExternalDdosFieldsStored {
     fn from(value: ExternalDdosFields) -> Self {
         Self {
@@ -481,7 +536,9 @@ pub struct ExternalDdos {
     pub sensor: String,
     pub time: DateTime<Utc>,
     pub orig_addrs: Vec<IpAddr>,
+    pub orig_country_code: Vec<[u8; 2]>,
     pub resp_addr: IpAddr,
+    pub resp_country_code: [u8; 2],
     pub proto: u8,
     pub start_time: DateTime<Utc>,
     pub end_time: DateTime<Utc>,
@@ -511,7 +568,9 @@ impl ExternalDdos {
             sensor: fields.sensor.clone(),
             time,
             orig_addrs: fields.orig_addrs.clone(),
+            orig_country_code: vec![super::common::COUNTRY_CODE_ZZ; fields.orig_addrs.len()],
             resp_addr: fields.resp_addr,
+            resp_country_code: super::common::COUNTRY_CODE_ZZ,
             proto: fields.proto,
             start_time: DateTime::from_timestamp_nanos(fields.start_time),
             end_time: DateTime::from_timestamp_nanos(fields.end_time),
@@ -637,6 +696,31 @@ pub(crate) struct BlocklistConnFieldsStoredV0_42 {
     pub category: Option<EventCategory>,
 }
 
+#[allow(dead_code)]
+#[derive(Deserialize, Serialize)]
+pub(crate) struct BlocklistConnFieldsStoredV0_45 {
+    pub sensor: String,
+    pub orig_addr: IpAddr,
+    pub orig_port: u16,
+    pub orig_country_code: [u8; 2],
+    pub resp_addr: IpAddr,
+    pub resp_port: u16,
+    pub resp_country_code: [u8; 2],
+    pub proto: u8,
+    pub conn_state: String,
+    pub start_time: i64,
+    pub duration: i64,
+    pub service: String,
+    pub orig_bytes: u64,
+    pub resp_bytes: u64,
+    pub orig_pkts: u64,
+    pub resp_pkts: u64,
+    pub orig_l2_bytes: u64,
+    pub resp_l2_bytes: u64,
+    pub confidence: f32,
+    pub category: Option<EventCategory>,
+}
+
 impl From<BlocklistConnFields> for BlocklistConnFieldsStored {
     fn from(value: BlocklistConnFields) -> Self {
         Self {
@@ -700,8 +784,10 @@ pub struct BlocklistConn {
     pub time: DateTime<Utc>,
     pub orig_addr: IpAddr,
     pub orig_port: u16,
+    pub orig_country_code: [u8; 2],
     pub resp_addr: IpAddr,
     pub resp_port: u16,
+    pub resp_country_code: [u8; 2],
     pub proto: u8,
     pub conn_state: String,
     pub start_time: DateTime<Utc>,
@@ -751,8 +837,10 @@ impl BlocklistConn {
             sensor: fields.sensor,
             orig_addr: fields.orig_addr,
             orig_port: fields.orig_port,
+            orig_country_code: super::common::COUNTRY_CODE_ZZ,
             resp_addr: fields.resp_addr,
             resp_port: fields.resp_port,
+            resp_country_code: super::common::COUNTRY_CODE_ZZ,
             proto: fields.proto,
             conn_state: fields.conn_state,
             start_time: DateTime::from_timestamp_nanos(fields.start_time),

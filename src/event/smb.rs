@@ -101,6 +101,38 @@ pub(crate) struct BlocklistSmbFieldsStoredV0_42 {
     pub category: Option<EventCategory>,
 }
 
+#[allow(dead_code)]
+#[derive(Deserialize, Serialize)]
+pub(crate) struct BlocklistSmbFieldsStoredV0_45 {
+    pub sensor: String,
+    pub orig_addr: IpAddr,
+    pub orig_port: u16,
+    pub orig_country_code: [u8; 2],
+    pub resp_addr: IpAddr,
+    pub resp_port: u16,
+    pub resp_country_code: [u8; 2],
+    pub proto: u8,
+    pub start_time: i64,
+    pub duration: i64,
+    pub orig_pkts: u64,
+    pub resp_pkts: u64,
+    pub orig_l2_bytes: u64,
+    pub resp_l2_bytes: u64,
+    pub command: u8,
+    pub path: String,
+    pub service: String,
+    pub file_name: String,
+    pub file_size: u64,
+    pub resource_type: u16,
+    pub fid: u16,
+    pub create_time: i64,
+    pub access_time: i64,
+    pub write_time: i64,
+    pub change_time: i64,
+    pub confidence: f32,
+    pub category: Option<EventCategory>,
+}
+
 impl From<BlocklistSmbFields> for BlocklistSmbFieldsStored {
     fn from(value: BlocklistSmbFields) -> Self {
         Self {
@@ -177,8 +209,10 @@ pub struct BlocklistSmb {
     pub sensor: String,
     pub orig_addr: IpAddr,
     pub orig_port: u16,
+    pub orig_country_code: [u8; 2],
     pub resp_addr: IpAddr,
     pub resp_port: u16,
+    pub resp_country_code: [u8; 2],
     pub proto: u8,
     pub start_time: DateTime<Utc>,
     pub duration: i64,
@@ -240,8 +274,10 @@ impl BlocklistSmb {
             sensor: fields.sensor,
             orig_addr: fields.orig_addr,
             orig_port: fields.orig_port,
+            orig_country_code: super::common::COUNTRY_CODE_ZZ,
             resp_addr: fields.resp_addr,
             resp_port: fields.resp_port,
+            resp_country_code: super::common::COUNTRY_CODE_ZZ,
             proto: fields.proto,
             start_time: DateTime::from_timestamp_nanos(fields.start_time),
             duration: fields.duration,

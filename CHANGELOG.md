@@ -25,6 +25,11 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   fields `client_name` to `cname` and `service_name` to `sname` to match
   Kerberos protocol terminology and align with the existing
   `cname_type`/`sname_type` fields.
+- **BREAKING**: Added `orig_country_code` and `resp_country_code` fields to
+  the public event schemas and their stored counterparts for event families
+  that track source and destination addresses. Runtime values currently
+  default these fields to `ZZ` until the country-code lookup and stored-event
+  migration are fully wired.
 - Separated producer-facing event field schemas from on-disk storage schemas.
   The producer-facing `*Fields` types remain the public ingestion interface,
   while new repository-local `*FieldsStored` types are the schema written to

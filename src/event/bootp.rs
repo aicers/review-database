@@ -139,6 +139,38 @@ pub(crate) struct BlocklistBootpFieldsStoredV0_42 {
     pub category: Option<EventCategory>,
 }
 
+#[allow(dead_code)]
+#[derive(Deserialize, Serialize)]
+pub(crate) struct BlocklistBootpFieldsStoredV0_45 {
+    pub sensor: String,
+    pub orig_addr: IpAddr,
+    pub orig_port: u16,
+    pub orig_country_code: [u8; 2],
+    pub resp_addr: IpAddr,
+    pub resp_port: u16,
+    pub resp_country_code: [u8; 2],
+    pub proto: u8,
+    pub start_time: i64,
+    pub duration: i64,
+    pub orig_pkts: u64,
+    pub resp_pkts: u64,
+    pub orig_l2_bytes: u64,
+    pub resp_l2_bytes: u64,
+    pub op: u8,
+    pub htype: u8,
+    pub hops: u8,
+    pub xid: u32,
+    pub ciaddr: IpAddr,
+    pub yiaddr: IpAddr,
+    pub siaddr: IpAddr,
+    pub giaddr: IpAddr,
+    pub chaddr: Vec<u8>,
+    pub sname: String,
+    pub file: String,
+    pub confidence: f32,
+    pub category: Option<EventCategory>,
+}
+
 impl From<BlocklistBootpFields> for BlocklistBootpFieldsStored {
     fn from(value: BlocklistBootpFields) -> Self {
         Self {
@@ -177,8 +209,10 @@ pub struct BlocklistBootp {
     pub sensor: String,
     pub orig_addr: IpAddr,
     pub orig_port: u16,
+    pub orig_country_code: [u8; 2],
     pub resp_addr: IpAddr,
     pub resp_port: u16,
+    pub resp_country_code: [u8; 2],
     pub proto: u8,
     pub start_time: DateTime<Utc>,
     pub duration: i64,
@@ -241,8 +275,10 @@ impl BlocklistBootp {
             sensor: fields.sensor,
             orig_addr: fields.orig_addr,
             orig_port: fields.orig_port,
+            orig_country_code: super::common::COUNTRY_CODE_ZZ,
             resp_addr: fields.resp_addr,
             resp_port: fields.resp_port,
+            resp_country_code: super::common::COUNTRY_CODE_ZZ,
             proto: fields.proto,
             start_time: DateTime::from_timestamp_nanos(fields.start_time),
             duration: fields.duration,

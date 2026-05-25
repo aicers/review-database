@@ -137,6 +137,46 @@ pub(crate) struct BlocklistDhcpFieldsStoredV0_44 {
     pub category: Option<EventCategory>,
 }
 
+#[allow(dead_code)]
+#[derive(Deserialize, Serialize)]
+pub(crate) struct BlocklistDhcpFieldsStoredV0_45 {
+    pub sensor: String,
+    pub orig_addr: IpAddr,
+    pub orig_port: u16,
+    pub orig_country_code: [u8; 2],
+    pub resp_addr: IpAddr,
+    pub resp_port: u16,
+    pub resp_country_code: [u8; 2],
+    pub proto: u8,
+    pub start_time: i64,
+    pub duration: i64,
+    pub orig_pkts: u64,
+    pub resp_pkts: u64,
+    pub orig_l2_bytes: u64,
+    pub resp_l2_bytes: u64,
+    pub msg_type: u8,
+    pub ciaddr: IpAddr,
+    pub yiaddr: IpAddr,
+    pub siaddr: IpAddr,
+    pub giaddr: IpAddr,
+    pub subnet_mask: IpAddr,
+    pub router: Vec<IpAddr>,
+    pub domain_name_server: Vec<IpAddr>,
+    pub req_ip_addr: IpAddr,
+    pub lease_time: u32,
+    pub server_id: IpAddr,
+    pub param_req_list: Vec<u8>,
+    pub message: String,
+    pub renewal_time: u32,
+    pub rebinding_time: u32,
+    pub class_id: Vec<u8>,
+    pub client_id_type: u8,
+    pub client_id: Vec<u8>,
+    pub options: Vec<(u8, Vec<u8>)>,
+    pub confidence: f32,
+    pub category: Option<EventCategory>,
+}
+
 impl From<BlocklistDhcpFields> for BlocklistDhcpFieldsStored {
     fn from(value: BlocklistDhcpFields) -> Self {
         Self {
@@ -236,8 +276,10 @@ pub struct BlocklistDhcp {
     pub sensor: String,
     pub orig_addr: IpAddr,
     pub orig_port: u16,
+    pub orig_country_code: [u8; 2],
     pub resp_addr: IpAddr,
     pub resp_port: u16,
+    pub resp_country_code: [u8; 2],
     pub proto: u8,
     pub start_time: DateTime<Utc>,
     pub duration: i64,
@@ -318,8 +360,10 @@ impl BlocklistDhcp {
             sensor: fields.sensor,
             orig_addr: fields.orig_addr,
             orig_port: fields.orig_port,
+            orig_country_code: super::common::COUNTRY_CODE_ZZ,
             resp_addr: fields.resp_addr,
             resp_port: fields.resp_port,
+            resp_country_code: super::common::COUNTRY_CODE_ZZ,
             proto: fields.proto,
             start_time: DateTime::from_timestamp_nanos(fields.start_time),
             duration: fields.duration,

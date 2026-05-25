@@ -89,6 +89,34 @@ pub(crate) struct BlocklistSmtpFieldsStoredV0_42 {
     pub category: Option<EventCategory>,
 }
 
+#[allow(dead_code)]
+#[derive(Deserialize, Serialize)]
+pub(crate) struct BlocklistSmtpFieldsStoredV0_45 {
+    pub sensor: String,
+    pub orig_addr: IpAddr,
+    pub orig_port: u16,
+    pub orig_country_code: [u8; 2],
+    pub resp_addr: IpAddr,
+    pub resp_port: u16,
+    pub resp_country_code: [u8; 2],
+    pub proto: u8,
+    pub start_time: i64,
+    pub duration: i64,
+    pub orig_pkts: u64,
+    pub resp_pkts: u64,
+    pub orig_l2_bytes: u64,
+    pub resp_l2_bytes: u64,
+    pub mailfrom: String,
+    pub date: String,
+    pub from: String,
+    pub to: String,
+    pub subject: String,
+    pub agent: String,
+    pub state: String,
+    pub confidence: f32,
+    pub category: Option<EventCategory>,
+}
+
 impl From<BlocklistSmtpFields> for BlocklistSmtpFieldsStored {
     fn from(value: BlocklistSmtpFields) -> Self {
         Self {
@@ -157,8 +185,10 @@ pub struct BlocklistSmtp {
     pub sensor: String,
     pub orig_addr: IpAddr,
     pub orig_port: u16,
+    pub orig_country_code: [u8; 2],
     pub resp_addr: IpAddr,
     pub resp_port: u16,
+    pub resp_country_code: [u8; 2],
     pub proto: u8,
     pub start_time: DateTime<Utc>,
     pub duration: i64,
@@ -213,8 +243,10 @@ impl BlocklistSmtp {
             sensor: fields.sensor,
             orig_addr: fields.orig_addr,
             orig_port: fields.orig_port,
+            orig_country_code: super::common::COUNTRY_CODE_ZZ,
             resp_addr: fields.resp_addr,
             resp_port: fields.resp_port,
+            resp_country_code: super::common::COUNTRY_CODE_ZZ,
             proto: fields.proto,
             start_time: DateTime::from_timestamp_nanos(fields.start_time),
             duration: fields.duration,
