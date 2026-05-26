@@ -2,6 +2,9 @@
 
 use std::net::IpAddr;
 
+/// Country code used before an endpoint lookup or migration has resolved it.
+pub(crate) const COUNTRY_CODE_PENDING: [u8; 2] = [b'Z', b'Z'];
+
 /// Looks up the country code for the given IP address.
 ///
 /// # Arguments

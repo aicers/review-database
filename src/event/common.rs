@@ -20,10 +20,6 @@ use crate::{
 
 /// Epsilon value for inclusive confidence comparisons
 const CONFIDENCE_EPSILON: f32 = 1e-6;
-// Country-code lookup is not wired for stored events yet; the follow-up migration
-// will distinguish failed/invalid lookup with XX.
-pub(super) const COUNTRY_CODE_ZZ: [u8; 2] = [b'Z', b'Z'];
-
 // TODO: Make new Match trait to support Windows Events
 
 pub(super) trait Match {
@@ -2567,10 +2563,10 @@ mod tests {
             sensor: "sensor".to_string(),
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             orig_port: 10000,
-            orig_country_code: [b'Z', b'Z'],
+            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
             resp_port: 80,
-            resp_country_code: [b'Z', b'Z'],
+            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
             proto: 6,
             service: "http".to_string(),
             start_time: Utc.with_ymd_and_hms(1970, 1, 1, 0, 0, 0).unwrap(),

@@ -140,7 +140,7 @@ pub(crate) struct HttpEventFieldsStoredV0_42 {
 
 #[allow(dead_code)]
 #[derive(Deserialize, Serialize)]
-pub(crate) struct HttpEventFieldsStoredV0_45 {
+pub(crate) struct HttpEventFieldsStoredV0_46 {
     pub sensor: String,
     pub orig_addr: IpAddr,
     pub orig_port: u16,
@@ -301,7 +301,7 @@ pub(crate) struct RepeatedHttpSessionsFieldsStoredV0_42 {
 
 #[allow(dead_code)]
 #[derive(Deserialize, Serialize)]
-pub(crate) struct RepeatedHttpSessionsFieldsStoredV0_45 {
+pub(crate) struct RepeatedHttpSessionsFieldsStoredV0_46 {
     pub sensor: String,
     pub orig_addr: IpAddr,
     pub orig_port: u16,
@@ -379,11 +379,13 @@ impl fmt::Display for RepeatedHttpSessions {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "sensor={:?} orig_addr={:?} orig_port={:?} resp_addr={:?} resp_port={:?} proto={:?} start_time={:?} end_time={:?} triage_scores={:?}",
+            "sensor={:?} orig_addr={:?} orig_country_code={:?} orig_port={:?} resp_addr={:?} resp_country_code={:?} resp_port={:?} proto={:?} start_time={:?} end_time={:?} triage_scores={:?}",
             self.sensor,
             self.orig_addr.to_string(),
+            self.orig_country_code,
             self.orig_port.to_string(),
             self.resp_addr.to_string(),
+            self.resp_country_code,
             self.resp_port.to_string(),
             self.proto.to_string(),
             self.start_time.to_rfc3339(),
@@ -400,10 +402,10 @@ impl RepeatedHttpSessions {
             sensor: fields.sensor.clone(),
             orig_addr: fields.orig_addr,
             orig_port: fields.orig_port,
-            orig_country_code: super::common::COUNTRY_CODE_ZZ,
+            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
             resp_addr: fields.resp_addr,
             resp_port: fields.resp_port,
-            resp_country_code: super::common::COUNTRY_CODE_ZZ,
+            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
             proto: fields.proto,
             start_time: DateTime::from_timestamp_nanos(fields.start_time),
             end_time: DateTime::from_timestamp_nanos(fields.end_time),
@@ -579,7 +581,7 @@ pub(crate) struct HttpThreatFieldsStoredV0_44 {
 
 #[allow(dead_code)]
 #[derive(::serde::Deserialize, ::serde::Serialize)]
-pub(crate) struct HttpThreatFieldsStoredV0_45 {
+pub(crate) struct HttpThreatFieldsStoredV0_46 {
     #[serde(with = "ts_nanoseconds")]
     pub time: DateTime<Utc>,
     pub sensor: String,
@@ -792,11 +794,13 @@ impl fmt::Display for HttpThreat {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "sensor={:?} orig_addr={:?} orig_port={:?} resp_addr={:?} resp_port={:?} proto={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} method={:?} host={:?} uri={:?} referer={:?} version={:?} user_agent={:?} request_len={:?} response_len={:?} status_code={:?} status_msg={:?} username={:?} password={:?} cookie={:?} content_encoding={:?} content_type={:?} cache_control={:?} filenames={:?} mime_types={:?} body={:?} state={:?} db_name={:?} rule_id={:?} matched_to={:?} cluster_id={:?} attack_kind={:?} confidence={:?} triage_scores={:?}",
+            "sensor={:?} orig_addr={:?} orig_country_code={:?} orig_port={:?} resp_addr={:?} resp_country_code={:?} resp_port={:?} proto={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} method={:?} host={:?} uri={:?} referer={:?} version={:?} user_agent={:?} request_len={:?} response_len={:?} status_code={:?} status_msg={:?} username={:?} password={:?} cookie={:?} content_encoding={:?} content_type={:?} cache_control={:?} filenames={:?} mime_types={:?} body={:?} state={:?} db_name={:?} rule_id={:?} matched_to={:?} cluster_id={:?} attack_kind={:?} confidence={:?} triage_scores={:?}",
             self.sensor,
             self.orig_addr.to_string(),
+            self.orig_country_code,
             self.orig_port.to_string(),
             self.resp_addr.to_string(),
+            self.resp_country_code,
             self.resp_port.to_string(),
             self.proto.to_string(),
             self.start_time.to_rfc3339(),
@@ -844,10 +848,10 @@ impl HttpThreat {
             start_time: DateTime::from_timestamp_nanos(fields.start_time),
             orig_addr: fields.orig_addr,
             orig_port: fields.orig_port,
-            orig_country_code: super::common::COUNTRY_CODE_ZZ,
+            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
             resp_addr: fields.resp_addr,
             resp_port: fields.resp_port,
-            resp_country_code: super::common::COUNTRY_CODE_ZZ,
+            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
             proto: fields.proto,
             duration: fields.duration,
             orig_pkts: fields.orig_pkts,
@@ -1064,7 +1068,7 @@ pub(crate) struct DgaFieldsStoredV0_42 {
 
 #[allow(dead_code)]
 #[derive(Deserialize, Serialize)]
-pub(crate) struct DgaFieldsStoredV0_45 {
+pub(crate) struct DgaFieldsStoredV0_46 {
     pub sensor: String,
     pub orig_addr: IpAddr,
     pub orig_port: u16,
@@ -1240,11 +1244,13 @@ impl fmt::Display for DomainGenerationAlgorithm {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "sensor={:?} orig_addr={:?} orig_port={:?} resp_addr={:?} resp_port={:?} proto={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} method={:?} host={:?} uri={:?} referer={:?} version={:?} user_agent={:?} request_len={:?} response_len={:?} status_code={:?} status_msg={:?} username={:?} password={:?} cookie={:?} content_encoding={:?} content_type={:?} cache_control={:?} filenames={:?} mime_types={:?} body={:?} state={:?} confidence={:?} triage_scores={:?}",
+            "sensor={:?} orig_addr={:?} orig_country_code={:?} orig_port={:?} resp_addr={:?} resp_country_code={:?} resp_port={:?} proto={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} method={:?} host={:?} uri={:?} referer={:?} version={:?} user_agent={:?} request_len={:?} response_len={:?} status_code={:?} status_msg={:?} username={:?} password={:?} cookie={:?} content_encoding={:?} content_type={:?} cache_control={:?} filenames={:?} mime_types={:?} body={:?} state={:?} confidence={:?} triage_scores={:?}",
             self.sensor,
             self.orig_addr.to_string(),
+            self.orig_country_code,
             self.orig_port.to_string(),
             self.resp_addr.to_string(),
+            self.resp_country_code,
             self.resp_port.to_string(),
             self.proto.to_string(),
             self.start_time.to_rfc3339(),
@@ -1287,10 +1293,10 @@ impl DomainGenerationAlgorithm {
             start_time: DateTime::from_timestamp_nanos(fields.start_time),
             orig_addr: fields.orig_addr,
             orig_port: fields.orig_port,
-            orig_country_code: super::common::COUNTRY_CODE_ZZ,
+            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
             resp_addr: fields.resp_addr,
             resp_port: fields.resp_port,
-            resp_country_code: super::common::COUNTRY_CODE_ZZ,
+            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
             proto: fields.proto,
             duration: fields.duration,
             orig_pkts: fields.orig_pkts,
@@ -1442,11 +1448,13 @@ impl fmt::Display for NonBrowser {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "sensor={:?} orig_addr={:?} orig_port={:?} resp_addr={:?} resp_port={:?} proto={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} method={:?} host={:?} uri={:?} referer={:?} version={:?} user_agent={:?} request_len={:?} response_len={:?} status_code={:?} status_msg={:?} username={:?} password={:?} cookie={:?} content_encoding={:?} content_type={:?} cache_control={:?} filenames={:?} mime_types={:?} body={:?} state={:?} triage_scores={:?}",
+            "sensor={:?} orig_addr={:?} orig_country_code={:?} orig_port={:?} resp_addr={:?} resp_country_code={:?} resp_port={:?} proto={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} method={:?} host={:?} uri={:?} referer={:?} version={:?} user_agent={:?} request_len={:?} response_len={:?} status_code={:?} status_msg={:?} username={:?} password={:?} cookie={:?} content_encoding={:?} content_type={:?} cache_control={:?} filenames={:?} mime_types={:?} body={:?} state={:?} triage_scores={:?}",
             self.sensor,
             self.orig_addr.to_string(),
+            self.orig_country_code,
             self.orig_port.to_string(),
             self.resp_addr.to_string(),
+            self.resp_country_code,
             self.resp_port.to_string(),
             self.proto.to_string(),
             self.start_time.to_rfc3339(),
@@ -1493,10 +1501,10 @@ impl NonBrowser {
             resp_l2_bytes: fields.resp_l2_bytes,
             orig_addr: fields.orig_addr,
             orig_port: fields.orig_port,
-            orig_country_code: super::common::COUNTRY_CODE_ZZ,
+            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
             resp_addr: fields.resp_addr,
             resp_port: fields.resp_port,
-            resp_country_code: super::common::COUNTRY_CODE_ZZ,
+            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
             proto: fields.proto,
             method: fields.method.clone(),
             host: fields.host.clone(),
@@ -1647,11 +1655,13 @@ impl fmt::Display for BlocklistHttp {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "sensor={:?} orig_addr={:?} orig_port={:?} resp_addr={:?} resp_port={:?} proto={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} method={:?} host={:?} uri={:?} referer={:?} version={:?} user_agent={:?} request_len={:?} response_len={:?} status_code={:?} status_msg={:?} username={:?} password={:?} cookie={:?} content_encoding={:?} content_type={:?} cache_control={:?} filenames={:?} mime_types={:?} body={:?} state={:?} triage_scores={:?}",
+            "sensor={:?} orig_addr={:?} orig_country_code={:?} orig_port={:?} resp_addr={:?} resp_country_code={:?} resp_port={:?} proto={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} method={:?} host={:?} uri={:?} referer={:?} version={:?} user_agent={:?} request_len={:?} response_len={:?} status_code={:?} status_msg={:?} username={:?} password={:?} cookie={:?} content_encoding={:?} content_type={:?} cache_control={:?} filenames={:?} mime_types={:?} body={:?} state={:?} triage_scores={:?}",
             self.sensor,
             self.orig_addr.to_string(),
+            self.orig_country_code,
             self.orig_port.to_string(),
             self.resp_addr.to_string(),
+            self.resp_country_code,
             self.resp_port.to_string(),
             self.proto.to_string(),
             self.start_time.to_rfc3339(),
@@ -1693,10 +1703,10 @@ impl BlocklistHttp {
             start_time: DateTime::from_timestamp_nanos(fields.start_time),
             orig_addr: fields.orig_addr,
             orig_port: fields.orig_port,
-            orig_country_code: super::common::COUNTRY_CODE_ZZ,
+            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
             resp_addr: fields.resp_addr,
             resp_port: fields.resp_port,
-            resp_country_code: super::common::COUNTRY_CODE_ZZ,
+            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
             proto: fields.proto,
             duration: fields.duration,
             orig_pkts: fields.orig_pkts,

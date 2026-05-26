@@ -93,7 +93,7 @@ pub struct NetworkThreatFieldsStored {
 
 #[allow(dead_code)]
 #[derive(Deserialize, Serialize)]
-pub struct NetworkThreatFieldsStoredV0_45 {
+pub struct NetworkThreatFieldsStoredV0_46 {
     #[serde(with = "ts_nanoseconds")]
     pub time: DateTime<Utc>,
     pub sensor: String,
@@ -221,10 +221,10 @@ impl NetworkThreat {
             sensor: fields.sensor,
             orig_addr: fields.orig_addr,
             orig_port: fields.orig_port,
-            orig_country_code: super::common::COUNTRY_CODE_ZZ,
+            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
             resp_addr: fields.resp_addr,
             resp_port: fields.resp_port,
-            resp_country_code: super::common::COUNTRY_CODE_ZZ,
+            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
             proto: fields.proto,
             service: fields.service,
             start_time: fields.start_time,
@@ -255,11 +255,13 @@ impl fmt::Display for NetworkThreat {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "sensor={:?} orig_addr={:?} orig_port={:?} resp_addr={:?} resp_port={:?} proto={:?} service={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} content={:?} db_name={:?} rule_id={:?} matched_to={:?} cluster_id={:?} attack_kind={:?} confidence={:?} triage_scores={:?}",
+            "sensor={:?} orig_addr={:?} orig_country_code={:?} orig_port={:?} resp_addr={:?} resp_country_code={:?} resp_port={:?} proto={:?} service={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} content={:?} db_name={:?} rule_id={:?} matched_to={:?} cluster_id={:?} attack_kind={:?} confidence={:?} triage_scores={:?}",
             self.sensor,
             self.orig_addr.to_string(),
+            self.orig_country_code,
             self.orig_port.to_string(),
             self.resp_addr.to_string(),
+            self.resp_country_code,
             self.resp_port.to_string(),
             self.proto.to_string(),
             self.service,
