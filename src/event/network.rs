@@ -62,8 +62,10 @@ pub struct NetworkThreatFields {
     pub triage_scores: Option<Vec<TriageScore>>,
 }
 
+pub type NetworkThreatFieldsStored = NetworkThreatFieldsStoredV0_45;
+
 #[derive(Deserialize, Serialize)]
-pub struct NetworkThreatFieldsStored {
+pub struct NetworkThreatFieldsStoredV0_45 {
     #[serde(with = "ts_nanoseconds")]
     pub time: DateTime<Utc>,
     pub sensor: String,
@@ -258,10 +260,10 @@ impl fmt::Display for NetworkThreat {
             "sensor={:?} orig_addr={:?} orig_country_code={:?} orig_port={:?} resp_addr={:?} resp_country_code={:?} resp_port={:?} proto={:?} service={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} content={:?} db_name={:?} rule_id={:?} matched_to={:?} cluster_id={:?} attack_kind={:?} confidence={:?} triage_scores={:?}",
             self.sensor,
             self.orig_addr.to_string(),
-            self.orig_country_code,
+            crate::util::country_code_to_string(self.orig_country_code),
             self.orig_port.to_string(),
             self.resp_addr.to_string(),
-            self.resp_country_code,
+            crate::util::country_code_to_string(self.resp_country_code),
             self.resp_port.to_string(),
             self.proto.to_string(),
             self.service,

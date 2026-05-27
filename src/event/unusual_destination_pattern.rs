@@ -127,7 +127,7 @@ impl fmt::Display for UnusualDestinationPattern {
             self.start_time.to_rfc3339(),
             self.end_time.to_rfc3339(),
             format_ip_vec(&self.destination_ips),
-            self.resp_country_codes,
+            crate::util::country_codes_to_string(&self.resp_country_codes),
             self.count.to_string(),
             self.expected_mean.to_string(),
             self.std_deviation.to_string(),

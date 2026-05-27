@@ -28,7 +28,9 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 - **BREAKING**: Added country-code fields to address-tracking runtime event
   schemas and the next internal stored schemas (`V0_46`). Runtime values
   currently default these fields to the placeholder `ZZ` code until the
-  country-code lookup and stored-event migration are fully wired.
+  country-code lookup and stored-event migration are fully wired. Event
+  display/log output now formats country codes as two-letter strings (for
+  example `ZZ`) instead of raw byte arrays.
 - Separated producer-facing event field schemas from on-disk storage schemas.
   The producer-facing `*Fields` types remain the public ingestion interface,
   while new repository-local `*FieldsStored` types are the schema written to
