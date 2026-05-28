@@ -5,10 +5,13 @@ use std::net::IpAddr;
 /// Country code used before an endpoint lookup or migration has resolved it.
 pub(crate) const COUNTRY_CODE_PENDING: [u8; 2] = [b'Z', b'Z'];
 
+/// Display fallback when stored country-code bytes are not valid UTF-8.
+const COUNTRY_CODE_INVALID: &str = "XX";
+
 /// Formats a two-letter country code for display output.
 #[must_use]
-pub(crate) fn country_code_to_string(code: [u8; 2]) -> String {
-    String::from_utf8_lossy(&code).into_owned()
+pub(crate) fn country_code_to_string(code: &[u8; 2]) -> &str {
+    std::str::from_utf8(code).unwrap_or(COUNTRY_CODE_INVALID)
 }
 
 /// Formats a list of two-letter country codes as a comma-separated string.
@@ -19,7 +22,7 @@ pub(crate) fn country_codes_to_string(codes: &[[u8; 2]]) -> String {
     } else {
         codes
             .iter()
-            .map(|code| country_code_to_string(*code))
+            .map(country_code_to_string)
             .collect::<Vec<_>>()
             .join(",")
     }
@@ -65,7 +68,12 @@ mod tests {
 
     #[test]
     fn country_code_to_string_formats_pending_code() {
-        assert_eq!(country_code_to_string(COUNTRY_CODE_PENDING), "ZZ");
+        assert_eq!(country_code_to_string(&COUNTRY_CODE_PENDING), "ZZ");
+    }
+
+    #[test]
+    fn country_code_to_string_returns_invalid_fallback_for_non_utf8() {
+        assert_eq!(country_code_to_string(&[0xFF, 0xFE]), "XX");
     }
 
     #[test]
