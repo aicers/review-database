@@ -21,8 +21,9 @@ pub struct UnusualDestinationPatternFields {
     pub category: Option<EventCategory>,
 }
 
-pub(crate) type UnusualDestinationPatternFieldsStored = UnusualDestinationPatternFieldsStoredV0_45;
+pub(crate) type UnusualDestinationPatternFieldsStored = UnusualDestinationPatternFieldsStoredV0_46;
 
+#[allow(dead_code)]
 #[derive(Deserialize, Serialize)]
 pub(crate) struct UnusualDestinationPatternFieldsStoredV0_45 {
     pub sensor: String,
@@ -59,6 +60,10 @@ impl From<UnusualDestinationPatternFields> for UnusualDestinationPatternFieldsSt
             sensor: value.sensor,
             start_time: value.start_time,
             end_time: value.end_time,
+            resp_country_codes: vec![
+                crate::util::COUNTRY_CODE_PENDING;
+                value.destination_ips.len()
+            ],
             destination_ips: value.destination_ips,
             count: value.count,
             expected_mean: value.expected_mean,
@@ -144,10 +149,7 @@ impl UnusualDestinationPattern {
             sensor: fields.sensor,
             start_time: DateTime::from_timestamp_nanos(fields.start_time),
             end_time: DateTime::from_timestamp_nanos(fields.end_time),
-            resp_country_codes: vec![
-                crate::util::COUNTRY_CODE_PENDING;
-                fields.destination_ips.len()
-            ],
+            resp_country_codes: fields.resp_country_codes.clone(),
             destination_ips: fields.destination_ips,
             count: fields.count,
             expected_mean: fields.expected_mean,

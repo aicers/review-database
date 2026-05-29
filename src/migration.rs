@@ -10,6 +10,7 @@ use std::{
 
 use anyhow::{Context, Result, anyhow};
 use bincode::Options;
+use num_traits::FromPrimitive;
 use semver::{Version, VersionReq};
 use tracing::{info, warn};
 
@@ -17,7 +18,7 @@ use crate::{
     AllowNetwork, BlockNetwork, Customer,
     event::{
         BlocklistDceRpcFieldsStoredV0_44, BlocklistDhcpFieldsStoredV0_44, EventKind,
-        HttpThreatFieldsStoredV0_44,
+        HttpThreatFieldsStoredV0_44, convert_for_storage, resolve_stored_country_codes,
     },
     migration::migration_structures::{
         AllowNetworkV0_42, BlockNetworkV0_42, BlocklistDceRpcFieldsStoredV0_42,
@@ -107,20 +108,31 @@ use crate::{
 /// // release that involves database format change) to 3.5.0, including
 /// // all alpha changes finalized in 3.5.0.
 /// ```
-const COMPATIBLE_VERSION_REQ: &str = ">=0.45.0,<0.46.0-alpha";
+const COMPATIBLE_VERSION_REQ: &str = ">=0.46.0,<0.47.0-alpha";
 
 /// Migrates the data directory to the up-to-date format if necessary.
 ///
 /// Migration is supported between released versions only. The prelease versions (alpha, beta,
 /// etc.) should be assumed to be incompatible with each other.
+/// Pass an `ip2location::DB` when available so endpoint country-code fields can
+/// be resolved during the stored event schema migration. If no locator is
+/// provided, completed migration fallback values are written as `XX`.
 ///
 /// # Errors
 ///
 /// Returns an error if the data directory doesn't exist and cannot be created,
 /// or if the data directory exists but is in the format incompatible with the
 /// current version.
-pub fn migrate_data_dir<P: AsRef<Path>>(data_dir: P, backup_dir: P) -> Result<()> {
-    type Migration = (VersionReq, Version, fn(&Path) -> anyhow::Result<()>);
+pub fn migrate_data_dir<P: AsRef<Path>>(
+    data_dir: P,
+    backup_dir: P,
+    locator: Option<&ip2location::DB>,
+) -> Result<()> {
+    type Migration = (
+        VersionReq,
+        Version,
+        fn(&Path, &Path, Option<&ip2location::DB>) -> anyhow::Result<()>,
+    );
 
     let data_dir = data_dir.as_ref();
     let backup_dir = backup_dir.as_ref();
@@ -158,17 +170,22 @@ pub fn migrate_data_dir<P: AsRef<Path>>(data_dir: P, backup_dir: P) -> Result<()
         (
             VersionReq::parse(">=0.42.0,<0.43.0")?,
             Version::parse("0.43.0")?,
-            migrate_0_42_to_0_43,
+            |data_dir, _backup_dir, _locator| migrate_0_42_to_0_43(data_dir),
         ),
         (
             VersionReq::parse(">=0.43.0,<0.44.0")?,
             Version::parse("0.44.0")?,
-            migrate_0_43_to_0_44,
+            |data_dir, _backup_dir, _locator| migrate_0_43_to_0_44(data_dir),
         ),
         (
             VersionReq::parse(">=0.44.0,<0.45.0")?,
             Version::parse("0.45.0")?,
-            migrate_0_44_to_0_45,
+            |data_dir, _backup_dir, _locator| migrate_0_44_to_0_45(data_dir),
+        ),
+        (
+            VersionReq::parse(">=0.45.0,<0.46.0")?,
+            Version::parse("0.46.0")?,
+            migrate_0_45_to_0_46,
         ),
     ];
 
@@ -177,7 +194,7 @@ pub fn migrate_data_dir<P: AsRef<Path>>(data_dir: P, backup_dir: P) -> Result<()
         .find(|(req, _to, _m)| req.matches(&version))
     {
         info!("Migrating database to {to}");
-        m(data_dir)?;
+        m(data_dir, backup_dir, locator)?;
         version = to.clone();
         if compatible.matches(&version) {
             create_version_file(&backup).context("failed to update VERSION")?;
@@ -186,6 +203,49 @@ pub fn migrate_data_dir<P: AsRef<Path>>(data_dir: P, backup_dir: P) -> Result<()
     }
 
     Err(anyhow!("migration from {version} is not supported"))
+}
+
+fn migrate_0_45_to_0_46(
+    data_dir: &Path,
+    backup_dir: &Path,
+    locator: Option<&ip2location::DB>,
+) -> Result<()> {
+    let store = crate::Store::new(data_dir, backup_dir)
+        .context("Failed to open Store for event migration")?;
+    migrate_event_country_codes(&store, locator)
+}
+
+pub(crate) fn migrate_event_country_codes(
+    store: &crate::Store,
+    locator: Option<&ip2location::DB>,
+) -> Result<()> {
+    let events = store.events();
+    let entries = events.raw_entries()?;
+    let mut migrated = 0usize;
+
+    for (key, value) in entries {
+        if key.len() != 16 {
+            continue;
+        }
+        let key_i128 = i128::from_be_bytes(key.as_slice().try_into().expect("checked length"));
+        let kind_num = (key_i128 & 0xffff_ffff_0000_0000) >> 32;
+        let Some(kind) = EventKind::from_i128(kind_num) else {
+            continue;
+        };
+
+        let current = resolve_stored_country_codes(kind, &value, locator).or_else(|_| {
+            let current = convert_for_storage(kind, &value)?;
+            resolve_stored_country_codes(kind, &current, locator)
+        })?;
+
+        if current != value {
+            events.update((&key, &value), (&key, &current))?;
+            migrated += 1;
+        }
+    }
+
+    info!("Migrated {migrated} event records to country-code stored schema");
+    Ok(())
 }
 
 /// Column family names for version 0.42 (includes the deprecated "account policy" column family)
@@ -1047,8 +1107,10 @@ fn migrate_http_threat_fields(value: &[u8]) -> Option<Vec<u8>> {
         sensor: old.sensor,
         orig_addr: old.orig_addr,
         orig_port: old.orig_port,
+        orig_country_code: crate::util::COUNTRY_CODE_PENDING,
         resp_addr: old.resp_addr,
         resp_port: old.resp_port,
+        resp_country_code: crate::util::COUNTRY_CODE_PENDING,
         proto: old.proto,
         start_time: old.start_time,
         duration: old.duration,
@@ -1100,8 +1162,10 @@ fn migrate_blocklist_dcerpc_fields(value: &[u8]) -> Option<Vec<u8>> {
         sensor: old.sensor,
         orig_addr: old.orig_addr,
         orig_port: old.orig_port,
+        orig_country_code: crate::util::COUNTRY_CODE_PENDING,
         resp_addr: old.resp_addr,
         resp_port: old.resp_port,
+        resp_country_code: crate::util::COUNTRY_CODE_PENDING,
         proto: old.proto,
         start_time: old.start_time,
         duration: old.duration,
@@ -1132,8 +1196,10 @@ fn migrate_blocklist_dhcp_fields(value: &[u8]) -> Option<Vec<u8>> {
         sensor: old.sensor,
         orig_addr: old.orig_addr,
         orig_port: old.orig_port,
+        orig_country_code: crate::util::COUNTRY_CODE_PENDING,
         resp_addr: old.resp_addr,
         resp_port: old.resp_port,
+        resp_country_code: crate::util::COUNTRY_CODE_PENDING,
         proto: old.proto,
         start_time: old.start_time,
         duration: old.duration,
@@ -1257,7 +1323,7 @@ mod tests {
         write_version(backup_dir.path(), current_version);
 
         // This should succeed without calling any migration
-        let result = migrate_data_dir(data_dir.path(), backup_dir.path());
+        let result = migrate_data_dir(data_dir.path(), backup_dir.path(), None);
         assert!(result.is_ok());
 
         // VERSION should remain unchanged
@@ -1282,7 +1348,7 @@ mod tests {
         write_version(data_dir.path(), &data_version.to_string());
         write_version(backup_dir.path(), &backup_version.to_string());
 
-        let result = migrate_data_dir(data_dir.path(), backup_dir.path());
+        let result = migrate_data_dir(data_dir.path(), backup_dir.path(), None);
 
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
@@ -1299,7 +1365,7 @@ mod tests {
 
         // Don't write any VERSION files - directories are empty
 
-        let result = migrate_data_dir(data_dir.path(), backup_dir.path());
+        let result = migrate_data_dir(data_dir.path(), backup_dir.path(), None);
 
         // Should succeed (empty dir gets current version)
         assert!(result.is_ok());
@@ -1326,7 +1392,7 @@ mod tests {
         // Also need a file in backup to prevent it from being treated as empty
         write_version(backup_dir.path(), env!("CARGO_PKG_VERSION"));
 
-        let result = migrate_data_dir(data_dir.path(), backup_dir.path());
+        let result = migrate_data_dir(data_dir.path(), backup_dir.path(), None);
 
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
@@ -1344,7 +1410,7 @@ mod tests {
         assert!(!data_dir.exists());
         assert!(!backup_dir.exists());
 
-        let result = migrate_data_dir(&data_dir, &backup_dir);
+        let result = migrate_data_dir(&data_dir, &backup_dir, None);
 
         // Should succeed
         assert!(result.is_ok());
@@ -1368,7 +1434,7 @@ mod tests {
         write_version(data_dir.path(), "0.30.0");
         write_version(backup_dir.path(), "0.30.0");
 
-        let result = migrate_data_dir(data_dir.path(), backup_dir.path());
+        let result = migrate_data_dir(data_dir.path(), backup_dir.path(), None);
 
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
@@ -1458,7 +1524,7 @@ mod tests {
             write_version(data_dir.path(), &version.to_string());
             write_version(backup_dir.path(), &version.to_string());
 
-            let result = migrate_data_dir(data_dir.path(), backup_dir.path());
+            let result = migrate_data_dir(data_dir.path(), backup_dir.path(), None);
             assert!(result.is_ok(), "Migration should succeed from {version}");
 
             let data_version = read_version_file(&data_dir.path().join("VERSION")).unwrap();
@@ -1489,7 +1555,7 @@ mod tests {
         write_version(backup_dir.path(), "0.42.0");
 
         // Run the migration
-        let result = migrate_data_dir(data_dir.path(), backup_dir.path());
+        let result = migrate_data_dir(data_dir.path(), backup_dir.path(), None);
         assert!(result.is_ok(), "Migration should succeed");
 
         // Verify database opens with the current column families

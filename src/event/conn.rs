@@ -50,8 +50,9 @@ pub struct PortScanFields {
     pub category: Option<EventCategory>,
 }
 
-pub(crate) type PortScanFieldsStored = PortScanFieldsStoredV0_42;
+pub(crate) type PortScanFieldsStored = PortScanFieldsStoredV0_46;
 
+#[allow(dead_code)]
 #[derive(Deserialize, Serialize)]
 pub(crate) struct PortScanFieldsStoredV0_42 {
     pub sensor: String,
@@ -86,7 +87,9 @@ impl From<PortScanFields> for PortScanFieldsStored {
         Self {
             sensor: value.sensor,
             orig_addr: value.orig_addr,
+            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
             resp_addr: value.resp_addr,
+            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
             resp_ports: value.resp_ports,
             start_time: value.start_time,
             end_time: value.end_time,
@@ -162,9 +165,9 @@ impl PortScan {
             sensor: fields.sensor.clone(),
             time,
             orig_addr: fields.orig_addr,
-            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
+            orig_country_code: fields.orig_country_code,
             resp_addr: fields.resp_addr,
-            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
+            resp_country_code: fields.resp_country_code,
             resp_ports: fields.resp_ports.clone(),
             proto: fields.proto,
             start_time: DateTime::from_timestamp_nanos(fields.start_time),
@@ -259,8 +262,9 @@ pub struct MultiHostPortScanFields {
     pub category: Option<EventCategory>,
 }
 
-pub(crate) type MultiHostPortScanFieldsStored = MultiHostPortScanFieldsStoredV0_42;
+pub(crate) type MultiHostPortScanFieldsStored = MultiHostPortScanFieldsStoredV0_46;
 
+#[allow(dead_code)]
 #[derive(Deserialize, Serialize)]
 pub(crate) struct MultiHostPortScanFieldsStoredV0_42 {
     pub sensor: String,
@@ -295,7 +299,9 @@ impl From<MultiHostPortScanFields> for MultiHostPortScanFieldsStored {
         Self {
             sensor: value.sensor,
             orig_addr: value.orig_addr,
+            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
             resp_port: value.resp_port,
+            resp_country_codes: vec![crate::util::COUNTRY_CODE_PENDING; value.resp_addrs.len()],
             resp_addrs: value.resp_addrs,
             proto: value.proto,
             start_time: value.start_time,
@@ -371,10 +377,10 @@ impl MultiHostPortScan {
             sensor: fields.sensor.clone(),
             time,
             orig_addr: fields.orig_addr,
-            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
+            orig_country_code: fields.orig_country_code,
             resp_port: fields.resp_port,
             resp_addrs: fields.resp_addrs.clone(),
-            resp_country_codes: vec![crate::util::COUNTRY_CODE_PENDING; fields.resp_addrs.len()],
+            resp_country_codes: fields.resp_country_codes.clone(),
             proto: fields.proto,
             start_time: DateTime::from_timestamp_nanos(fields.start_time),
             end_time: DateTime::from_timestamp_nanos(fields.end_time),
@@ -468,8 +474,9 @@ pub struct ExternalDdosFields {
     pub category: Option<EventCategory>,
 }
 
-pub(crate) type ExternalDdosFieldsStored = ExternalDdosFieldsStoredV0_42;
+pub(crate) type ExternalDdosFieldsStored = ExternalDdosFieldsStoredV0_46;
 
+#[allow(dead_code)]
 #[derive(Deserialize, Serialize)]
 pub(crate) struct ExternalDdosFieldsStoredV0_42 {
     pub sensor: String,
@@ -501,8 +508,10 @@ impl From<ExternalDdosFields> for ExternalDdosFieldsStored {
     fn from(value: ExternalDdosFields) -> Self {
         Self {
             sensor: value.sensor,
+            orig_country_codes: vec![crate::util::COUNTRY_CODE_PENDING; value.orig_addrs.len()],
             orig_addrs: value.orig_addrs,
             resp_addr: value.resp_addr,
+            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
             proto: value.proto,
             start_time: value.start_time,
             end_time: value.end_time,
@@ -574,9 +583,9 @@ impl ExternalDdos {
             sensor: fields.sensor.clone(),
             time,
             orig_addrs: fields.orig_addrs.clone(),
-            orig_country_codes: vec![crate::util::COUNTRY_CODE_PENDING; fields.orig_addrs.len()],
+            orig_country_codes: fields.orig_country_codes.clone(),
             resp_addr: fields.resp_addr,
-            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
+            resp_country_code: fields.resp_country_code,
             proto: fields.proto,
             start_time: DateTime::from_timestamp_nanos(fields.start_time),
             end_time: DateTime::from_timestamp_nanos(fields.end_time),
@@ -678,8 +687,9 @@ pub struct BlocklistConnFields {
     pub category: Option<EventCategory>,
 }
 
-pub(crate) type BlocklistConnFieldsStored = BlocklistConnFieldsStoredV0_42;
+pub(crate) type BlocklistConnFieldsStored = BlocklistConnFieldsStoredV0_46;
 
+#[allow(dead_code)]
 #[derive(Deserialize, Serialize)]
 pub(crate) struct BlocklistConnFieldsStoredV0_42 {
     pub sensor: String,
@@ -732,8 +742,10 @@ impl From<BlocklistConnFields> for BlocklistConnFieldsStored {
         Self {
             sensor: value.sensor,
             orig_addr: value.orig_addr,
+            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
             orig_port: value.orig_port,
             resp_addr: value.resp_addr,
+            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
             resp_port: value.resp_port,
             proto: value.proto,
             conn_state: value.conn_state,
@@ -845,10 +857,10 @@ impl BlocklistConn {
             sensor: fields.sensor,
             orig_addr: fields.orig_addr,
             orig_port: fields.orig_port,
-            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
+            orig_country_code: fields.orig_country_code,
             resp_addr: fields.resp_addr,
             resp_port: fields.resp_port,
-            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
+            resp_country_code: fields.resp_country_code,
             proto: fields.proto,
             conn_state: fields.conn_state,
             start_time: DateTime::from_timestamp_nanos(fields.start_time),

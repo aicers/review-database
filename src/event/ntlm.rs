@@ -58,8 +58,9 @@ pub struct BlocklistNtlmFields {
     pub category: Option<EventCategory>,
 }
 
-pub(crate) type BlocklistNtlmFieldsStored = BlocklistNtlmFieldsStoredV0_42;
+pub(crate) type BlocklistNtlmFieldsStored = BlocklistNtlmFieldsStoredV0_46;
 
+#[allow(dead_code)]
 #[derive(Deserialize, Serialize)]
 pub(crate) struct BlocklistNtlmFieldsStoredV0_42 {
     pub sensor: String,
@@ -114,8 +115,10 @@ impl From<BlocklistNtlmFields> for BlocklistNtlmFieldsStored {
         Self {
             sensor: value.sensor,
             orig_addr: value.orig_addr,
+            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
             orig_port: value.orig_port,
             resp_addr: value.resp_addr,
+            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
             resp_port: value.resp_port,
             proto: value.proto,
             start_time: value.start_time,
@@ -228,10 +231,10 @@ impl BlocklistNtlm {
             sensor: fields.sensor,
             orig_addr: fields.orig_addr,
             orig_port: fields.orig_port,
-            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
+            orig_country_code: fields.orig_country_code,
             resp_addr: fields.resp_addr,
             resp_port: fields.resp_port,
-            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
+            resp_country_code: fields.resp_country_code,
             proto: fields.proto,
             start_time: DateTime::from_timestamp_nanos(fields.start_time),
             duration: fields.duration,

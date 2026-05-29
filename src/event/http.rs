@@ -98,8 +98,9 @@ pub struct HttpEventFields {
     pub category: Option<EventCategory>,
 }
 
-pub(crate) type HttpEventFieldsStored = HttpEventFieldsStoredV0_42;
+pub(crate) type HttpEventFieldsStored = HttpEventFieldsStoredV0_46;
 
+#[allow(dead_code)]
 #[derive(Deserialize, Serialize)]
 pub(crate) struct HttpEventFieldsStoredV0_42 {
     pub sensor: String,
@@ -184,8 +185,10 @@ impl From<HttpEventFields> for HttpEventFieldsStored {
         Self {
             sensor: value.sensor,
             orig_addr: value.orig_addr,
+            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
             orig_port: value.orig_port,
             resp_addr: value.resp_addr,
+            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
             resp_port: value.resp_port,
             proto: value.proto,
             start_time: value.start_time,
@@ -283,8 +286,9 @@ pub struct RepeatedHttpSessionsFields {
     pub category: Option<EventCategory>,
 }
 
-pub(crate) type RepeatedHttpSessionsFieldsStored = RepeatedHttpSessionsFieldsStoredV0_42;
+pub(crate) type RepeatedHttpSessionsFieldsStored = RepeatedHttpSessionsFieldsStoredV0_46;
 
+#[allow(dead_code)]
 #[derive(Deserialize, Serialize)]
 pub(crate) struct RepeatedHttpSessionsFieldsStoredV0_42 {
     pub sensor: String,
@@ -321,8 +325,10 @@ impl From<RepeatedHttpSessionsFields> for RepeatedHttpSessionsFieldsStored {
         Self {
             sensor: value.sensor,
             orig_addr: value.orig_addr,
+            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
             orig_port: value.orig_port,
             resp_addr: value.resp_addr,
+            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
             resp_port: value.resp_port,
             proto: value.proto,
             start_time: value.start_time,
@@ -402,10 +408,10 @@ impl RepeatedHttpSessions {
             sensor: fields.sensor.clone(),
             orig_addr: fields.orig_addr,
             orig_port: fields.orig_port,
-            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
+            orig_country_code: fields.orig_country_code,
             resp_addr: fields.resp_addr,
             resp_port: fields.resp_port,
-            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
+            resp_country_code: fields.resp_country_code,
             proto: fields.proto,
             start_time: DateTime::from_timestamp_nanos(fields.start_time),
             end_time: DateTime::from_timestamp_nanos(fields.end_time),
@@ -531,7 +537,7 @@ pub struct HttpThreatFields {
     pub category: Option<EventCategory>,
 }
 
-pub(crate) type HttpThreatFieldsStored = HttpThreatFieldsStoredV0_44;
+pub(crate) type HttpThreatFieldsStored = HttpThreatFieldsStoredV0_46;
 
 /// `HttpThreatFieldsStored` structure from version 0.44.x.
 #[derive(::serde::Deserialize, ::serde::Serialize)]
@@ -633,8 +639,10 @@ impl From<HttpThreatFields> for HttpThreatFieldsStored {
             time: value.time,
             sensor: value.sensor,
             orig_addr: value.orig_addr,
+            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
             orig_port: value.orig_port,
             resp_addr: value.resp_addr,
+            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
             resp_port: value.resp_port,
             proto: value.proto,
             start_time: value.start_time,
@@ -848,10 +856,10 @@ impl HttpThreat {
             start_time: DateTime::from_timestamp_nanos(fields.start_time),
             orig_addr: fields.orig_addr,
             orig_port: fields.orig_port,
-            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
+            orig_country_code: fields.orig_country_code,
             resp_addr: fields.resp_addr,
             resp_port: fields.resp_port,
-            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
+            resp_country_code: fields.resp_country_code,
             proto: fields.proto,
             duration: fields.duration,
             orig_pkts: fields.orig_pkts,
@@ -1026,8 +1034,9 @@ pub struct DgaFields {
     pub category: Option<EventCategory>,
 }
 
-pub(crate) type DgaFieldsStored = DgaFieldsStoredV0_42;
+pub(crate) type DgaFieldsStored = DgaFieldsStoredV0_46;
 
+#[allow(dead_code)]
 #[derive(Deserialize, Serialize)]
 pub(crate) struct DgaFieldsStoredV0_42 {
     pub sensor: String,
@@ -1112,8 +1121,10 @@ impl From<DgaFields> for DgaFieldsStored {
         Self {
             sensor: value.sensor,
             orig_addr: value.orig_addr,
+            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
             orig_port: value.orig_port,
             resp_addr: value.resp_addr,
+            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
             resp_port: value.resp_port,
             proto: value.proto,
             start_time: value.start_time,
@@ -1293,10 +1304,10 @@ impl DomainGenerationAlgorithm {
             start_time: DateTime::from_timestamp_nanos(fields.start_time),
             orig_addr: fields.orig_addr,
             orig_port: fields.orig_port,
-            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
+            orig_country_code: fields.orig_country_code,
             resp_addr: fields.resp_addr,
             resp_port: fields.resp_port,
-            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
+            resp_country_code: fields.resp_country_code,
             proto: fields.proto,
             duration: fields.duration,
             orig_pkts: fields.orig_pkts,
@@ -1501,10 +1512,10 @@ impl NonBrowser {
             resp_l2_bytes: fields.resp_l2_bytes,
             orig_addr: fields.orig_addr,
             orig_port: fields.orig_port,
-            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
+            orig_country_code: fields.orig_country_code,
             resp_addr: fields.resp_addr,
             resp_port: fields.resp_port,
-            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
+            resp_country_code: fields.resp_country_code,
             proto: fields.proto,
             method: fields.method.clone(),
             host: fields.host.clone(),
@@ -1703,10 +1714,10 @@ impl BlocklistHttp {
             start_time: DateTime::from_timestamp_nanos(fields.start_time),
             orig_addr: fields.orig_addr,
             orig_port: fields.orig_port,
-            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
+            orig_country_code: fields.orig_country_code,
             resp_addr: fields.resp_addr,
             resp_port: fields.resp_port,
-            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
+            resp_country_code: fields.resp_country_code,
             proto: fields.proto,
             duration: fields.duration,
             orig_pkts: fields.orig_pkts,

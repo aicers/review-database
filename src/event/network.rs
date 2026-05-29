@@ -62,8 +62,9 @@ pub struct NetworkThreatFields {
     pub triage_scores: Option<Vec<TriageScore>>,
 }
 
-pub type NetworkThreatFieldsStored = NetworkThreatFieldsStoredV0_45;
+pub type NetworkThreatFieldsStored = NetworkThreatFieldsStoredV0_46;
 
+#[allow(dead_code)]
 #[derive(Deserialize, Serialize)]
 pub struct NetworkThreatFieldsStoredV0_45 {
     #[serde(with = "ts_nanoseconds")]
@@ -131,8 +132,10 @@ impl From<NetworkThreatFields> for NetworkThreatFieldsStored {
             time: value.time,
             sensor: value.sensor,
             orig_addr: value.orig_addr,
+            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
             orig_port: value.orig_port,
             resp_addr: value.resp_addr,
+            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
             resp_port: value.resp_port,
             proto: value.proto,
             service: value.service,
@@ -223,10 +226,10 @@ impl NetworkThreat {
             sensor: fields.sensor,
             orig_addr: fields.orig_addr,
             orig_port: fields.orig_port,
-            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
+            orig_country_code: fields.orig_country_code,
             resp_addr: fields.resp_addr,
             resp_port: fields.resp_port,
-            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
+            resp_country_code: fields.resp_country_code,
             proto: fields.proto,
             service: fields.service,
             start_time: fields.start_time,

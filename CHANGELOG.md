@@ -9,6 +9,13 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **BREAKING**: Bumped the repository migration format to `0.46.0` and wired
+  the country-code-capable stored event schema into `EventDb`. Producer-facing
+  writes still accept event fields without country-code input and store `ZZ`
+  placeholders, while the `0.45.x` to `0.46.0` migration rewrites endpoint
+  records with resolved country codes when `ip2location` is configured and
+  `XX` fallback codes when lookup is unavailable or invalid. The
+  `migrate_data_dir` API now accepts `Option<&ip2location::DB>`.
 - **BREAKING**: Renamed `TrafficFilter::agent` to `host_fqdn` to clarify
   that it stores a host fully-qualified domain name. Related
   `Table<'_, TrafficFilter>` method parameters were also renamed from

@@ -63,8 +63,9 @@ pub struct LdapBruteForceFields {
     pub category: Option<EventCategory>,
 }
 
-pub(crate) type LdapBruteForceFieldsStored = LdapBruteForceFieldsStoredV0_42;
+pub(crate) type LdapBruteForceFieldsStored = LdapBruteForceFieldsStoredV0_46;
 
+#[allow(dead_code)]
 #[derive(Deserialize, Serialize)]
 pub(crate) struct LdapBruteForceFieldsStoredV0_42 {
     pub sensor: String,
@@ -101,7 +102,9 @@ impl From<LdapBruteForceFields> for LdapBruteForceFieldsStored {
         Self {
             sensor: value.sensor,
             orig_addr: value.orig_addr,
+            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
             resp_addr: value.resp_addr,
+            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
             resp_port: value.resp_port,
             proto: value.proto,
             user_pw_list: value.user_pw_list,
@@ -192,10 +195,10 @@ impl LdapBruteForce {
             sensor: fields.sensor.clone(),
             time,
             orig_addr: fields.orig_addr,
-            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
+            orig_country_code: fields.orig_country_code,
             resp_addr: fields.resp_addr,
             resp_port: fields.resp_port,
-            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
+            resp_country_code: fields.resp_country_code,
             proto: fields.proto,
             user_pw_list: fields.user_pw_list.clone(),
             start_time: DateTime::from_timestamp_nanos(fields.start_time),
@@ -300,8 +303,9 @@ pub struct LdapEventFields {
     pub category: Option<EventCategory>,
 }
 
-pub(crate) type LdapEventFieldsStored = LdapEventFieldsStoredV0_42;
+pub(crate) type LdapEventFieldsStored = LdapEventFieldsStoredV0_46;
 
+#[allow(dead_code)]
 #[derive(Deserialize, Serialize)]
 pub(crate) struct LdapEventFieldsStoredV0_42 {
     pub sensor: String,
@@ -360,8 +364,10 @@ impl From<LdapEventFields> for LdapEventFieldsStored {
         Self {
             sensor: value.sensor,
             orig_addr: value.orig_addr,
+            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
             orig_port: value.orig_port,
             resp_addr: value.resp_addr,
+            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
             resp_port: value.resp_port,
             proto: value.proto,
             start_time: value.start_time,
@@ -485,10 +491,10 @@ impl LdapPlainText {
             start_time: DateTime::from_timestamp_nanos(fields.start_time),
             orig_addr: fields.orig_addr,
             orig_port: fields.orig_port,
-            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
+            orig_country_code: fields.orig_country_code,
             resp_addr: fields.resp_addr,
             resp_port: fields.resp_port,
-            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
+            resp_country_code: fields.resp_country_code,
             proto: fields.proto,
             duration: fields.duration,
             orig_pkts: fields.orig_pkts,
@@ -634,10 +640,10 @@ impl BlocklistLdap {
             start_time: DateTime::from_timestamp_nanos(fields.start_time),
             orig_addr: fields.orig_addr,
             orig_port: fields.orig_port,
-            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
+            orig_country_code: fields.orig_country_code,
             resp_addr: fields.resp_addr,
             resp_port: fields.resp_port,
-            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
+            resp_country_code: fields.resp_country_code,
             proto: fields.proto,
             duration: fields.duration,
             orig_pkts: fields.orig_pkts,

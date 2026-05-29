@@ -11,7 +11,14 @@ fn main() -> Result<()> {
 
     println!("Starting migration process...");
     println!("Migrating data directory...");
-    migrate_data_dir(&config.data_dir, &config.backup_dir).context("migration failed")?;
+    let locator = config
+        .ip2location
+        .as_ref()
+        .map(ip2location::DB::from_file)
+        .transpose()
+        .context("failed to open ip2location database")?;
+    migrate_data_dir(&config.data_dir, &config.backup_dir, locator.as_ref())
+        .context("migration failed")?;
     Ok(())
 }
 
@@ -57,6 +64,7 @@ fn bin() -> &'static str {
 pub struct Config {
     data_dir: PathBuf,
     backup_dir: PathBuf,
+    ip2location: Option<PathBuf>,
 }
 
 impl Config {
@@ -83,6 +91,7 @@ impl Config {
         Ok(Self {
             data_dir: config.data_dir,
             backup_dir: config.backup_dir,
+            ip2location: config.ip2location,
         })
     }
 }
@@ -91,4 +100,5 @@ impl Config {
 struct ConfigParser {
     data_dir: PathBuf,
     backup_dir: PathBuf,
+    ip2location: Option<PathBuf>,
 }

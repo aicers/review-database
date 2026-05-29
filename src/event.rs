@@ -2541,7 +2541,7 @@ impl EventMessage {
 
 /// Converts producer-facing `*Fields` bytes into the on-disk
 /// `*FieldsStored` representation for the given [`EventKind`].
-fn convert_for_storage(kind: EventKind, bytes: &[u8]) -> Result<Vec<u8>> {
+pub(crate) fn convert_for_storage(kind: EventKind, bytes: &[u8]) -> Result<Vec<u8>> {
     fn reserialize<S, T>(bytes: &[u8]) -> Result<Vec<u8>>
     where
         S: for<'de> Deserialize<'de>,
@@ -2656,6 +2656,114 @@ fn convert_for_storage(kind: EventKind, bytes: &[u8]) -> Result<Vec<u8>> {
     }
 }
 
+fn lookup_country_code(locator: Option<&ip2location::DB>, addr: IpAddr) -> [u8; 2] {
+    let Some(locator) = locator else {
+        return *b"XX";
+    };
+    let code = crate::util::find_ip_country(locator, addr).to_ascii_uppercase();
+    let bytes = code.as_bytes();
+    if bytes.len() == 2 && bytes.iter().all(u8::is_ascii_alphabetic) {
+        [bytes[0], bytes[1]]
+    } else {
+        *b"XX"
+    }
+}
+
+pub(crate) fn resolve_stored_country_codes(
+    kind: EventKind,
+    bytes: &[u8],
+    locator: Option<&ip2location::DB>,
+) -> Result<Vec<u8>> {
+    fn reserialize<T, F>(bytes: &[u8], mut update: F) -> Result<Vec<u8>>
+    where
+        T: for<'de> Deserialize<'de> + Serialize,
+        F: FnMut(&mut T),
+    {
+        let mut fields: T = bincode::deserialize(bytes)
+            .context("failed to deserialize event fields as current stored schema")?;
+        update(&mut fields);
+        bincode::serialize(&fields).context("failed to serialize resolved event fields")
+    }
+
+    macro_rules! pair {
+        ($ty:ty) => {
+            reserialize::<$ty, _>(bytes, |fields| {
+                fields.orig_country_code = lookup_country_code(locator, fields.orig_addr);
+                fields.resp_country_code = lookup_country_code(locator, fields.resp_addr);
+            })
+        };
+    }
+    macro_rules! resp_vec {
+        ($ty:ty) => {
+            reserialize::<$ty, _>(bytes, |fields| {
+                fields.orig_country_code = lookup_country_code(locator, fields.orig_addr);
+                fields.resp_country_codes = fields
+                    .resp_addrs
+                    .iter()
+                    .copied()
+                    .map(|addr| lookup_country_code(locator, addr))
+                    .collect();
+            })
+        };
+    }
+
+    match kind {
+        EventKind::BlocklistBootp => pair!(BlocklistBootpFieldsStored),
+        EventKind::BlocklistConn | EventKind::TorConnectionConn => pair!(BlocklistConnFieldsStored),
+        EventKind::BlocklistDceRpc => pair!(BlocklistDceRpcFieldsStored),
+        EventKind::BlocklistDhcp => pair!(BlocklistDhcpFieldsStored),
+        EventKind::BlocklistDns => pair!(BlocklistDnsFieldsStored),
+        EventKind::BlocklistFtp | EventKind::FtpPlainText => pair!(FtpEventFieldsStored),
+        EventKind::BlocklistHttp => pair!(BlocklistHttpFieldsStored),
+        EventKind::BlocklistKerberos => pair!(BlocklistKerberosFieldsStored),
+        EventKind::BlocklistLdap | EventKind::LdapPlainText => pair!(LdapEventFieldsStored),
+        EventKind::BlocklistMalformedDns => pair!(BlocklistMalformedDnsFieldsStored),
+        EventKind::BlocklistMqtt => pair!(BlocklistMqttFieldsStored),
+        EventKind::BlocklistNfs => pair!(BlocklistNfsFieldsStored),
+        EventKind::BlocklistNtlm => pair!(BlocklistNtlmFieldsStored),
+        EventKind::BlocklistRadius => pair!(BlocklistRadiusFieldsStored),
+        EventKind::BlocklistRdp => pair!(BlocklistRdpFieldsStored),
+        EventKind::BlocklistSmb => pair!(BlocklistSmbFieldsStored),
+        EventKind::BlocklistSmtp => pair!(BlocklistSmtpFieldsStored),
+        EventKind::BlocklistSsh => pair!(BlocklistSshFieldsStored),
+        EventKind::BlocklistTls | EventKind::SuspiciousTlsTraffic => {
+            pair!(BlocklistTlsFieldsStored)
+        }
+        EventKind::CryptocurrencyMiningPool => pair!(CryptocurrencyMiningPoolFieldsStored),
+        EventKind::DnsCovertChannel | EventKind::LockyRansomware => pair!(DnsEventFieldsStored),
+        EventKind::DomainGenerationAlgorithm => pair!(DgaFieldsStored),
+        EventKind::ExternalDdos => reserialize::<ExternalDdosFieldsStored, _>(bytes, |fields| {
+            fields.orig_country_codes = fields
+                .orig_addrs
+                .iter()
+                .copied()
+                .map(|addr| lookup_country_code(locator, addr))
+                .collect();
+            fields.resp_country_code = lookup_country_code(locator, fields.resp_addr);
+        }),
+        EventKind::FtpBruteForce => pair!(FtpBruteForceFieldsStored),
+        EventKind::HttpThreat => pair!(HttpThreatFieldsStored),
+        EventKind::LdapBruteForce => pair!(LdapBruteForceFieldsStored),
+        EventKind::MultiHostPortScan => resp_vec!(MultiHostPortScanFieldsStored),
+        EventKind::NetworkThreat => pair!(NetworkThreatFieldsStored),
+        EventKind::NonBrowser | EventKind::TorConnection => pair!(HttpEventFieldsStored),
+        EventKind::PortScan => pair!(PortScanFieldsStored),
+        EventKind::RdpBruteForce => resp_vec!(RdpBruteForceFieldsStored),
+        EventKind::RepeatedHttpSessions => pair!(RepeatedHttpSessionsFieldsStored),
+        EventKind::UnusualDestinationPattern => {
+            reserialize::<UnusualDestinationPatternFieldsStored, _>(bytes, |fields| {
+                fields.resp_country_codes = fields
+                    .destination_ips
+                    .iter()
+                    .copied()
+                    .map(|addr| lookup_country_code(locator, addr))
+                    .collect();
+            })
+        }
+        EventKind::ExtraThreat | EventKind::WindowsThreat => Ok(bytes.to_vec()),
+    }
+}
+
 #[allow(clippy::module_name_repetitions)]
 pub struct EventDb<'a> {
     inner: &'a rocksdb::OptimisticTransactionDB,
@@ -2681,6 +2789,16 @@ impl<'a> EventDb<'a> {
     pub fn iter_forward(&self) -> EventIterator<'_> {
         let iter = self.inner.iterator(IteratorMode::Start);
         EventIterator { inner: iter }
+    }
+
+    pub(crate) fn raw_entries(&self) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
+        self.inner
+            .iterator(IteratorMode::Start)
+            .map(|item| {
+                let (key, value) = item.context("cannot read from event database")?;
+                Ok((key.to_vec(), value.to_vec()))
+            })
+            .collect()
     }
 
     /// Stores a new event into the database.
@@ -3440,6 +3558,10 @@ mod tests {
             EventCategory::CommandAndControl,
         );
         db.put(&msg).unwrap();
+        let raw = db.raw_entries().unwrap();
+        let stored: super::DnsEventFieldsStored = bincode::deserialize(&raw[0].1).unwrap();
+        assert_eq!(stored.orig_country_code, crate::util::COUNTRY_CODE_PENDING);
+        assert_eq!(stored.resp_country_code, crate::util::COUNTRY_CODE_PENDING);
         let mut iter = db.iter_forward();
         assert!(iter.next().is_some());
         assert!(iter.next().is_none());

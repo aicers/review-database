@@ -49,8 +49,9 @@ pub struct RdpBruteForceFields {
     pub category: Option<EventCategory>,
 }
 
-pub(crate) type RdpBruteForceFieldsStored = RdpBruteForceFieldsStoredV0_42;
+pub(crate) type RdpBruteForceFieldsStored = RdpBruteForceFieldsStoredV0_46;
 
+#[allow(dead_code)]
 #[derive(Deserialize, Serialize)]
 pub(crate) struct RdpBruteForceFieldsStoredV0_42 {
     pub sensor: String,
@@ -83,6 +84,8 @@ impl From<RdpBruteForceFields> for RdpBruteForceFieldsStored {
         Self {
             sensor: value.sensor,
             orig_addr: value.orig_addr,
+            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
+            resp_country_codes: vec![crate::util::COUNTRY_CODE_PENDING; value.resp_addrs.len()],
             resp_addrs: value.resp_addrs,
             start_time: value.start_time,
             end_time: value.end_time,
@@ -154,9 +157,9 @@ impl RdpBruteForce {
             sensor: fields.sensor.clone(),
             time,
             orig_addr: fields.orig_addr,
-            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
+            orig_country_code: fields.orig_country_code,
             resp_addrs: fields.resp_addrs.clone(),
-            resp_country_codes: vec![crate::util::COUNTRY_CODE_PENDING; fields.resp_addrs.len()],
+            resp_country_codes: fields.resp_country_codes.clone(),
             start_time: DateTime::from_timestamp_nanos(fields.start_time),
             end_time: DateTime::from_timestamp_nanos(fields.end_time),
             proto: fields.proto,
@@ -255,8 +258,9 @@ pub struct BlocklistRdpFields {
     pub category: Option<EventCategory>,
 }
 
-pub(crate) type BlocklistRdpFieldsStored = BlocklistRdpFieldsStoredV0_42;
+pub(crate) type BlocklistRdpFieldsStored = BlocklistRdpFieldsStoredV0_46;
 
+#[allow(dead_code)]
 #[derive(Deserialize, Serialize)]
 pub(crate) struct BlocklistRdpFieldsStoredV0_42 {
     pub sensor: String,
@@ -303,8 +307,10 @@ impl From<BlocklistRdpFields> for BlocklistRdpFieldsStored {
         Self {
             sensor: value.sensor,
             orig_addr: value.orig_addr,
+            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
             orig_port: value.orig_port,
             resp_addr: value.resp_addr,
+            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
             resp_port: value.resp_port,
             proto: value.proto,
             start_time: value.start_time,
@@ -401,10 +407,10 @@ impl BlocklistRdp {
             sensor: fields.sensor,
             orig_addr: fields.orig_addr,
             orig_port: fields.orig_port,
-            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
+            orig_country_code: fields.orig_country_code,
             resp_addr: fields.resp_addr,
             resp_port: fields.resp_port,
-            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
+            resp_country_code: fields.resp_country_code,
             proto: fields.proto,
             start_time: DateTime::from_timestamp_nanos(fields.start_time),
             duration: fields.duration,

@@ -1684,8 +1684,10 @@ mod tests {
             sensor: "sensor".to_string(),
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             orig_port: 68,
+            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
             resp_port: 67,
+            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
             proto: 17,
             start_time: Utc
                 .with_ymd_and_hms(1970, 1, 1, 0, 0, 0)
@@ -1718,8 +1720,10 @@ mod tests {
             sensor: "collector1".to_string(),
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             orig_port: 10000,
+            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
             resp_port: 80,
+            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
             proto: 6,
             conn_state: "SAF".to_string(),
             start_time: Utc
@@ -1745,8 +1749,10 @@ mod tests {
             sensor: "sensor".to_string(),
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             orig_port: 10000,
+            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
             resp_port: 135,
+            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
             proto: 6,
             start_time: Utc
                 .with_ymd_and_hms(1970, 1, 1, 0, 0, 0)
@@ -1770,8 +1776,10 @@ mod tests {
             sensor: "sensor".to_string(),
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             orig_port: 68,
+            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
             resp_port: 67,
+            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
             proto: 17,
             start_time: Utc
                 .with_ymd_and_hms(1970, 1, 1, 0, 0, 0)
@@ -1813,8 +1821,10 @@ mod tests {
             sensor: "sensor".to_string(),
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             orig_port: 10000,
+            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
             resp_port: 53,
+            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
             proto: 17,
             start_time: Utc
                 .with_ymd_and_hms(1970, 1, 1, 0, 0, 0)
@@ -1848,8 +1858,10 @@ mod tests {
             sensor: "sensor".to_string(),
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             orig_port: 10000,
+            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
             resp_port: 80,
+            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
             proto: 6,
             start_time: Utc
                 .with_ymd_and_hms(1970, 1, 1, 0, 0, 0)
@@ -1891,8 +1903,10 @@ mod tests {
             sensor: "sensor".to_string(),
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             orig_port: 10000,
+            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
             resp_port: 88,
+            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
             proto: 17,
             start_time: Utc
                 .with_ymd_and_hms(1970, 1, 1, 0, 0, 0)
@@ -1923,8 +1937,10 @@ mod tests {
             sensor: "sensor".to_string(),
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             orig_port: 10000,
+            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
             resp_port: 1883,
+            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
             proto: 6,
             start_time: Utc
                 .with_ymd_and_hms(1970, 1, 1, 0, 0, 0)
@@ -1952,8 +1968,10 @@ mod tests {
             sensor: "sensor".to_string(),
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             orig_port: 10000,
+            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
             resp_port: 2049,
+            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
             proto: 6,
             start_time: Utc
                 .with_ymd_and_hms(1970, 1, 1, 0, 0, 0)
@@ -1977,8 +1995,10 @@ mod tests {
             sensor: "sensor".to_string(),
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             orig_port: 10000,
+            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
             resp_port: 445,
+            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
             proto: 6,
             start_time: Utc
                 .with_ymd_and_hms(1970, 1, 1, 0, 0, 0)
@@ -2005,8 +2025,10 @@ mod tests {
             sensor: "sensor".to_string(),
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             orig_port: 10000,
+            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
             resp_port: 3389,
+            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
             proto: 6,
             start_time: Utc
                 .with_ymd_and_hms(1970, 1, 1, 0, 0, 0)
@@ -2029,8 +2051,10 @@ mod tests {
             sensor: "sensor".to_string(),
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             orig_port: 10000,
+            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
             resp_port: 445,
+            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
             proto: 6,
             start_time: Utc
                 .with_ymd_and_hms(1970, 1, 1, 0, 0, 0)
@@ -2063,8 +2087,10 @@ mod tests {
             sensor: "sensor".to_string(),
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             orig_port: 10000,
+            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
             resp_port: 25,
+            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
             proto: 6,
             start_time: Utc
                 .with_ymd_and_hms(1970, 1, 1, 0, 0, 0)
@@ -2093,8 +2119,10 @@ mod tests {
             sensor: "sensor".to_string(),
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             orig_port: 10000,
+            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
             resp_port: 22,
+            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
             proto: 6,
             start_time: Utc
                 .with_ymd_and_hms(1970, 1, 1, 0, 0, 0)
@@ -2129,8 +2157,10 @@ mod tests {
             sensor: "sensor".to_string(),
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             orig_port: 10000,
+            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
             resp_port: 443,
+            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
             proto: 6,
             start_time: Utc
                 .with_ymd_and_hms(1970, 1, 1, 0, 0, 0)
@@ -2173,8 +2203,10 @@ mod tests {
             sensor: "sensor".to_string(),
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             orig_port: 10000,
+            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
             resp_port: 389,
+            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
             proto: 6,
             start_time: Utc
                 .with_ymd_and_hms(1970, 1, 1, 0, 1, 1)
@@ -2218,8 +2250,10 @@ mod tests {
             sensor: "collector1".to_string(),
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             orig_port: 10000,
+            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
             resp_port: 21,
+            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
             proto: 6,
             start_time: Utc
                 .with_ymd_and_hms(1970, 1, 1, 0, 1, 1)
@@ -2243,7 +2277,9 @@ mod tests {
         PortScanFieldsStored {
             sensor: String::new(),
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
+            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
+            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
             resp_ports: vec![80, 443, 8000, 8080, 8888, 8443, 9000, 9001, 9002],
             start_time: Utc
                 .with_ymd_and_hms(1970, 1, 1, 0, 1, 1)
@@ -2265,10 +2301,12 @@ mod tests {
         MultiHostPortScanFieldsStored {
             sensor: String::new(),
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
+            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
             resp_addrs: vec![
                 IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
                 IpAddr::V4(Ipv4Addr::new(127, 0, 0, 3)),
             ],
+            resp_country_codes: vec![crate::util::COUNTRY_CODE_PENDING; 2],
             resp_port: 80,
             start_time: Utc
                 .with_ymd_and_hms(1970, 1, 1, 0, 1, 1)
@@ -2293,7 +2331,9 @@ mod tests {
                 IpAddr::V4(Ipv4Addr::LOCALHOST),
                 IpAddr::V4(Ipv4Addr::new(127, 0, 0, 3)),
             ],
+            orig_country_codes: vec![crate::util::COUNTRY_CODE_PENDING; 2],
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
+            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
             start_time: Utc
                 .with_ymd_and_hms(1970, 1, 1, 0, 1, 1)
                 .unwrap()
@@ -2315,8 +2355,10 @@ mod tests {
             sensor: "sensro".to_string(),
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             orig_port: 10000,
+            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
             resp_port: 53,
+            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
             proto: 17,
             start_time: Utc
                 .with_ymd_and_hms(1970, 1, 1, 0, 1, 1)
@@ -2350,8 +2392,10 @@ mod tests {
         FtpBruteForceFieldsStored {
             sensor: String::new(),
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
+            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
             resp_port: 21,
+            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
             proto: 6,
             user_list: vec!["user1".to_string(), "user_2".to_string()],
             start_time: Utc
@@ -2376,8 +2420,10 @@ mod tests {
             sensor: "sensor".to_string(),
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             orig_port: 10000,
+            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
             resp_port: 443,
+            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
             proto: 6,
             start_time: now,
             end_time: now,
@@ -2391,8 +2437,10 @@ mod tests {
             sensor: "sensor".to_string(),
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             orig_port: 10000,
+            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
             resp_port: 80,
+            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
             proto: 6,
             start_time: Utc
                 .with_ymd_and_hms(1970, 1, 1, 0, 0, 0)
@@ -2434,8 +2482,10 @@ mod tests {
             sensor: "sensor".to_string(),
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             orig_port: 10000,
+            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
             resp_port: 80,
+            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
             proto: 6,
             start_time: Utc
                 .with_ymd_and_hms(1970, 1, 1, 0, 1, 1)
@@ -2476,8 +2526,10 @@ mod tests {
         LdapBruteForceFieldsStored {
             sensor: String::new(),
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
+            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
             resp_port: 389,
+            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
             proto: 6,
             user_pw_list: vec![
                 ("user1".to_string(), "pw1".to_string()),
@@ -2502,10 +2554,12 @@ mod tests {
         RdpBruteForceFieldsStored {
             sensor: String::new(),
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
+            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
             resp_addrs: vec![
                 IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
                 IpAddr::V4(Ipv4Addr::new(127, 0, 0, 3)),
             ],
+            resp_country_codes: vec![crate::util::COUNTRY_CODE_PENDING; 2],
             start_time: Utc
                 .with_ymd_and_hms(1970, 1, 1, 0, 1, 1)
                 .unwrap()
@@ -2527,8 +2581,10 @@ mod tests {
             sensor: "sensor".to_string(),
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             orig_port: 10000,
+            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
             resp_port: 53,
+            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
             proto: 17,
             start_time: Utc
                 .with_ymd_and_hms(1970, 1, 1, 0, 1, 1)
@@ -2633,8 +2689,10 @@ mod tests {
             sensor: "sensor".to_string(),
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             orig_port: 10000,
+            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
             resp_port: 80,
+            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
             proto: 6,
             start_time: Utc
                 .with_ymd_and_hms(1970, 1, 1, 0, 0, 0)
@@ -2680,8 +2738,10 @@ mod tests {
             sensor: "sensor".to_string(),
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             orig_port: 10000,
+            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
             resp_port: 1812,
+            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
             proto: 17,
             start_time: Utc
                 .with_ymd_and_hms(1970, 1, 1, 0, 0, 0)
@@ -2717,8 +2777,10 @@ mod tests {
             sensor: "sensor".to_string(),
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             orig_port: 10000,
+            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
             resp_port: 53,
+            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
             proto: 17,
             start_time: Utc
                 .with_ymd_and_hms(1970, 1, 1, 0, 0, 0)
@@ -2761,6 +2823,7 @@ mod tests {
                 .timestamp_nanos_opt()
                 .unwrap(),
             destination_ips: vec![IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1))],
+            resp_country_codes: vec![crate::util::COUNTRY_CODE_PENDING; 1],
             count: 1,
             expected_mean: 0.0,
             std_deviation: 0.0,
