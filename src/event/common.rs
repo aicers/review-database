@@ -2306,8 +2306,8 @@ mod tests {
                 IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
                 IpAddr::V4(Ipv4Addr::new(127, 0, 0, 3)),
             ],
-            resp_country_codes: vec![crate::util::COUNTRY_CODE_PENDING; 2],
             resp_port: 80,
+            resp_country_codes: vec![crate::util::COUNTRY_CODE_PENDING; 2],
             start_time: Utc
                 .with_ymd_and_hms(1970, 1, 1, 0, 1, 1)
                 .unwrap()

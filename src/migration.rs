@@ -18,7 +18,8 @@ use crate::{
     AllowNetwork, BlockNetwork, Customer,
     event::{
         BlocklistDceRpcFieldsStoredV0_44, BlocklistDhcpFieldsStoredV0_44, EventKind,
-        HttpThreatFieldsStoredV0_44, convert_for_storage, resolve_stored_country_codes,
+        HttpThreatFieldsStoredV0_44, convert_legacy_stored_for_country_codes,
+        resolve_stored_country_codes,
     },
     migration::migration_structures::{
         AllowNetworkV0_42, BlockNetworkV0_42, BlocklistDceRpcFieldsStoredV0_42,
@@ -234,7 +235,7 @@ pub(crate) fn migrate_event_country_codes(
         };
 
         let current = resolve_stored_country_codes(kind, &value, locator).or_else(|_| {
-            let current = convert_for_storage(kind, &value)?;
+            let current = convert_legacy_stored_for_country_codes(kind, &value)?;
             resolve_stored_country_codes(kind, &current, locator)
         })?;
 
