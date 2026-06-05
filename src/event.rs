@@ -1,29 +1,29 @@
 #![allow(clippy::too_many_lines)]
-mod bootp;
+pub(crate) mod bootp;
 mod common;
-mod conn;
-mod dcerpc;
-mod dhcp;
-mod dns;
-mod ftp;
-mod http;
-mod kerberos;
-mod ldap;
+pub(crate) mod conn;
+pub(crate) mod dcerpc;
+pub(crate) mod dhcp;
+pub(crate) mod dns;
+pub(crate) mod ftp;
+pub(crate) mod http;
+pub(crate) mod kerberos;
+pub(crate) mod ldap;
 mod log;
-mod malformed_dns;
-mod mqtt;
-mod network;
-mod nfs;
-mod ntlm;
-mod radius;
-mod rdp;
-mod smb;
-mod smtp;
-mod ssh;
+pub(crate) mod malformed_dns;
+pub(crate) mod mqtt;
+pub(crate) mod network;
+pub(crate) mod nfs;
+pub(crate) mod ntlm;
+pub(crate) mod radius;
+pub(crate) mod rdp;
+pub(crate) mod smb;
+pub(crate) mod smtp;
+pub(crate) mod ssh;
 mod sysmon;
-mod tls;
+pub(crate) mod tls;
 mod tor;
-mod unusual_destination_pattern;
+pub(crate) mod unusual_destination_pattern;
 
 #[cfg(test)]
 mod key_baseline;
@@ -2656,243 +2656,6 @@ pub(crate) fn convert_for_storage(kind: EventKind, bytes: &[u8]) -> Result<Vec<u
     }
 }
 
-/// Converts pre-0.46 stored event bytes into the current stored schema.
-///
-/// This is migration-only logic. Unlike [`convert_for_storage`], the input is
-/// already an internal stored record, not the producer-facing `*Fields` schema.
-pub(crate) fn convert_legacy_stored_for_country_codes(
-    kind: EventKind,
-    bytes: &[u8],
-) -> Result<Vec<u8>> {
-    fn reserialize<O, T>(bytes: &[u8], shape: CountryCodeShape) -> Result<Vec<u8>>
-    where
-        O: for<'de> Deserialize<'de> + Serialize,
-        T: for<'de> Deserialize<'de> + Serialize,
-    {
-        let old: O = bincode::deserialize(bytes)
-            .context("failed to deserialize event fields as the previous stored schema")?;
-        let mut value =
-            serde_json::to_value(old).context("failed to prepare previous stored schema")?;
-        add_pending_country_codes(&mut value, shape)?;
-        let current: T =
-            serde_json::from_value(value).context("failed to build current stored schema")?;
-        bincode::serialize(&current).context("failed to serialize current stored schema")
-    }
-
-    #[derive(Clone, Copy)]
-    enum CountryCodeShape {
-        Pair,
-        RespVector,
-        ExternalDdos,
-        UnusualDestinationPattern,
-        None,
-    }
-
-    fn pending_value() -> serde_json::Value {
-        serde_json::json!(crate::util::COUNTRY_CODE_PENDING)
-    }
-
-    fn pending_vec(len: usize) -> serde_json::Value {
-        serde_json::Value::Array((0..len).map(|_| pending_value()).collect())
-    }
-
-    fn array_len(map: &serde_json::Map<String, serde_json::Value>, key: &str) -> Result<usize> {
-        map.get(key)
-            .and_then(serde_json::Value::as_array)
-            .map(std::vec::Vec::len)
-            .with_context(|| format!("missing array field `{key}` in previous stored schema"))
-    }
-
-    fn add_pending_country_codes(
-        value: &mut serde_json::Value,
-        shape: CountryCodeShape,
-    ) -> Result<()> {
-        let Some(map) = value.as_object_mut() else {
-            bail!("previous stored schema did not serialize as an object");
-        };
-
-        match shape {
-            CountryCodeShape::Pair => {
-                map.insert("orig_country_code".to_string(), pending_value());
-                map.insert("resp_country_code".to_string(), pending_value());
-            }
-            CountryCodeShape::RespVector => {
-                let len = array_len(map, "resp_addrs")?;
-                map.insert("orig_country_code".to_string(), pending_value());
-                map.insert("resp_country_codes".to_string(), pending_vec(len));
-            }
-            CountryCodeShape::ExternalDdos => {
-                let len = array_len(map, "orig_addrs")?;
-                map.insert("orig_country_codes".to_string(), pending_vec(len));
-                map.insert("resp_country_code".to_string(), pending_value());
-            }
-            CountryCodeShape::UnusualDestinationPattern => {
-                let len = array_len(map, "destination_ips")?;
-                map.insert("resp_country_codes".to_string(), pending_vec(len));
-            }
-            CountryCodeShape::None => {}
-        }
-        Ok(())
-    }
-
-    match kind {
-        EventKind::BlocklistBootp => reserialize::<
-            bootp::BlocklistBootpFieldsStoredV0_42,
-            BlocklistBootpFieldsStored,
-        >(bytes, CountryCodeShape::Pair),
-        EventKind::BlocklistConn | EventKind::TorConnectionConn => {
-            reserialize::<conn::BlocklistConnFieldsStoredV0_42, BlocklistConnFieldsStored>(
-                bytes,
-                CountryCodeShape::Pair,
-            )
-        }
-        EventKind::BlocklistDceRpc => reserialize::<
-            dcerpc::BlocklistDceRpcFieldsStoredV0_44,
-            BlocklistDceRpcFieldsStored,
-        >(bytes, CountryCodeShape::Pair),
-        EventKind::BlocklistDhcp => reserialize::<
-            dhcp::BlocklistDhcpFieldsStoredV0_44,
-            BlocklistDhcpFieldsStored,
-        >(bytes, CountryCodeShape::Pair),
-        EventKind::BlocklistDns => reserialize::<
-            dns::BlocklistDnsFieldsStoredV0_42,
-            BlocklistDnsFieldsStored,
-        >(bytes, CountryCodeShape::Pair),
-        EventKind::BlocklistFtp | EventKind::FtpPlainText => {
-            reserialize::<ftp::FtpEventFieldsStoredV0_42, FtpEventFieldsStored>(
-                bytes,
-                CountryCodeShape::Pair,
-            )
-        }
-        EventKind::BlocklistHttp => reserialize::<
-            http::DgaFieldsStoredV0_42,
-            BlocklistHttpFieldsStored,
-        >(bytes, CountryCodeShape::Pair),
-        EventKind::BlocklistKerberos => reserialize::<
-            kerberos::BlocklistKerberosFieldsStoredV0_42,
-            BlocklistKerberosFieldsStored,
-        >(bytes, CountryCodeShape::Pair),
-        EventKind::BlocklistLdap | EventKind::LdapPlainText => {
-            reserialize::<ldap::LdapEventFieldsStoredV0_42, LdapEventFieldsStored>(
-                bytes,
-                CountryCodeShape::Pair,
-            )
-        }
-        EventKind::BlocklistMalformedDns => reserialize::<
-            malformed_dns::BlocklistMalformedDnsFieldsStoredV0_45,
-            BlocklistMalformedDnsFieldsStored,
-        >(bytes, CountryCodeShape::Pair),
-        EventKind::BlocklistMqtt => reserialize::<
-            mqtt::BlocklistMqttFieldsStoredV0_42,
-            BlocklistMqttFieldsStored,
-        >(bytes, CountryCodeShape::Pair),
-        EventKind::BlocklistNfs => reserialize::<
-            nfs::BlocklistNfsFieldsStoredV0_42,
-            BlocklistNfsFieldsStored,
-        >(bytes, CountryCodeShape::Pair),
-        EventKind::BlocklistNtlm => reserialize::<
-            ntlm::BlocklistNtlmFieldsStoredV0_42,
-            BlocklistNtlmFieldsStored,
-        >(bytes, CountryCodeShape::Pair),
-        EventKind::BlocklistRadius => reserialize::<
-            radius::BlocklistRadiusFieldsStoredV0_45,
-            BlocklistRadiusFieldsStored,
-        >(bytes, CountryCodeShape::Pair),
-        EventKind::BlocklistRdp => reserialize::<
-            rdp::BlocklistRdpFieldsStoredV0_42,
-            BlocklistRdpFieldsStored,
-        >(bytes, CountryCodeShape::Pair),
-        EventKind::BlocklistSmb => reserialize::<
-            smb::BlocklistSmbFieldsStoredV0_42,
-            BlocklistSmbFieldsStored,
-        >(bytes, CountryCodeShape::Pair),
-        EventKind::BlocklistSmtp => reserialize::<
-            smtp::BlocklistSmtpFieldsStoredV0_42,
-            BlocklistSmtpFieldsStored,
-        >(bytes, CountryCodeShape::Pair),
-        EventKind::BlocklistSsh => reserialize::<
-            ssh::BlocklistSshFieldsStoredV0_42,
-            BlocklistSshFieldsStored,
-        >(bytes, CountryCodeShape::Pair),
-        EventKind::BlocklistTls | EventKind::SuspiciousTlsTraffic => {
-            reserialize::<tls::BlocklistTlsFieldsStoredV0_42, BlocklistTlsFieldsStored>(
-                bytes,
-                CountryCodeShape::Pair,
-            )
-        }
-        EventKind::CryptocurrencyMiningPool => reserialize::<
-            dns::CryptocurrencyMiningPoolFieldsStoredV0_42,
-            CryptocurrencyMiningPoolFieldsStored,
-        >(bytes, CountryCodeShape::Pair),
-        EventKind::DnsCovertChannel | EventKind::LockyRansomware => {
-            reserialize::<dns::DnsEventFieldsStoredV0_42, DnsEventFieldsStored>(
-                bytes,
-                CountryCodeShape::Pair,
-            )
-        }
-        EventKind::DomainGenerationAlgorithm => reserialize::<
-            http::DgaFieldsStoredV0_42,
-            DgaFieldsStored,
-        >(bytes, CountryCodeShape::Pair),
-        EventKind::ExternalDdos => reserialize::<
-            conn::ExternalDdosFieldsStoredV0_42,
-            ExternalDdosFieldsStored,
-        >(bytes, CountryCodeShape::ExternalDdos),
-        EventKind::FtpBruteForce => reserialize::<
-            ftp::FtpBruteForceFieldsStoredV0_42,
-            FtpBruteForceFieldsStored,
-        >(bytes, CountryCodeShape::Pair),
-        EventKind::HttpThreat => reserialize::<
-            http::HttpThreatFieldsStoredV0_42,
-            HttpThreatFieldsStored,
-        >(bytes, CountryCodeShape::Pair),
-        EventKind::LdapBruteForce => reserialize::<
-            ldap::LdapBruteForceFieldsStoredV0_42,
-            LdapBruteForceFieldsStored,
-        >(bytes, CountryCodeShape::Pair),
-        EventKind::MultiHostPortScan => reserialize::<
-            conn::MultiHostPortScanFieldsStoredV0_42,
-            MultiHostPortScanFieldsStored,
-        >(bytes, CountryCodeShape::RespVector),
-        EventKind::NetworkThreat => reserialize::<
-            network::NetworkThreatFieldsStoredV0_45,
-            NetworkThreatFieldsStored,
-        >(bytes, CountryCodeShape::Pair),
-        EventKind::NonBrowser | EventKind::TorConnection => reserialize::<
-            http::HttpEventFieldsStoredV0_42,
-            HttpEventFieldsStored,
-        >(bytes, CountryCodeShape::Pair),
-        EventKind::PortScan => {
-            reserialize::<conn::PortScanFieldsStoredV0_42, PortScanFieldsStored>(
-                bytes,
-                CountryCodeShape::Pair,
-            )
-        }
-        EventKind::RdpBruteForce => reserialize::<
-            rdp::RdpBruteForceFieldsStoredV0_42,
-            RdpBruteForceFieldsStored,
-        >(bytes, CountryCodeShape::RespVector),
-        EventKind::RepeatedHttpSessions => reserialize::<
-            http::RepeatedHttpSessionsFieldsStoredV0_42,
-            RepeatedHttpSessionsFieldsStored,
-        >(bytes, CountryCodeShape::Pair),
-        EventKind::UnusualDestinationPattern => {
-            reserialize::<
-                unusual_destination_pattern::UnusualDestinationPatternFieldsStoredV0_45,
-                UnusualDestinationPatternFieldsStored,
-            >(bytes, CountryCodeShape::UnusualDestinationPattern)
-        }
-        EventKind::ExtraThreat => reserialize::<
-            log::ExtraThreatFieldsStored,
-            ExtraThreatFieldsStored,
-        >(bytes, CountryCodeShape::None),
-        EventKind::WindowsThreat => reserialize::<
-            WindowsThreatFieldsStored,
-            WindowsThreatFieldsStored,
-        >(bytes, CountryCodeShape::None),
-    }
-}
-
 fn lookup_country_code(locator: Option<&ip2location::DB>, addr: IpAddr) -> [u8; 2] {
     let Some(locator) = locator else {
         return *b"XX";
@@ -3028,14 +2791,10 @@ impl<'a> EventDb<'a> {
         EventIterator { inner: iter }
     }
 
-    pub(crate) fn raw_entries(&self) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
-        self.inner
-            .iterator(IteratorMode::Start)
-            .map(|item| {
-                let (key, value) = item.context("cannot read from event database")?;
-                Ok((key.to_vec(), value.to_vec()))
-            })
-            .collect()
+    #[must_use]
+    pub(crate) fn raw_iter(&self) -> RawEventIterator<'_> {
+        let iter = self.inner.iterator(IteratorMode::Start);
+        RawEventIterator { inner: iter }
     }
 
     /// Stores a new event into the database.
@@ -3228,6 +2987,25 @@ pub struct EventIterator<'i> {
         'i,
         rocksdb::OptimisticTransactionDB<rocksdb::SingleThreaded>,
     >,
+}
+
+#[allow(clippy::module_name_repetitions)]
+pub(crate) struct RawEventIterator<'i> {
+    inner: rocksdb::DBIteratorWithThreadMode<
+        'i,
+        rocksdb::OptimisticTransactionDB<rocksdb::SingleThreaded>,
+    >,
+}
+
+impl Iterator for RawEventIterator<'_> {
+    type Item = Result<(Vec<u8>, Vec<u8>)>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.inner.next().map(|item| {
+            let (key, value) = item.context("cannot read from event database")?;
+            Ok((key.to_vec(), value.to_vec()))
+        })
+    }
 }
 
 impl Iterator for EventIterator<'_> {
@@ -3795,7 +3573,10 @@ mod tests {
             EventCategory::CommandAndControl,
         );
         db.put(&msg).unwrap();
-        let raw = db.raw_entries().unwrap();
+        let raw: Vec<_> = db
+            .raw_iter()
+            .collect::<std::result::Result<_, _>>()
+            .unwrap();
         let stored: super::DnsEventFieldsStored = bincode::deserialize(&raw[0].1).unwrap();
         assert_eq!(stored.orig_country_code, crate::util::COUNTRY_CODE_PENDING);
         assert_eq!(stored.resp_country_code, crate::util::COUNTRY_CODE_PENDING);
@@ -3822,10 +3603,8 @@ mod tests {
 
     #[test]
     fn legacy_stored_country_code_conversion_uses_stored_schema() {
-        use super::{
-            BlocklistConnFieldsStored, conn::BlocklistConnFieldsStoredV0_42,
-            convert_legacy_stored_for_country_codes,
-        };
+        use super::{BlocklistConnFieldsStored, conn::BlocklistConnFieldsStoredV0_42};
+        use crate::migration::convert_legacy_stored_for_country_codes;
 
         let old = BlocklistConnFieldsStoredV0_42 {
             sensor: "collector1".to_string(),
@@ -3864,10 +3643,8 @@ mod tests {
 
     #[test]
     fn legacy_stored_country_code_conversion_preserves_endpoint_vectors() {
-        use super::{
-            MultiHostPortScanFieldsStored, conn::MultiHostPortScanFieldsStoredV0_42,
-            convert_legacy_stored_for_country_codes,
-        };
+        use super::{MultiHostPortScanFieldsStored, conn::MultiHostPortScanFieldsStoredV0_42};
+        use crate::migration::convert_legacy_stored_for_country_codes;
 
         let old = MultiHostPortScanFieldsStoredV0_42 {
             sensor: "collector1".to_string(),

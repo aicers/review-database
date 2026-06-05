@@ -1,7 +1,6 @@
 //! Routines to check the database format version and migrate it if necessary.
 #![allow(clippy::too_many_lines)]
 mod migration_structures;
-
 use std::{
     fs::{File, create_dir_all},
     io::{Read, Write},
@@ -14,12 +13,12 @@ use num_traits::FromPrimitive;
 use semver::{Version, VersionReq};
 use tracing::{info, warn};
 
+pub(crate) use self::migration_structures::convert_legacy_stored_for_country_codes;
 use crate::{
     AllowNetwork, BlockNetwork, Customer,
     event::{
         BlocklistDceRpcFieldsStoredV0_44, BlocklistDhcpFieldsStoredV0_44, EventKind,
-        HttpThreatFieldsStoredV0_44, convert_legacy_stored_for_country_codes,
-        resolve_stored_country_codes,
+        HttpThreatFieldsStoredV0_44, resolve_stored_country_codes,
     },
     migration::migration_structures::{
         AllowNetworkV0_42, BlockNetworkV0_42, BlocklistDceRpcFieldsStoredV0_42,
@@ -221,10 +220,10 @@ pub(crate) fn migrate_event_country_codes(
     locator: Option<&ip2location::DB>,
 ) -> Result<()> {
     let events = store.events();
-    let entries = events.raw_entries()?;
     let mut migrated = 0usize;
 
-    for (key, value) in entries {
+    for entry in events.raw_iter() {
+        let (key, value) = entry?;
         if key.len() != 16 {
             continue;
         }
