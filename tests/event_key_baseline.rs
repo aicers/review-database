@@ -16,10 +16,7 @@
 use std::net::{IpAddr, Ipv4Addr};
 
 use chrono::{DateTime, TimeZone, Utc};
-use review_database::{
-    EventCategory, EventKind, EventMessage, Store,
-    event::DnsEventFields,
-};
+use review_database::{EventCategory, EventKind, EventMessage, Store, event::DnsEventFields};
 use tempfile::tempdir;
 
 /// Returns the first eight bytes of a 16-byte big-endian event key.
@@ -78,9 +75,7 @@ fn put_and_read_timestamp_region(time: DateTime<Utc>) -> ([u8; 8], [u8; 8]) {
     let store = Store::new(data_dir.path(), backup_dir.path()).expect("open store");
     let db = store.events();
 
-    let key = db
-        .put(&minimal_dns_message(time))
-        .expect("put event");
+    let key = db.put(&minimal_dns_message(time)).expect("put event");
     let from_put = timestamp_region(key);
 
     let scanned_key = db
@@ -105,10 +100,8 @@ fn event_key_timestamp_matches_i64_epoch_nanoseconds() {
 
 #[test]
 fn event_key_one_nanosecond_after_unix_epoch() {
-    let time = Utc
-        .with_ymd_and_hms(1970, 1, 1, 0, 0, 0)
-        .unwrap()
-        + chrono::Duration::nanoseconds(1);
+    let time =
+        Utc.with_ymd_and_hms(1970, 1, 1, 0, 0, 0).unwrap() + chrono::Duration::nanoseconds(1);
     assert_eq!(time.timestamp_nanos_opt(), Some(1));
 
     let expected = 1i64.to_be_bytes();
