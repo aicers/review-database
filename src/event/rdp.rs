@@ -51,20 +51,6 @@ pub struct RdpBruteForceFields {
 
 pub(crate) type RdpBruteForceFieldsStored = RdpBruteForceFieldsStoredV0_46;
 
-#[allow(dead_code)]
-#[derive(Deserialize, Serialize)]
-pub(crate) struct RdpBruteForceFieldsStoredV0_42 {
-    pub sensor: String,
-    pub orig_addr: IpAddr,
-    pub resp_addrs: Vec<IpAddr>,
-    pub start_time: i64,
-    pub end_time: i64,
-    pub proto: u8,
-    pub confidence: f32,
-    pub category: Option<EventCategory>,
-}
-
-#[allow(dead_code)]
 #[derive(Deserialize, Serialize)]
 pub(crate) struct RdpBruteForceFieldsStoredV0_46 {
     pub sensor: String,
@@ -260,27 +246,6 @@ pub struct BlocklistRdpFields {
 
 pub(crate) type BlocklistRdpFieldsStored = BlocklistRdpFieldsStoredV0_46;
 
-#[allow(dead_code)]
-#[derive(Deserialize, Serialize)]
-pub(crate) struct BlocklistRdpFieldsStoredV0_42 {
-    pub sensor: String,
-    pub orig_addr: IpAddr,
-    pub orig_port: u16,
-    pub resp_addr: IpAddr,
-    pub resp_port: u16,
-    pub proto: u8,
-    pub start_time: i64,
-    pub duration: i64,
-    pub orig_pkts: u64,
-    pub resp_pkts: u64,
-    pub orig_l2_bytes: u64,
-    pub resp_l2_bytes: u64,
-    pub cookie: String,
-    pub confidence: f32,
-    pub category: Option<EventCategory>,
-}
-
-#[allow(dead_code)]
 #[derive(Deserialize, Serialize)]
 pub(crate) struct BlocklistRdpFieldsStoredV0_46 {
     pub sensor: String,

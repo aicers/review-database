@@ -58,28 +58,6 @@ pub struct BlocklistNfsFields {
 
 pub(crate) type BlocklistNfsFieldsStored = BlocklistNfsFieldsStoredV0_46;
 
-#[allow(dead_code)]
-#[derive(Deserialize, Serialize)]
-pub(crate) struct BlocklistNfsFieldsStoredV0_42 {
-    pub sensor: String,
-    pub orig_addr: IpAddr,
-    pub orig_port: u16,
-    pub resp_addr: IpAddr,
-    pub resp_port: u16,
-    pub proto: u8,
-    pub start_time: i64,
-    pub duration: i64,
-    pub orig_pkts: u64,
-    pub resp_pkts: u64,
-    pub orig_l2_bytes: u64,
-    pub resp_l2_bytes: u64,
-    pub read_files: Vec<String>,
-    pub write_files: Vec<String>,
-    pub confidence: f32,
-    pub category: Option<EventCategory>,
-}
-
-#[allow(dead_code)]
 #[derive(Deserialize, Serialize)]
 pub(crate) struct BlocklistNfsFieldsStoredV0_46 {
     pub sensor: String,

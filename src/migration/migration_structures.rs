@@ -9,10 +9,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    event::{
-        EventKind, bootp, conn, dcerpc, dhcp, dns, ftp, http, kerberos, ldap, malformed_dns, mqtt,
-        network, nfs, ntlm, radius, rdp, smb, smtp, ssh, tls, unusual_destination_pattern,
-    },
+    event::{DceRpcContext, EventKind, FtpCommand, TriageScore},
     types::HostNetworkGroup,
 };
 
@@ -238,6 +235,817 @@ pub(crate) struct HttpThreatFieldsStoredV0_43 {
 }
 
 // ============================================================================
+// Historical persisted event schemas
+// ============================================================================
+
+#[derive(Deserialize, Serialize)]
+pub(crate) struct BlocklistBootpFieldsStoredV0_42 {
+    pub sensor: String,
+    pub orig_addr: IpAddr,
+    pub orig_port: u16,
+    pub resp_addr: IpAddr,
+    pub resp_port: u16,
+    pub proto: u8,
+    pub start_time: i64,
+    pub duration: i64,
+    pub orig_pkts: u64,
+    pub resp_pkts: u64,
+    pub orig_l2_bytes: u64,
+    pub resp_l2_bytes: u64,
+    pub op: u8,
+    pub htype: u8,
+    pub hops: u8,
+    pub xid: u32,
+    pub ciaddr: IpAddr,
+    pub yiaddr: IpAddr,
+    pub siaddr: IpAddr,
+    pub giaddr: IpAddr,
+    pub chaddr: Vec<u8>,
+    pub sname: String,
+    pub file: String,
+    pub confidence: f32,
+    pub category: Option<EventCategory>,
+}
+
+#[derive(Deserialize, Serialize)]
+pub(crate) struct BlocklistMqttFieldsStoredV0_42 {
+    pub sensor: String,
+    pub orig_addr: IpAddr,
+    pub orig_port: u16,
+    pub resp_addr: IpAddr,
+    pub resp_port: u16,
+    pub proto: u8,
+    pub start_time: i64,
+    pub duration: i64,
+    pub orig_pkts: u64,
+    pub resp_pkts: u64,
+    pub orig_l2_bytes: u64,
+    pub resp_l2_bytes: u64,
+    pub protocol: String,
+    pub version: u8,
+    pub client_id: String,
+    pub connack_reason: u8,
+    pub subscribe: Vec<String>,
+    pub suback_reason: Vec<u8>,
+    pub confidence: f32,
+    pub category: Option<EventCategory>,
+}
+
+#[derive(Deserialize, Serialize)]
+pub(crate) struct BlocklistSmbFieldsStoredV0_42 {
+    pub sensor: String,
+    pub orig_addr: IpAddr,
+    pub orig_port: u16,
+    pub resp_addr: IpAddr,
+    pub resp_port: u16,
+    pub proto: u8,
+    pub start_time: i64,
+    pub duration: i64,
+    pub orig_pkts: u64,
+    pub resp_pkts: u64,
+    pub orig_l2_bytes: u64,
+    pub resp_l2_bytes: u64,
+    pub command: u8,
+    pub path: String,
+    pub service: String,
+    pub file_name: String,
+    pub file_size: u64,
+    pub resource_type: u16,
+    pub fid: u16,
+    pub create_time: i64,
+    pub access_time: i64,
+    pub write_time: i64,
+    pub change_time: i64,
+    pub confidence: f32,
+    pub category: Option<EventCategory>,
+}
+
+#[derive(Deserialize, Serialize)]
+pub(crate) struct BlocklistNtlmFieldsStoredV0_42 {
+    pub sensor: String,
+    pub orig_addr: IpAddr,
+    pub orig_port: u16,
+    pub resp_addr: IpAddr,
+    pub resp_port: u16,
+    pub proto: u8,
+    pub start_time: i64,
+    pub duration: i64,
+    pub orig_pkts: u64,
+    pub resp_pkts: u64,
+    pub orig_l2_bytes: u64,
+    pub resp_l2_bytes: u64,
+    pub protocol: String,
+    pub username: String,
+    pub hostname: String,
+    pub domainname: String,
+    pub success: String,
+    pub confidence: f32,
+    pub category: Option<EventCategory>,
+}
+
+#[derive(Deserialize, Serialize)]
+pub(crate) struct UnusualDestinationPatternFieldsStoredV0_45 {
+    pub sensor: String,
+    pub start_time: i64,
+    pub end_time: i64,
+    pub destination_ips: Vec<IpAddr>,
+    pub count: usize,
+    pub expected_mean: f64,
+    pub std_deviation: f64,
+    pub z_score: f64,
+    pub confidence: f32,
+    pub category: Option<EventCategory>,
+}
+
+#[derive(Deserialize, Serialize)]
+pub(crate) struct LdapBruteForceFieldsStoredV0_42 {
+    pub sensor: String,
+    pub orig_addr: IpAddr,
+    pub resp_addr: IpAddr,
+    pub resp_port: u16,
+    pub proto: u8,
+    pub user_pw_list: Vec<(String, String)>,
+    pub start_time: i64,
+    pub end_time: i64,
+    pub confidence: f32,
+    pub category: Option<EventCategory>,
+}
+
+#[derive(Deserialize, Serialize)]
+pub(crate) struct LdapEventFieldsStoredV0_42 {
+    pub sensor: String,
+    pub orig_addr: IpAddr,
+    pub orig_port: u16,
+    pub resp_addr: IpAddr,
+    pub resp_port: u16,
+    pub proto: u8,
+    pub start_time: i64,
+    pub duration: i64,
+    pub orig_pkts: u64,
+    pub resp_pkts: u64,
+    pub orig_l2_bytes: u64,
+    pub resp_l2_bytes: u64,
+    pub message_id: u32,
+    pub version: u8,
+    pub opcode: Vec<String>,
+    pub result: Vec<String>,
+    pub diagnostic_message: Vec<String>,
+    pub object: Vec<String>,
+    pub argument: Vec<String>,
+    pub confidence: f32,
+    pub category: Option<EventCategory>,
+}
+
+#[derive(Deserialize, Serialize)]
+pub(crate) struct BlocklistMalformedDnsFieldsStoredV0_45 {
+    pub sensor: String,
+    pub orig_addr: IpAddr,
+    pub orig_port: u16,
+    pub resp_addr: IpAddr,
+    pub resp_port: u16,
+    pub proto: u8,
+    pub start_time: i64,
+    pub duration: i64,
+    pub orig_pkts: u64,
+    pub resp_pkts: u64,
+    pub orig_l2_bytes: u64,
+    pub resp_l2_bytes: u64,
+    pub trans_id: u16,
+    pub flags: u16,
+    pub question_count: u16,
+    pub answer_count: u16,
+    pub authority_count: u16,
+    pub additional_count: u16,
+    pub query_count: u32,
+    pub resp_count: u32,
+    pub query_bytes: u64,
+    pub resp_bytes: u64,
+    pub query_body: Vec<Vec<u8>>,
+    pub resp_body: Vec<Vec<u8>>,
+    pub confidence: f32,
+    pub category: Option<EventCategory>,
+}
+
+// This persisted schema must remain byte-compatible with v0.42 data.
+#[allow(clippy::struct_excessive_bools)]
+#[derive(Deserialize, Serialize)]
+pub(crate) struct DnsEventFieldsStoredV0_42 {
+    pub sensor: String,
+    pub orig_addr: IpAddr,
+    pub orig_port: u16,
+    pub resp_addr: IpAddr,
+    pub resp_port: u16,
+    pub proto: u8,
+    pub start_time: i64,
+    pub duration: i64,
+    pub orig_pkts: u64,
+    pub resp_pkts: u64,
+    pub orig_l2_bytes: u64,
+    pub resp_l2_bytes: u64,
+    pub query: String,
+    pub answer: Vec<String>,
+    pub trans_id: u16,
+    pub rtt: i64,
+    pub qclass: u16,
+    pub qtype: u16,
+    pub rcode: u16,
+    pub aa_flag: bool,
+    pub tc_flag: bool,
+    pub rd_flag: bool,
+    pub ra_flag: bool,
+    pub ttl: Vec<i32>,
+    pub confidence: f32,
+    pub category: Option<EventCategory>,
+}
+
+// This persisted schema must remain byte-compatible with v0.42 data.
+#[allow(clippy::struct_excessive_bools)]
+#[derive(Deserialize, Serialize)]
+pub(crate) struct CryptocurrencyMiningPoolFieldsStoredV0_42 {
+    pub sensor: String,
+    pub orig_addr: IpAddr,
+    pub orig_port: u16,
+    pub resp_addr: IpAddr,
+    pub resp_port: u16,
+    pub proto: u8,
+    pub start_time: i64,
+    pub duration: i64,
+    pub orig_pkts: u64,
+    pub resp_pkts: u64,
+    pub orig_l2_bytes: u64,
+    pub resp_l2_bytes: u64,
+    pub query: String,
+    pub answer: Vec<String>,
+    pub trans_id: u16,
+    pub rtt: i64,
+    pub qclass: u16,
+    pub qtype: u16,
+    pub rcode: u16,
+    pub aa_flag: bool,
+    pub tc_flag: bool,
+    pub rd_flag: bool,
+    pub ra_flag: bool,
+    pub ttl: Vec<i32>,
+    pub coins: Vec<String>,
+    pub confidence: f32,
+    pub category: Option<EventCategory>,
+}
+
+// This persisted schema must remain byte-compatible with v0.42 data.
+#[allow(clippy::struct_excessive_bools)]
+#[derive(Deserialize, Serialize)]
+pub(crate) struct BlocklistDnsFieldsStoredV0_42 {
+    pub sensor: String,
+    pub orig_addr: IpAddr,
+    pub orig_port: u16,
+    pub resp_addr: IpAddr,
+    pub resp_port: u16,
+    pub proto: u8,
+    pub start_time: i64,
+    pub duration: i64,
+    pub orig_pkts: u64,
+    pub resp_pkts: u64,
+    pub orig_l2_bytes: u64,
+    pub resp_l2_bytes: u64,
+    pub query: String,
+    pub answer: Vec<String>,
+    pub trans_id: u16,
+    pub rtt: i64,
+    pub qclass: u16,
+    pub qtype: u16,
+    pub rcode: u16,
+    pub aa_flag: bool,
+    pub tc_flag: bool,
+    pub rd_flag: bool,
+    pub ra_flag: bool,
+    pub ttl: Vec<i32>,
+    pub confidence: f32,
+    pub category: Option<EventCategory>,
+}
+
+#[derive(Deserialize, Serialize)]
+pub(crate) struct BlocklistDhcpFieldsStoredV0_44 {
+    pub sensor: String,
+    pub orig_addr: IpAddr,
+    pub orig_port: u16,
+    pub resp_addr: IpAddr,
+    pub resp_port: u16,
+    pub proto: u8,
+    pub start_time: i64,
+    pub duration: i64,
+    pub orig_pkts: u64,
+    pub resp_pkts: u64,
+    pub orig_l2_bytes: u64,
+    pub resp_l2_bytes: u64,
+    pub msg_type: u8,
+    pub ciaddr: IpAddr,
+    pub yiaddr: IpAddr,
+    pub siaddr: IpAddr,
+    pub giaddr: IpAddr,
+    pub subnet_mask: IpAddr,
+    pub router: Vec<IpAddr>,
+    pub domain_name_server: Vec<IpAddr>,
+    pub req_ip_addr: IpAddr,
+    pub lease_time: u32,
+    pub server_id: IpAddr,
+    pub param_req_list: Vec<u8>,
+    pub message: String,
+    pub renewal_time: u32,
+    pub rebinding_time: u32,
+    pub class_id: Vec<u8>,
+    pub client_id_type: u8,
+    pub client_id: Vec<u8>,
+    pub options: Vec<(u8, Vec<u8>)>,
+    pub confidence: f32,
+    pub category: Option<EventCategory>,
+}
+
+#[derive(Deserialize, Serialize)]
+pub(crate) struct FtpBruteForceFieldsStoredV0_42 {
+    pub sensor: String,
+    pub orig_addr: IpAddr,
+    pub resp_addr: IpAddr,
+    pub resp_port: u16,
+    pub proto: u8,
+    pub user_list: Vec<String>,
+    pub start_time: i64,
+    pub end_time: i64,
+    pub is_internal: bool,
+    pub confidence: f32,
+    pub category: Option<EventCategory>,
+}
+
+#[derive(Deserialize, Serialize)]
+pub(crate) struct FtpEventFieldsStoredV0_42 {
+    pub sensor: String,
+    pub orig_addr: IpAddr,
+    pub orig_port: u16,
+    pub resp_addr: IpAddr,
+    pub resp_port: u16,
+    pub proto: u8,
+    pub start_time: i64,
+    pub duration: i64,
+    pub orig_pkts: u64,
+    pub resp_pkts: u64,
+    pub orig_l2_bytes: u64,
+    pub resp_l2_bytes: u64,
+    pub user: String,
+    pub password: String,
+    pub commands: Vec<FtpCommand>,
+    pub confidence: f32,
+    pub category: Option<EventCategory>,
+}
+
+#[derive(Deserialize, Serialize)]
+pub(crate) struct RdpBruteForceFieldsStoredV0_42 {
+    pub sensor: String,
+    pub orig_addr: IpAddr,
+    pub resp_addrs: Vec<IpAddr>,
+    pub start_time: i64,
+    pub end_time: i64,
+    pub proto: u8,
+    pub confidence: f32,
+    pub category: Option<EventCategory>,
+}
+
+#[derive(Deserialize, Serialize)]
+pub(crate) struct BlocklistRdpFieldsStoredV0_42 {
+    pub sensor: String,
+    pub orig_addr: IpAddr,
+    pub orig_port: u16,
+    pub resp_addr: IpAddr,
+    pub resp_port: u16,
+    pub proto: u8,
+    pub start_time: i64,
+    pub duration: i64,
+    pub orig_pkts: u64,
+    pub resp_pkts: u64,
+    pub orig_l2_bytes: u64,
+    pub resp_l2_bytes: u64,
+    pub cookie: String,
+    pub confidence: f32,
+    pub category: Option<EventCategory>,
+}
+
+#[derive(Deserialize, Serialize)]
+pub(crate) struct BlocklistDceRpcFieldsStoredV0_44 {
+    pub sensor: String,
+    pub orig_addr: IpAddr,
+    pub orig_port: u16,
+    pub resp_addr: IpAddr,
+    pub resp_port: u16,
+    pub proto: u8,
+    pub start_time: i64,
+    pub duration: i64,
+    pub orig_pkts: u64,
+    pub resp_pkts: u64,
+    pub orig_l2_bytes: u64,
+    pub resp_l2_bytes: u64,
+    pub context: Vec<DceRpcContext>,
+    pub request: Vec<String>,
+    pub confidence: f32,
+    pub category: Option<EventCategory>,
+}
+
+#[derive(Deserialize, Serialize)]
+pub(crate) struct BlocklistSshFieldsStoredV0_42 {
+    pub sensor: String,
+    pub orig_addr: IpAddr,
+    pub orig_port: u16,
+    pub resp_addr: IpAddr,
+    pub resp_port: u16,
+    pub proto: u8,
+    pub start_time: i64,
+    pub duration: i64,
+    pub orig_pkts: u64,
+    pub resp_pkts: u64,
+    pub orig_l2_bytes: u64,
+    pub resp_l2_bytes: u64,
+    pub client: String,
+    pub server: String,
+    pub cipher_alg: String,
+    pub mac_alg: String,
+    pub compression_alg: String,
+    pub kex_alg: String,
+    pub host_key_alg: String,
+    pub hassh_algorithms: String,
+    pub hassh: String,
+    pub hassh_server_algorithms: String,
+    pub hassh_server: String,
+    pub client_shka: String,
+    pub server_shka: String,
+    pub confidence: f32,
+    pub category: Option<EventCategory>,
+}
+
+#[derive(Deserialize, Serialize)]
+pub(crate) struct PortScanFieldsStoredV0_42 {
+    pub sensor: String,
+    pub orig_addr: IpAddr,
+    pub resp_addr: IpAddr,
+    pub resp_ports: Vec<u16>,
+    pub start_time: i64,
+    pub end_time: i64,
+    pub proto: u8,
+    pub confidence: f32,
+    pub category: Option<EventCategory>,
+}
+
+#[derive(Deserialize, Serialize)]
+pub(crate) struct MultiHostPortScanFieldsStoredV0_42 {
+    pub sensor: String,
+    pub orig_addr: IpAddr,
+    pub resp_port: u16,
+    pub resp_addrs: Vec<IpAddr>,
+    pub proto: u8,
+    pub start_time: i64,
+    pub end_time: i64,
+    pub confidence: f32,
+    pub category: Option<EventCategory>,
+}
+
+#[derive(Deserialize, Serialize)]
+pub(crate) struct ExternalDdosFieldsStoredV0_42 {
+    pub sensor: String,
+    pub orig_addrs: Vec<IpAddr>,
+    pub resp_addr: IpAddr,
+    pub proto: u8,
+    pub start_time: i64,
+    pub end_time: i64,
+    pub confidence: f32,
+    pub category: Option<EventCategory>,
+}
+
+#[derive(Deserialize, Serialize)]
+pub(crate) struct BlocklistConnFieldsStoredV0_42 {
+    pub sensor: String,
+    pub orig_addr: IpAddr,
+    pub orig_port: u16,
+    pub resp_addr: IpAddr,
+    pub resp_port: u16,
+    pub proto: u8,
+    pub conn_state: String,
+    pub start_time: i64,
+    pub duration: i64,
+    pub service: String,
+    pub orig_bytes: u64,
+    pub resp_bytes: u64,
+    pub orig_pkts: u64,
+    pub resp_pkts: u64,
+    pub orig_l2_bytes: u64,
+    pub resp_l2_bytes: u64,
+    pub confidence: f32,
+    pub category: Option<EventCategory>,
+}
+
+#[derive(Deserialize, Serialize)]
+pub(crate) struct HttpEventFieldsStoredV0_42 {
+    pub sensor: String,
+    pub orig_addr: IpAddr,
+    pub orig_port: u16,
+    pub resp_addr: IpAddr,
+    pub resp_port: u16,
+    pub proto: u8,
+    pub start_time: i64,
+    pub duration: i64,
+    pub orig_pkts: u64,
+    pub resp_pkts: u64,
+    pub orig_l2_bytes: u64,
+    pub resp_l2_bytes: u64,
+    pub method: String,
+    pub host: String,
+    pub uri: String,
+    pub referer: String,
+    pub version: String,
+    pub user_agent: String,
+    pub request_len: usize,
+    pub response_len: usize,
+    pub status_code: u16,
+    pub status_msg: String,
+    pub username: String,
+    pub password: String,
+    pub cookie: String,
+    pub content_encoding: String,
+    pub content_type: String,
+    pub cache_control: String,
+    pub filenames: Vec<String>,
+    pub mime_types: Vec<String>,
+    pub body: Vec<u8>,
+    pub state: String,
+    pub confidence: f32,
+    pub category: Option<EventCategory>,
+}
+
+#[derive(Deserialize, Serialize)]
+pub(crate) struct RepeatedHttpSessionsFieldsStoredV0_42 {
+    pub sensor: String,
+    pub orig_addr: IpAddr,
+    pub orig_port: u16,
+    pub resp_addr: IpAddr,
+    pub resp_port: u16,
+    pub proto: u8,
+    pub start_time: i64,
+    pub end_time: i64,
+    pub confidence: f32,
+    pub category: Option<EventCategory>,
+}
+
+#[derive(Deserialize, Serialize)]
+pub(crate) struct HttpThreatFieldsStoredV0_44 {
+    #[serde(with = "ts_nanoseconds")]
+    pub time: DateTime<Utc>,
+    pub sensor: String,
+    pub orig_addr: IpAddr,
+    pub orig_port: u16,
+    pub resp_addr: IpAddr,
+    pub resp_port: u16,
+    pub proto: u8,
+    pub start_time: i64,
+    pub duration: i64,
+    pub orig_pkts: u64,
+    pub resp_pkts: u64,
+    pub orig_l2_bytes: u64,
+    pub resp_l2_bytes: u64,
+    pub method: String,
+    pub host: String,
+    pub uri: String,
+    pub referer: String,
+    pub version: String,
+    pub user_agent: String,
+    pub request_len: usize,
+    pub response_len: usize,
+    pub status_code: u16,
+    pub status_msg: String,
+    pub username: String,
+    pub password: String,
+    pub cookie: String,
+    pub content_encoding: String,
+    pub content_type: String,
+    pub cache_control: String,
+    pub filenames: Vec<String>,
+    pub mime_types: Vec<String>,
+    pub body: Vec<u8>,
+    pub state: String,
+    pub db_name: String,
+    pub rule_id: u32,
+    pub matched_to: String,
+    pub cluster_id: Option<u32>,
+    pub attack_kind: String,
+    pub confidence: f32,
+    pub category: Option<EventCategory>,
+}
+
+#[derive(Deserialize, Serialize)]
+pub(crate) struct DgaFieldsStoredV0_42 {
+    pub sensor: String,
+    pub orig_addr: IpAddr,
+    pub orig_port: u16,
+    pub resp_addr: IpAddr,
+    pub resp_port: u16,
+    pub proto: u8,
+    pub start_time: i64,
+    pub duration: i64,
+    pub orig_pkts: u64,
+    pub resp_pkts: u64,
+    pub orig_l2_bytes: u64,
+    pub resp_l2_bytes: u64,
+    pub method: String,
+    pub host: String,
+    pub uri: String,
+    pub referer: String,
+    pub version: String,
+    pub user_agent: String,
+    pub request_len: usize,
+    pub response_len: usize,
+    pub status_code: u16,
+    pub status_msg: String,
+    pub username: String,
+    pub password: String,
+    pub cookie: String,
+    pub content_encoding: String,
+    pub content_type: String,
+    pub cache_control: String,
+    pub filenames: Vec<String>,
+    pub mime_types: Vec<String>,
+    pub body: Vec<u8>,
+    pub state: String,
+    pub confidence: f32,
+    pub category: Option<EventCategory>,
+}
+
+#[derive(Deserialize, Serialize)]
+pub(crate) struct BlocklistNfsFieldsStoredV0_42 {
+    pub sensor: String,
+    pub orig_addr: IpAddr,
+    pub orig_port: u16,
+    pub resp_addr: IpAddr,
+    pub resp_port: u16,
+    pub proto: u8,
+    pub start_time: i64,
+    pub duration: i64,
+    pub orig_pkts: u64,
+    pub resp_pkts: u64,
+    pub orig_l2_bytes: u64,
+    pub resp_l2_bytes: u64,
+    pub read_files: Vec<String>,
+    pub write_files: Vec<String>,
+    pub confidence: f32,
+    pub category: Option<EventCategory>,
+}
+
+#[derive(Deserialize, Serialize)]
+pub(crate) struct BlocklistRadiusFieldsStoredV0_45 {
+    pub sensor: String,
+    pub orig_addr: IpAddr,
+    pub orig_port: u16,
+    pub resp_addr: IpAddr,
+    pub resp_port: u16,
+    pub proto: u8,
+    pub start_time: i64,
+    pub duration: i64,
+    pub orig_pkts: u64,
+    pub resp_pkts: u64,
+    pub orig_l2_bytes: u64,
+    pub resp_l2_bytes: u64,
+    pub id: u8,
+    pub code: u8,
+    pub resp_code: u8,
+    pub auth: String,
+    pub resp_auth: String,
+    pub user_name: Vec<u8>,
+    pub user_passwd: Vec<u8>,
+    pub chap_passwd: Vec<u8>,
+    pub nas_ip: IpAddr,
+    pub nas_port: u32,
+    pub state: Vec<u8>,
+    pub nas_id: Vec<u8>,
+    pub nas_port_type: u32,
+    pub message: String,
+    pub confidence: f32,
+    pub category: Option<EventCategory>,
+}
+
+#[derive(Deserialize, Serialize)]
+pub(crate) struct BlocklistSmtpFieldsStoredV0_42 {
+    pub sensor: String,
+    pub orig_addr: IpAddr,
+    pub orig_port: u16,
+    pub resp_addr: IpAddr,
+    pub resp_port: u16,
+    pub proto: u8,
+    pub start_time: i64,
+    pub duration: i64,
+    pub orig_pkts: u64,
+    pub resp_pkts: u64,
+    pub orig_l2_bytes: u64,
+    pub resp_l2_bytes: u64,
+    pub mailfrom: String,
+    pub date: String,
+    pub from: String,
+    pub to: String,
+    pub subject: String,
+    pub agent: String,
+    pub state: String,
+    pub confidence: f32,
+    pub category: Option<EventCategory>,
+}
+
+#[derive(Deserialize, Serialize)]
+pub(crate) struct BlocklistKerberosFieldsStoredV0_42 {
+    pub sensor: String,
+    pub orig_addr: IpAddr,
+    pub orig_port: u16,
+    pub resp_addr: IpAddr,
+    pub resp_port: u16,
+    pub proto: u8,
+    pub start_time: i64,
+    pub duration: i64,
+    pub orig_pkts: u64,
+    pub resp_pkts: u64,
+    pub orig_l2_bytes: u64,
+    pub resp_l2_bytes: u64,
+    pub client_time: i64,
+    pub server_time: i64,
+    pub error_code: u32,
+    pub client_realm: String,
+    pub cname_type: u8,
+    pub cname: Vec<String>,
+    pub realm: String,
+    pub sname_type: u8,
+    pub sname: Vec<String>,
+    pub confidence: f32,
+    pub category: Option<EventCategory>,
+}
+
+#[derive(Deserialize, Serialize)]
+pub struct NetworkThreatFieldsStoredV0_45 {
+    #[serde(with = "ts_nanoseconds")]
+    pub time: DateTime<Utc>,
+    pub sensor: String,
+    pub orig_addr: IpAddr,
+    pub orig_port: u16,
+    pub resp_addr: IpAddr,
+    pub resp_port: u16,
+    pub proto: u8,
+    pub service: String,
+    #[serde(with = "ts_nanoseconds")]
+    pub start_time: DateTime<Utc>,
+    pub duration: i64,
+    pub orig_pkts: u64,
+    pub resp_pkts: u64,
+    pub orig_l2_bytes: u64,
+    pub resp_l2_bytes: u64,
+    pub content: String,
+    pub db_name: String,
+    pub rule_id: u32,
+    pub matched_to: String,
+    pub cluster_id: Option<u32>,
+    pub attack_kind: String,
+    pub confidence: f32,
+    pub category: Option<EventCategory>,
+    pub triage_scores: Option<Vec<TriageScore>>,
+}
+
+#[derive(Deserialize, Serialize)]
+pub(crate) struct BlocklistTlsFieldsStoredV0_42 {
+    pub sensor: String,
+    pub orig_addr: IpAddr,
+    pub orig_port: u16,
+    pub resp_addr: IpAddr,
+    pub resp_port: u16,
+    pub proto: u8,
+    pub start_time: i64,
+    pub duration: i64,
+    pub orig_pkts: u64,
+    pub resp_pkts: u64,
+    pub orig_l2_bytes: u64,
+    pub resp_l2_bytes: u64,
+    pub server_name: String,
+    pub alpn_protocol: String,
+    pub ja3: String,
+    pub version: String,
+    pub client_cipher_suites: Vec<u16>,
+    pub client_extensions: Vec<u16>,
+    pub cipher: u16,
+    pub extensions: Vec<u16>,
+    pub ja3s: String,
+    pub serial: String,
+    pub subject_country: String,
+    pub subject_org_name: String,
+    pub subject_common_name: String,
+    pub validity_not_before: i64,
+    pub validity_not_after: i64,
+    pub subject_alt_name: String,
+    pub issuer_country: String,
+    pub issuer_org_name: String,
+    pub issuer_org_unit_name: String,
+    pub issuer_common_name: String,
+    pub last_alert: u8,
+    pub confidence: f32,
+    pub category: Option<EventCategory>,
+}
+
+// ============================================================================
 // Pre-0.46 stored event country-code migration
 // ============================================================================
 
@@ -245,932 +1053,1118 @@ pub(crate) struct HttpThreatFieldsStoredV0_43 {
 ///
 /// This is migration-only logic. Unlike [`convert_for_storage`], the input is
 /// already an internal stored record, not the producer-facing `*Fields` schema.
+impl From<BlocklistBootpFieldsStoredV0_42> for crate::event::BlocklistBootpFieldsStoredV0_46 {
+    fn from(old: BlocklistBootpFieldsStoredV0_42) -> Self {
+        Self {
+            sensor: old.sensor,
+            orig_addr: old.orig_addr,
+            orig_port: old.orig_port,
+            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
+            resp_addr: old.resp_addr,
+            resp_port: old.resp_port,
+            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
+            proto: old.proto,
+            start_time: old.start_time,
+            duration: old.duration,
+            orig_pkts: old.orig_pkts,
+            resp_pkts: old.resp_pkts,
+            orig_l2_bytes: old.orig_l2_bytes,
+            resp_l2_bytes: old.resp_l2_bytes,
+            op: old.op,
+            htype: old.htype,
+            hops: old.hops,
+            xid: old.xid,
+            ciaddr: old.ciaddr,
+            yiaddr: old.yiaddr,
+            siaddr: old.siaddr,
+            giaddr: old.giaddr,
+            chaddr: old.chaddr,
+            sname: old.sname,
+            file: old.file,
+            confidence: old.confidence,
+            category: old.category,
+        }
+    }
+}
+
+impl From<BlocklistConnFieldsStoredV0_42> for crate::event::BlocklistConnFieldsStoredV0_46 {
+    fn from(old: BlocklistConnFieldsStoredV0_42) -> Self {
+        Self {
+            sensor: old.sensor,
+            orig_addr: old.orig_addr,
+            orig_port: old.orig_port,
+            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
+            resp_addr: old.resp_addr,
+            resp_port: old.resp_port,
+            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
+            proto: old.proto,
+            conn_state: old.conn_state,
+            start_time: old.start_time,
+            duration: old.duration,
+            service: old.service,
+            orig_bytes: old.orig_bytes,
+            resp_bytes: old.resp_bytes,
+            orig_pkts: old.orig_pkts,
+            resp_pkts: old.resp_pkts,
+            orig_l2_bytes: old.orig_l2_bytes,
+            resp_l2_bytes: old.resp_l2_bytes,
+            confidence: old.confidence,
+            category: old.category,
+        }
+    }
+}
+
+impl From<BlocklistDceRpcFieldsStoredV0_44> for crate::event::BlocklistDceRpcFieldsStoredV0_46 {
+    fn from(old: BlocklistDceRpcFieldsStoredV0_44) -> Self {
+        Self {
+            sensor: old.sensor,
+            orig_addr: old.orig_addr,
+            orig_port: old.orig_port,
+            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
+            resp_addr: old.resp_addr,
+            resp_port: old.resp_port,
+            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
+            proto: old.proto,
+            start_time: old.start_time,
+            duration: old.duration,
+            orig_pkts: old.orig_pkts,
+            resp_pkts: old.resp_pkts,
+            orig_l2_bytes: old.orig_l2_bytes,
+            resp_l2_bytes: old.resp_l2_bytes,
+            context: old.context,
+            request: old.request,
+            confidence: old.confidence,
+            category: old.category,
+        }
+    }
+}
+
+impl From<BlocklistDhcpFieldsStoredV0_44> for crate::event::BlocklistDhcpFieldsStoredV0_46 {
+    fn from(old: BlocklistDhcpFieldsStoredV0_44) -> Self {
+        Self {
+            sensor: old.sensor,
+            orig_addr: old.orig_addr,
+            orig_port: old.orig_port,
+            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
+            resp_addr: old.resp_addr,
+            resp_port: old.resp_port,
+            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
+            proto: old.proto,
+            start_time: old.start_time,
+            duration: old.duration,
+            orig_pkts: old.orig_pkts,
+            resp_pkts: old.resp_pkts,
+            orig_l2_bytes: old.orig_l2_bytes,
+            resp_l2_bytes: old.resp_l2_bytes,
+            msg_type: old.msg_type,
+            ciaddr: old.ciaddr,
+            yiaddr: old.yiaddr,
+            siaddr: old.siaddr,
+            giaddr: old.giaddr,
+            subnet_mask: old.subnet_mask,
+            router: old.router,
+            domain_name_server: old.domain_name_server,
+            req_ip_addr: old.req_ip_addr,
+            lease_time: old.lease_time,
+            server_id: old.server_id,
+            param_req_list: old.param_req_list,
+            message: old.message,
+            renewal_time: old.renewal_time,
+            rebinding_time: old.rebinding_time,
+            class_id: old.class_id,
+            client_id_type: old.client_id_type,
+            client_id: old.client_id,
+            options: old.options,
+            confidence: old.confidence,
+            category: old.category,
+        }
+    }
+}
+
+impl From<BlocklistDnsFieldsStoredV0_42> for crate::event::BlocklistDnsFieldsStoredV0_46 {
+    fn from(old: BlocklistDnsFieldsStoredV0_42) -> Self {
+        Self {
+            sensor: old.sensor,
+            orig_addr: old.orig_addr,
+            orig_port: old.orig_port,
+            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
+            resp_addr: old.resp_addr,
+            resp_port: old.resp_port,
+            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
+            proto: old.proto,
+            start_time: old.start_time,
+            duration: old.duration,
+            orig_pkts: old.orig_pkts,
+            resp_pkts: old.resp_pkts,
+            orig_l2_bytes: old.orig_l2_bytes,
+            resp_l2_bytes: old.resp_l2_bytes,
+            query: old.query,
+            answer: old.answer,
+            trans_id: old.trans_id,
+            rtt: old.rtt,
+            qclass: old.qclass,
+            qtype: old.qtype,
+            rcode: old.rcode,
+            aa_flag: old.aa_flag,
+            tc_flag: old.tc_flag,
+            rd_flag: old.rd_flag,
+            ra_flag: old.ra_flag,
+            ttl: old.ttl,
+            confidence: old.confidence,
+            category: old.category,
+        }
+    }
+}
+
+impl From<FtpEventFieldsStoredV0_42> for crate::event::FtpEventFieldsStoredV0_46 {
+    fn from(old: FtpEventFieldsStoredV0_42) -> Self {
+        Self {
+            sensor: old.sensor,
+            orig_addr: old.orig_addr,
+            orig_port: old.orig_port,
+            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
+            resp_addr: old.resp_addr,
+            resp_port: old.resp_port,
+            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
+            proto: old.proto,
+            start_time: old.start_time,
+            duration: old.duration,
+            orig_pkts: old.orig_pkts,
+            resp_pkts: old.resp_pkts,
+            orig_l2_bytes: old.orig_l2_bytes,
+            resp_l2_bytes: old.resp_l2_bytes,
+            user: old.user,
+            password: old.password,
+            commands: old.commands,
+            confidence: old.confidence,
+            category: old.category,
+        }
+    }
+}
+
+impl From<DgaFieldsStoredV0_42> for crate::event::DgaFieldsStoredV0_46 {
+    fn from(old: DgaFieldsStoredV0_42) -> Self {
+        Self {
+            sensor: old.sensor,
+            orig_addr: old.orig_addr,
+            orig_port: old.orig_port,
+            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
+            resp_addr: old.resp_addr,
+            resp_port: old.resp_port,
+            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
+            proto: old.proto,
+            start_time: old.start_time,
+            duration: old.duration,
+            orig_pkts: old.orig_pkts,
+            resp_pkts: old.resp_pkts,
+            orig_l2_bytes: old.orig_l2_bytes,
+            resp_l2_bytes: old.resp_l2_bytes,
+            method: old.method,
+            host: old.host,
+            uri: old.uri,
+            referer: old.referer,
+            version: old.version,
+            user_agent: old.user_agent,
+            request_len: old.request_len,
+            response_len: old.response_len,
+            status_code: old.status_code,
+            status_msg: old.status_msg,
+            username: old.username,
+            password: old.password,
+            cookie: old.cookie,
+            content_encoding: old.content_encoding,
+            content_type: old.content_type,
+            cache_control: old.cache_control,
+            filenames: old.filenames,
+            mime_types: old.mime_types,
+            body: old.body,
+            state: old.state,
+            confidence: old.confidence,
+            category: old.category,
+        }
+    }
+}
+
+impl From<BlocklistKerberosFieldsStoredV0_42> for crate::event::BlocklistKerberosFieldsStoredV0_46 {
+    fn from(old: BlocklistKerberosFieldsStoredV0_42) -> Self {
+        Self {
+            sensor: old.sensor,
+            orig_addr: old.orig_addr,
+            orig_port: old.orig_port,
+            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
+            resp_addr: old.resp_addr,
+            resp_port: old.resp_port,
+            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
+            proto: old.proto,
+            start_time: old.start_time,
+            duration: old.duration,
+            orig_pkts: old.orig_pkts,
+            resp_pkts: old.resp_pkts,
+            orig_l2_bytes: old.orig_l2_bytes,
+            resp_l2_bytes: old.resp_l2_bytes,
+            client_time: old.client_time,
+            server_time: old.server_time,
+            error_code: old.error_code,
+            client_realm: old.client_realm,
+            cname_type: old.cname_type,
+            cname: old.cname,
+            realm: old.realm,
+            sname_type: old.sname_type,
+            sname: old.sname,
+            confidence: old.confidence,
+            category: old.category,
+        }
+    }
+}
+
+impl From<LdapEventFieldsStoredV0_42> for crate::event::LdapEventFieldsStoredV0_46 {
+    fn from(old: LdapEventFieldsStoredV0_42) -> Self {
+        Self {
+            sensor: old.sensor,
+            orig_addr: old.orig_addr,
+            orig_port: old.orig_port,
+            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
+            resp_addr: old.resp_addr,
+            resp_port: old.resp_port,
+            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
+            proto: old.proto,
+            start_time: old.start_time,
+            duration: old.duration,
+            orig_pkts: old.orig_pkts,
+            resp_pkts: old.resp_pkts,
+            orig_l2_bytes: old.orig_l2_bytes,
+            resp_l2_bytes: old.resp_l2_bytes,
+            message_id: old.message_id,
+            version: old.version,
+            opcode: old.opcode,
+            result: old.result,
+            diagnostic_message: old.diagnostic_message,
+            object: old.object,
+            argument: old.argument,
+            confidence: old.confidence,
+            category: old.category,
+        }
+    }
+}
+
+impl From<BlocklistMalformedDnsFieldsStoredV0_45>
+    for crate::event::BlocklistMalformedDnsFieldsStoredV0_46
+{
+    fn from(old: BlocklistMalformedDnsFieldsStoredV0_45) -> Self {
+        Self {
+            sensor: old.sensor,
+            orig_addr: old.orig_addr,
+            orig_port: old.orig_port,
+            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
+            resp_addr: old.resp_addr,
+            resp_port: old.resp_port,
+            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
+            proto: old.proto,
+            start_time: old.start_time,
+            duration: old.duration,
+            orig_pkts: old.orig_pkts,
+            resp_pkts: old.resp_pkts,
+            orig_l2_bytes: old.orig_l2_bytes,
+            resp_l2_bytes: old.resp_l2_bytes,
+            trans_id: old.trans_id,
+            flags: old.flags,
+            question_count: old.question_count,
+            answer_count: old.answer_count,
+            authority_count: old.authority_count,
+            additional_count: old.additional_count,
+            query_count: old.query_count,
+            resp_count: old.resp_count,
+            query_bytes: old.query_bytes,
+            resp_bytes: old.resp_bytes,
+            query_body: old.query_body,
+            resp_body: old.resp_body,
+            confidence: old.confidence,
+            category: old.category,
+        }
+    }
+}
+
+impl From<BlocklistMqttFieldsStoredV0_42> for crate::event::BlocklistMqttFieldsStoredV0_46 {
+    fn from(old: BlocklistMqttFieldsStoredV0_42) -> Self {
+        Self {
+            sensor: old.sensor,
+            orig_addr: old.orig_addr,
+            orig_port: old.orig_port,
+            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
+            resp_addr: old.resp_addr,
+            resp_port: old.resp_port,
+            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
+            proto: old.proto,
+            start_time: old.start_time,
+            duration: old.duration,
+            orig_pkts: old.orig_pkts,
+            resp_pkts: old.resp_pkts,
+            orig_l2_bytes: old.orig_l2_bytes,
+            resp_l2_bytes: old.resp_l2_bytes,
+            protocol: old.protocol,
+            version: old.version,
+            client_id: old.client_id,
+            connack_reason: old.connack_reason,
+            subscribe: old.subscribe,
+            suback_reason: old.suback_reason,
+            confidence: old.confidence,
+            category: old.category,
+        }
+    }
+}
+
+impl From<BlocklistNfsFieldsStoredV0_42> for crate::event::BlocklistNfsFieldsStoredV0_46 {
+    fn from(old: BlocklistNfsFieldsStoredV0_42) -> Self {
+        Self {
+            sensor: old.sensor,
+            orig_addr: old.orig_addr,
+            orig_port: old.orig_port,
+            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
+            resp_addr: old.resp_addr,
+            resp_port: old.resp_port,
+            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
+            proto: old.proto,
+            start_time: old.start_time,
+            duration: old.duration,
+            orig_pkts: old.orig_pkts,
+            resp_pkts: old.resp_pkts,
+            orig_l2_bytes: old.orig_l2_bytes,
+            resp_l2_bytes: old.resp_l2_bytes,
+            read_files: old.read_files,
+            write_files: old.write_files,
+            confidence: old.confidence,
+            category: old.category,
+        }
+    }
+}
+
+impl From<BlocklistNtlmFieldsStoredV0_42> for crate::event::BlocklistNtlmFieldsStoredV0_46 {
+    fn from(old: BlocklistNtlmFieldsStoredV0_42) -> Self {
+        Self {
+            sensor: old.sensor,
+            orig_addr: old.orig_addr,
+            orig_port: old.orig_port,
+            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
+            resp_addr: old.resp_addr,
+            resp_port: old.resp_port,
+            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
+            proto: old.proto,
+            start_time: old.start_time,
+            duration: old.duration,
+            orig_pkts: old.orig_pkts,
+            resp_pkts: old.resp_pkts,
+            orig_l2_bytes: old.orig_l2_bytes,
+            resp_l2_bytes: old.resp_l2_bytes,
+            protocol: old.protocol,
+            username: old.username,
+            hostname: old.hostname,
+            domainname: old.domainname,
+            success: old.success,
+            confidence: old.confidence,
+            category: old.category,
+        }
+    }
+}
+
+impl From<BlocklistRadiusFieldsStoredV0_45> for crate::event::BlocklistRadiusFieldsStoredV0_46 {
+    fn from(old: BlocklistRadiusFieldsStoredV0_45) -> Self {
+        Self {
+            sensor: old.sensor,
+            orig_addr: old.orig_addr,
+            orig_port: old.orig_port,
+            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
+            resp_addr: old.resp_addr,
+            resp_port: old.resp_port,
+            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
+            proto: old.proto,
+            start_time: old.start_time,
+            duration: old.duration,
+            orig_pkts: old.orig_pkts,
+            resp_pkts: old.resp_pkts,
+            orig_l2_bytes: old.orig_l2_bytes,
+            resp_l2_bytes: old.resp_l2_bytes,
+            id: old.id,
+            code: old.code,
+            resp_code: old.resp_code,
+            auth: old.auth,
+            resp_auth: old.resp_auth,
+            user_name: old.user_name,
+            user_passwd: old.user_passwd,
+            chap_passwd: old.chap_passwd,
+            nas_ip: old.nas_ip,
+            nas_port: old.nas_port,
+            state: old.state,
+            nas_id: old.nas_id,
+            nas_port_type: old.nas_port_type,
+            message: old.message,
+            confidence: old.confidence,
+            category: old.category,
+        }
+    }
+}
+
+impl From<BlocklistRdpFieldsStoredV0_42> for crate::event::BlocklistRdpFieldsStoredV0_46 {
+    fn from(old: BlocklistRdpFieldsStoredV0_42) -> Self {
+        Self {
+            sensor: old.sensor,
+            orig_addr: old.orig_addr,
+            orig_port: old.orig_port,
+            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
+            resp_addr: old.resp_addr,
+            resp_port: old.resp_port,
+            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
+            proto: old.proto,
+            start_time: old.start_time,
+            duration: old.duration,
+            orig_pkts: old.orig_pkts,
+            resp_pkts: old.resp_pkts,
+            orig_l2_bytes: old.orig_l2_bytes,
+            resp_l2_bytes: old.resp_l2_bytes,
+            cookie: old.cookie,
+            confidence: old.confidence,
+            category: old.category,
+        }
+    }
+}
+
+impl From<BlocklistSmbFieldsStoredV0_42> for crate::event::BlocklistSmbFieldsStoredV0_46 {
+    fn from(old: BlocklistSmbFieldsStoredV0_42) -> Self {
+        Self {
+            sensor: old.sensor,
+            orig_addr: old.orig_addr,
+            orig_port: old.orig_port,
+            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
+            resp_addr: old.resp_addr,
+            resp_port: old.resp_port,
+            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
+            proto: old.proto,
+            start_time: old.start_time,
+            duration: old.duration,
+            orig_pkts: old.orig_pkts,
+            resp_pkts: old.resp_pkts,
+            orig_l2_bytes: old.orig_l2_bytes,
+            resp_l2_bytes: old.resp_l2_bytes,
+            command: old.command,
+            path: old.path,
+            service: old.service,
+            file_name: old.file_name,
+            file_size: old.file_size,
+            resource_type: old.resource_type,
+            fid: old.fid,
+            create_time: old.create_time,
+            access_time: old.access_time,
+            write_time: old.write_time,
+            change_time: old.change_time,
+            confidence: old.confidence,
+            category: old.category,
+        }
+    }
+}
+
+impl From<BlocklistSmtpFieldsStoredV0_42> for crate::event::BlocklistSmtpFieldsStoredV0_46 {
+    fn from(old: BlocklistSmtpFieldsStoredV0_42) -> Self {
+        Self {
+            sensor: old.sensor,
+            orig_addr: old.orig_addr,
+            orig_port: old.orig_port,
+            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
+            resp_addr: old.resp_addr,
+            resp_port: old.resp_port,
+            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
+            proto: old.proto,
+            start_time: old.start_time,
+            duration: old.duration,
+            orig_pkts: old.orig_pkts,
+            resp_pkts: old.resp_pkts,
+            orig_l2_bytes: old.orig_l2_bytes,
+            resp_l2_bytes: old.resp_l2_bytes,
+            mailfrom: old.mailfrom,
+            date: old.date,
+            from: old.from,
+            to: old.to,
+            subject: old.subject,
+            agent: old.agent,
+            state: old.state,
+            confidence: old.confidence,
+            category: old.category,
+        }
+    }
+}
+
+impl From<BlocklistSshFieldsStoredV0_42> for crate::event::BlocklistSshFieldsStoredV0_46 {
+    fn from(old: BlocklistSshFieldsStoredV0_42) -> Self {
+        Self {
+            sensor: old.sensor,
+            orig_addr: old.orig_addr,
+            orig_port: old.orig_port,
+            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
+            resp_addr: old.resp_addr,
+            resp_port: old.resp_port,
+            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
+            proto: old.proto,
+            start_time: old.start_time,
+            duration: old.duration,
+            orig_pkts: old.orig_pkts,
+            resp_pkts: old.resp_pkts,
+            orig_l2_bytes: old.orig_l2_bytes,
+            resp_l2_bytes: old.resp_l2_bytes,
+            client: old.client,
+            server: old.server,
+            cipher_alg: old.cipher_alg,
+            mac_alg: old.mac_alg,
+            compression_alg: old.compression_alg,
+            kex_alg: old.kex_alg,
+            host_key_alg: old.host_key_alg,
+            hassh_algorithms: old.hassh_algorithms,
+            hassh: old.hassh,
+            hassh_server_algorithms: old.hassh_server_algorithms,
+            hassh_server: old.hassh_server,
+            client_shka: old.client_shka,
+            server_shka: old.server_shka,
+            confidence: old.confidence,
+            category: old.category,
+        }
+    }
+}
+
+impl From<BlocklistTlsFieldsStoredV0_42> for crate::event::BlocklistTlsFieldsStoredV0_46 {
+    fn from(old: BlocklistTlsFieldsStoredV0_42) -> Self {
+        Self {
+            sensor: old.sensor,
+            orig_addr: old.orig_addr,
+            orig_port: old.orig_port,
+            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
+            resp_addr: old.resp_addr,
+            resp_port: old.resp_port,
+            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
+            proto: old.proto,
+            start_time: old.start_time,
+            duration: old.duration,
+            orig_pkts: old.orig_pkts,
+            resp_pkts: old.resp_pkts,
+            orig_l2_bytes: old.orig_l2_bytes,
+            resp_l2_bytes: old.resp_l2_bytes,
+            server_name: old.server_name,
+            alpn_protocol: old.alpn_protocol,
+            ja3: old.ja3,
+            version: old.version,
+            client_cipher_suites: old.client_cipher_suites,
+            client_extensions: old.client_extensions,
+            cipher: old.cipher,
+            extensions: old.extensions,
+            ja3s: old.ja3s,
+            serial: old.serial,
+            subject_country: old.subject_country,
+            subject_org_name: old.subject_org_name,
+            subject_common_name: old.subject_common_name,
+            validity_not_before: old.validity_not_before,
+            validity_not_after: old.validity_not_after,
+            subject_alt_name: old.subject_alt_name,
+            issuer_country: old.issuer_country,
+            issuer_org_name: old.issuer_org_name,
+            issuer_org_unit_name: old.issuer_org_unit_name,
+            issuer_common_name: old.issuer_common_name,
+            last_alert: old.last_alert,
+            confidence: old.confidence,
+            category: old.category,
+        }
+    }
+}
+
+impl From<CryptocurrencyMiningPoolFieldsStoredV0_42>
+    for crate::event::CryptocurrencyMiningPoolFieldsStoredV0_46
+{
+    fn from(old: CryptocurrencyMiningPoolFieldsStoredV0_42) -> Self {
+        Self {
+            sensor: old.sensor,
+            orig_addr: old.orig_addr,
+            orig_port: old.orig_port,
+            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
+            resp_addr: old.resp_addr,
+            resp_port: old.resp_port,
+            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
+            proto: old.proto,
+            start_time: old.start_time,
+            duration: old.duration,
+            orig_pkts: old.orig_pkts,
+            resp_pkts: old.resp_pkts,
+            orig_l2_bytes: old.orig_l2_bytes,
+            resp_l2_bytes: old.resp_l2_bytes,
+            query: old.query,
+            answer: old.answer,
+            trans_id: old.trans_id,
+            rtt: old.rtt,
+            qclass: old.qclass,
+            qtype: old.qtype,
+            rcode: old.rcode,
+            aa_flag: old.aa_flag,
+            tc_flag: old.tc_flag,
+            rd_flag: old.rd_flag,
+            ra_flag: old.ra_flag,
+            ttl: old.ttl,
+            coins: old.coins,
+            confidence: old.confidence,
+            category: old.category,
+        }
+    }
+}
+
+impl From<DnsEventFieldsStoredV0_42> for crate::event::DnsEventFieldsStoredV0_46 {
+    fn from(old: DnsEventFieldsStoredV0_42) -> Self {
+        Self {
+            sensor: old.sensor,
+            orig_addr: old.orig_addr,
+            orig_port: old.orig_port,
+            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
+            resp_addr: old.resp_addr,
+            resp_port: old.resp_port,
+            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
+            proto: old.proto,
+            start_time: old.start_time,
+            duration: old.duration,
+            orig_pkts: old.orig_pkts,
+            resp_pkts: old.resp_pkts,
+            orig_l2_bytes: old.orig_l2_bytes,
+            resp_l2_bytes: old.resp_l2_bytes,
+            query: old.query,
+            answer: old.answer,
+            trans_id: old.trans_id,
+            rtt: old.rtt,
+            qclass: old.qclass,
+            qtype: old.qtype,
+            rcode: old.rcode,
+            aa_flag: old.aa_flag,
+            tc_flag: old.tc_flag,
+            rd_flag: old.rd_flag,
+            ra_flag: old.ra_flag,
+            ttl: old.ttl,
+            confidence: old.confidence,
+            category: old.category,
+        }
+    }
+}
+
+impl From<ExternalDdosFieldsStoredV0_42> for crate::event::ExternalDdosFieldsStoredV0_46 {
+    fn from(old: ExternalDdosFieldsStoredV0_42) -> Self {
+        let orig_addr_count = old.orig_addrs.len();
+        Self {
+            sensor: old.sensor,
+            orig_addrs: old.orig_addrs,
+            orig_country_codes: vec![crate::util::COUNTRY_CODE_PENDING; orig_addr_count],
+            resp_addr: old.resp_addr,
+            proto: old.proto,
+            start_time: old.start_time,
+            end_time: old.end_time,
+            confidence: old.confidence,
+            category: old.category,
+            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
+        }
+    }
+}
+
+impl From<FtpBruteForceFieldsStoredV0_42> for crate::event::FtpBruteForceFieldsStoredV0_46 {
+    fn from(old: FtpBruteForceFieldsStoredV0_42) -> Self {
+        Self {
+            sensor: old.sensor,
+            orig_addr: old.orig_addr,
+            resp_addr: old.resp_addr,
+            resp_port: old.resp_port,
+            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
+            proto: old.proto,
+            user_list: old.user_list,
+            start_time: old.start_time,
+            end_time: old.end_time,
+            is_internal: old.is_internal,
+            confidence: old.confidence,
+            category: old.category,
+            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
+        }
+    }
+}
+
+impl From<HttpThreatFieldsStoredV0_44> for crate::event::HttpThreatFieldsStoredV0_46 {
+    fn from(old: HttpThreatFieldsStoredV0_44) -> Self {
+        Self {
+            time: old.time,
+            sensor: old.sensor,
+            orig_addr: old.orig_addr,
+            orig_port: old.orig_port,
+            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
+            resp_addr: old.resp_addr,
+            resp_port: old.resp_port,
+            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
+            proto: old.proto,
+            start_time: old.start_time,
+            duration: old.duration,
+            orig_pkts: old.orig_pkts,
+            resp_pkts: old.resp_pkts,
+            orig_l2_bytes: old.orig_l2_bytes,
+            resp_l2_bytes: old.resp_l2_bytes,
+            method: old.method,
+            host: old.host,
+            uri: old.uri,
+            referer: old.referer,
+            version: old.version,
+            user_agent: old.user_agent,
+            request_len: old.request_len,
+            response_len: old.response_len,
+            status_code: old.status_code,
+            status_msg: old.status_msg,
+            username: old.username,
+            password: old.password,
+            cookie: old.cookie,
+            content_encoding: old.content_encoding,
+            content_type: old.content_type,
+            cache_control: old.cache_control,
+            filenames: old.filenames,
+            mime_types: old.mime_types,
+            body: old.body,
+            state: old.state,
+            db_name: old.db_name,
+            rule_id: old.rule_id,
+            matched_to: old.matched_to,
+            cluster_id: old.cluster_id,
+            attack_kind: old.attack_kind,
+            confidence: old.confidence,
+            category: old.category,
+        }
+    }
+}
+
+impl From<LdapBruteForceFieldsStoredV0_42> for crate::event::LdapBruteForceFieldsStoredV0_46 {
+    fn from(old: LdapBruteForceFieldsStoredV0_42) -> Self {
+        Self {
+            sensor: old.sensor,
+            orig_addr: old.orig_addr,
+            resp_addr: old.resp_addr,
+            resp_port: old.resp_port,
+            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
+            proto: old.proto,
+            user_pw_list: old.user_pw_list,
+            start_time: old.start_time,
+            end_time: old.end_time,
+            confidence: old.confidence,
+            category: old.category,
+            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
+        }
+    }
+}
+
+impl From<MultiHostPortScanFieldsStoredV0_42> for crate::event::MultiHostPortScanFieldsStoredV0_46 {
+    fn from(old: MultiHostPortScanFieldsStoredV0_42) -> Self {
+        let resp_addr_count = old.resp_addrs.len();
+        Self {
+            sensor: old.sensor,
+            orig_addr: old.orig_addr,
+            resp_addrs: old.resp_addrs,
+            resp_country_codes: vec![crate::util::COUNTRY_CODE_PENDING; resp_addr_count],
+            resp_port: old.resp_port,
+            proto: old.proto,
+            start_time: old.start_time,
+            end_time: old.end_time,
+            confidence: old.confidence,
+            category: old.category,
+            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
+        }
+    }
+}
+
+impl From<NetworkThreatFieldsStoredV0_45> for crate::event::NetworkThreatFieldsStoredV0_46 {
+    fn from(old: NetworkThreatFieldsStoredV0_45) -> Self {
+        Self {
+            time: old.time,
+            sensor: old.sensor,
+            orig_addr: old.orig_addr,
+            orig_port: old.orig_port,
+            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
+            resp_addr: old.resp_addr,
+            resp_port: old.resp_port,
+            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
+            proto: old.proto,
+            service: old.service,
+            start_time: old.start_time,
+            duration: old.duration,
+            orig_pkts: old.orig_pkts,
+            resp_pkts: old.resp_pkts,
+            orig_l2_bytes: old.orig_l2_bytes,
+            resp_l2_bytes: old.resp_l2_bytes,
+            content: old.content,
+            db_name: old.db_name,
+            rule_id: old.rule_id,
+            matched_to: old.matched_to,
+            cluster_id: old.cluster_id,
+            attack_kind: old.attack_kind,
+            confidence: old.confidence,
+            category: old.category,
+            triage_scores: old.triage_scores,
+        }
+    }
+}
+
+impl From<HttpEventFieldsStoredV0_42> for crate::event::HttpEventFieldsStoredV0_46 {
+    fn from(old: HttpEventFieldsStoredV0_42) -> Self {
+        Self {
+            sensor: old.sensor,
+            orig_addr: old.orig_addr,
+            orig_port: old.orig_port,
+            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
+            resp_addr: old.resp_addr,
+            resp_port: old.resp_port,
+            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
+            proto: old.proto,
+            start_time: old.start_time,
+            duration: old.duration,
+            orig_pkts: old.orig_pkts,
+            resp_pkts: old.resp_pkts,
+            orig_l2_bytes: old.orig_l2_bytes,
+            resp_l2_bytes: old.resp_l2_bytes,
+            method: old.method,
+            host: old.host,
+            uri: old.uri,
+            referer: old.referer,
+            version: old.version,
+            user_agent: old.user_agent,
+            request_len: old.request_len,
+            response_len: old.response_len,
+            status_code: old.status_code,
+            status_msg: old.status_msg,
+            username: old.username,
+            password: old.password,
+            cookie: old.cookie,
+            content_encoding: old.content_encoding,
+            content_type: old.content_type,
+            cache_control: old.cache_control,
+            filenames: old.filenames,
+            mime_types: old.mime_types,
+            body: old.body,
+            state: old.state,
+            confidence: old.confidence,
+            category: old.category,
+        }
+    }
+}
+
+impl From<PortScanFieldsStoredV0_42> for crate::event::PortScanFieldsStoredV0_46 {
+    fn from(old: PortScanFieldsStoredV0_42) -> Self {
+        Self {
+            sensor: old.sensor,
+            orig_addr: old.orig_addr,
+            resp_addr: old.resp_addr,
+            resp_ports: old.resp_ports,
+            start_time: old.start_time,
+            end_time: old.end_time,
+            proto: old.proto,
+            confidence: old.confidence,
+            category: old.category,
+            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
+            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
+        }
+    }
+}
+
+impl From<RdpBruteForceFieldsStoredV0_42> for crate::event::RdpBruteForceFieldsStoredV0_46 {
+    fn from(old: RdpBruteForceFieldsStoredV0_42) -> Self {
+        let resp_addr_count = old.resp_addrs.len();
+        Self {
+            sensor: old.sensor,
+            orig_addr: old.orig_addr,
+            resp_addrs: old.resp_addrs,
+            resp_country_codes: vec![crate::util::COUNTRY_CODE_PENDING; resp_addr_count],
+            start_time: old.start_time,
+            end_time: old.end_time,
+            proto: old.proto,
+            confidence: old.confidence,
+            category: old.category,
+            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
+        }
+    }
+}
+
+impl From<RepeatedHttpSessionsFieldsStoredV0_42>
+    for crate::event::RepeatedHttpSessionsFieldsStoredV0_46
+{
+    fn from(old: RepeatedHttpSessionsFieldsStoredV0_42) -> Self {
+        Self {
+            sensor: old.sensor,
+            orig_addr: old.orig_addr,
+            orig_port: old.orig_port,
+            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
+            resp_addr: old.resp_addr,
+            resp_port: old.resp_port,
+            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
+            proto: old.proto,
+            start_time: old.start_time,
+            end_time: old.end_time,
+            confidence: old.confidence,
+            category: old.category,
+        }
+    }
+}
+
+impl From<UnusualDestinationPatternFieldsStoredV0_45>
+    for crate::event::UnusualDestinationPatternFieldsStoredV0_46
+{
+    fn from(old: UnusualDestinationPatternFieldsStoredV0_45) -> Self {
+        let destination_ip_count = old.destination_ips.len();
+        Self {
+            sensor: old.sensor,
+            start_time: old.start_time,
+            end_time: old.end_time,
+            destination_ips: old.destination_ips,
+            resp_country_codes: vec![crate::util::COUNTRY_CODE_PENDING; destination_ip_count],
+            count: old.count,
+            expected_mean: old.expected_mean,
+            std_deviation: old.std_deviation,
+            z_score: old.z_score,
+            confidence: old.confidence,
+            category: old.category,
+        }
+    }
+}
+
+fn convert_stored<Old, Current>(bytes: &[u8]) -> Result<Vec<u8>>
+where
+    Old: for<'de> Deserialize<'de>,
+    Current: From<Old> + Serialize,
+{
+    let old: Old = bincode::deserialize(bytes)
+        .context("failed to deserialize event fields as the previous stored schema")?;
+    let current = Current::from(old);
+    bincode::serialize(&current).context("failed to serialize current stored schema")
+}
+
 pub(crate) fn convert_legacy_stored_for_country_codes(
     kind: EventKind,
     bytes: &[u8],
 ) -> Result<Vec<u8>> {
-    macro_rules! serialize_current {
-        ($current:expr) => {
-            bincode::serialize(&$current).context("failed to serialize current stored schema")
-        };
-    }
-
-    macro_rules! convert_pair {
-        ($bytes:expr, $old_module:ident::$old:ident, $new_module:ident::$new:ident, [$($field:ident,)*]) => {{
-            let old: $old_module::$old = bincode::deserialize($bytes)
-                .context("failed to deserialize event fields as the previous stored schema")?;
-            let current = $new_module::$new {
-                $($field: old.$field,)*
-                orig_country_code: crate::util::COUNTRY_CODE_PENDING,
-                resp_country_code: crate::util::COUNTRY_CODE_PENDING,
-            };
-            serialize_current!(current)
-        }};
-    }
-
-    macro_rules! convert_resp_vector {
-        ($bytes:expr, $old_module:ident::$old:ident, $new_module:ident::$new:ident, [$($field:ident,)*]) => {{
-            let old: $old_module::$old = bincode::deserialize($bytes)
-                .context("failed to deserialize event fields as the previous stored schema")?;
-            let resp_country_codes =
-                vec![crate::util::COUNTRY_CODE_PENDING; old.resp_addrs.len()];
-            let current = $new_module::$new {
-                $($field: old.$field,)*
-                orig_country_code: crate::util::COUNTRY_CODE_PENDING,
-                resp_country_codes,
-            };
-            serialize_current!(current)
-        }};
-    }
-
-    macro_rules! convert_external_ddos {
-        ($bytes:expr, $old_module:ident::$old:ident, $new_module:ident::$new:ident, [$($field:ident,)*]) => {{
-            let old: $old_module::$old = bincode::deserialize($bytes)
-                .context("failed to deserialize event fields as the previous stored schema")?;
-            let orig_country_codes =
-                vec![crate::util::COUNTRY_CODE_PENDING; old.orig_addrs.len()];
-            let current = $new_module::$new {
-                $($field: old.$field,)*
-                orig_country_codes,
-                resp_country_code: crate::util::COUNTRY_CODE_PENDING,
-            };
-            serialize_current!(current)
-        }};
-    }
-
-    macro_rules! convert_unusual_destination_pattern {
-        ($bytes:expr, $old_module:ident::$old:ident, $new_module:ident::$new:ident, [$($field:ident,)*]) => {{
-            let old: $old_module::$old = bincode::deserialize($bytes)
-                .context("failed to deserialize event fields as the previous stored schema")?;
-            let resp_country_codes =
-                vec![crate::util::COUNTRY_CODE_PENDING; old.destination_ips.len()];
-            let current = $new_module::$new {
-                $($field: old.$field,)*
-                resp_country_codes,
-            };
-            serialize_current!(current)
-        }};
-    }
-
     match kind {
-        EventKind::BlocklistBootp => convert_pair!(
-            bytes,
-            bootp::BlocklistBootpFieldsStoredV0_42,
-            bootp::BlocklistBootpFieldsStoredV0_46,
-            [
-                sensor,
-                orig_addr,
-                orig_port,
-                resp_addr,
-                resp_port,
-                proto,
-                start_time,
-                duration,
-                orig_pkts,
-                resp_pkts,
-                orig_l2_bytes,
-                resp_l2_bytes,
-                op,
-                htype,
-                hops,
-                xid,
-                ciaddr,
-                yiaddr,
-                siaddr,
-                giaddr,
-                chaddr,
-                sname,
-                file,
-                confidence,
-                category,
-            ]
-        ),
-        EventKind::BlocklistConn | EventKind::TorConnectionConn => convert_pair!(
-            bytes,
-            conn::BlocklistConnFieldsStoredV0_42,
-            conn::BlocklistConnFieldsStoredV0_46,
-            [
-                sensor,
-                orig_addr,
-                orig_port,
-                resp_addr,
-                resp_port,
-                proto,
-                conn_state,
-                start_time,
-                duration,
-                service,
-                orig_bytes,
-                resp_bytes,
-                orig_pkts,
-                resp_pkts,
-                orig_l2_bytes,
-                resp_l2_bytes,
-                confidence,
-                category,
-            ]
-        ),
-        EventKind::BlocklistDceRpc => convert_pair!(
-            bytes,
-            dcerpc::BlocklistDceRpcFieldsStoredV0_44,
-            dcerpc::BlocklistDceRpcFieldsStoredV0_46,
-            [
-                sensor,
-                orig_addr,
-                orig_port,
-                resp_addr,
-                resp_port,
-                proto,
-                start_time,
-                duration,
-                orig_pkts,
-                resp_pkts,
-                orig_l2_bytes,
-                resp_l2_bytes,
-                context,
-                request,
-                confidence,
-                category,
-            ]
-        ),
-        EventKind::BlocklistDhcp => convert_pair!(
-            bytes,
-            dhcp::BlocklistDhcpFieldsStoredV0_44,
-            dhcp::BlocklistDhcpFieldsStoredV0_46,
-            [
-                sensor,
-                orig_addr,
-                orig_port,
-                resp_addr,
-                resp_port,
-                proto,
-                start_time,
-                duration,
-                orig_pkts,
-                resp_pkts,
-                orig_l2_bytes,
-                resp_l2_bytes,
-                msg_type,
-                ciaddr,
-                yiaddr,
-                siaddr,
-                giaddr,
-                subnet_mask,
-                router,
-                domain_name_server,
-                req_ip_addr,
-                lease_time,
-                server_id,
-                param_req_list,
-                message,
-                renewal_time,
-                rebinding_time,
-                class_id,
-                client_id_type,
-                client_id,
-                options,
-                confidence,
-                category,
-            ]
-        ),
-        EventKind::BlocklistDns => convert_pair!(
-            bytes,
-            dns::BlocklistDnsFieldsStoredV0_42,
-            dns::BlocklistDnsFieldsStoredV0_46,
-            [
-                sensor,
-                orig_addr,
-                orig_port,
-                resp_addr,
-                resp_port,
-                proto,
-                start_time,
-                duration,
-                orig_pkts,
-                resp_pkts,
-                orig_l2_bytes,
-                resp_l2_bytes,
-                query,
-                answer,
-                trans_id,
-                rtt,
-                qclass,
-                qtype,
-                rcode,
-                aa_flag,
-                tc_flag,
-                rd_flag,
-                ra_flag,
-                ttl,
-                confidence,
-                category,
-            ]
-        ),
-        EventKind::BlocklistFtp | EventKind::FtpPlainText => convert_pair!(
-            bytes,
-            ftp::FtpEventFieldsStoredV0_42,
-            ftp::FtpEventFieldsStoredV0_46,
-            [
-                sensor,
-                orig_addr,
-                orig_port,
-                resp_addr,
-                resp_port,
-                proto,
-                start_time,
-                duration,
-                orig_pkts,
-                resp_pkts,
-                orig_l2_bytes,
-                resp_l2_bytes,
-                user,
-                password,
-                commands,
-                confidence,
-                category,
-            ]
-        ),
-        EventKind::BlocklistHttp | EventKind::DomainGenerationAlgorithm => convert_pair!(
-            bytes,
-            http::DgaFieldsStoredV0_42,
-            http::DgaFieldsStoredV0_46,
-            [
-                sensor,
-                orig_addr,
-                orig_port,
-                resp_addr,
-                resp_port,
-                proto,
-                start_time,
-                duration,
-                orig_pkts,
-                resp_pkts,
-                orig_l2_bytes,
-                resp_l2_bytes,
-                method,
-                host,
-                uri,
-                referer,
-                version,
-                user_agent,
-                request_len,
-                response_len,
-                status_code,
-                status_msg,
-                username,
-                password,
-                cookie,
-                content_encoding,
-                content_type,
-                cache_control,
-                filenames,
-                mime_types,
-                body,
-                state,
-                confidence,
-                category,
-            ]
-        ),
-        EventKind::BlocklistKerberos => convert_pair!(
-            bytes,
-            kerberos::BlocklistKerberosFieldsStoredV0_42,
-            kerberos::BlocklistKerberosFieldsStoredV0_46,
-            [
-                sensor,
-                orig_addr,
-                orig_port,
-                resp_addr,
-                resp_port,
-                proto,
-                start_time,
-                duration,
-                orig_pkts,
-                resp_pkts,
-                orig_l2_bytes,
-                resp_l2_bytes,
-                client_time,
-                server_time,
-                error_code,
-                client_realm,
-                cname_type,
-                cname,
-                realm,
-                sname_type,
-                sname,
-                confidence,
-                category,
-            ]
-        ),
-        EventKind::BlocklistLdap | EventKind::LdapPlainText => convert_pair!(
-            bytes,
-            ldap::LdapEventFieldsStoredV0_42,
-            ldap::LdapEventFieldsStoredV0_46,
-            [
-                sensor,
-                orig_addr,
-                orig_port,
-                resp_addr,
-                resp_port,
-                proto,
-                start_time,
-                duration,
-                orig_pkts,
-                resp_pkts,
-                orig_l2_bytes,
-                resp_l2_bytes,
-                message_id,
-                version,
-                opcode,
-                result,
-                diagnostic_message,
-                object,
-                argument,
-                confidence,
-                category,
-            ]
-        ),
-        EventKind::BlocklistMalformedDns => convert_pair!(
-            bytes,
-            malformed_dns::BlocklistMalformedDnsFieldsStoredV0_45,
-            malformed_dns::BlocklistMalformedDnsFieldsStoredV0_46,
-            [
-                sensor,
-                orig_addr,
-                orig_port,
-                resp_addr,
-                resp_port,
-                proto,
-                start_time,
-                duration,
-                orig_pkts,
-                resp_pkts,
-                orig_l2_bytes,
-                resp_l2_bytes,
-                trans_id,
-                flags,
-                question_count,
-                answer_count,
-                authority_count,
-                additional_count,
-                query_count,
-                resp_count,
-                query_bytes,
-                resp_bytes,
-                query_body,
-                resp_body,
-                confidence,
-                category,
-            ]
-        ),
-        EventKind::BlocklistMqtt => convert_pair!(
-            bytes,
-            mqtt::BlocklistMqttFieldsStoredV0_42,
-            mqtt::BlocklistMqttFieldsStoredV0_46,
-            [
-                sensor,
-                orig_addr,
-                orig_port,
-                resp_addr,
-                resp_port,
-                proto,
-                start_time,
-                duration,
-                orig_pkts,
-                resp_pkts,
-                orig_l2_bytes,
-                resp_l2_bytes,
-                protocol,
-                version,
-                client_id,
-                connack_reason,
-                subscribe,
-                suback_reason,
-                confidence,
-                category,
-            ]
-        ),
-        EventKind::BlocklistNfs => convert_pair!(
-            bytes,
-            nfs::BlocklistNfsFieldsStoredV0_42,
-            nfs::BlocklistNfsFieldsStoredV0_46,
-            [
-                sensor,
-                orig_addr,
-                orig_port,
-                resp_addr,
-                resp_port,
-                proto,
-                start_time,
-                duration,
-                orig_pkts,
-                resp_pkts,
-                orig_l2_bytes,
-                resp_l2_bytes,
-                read_files,
-                write_files,
-                confidence,
-                category,
-            ]
-        ),
-        EventKind::BlocklistNtlm => convert_pair!(
-            bytes,
-            ntlm::BlocklistNtlmFieldsStoredV0_42,
-            ntlm::BlocklistNtlmFieldsStoredV0_46,
-            [
-                sensor,
-                orig_addr,
-                orig_port,
-                resp_addr,
-                resp_port,
-                proto,
-                start_time,
-                duration,
-                orig_pkts,
-                resp_pkts,
-                orig_l2_bytes,
-                resp_l2_bytes,
-                protocol,
-                username,
-                hostname,
-                domainname,
-                success,
-                confidence,
-                category,
-            ]
-        ),
-        EventKind::BlocklistRadius => convert_pair!(
-            bytes,
-            radius::BlocklistRadiusFieldsStoredV0_45,
-            radius::BlocklistRadiusFieldsStoredV0_46,
-            [
-                sensor,
-                orig_addr,
-                orig_port,
-                resp_addr,
-                resp_port,
-                proto,
-                start_time,
-                duration,
-                orig_pkts,
-                resp_pkts,
-                orig_l2_bytes,
-                resp_l2_bytes,
-                id,
-                code,
-                resp_code,
-                auth,
-                resp_auth,
-                user_name,
-                user_passwd,
-                chap_passwd,
-                nas_ip,
-                nas_port,
-                state,
-                nas_id,
-                nas_port_type,
-                message,
-                confidence,
-                category,
-            ]
-        ),
-        EventKind::BlocklistRdp => convert_pair!(
-            bytes,
-            rdp::BlocklistRdpFieldsStoredV0_42,
-            rdp::BlocklistRdpFieldsStoredV0_46,
-            [
-                sensor,
-                orig_addr,
-                orig_port,
-                resp_addr,
-                resp_port,
-                proto,
-                start_time,
-                duration,
-                orig_pkts,
-                resp_pkts,
-                orig_l2_bytes,
-                resp_l2_bytes,
-                cookie,
-                confidence,
-                category,
-            ]
-        ),
-        EventKind::BlocklistSmb => convert_pair!(
-            bytes,
-            smb::BlocklistSmbFieldsStoredV0_42,
-            smb::BlocklistSmbFieldsStoredV0_46,
-            [
-                sensor,
-                orig_addr,
-                orig_port,
-                resp_addr,
-                resp_port,
-                proto,
-                start_time,
-                duration,
-                orig_pkts,
-                resp_pkts,
-                orig_l2_bytes,
-                resp_l2_bytes,
-                command,
-                path,
-                service,
-                file_name,
-                file_size,
-                resource_type,
-                fid,
-                create_time,
-                access_time,
-                write_time,
-                change_time,
-                confidence,
-                category,
-            ]
-        ),
-        EventKind::BlocklistSmtp => convert_pair!(
-            bytes,
-            smtp::BlocklistSmtpFieldsStoredV0_42,
-            smtp::BlocklistSmtpFieldsStoredV0_46,
-            [
-                sensor,
-                orig_addr,
-                orig_port,
-                resp_addr,
-                resp_port,
-                proto,
-                start_time,
-                duration,
-                orig_pkts,
-                resp_pkts,
-                orig_l2_bytes,
-                resp_l2_bytes,
-                mailfrom,
-                date,
-                from,
-                to,
-                subject,
-                agent,
-                state,
-                confidence,
-                category,
-            ]
-        ),
-        EventKind::BlocklistSsh => convert_pair!(
-            bytes,
-            ssh::BlocklistSshFieldsStoredV0_42,
-            ssh::BlocklistSshFieldsStoredV0_46,
-            [
-                sensor,
-                orig_addr,
-                orig_port,
-                resp_addr,
-                resp_port,
-                proto,
-                start_time,
-                duration,
-                orig_pkts,
-                resp_pkts,
-                orig_l2_bytes,
-                resp_l2_bytes,
-                client,
-                server,
-                cipher_alg,
-                mac_alg,
-                compression_alg,
-                kex_alg,
-                host_key_alg,
-                hassh_algorithms,
-                hassh,
-                hassh_server_algorithms,
-                hassh_server,
-                client_shka,
-                server_shka,
-                confidence,
-                category,
-            ]
-        ),
-        EventKind::BlocklistTls | EventKind::SuspiciousTlsTraffic => convert_pair!(
-            bytes,
-            tls::BlocklistTlsFieldsStoredV0_42,
-            tls::BlocklistTlsFieldsStoredV0_46,
-            [
-                sensor,
-                orig_addr,
-                orig_port,
-                resp_addr,
-                resp_port,
-                proto,
-                start_time,
-                duration,
-                orig_pkts,
-                resp_pkts,
-                orig_l2_bytes,
-                resp_l2_bytes,
-                server_name,
-                alpn_protocol,
-                ja3,
-                version,
-                client_cipher_suites,
-                client_extensions,
-                cipher,
-                extensions,
-                ja3s,
-                serial,
-                subject_country,
-                subject_org_name,
-                subject_common_name,
-                validity_not_before,
-                validity_not_after,
-                subject_alt_name,
-                issuer_country,
-                issuer_org_name,
-                issuer_org_unit_name,
-                issuer_common_name,
-                last_alert,
-                confidence,
-                category,
-            ]
-        ),
-        EventKind::CryptocurrencyMiningPool => convert_pair!(
-            bytes,
-            dns::CryptocurrencyMiningPoolFieldsStoredV0_42,
-            dns::CryptocurrencyMiningPoolFieldsStoredV0_46,
-            [
-                sensor,
-                orig_addr,
-                orig_port,
-                resp_addr,
-                resp_port,
-                proto,
-                start_time,
-                duration,
-                orig_pkts,
-                resp_pkts,
-                orig_l2_bytes,
-                resp_l2_bytes,
-                query,
-                answer,
-                trans_id,
-                rtt,
-                qclass,
-                qtype,
-                rcode,
-                aa_flag,
-                tc_flag,
-                rd_flag,
-                ra_flag,
-                ttl,
-                coins,
-                confidence,
-                category,
-            ]
-        ),
-        EventKind::DnsCovertChannel | EventKind::LockyRansomware => convert_pair!(
-            bytes,
-            dns::DnsEventFieldsStoredV0_42,
-            dns::DnsEventFieldsStoredV0_46,
-            [
-                sensor,
-                orig_addr,
-                orig_port,
-                resp_addr,
-                resp_port,
-                proto,
-                start_time,
-                duration,
-                orig_pkts,
-                resp_pkts,
-                orig_l2_bytes,
-                resp_l2_bytes,
-                query,
-                answer,
-                trans_id,
-                rtt,
-                qclass,
-                qtype,
-                rcode,
-                aa_flag,
-                tc_flag,
-                rd_flag,
-                ra_flag,
-                ttl,
-                confidence,
-                category,
-            ]
-        ),
-        EventKind::ExternalDdos => convert_external_ddos!(
-            bytes,
-            conn::ExternalDdosFieldsStoredV0_42,
-            conn::ExternalDdosFieldsStoredV0_46,
-            [
-                sensor, orig_addrs, resp_addr, proto, start_time, end_time, confidence, category,
-            ]
-        ),
-        EventKind::FtpBruteForce => convert_pair!(
-            bytes,
-            ftp::FtpBruteForceFieldsStoredV0_42,
-            ftp::FtpBruteForceFieldsStoredV0_46,
-            [
-                sensor,
-                orig_addr,
-                resp_addr,
-                resp_port,
-                proto,
-                user_list,
-                start_time,
-                end_time,
-                is_internal,
-                confidence,
-                category,
-            ]
-        ),
-        EventKind::HttpThreat => convert_pair!(
-            bytes,
-            http::HttpThreatFieldsStoredV0_42,
-            http::HttpThreatFieldsStoredV0_46,
-            [
-                time,
-                sensor,
-                orig_addr,
-                orig_port,
-                resp_addr,
-                resp_port,
-                proto,
-                start_time,
-                duration,
-                orig_pkts,
-                resp_pkts,
-                orig_l2_bytes,
-                resp_l2_bytes,
-                method,
-                host,
-                uri,
-                referer,
-                version,
-                user_agent,
-                request_len,
-                response_len,
-                status_code,
-                status_msg,
-                username,
-                password,
-                cookie,
-                content_encoding,
-                content_type,
-                cache_control,
-                filenames,
-                mime_types,
-                body,
-                state,
-                db_name,
-                rule_id,
-                matched_to,
-                cluster_id,
-                attack_kind,
-                confidence,
-                category,
-            ]
-        ),
-        EventKind::LdapBruteForce => convert_pair!(
-            bytes,
-            ldap::LdapBruteForceFieldsStoredV0_42,
-            ldap::LdapBruteForceFieldsStoredV0_46,
-            [
-                sensor,
-                orig_addr,
-                resp_addr,
-                resp_port,
-                proto,
-                user_pw_list,
-                start_time,
-                end_time,
-                confidence,
-                category,
-            ]
-        ),
-        EventKind::MultiHostPortScan => convert_resp_vector!(
-            bytes,
-            conn::MultiHostPortScanFieldsStoredV0_42,
-            conn::MultiHostPortScanFieldsStoredV0_46,
-            [
-                sensor, orig_addr, resp_addrs, resp_port, proto, start_time, end_time, confidence,
-                category,
-            ]
-        ),
-        EventKind::NetworkThreat => convert_pair!(
-            bytes,
-            network::NetworkThreatFieldsStoredV0_45,
-            network::NetworkThreatFieldsStoredV0_46,
-            [
-                time,
-                sensor,
-                orig_addr,
-                orig_port,
-                resp_addr,
-                resp_port,
-                proto,
-                service,
-                start_time,
-                duration,
-                orig_pkts,
-                resp_pkts,
-                orig_l2_bytes,
-                resp_l2_bytes,
-                content,
-                db_name,
-                rule_id,
-                matched_to,
-                cluster_id,
-                attack_kind,
-                confidence,
-                category,
-                triage_scores,
-            ]
-        ),
-        EventKind::NonBrowser | EventKind::TorConnection => convert_pair!(
-            bytes,
-            http::HttpEventFieldsStoredV0_42,
-            http::HttpEventFieldsStoredV0_46,
-            [
-                sensor,
-                orig_addr,
-                orig_port,
-                resp_addr,
-                resp_port,
-                proto,
-                start_time,
-                duration,
-                orig_pkts,
-                resp_pkts,
-                orig_l2_bytes,
-                resp_l2_bytes,
-                method,
-                host,
-                uri,
-                referer,
-                version,
-                user_agent,
-                request_len,
-                response_len,
-                status_code,
-                status_msg,
-                username,
-                password,
-                cookie,
-                content_encoding,
-                content_type,
-                cache_control,
-                filenames,
-                mime_types,
-                body,
-                state,
-                confidence,
-                category,
-            ]
-        ),
-        EventKind::PortScan => convert_pair!(
-            bytes,
-            conn::PortScanFieldsStoredV0_42,
-            conn::PortScanFieldsStoredV0_46,
-            [
-                sensor, orig_addr, resp_addr, resp_ports, start_time, end_time, proto, confidence,
-                category,
-            ]
-        ),
-        EventKind::RdpBruteForce => convert_resp_vector!(
-            bytes,
-            rdp::RdpBruteForceFieldsStoredV0_42,
-            rdp::RdpBruteForceFieldsStoredV0_46,
-            [
-                sensor, orig_addr, resp_addrs, start_time, end_time, proto, confidence, category,
-            ]
-        ),
-        EventKind::RepeatedHttpSessions => convert_pair!(
-            bytes,
-            http::RepeatedHttpSessionsFieldsStoredV0_42,
-            http::RepeatedHttpSessionsFieldsStoredV0_46,
-            [
-                sensor, orig_addr, orig_port, resp_addr, resp_port, proto, start_time, end_time,
-                confidence, category,
-            ]
-        ),
-        EventKind::UnusualDestinationPattern => convert_unusual_destination_pattern!(
-            bytes,
-            unusual_destination_pattern::UnusualDestinationPatternFieldsStoredV0_45,
-            unusual_destination_pattern::UnusualDestinationPatternFieldsStoredV0_46,
-            [
-                sensor,
-                start_time,
-                end_time,
-                destination_ips,
-                count,
-                expected_mean,
-                std_deviation,
-                z_score,
-                confidence,
-                category,
-            ]
-        ),
+        EventKind::BlocklistBootp => convert_stored::<
+            BlocklistBootpFieldsStoredV0_42,
+            crate::event::BlocklistBootpFieldsStoredV0_46,
+        >(bytes),
+        EventKind::BlocklistConn | EventKind::TorConnectionConn => convert_stored::<
+            BlocklistConnFieldsStoredV0_42,
+            crate::event::BlocklistConnFieldsStoredV0_46,
+        >(bytes),
+        EventKind::BlocklistDceRpc => convert_stored::<
+            BlocklistDceRpcFieldsStoredV0_44,
+            crate::event::BlocklistDceRpcFieldsStoredV0_46,
+        >(bytes),
+        EventKind::BlocklistDhcp => convert_stored::<
+            BlocklistDhcpFieldsStoredV0_44,
+            crate::event::BlocklistDhcpFieldsStoredV0_46,
+        >(bytes),
+        EventKind::BlocklistDns => convert_stored::<
+            BlocklistDnsFieldsStoredV0_42,
+            crate::event::BlocklistDnsFieldsStoredV0_46,
+        >(bytes),
+        EventKind::BlocklistFtp | EventKind::FtpPlainText => convert_stored::<
+            FtpEventFieldsStoredV0_42,
+            crate::event::FtpEventFieldsStoredV0_46,
+        >(bytes),
+        EventKind::BlocklistHttp | EventKind::DomainGenerationAlgorithm => {
+            convert_stored::<DgaFieldsStoredV0_42, crate::event::DgaFieldsStoredV0_46>(bytes)
+        }
+        EventKind::BlocklistKerberos => convert_stored::<
+            BlocklistKerberosFieldsStoredV0_42,
+            crate::event::BlocklistKerberosFieldsStoredV0_46,
+        >(bytes),
+        EventKind::BlocklistLdap | EventKind::LdapPlainText => convert_stored::<
+            LdapEventFieldsStoredV0_42,
+            crate::event::LdapEventFieldsStoredV0_46,
+        >(bytes),
+        EventKind::BlocklistMalformedDns => convert_stored::<
+            BlocklistMalformedDnsFieldsStoredV0_45,
+            crate::event::BlocklistMalformedDnsFieldsStoredV0_46,
+        >(bytes),
+        EventKind::BlocklistMqtt => convert_stored::<
+            BlocklistMqttFieldsStoredV0_42,
+            crate::event::BlocklistMqttFieldsStoredV0_46,
+        >(bytes),
+        EventKind::BlocklistNfs => convert_stored::<
+            BlocklistNfsFieldsStoredV0_42,
+            crate::event::BlocklistNfsFieldsStoredV0_46,
+        >(bytes),
+        EventKind::BlocklistNtlm => convert_stored::<
+            BlocklistNtlmFieldsStoredV0_42,
+            crate::event::BlocklistNtlmFieldsStoredV0_46,
+        >(bytes),
+        EventKind::BlocklistRadius => convert_stored::<
+            BlocklistRadiusFieldsStoredV0_45,
+            crate::event::BlocklistRadiusFieldsStoredV0_46,
+        >(bytes),
+        EventKind::BlocklistRdp => convert_stored::<
+            BlocklistRdpFieldsStoredV0_42,
+            crate::event::BlocklistRdpFieldsStoredV0_46,
+        >(bytes),
+        EventKind::BlocklistSmb => convert_stored::<
+            BlocklistSmbFieldsStoredV0_42,
+            crate::event::BlocklistSmbFieldsStoredV0_46,
+        >(bytes),
+        EventKind::BlocklistSmtp => convert_stored::<
+            BlocklistSmtpFieldsStoredV0_42,
+            crate::event::BlocklistSmtpFieldsStoredV0_46,
+        >(bytes),
+        EventKind::BlocklistSsh => convert_stored::<
+            BlocklistSshFieldsStoredV0_42,
+            crate::event::BlocklistSshFieldsStoredV0_46,
+        >(bytes),
+        EventKind::BlocklistTls | EventKind::SuspiciousTlsTraffic => convert_stored::<
+            BlocklistTlsFieldsStoredV0_42,
+            crate::event::BlocklistTlsFieldsStoredV0_46,
+        >(bytes),
+        EventKind::CryptocurrencyMiningPool => convert_stored::<
+            CryptocurrencyMiningPoolFieldsStoredV0_42,
+            crate::event::CryptocurrencyMiningPoolFieldsStoredV0_46,
+        >(bytes),
+        EventKind::DnsCovertChannel | EventKind::LockyRansomware => convert_stored::<
+            DnsEventFieldsStoredV0_42,
+            crate::event::DnsEventFieldsStoredV0_46,
+        >(bytes),
+        EventKind::ExternalDdos => convert_stored::<
+            ExternalDdosFieldsStoredV0_42,
+            crate::event::ExternalDdosFieldsStoredV0_46,
+        >(bytes),
+        EventKind::FtpBruteForce => convert_stored::<
+            FtpBruteForceFieldsStoredV0_42,
+            crate::event::FtpBruteForceFieldsStoredV0_46,
+        >(bytes),
+        EventKind::HttpThreat => convert_stored::<
+            HttpThreatFieldsStoredV0_44,
+            crate::event::HttpThreatFieldsStoredV0_46,
+        >(bytes),
+        EventKind::LdapBruteForce => convert_stored::<
+            LdapBruteForceFieldsStoredV0_42,
+            crate::event::LdapBruteForceFieldsStoredV0_46,
+        >(bytes),
+        EventKind::MultiHostPortScan => convert_stored::<
+            MultiHostPortScanFieldsStoredV0_42,
+            crate::event::MultiHostPortScanFieldsStoredV0_46,
+        >(bytes),
+        EventKind::NetworkThreat => convert_stored::<
+            NetworkThreatFieldsStoredV0_45,
+            crate::event::NetworkThreatFieldsStoredV0_46,
+        >(bytes),
+        EventKind::NonBrowser | EventKind::TorConnection => convert_stored::<
+            HttpEventFieldsStoredV0_42,
+            crate::event::HttpEventFieldsStoredV0_46,
+        >(bytes),
+        EventKind::PortScan => convert_stored::<
+            PortScanFieldsStoredV0_42,
+            crate::event::PortScanFieldsStoredV0_46,
+        >(bytes),
+        EventKind::RdpBruteForce => convert_stored::<
+            RdpBruteForceFieldsStoredV0_42,
+            crate::event::RdpBruteForceFieldsStoredV0_46,
+        >(bytes),
+        EventKind::RepeatedHttpSessions => convert_stored::<
+            RepeatedHttpSessionsFieldsStoredV0_42,
+            crate::event::RepeatedHttpSessionsFieldsStoredV0_46,
+        >(bytes),
+        EventKind::UnusualDestinationPattern => convert_stored::<
+            UnusualDestinationPatternFieldsStoredV0_45,
+            crate::event::UnusualDestinationPatternFieldsStoredV0_46,
+        >(bytes),
         EventKind::ExtraThreat | EventKind::WindowsThreat => Ok(bytes.to_vec()),
     }
 }

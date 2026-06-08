@@ -52,21 +52,6 @@ pub struct PortScanFields {
 
 pub(crate) type PortScanFieldsStored = PortScanFieldsStoredV0_46;
 
-#[allow(dead_code)]
-#[derive(Deserialize, Serialize)]
-pub(crate) struct PortScanFieldsStoredV0_42 {
-    pub sensor: String,
-    pub orig_addr: IpAddr,
-    pub resp_addr: IpAddr,
-    pub resp_ports: Vec<u16>,
-    pub start_time: i64,
-    pub end_time: i64,
-    pub proto: u8,
-    pub confidence: f32,
-    pub category: Option<EventCategory>,
-}
-
-#[allow(dead_code)]
 #[derive(Deserialize, Serialize)]
 pub(crate) struct PortScanFieldsStoredV0_46 {
     pub sensor: String,
@@ -264,21 +249,6 @@ pub struct MultiHostPortScanFields {
 
 pub(crate) type MultiHostPortScanFieldsStored = MultiHostPortScanFieldsStoredV0_46;
 
-#[allow(dead_code)]
-#[derive(Deserialize, Serialize)]
-pub(crate) struct MultiHostPortScanFieldsStoredV0_42 {
-    pub sensor: String,
-    pub orig_addr: IpAddr,
-    pub resp_port: u16,
-    pub resp_addrs: Vec<IpAddr>,
-    pub proto: u8,
-    pub start_time: i64,
-    pub end_time: i64,
-    pub confidence: f32,
-    pub category: Option<EventCategory>,
-}
-
-#[allow(dead_code)]
 #[derive(Deserialize, Serialize)]
 pub(crate) struct MultiHostPortScanFieldsStoredV0_46 {
     pub sensor: String,
@@ -476,20 +446,6 @@ pub struct ExternalDdosFields {
 
 pub(crate) type ExternalDdosFieldsStored = ExternalDdosFieldsStoredV0_46;
 
-#[allow(dead_code)]
-#[derive(Deserialize, Serialize)]
-pub(crate) struct ExternalDdosFieldsStoredV0_42 {
-    pub sensor: String,
-    pub orig_addrs: Vec<IpAddr>,
-    pub resp_addr: IpAddr,
-    pub proto: u8,
-    pub start_time: i64,
-    pub end_time: i64,
-    pub confidence: f32,
-    pub category: Option<EventCategory>,
-}
-
-#[allow(dead_code)]
 #[derive(Deserialize, Serialize)]
 pub(crate) struct ExternalDdosFieldsStoredV0_46 {
     pub sensor: String,
@@ -689,30 +645,6 @@ pub struct BlocklistConnFields {
 
 pub(crate) type BlocklistConnFieldsStored = BlocklistConnFieldsStoredV0_46;
 
-#[allow(dead_code)]
-#[derive(Deserialize, Serialize)]
-pub(crate) struct BlocklistConnFieldsStoredV0_42 {
-    pub sensor: String,
-    pub orig_addr: IpAddr,
-    pub orig_port: u16,
-    pub resp_addr: IpAddr,
-    pub resp_port: u16,
-    pub proto: u8,
-    pub conn_state: String,
-    pub start_time: i64,
-    pub duration: i64,
-    pub service: String,
-    pub orig_bytes: u64,
-    pub resp_bytes: u64,
-    pub orig_pkts: u64,
-    pub resp_pkts: u64,
-    pub orig_l2_bytes: u64,
-    pub resp_l2_bytes: u64,
-    pub confidence: f32,
-    pub category: Option<EventCategory>,
-}
-
-#[allow(dead_code)]
 #[derive(Deserialize, Serialize)]
 pub(crate) struct BlocklistConnFieldsStoredV0_46 {
     pub sensor: String,

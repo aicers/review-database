@@ -14,15 +14,17 @@ use semver::{Version, VersionReq};
 use tracing::{info, warn};
 
 pub(crate) use self::migration_structures::convert_legacy_stored_for_country_codes;
+#[cfg(test)]
+pub(crate) use self::migration_structures::{
+    BlocklistConnFieldsStoredV0_42, MultiHostPortScanFieldsStoredV0_42,
+};
 use crate::{
     AllowNetwork, BlockNetwork, Customer,
-    event::{
-        BlocklistDceRpcFieldsStoredV0_44, BlocklistDhcpFieldsStoredV0_44, EventKind,
-        HttpThreatFieldsStoredV0_44, resolve_stored_country_codes,
-    },
+    event::{EventKind, resolve_stored_country_codes},
     migration::migration_structures::{
         AllowNetworkV0_42, BlockNetworkV0_42, BlocklistDceRpcFieldsStoredV0_42,
-        BlocklistDhcpFieldsStoredV0_42, HttpThreatFieldsStoredV0_43,
+        BlocklistDceRpcFieldsStoredV0_44, BlocklistDhcpFieldsStoredV0_42,
+        BlocklistDhcpFieldsStoredV0_44, HttpThreatFieldsStoredV0_43, HttpThreatFieldsStoredV0_44,
     },
     tables::NETWORK_TAGS,
 };
@@ -1107,10 +1109,8 @@ fn migrate_http_threat_fields(value: &[u8]) -> Option<Vec<u8>> {
         sensor: old.sensor,
         orig_addr: old.orig_addr,
         orig_port: old.orig_port,
-        orig_country_code: crate::util::COUNTRY_CODE_PENDING,
         resp_addr: old.resp_addr,
         resp_port: old.resp_port,
-        resp_country_code: crate::util::COUNTRY_CODE_PENDING,
         proto: old.proto,
         start_time: old.start_time,
         duration: old.duration,
@@ -1162,10 +1162,8 @@ fn migrate_blocklist_dcerpc_fields(value: &[u8]) -> Option<Vec<u8>> {
         sensor: old.sensor,
         orig_addr: old.orig_addr,
         orig_port: old.orig_port,
-        orig_country_code: crate::util::COUNTRY_CODE_PENDING,
         resp_addr: old.resp_addr,
         resp_port: old.resp_port,
-        resp_country_code: crate::util::COUNTRY_CODE_PENDING,
         proto: old.proto,
         start_time: old.start_time,
         duration: old.duration,
@@ -1196,10 +1194,8 @@ fn migrate_blocklist_dhcp_fields(value: &[u8]) -> Option<Vec<u8>> {
         sensor: old.sensor,
         orig_addr: old.orig_addr,
         orig_port: old.orig_port,
-        orig_country_code: crate::util::COUNTRY_CODE_PENDING,
         resp_addr: old.resp_addr,
         resp_port: old.resp_port,
-        resp_country_code: crate::util::COUNTRY_CODE_PENDING,
         proto: old.proto,
         start_time: old.start_time,
         duration: old.duration,
@@ -2609,8 +2605,10 @@ mod tests {
     fn test_migrate_http_threat_events() {
         use std::net::IpAddr;
 
-        use super::migration_structures::HttpThreatFieldsStoredV0_43;
-        use crate::event::{EventKind, HttpThreatFieldsStoredV0_44};
+        use super::migration_structures::{
+            HttpThreatFieldsStoredV0_43, HttpThreatFieldsStoredV0_44,
+        };
+        use crate::event::EventKind;
 
         // Create test directory and database
         let db_dir = tempfile::tempdir().unwrap();
@@ -2727,8 +2725,10 @@ mod tests {
     fn test_migrate_blocklist_dcerpc_events() {
         use std::net::IpAddr;
 
-        use super::migration_structures::BlocklistDceRpcFieldsStoredV0_42;
-        use crate::event::{BlocklistDceRpcFieldsStoredV0_44, EventKind};
+        use super::migration_structures::{
+            BlocklistDceRpcFieldsStoredV0_42, BlocklistDceRpcFieldsStoredV0_44,
+        };
+        use crate::event::EventKind;
 
         let db_dir = tempfile::tempdir().unwrap();
         let db_path = db_dir.path().join("states.db");
@@ -2796,8 +2796,9 @@ mod tests {
     fn test_migrate_blocklist_dcerpc_fields_empty_strings() {
         use std::net::IpAddr;
 
-        use super::migration_structures::BlocklistDceRpcFieldsStoredV0_42;
-        use crate::event::BlocklistDceRpcFieldsStoredV0_44;
+        use super::migration_structures::{
+            BlocklistDceRpcFieldsStoredV0_42, BlocklistDceRpcFieldsStoredV0_44,
+        };
 
         let old_event = BlocklistDceRpcFieldsStoredV0_42 {
             sensor: "sensor".to_string(),
@@ -2833,8 +2834,10 @@ mod tests {
     fn test_migrate_blocklist_dhcp_events() {
         use std::net::IpAddr;
 
-        use super::migration_structures::BlocklistDhcpFieldsStoredV0_42;
-        use crate::event::{BlocklistDhcpFieldsStoredV0_44, EventKind};
+        use super::migration_structures::{
+            BlocklistDhcpFieldsStoredV0_42, BlocklistDhcpFieldsStoredV0_44,
+        };
+        use crate::event::EventKind;
 
         // Create test directory and database
         let db_dir = tempfile::tempdir().unwrap();

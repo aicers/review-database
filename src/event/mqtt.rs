@@ -70,32 +70,6 @@ pub struct BlocklistMqttFields {
 
 pub(crate) type BlocklistMqttFieldsStored = BlocklistMqttFieldsStoredV0_46;
 
-#[allow(dead_code)]
-#[derive(Deserialize, Serialize)]
-pub(crate) struct BlocklistMqttFieldsStoredV0_42 {
-    pub sensor: String,
-    pub orig_addr: IpAddr,
-    pub orig_port: u16,
-    pub resp_addr: IpAddr,
-    pub resp_port: u16,
-    pub proto: u8,
-    pub start_time: i64,
-    pub duration: i64,
-    pub orig_pkts: u64,
-    pub resp_pkts: u64,
-    pub orig_l2_bytes: u64,
-    pub resp_l2_bytes: u64,
-    pub protocol: String,
-    pub version: u8,
-    pub client_id: String,
-    pub connack_reason: u8,
-    pub subscribe: Vec<String>,
-    pub suback_reason: Vec<u8>,
-    pub confidence: f32,
-    pub category: Option<EventCategory>,
-}
-
-#[allow(dead_code)]
 #[derive(Deserialize, Serialize)]
 pub(crate) struct BlocklistMqttFieldsStoredV0_46 {
     pub sensor: String,

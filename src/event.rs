@@ -1,29 +1,29 @@
 #![allow(clippy::too_many_lines)]
-pub(crate) mod bootp;
+mod bootp;
 mod common;
-pub(crate) mod conn;
-pub(crate) mod dcerpc;
-pub(crate) mod dhcp;
-pub(crate) mod dns;
-pub(crate) mod ftp;
-pub(crate) mod http;
-pub(crate) mod kerberos;
-pub(crate) mod ldap;
+mod conn;
+mod dcerpc;
+mod dhcp;
+mod dns;
+mod ftp;
+mod http;
+mod kerberos;
+mod ldap;
 mod log;
-pub(crate) mod malformed_dns;
-pub(crate) mod mqtt;
-pub(crate) mod network;
-pub(crate) mod nfs;
-pub(crate) mod ntlm;
-pub(crate) mod radius;
-pub(crate) mod rdp;
-pub(crate) mod smb;
-pub(crate) mod smtp;
-pub(crate) mod ssh;
+mod malformed_dns;
+mod mqtt;
+mod network;
+mod nfs;
+mod ntlm;
+mod radius;
+mod rdp;
+mod smb;
+mod smtp;
+mod ssh;
 mod sysmon;
-pub(crate) mod tls;
+mod tls;
 mod tor;
-pub(crate) mod unusual_destination_pattern;
+mod unusual_destination_pattern;
 
 #[cfg(test)]
 mod key_baseline;
@@ -77,6 +77,38 @@ use self::{
     tls::BlocklistTlsFieldsStored,
     unusual_destination_pattern::UnusualDestinationPatternFieldsStored,
 };
+pub(crate) use self::{
+    bootp::BlocklistBootpFieldsStoredV0_46,
+    conn::{
+        BlocklistConnFieldsStoredV0_46, ExternalDdosFieldsStoredV0_46,
+        MultiHostPortScanFieldsStoredV0_46, PortScanFieldsStoredV0_46,
+    },
+    dcerpc::{BlocklistDceRpcFieldsStored, BlocklistDceRpcFieldsStoredV0_46},
+    dhcp::{BlocklistDhcpFieldsStored, BlocklistDhcpFieldsStoredV0_46},
+    dns::{
+        BlocklistDnsFieldsStoredV0_46, CryptocurrencyMiningPoolFieldsStoredV0_46,
+        DnsEventFieldsStoredV0_46,
+    },
+    ftp::{FtpBruteForceFieldsStoredV0_46, FtpEventFieldsStoredV0_46},
+    http::{
+        DgaFieldsStoredV0_46, HttpEventFieldsStoredV0_46, HttpThreatFieldsStored,
+        HttpThreatFieldsStoredV0_46, RepeatedHttpSessionsFieldsStoredV0_46,
+    },
+    kerberos::BlocklistKerberosFieldsStoredV0_46,
+    ldap::{LdapBruteForceFieldsStoredV0_46, LdapEventFieldsStoredV0_46},
+    malformed_dns::BlocklistMalformedDnsFieldsStoredV0_46,
+    mqtt::BlocklistMqttFieldsStoredV0_46,
+    network::NetworkThreatFieldsStoredV0_46,
+    nfs::BlocklistNfsFieldsStoredV0_46,
+    ntlm::BlocklistNtlmFieldsStoredV0_46,
+    radius::BlocklistRadiusFieldsStoredV0_46,
+    rdp::{BlocklistRdpFieldsStoredV0_46, RdpBruteForceFieldsStoredV0_46},
+    smb::BlocklistSmbFieldsStoredV0_46,
+    smtp::BlocklistSmtpFieldsStoredV0_46,
+    ssh::BlocklistSshFieldsStoredV0_46,
+    tls::BlocklistTlsFieldsStoredV0_46,
+    unusual_destination_pattern::UnusualDestinationPatternFieldsStoredV0_46,
+};
 pub use self::{
     bootp::{BlocklistBootp, BlocklistBootpFields},
     common::TriageScore,
@@ -114,11 +146,6 @@ pub use self::{
     tls::{BlocklistTls, BlocklistTlsFields, SuspiciousTlsTraffic},
     tor::{TorConnection, TorConnectionConn},
     unusual_destination_pattern::{UnusualDestinationPattern, UnusualDestinationPatternFields},
-};
-pub(crate) use self::{
-    dcerpc::{BlocklistDceRpcFieldsStored, BlocklistDceRpcFieldsStoredV0_44},
-    dhcp::{BlocklistDhcpFieldsStored, BlocklistDhcpFieldsStoredV0_44},
-    http::{HttpThreatFieldsStored, HttpThreatFieldsStoredV0_44},
 };
 use super::{
     Customer, EventCategory, Network, TriageExclusion, TriagePolicyInput,
@@ -3603,8 +3630,10 @@ mod tests {
 
     #[test]
     fn legacy_stored_country_code_conversion_uses_stored_schema() {
-        use super::{BlocklistConnFieldsStored, conn::BlocklistConnFieldsStoredV0_42};
-        use crate::migration::convert_legacy_stored_for_country_codes;
+        use super::BlocklistConnFieldsStored;
+        use crate::migration::{
+            BlocklistConnFieldsStoredV0_42, convert_legacy_stored_for_country_codes,
+        };
 
         let old = BlocklistConnFieldsStoredV0_42 {
             sensor: "collector1".to_string(),
@@ -3643,8 +3672,10 @@ mod tests {
 
     #[test]
     fn legacy_stored_country_code_conversion_preserves_endpoint_vectors() {
-        use super::{MultiHostPortScanFieldsStored, conn::MultiHostPortScanFieldsStoredV0_42};
-        use crate::migration::convert_legacy_stored_for_country_codes;
+        use super::MultiHostPortScanFieldsStored;
+        use crate::migration::{
+            MultiHostPortScanFieldsStoredV0_42, convert_legacy_stored_for_country_codes,
+        };
 
         let old = MultiHostPortScanFieldsStoredV0_42 {
             sensor: "collector1".to_string(),

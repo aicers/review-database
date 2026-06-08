@@ -63,38 +63,6 @@ pub struct BlocklistMalformedDnsFields {
 
 pub(crate) type BlocklistMalformedDnsFieldsStored = BlocklistMalformedDnsFieldsStoredV0_46;
 
-#[allow(dead_code)]
-#[derive(Deserialize, Serialize)]
-pub(crate) struct BlocklistMalformedDnsFieldsStoredV0_45 {
-    pub sensor: String,
-    pub orig_addr: IpAddr,
-    pub orig_port: u16,
-    pub resp_addr: IpAddr,
-    pub resp_port: u16,
-    pub proto: u8,
-    pub start_time: i64,
-    pub duration: i64,
-    pub orig_pkts: u64,
-    pub resp_pkts: u64,
-    pub orig_l2_bytes: u64,
-    pub resp_l2_bytes: u64,
-    pub trans_id: u16,
-    pub flags: u16,
-    pub question_count: u16,
-    pub answer_count: u16,
-    pub authority_count: u16,
-    pub additional_count: u16,
-    pub query_count: u32,
-    pub resp_count: u32,
-    pub query_bytes: u64,
-    pub resp_bytes: u64,
-    pub query_body: Vec<Vec<u8>>,
-    pub resp_body: Vec<Vec<u8>>,
-    pub confidence: f32,
-    pub category: Option<EventCategory>,
-}
-
-#[allow(dead_code)]
 #[derive(Deserialize, Serialize)]
 pub(crate) struct BlocklistMalformedDnsFieldsStoredV0_46 {
     pub sensor: String,

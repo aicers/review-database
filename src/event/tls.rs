@@ -111,47 +111,6 @@ pub struct BlocklistTlsFields {
 
 pub(crate) type BlocklistTlsFieldsStored = BlocklistTlsFieldsStoredV0_46;
 
-#[allow(dead_code)]
-#[derive(Deserialize, Serialize)]
-pub(crate) struct BlocklistTlsFieldsStoredV0_42 {
-    pub sensor: String,
-    pub orig_addr: IpAddr,
-    pub orig_port: u16,
-    pub resp_addr: IpAddr,
-    pub resp_port: u16,
-    pub proto: u8,
-    pub start_time: i64,
-    pub duration: i64,
-    pub orig_pkts: u64,
-    pub resp_pkts: u64,
-    pub orig_l2_bytes: u64,
-    pub resp_l2_bytes: u64,
-    pub server_name: String,
-    pub alpn_protocol: String,
-    pub ja3: String,
-    pub version: String,
-    pub client_cipher_suites: Vec<u16>,
-    pub client_extensions: Vec<u16>,
-    pub cipher: u16,
-    pub extensions: Vec<u16>,
-    pub ja3s: String,
-    pub serial: String,
-    pub subject_country: String,
-    pub subject_org_name: String,
-    pub subject_common_name: String,
-    pub validity_not_before: i64,
-    pub validity_not_after: i64,
-    pub subject_alt_name: String,
-    pub issuer_country: String,
-    pub issuer_org_name: String,
-    pub issuer_org_unit_name: String,
-    pub issuer_common_name: String,
-    pub last_alert: u8,
-    pub confidence: f32,
-    pub category: Option<EventCategory>,
-}
-
-#[allow(dead_code)]
 #[derive(Deserialize, Serialize)]
 pub(crate) struct BlocklistTlsFieldsStoredV0_46 {
     pub sensor: String,

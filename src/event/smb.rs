@@ -72,37 +72,6 @@ pub struct BlocklistSmbFields {
 
 pub(crate) type BlocklistSmbFieldsStored = BlocklistSmbFieldsStoredV0_46;
 
-#[allow(dead_code)]
-#[derive(Deserialize, Serialize)]
-pub(crate) struct BlocklistSmbFieldsStoredV0_42 {
-    pub sensor: String,
-    pub orig_addr: IpAddr,
-    pub orig_port: u16,
-    pub resp_addr: IpAddr,
-    pub resp_port: u16,
-    pub proto: u8,
-    pub start_time: i64,
-    pub duration: i64,
-    pub orig_pkts: u64,
-    pub resp_pkts: u64,
-    pub orig_l2_bytes: u64,
-    pub resp_l2_bytes: u64,
-    pub command: u8,
-    pub path: String,
-    pub service: String,
-    pub file_name: String,
-    pub file_size: u64,
-    pub resource_type: u16,
-    pub fid: u16,
-    pub create_time: i64,
-    pub access_time: i64,
-    pub write_time: i64,
-    pub change_time: i64,
-    pub confidence: f32,
-    pub category: Option<EventCategory>,
-}
-
-#[allow(dead_code)]
 #[derive(Deserialize, Serialize)]
 pub(crate) struct BlocklistSmbFieldsStoredV0_46 {
     pub sensor: String,

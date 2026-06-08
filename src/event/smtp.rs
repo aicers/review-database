@@ -64,33 +64,6 @@ pub struct BlocklistSmtpFields {
 
 pub(crate) type BlocklistSmtpFieldsStored = BlocklistSmtpFieldsStoredV0_46;
 
-#[allow(dead_code)]
-#[derive(Deserialize, Serialize)]
-pub(crate) struct BlocklistSmtpFieldsStoredV0_42 {
-    pub sensor: String,
-    pub orig_addr: IpAddr,
-    pub orig_port: u16,
-    pub resp_addr: IpAddr,
-    pub resp_port: u16,
-    pub proto: u8,
-    pub start_time: i64,
-    pub duration: i64,
-    pub orig_pkts: u64,
-    pub resp_pkts: u64,
-    pub orig_l2_bytes: u64,
-    pub resp_l2_bytes: u64,
-    pub mailfrom: String,
-    pub date: String,
-    pub from: String,
-    pub to: String,
-    pub subject: String,
-    pub agent: String,
-    pub state: String,
-    pub confidence: f32,
-    pub category: Option<EventCategory>,
-}
-
-#[allow(dead_code)]
 #[derive(Deserialize, Serialize)]
 pub(crate) struct BlocklistSmtpFieldsStoredV0_46 {
     pub sensor: String,

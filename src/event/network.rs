@@ -64,37 +64,6 @@ pub struct NetworkThreatFields {
 
 pub type NetworkThreatFieldsStored = NetworkThreatFieldsStoredV0_46;
 
-#[allow(dead_code)]
-#[derive(Deserialize, Serialize)]
-pub struct NetworkThreatFieldsStoredV0_45 {
-    #[serde(with = "ts_nanoseconds")]
-    pub time: DateTime<Utc>,
-    pub sensor: String,
-    pub orig_addr: IpAddr,
-    pub orig_port: u16,
-    pub resp_addr: IpAddr,
-    pub resp_port: u16,
-    pub proto: u8,
-    pub service: String,
-    #[serde(with = "ts_nanoseconds")]
-    pub start_time: DateTime<Utc>,
-    pub duration: i64,
-    pub orig_pkts: u64,
-    pub resp_pkts: u64,
-    pub orig_l2_bytes: u64,
-    pub resp_l2_bytes: u64,
-    pub content: String,
-    pub db_name: String,
-    pub rule_id: u32,
-    pub matched_to: String,
-    pub cluster_id: Option<u32>,
-    pub attack_kind: String,
-    pub confidence: f32,
-    pub category: Option<EventCategory>,
-    pub triage_scores: Option<Vec<TriageScore>>,
-}
-
-#[allow(dead_code)]
 #[derive(Deserialize, Serialize)]
 pub struct NetworkThreatFieldsStoredV0_46 {
     #[serde(with = "ts_nanoseconds")]

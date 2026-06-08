@@ -65,22 +65,6 @@ pub struct LdapBruteForceFields {
 
 pub(crate) type LdapBruteForceFieldsStored = LdapBruteForceFieldsStoredV0_46;
 
-#[allow(dead_code)]
-#[derive(Deserialize, Serialize)]
-pub(crate) struct LdapBruteForceFieldsStoredV0_42 {
-    pub sensor: String,
-    pub orig_addr: IpAddr,
-    pub resp_addr: IpAddr,
-    pub resp_port: u16,
-    pub proto: u8,
-    pub user_pw_list: Vec<(String, String)>,
-    pub start_time: i64,
-    pub end_time: i64,
-    pub confidence: f32,
-    pub category: Option<EventCategory>,
-}
-
-#[allow(dead_code)]
 #[derive(Deserialize, Serialize)]
 pub(crate) struct LdapBruteForceFieldsStoredV0_46 {
     pub sensor: String,
@@ -305,33 +289,6 @@ pub struct LdapEventFields {
 
 pub(crate) type LdapEventFieldsStored = LdapEventFieldsStoredV0_46;
 
-#[allow(dead_code)]
-#[derive(Deserialize, Serialize)]
-pub(crate) struct LdapEventFieldsStoredV0_42 {
-    pub sensor: String,
-    pub orig_addr: IpAddr,
-    pub orig_port: u16,
-    pub resp_addr: IpAddr,
-    pub resp_port: u16,
-    pub proto: u8,
-    pub start_time: i64,
-    pub duration: i64,
-    pub orig_pkts: u64,
-    pub resp_pkts: u64,
-    pub orig_l2_bytes: u64,
-    pub resp_l2_bytes: u64,
-    pub message_id: u32,
-    pub version: u8,
-    pub opcode: Vec<String>,
-    pub result: Vec<String>,
-    pub diagnostic_message: Vec<String>,
-    pub object: Vec<String>,
-    pub argument: Vec<String>,
-    pub confidence: f32,
-    pub category: Option<EventCategory>,
-}
-
-#[allow(dead_code)]
 #[derive(Deserialize, Serialize)]
 pub(crate) struct LdapEventFieldsStoredV0_46 {
     pub sensor: String,

@@ -80,38 +80,6 @@ pub struct DnsEventFields {
 
 pub(crate) type DnsEventFieldsStored = DnsEventFieldsStoredV0_46;
 
-#[allow(dead_code)]
-#[derive(Deserialize, Serialize)]
-pub(crate) struct DnsEventFieldsStoredV0_42 {
-    pub sensor: String,
-    pub orig_addr: IpAddr,
-    pub orig_port: u16,
-    pub resp_addr: IpAddr,
-    pub resp_port: u16,
-    pub proto: u8,
-    pub start_time: i64,
-    pub duration: i64,
-    pub orig_pkts: u64,
-    pub resp_pkts: u64,
-    pub orig_l2_bytes: u64,
-    pub resp_l2_bytes: u64,
-    pub query: String,
-    pub answer: Vec<String>,
-    pub trans_id: u16,
-    pub rtt: i64,
-    pub qclass: u16,
-    pub qtype: u16,
-    pub rcode: u16,
-    pub aa_flag: bool,
-    pub tc_flag: bool,
-    pub rd_flag: bool,
-    pub ra_flag: bool,
-    pub ttl: Vec<i32>,
-    pub confidence: f32,
-    pub category: Option<EventCategory>,
-}
-
-#[allow(dead_code)]
 #[derive(Deserialize, Serialize)]
 pub(crate) struct DnsEventFieldsStoredV0_46 {
     pub sensor: String,
@@ -622,39 +590,6 @@ pub struct CryptocurrencyMiningPoolFields {
 
 pub(crate) type CryptocurrencyMiningPoolFieldsStored = CryptocurrencyMiningPoolFieldsStoredV0_46;
 
-#[allow(dead_code)]
-#[derive(Deserialize, Serialize)]
-pub(crate) struct CryptocurrencyMiningPoolFieldsStoredV0_42 {
-    pub sensor: String,
-    pub orig_addr: IpAddr,
-    pub orig_port: u16,
-    pub resp_addr: IpAddr,
-    pub resp_port: u16,
-    pub proto: u8,
-    pub start_time: i64,
-    pub duration: i64,
-    pub orig_pkts: u64,
-    pub resp_pkts: u64,
-    pub orig_l2_bytes: u64,
-    pub resp_l2_bytes: u64,
-    pub query: String,
-    pub answer: Vec<String>,
-    pub trans_id: u16,
-    pub rtt: i64,
-    pub qclass: u16,
-    pub qtype: u16,
-    pub rcode: u16,
-    pub aa_flag: bool,
-    pub tc_flag: bool,
-    pub rd_flag: bool,
-    pub ra_flag: bool,
-    pub ttl: Vec<i32>,
-    pub coins: Vec<String>,
-    pub confidence: f32,
-    pub category: Option<EventCategory>,
-}
-
-#[allow(dead_code)]
 #[derive(Deserialize, Serialize)]
 pub(crate) struct CryptocurrencyMiningPoolFieldsStoredV0_46 {
     pub sensor: String,
@@ -984,38 +919,6 @@ pub struct BlocklistDnsFields {
 
 pub(crate) type BlocklistDnsFieldsStored = BlocklistDnsFieldsStoredV0_46;
 
-#[allow(dead_code)]
-#[derive(Deserialize, Serialize)]
-pub(crate) struct BlocklistDnsFieldsStoredV0_42 {
-    pub sensor: String,
-    pub orig_addr: IpAddr,
-    pub orig_port: u16,
-    pub resp_addr: IpAddr,
-    pub resp_port: u16,
-    pub proto: u8,
-    pub start_time: i64,
-    pub duration: i64,
-    pub orig_pkts: u64,
-    pub resp_pkts: u64,
-    pub orig_l2_bytes: u64,
-    pub resp_l2_bytes: u64,
-    pub query: String,
-    pub answer: Vec<String>,
-    pub trans_id: u16,
-    pub rtt: i64,
-    pub qclass: u16,
-    pub qtype: u16,
-    pub rcode: u16,
-    pub aa_flag: bool,
-    pub tc_flag: bool,
-    pub rd_flag: bool,
-    pub ra_flag: bool,
-    pub ttl: Vec<i32>,
-    pub confidence: f32,
-    pub category: Option<EventCategory>,
-}
-
-#[allow(dead_code)]
 #[derive(Deserialize, Serialize)]
 pub(crate) struct BlocklistDnsFieldsStoredV0_46 {
     pub sensor: String,

@@ -23,22 +23,6 @@ pub struct UnusualDestinationPatternFields {
 
 pub(crate) type UnusualDestinationPatternFieldsStored = UnusualDestinationPatternFieldsStoredV0_46;
 
-#[allow(dead_code)]
-#[derive(Deserialize, Serialize)]
-pub(crate) struct UnusualDestinationPatternFieldsStoredV0_45 {
-    pub sensor: String,
-    pub start_time: i64,
-    pub end_time: i64,
-    pub destination_ips: Vec<IpAddr>,
-    pub count: usize,
-    pub expected_mean: f64,
-    pub std_deviation: f64,
-    pub z_score: f64,
-    pub confidence: f32,
-    pub category: Option<EventCategory>,
-}
-
-#[allow(dead_code)]
 #[derive(Deserialize, Serialize)]
 pub(crate) struct UnusualDestinationPatternFieldsStoredV0_46 {
     pub sensor: String,
