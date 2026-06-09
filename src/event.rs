@@ -2568,7 +2568,7 @@ impl EventMessage {
 
 /// Converts producer-facing `*Fields` bytes into the on-disk
 /// `*FieldsStored` representation for the given [`EventKind`].
-pub(crate) fn convert_for_storage(kind: EventKind, bytes: &[u8]) -> Result<Vec<u8>> {
+fn convert_for_storage(kind: EventKind, bytes: &[u8]) -> Result<Vec<u8>> {
     fn reserialize<S, T>(bytes: &[u8]) -> Result<Vec<u8>>
     where
         S: for<'de> Deserialize<'de>,
@@ -2683,19 +2683,6 @@ pub(crate) fn convert_for_storage(kind: EventKind, bytes: &[u8]) -> Result<Vec<u
     }
 }
 
-fn lookup_country_code(locator: Option<&ip2location::DB>, addr: IpAddr) -> [u8; 2] {
-    let Some(locator) = locator else {
-        return *b"XX";
-    };
-    let code = crate::util::find_ip_country(locator, addr).to_ascii_uppercase();
-    let bytes = code.as_bytes();
-    if bytes.len() == 2 && bytes.iter().all(u8::is_ascii_alphabetic) {
-        [bytes[0], bytes[1]]
-    } else {
-        *b"XX"
-    }
-}
-
 pub(crate) fn resolve_stored_country_codes(
     kind: EventKind,
     bytes: &[u8],
@@ -2707,7 +2694,7 @@ pub(crate) fn resolve_stored_country_codes(
         F: FnMut(&mut T),
     {
         let mut fields: T = bincode::deserialize(bytes)
-            .context("failed to deserialize event fields as current stored schema")?;
+            .context("failed to deserialize event fields as the V0_46 stored schema")?;
         update(&mut fields);
         bincode::serialize(&fields).context("failed to serialize resolved event fields")
     }
@@ -2715,20 +2702,23 @@ pub(crate) fn resolve_stored_country_codes(
     macro_rules! pair {
         ($ty:ty) => {
             reserialize::<$ty, _>(bytes, |fields| {
-                fields.orig_country_code = lookup_country_code(locator, fields.orig_addr);
-                fields.resp_country_code = lookup_country_code(locator, fields.resp_addr);
+                fields.orig_country_code =
+                    crate::util::lookup_country_code(locator, fields.orig_addr);
+                fields.resp_country_code =
+                    crate::util::lookup_country_code(locator, fields.resp_addr);
             })
         };
     }
     macro_rules! resp_vec {
         ($ty:ty) => {
             reserialize::<$ty, _>(bytes, |fields| {
-                fields.orig_country_code = lookup_country_code(locator, fields.orig_addr);
+                fields.orig_country_code =
+                    crate::util::lookup_country_code(locator, fields.orig_addr);
                 fields.resp_country_codes = fields
                     .resp_addrs
                     .iter()
                     .copied()
-                    .map(|addr| lookup_country_code(locator, addr))
+                    .map(|addr| crate::util::lookup_country_code(locator, addr))
                     .collect();
             })
         };
@@ -2764,9 +2754,9 @@ pub(crate) fn resolve_stored_country_codes(
                 .orig_addrs
                 .iter()
                 .copied()
-                .map(|addr| lookup_country_code(locator, addr))
+                .map(|addr| crate::util::lookup_country_code(locator, addr))
                 .collect();
-            fields.resp_country_code = lookup_country_code(locator, fields.resp_addr);
+            fields.resp_country_code = crate::util::lookup_country_code(locator, fields.resp_addr);
         }),
         EventKind::FtpBruteForce => pair!(FtpBruteForceFieldsStored),
         EventKind::HttpThreat => pair!(HttpThreatFieldsStored),
@@ -2783,7 +2773,7 @@ pub(crate) fn resolve_stored_country_codes(
                     .destination_ips
                     .iter()
                     .copied()
-                    .map(|addr| lookup_country_code(locator, addr))
+                    .map(|addr| crate::util::lookup_country_code(locator, addr))
                     .collect();
             })
         }
@@ -3632,7 +3622,7 @@ mod tests {
     fn legacy_stored_country_code_conversion_uses_stored_schema() {
         use super::BlocklistConnFieldsStored;
         use crate::migration::{
-            BlocklistConnFieldsStoredV0_42, convert_legacy_stored_for_country_codes,
+            BlocklistConnFieldsStoredV0_42, migrate_event_stored_schema_to_v0_46,
         };
 
         let old = BlocklistConnFieldsStoredV0_42 {
@@ -3658,7 +3648,7 @@ mod tests {
         let old_bytes = bincode::serialize(&old).unwrap();
 
         let converted =
-            convert_legacy_stored_for_country_codes(EventKind::BlocklistConn, &old_bytes).unwrap();
+            migrate_event_stored_schema_to_v0_46(EventKind::BlocklistConn, &old_bytes).unwrap();
         let current: BlocklistConnFieldsStored = bincode::deserialize(&converted).unwrap();
 
         assert_eq!(current.orig_addr, old.orig_addr);
@@ -3674,17 +3664,17 @@ mod tests {
     fn legacy_stored_country_code_conversion_preserves_endpoint_vectors() {
         use super::MultiHostPortScanFieldsStored;
         use crate::migration::{
-            MultiHostPortScanFieldsStoredV0_42, convert_legacy_stored_for_country_codes,
+            MultiHostPortScanFieldsStoredV0_42, migrate_event_stored_schema_to_v0_46,
         };
 
         let old = MultiHostPortScanFieldsStoredV0_42 {
             sensor: "collector1".to_string(),
             orig_addr: "192.0.2.1".parse().unwrap(),
+            resp_port: 22,
             resp_addrs: vec![
                 "198.51.100.1".parse().unwrap(),
                 "198.51.100.2".parse().unwrap(),
             ],
-            resp_port: 22,
             proto: 6,
             start_time: 100,
             end_time: 200,
@@ -3695,8 +3685,7 @@ mod tests {
         let old_bytes = bincode::serialize(&old).unwrap();
 
         let converted =
-            convert_legacy_stored_for_country_codes(EventKind::MultiHostPortScan, &old_bytes)
-                .unwrap();
+            migrate_event_stored_schema_to_v0_46(EventKind::MultiHostPortScan, &old_bytes).unwrap();
         let current: MultiHostPortScanFieldsStored = bincode::deserialize(&converted).unwrap();
 
         assert_eq!(current.orig_addr, old.orig_addr);

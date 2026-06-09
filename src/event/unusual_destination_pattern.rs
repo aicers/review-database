@@ -40,15 +40,13 @@ pub(crate) struct UnusualDestinationPatternFieldsStoredV0_46 {
 
 impl From<UnusualDestinationPatternFields> for UnusualDestinationPatternFieldsStored {
     fn from(value: UnusualDestinationPatternFields) -> Self {
+        let destination_ip_count = value.destination_ips.len();
         Self {
             sensor: value.sensor,
             start_time: value.start_time,
             end_time: value.end_time,
-            resp_country_codes: vec![
-                crate::util::COUNTRY_CODE_PENDING;
-                value.destination_ips.len()
-            ],
             destination_ips: value.destination_ips,
+            resp_country_codes: vec![crate::util::COUNTRY_CODE_PENDING; destination_ip_count],
             count: value.count,
             expected_mean: value.expected_mean,
             std_deviation: value.std_deviation,
@@ -133,8 +131,8 @@ impl UnusualDestinationPattern {
             sensor: fields.sensor,
             start_time: DateTime::from_timestamp_nanos(fields.start_time),
             end_time: DateTime::from_timestamp_nanos(fields.end_time),
-            resp_country_codes: fields.resp_country_codes.clone(),
             destination_ips: fields.destination_ips,
+            resp_country_codes: fields.resp_country_codes.clone(),
             count: fields.count,
             expected_mean: fields.expected_mean,
             std_deviation: fields.std_deviation,

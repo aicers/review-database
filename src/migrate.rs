@@ -10,13 +10,13 @@ fn main() -> Result<()> {
     let config = Config::load_config(parse().as_deref())?;
 
     println!("Starting migration process...");
-    println!("Migrating data directory...");
     let locator = config
         .ip2location
         .as_ref()
         .map(ip2location::DB::from_file)
         .transpose()
         .context("failed to open ip2location database")?;
+    println!("Migrating data directory...");
     migrate_data_dir(&config.data_dir, &config.backup_dir, locator.as_ref())
         .context("migration failed")?;
     Ok(())

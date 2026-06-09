@@ -2279,8 +2279,8 @@ mod tests {
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             orig_country_code: crate::util::COUNTRY_CODE_PENDING,
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
-            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
             resp_ports: vec![80, 443, 8000, 8080, 8888, 8443, 9000, 9001, 9002],
+            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
             start_time: Utc
                 .with_ymd_and_hms(1970, 1, 1, 0, 1, 1)
                 .unwrap()

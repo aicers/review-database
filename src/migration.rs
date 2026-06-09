@@ -13,7 +13,7 @@ use num_traits::FromPrimitive;
 use semver::{Version, VersionReq};
 use tracing::{info, warn};
 
-pub(crate) use self::migration_structures::convert_legacy_stored_for_country_codes;
+pub(crate) use self::migration_structures::migrate_event_stored_schema_to_v0_46;
 #[cfg(test)]
 pub(crate) use self::migration_structures::{
     BlocklistConnFieldsStoredV0_42, MultiHostPortScanFieldsStoredV0_42,
@@ -118,7 +118,7 @@ const COMPATIBLE_VERSION_REQ: &str = ">=0.46.0,<0.47.0-alpha";
 /// etc.) should be assumed to be incompatible with each other.
 /// Pass an `ip2location::DB` when available so endpoint country-code fields can
 /// be resolved during the stored event schema migration. If no locator is
-/// provided, completed migration fallback values are written as `XX`.
+/// provided, endpoint country codes remain at the pre-lookup value `ZZ`.
 ///
 /// # Errors
 ///
@@ -235,13 +235,11 @@ pub(crate) fn migrate_event_country_codes(
             continue;
         };
 
-        let current = resolve_stored_country_codes(kind, &value, locator).or_else(|_| {
-            let current = convert_legacy_stored_for_country_codes(kind, &value)?;
-            resolve_stored_country_codes(kind, &current, locator)
-        })?;
+        let v0_46 = migrate_event_stored_schema_to_v0_46(kind, &value)?;
+        let resolved = resolve_stored_country_codes(kind, &v0_46, locator)?;
 
-        if current != value {
-            events.update((&key, &value), (&key, &current))?;
+        if resolved != value {
+            events.update((&key, &value), (&key, &resolved))?;
             migrated += 1;
         }
     }

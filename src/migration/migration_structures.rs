@@ -109,7 +109,7 @@ impl From<TriagePolicyV0_44> for crate::TriagePolicy {
 }
 
 // ============================================================================
-// Old event structures for migration
+// Historical persisted event schemas
 // ============================================================================
 
 use std::net::IpAddr;
@@ -118,7 +118,6 @@ use chrono::serde::ts_nanoseconds;
 
 use crate::EventCategory;
 
-/// `BlocklistDceRpcFieldsStored` structure from version 0.42.x.
 #[derive(Serialize, Deserialize)]
 pub(crate) struct BlocklistDceRpcFieldsStoredV0_42 {
     pub sensor: String,
@@ -141,11 +140,6 @@ pub(crate) struct BlocklistDceRpcFieldsStoredV0_42 {
     pub category: Option<EventCategory>,
 }
 
-/// `BlocklistDhcpFieldsStored` structure from version 0.42.x
-/// (before `options` field was added)
-///
-/// In 0.42.x, `BlocklistDhcpFieldsStored` did not have an `options` field.
-/// From 0.44.x, `options: Vec<(u8, Vec<u8>)>` was added to the stored schema.
 #[derive(Debug, Deserialize, Serialize)]
 pub(crate) struct BlocklistDhcpFieldsStoredV0_42 {
     pub sensor: String,
@@ -182,13 +176,6 @@ pub(crate) struct BlocklistDhcpFieldsStoredV0_42 {
     pub category: Option<EventCategory>,
 }
 
-/// `HttpThreatFieldsStored` structure from version 0.43.x
-/// (before `cluster_id` type change).
-/// In 0.43.x, `cluster_id` was `Option<usize>`. From 0.44.x, it changed to
-/// `Option<u32>` in the stored schema.
-///
-/// Note: Other event types (`NetworkThreat`, `WindowsThreat`, `ExtraThreat`) are not generated
-/// on production servers, so their migration structures are not needed.
 #[derive(Debug, Deserialize, Serialize)]
 pub(crate) struct HttpThreatFieldsStoredV0_43 {
     #[serde(with = "ts_nanoseconds")]
@@ -228,15 +215,11 @@ pub(crate) struct HttpThreatFieldsStoredV0_43 {
     pub db_name: String,
     pub rule_id: u32,
     pub matched_to: String,
-    pub cluster_id: Option<usize>, // OLD TYPE
+    pub cluster_id: Option<usize>,
     pub attack_kind: String,
     pub confidence: f32,
     pub category: Option<EventCategory>,
 }
-
-// ============================================================================
-// Historical persisted event schemas
-// ============================================================================
 
 #[derive(Deserialize, Serialize)]
 pub(crate) struct BlocklistBootpFieldsStoredV0_42 {
@@ -426,7 +409,6 @@ pub(crate) struct BlocklistMalformedDnsFieldsStoredV0_45 {
     pub category: Option<EventCategory>,
 }
 
-// This persisted schema must remain byte-compatible with v0.42 data.
 #[allow(clippy::struct_excessive_bools)]
 #[derive(Deserialize, Serialize)]
 pub(crate) struct DnsEventFieldsStoredV0_42 {
@@ -458,7 +440,6 @@ pub(crate) struct DnsEventFieldsStoredV0_42 {
     pub category: Option<EventCategory>,
 }
 
-// This persisted schema must remain byte-compatible with v0.42 data.
 #[allow(clippy::struct_excessive_bools)]
 #[derive(Deserialize, Serialize)]
 pub(crate) struct CryptocurrencyMiningPoolFieldsStoredV0_42 {
@@ -491,7 +472,6 @@ pub(crate) struct CryptocurrencyMiningPoolFieldsStoredV0_42 {
     pub category: Option<EventCategory>,
 }
 
-// This persisted schema must remain byte-compatible with v0.42 data.
 #[allow(clippy::struct_excessive_bools)]
 #[derive(Deserialize, Serialize)]
 pub(crate) struct BlocklistDnsFieldsStoredV0_42 {
@@ -1045,14 +1025,6 @@ pub(crate) struct BlocklistTlsFieldsStoredV0_42 {
     pub category: Option<EventCategory>,
 }
 
-// ============================================================================
-// Pre-0.46 stored event country-code migration
-// ============================================================================
-
-/// Converts pre-0.46 stored event bytes into the current stored schema.
-///
-/// This is migration-only logic. Unlike [`convert_for_storage`], the input is
-/// already an internal stored record, not the producer-facing `*Fields` schema.
 impl From<BlocklistBootpFieldsStoredV0_42> for crate::event::BlocklistBootpFieldsStoredV0_46 {
     fn from(old: BlocklistBootpFieldsStoredV0_42) -> Self {
         Self {
@@ -1752,12 +1724,12 @@ impl From<ExternalDdosFieldsStoredV0_42> for crate::event::ExternalDdosFieldsSto
             orig_addrs: old.orig_addrs,
             orig_country_codes: vec![crate::util::COUNTRY_CODE_PENDING; orig_addr_count],
             resp_addr: old.resp_addr,
+            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
             proto: old.proto,
             start_time: old.start_time,
             end_time: old.end_time,
             confidence: old.confidence,
             category: old.category,
-            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
         }
     }
 }
@@ -1767,6 +1739,7 @@ impl From<FtpBruteForceFieldsStoredV0_42> for crate::event::FtpBruteForceFieldsS
         Self {
             sensor: old.sensor,
             orig_addr: old.orig_addr,
+            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
             resp_addr: old.resp_addr,
             resp_port: old.resp_port,
             resp_country_code: crate::util::COUNTRY_CODE_PENDING,
@@ -1777,7 +1750,6 @@ impl From<FtpBruteForceFieldsStoredV0_42> for crate::event::FtpBruteForceFieldsS
             is_internal: old.is_internal,
             confidence: old.confidence,
             category: old.category,
-            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
         }
     }
 }
@@ -1836,6 +1808,7 @@ impl From<LdapBruteForceFieldsStoredV0_42> for crate::event::LdapBruteForceField
         Self {
             sensor: old.sensor,
             orig_addr: old.orig_addr,
+            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
             resp_addr: old.resp_addr,
             resp_port: old.resp_port,
             resp_country_code: crate::util::COUNTRY_CODE_PENDING,
@@ -1845,7 +1818,6 @@ impl From<LdapBruteForceFieldsStoredV0_42> for crate::event::LdapBruteForceField
             end_time: old.end_time,
             confidence: old.confidence,
             category: old.category,
-            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
         }
     }
 }
@@ -1856,15 +1828,15 @@ impl From<MultiHostPortScanFieldsStoredV0_42> for crate::event::MultiHostPortSca
         Self {
             sensor: old.sensor,
             orig_addr: old.orig_addr,
+            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
             resp_addrs: old.resp_addrs,
-            resp_country_codes: vec![crate::util::COUNTRY_CODE_PENDING; resp_addr_count],
             resp_port: old.resp_port,
+            resp_country_codes: vec![crate::util::COUNTRY_CODE_PENDING; resp_addr_count],
             proto: old.proto,
             start_time: old.start_time,
             end_time: old.end_time,
             confidence: old.confidence,
             category: old.category,
-            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
         }
     }
 }
@@ -1949,15 +1921,15 @@ impl From<PortScanFieldsStoredV0_42> for crate::event::PortScanFieldsStoredV0_46
         Self {
             sensor: old.sensor,
             orig_addr: old.orig_addr,
+            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
             resp_addr: old.resp_addr,
             resp_ports: old.resp_ports,
+            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
             start_time: old.start_time,
             end_time: old.end_time,
             proto: old.proto,
             confidence: old.confidence,
             category: old.category,
-            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
-            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
         }
     }
 }
@@ -1968,6 +1940,7 @@ impl From<RdpBruteForceFieldsStoredV0_42> for crate::event::RdpBruteForceFieldsS
         Self {
             sensor: old.sensor,
             orig_addr: old.orig_addr,
+            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
             resp_addrs: old.resp_addrs,
             resp_country_codes: vec![crate::util::COUNTRY_CODE_PENDING; resp_addr_count],
             start_time: old.start_time,
@@ -1975,7 +1948,6 @@ impl From<RdpBruteForceFieldsStoredV0_42> for crate::event::RdpBruteForceFieldsS
             proto: old.proto,
             confidence: old.confidence,
             category: old.category,
-            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
         }
     }
 }
@@ -2022,18 +1994,18 @@ impl From<UnusualDestinationPatternFieldsStoredV0_45>
     }
 }
 
-fn convert_stored<Old, Current>(bytes: &[u8]) -> Result<Vec<u8>>
+fn convert_stored<Source, Target>(bytes: &[u8]) -> Result<Vec<u8>>
 where
-    Old: for<'de> Deserialize<'de>,
-    Current: From<Old> + Serialize,
+    Source: for<'de> Deserialize<'de>,
+    Target: From<Source> + Serialize,
 {
-    let old: Old = bincode::deserialize(bytes)
+    let source: Source = bincode::deserialize(bytes)
         .context("failed to deserialize event fields as the previous stored schema")?;
-    let current = Current::from(old);
-    bincode::serialize(&current).context("failed to serialize current stored schema")
+    let target = Target::from(source);
+    bincode::serialize(&target).context("failed to serialize target stored schema")
 }
 
-pub(crate) fn convert_legacy_stored_for_country_codes(
+pub(crate) fn migrate_event_stored_schema_to_v0_46(
     kind: EventKind,
     bytes: &[u8],
 ) -> Result<Vec<u8>> {

@@ -74,8 +74,8 @@ impl From<PortScanFields> for PortScanFieldsStored {
             orig_addr: value.orig_addr,
             orig_country_code: crate::util::COUNTRY_CODE_PENDING,
             resp_addr: value.resp_addr,
-            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
             resp_ports: value.resp_ports,
+            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
             start_time: value.start_time,
             end_time: value.end_time,
             proto: value.proto,
@@ -152,8 +152,8 @@ impl PortScan {
             orig_addr: fields.orig_addr,
             orig_country_code: fields.orig_country_code,
             resp_addr: fields.resp_addr,
-            resp_country_code: fields.resp_country_code,
             resp_ports: fields.resp_ports.clone(),
+            resp_country_code: fields.resp_country_code,
             proto: fields.proto,
             start_time: DateTime::from_timestamp_nanos(fields.start_time),
             end_time: DateTime::from_timestamp_nanos(fields.end_time),
@@ -266,13 +266,14 @@ pub(crate) struct MultiHostPortScanFieldsStoredV0_46 {
 
 impl From<MultiHostPortScanFields> for MultiHostPortScanFieldsStored {
     fn from(value: MultiHostPortScanFields) -> Self {
+        let resp_addr_count = value.resp_addrs.len();
         Self {
             sensor: value.sensor,
             orig_addr: value.orig_addr,
             orig_country_code: crate::util::COUNTRY_CODE_PENDING,
-            resp_port: value.resp_port,
-            resp_country_codes: vec![crate::util::COUNTRY_CODE_PENDING; value.resp_addrs.len()],
             resp_addrs: value.resp_addrs,
+            resp_port: value.resp_port,
+            resp_country_codes: vec![crate::util::COUNTRY_CODE_PENDING; resp_addr_count],
             proto: value.proto,
             start_time: value.start_time,
             end_time: value.end_time,
@@ -348,8 +349,8 @@ impl MultiHostPortScan {
             time,
             orig_addr: fields.orig_addr,
             orig_country_code: fields.orig_country_code,
-            resp_port: fields.resp_port,
             resp_addrs: fields.resp_addrs.clone(),
+            resp_port: fields.resp_port,
             resp_country_codes: fields.resp_country_codes.clone(),
             proto: fields.proto,
             start_time: DateTime::from_timestamp_nanos(fields.start_time),
@@ -462,10 +463,11 @@ pub(crate) struct ExternalDdosFieldsStoredV0_46 {
 
 impl From<ExternalDdosFields> for ExternalDdosFieldsStored {
     fn from(value: ExternalDdosFields) -> Self {
+        let orig_addr_count = value.orig_addrs.len();
         Self {
             sensor: value.sensor,
-            orig_country_codes: vec![crate::util::COUNTRY_CODE_PENDING; value.orig_addrs.len()],
             orig_addrs: value.orig_addrs,
+            orig_country_codes: vec![crate::util::COUNTRY_CODE_PENDING; orig_addr_count],
             resp_addr: value.resp_addr,
             resp_country_code: crate::util::COUNTRY_CODE_PENDING,
             proto: value.proto,

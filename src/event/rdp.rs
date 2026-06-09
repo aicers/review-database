@@ -67,12 +67,13 @@ pub(crate) struct RdpBruteForceFieldsStoredV0_46 {
 
 impl From<RdpBruteForceFields> for RdpBruteForceFieldsStored {
     fn from(value: RdpBruteForceFields) -> Self {
+        let resp_addr_count = value.resp_addrs.len();
         Self {
             sensor: value.sensor,
             orig_addr: value.orig_addr,
             orig_country_code: crate::util::COUNTRY_CODE_PENDING,
-            resp_country_codes: vec![crate::util::COUNTRY_CODE_PENDING; value.resp_addrs.len()],
             resp_addrs: value.resp_addrs,
+            resp_country_codes: vec![crate::util::COUNTRY_CODE_PENDING; resp_addr_count],
             start_time: value.start_time,
             end_time: value.end_time,
             proto: value.proto,
