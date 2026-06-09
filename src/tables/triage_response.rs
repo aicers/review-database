@@ -236,6 +236,20 @@ mod test {
 
     const SENSOR: &str = "sensor-a";
 
+    // Pinned big-endian `i64` nanosecond suffix bytes for the chrono key contract.
+    // These literals document the historical bytes preserved in existing keys and are
+    // independent of the test's expected-value computation path.
+
+    /// `2023-03-15T12:34:56.123456789Z` as chrono `timestamp_nanos_opt()`.
+    const TIMESTAMP_2023_SUFFIX: [u8; size_of::<i64>()] =
+        1_678_883_696_123_456_789i64.to_be_bytes();
+
+    /// `1969-12-31T23:59:59.999999999Z` as chrono `timestamp_nanos_opt()`.
+    const TIMESTAMP_PRE_EPOCH_SUFFIX: [u8; size_of::<i64>()] = (-1i64).to_be_bytes();
+
+    /// Suffix substituted when chrono `timestamp_nanos_opt()` returns `None`.
+    const TIMESTAMP_OUT_OF_RANGE_SUFFIX: [u8; size_of::<i64>()] = 0i64.to_be_bytes();
+
     /// Extracts the big-endian `i64` nanosecond timestamp suffix from a
     /// `TriageResponse` unique key.
     fn timestamp_bytes_from_key(key: &[u8], sensor: &str) -> [u8; size_of::<i64>()] {
@@ -251,12 +265,11 @@ mod test {
         suffix.try_into().expect("i64 timestamp suffix")
     }
 
-    /// Computes the expected timestamp suffix bytes for the current key contract.
-    fn expected_timestamp_bytes(time: &DateTime<Utc>) -> [u8; size_of::<i64>()] {
-        time.timestamp_nanos_opt().unwrap_or_default().to_be_bytes()
-    }
-
-    fn assert_unique_key_timestamp(sensor: &str, time: DateTime<Utc>) {
+    fn assert_unique_key_timestamp(
+        sensor: &str,
+        time: DateTime<Utc>,
+        expected_suffix: [u8; size_of::<i64>()],
+    ) {
         let response = TriageResponse::new(sensor.to_string(), time, Vec::new(), String::new());
         let key = response.unique_key();
         assert!(
@@ -264,33 +277,23 @@ mod test {
             "unique key must begin with the sensor bytes"
         );
         let actual = timestamp_bytes_from_key(key, sensor);
-        let expected = expected_timestamp_bytes(&time);
         assert_eq!(
-            actual, expected,
-            "unique key timestamp must use chrono `timestamp_nanos_opt()` as i64 \
-             big-endian nanoseconds"
+            actual, expected_suffix,
+            "unique key timestamp suffix must match the pinned chrono i64 nanosecond bytes"
         );
     }
 
     // Baseline tests for the `TriageResponse` unique-key timestamp contract.
-    // They pin `time.timestamp_nanos_opt()` encoded as big-endian `i64`
-    // nanoseconds so a future chrono-to-Jiff migration cannot silently switch
-    // to seconds, Jiff default serde, or Jiff `i128` nanoseconds.
+    // They pin big-endian `i64` nanosecond suffix bytes so a future chrono-to-Jiff
+    // migration cannot silently switch to seconds, Jiff default serde, or Jiff
+    // `i128` nanoseconds.
 
     #[test]
     fn unique_key_timestamp_nanosecond_precision() {
         let time = DateTime::parse_from_rfc3339("2023-03-15T12:34:56.123456789Z")
             .expect("valid RFC3339 timestamp")
             .with_timezone(&Utc);
-        let nanos = time
-            .timestamp_nanos_opt()
-            .expect("timestamp must be within i64 nanosecond range");
-        assert_ne!(
-            nanos % 1_000_000_000,
-            0,
-            "fixture must include subsecond nanos"
-        );
-        assert_unique_key_timestamp(SENSOR, time);
+        assert_unique_key_timestamp(SENSOR, time, TIMESTAMP_2023_SUFFIX);
     }
 
     #[test]
@@ -298,14 +301,7 @@ mod test {
         let time = DateTime::parse_from_rfc3339("1969-12-31T23:59:59.999999999Z")
             .expect("valid RFC3339 timestamp")
             .with_timezone(&Utc);
-        let nanos = time
-            .timestamp_nanos_opt()
-            .expect("timestamp must be within i64 nanosecond range");
-        assert!(
-            nanos < 0,
-            "pre-1970 fixture must yield negative nanoseconds"
-        );
-        assert_unique_key_timestamp(SENSOR, time);
+        assert_unique_key_timestamp(SENSOR, time, TIMESTAMP_PRE_EPOCH_SUFFIX);
     }
 
     #[test]
@@ -318,14 +314,10 @@ mod test {
             .and_hms_opt(0, 0, 0)
             .expect("valid time");
         let time = DateTime::from_naive_utc_and_offset(naive, Utc);
-        assert!(
-            time.timestamp_nanos_opt().is_none(),
-            "fixture must be outside i64 nanosecond range"
-        );
 
         let response = TriageResponse::new(SENSOR.to_string(), time, Vec::new(), String::new());
         let actual = timestamp_bytes_from_key(response.unique_key(), SENSOR);
-        assert_eq!(actual, 0i64.to_be_bytes());
+        assert_eq!(actual, TIMESTAMP_OUT_OF_RANGE_SUFFIX);
     }
 
     fn setup_store() -> (DbGuard<'static>, Arc<Store>) {
