@@ -572,47 +572,46 @@ impl<'d> Table<'d, ColumnStats> {
         is_first: bool,
         limit: usize,
     ) -> Result<(i32, Vec<NaiveDateTime>)> {
+        let model_id_i32 = i32::try_from(model_id)?;
+        if limit == 0 {
+            return Ok((model_id_i32, Vec::new()));
+        }
+
         let mut prefix = model_id.to_be_bytes().to_vec();
         prefix.extend(cluster_id.to_be_bytes());
-        let mut buf = Vec::with_capacity(size_of::<u32>() + size_of::<i64>());
-        buf.extend(cluster_id.to_be_bytes());
-        let (direction, from) = if is_first {
-            if let Some(after) = after {
-                let after_ts = from_naive_utc(*after);
-                buf.extend(after_ts.to_be_bytes());
-                (Direction::Forward, Some(buf.as_slice()))
-            } else {
-                (Direction::Forward, None)
-            }
-        } else if let Some(before) = before {
-            let before_ts = from_naive_utc(*before);
-            buf.extend(before_ts.to_be_bytes());
-            (Direction::Reverse, Some(buf.as_slice()))
+        let boundary = if is_first { after } else { before };
+        let boundary_ts = boundary.map(from_naive_utc);
+        let seek_key = boundary_ts.map(|batch_ts| round_seek_key(model_id, cluster_id, batch_ts));
+        let direction = if is_first {
+            Direction::Forward
         } else {
-            (Direction::Reverse, None)
+            Direction::Reverse
         };
+        let from = seek_key.as_deref();
         let iter = self.prefix_iter(direction, from, &prefix);
-        let mut model_id = Option::None;
-        let mut rounds = HashSet::new();
-        for (m_id, round) in iter.filter_map(|result| {
-            let column_stats = result.ok()?;
-            Some((
-                column_stats.model_id,
-                from_timestamp(column_stats.batch_ts).ok()?,
-            ))
-        }) {
-            if model_id.is_none() {
-                model_id = Some(m_id);
-            } else if model_id != Some(m_id) {
-                return Err(anyhow::anyhow!("Model ID mismatch"));
+
+        let mut rounds = Vec::with_capacity(limit);
+        let mut last_batch_ts = None;
+        for result in iter {
+            let column_stats = result?;
+            if boundary_ts == Some(column_stats.batch_ts)
+                || last_batch_ts == Some(column_stats.batch_ts)
+            {
+                continue;
             }
-            rounds.insert(round);
+
+            last_batch_ts = Some(column_stats.batch_ts);
+            rounds.push(from_timestamp(column_stats.batch_ts)?);
             if rounds.len() >= limit {
                 break;
             }
         }
-        let model_id = model_id.ok_or_else(|| anyhow::anyhow!("No model ID found"))?;
-        Ok((i32::try_from(model_id)?, rounds.into_iter().collect()))
+
+        if !is_first {
+            rounds.reverse();
+        }
+
+        Ok((model_id_i32, rounds))
     }
 
     /// # Errors
@@ -869,6 +868,15 @@ struct Key {
     pub batch_ts: i64,
     pub column_index: u32,
 }
+
+fn round_seek_key(model_id: u32, cluster_id: u32, batch_ts: i64) -> Vec<u8> {
+    let mut key = Vec::with_capacity(size_of::<u32>() * 2 + size_of::<i64>());
+    key.extend(model_id.to_be_bytes());
+    key.extend(cluster_id.to_be_bytes());
+    key.extend(batch_ts.to_be_bytes());
+    key
+}
+
 impl Key {
     #[must_use]
     pub fn to_bytes(&self) -> Vec<u8> {
@@ -1069,14 +1077,14 @@ mod tests {
         let cluster_id = 123;
         let model_id = 42_u32;
 
-        let batch1 = NaiveDate::from_ymd_opt(2024, 1, 10)
-            .unwrap()
-            .and_hms_opt(0, 0, 0)
-            .unwrap();
-        let batch2 = NaiveDate::from_ymd_opt(2024, 2, 10)
-            .unwrap()
-            .and_hms_opt(0, 0, 0)
-            .unwrap();
+        let batches: Vec<_> = (1..=4)
+            .map(|month| {
+                NaiveDate::from_ymd_opt(2024, month, 10)
+                    .unwrap()
+                    .and_hms_opt(0, 0, 0)
+                    .unwrap()
+            })
+            .collect();
 
         let stats = ColumnStatistics {
             description: Description::default(),
@@ -1090,20 +1098,58 @@ mod tests {
             ),
         };
 
-        for batch in &[batch1, batch2] {
+        for batch in &batches {
             table
-                .insert_column_statistics(vec![(cluster_id, vec![stats.clone()])], model_id, *batch)
+                .insert_column_statistics(
+                    vec![(cluster_id, vec![stats.clone(), stats.clone()])],
+                    model_id,
+                    *batch,
+                )
                 .unwrap();
         }
 
         let (retrieved_model_id, rounds) = table
-            .load_rounds_by_cluster(model_id, cluster_id, &None, &None, true, 10)
+            .load_rounds_by_cluster(model_id, cluster_id, &None, &None, true, 2)
             .unwrap();
 
         assert_eq!(u32::try_from(retrieved_model_id).unwrap(), model_id);
-        assert_eq!(rounds.len(), 2);
-        assert!(rounds.contains(&batch1));
-        assert!(rounds.contains(&batch2));
+        assert_eq!(rounds, batches[..2]);
+
+        let (_, rounds) = table
+            .load_rounds_by_cluster(model_id, cluster_id, &Some(batches[1]), &None, true, 2)
+            .unwrap();
+        assert_eq!(rounds, batches[2..]);
+
+        let (_, rounds) = table
+            .load_rounds_by_cluster(model_id, cluster_id, &None, &None, false, 2)
+            .unwrap();
+        assert_eq!(rounds, batches[2..]);
+
+        let (_, rounds) = table
+            .load_rounds_by_cluster(model_id, cluster_id, &None, &Some(batches[2]), false, 2)
+            .unwrap();
+        assert_eq!(rounds, batches[..2]);
+
+        let (_, rounds) = table
+            .load_rounds_by_cluster(model_id, cluster_id, &Some(batches[3]), &None, true, 2)
+            .unwrap();
+        assert!(rounds.is_empty());
+    }
+
+    #[test]
+    fn round_seek_key_matches_stored_key_prefix() {
+        let model_id = 42;
+        let cluster_id = 123;
+        let batch_ts = 1_704_844_800;
+        let stored_key = Key {
+            model_id,
+            cluster_id,
+            batch_ts,
+            column_index: 7,
+        }
+        .to_bytes();
+
+        assert!(stored_key.starts_with(&round_seek_key(model_id, cluster_id, batch_ts)));
     }
 
     #[test]
