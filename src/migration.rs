@@ -14,10 +14,6 @@ use semver::{Version, VersionReq};
 use tracing::{info, warn};
 
 pub(crate) use self::migration_structures::migrate_event_stored_schema_to_v0_46;
-#[cfg(test)]
-pub(crate) use self::migration_structures::{
-    BlocklistConnFieldsStoredV0_42, MultiHostPortScanFieldsStoredV0_42,
-};
 use crate::{
     AllowNetwork, BlockNetwork, Customer,
     event::{EventKind, resolve_stored_country_codes},
@@ -1289,7 +1285,17 @@ mod tests {
 
     use semver::{Version, VersionReq};
 
-    use super::{COMPATIBLE_VERSION_REQ, create_version_file, migrate_data_dir, read_version_file};
+    use super::{
+        COMPATIBLE_VERSION_REQ, create_version_file, migrate_data_dir, migrate_event_country_codes,
+        migrate_event_stored_schema_to_v0_46, read_version_file,
+    };
+    use crate::event::{
+        BlocklistConnFields, BlocklistConnFieldsStored, EventKind, EventMessage,
+        MultiHostPortScanFieldsStored, resolve_stored_country_codes,
+    };
+    use crate::migration::migration_structures::{
+        BlocklistConnFieldsStoredV0_42, MultiHostPortScanFieldsStoredV0_42,
+    };
     use crate::tables::NETWORK_TAGS;
     use crate::test::{DbGuard, acquire_db_permit};
     use crate::{Indexable, Store};
@@ -1299,6 +1305,154 @@ mod tests {
         let version_file = path.join("VERSION");
         let mut f = std::fs::File::create(&version_file).unwrap();
         f.write_all(version.as_bytes()).unwrap();
+    }
+
+    fn legacy_blocklist_conn() -> BlocklistConnFieldsStoredV0_42 {
+        BlocklistConnFieldsStoredV0_42 {
+            sensor: "collector1".to_string(),
+            orig_addr: "192.0.2.1".parse().unwrap(),
+            orig_port: 12345,
+            resp_addr: "198.51.100.1".parse().unwrap(),
+            resp_port: 443,
+            proto: 6,
+            conn_state: "SF".to_string(),
+            start_time: 100,
+            duration: 200,
+            service: "https".to_string(),
+            orig_bytes: 10,
+            resp_bytes: 20,
+            orig_pkts: 1,
+            resp_pkts: 2,
+            orig_l2_bytes: 42,
+            resp_l2_bytes: 84,
+            confidence: 0.9,
+            category: None,
+        }
+    }
+
+    #[test]
+    fn stored_schema_migration_dispatches_endpoint_event() {
+        let old = legacy_blocklist_conn();
+        let converted = migrate_event_stored_schema_to_v0_46(
+            EventKind::BlocklistConn,
+            &bincode::serialize(&old).unwrap(),
+        )
+        .unwrap();
+        let current: BlocklistConnFieldsStored = bincode::deserialize(&converted).unwrap();
+
+        assert_eq!(current.orig_addr, old.orig_addr);
+        assert_eq!(current.orig_port, old.orig_port);
+        assert_eq!(current.orig_country_code, crate::util::COUNTRY_CODE_PENDING);
+        assert_eq!(current.resp_addr, old.resp_addr);
+        assert_eq!(current.resp_port, old.resp_port);
+        assert_eq!(current.resp_country_code, crate::util::COUNTRY_CODE_PENDING);
+        assert_eq!(current.conn_state, old.conn_state);
+    }
+
+    #[test]
+    fn stored_schema_migration_preserves_endpoint_vectors() {
+        let old = MultiHostPortScanFieldsStoredV0_42 {
+            sensor: "collector1".to_string(),
+            orig_addr: "192.0.2.1".parse().unwrap(),
+            resp_port: 22,
+            resp_addrs: vec![
+                "198.51.100.1".parse().unwrap(),
+                "198.51.100.2".parse().unwrap(),
+            ],
+            proto: 6,
+            start_time: 100,
+            end_time: 200,
+            confidence: 0.7,
+            category: None,
+        };
+        let resp_count = old.resp_addrs.len();
+        let converted = migrate_event_stored_schema_to_v0_46(
+            EventKind::MultiHostPortScan,
+            &bincode::serialize(&old).unwrap(),
+        )
+        .unwrap();
+        let current: MultiHostPortScanFieldsStored = bincode::deserialize(&converted).unwrap();
+
+        assert_eq!(current.orig_addr, old.orig_addr);
+        assert_eq!(current.orig_country_code, crate::util::COUNTRY_CODE_PENDING);
+        assert_eq!(current.resp_addrs, old.resp_addrs);
+        assert_eq!(current.resp_port, old.resp_port);
+        assert_eq!(
+            current.resp_country_codes,
+            vec![crate::util::COUNTRY_CODE_PENDING; resp_count]
+        );
+    }
+
+    #[test]
+    fn country_code_resolution_without_locator_preserves_serialized_bytes() {
+        let converted = migrate_event_stored_schema_to_v0_46(
+            EventKind::BlocklistConn,
+            &bincode::serialize(&legacy_blocklist_conn()).unwrap(),
+        )
+        .unwrap();
+
+        let resolved =
+            resolve_stored_country_codes(EventKind::BlocklistConn, &converted, None).unwrap();
+
+        assert_eq!(resolved, converted);
+    }
+
+    #[test]
+    fn event_country_code_migration_rewrites_legacy_record_through_event_db() {
+        let _permit = acquire_db_permit();
+        let data_dir = tempfile::tempdir().unwrap();
+        let backup_dir = tempfile::tempdir().unwrap();
+        let store = Store::new(data_dir.path(), backup_dir.path()).unwrap();
+        let events = store.events();
+        let legacy = legacy_blocklist_conn();
+        let message = EventMessage {
+            time: chrono::Utc::now(),
+            kind: EventKind::BlocklistConn,
+            fields: bincode::serialize(&BlocklistConnFields {
+                sensor: legacy.sensor.clone(),
+                orig_addr: legacy.orig_addr,
+                orig_port: legacy.orig_port,
+                resp_addr: legacy.resp_addr,
+                resp_port: legacy.resp_port,
+                proto: legacy.proto,
+                conn_state: legacy.conn_state.clone(),
+                start_time: legacy.start_time,
+                duration: legacy.duration,
+                service: legacy.service.clone(),
+                orig_bytes: legacy.orig_bytes,
+                resp_bytes: legacy.resp_bytes,
+                orig_pkts: legacy.orig_pkts,
+                resp_pkts: legacy.resp_pkts,
+                orig_l2_bytes: legacy.orig_l2_bytes,
+                resp_l2_bytes: legacy.resp_l2_bytes,
+                confidence: legacy.confidence,
+                category: legacy.category,
+            })
+            .unwrap(),
+        };
+        events.put(&message).unwrap();
+        let (key, current_value) = events.raw_iter().next().unwrap().unwrap();
+        let legacy_value = bincode::serialize(&legacy).unwrap();
+        events
+            .update((&key, &current_value), (&key, &legacy_value))
+            .unwrap();
+
+        migrate_event_country_codes(&store, None).unwrap();
+
+        let (migrated_key, migrated_value) = events.raw_iter().next().unwrap().unwrap();
+        let migrated: BlocklistConnFieldsStored = bincode::deserialize(&migrated_value).unwrap();
+        assert_eq!(migrated_key, key);
+        assert_ne!(migrated_value, legacy_value);
+        assert_eq!(migrated.orig_addr, legacy.orig_addr);
+        assert_eq!(
+            migrated.orig_country_code,
+            crate::util::COUNTRY_CODE_PENDING
+        );
+        assert_eq!(migrated.resp_addr, legacy.resp_addr);
+        assert_eq!(
+            migrated.resp_country_code,
+            crate::util::COUNTRY_CODE_PENDING
+        );
     }
 
     // =========================================================================

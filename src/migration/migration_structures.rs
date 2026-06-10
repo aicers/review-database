@@ -958,7 +958,7 @@ pub(crate) struct BlocklistKerberosFieldsStoredV0_42 {
 }
 
 #[derive(Deserialize, Serialize)]
-pub struct NetworkThreatFieldsStoredV0_45 {
+pub(crate) struct NetworkThreatFieldsStoredV0_45 {
     #[serde(with = "ts_nanoseconds")]
     pub time: DateTime<Utc>,
     pub sensor: String,
