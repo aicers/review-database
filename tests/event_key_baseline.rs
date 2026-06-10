@@ -9,9 +9,9 @@
 //! ```
 //!
 //! These tests pin that layout before migrating `EventMessage.time` from chrono
-//! to Jiff. They assert raw key bytes directly — not round-trip through
-//! `EventIterator` — so a mistaken unit (milliseconds), endianness, or Jiff
-//! `i128` nanosecond encoding would fail here.
+//! to Jiff. Expected timestamp values are pinned as literal `i64` nanoseconds
+//! (not recomputed with chrono in the assertion path). On-disk layout is checked
+//! via raw RocksDB key bytes as well as `EventDb::put` and `EventIterator`.
 
 use std::net::{IpAddr, Ipv4Addr};
 
@@ -19,18 +19,27 @@ use chrono::{DateTime, TimeZone, Utc};
 use review_database::{EventCategory, EventKind, EventMessage, Store, event::DnsEventFields};
 use tempfile::tempdir;
 
+/// 2020-06-15T12:30:45Z as epoch nanoseconds (pinned baseline).
+const EPOCH_NANOS_2020_06_15_123045: i64 = 1_592_224_245_000_000_000;
+
+/// 1965-10-15T12:34:56.123456789Z as epoch nanoseconds (pinned baseline).
+const EPOCH_NANOS_1965_10_15_123456789: i64 = -132_924_303_876_543_211;
+
+/// 1985-03-04T05:06:07Z as epoch nanoseconds (pinned baseline).
+const EPOCH_NANOS_1985_03_04_050607: i64 = 478_760_767_000_000_000;
+
+/// 2020-06-15T12:00:00Z as epoch nanoseconds (pinned baseline).
+const EPOCH_NANOS_2020_06_15_120000: i64 = 1_592_222_400_000_000_000;
+
 /// Returns the first eight bytes of a 16-byte big-endian event key.
 fn timestamp_region(key: i128) -> [u8; 8] {
     let bytes = key.to_be_bytes();
     bytes[..8].try_into().expect("event key has 16 bytes")
 }
 
-/// Builds the expected timestamp region for an in-range `DateTime<Utc>`.
-fn expected_timestamp_region(time: DateTime<Utc>) -> [u8; 8] {
-    let nanos = time
-        .timestamp_nanos_opt()
-        .expect("timestamp must be within chrono i64-nanosecond range");
-    nanos.to_be_bytes()
+/// Returns the timestamp region from a raw 16-byte on-disk event key.
+fn timestamp_region_from_raw(key: [u8; 16]) -> [u8; 8] {
+    key[..8].try_into().expect("event key has 16 bytes")
 }
 
 fn minimal_dns_message(time: DateTime<Utc>) -> EventMessage {
@@ -69,7 +78,7 @@ fn minimal_dns_message(time: DateTime<Utc>) -> EventMessage {
     }
 }
 
-fn put_and_read_timestamp_region(time: DateTime<Utc>) -> ([u8; 8], [u8; 8]) {
+fn put_and_read_timestamp_regions(time: DateTime<Utc>) -> ([u8; 8], [u8; 8], [u8; 8]) {
     let data_dir = tempdir().expect("temp data dir");
     let backup_dir = tempdir().expect("temp backup dir");
     let store = Store::new(data_dir.path(), backup_dir.path()).expect("open store");
@@ -86,16 +95,31 @@ fn put_and_read_timestamp_region(time: DateTime<Utc>) -> ([u8; 8], [u8; 8]) {
         .0;
     let from_scan = timestamp_region(scanned_key);
 
-    (from_put, from_scan)
+    let raw_key = db
+        .first_raw_event_key()
+        .expect("read raw RocksDB key")
+        .expect("one stored event");
+    let from_raw = timestamp_region_from_raw(raw_key);
+
+    (from_put, from_scan, from_raw)
+}
+
+fn assert_timestamp_regions(expected: [u8; 8], regions: ([u8; 8], [u8; 8], [u8; 8])) {
+    let (from_put, from_scan, from_raw) = regions;
+    assert_eq!(from_put, expected, "put return key timestamp region");
+    assert_eq!(
+        from_scan, expected,
+        "iter_forward decoded key timestamp region"
+    );
+    assert_eq!(from_raw, expected, "raw RocksDB key timestamp region");
 }
 
 #[test]
 fn event_key_timestamp_matches_i64_epoch_nanoseconds() {
     let time = Utc.with_ymd_and_hms(2020, 6, 15, 12, 30, 45).unwrap();
-    let expected = expected_timestamp_region(time);
-    let (from_put, from_scan) = put_and_read_timestamp_region(time);
-    assert_eq!(from_put, expected);
-    assert_eq!(from_scan, expected);
+    let expected = EPOCH_NANOS_2020_06_15_123045.to_be_bytes();
+    let regions = put_and_read_timestamp_regions(time);
+    assert_timestamp_regions(expected, regions);
 }
 
 #[test]
@@ -105,9 +129,8 @@ fn event_key_one_nanosecond_after_unix_epoch() {
     assert_eq!(time.timestamp_nanos_opt(), Some(1));
 
     let expected = 1i64.to_be_bytes();
-    let (from_put, from_scan) = put_and_read_timestamp_region(time);
-    assert_eq!(from_put, expected);
-    assert_eq!(from_scan, expected);
+    let regions = put_and_read_timestamp_regions(time);
+    assert_timestamp_regions(expected, regions);
 }
 
 #[test]
@@ -115,15 +138,10 @@ fn event_key_pre_1970_negative_epoch_nanoseconds() {
     let time = DateTime::parse_from_rfc3339("1965-10-15T12:34:56.123456789Z")
         .expect("valid RFC3339")
         .with_timezone(&Utc);
-    let nanos = time
-        .timestamp_nanos_opt()
-        .expect("in-range pre-1970 timestamp");
-    assert!(nanos < 0, "pre-1970 timestamps must be negative i64 nanos");
 
-    let expected = nanos.to_be_bytes();
-    let (from_put, from_scan) = put_and_read_timestamp_region(time);
-    assert_eq!(from_put, expected);
-    assert_eq!(from_scan, expected);
+    let expected = EPOCH_NANOS_1965_10_15_123456789.to_be_bytes();
+    let regions = put_and_read_timestamp_regions(time);
+    assert_timestamp_regions(expected, regions);
 }
 
 #[test]
@@ -131,9 +149,8 @@ fn event_key_i64_nanosecond_range_boundaries() {
     for nanos in [i64::MIN, i64::MAX] {
         let time = DateTime::from_timestamp_nanos(nanos);
         let expected = nanos.to_be_bytes();
-        let (from_put, from_scan) = put_and_read_timestamp_region(time);
-        assert_eq!(from_put, expected, "boundary nanos={nanos}");
-        assert_eq!(from_scan, expected, "boundary nanos={nanos}");
+        let regions = put_and_read_timestamp_regions(time);
+        assert_timestamp_regions(expected, regions);
     }
 }
 
@@ -170,30 +187,29 @@ fn event_key_put_maps_out_of_range_time_to_i64_max() {
     assert!(far_future.timestamp_nanos_opt().is_none());
 
     let expected = i64::MAX.to_be_bytes();
-    let (from_put, from_scan) = put_and_read_timestamp_region(far_future);
-    assert_eq!(from_put, expected);
-    assert_eq!(from_scan, expected);
+    let regions = put_and_read_timestamp_regions(far_future);
+    assert_timestamp_regions(expected, regions);
 
     let far_past = DateTime::parse_from_rfc3339("1000-01-01T00:00:00Z")
         .expect("valid RFC3339")
         .with_timezone(&Utc);
     assert!(far_past.timestamp_nanos_opt().is_none());
 
-    let (from_put, from_scan) = put_and_read_timestamp_region(far_past);
-    assert_eq!(from_put, expected);
-    assert_eq!(from_scan, expected);
+    let regions = put_and_read_timestamp_regions(far_past);
+    assert_timestamp_regions(expected, regions);
 }
 
 #[test]
 fn event_key_timestamp_is_big_endian_not_little_endian() {
     let time = Utc.with_ymd_and_hms(1985, 3, 4, 5, 6, 7).unwrap();
-    let nanos = time.timestamp_nanos_opt().expect("in-range");
-    let (from_put, _) = put_and_read_timestamp_region(time);
+    let expected = EPOCH_NANOS_1985_03_04_050607.to_be_bytes();
+    let (from_put, _, from_raw) = put_and_read_timestamp_regions(time);
 
-    assert_eq!(from_put, nanos.to_be_bytes());
+    assert_eq!(from_put, expected);
+    assert_eq!(from_raw, expected);
     assert_ne!(
         from_put,
-        nanos.to_le_bytes(),
+        EPOCH_NANOS_1985_03_04_050607.to_le_bytes(),
         "little-endian encoding would fail this contract"
     );
 }
@@ -206,11 +222,12 @@ fn event_key_timestamp_is_not_millisecond_encoding() {
     //   milliseconds: 1_592_222_400_000
     // The high-order bytes are completely different patterns.
     let time = Utc.with_ymd_and_hms(2020, 6, 15, 12, 0, 0).unwrap();
-    let nanos = time.timestamp_nanos_opt().expect("in-range");
     let millis = time.timestamp_millis();
 
-    let (from_put, _) = put_and_read_timestamp_region(time);
-    assert_eq!(from_put, nanos.to_be_bytes());
+    let expected = EPOCH_NANOS_2020_06_15_120000.to_be_bytes();
+    let (from_put, _, from_raw) = put_and_read_timestamp_regions(time);
+    assert_eq!(from_put, expected);
+    assert_eq!(from_raw, expected);
     assert_ne!(
         from_put,
         millis.to_be_bytes(),
