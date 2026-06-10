@@ -142,6 +142,55 @@ impl Account {
     }
 }
 
+/// Builds a deterministic `Account` for literal-byte compatibility tests.
+///
+/// Part of #746 / #762: fixed field values and timestamps pin the bincode wire
+/// format exercised by `Value::value` and `FromKeyValue::from_key_value`.
+#[doc(hidden)]
+#[must_use]
+pub fn bytes_fixture_account() -> Account {
+    use std::net::IpAddr;
+    use std::num::NonZeroU32;
+
+    const ITERATIONS: u32 = 210_000;
+    const FIXTURE_TIMESTAMP: &str = "2000-02-29T12:34:56.123456789Z";
+
+    let fixed_time = FIXTURE_TIMESTAMP
+        .parse::<DateTime<Utc>>()
+        .expect("valid RFC 3339 timestamp");
+
+    let iterations = NonZeroU32::new(ITERATIONS).expect("non-zero iteration count");
+    let password = SaltedPassword {
+        salt: (0_u8..64).collect(),
+        hash: (64_u8..128).collect(),
+        algorithm: HashAlgorithm::Sha512,
+        iterations,
+    };
+
+    Account {
+        username: "fixture-user".to_string(),
+        password,
+        role: Role::SecurityMonitor,
+        name: "Fixture Name".to_string(),
+        department: "Fixture Department".to_string(),
+        language: Some("en".to_string()),
+        theme: Some("dark".to_string()),
+        creation_time: fixed_time,
+        last_signin_time: Some(fixed_time),
+        allow_access_from: Some(vec![
+            "192.0.2.1".parse::<IpAddr>().expect("valid IPv4"),
+            "2001:db8::1".parse::<IpAddr>().expect("valid IPv6"),
+        ]),
+        max_parallel_sessions: Some(3),
+        password_hash_algorithm: PasswordHashAlgorithm::Pbkdf2HmacSha512,
+        password_last_modified_at: fixed_time,
+        customer_ids: Some(vec![1, 2, 42]),
+        failed_login_attempts: 2,
+        locked_out_until: Some(fixed_time),
+        is_suspended: true,
+    }
+}
+
 /// The account security policy.
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub struct AccountPolicy {
@@ -335,6 +384,14 @@ impl SaltedPassword {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tables::Value;
+
+    #[test]
+    #[ignore = "one-shot helper to regenerate tests/fixtures/account_bytes.bin"]
+    fn write_account_bytes_fixture() {
+        let bytes = bytes_fixture_account().value();
+        std::fs::write("tests/fixtures/account_bytes.bin", &bytes).expect("write fixture");
+    }
 
     #[test]
     fn pbkdf2_test() {
