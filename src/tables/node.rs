@@ -779,7 +779,7 @@ pub struct Profile {
     pub hostname: String,
 }
 
-#[derive(Clone, Deserialize, Serialize)]
+#[derive(Clone, Deserialize, Serialize, PartialEq, Debug)]
 pub(crate) struct Inner {
     pub id: u32,
     pub name: String,
@@ -1062,6 +1062,50 @@ mod test {
                 }
             })
             .collect()
+    }
+
+    /// Builds a deterministic `Inner` for the literal-byte contract test.
+    fn deterministic_node_inner() -> Inner {
+        let creation_time = DateTime::parse_from_rfc3339("2000-02-29T12:34:56.123456789Z")
+            .expect("valid RFC3339 timestamp")
+            .with_timezone(&Utc);
+        Inner {
+            id: 42,
+            name: "fixture-node".to_string(),
+            name_draft: Some("fixture-draft".to_string()),
+            profile: Some(Profile {
+                customer_id: 7,
+                description: "fixture profile".to_string(),
+                hostname: "fixture.example.com".to_string(),
+            }),
+            profile_draft: Some(Profile {
+                customer_id: 8,
+                description: "fixture profile draft".to_string(),
+                hostname: "draft.fixture.example.com".to_string(),
+            }),
+            creation_time,
+            agents: vec!["1".to_string(), "3".to_string()],
+            external_services: vec!["0".to_string(), "1".to_string()],
+        }
+    }
+
+    /// Locks the on-disk bincode byte contract for the persisted `Inner` record.
+    ///
+    /// Expected bytes come from the committed literal fixture (not from the
+    /// production serializer inside this test). `creation_time` is pinned to
+    /// `2000-02-29T12:34:56.123456789Z` so the encoding stays deterministic.
+    #[test]
+    fn node_inner_literal_bytes_contract() -> Result<()> {
+        const FIXTURE_BYTES: &[u8] = include_bytes!("../../tests/fixtures/node_inner_literal.bin");
+
+        let decoded = Inner::from_key_value(b"fixture-node", FIXTURE_BYTES)?;
+        let expected = deterministic_node_inner();
+        assert_eq!(decoded, expected);
+
+        let serialized = Indexable::value(&expected);
+        assert_eq!(serialized.as_slice(), FIXTURE_BYTES);
+
+        Ok(())
     }
 
     #[test]
