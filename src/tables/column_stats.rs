@@ -1134,6 +1134,17 @@ mod tests {
             .load_rounds_by_cluster(model_id, cluster_id, &Some(batches[3]), &None, true, 2)
             .unwrap();
         assert!(rounds.is_empty());
+
+        let (retrieved_model_id, rounds) = table
+            .load_rounds_by_cluster(model_id, cluster_id, &None, &None, true, 0)
+            .unwrap();
+        assert_eq!(u32::try_from(retrieved_model_id).unwrap(), model_id);
+        assert!(rounds.is_empty());
+
+        let (_, rounds) = table
+            .load_rounds_by_cluster(model_id, cluster_id, &None, &Some(batches[0]), false, 2)
+            .unwrap();
+        assert!(rounds.is_empty());
     }
 
     #[test]
