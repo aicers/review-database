@@ -467,10 +467,11 @@ pub struct HttpThreatFields {
     pub category: Option<EventCategory>,
 }
 
-pub(crate) type HttpThreatFieldsStored = HttpThreatFieldsStoredV0_42;
+pub(crate) type HttpThreatFieldsStored = HttpThreatFieldsStoredV0_44;
 
+/// `HttpThreatFieldsStored` structure from version 0.44.x.
 #[derive(::serde::Deserialize, ::serde::Serialize)]
-pub(crate) struct HttpThreatFieldsStoredV0_42 {
+pub(crate) struct HttpThreatFieldsStoredV0_44 {
     #[serde(with = "ts_nanoseconds")]
     pub time: DateTime<Utc>,
     pub sensor: String,

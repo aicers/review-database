@@ -113,8 +113,9 @@ pub use self::{
     unusual_destination_pattern::{UnusualDestinationPattern, UnusualDestinationPatternFields},
 };
 pub(crate) use self::{
-    dcerpc::BlocklistDceRpcFieldsStored, dhcp::BlocklistDhcpFieldsStored,
-    http::HttpThreatFieldsStored,
+    dcerpc::{BlocklistDceRpcFieldsStored, BlocklistDceRpcFieldsStoredV0_44},
+    dhcp::{BlocklistDhcpFieldsStored, BlocklistDhcpFieldsStoredV0_44},
+    http::{HttpThreatFieldsStored, HttpThreatFieldsStoredV0_44},
 };
 use super::{
     Customer, EventCategory, Network, TriageExclusion, TriagePolicyInput,
