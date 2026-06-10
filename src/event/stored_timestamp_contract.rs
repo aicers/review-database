@@ -13,7 +13,7 @@
 //! | --- | --- | --- |
 //! | [`HttpThreatFieldsStored`](super::HttpThreatFieldsStored) | `time` | HTTP threat events; exercised by `convert_for_storage` and migration tests |
 //! | [`NetworkThreatFieldsStored`](super::network::NetworkThreatFieldsStored) | `time`, `start_time` | Multiple `ts_nanoseconds` fields in one stored struct |
-//! | [`ExtraThreatFieldsStored`](super::log::ExtraThreatFieldsStored) | `time` | Log/extra-threat family with a compact stored layout |
+//! | [`ExtraThreatFieldsStored`](super::log::ExtraThreatFieldsStored) | `time` | Production conversion and full stored-event fixture |
 //!
 //! These structs share the same serde attribute and bincode path as every
 //! other event stored field that uses `ts_nanoseconds`. Pinning the contract
@@ -23,16 +23,34 @@
 //! this boundary would change serialized sizes or byte patterns and cause
 //! these tests to fail.
 
+use std::net::IpAddr;
+
 use chrono::{DateTime, NaiveDate, Utc, serde::ts_nanoseconds};
 use serde::{Deserialize, Serialize};
 
-use super::{ExtraThreatFieldsStored, HttpThreatFieldsStored, network::NetworkThreatFieldsStored};
+use super::{
+    EventKind, ExtraThreatFields, ExtraThreatFieldsStored, HttpThreatFields,
+    HttpThreatFieldsStored, convert_for_storage, network::NetworkThreatFieldsStored,
+};
 
 /// Mirrors a single stored `ts_nanoseconds` field for isolated size checks.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct TsNanosecondsField {
     #[serde(with = "ts_nanoseconds")]
     time: DateTime<Utc>,
+}
+
+#[derive(Serialize)]
+struct NetworkThreatStartTimePrefix<'a> {
+    #[serde(with = "ts_nanoseconds")]
+    time: DateTime<Utc>,
+    sensor: &'a str,
+    orig_addr: IpAddr,
+    orig_port: u16,
+    resp_addr: IpAddr,
+    resp_port: u16,
+    proto: u8,
+    service: &'a str,
 }
 
 /// Returns `1969-12-31T23:59:59.123456789Z`.
@@ -65,6 +83,68 @@ fn assert_eight_byte_i64_contract(bytes: &[u8], expected_nanos: i64) {
     );
     let decoded_nanos: i64 = bincode::deserialize(bytes).expect("i64 nanoseconds");
     assert_eq!(decoded_nanos, expected_nanos);
+}
+
+fn extra_threat_fields(time: DateTime<Utc>) -> ExtraThreatFields {
+    ExtraThreatFields {
+        time,
+        sensor: "sensor".to_string(),
+        service: "service".to_string(),
+        content: "content".to_string(),
+        db_name: "db".to_string(),
+        rule_id: 1,
+        matched_to: "rule".to_string(),
+        cluster_id: None,
+        attack_kind: "kind".to_string(),
+        confidence: 1.0,
+        category: None,
+        triage_scores: None,
+    }
+}
+
+fn http_threat_fields(time: DateTime<Utc>) -> HttpThreatFields {
+    HttpThreatFields {
+        time,
+        sensor: String::new(),
+        orig_addr: "127.0.0.1".parse().expect("valid ip"),
+        orig_port: 0,
+        resp_addr: "127.0.0.2".parse().expect("valid ip"),
+        resp_port: 0,
+        proto: 6,
+        start_time: 0,
+        duration: 0,
+        orig_pkts: 0,
+        resp_pkts: 0,
+        orig_l2_bytes: 0,
+        resp_l2_bytes: 0,
+        method: String::new(),
+        host: String::new(),
+        uri: String::new(),
+        referer: String::new(),
+        version: String::new(),
+        user_agent: String::new(),
+        request_len: 0,
+        response_len: 0,
+        status_code: 0,
+        status_msg: String::new(),
+        username: String::new(),
+        password: String::new(),
+        cookie: String::new(),
+        content_encoding: String::new(),
+        content_type: String::new(),
+        cache_control: String::new(),
+        filenames: Vec::new(),
+        mime_types: Vec::new(),
+        body: Vec::new(),
+        state: String::new(),
+        db_name: String::new(),
+        rule_id: 0,
+        matched_to: String::new(),
+        cluster_id: None,
+        attack_kind: String::new(),
+        confidence: 0.0,
+        category: None,
+    }
 }
 
 #[test]
@@ -106,66 +186,44 @@ fn modern_timestamp_round_trips_with_nanosecond_precision() {
 }
 
 #[test]
-fn pre_1970_fixture_bytes_decode_to_chrono_timestamp() {
+fn i64_nanosecond_boundaries_round_trip_and_out_of_range_is_rejected() {
+    for nanos in [i64::MIN, i64::MAX] {
+        let time = DateTime::<Utc>::from_timestamp_nanos(nanos);
+        let bytes = serialize_ts_field(time);
+        assert_eight_byte_i64_contract(&bytes, nanos);
+        let decoded: TsNanosecondsField = bincode::deserialize(&bytes).expect("decodable");
+        assert_eq!(decoded.time, time);
+    }
+
+    let out_of_range = NaiveDate::from_ymd_opt(2263, 1, 1)
+        .expect("valid date")
+        .and_hms_opt(0, 0, 0)
+        .expect("valid time");
+    let out_of_range = DateTime::from_naive_utc_and_offset(out_of_range, Utc);
+    assert!(bincode::serialize(&TsNanosecondsField { time: out_of_range }).is_err());
+}
+
+#[test]
+fn full_stored_event_fixture_decodes_to_current_chrono_type() {
     const FIXTURE: &[u8] =
-        include_bytes!("../../tests/fixtures/event_ts_nanoseconds_pre_1970_i64.bin");
+        include_bytes!("../../tests/fixtures/event_extra_threat_pre_1970_stored.bin");
     let expected = pre_1970_timestamp();
     let expected_nanos = expected.timestamp_nanos_opt().expect("in range");
 
-    assert_eight_byte_i64_contract(FIXTURE, expected_nanos);
+    assert_eight_byte_i64_contract(&FIXTURE[..8], expected_nanos);
 
-    let decoded: TsNanosecondsField =
-        bincode::deserialize(FIXTURE).expect("fixture matches stored contract");
+    let decoded: ExtraThreatFieldsStored =
+        bincode::deserialize(FIXTURE).expect("fixture matches stored event contract");
     assert_eq!(decoded.time, expected);
 }
 
 #[test]
-fn http_threat_stored_time_leads_serialized_struct() {
+fn convert_for_storage_preserves_http_threat_i64_timestamp_bytes() {
     let time = modern_timestamp();
-    let stored = HttpThreatFieldsStored {
-        time,
-        sensor: String::new(),
-        orig_addr: "127.0.0.1".parse().expect("valid ip"),
-        orig_port: 0,
-        resp_addr: "127.0.0.2".parse().expect("valid ip"),
-        resp_port: 0,
-        proto: 6,
-        start_time: 0,
-        duration: 0,
-        orig_pkts: 0,
-        resp_pkts: 0,
-        orig_l2_bytes: 0,
-        resp_l2_bytes: 0,
-        method: String::new(),
-        host: String::new(),
-        uri: String::new(),
-        referer: String::new(),
-        version: String::new(),
-        user_agent: String::new(),
-        request_len: 0,
-        response_len: 0,
-        status_code: 0,
-        status_msg: String::new(),
-        username: String::new(),
-        password: String::new(),
-        cookie: String::new(),
-        content_encoding: String::new(),
-        content_type: String::new(),
-        cache_control: String::new(),
-        filenames: Vec::new(),
-        mime_types: Vec::new(),
-        body: Vec::new(),
-        state: String::new(),
-        db_name: String::new(),
-        rule_id: 0,
-        matched_to: String::new(),
-        cluster_id: None,
-        attack_kind: String::new(),
-        confidence: 0.0,
-        category: None,
-    };
-
-    let bytes = bincode::serialize(&stored).expect("serializable stored fields");
+    let producer_bytes =
+        bincode::serialize(&http_threat_fields(time)).expect("serializable producer fields");
+    let bytes = convert_for_storage(EventKind::HttpThreat, &producer_bytes)
+        .expect("convertible to stored fields");
     let nanos = time.timestamp_nanos_opt().expect("in range");
     assert_eight_byte_i64_contract(bytes.get(..8).expect("timestamp prefix"), nanos);
 
@@ -175,7 +233,7 @@ fn http_threat_stored_time_leads_serialized_struct() {
 }
 
 #[test]
-fn network_threat_stored_timestamps_round_trip() {
+fn network_threat_stored_timestamps_use_i64_bytes() {
     let time = pre_1970_timestamp();
     let start_time = modern_timestamp();
     let stored = NetworkThreatFieldsStored {
@@ -214,27 +272,42 @@ fn network_threat_stored_timestamps_round_trip() {
 
     let time_prefix = bytes.get(..8).expect("leading timestamp");
     assert_eight_byte_i64_contract(time_prefix, time.timestamp_nanos_opt().expect("in range"));
+
+    let start_time_offset = bincode::serialize(&NetworkThreatStartTimePrefix {
+        time,
+        sensor: &stored.sensor,
+        orig_addr: stored.orig_addr,
+        orig_port: stored.orig_port,
+        resp_addr: stored.resp_addr,
+        resp_port: stored.resp_port,
+        proto: stored.proto,
+        service: &stored.service,
+    })
+    .expect("serializable prefix")
+    .len();
+    assert_eight_byte_i64_contract(
+        bytes
+            .get(start_time_offset..start_time_offset + 8)
+            .expect("start_time bytes"),
+        start_time.timestamp_nanos_opt().expect("in range"),
+    );
 }
 
 #[test]
-fn extra_threat_stored_timestamp_round_trips_through_bincode() {
+fn extra_threat_production_bytes_match_full_stored_event_fixture() {
+    const FIXTURE: &[u8] =
+        include_bytes!("../../tests/fixtures/event_extra_threat_pre_1970_stored.bin");
     let time = pre_1970_timestamp();
-    let stored = ExtraThreatFieldsStored {
-        time,
-        sensor: "sensor".to_string(),
-        service: "service".to_string(),
-        content: "content".to_string(),
-        db_name: "db".to_string(),
-        rule_id: 1,
-        matched_to: "rule".to_string(),
-        cluster_id: None,
-        attack_kind: "kind".to_string(),
-        confidence: 1.0,
-        category: None,
-        triage_scores: None,
-    };
+    let producer_bytes =
+        bincode::serialize(&extra_threat_fields(time)).expect("serializable producer fields");
+    let bytes = convert_for_storage(EventKind::ExtraThreat, &producer_bytes)
+        .expect("convertible to stored fields");
+    assert_eq!(bytes, FIXTURE);
+    assert_eight_byte_i64_contract(
+        bytes.get(..8).expect("timestamp prefix"),
+        time.timestamp_nanos_opt().expect("in range"),
+    );
 
-    let bytes = bincode::serialize(&stored).expect("serializable stored fields");
     let decoded: ExtraThreatFieldsStored =
         bincode::deserialize(&bytes).expect("round-trippable stored fields");
     assert_eq!(decoded.time, time);
