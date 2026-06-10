@@ -648,4 +648,85 @@ mod tests {
         let store = Arc::new(Store::new(db_dir.path(), backup_dir.path()).unwrap());
         (permit, store)
     }
+
+    const FIXTURE_MODEL_ID: u32 = 1;
+    const FIXTURE_CLUSTER_ID: u32 = 2;
+
+    // Generated once locally from the production `Cluster::value()` path using
+    // `fixture_cluster` below. Embedded as literals so these tests fail if the
+    // serializer changes.
+    const FIXTURE_OPTION_NAIVEDATETIME_SOME: &[u8] = &[
+        0x14, 0x28, 0x02, 0xfb, 0xd2, 0x07, 0xfb, 0xd4, 0x07, 0x02, 0x04, 0x73, 0x72, 0x63, 0x31,
+        0x04, 0x73, 0x72, 0x63, 0x32, 0x00, 0x06, 0x08, 0x06, 0x61, 0x62, 0x63, 0x64, 0x65, 0x66,
+        0xfb, 0xa4, 0x09, 0x01, 0x3d, 0x0a, 0xd7, 0xa3, 0x70, 0xbd, 0x23, 0x40, 0x01, 0x1d, 0x32,
+        0x30, 0x30, 0x30, 0x2d, 0x30, 0x32, 0x2d, 0x32, 0x39, 0x54, 0x31, 0x32, 0x3a, 0x33, 0x34,
+        0x3a, 0x35, 0x36, 0x2e, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37, 0x38, 0x39,
+    ];
+
+    const FIXTURE_OPTION_NAIVEDATETIME_NONE: &[u8] = &[
+        0x14, 0x28, 0x02, 0xfb, 0xd2, 0x07, 0xfb, 0xd4, 0x07, 0x02, 0x04, 0x73, 0x72, 0x63, 0x31,
+        0x04, 0x73, 0x72, 0x63, 0x32, 0x00, 0x06, 0x08, 0x06, 0x61, 0x62, 0x63, 0x64, 0x65, 0x66,
+        0xfb, 0xa4, 0x09, 0x01, 0x3d, 0x0a, 0xd7, 0xa3, 0x70, 0xbd, 0x23, 0x40, 0x00,
+    ];
+
+    /// Returns a leap-day timestamp with full nanosecond precision to pin
+    /// chrono string formatting in serialized cluster values.
+    fn fixture_naive_datetime() -> NaiveDateTime {
+        use chrono::NaiveDate;
+
+        NaiveDate::from_ymd_opt(2000, 2, 29)
+            .unwrap()
+            .and_hms_nano_opt(12, 34, 56, 123_456_789)
+            .unwrap()
+    }
+
+    fn fixture_cluster(last_modification_time: Option<NaiveDateTime>) -> Cluster {
+        Cluster {
+            model_id: FIXTURE_MODEL_ID,
+            id: FIXTURE_CLUSTER_ID,
+            category_id: 10,
+            detector_id: 20,
+            event_ids: vec![1001, 1002],
+            sensors: vec!["src1".into(), "src2".into()],
+            labels: None,
+            qualifier_id: 3,
+            status_id: 4,
+            signature: "abcdef".into(),
+            size: 1234,
+            score: Some(9.87),
+            last_modification_time,
+        }
+    }
+
+    fn fixture_key_bytes() -> Vec<u8> {
+        Key {
+            model_id: FIXTURE_MODEL_ID,
+            cluster_id: FIXTURE_CLUSTER_ID,
+        }
+        .to_bytes()
+    }
+
+    #[test]
+    fn test_cluster_literal_fixture_option_naivedatetime_some() -> anyhow::Result<()> {
+        let key_bytes = fixture_key_bytes();
+        let decoded = Cluster::from_key_value(&key_bytes, FIXTURE_OPTION_NAIVEDATETIME_SOME)?;
+        let expected = fixture_cluster(Some(fixture_naive_datetime()));
+
+        assert_eq!(decoded, expected);
+        assert_eq!(expected.value(), FIXTURE_OPTION_NAIVEDATETIME_SOME);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_cluster_literal_fixture_option_naivedatetime_none() -> anyhow::Result<()> {
+        let key_bytes = fixture_key_bytes();
+        let decoded = Cluster::from_key_value(&key_bytes, FIXTURE_OPTION_NAIVEDATETIME_NONE)?;
+        let expected = fixture_cluster(None);
+
+        assert_eq!(decoded, expected);
+        assert_eq!(expected.value(), FIXTURE_OPTION_NAIVEDATETIME_NONE);
+
+        Ok(())
+    }
 }
