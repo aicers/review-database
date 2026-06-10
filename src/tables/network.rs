@@ -256,12 +256,88 @@ impl IndexedMapUpdate for Update {
 
 #[cfg(test)]
 mod test {
-    use std::sync::Arc;
+    use std::{
+        net::{IpAddr, Ipv4Addr},
+        ops::RangeInclusive,
+        sync::Arc,
+    };
 
+    use chrono::{DateTime, Utc};
+    use ipnet::IpNet;
     use rocksdb::Direction;
 
     use crate::test::{DbGuard, acquire_db_permit};
-    use crate::{Iterable, Network, Store, types::HostNetworkGroup};
+    use crate::{HostNetworkGroup, Indexable, Iterable, Network, Store, types::FromKeyValue};
+
+    const FIXTURE_TIMESTAMP: &str = "2000-02-29T12:34:56.123456789Z";
+    const FIXTURE_NETWORK_NAME: &str = "fixture-network";
+
+    /// Builds a deterministic `Network` for literal-byte compatibility tests.
+    ///
+    /// Part of #746 / #764: fixed field values and timestamps pin the bincode wire
+    /// format exercised by `Indexable::value` (private projected `Value`) and
+    /// `FromKeyValue::from_key_value`.
+    fn deterministic_fixture_network() -> Network {
+        let creation_time: DateTime<Utc> =
+            FIXTURE_TIMESTAMP.parse().expect("valid RFC 3339 timestamp");
+
+        Network {
+            id: 42,
+            name: FIXTURE_NETWORK_NAME.to_string(),
+            description: "Fixture network description".to_string(),
+            networks: HostNetworkGroup::new(
+                vec![
+                    "10.0.0.1".parse().expect("valid IPv4"),
+                    "192.168.1.1".parse().expect("valid IPv4"),
+                ],
+                vec![
+                    "10.0.0.0/8".parse::<IpNet>().expect("valid CIDR"),
+                    "172.16.0.0/12".parse::<IpNet>().expect("valid CIDR"),
+                ],
+                vec![RangeInclusive::new(
+                    IpAddr::V4(Ipv4Addr::new(1, 2, 3, 4)),
+                    IpAddr::V4(Ipv4Addr::new(1, 2, 3, 10)),
+                )],
+            ),
+            tag_ids: vec![3, 7, 42],
+            creation_time,
+        }
+    }
+
+    /// Verifies the private projected `Value` wire format for `Network`.
+    ///
+    /// `tests/fixtures/network_projected_private_value.bin` was produced once by
+    /// calling `Indexable::value` on `deterministic_fixture_network()`, which
+    /// serializes the private `Value` struct (name excluded; stored in the key)
+    /// via `tables::serialize` (`bincode::DefaultOptions`). Part of #746 / #764.
+    #[test]
+    fn network_projected_private_value_backward_compatibility() {
+        const FIXTURE_BYTES: &[u8] = include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/network_projected_private_value.bin"
+        ));
+
+        let expected = deterministic_fixture_network();
+        let key = FIXTURE_NETWORK_NAME.as_bytes();
+
+        let decoded = Network::from_key_value(key, FIXTURE_BYTES)
+            .expect("fixture bytes must deserialize via FromKeyValue");
+        assert_eq!(decoded, expected);
+
+        let produced = Indexable::value(&expected);
+        assert_eq!(produced.as_slice(), FIXTURE_BYTES);
+    }
+
+    #[test]
+    #[ignore = "one-shot helper to regenerate tests/fixtures/network_projected_private_value.bin"]
+    fn write_network_projected_private_value_fixture() {
+        let bytes = Indexable::value(&deterministic_fixture_network());
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/network_projected_private_value.bin"
+        );
+        std::fs::write(path, &bytes).expect("write fixture");
+    }
 
     #[test]
     fn insert_and_get() {
