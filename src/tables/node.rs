@@ -1064,6 +1064,71 @@ mod test {
             .collect()
     }
 
+    const FIXTURE_AGENT_CONFIG: &str = "enabled = true";
+    const FIXTURE_AGENT_DRAFT: &str = "enabled = false";
+    const FIXTURE_EXTERNAL_SERVICE_DRAFT: &str = "port = 8080";
+
+    /// Builds a deterministic public `Node` for the serde baseline test.
+    fn deterministic_node() -> Node {
+        let creation_time = DateTime::parse_from_rfc3339("2000-02-29T12:34:56.123456789Z")
+            .expect("valid RFC3339 timestamp")
+            .with_timezone(&Utc);
+        Node {
+            id: 42,
+            name: "fixture-node".to_string(),
+            name_draft: Some("fixture-draft".to_string()),
+            profile: Some(Profile {
+                customer_id: 7,
+                description: "fixture profile".to_string(),
+                hostname: "fixture.example.com".to_string(),
+            }),
+            profile_draft: Some(Profile {
+                customer_id: 8,
+                description: "fixture profile draft".to_string(),
+                hostname: "draft.fixture.example.com".to_string(),
+            }),
+            agents: vec![
+                Agent::new(
+                    42,
+                    "1".to_string(),
+                    AgentKind::Unsupervised,
+                    Status::Enabled,
+                    Some(FIXTURE_AGENT_CONFIG.to_string()),
+                    None,
+                )
+                .expect("valid agent config"),
+                Agent::new(
+                    42,
+                    "3".to_string(),
+                    AgentKind::SemiSupervised,
+                    Status::Enabled,
+                    None,
+                    Some(FIXTURE_AGENT_DRAFT.to_string()),
+                )
+                .expect("valid agent draft"),
+            ],
+            external_services: vec![
+                ExternalService::new(
+                    42,
+                    "0".to_string(),
+                    ExternalServiceKind::DataStore,
+                    Status::Enabled,
+                    None,
+                )
+                .expect("valid external service"),
+                ExternalService::new(
+                    42,
+                    "1".to_string(),
+                    ExternalServiceKind::TiContainer,
+                    Status::Enabled,
+                    Some(FIXTURE_EXTERNAL_SERVICE_DRAFT.to_string()),
+                )
+                .expect("valid external service draft"),
+            ],
+            creation_time,
+        }
+    }
+
     /// Builds a deterministic `Inner` for the literal-byte contract test.
     fn deterministic_node_inner() -> Inner {
         let creation_time = DateTime::parse_from_rfc3339("2000-02-29T12:34:56.123456789Z")
@@ -1104,6 +1169,26 @@ mod test {
 
         let serialized = Indexable::value(&expected);
         assert_eq!(serialized.as_slice(), FIXTURE_BYTES);
+
+        Ok(())
+    }
+
+    /// Locks the public `Node` serde contract separately from the persisted
+    /// `Inner` record.
+    ///
+    /// Expected JSON comes from the committed literal fixture (not from the
+    /// production serializer inside this test). `creation_time` is pinned to
+    /// `2000-02-29T12:34:56.123456789Z` so the encoding stays deterministic.
+    #[test]
+    fn node_public_serde_baseline() -> Result<()> {
+        const FIXTURE_JSON: &str = include_str!("../../tests/fixtures/node_public_serde.json");
+
+        let expected = deterministic_node();
+        let decoded: Node = serde_json::from_str(FIXTURE_JSON)?;
+        assert_eq!(decoded, expected);
+
+        let serialized = serde_json::to_string(&expected)?;
+        assert_eq!(serialized, FIXTURE_JSON);
 
         Ok(())
     }
