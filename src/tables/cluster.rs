@@ -669,6 +669,23 @@ mod tests {
         0xfb, 0xa4, 0x09, 0x01, 0x3d, 0x0a, 0xd7, 0xa3, 0x70, 0xbd, 0x23, 0x40, 0x00,
     ];
 
+    // Generated once locally from `bincode::DefaultOptions` serialization of
+    // `fixture_cluster` below. Pins the public `Cluster` serde payload, which
+    // includes `model_id` and `id` absent from the stored `Value` bytes.
+    const PUBLIC_SERDE_FIXTURE_OPTION_NAIVEDATETIME_SOME: &[u8] = &[
+        0x01, 0x02, 0x14, 0x28, 0x02, 0xfb, 0xd2, 0x07, 0xfb, 0xd4, 0x07, 0x02, 0x04, 0x73, 0x72,
+        0x63, 0x31, 0x04, 0x73, 0x72, 0x63, 0x32, 0x00, 0x06, 0x08, 0x06, 0x61, 0x62, 0x63, 0x64,
+        0x65, 0x66, 0xfb, 0xa4, 0x09, 0x01, 0x3d, 0x0a, 0xd7, 0xa3, 0x70, 0xbd, 0x23, 0x40, 0x01,
+        0x1d, 0x32, 0x30, 0x30, 0x30, 0x2d, 0x30, 0x32, 0x2d, 0x32, 0x39, 0x54, 0x31, 0x32, 0x3a,
+        0x33, 0x34, 0x3a, 0x35, 0x36, 0x2e, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37, 0x38, 0x39,
+    ];
+
+    const PUBLIC_SERDE_FIXTURE_OPTION_NAIVEDATETIME_NONE: &[u8] = &[
+        0x01, 0x02, 0x14, 0x28, 0x02, 0xfb, 0xd2, 0x07, 0xfb, 0xd4, 0x07, 0x02, 0x04, 0x73, 0x72,
+        0x63, 0x31, 0x04, 0x73, 0x72, 0x63, 0x32, 0x00, 0x06, 0x08, 0x06, 0x61, 0x62, 0x63, 0x64,
+        0x65, 0x66, 0xfb, 0xa4, 0x09, 0x01, 0x3d, 0x0a, 0xd7, 0xa3, 0x70, 0xbd, 0x23, 0x40, 0x00,
+    ];
+
     /// Returns a leap-day timestamp with full nanosecond precision to pin
     /// chrono string formatting in serialized cluster values.
     fn fixture_naive_datetime() -> NaiveDateTime {
@@ -706,6 +723,22 @@ mod tests {
         .to_bytes()
     }
 
+    fn serialize_public_cluster(cluster: &Cluster) -> Vec<u8> {
+        use bincode::Options;
+
+        bincode::DefaultOptions::new()
+            .serialize(cluster)
+            .expect("serializable")
+    }
+
+    fn deserialize_public_cluster(bytes: &[u8]) -> Cluster {
+        use bincode::Options;
+
+        bincode::DefaultOptions::new()
+            .deserialize(bytes)
+            .expect("fixture bytes must deserialize as public Cluster")
+    }
+
     #[test]
     fn test_cluster_literal_fixture_option_naivedatetime_some() -> anyhow::Result<()> {
         let key_bytes = fixture_key_bytes();
@@ -728,5 +761,29 @@ mod tests {
         assert_eq!(expected.value(), FIXTURE_OPTION_NAIVEDATETIME_NONE);
 
         Ok(())
+    }
+
+    #[test]
+    fn test_cluster_public_serde_literal_fixture_option_naivedatetime_some() {
+        let decoded = deserialize_public_cluster(PUBLIC_SERDE_FIXTURE_OPTION_NAIVEDATETIME_SOME);
+        let expected = fixture_cluster(Some(fixture_naive_datetime()));
+
+        assert_eq!(decoded, expected);
+        assert_eq!(
+            serialize_public_cluster(&expected),
+            PUBLIC_SERDE_FIXTURE_OPTION_NAIVEDATETIME_SOME
+        );
+    }
+
+    #[test]
+    fn test_cluster_public_serde_literal_fixture_option_naivedatetime_none() {
+        let decoded = deserialize_public_cluster(PUBLIC_SERDE_FIXTURE_OPTION_NAIVEDATETIME_NONE);
+        let expected = fixture_cluster(None);
+
+        assert_eq!(decoded, expected);
+        assert_eq!(
+            serialize_public_cluster(&expected),
+            PUBLIC_SERDE_FIXTURE_OPTION_NAIVEDATETIME_NONE
+        );
     }
 }
