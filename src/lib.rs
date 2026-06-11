@@ -28,8 +28,6 @@ pub use tags::{CustomerTagSet, TagSet};
 use tags::{EventTagId, NetworkTagId, WorkflowTagId};
 use thiserror::Error;
 
-#[doc(hidden)]
-pub use self::account::bytes_fixture_account;
 pub use self::account::{AccountPolicy, AccountPolicyUpdate, Role};
 pub use self::batch_info::BatchInfo;
 pub use self::category::Category;
@@ -42,8 +40,6 @@ pub use self::migration::migrate_data_dir;
 pub use self::model::{Digest, Model};
 pub use self::scores::Scores;
 use self::tables::StateDb;
-#[doc(hidden)]
-pub use self::tables::Value;
 pub use self::tables::{
     AccessToken, Agent, AgentConfig, AgentKind, AgentStatus, AllowNetwork, AllowNetworkUpdate,
     AttrCmpKind, BackupConfig, BackupConfigUpdate, BlockNetwork, BlockNetworkUpdate, Cluster,
