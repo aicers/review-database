@@ -316,10 +316,10 @@ mod test {
     use crate::{Iterable, Store};
 
     const FIXTURE_TIMESTAMP: &str = "2000-02-29T12:34:56.123456789Z";
-    const FIXTURE_PATH: &str = concat!(
+    const FIXTURE_BYTES: &[u8] = include_bytes!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/tests/fixtures/traffic_filter_literal_bytes.bin"
-    );
+    ));
 
     /// Builds the deterministic `TrafficFilter` encoded by the literal-byte fixture.
     ///
@@ -348,8 +348,7 @@ mod test {
 
     #[test]
     fn stored_value_bytes_match_literal_fixture() -> Result<()> {
-        let fixture_bytes = std::fs::read(FIXTURE_PATH)?;
-        let record = TrafficFilter::from_key_value(b"fixture.example.com", &fixture_bytes)?;
+        let record = TrafficFilter::from_key_value(b"fixture.example.com", FIXTURE_BYTES)?;
         let expected = fixture_traffic_filter();
 
         assert_eq!(record.host_fqdn, expected.host_fqdn);
@@ -370,7 +369,7 @@ mod test {
         }
 
         let written_bytes = expected.value();
-        assert_eq!(written_bytes, fixture_bytes);
+        assert_eq!(written_bytes, FIXTURE_BYTES);
 
         Ok(())
     }
