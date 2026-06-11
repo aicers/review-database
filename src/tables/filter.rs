@@ -255,12 +255,23 @@ mod tests {
     const FIXTURE_USERNAME: &str = "fixture-user";
     const FIXTURE_FILTER_NAME: &str = "fixture-filter";
 
-    /// Builds a deterministic `Filter` for literal-byte compatibility tests.
+    /// Historical bincode bytes for public `PeriodForSearch::Custom` serde.
     ///
-    /// Part of #746 / #771: fixed `PeriodForSearch::Custom` timestamps pin the
-    /// bincode wire format exercised by `Filter::into_key_value` (private
-    /// projected `Value`) and `FromKeyValue::from_key_value`.
-    fn deterministic_fixture_filter() -> Filter {
+    /// Captured once from `review-database` v0.45.0 via `tables::serialize`
+    /// (`bincode::DefaultOptions`) on `deterministic_period_for_search_custom()`.
+    /// Part of #771.
+    const PERIOD_FOR_SEARCH_CUSTOM_V0: &[u8] = &[
+        0x01, 0x14, 0x32, 0x30, 0x30, 0x30, 0x2d, 0x30, 0x31, 0x2d, 0x30, 0x31, 0x54, 0x30, 0x30,
+        0x3a, 0x30, 0x30, 0x3a, 0x30, 0x30, 0x5a, 0x1e, 0x32, 0x30, 0x30, 0x30, 0x2d, 0x30, 0x31,
+        0x2d, 0x33, 0x31, 0x54, 0x32, 0x33, 0x3a, 0x35, 0x39, 0x3a, 0x35, 0x39, 0x2e, 0x39, 0x39,
+        0x39, 0x39, 0x39, 0x39, 0x39, 0x39, 0x39, 0x5a,
+    ];
+
+    /// Builds a deterministic public `PeriodForSearch::Custom` for serde baselines.
+    ///
+    /// Part of #771: fixed RFC3339 timestamps pin the chrono-bearing public
+    /// `Serialize` / `Deserialize` surface for `PeriodForSearch`.
+    fn deterministic_period_for_search_custom() -> PeriodForSearch {
         let period_start: DateTime<Utc> = FIXTURE_PERIOD_START
             .parse()
             .expect("valid RFC 3339 timestamp");
@@ -268,6 +279,15 @@ mod tests {
             .parse()
             .expect("valid RFC 3339 timestamp");
 
+        PeriodForSearch::Custom(period_start, period_end)
+    }
+
+    /// Builds a deterministic `Filter` for literal-byte compatibility tests.
+    ///
+    /// Part of #746 / #771: fixed `PeriodForSearch::Custom` timestamps pin the
+    /// bincode wire format exercised by `Filter::into_key_value` (private
+    /// projected `Value`) and `FromKeyValue::from_key_value`.
+    fn deterministic_fixture_filter() -> Filter {
         Filter {
             username: FIXTURE_USERNAME.to_string(),
             name: FIXTURE_FILTER_NAME.to_string(),
@@ -290,7 +310,7 @@ mod tests {
             learning_methods: None,
             confidence_min: None,
             confidence_max: None,
-            period: PeriodForSearch::Custom(period_start, period_end),
+            period: deterministic_period_for_search_custom(),
         }
     }
 
@@ -317,6 +337,28 @@ mod tests {
         assert_eq!(actual.confidence_min, expected.confidence_min);
         assert_eq!(actual.confidence_max, expected.confidence_max);
         assert_eq!(actual.period, expected.period);
+    }
+
+    /// Verifies the public bincode serde surface for `PeriodForSearch::Custom`.
+    ///
+    /// `PERIOD_FOR_SEARCH_CUSTOM_V0` was produced once by calling
+    /// `tables::serialize` on `deterministic_period_for_search_custom()`.
+    /// The active test decodes those literal bytes and round-trips through the
+    /// production `tables::deserialize` / `tables::serialize` helpers without
+    /// deriving expected bytes from the serializer under assertion.
+    /// Part of #771.
+    #[test]
+    fn period_for_search_custom_backward_compatibility() -> anyhow::Result<()> {
+        let expected = deterministic_period_for_search_custom();
+
+        let decoded: PeriodForSearch = crate::tables::deserialize(PERIOD_FOR_SEARCH_CUSTOM_V0)
+            .expect("fixture bytes must deserialize");
+        assert_eq!(decoded, expected);
+
+        let produced = crate::tables::serialize(&expected)?;
+        assert_eq!(produced.as_slice(), PERIOD_FOR_SEARCH_CUSTOM_V0);
+
+        Ok(())
     }
 
     /// Verifies the private projected `Value` wire format for `Filter.period`.
