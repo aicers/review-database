@@ -25,6 +25,9 @@ mod tls;
 mod tor;
 mod unusual_destination_pattern;
 
+#[cfg(test)]
+mod key_baseline;
+
 use std::{
     collections::HashMap,
     convert::TryInto,
@@ -2680,28 +2683,6 @@ impl<'a> EventDb<'a> {
         EventIterator { inner: iter }
     }
 
-    /// Returns the first event's on-disk key bytes in forward iteration order.
-    ///
-    /// Baseline contract tests use this to assert the RocksDB key layout
-    /// independently of `EventIterator` decoding.
-    #[doc(hidden)]
-    pub fn first_raw_event_key(&self) -> Result<Option<[u8; 16]>> {
-        let mut iter = self.inner.iterator(IteratorMode::Start);
-        match iter
-            .next()
-            .transpose()
-            .context("cannot read from event database")?
-        {
-            None => Ok(None),
-            Some((key, _value)) => {
-                let key_bytes: [u8; 16] = key.as_ref().try_into().map_err(|_| {
-                    anyhow::anyhow!("event key must be 16 bytes, got {}", key.len())
-                })?;
-                Ok(Some(key_bytes))
-            }
-        }
-    }
-
     /// Stores a new event into the database.
     ///
     /// Converts the producer-facing `*Fields` bytes into the repository-local
@@ -2864,6 +2845,25 @@ impl<'a> EventDb<'a> {
     #[cfg(test)]
     fn put_raw(&self, key: &[u8], value: &[u8]) {
         self.inner.put(key, value).expect("put_raw should succeed");
+    }
+
+    /// Returns the first event's on-disk key bytes in forward iteration order.
+    #[cfg(test)]
+    fn first_raw_event_key(&self) -> Result<Option<[u8; 16]>> {
+        let mut iter = self.inner.iterator(IteratorMode::Start);
+        match iter
+            .next()
+            .transpose()
+            .context("cannot read from event database")?
+        {
+            None => Ok(None),
+            Some((key, _value)) => {
+                let key_bytes: [u8; 16] = key.as_ref().try_into().map_err(|_| {
+                    anyhow::anyhow!("event key must be 16 bytes, got {}", key.len())
+                })?;
+                Ok(Some(key_bytes))
+            }
+        }
     }
 }
 
