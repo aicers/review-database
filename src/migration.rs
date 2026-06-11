@@ -13,7 +13,6 @@ use num_traits::FromPrimitive;
 use semver::{Version, VersionReq};
 use tracing::{info, warn};
 
-pub(crate) use self::migration_structures::migrate_event_stored_schema_to_v0_46;
 use crate::{
     AllowNetwork, BlockNetwork, Customer,
     event::{EventKind, resolve_stored_country_codes},
@@ -21,6 +20,7 @@ use crate::{
         AllowNetworkV0_42, BlockNetworkV0_42, BlocklistDceRpcFieldsStoredV0_42,
         BlocklistDceRpcFieldsStoredV0_44, BlocklistDhcpFieldsStoredV0_42,
         BlocklistDhcpFieldsStoredV0_44, HttpThreatFieldsStoredV0_43, HttpThreatFieldsStoredV0_44,
+        migrate_event_stored_schema_to_v0_46,
     },
     tables::NETWORK_TAGS,
 };
@@ -106,7 +106,7 @@ use crate::{
 /// // release that involves database format change) to 3.5.0, including
 /// // all alpha changes finalized in 3.5.0.
 /// ```
-const COMPATIBLE_VERSION_REQ: &str = ">=0.46.0,<0.47.0-alpha";
+const COMPATIBLE_VERSION_REQ: &str = ">=0.46.0-alpha.1,<0.46.0-alpha.2";
 
 /// Migrates the data directory to the up-to-date format if necessary.
 ///
@@ -181,8 +181,8 @@ pub fn migrate_data_dir<P: AsRef<Path>>(
             |data_dir, _backup_dir, _locator| migrate_0_44_to_0_45(data_dir),
         ),
         (
-            VersionReq::parse(">=0.45.0,<0.46.0")?,
-            Version::parse("0.46.0")?,
+            VersionReq::parse(">=0.45.0,<0.46.0-alpha.1")?,
+            Version::parse("0.46.0-alpha.1")?,
             migrate_0_45_to_0_46,
         ),
     ];

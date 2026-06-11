@@ -2697,66 +2697,66 @@ pub(crate) fn resolve_stored_country_codes(
         bincode::serialize(&fields).context("failed to serialize resolved event fields")
     }
 
+    let Some(locator) = locator else {
+        return Ok(bytes.to_vec());
+    };
+
     macro_rules! pair {
-        ($ty:ty, $locator:expr) => {
+        ($ty:ty) => {
             reserialize::<$ty, _>(bytes, |fields| {
                 fields.orig_country_code =
-                    crate::util::lookup_country_code($locator, fields.orig_addr);
+                    crate::util::lookup_country_code(locator, fields.orig_addr);
                 fields.resp_country_code =
-                    crate::util::lookup_country_code($locator, fields.resp_addr);
+                    crate::util::lookup_country_code(locator, fields.resp_addr);
             })
         };
     }
     macro_rules! resp_vec {
-        ($ty:ty, $locator:expr) => {
+        ($ty:ty) => {
             reserialize::<$ty, _>(bytes, |fields| {
                 fields.orig_country_code =
-                    crate::util::lookup_country_code($locator, fields.orig_addr);
+                    crate::util::lookup_country_code(locator, fields.orig_addr);
                 fields.resp_country_codes = fields
                     .resp_addrs
                     .iter()
                     .copied()
-                    .map(|addr| crate::util::lookup_country_code($locator, addr))
+                    .map(|addr| crate::util::lookup_country_code(locator, addr))
                     .collect();
             })
         };
     }
 
-    let Some(locator) = locator else {
-        return Ok(bytes.to_vec());
-    };
-
     match kind {
-        EventKind::BlocklistBootp => pair!(BlocklistBootpFieldsStored, locator),
+        EventKind::BlocklistBootp => pair!(BlocklistBootpFieldsStored),
         EventKind::BlocklistConn | EventKind::TorConnectionConn => {
-            pair!(BlocklistConnFieldsStored, locator)
+            pair!(BlocklistConnFieldsStored)
         }
-        EventKind::BlocklistDceRpc => pair!(BlocklistDceRpcFieldsStored, locator),
-        EventKind::BlocklistDhcp => pair!(BlocklistDhcpFieldsStored, locator),
-        EventKind::BlocklistDns => pair!(BlocklistDnsFieldsStored, locator),
-        EventKind::BlocklistFtp | EventKind::FtpPlainText => pair!(FtpEventFieldsStored, locator),
-        EventKind::BlocklistHttp => pair!(BlocklistHttpFieldsStored, locator),
-        EventKind::BlocklistKerberos => pair!(BlocklistKerberosFieldsStored, locator),
+        EventKind::BlocklistDceRpc => pair!(BlocklistDceRpcFieldsStored),
+        EventKind::BlocklistDhcp => pair!(BlocklistDhcpFieldsStored),
+        EventKind::BlocklistDns => pair!(BlocklistDnsFieldsStored),
+        EventKind::BlocklistFtp | EventKind::FtpPlainText => pair!(FtpEventFieldsStored),
+        EventKind::BlocklistHttp => pair!(BlocklistHttpFieldsStored),
+        EventKind::BlocklistKerberos => pair!(BlocklistKerberosFieldsStored),
         EventKind::BlocklistLdap | EventKind::LdapPlainText => {
-            pair!(LdapEventFieldsStored, locator)
+            pair!(LdapEventFieldsStored)
         }
-        EventKind::BlocklistMalformedDns => pair!(BlocklistMalformedDnsFieldsStored, locator),
-        EventKind::BlocklistMqtt => pair!(BlocklistMqttFieldsStored, locator),
-        EventKind::BlocklistNfs => pair!(BlocklistNfsFieldsStored, locator),
-        EventKind::BlocklistNtlm => pair!(BlocklistNtlmFieldsStored, locator),
-        EventKind::BlocklistRadius => pair!(BlocklistRadiusFieldsStored, locator),
-        EventKind::BlocklistRdp => pair!(BlocklistRdpFieldsStored, locator),
-        EventKind::BlocklistSmb => pair!(BlocklistSmbFieldsStored, locator),
-        EventKind::BlocklistSmtp => pair!(BlocklistSmtpFieldsStored, locator),
-        EventKind::BlocklistSsh => pair!(BlocklistSshFieldsStored, locator),
+        EventKind::BlocklistMalformedDns => pair!(BlocklistMalformedDnsFieldsStored),
+        EventKind::BlocklistMqtt => pair!(BlocklistMqttFieldsStored),
+        EventKind::BlocklistNfs => pair!(BlocklistNfsFieldsStored),
+        EventKind::BlocklistNtlm => pair!(BlocklistNtlmFieldsStored),
+        EventKind::BlocklistRadius => pair!(BlocklistRadiusFieldsStored),
+        EventKind::BlocklistRdp => pair!(BlocklistRdpFieldsStored),
+        EventKind::BlocklistSmb => pair!(BlocklistSmbFieldsStored),
+        EventKind::BlocklistSmtp => pair!(BlocklistSmtpFieldsStored),
+        EventKind::BlocklistSsh => pair!(BlocklistSshFieldsStored),
         EventKind::BlocklistTls | EventKind::SuspiciousTlsTraffic => {
-            pair!(BlocklistTlsFieldsStored, locator)
+            pair!(BlocklistTlsFieldsStored)
         }
-        EventKind::CryptocurrencyMiningPool => pair!(CryptocurrencyMiningPoolFieldsStored, locator),
+        EventKind::CryptocurrencyMiningPool => pair!(CryptocurrencyMiningPoolFieldsStored),
         EventKind::DnsCovertChannel | EventKind::LockyRansomware => {
-            pair!(DnsEventFieldsStored, locator)
+            pair!(DnsEventFieldsStored)
         }
-        EventKind::DomainGenerationAlgorithm => pair!(DgaFieldsStored, locator),
+        EventKind::DomainGenerationAlgorithm => pair!(DgaFieldsStored),
         EventKind::ExternalDdos => reserialize::<ExternalDdosFieldsStored, _>(bytes, |fields| {
             fields.orig_country_codes = fields
                 .orig_addrs
@@ -2766,15 +2766,15 @@ pub(crate) fn resolve_stored_country_codes(
                 .collect();
             fields.resp_country_code = crate::util::lookup_country_code(locator, fields.resp_addr);
         }),
-        EventKind::FtpBruteForce => pair!(FtpBruteForceFieldsStored, locator),
-        EventKind::HttpThreat => pair!(HttpThreatFieldsStored, locator),
-        EventKind::LdapBruteForce => pair!(LdapBruteForceFieldsStored, locator),
-        EventKind::MultiHostPortScan => resp_vec!(MultiHostPortScanFieldsStored, locator),
-        EventKind::NetworkThreat => pair!(NetworkThreatFieldsStored, locator),
-        EventKind::NonBrowser | EventKind::TorConnection => pair!(HttpEventFieldsStored, locator),
-        EventKind::PortScan => pair!(PortScanFieldsStored, locator),
-        EventKind::RdpBruteForce => resp_vec!(RdpBruteForceFieldsStored, locator),
-        EventKind::RepeatedHttpSessions => pair!(RepeatedHttpSessionsFieldsStored, locator),
+        EventKind::FtpBruteForce => pair!(FtpBruteForceFieldsStored),
+        EventKind::HttpThreat => pair!(HttpThreatFieldsStored),
+        EventKind::LdapBruteForce => pair!(LdapBruteForceFieldsStored),
+        EventKind::MultiHostPortScan => resp_vec!(MultiHostPortScanFieldsStored),
+        EventKind::NetworkThreat => pair!(NetworkThreatFieldsStored),
+        EventKind::NonBrowser | EventKind::TorConnection => pair!(HttpEventFieldsStored),
+        EventKind::PortScan => pair!(PortScanFieldsStored),
+        EventKind::RdpBruteForce => resp_vec!(RdpBruteForceFieldsStored),
+        EventKind::RepeatedHttpSessions => pair!(RepeatedHttpSessionsFieldsStored),
         EventKind::UnusualDestinationPattern => {
             reserialize::<UnusualDestinationPatternFieldsStored, _>(bytes, |fields| {
                 fields.resp_country_codes = fields

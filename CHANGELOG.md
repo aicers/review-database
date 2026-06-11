@@ -9,14 +9,16 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
-- **BREAKING**: Bumped the repository migration format to `0.46.0` and wired
-  the country-code-capable stored event schema into `EventDb`. Producer-facing
-  writes still accept event fields without country-code input and store `ZZ`
-  placeholders, while the `0.45.x` to `0.46.0` migration leaves endpoint
-  records at `ZZ` when `ip2location` is unavailable, rewrites them with
-  resolved country codes when it is configured, and uses `XX` fallback codes
-  when lookup is invalid. The `migrate_data_dir` API now accepts
-  `Option<&ip2location::DB>`.
+- **BREAKING**: Bumped the database format to `0.46.0-alpha.1` and changed
+  `migrate_data_dir` to accept `Option<&ip2location::DB>`. Event stored schemas
+  and runtime event types that track endpoints now include country-code fields.
+  Producer-facing event fields still do not require country-code input; new
+  writes store `ZZ` placeholders. The `0.45.x` to `0.46.0-alpha.1` migration
+  rewrites existing endpoint event records into the new stored schema, resolves
+  country codes when an IP2Location database is provided, preserves `ZZ` when
+  no lookup is performed, and uses `XX` when lookup fails or returns an invalid
+  code. Event `Display` output now includes country-code fields rendered as
+  two-letter strings.
 - **BREAKING**: Renamed `TrafficFilter::agent` to `host_fqdn` to clarify
   that it stores a host fully-qualified domain name. Related
   `Table<'_, TrafficFilter>` method parameters were also renamed from
@@ -33,11 +35,6 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   fields `client_name` to `cname` and `service_name` to `sname` to match
   Kerberos protocol terminology and align with the existing
   `cname_type`/`sname_type` fields.
-- Added placeholder country-code fields to address-tracking runtime event
-  schemas and the next internal stored event schemas. Runtime values currently
-  default these fields to `ZZ` until country-code lookup and stored-event
-  migration are wired in a follow-up change. Event `Display` output now
-  includes country-code fields rendered as two-letter strings, such as `ZZ`.
 - Separated producer-facing event field schemas from on-disk storage schemas.
   The producer-facing `*Fields` types remain the public ingestion interface,
   while new repository-local `*FieldsStored` types are the schema written to
