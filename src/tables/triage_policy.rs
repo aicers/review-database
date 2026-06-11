@@ -25,7 +25,7 @@ use crate::{
 const IP_V4_MAX_PREFIX_LEN: u8 = 32;
 const IP_V6_MAX_PREFIX_LEN: u8 = 128;
 
-#[derive(Clone, PartialEq, Deserialize, Serialize)]
+#[derive(Clone, Deserialize, Serialize)]
 pub struct TriagePolicy {
     pub id: u32,
     pub name: String,
@@ -1008,7 +1008,14 @@ mod test {
         let decoded =
             TriagePolicy::from_key_value(&[], fixture_bytes).expect("fixture must decode");
         let expected = deterministic_fixture_triage_policy();
-        assert!(decoded == expected);
+        assert_eq!(decoded.id, expected.id);
+        assert_eq!(decoded.name, expected.name);
+        assert_eq!(decoded.triage_exclusion_id, expected.triage_exclusion_id);
+        assert!(decoded.packet_attr == expected.packet_attr);
+        assert_eq!(decoded.confidence, expected.confidence);
+        assert!(decoded.response == expected.response);
+        assert_eq!(decoded.creation_time, expected.creation_time);
+        assert_eq!(decoded.customer_id, expected.customer_id);
 
         let encoded = expected.value();
         assert_eq!(encoded.as_slice(), fixture_bytes);
