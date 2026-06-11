@@ -13,7 +13,7 @@ use crate::{
     types::FromKeyValue,
 };
 
-#[derive(Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Deserialize, Serialize)]
 pub struct TriageResponse {
     pub id: u32,
     key: Vec<u8>,
@@ -224,33 +224,6 @@ impl IndexedMapUpdate for Update {
     }
 }
 
-/// Builds a deterministic `TriageResponse` for the literal-byte contract test.
-#[cfg(test)]
-fn deterministic_triage_response() -> TriageResponse {
-    let time = DateTime::parse_from_rfc3339("2000-02-29T12:34:56.123456789Z")
-        .expect("valid RFC 3339 timestamp")
-        .with_timezone(&Utc);
-    let creation_time = DateTime::parse_from_rfc3339("2000-01-15T08:00:00.111111111Z")
-        .expect("valid RFC 3339 timestamp")
-        .with_timezone(&Utc);
-    let last_modified_time = DateTime::parse_from_rfc3339("2000-03-01T23:59:59.987654321Z")
-        .expect("valid RFC 3339 timestamp")
-        .with_timezone(&Utc);
-    let sensor = "fixture-sensor".to_string();
-    let key = TriageResponse::create_key(&sensor, &time);
-
-    TriageResponse {
-        id: 7,
-        key,
-        sensor,
-        time,
-        tag_ids: vec![2, 5, 11],
-        remarks: "fixture remarks".to_string(),
-        creation_time,
-        last_modified_time,
-    }
-}
-
 #[cfg(test)]
 mod test {
     use std::mem::size_of;
@@ -259,7 +232,6 @@ mod test {
     use anyhow::Result;
     use chrono::{DateTime, NaiveDate, Utc};
 
-    use super::deterministic_triage_response;
     use crate::test::{DbGuard, acquire_db_permit};
     use crate::{Iterable, Store, TriageResponse, TriageResponseUpdate, UniqueKey};
     use crate::types::FromKeyValue;
@@ -363,7 +335,14 @@ mod test {
 
         let decoded = TriageResponse::from_key_value(b"fixture-key", FIXTURE_BYTES)?;
         let expected = deterministic_triage_response();
-        assert_eq!(decoded, expected);
+        assert_eq!(decoded.id, expected.id);
+        assert_eq!(decoded.key, expected.key);
+        assert_eq!(decoded.sensor, expected.sensor);
+        assert_eq!(decoded.time, expected.time);
+        assert_eq!(decoded.tag_ids, expected.tag_ids);
+        assert_eq!(decoded.remarks, expected.remarks);
+        assert_eq!(decoded.creation_time, expected.creation_time);
+        assert_eq!(decoded.last_modified_time, expected.last_modified_time);
 
         let serialized = Indexable::value(&expected);
         assert_eq!(serialized.as_slice(), FIXTURE_BYTES);
@@ -378,6 +357,32 @@ mod test {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("tests/fixtures/triage_response_literal.bin");
         std::fs::write(path, &bytes).expect("write fixture");
+    }
+
+    /// Builds a deterministic `TriageResponse` for the literal-byte contract test.
+    fn deterministic_triage_response() -> TriageResponse {
+        let time = DateTime::parse_from_rfc3339("2000-02-29T12:34:56.123456789Z")
+            .expect("valid RFC 3339 timestamp")
+            .with_timezone(&Utc);
+        let creation_time = DateTime::parse_from_rfc3339("2000-01-15T08:00:00.111111111Z")
+            .expect("valid RFC 3339 timestamp")
+            .with_timezone(&Utc);
+        let last_modified_time = DateTime::parse_from_rfc3339("2000-03-01T23:59:59.987654321Z")
+            .expect("valid RFC 3339 timestamp")
+            .with_timezone(&Utc);
+        let sensor = "fixture-sensor".to_string();
+        let key = TriageResponse::create_key(&sensor, &time);
+
+        TriageResponse {
+            id: 7,
+            key,
+            sensor,
+            time,
+            tag_ids: vec![2, 5, 11],
+            remarks: "fixture remarks".to_string(),
+            creation_time,
+            last_modified_time,
+        }
     }
 
     fn setup_store() -> (DbGuard<'static>, Arc<Store>) {

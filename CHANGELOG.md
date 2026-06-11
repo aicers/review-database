@@ -46,6 +46,9 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   exclusions remain unmatched for TLS, since TLS records do not carry URIs.
   NTLM remains intentionally out of scope: its `hostname` and `domainname`
   fields are NetBIOS-style identifiers, not DNS names.
+- Added a literal-byte fixture and deterministic contract test for
+  `TriageResponse` so its persisted bincode layout is locked down against
+  accidental serialization drift.
 
 ## [0.45.0] - 2026-05-09
 
