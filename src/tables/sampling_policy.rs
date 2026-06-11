@@ -13,7 +13,7 @@ use crate::{
     types::FromKeyValue,
 };
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Deserialize, Serialize)]
 pub struct SamplingPolicy {
     pub id: u32,
     pub name: String,
@@ -65,7 +65,7 @@ impl Indexable for SamplingPolicy {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize, Serialize)]
+#[derive(Clone, Copy, Eq, PartialEq, Deserialize, Serialize)]
 #[repr(u32)]
 pub enum Interval {
     FiveMinutes = 0,
@@ -75,7 +75,7 @@ pub enum Interval {
     OneHour = 4,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize, Serialize)]
+#[derive(Clone, Copy, Eq, PartialEq, Deserialize, Serialize)]
 #[repr(u32)]
 pub enum Period {
     SixHours = 0,
@@ -83,7 +83,7 @@ pub enum Period {
     OneDay = 2,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize, Serialize)]
+#[derive(Clone, Copy, Eq, PartialEq, Deserialize, Serialize)]
 #[repr(u32)]
 pub enum Kind {
     Conn = 0,
@@ -274,7 +274,18 @@ mod test {
 
         let decoded = SamplingPolicy::from_key_value(b"fixture-policy", FIXTURE_BYTES)?;
         let expected = deterministic_sampling_policy();
-        assert_eq!(decoded, expected);
+        assert_eq!(decoded.id, expected.id);
+        assert_eq!(decoded.name, expected.name);
+        assert!(decoded.kind == expected.kind);
+        assert!(decoded.interval == expected.interval);
+        assert!(decoded.period == expected.period);
+        assert_eq!(decoded.offset, expected.offset);
+        assert_eq!(decoded.src_ip, expected.src_ip);
+        assert_eq!(decoded.dst_ip, expected.dst_ip);
+        assert_eq!(decoded.node, expected.node);
+        assert_eq!(decoded.column, expected.column);
+        assert_eq!(decoded.immutable, expected.immutable);
+        assert_eq!(decoded.creation_time, expected.creation_time);
 
         let serialized = Indexable::value(&expected);
         assert_eq!(serialized.as_slice(), FIXTURE_BYTES);
