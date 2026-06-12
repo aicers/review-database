@@ -25,9 +25,6 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   fields `client_name` to `cname` and `service_name` to `sname` to match
   Kerberos protocol terminology and align with the existing
   `cname_type`/`sname_type` fields.
-- **BREAKING**: Removed `PartialEq` from `TriagePolicy`. Code that compared
-  `TriagePolicy` values directly must now compare fields explicitly or use a
-  custom equality helper.
 - Separated producer-facing event field schemas from on-disk storage schemas.
   The producer-facing `*Fields` types remain the public ingestion interface,
   while new repository-local `*FieldsStored` types are the schema written to
@@ -41,9 +38,6 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
-- Added a committed literal `TriagePolicy` table-value fixture and a
-  deterministic round-trip test that verifies serialization is byte-for-byte
-  stable against the stored bytes.
 - Domain and Hostname triage exclusions now apply to TLS events. Previously
   these exclusion kinds were silently ignored for TLS records, so a Domain or
   Hostname rule (e.g. `internal-cert.example.com`) had no effect on matching
