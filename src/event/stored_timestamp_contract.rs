@@ -210,6 +210,7 @@ fn full_stored_event_fixture_decodes_to_current_chrono_type() {
     let expected = pre_1970_timestamp();
     let expected_nanos = expected.timestamp_nanos_opt().expect("in range");
 
+    assert_eq!(FIXTURE.len(), 97);
     assert_eight_byte_i64_contract(&FIXTURE[..8], expected_nanos);
 
     let decoded: ExtraThreatFieldsStored =
@@ -311,4 +312,18 @@ fn extra_threat_production_bytes_match_full_stored_event_fixture() {
     let decoded: ExtraThreatFieldsStored =
         bincode::deserialize(&bytes).expect("round-trippable stored fields");
     assert_eq!(decoded.time, time);
+}
+
+#[test]
+#[ignore = "rewrites the checked-in binary fixture; run only when intentionally replacing this baseline fixture"]
+fn regenerate_extra_threat_pre_1970_stored_fixture() {
+    let time = pre_1970_timestamp();
+    let producer_bytes =
+        bincode::serialize(&extra_threat_fields(time)).expect("serializable producer fields");
+    let bytes = convert_for_storage(EventKind::ExtraThreat, &producer_bytes)
+        .expect("convertible to stored fields");
+    let fixture_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/event_extra_threat_pre_1970_stored.bin");
+
+    std::fs::write(fixture_path, bytes).expect("write raw binary fixture");
 }
