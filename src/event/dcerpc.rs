@@ -1,12 +1,181 @@
 use std::{fmt, net::IpAddr};
 
-use attrievent::attribute::RawEventAttrKind;
+use attrievent::attribute::{DceRpcAttr, RawEventAttrKind};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use super::{EventCategory, LearningMethod, ThreatLevel, TriageScore, common::Match};
 use crate::event::common::{AttrValue, triage_scores_to_string};
 
+// request entry format: "{context_id}:{opnum}"
+const REQUEST_SEPARATOR: char = ':';
+
+/// Converts a DCE/RPC syntax UUID (captured from wire and read as `be_u128`)
+/// into canonical UUID text (`8-4-4-4-12`) for rule/log comparison.
+///
+/// Conversion steps:
+/// 1) `be_u128` preserves the 16 wire octets; `to_be_bytes()` restores that
+///    packet order.
+/// 2) Per DCE/RPC GUID packet layout, the first three UUID fields
+///    (`Data1` 4B, `Data2` 2B, `Data3` 2B) are decoded as little-endian
+///    fields. The remaining octets are emitted in-order for canonical text
+///    rendering.
+fn format_dce_uuid(value: u128) -> String {
+    let b = value.to_be_bytes();
+
+    let g1 = u32::from_le_bytes([b[0], b[1], b[2], b[3]]);
+    let g2 = u16::from_le_bytes([b[4], b[5]]);
+    let g3 = u16::from_le_bytes([b[6], b[7]]);
+
+    format!(
+        "{:08x}-{:04x}-{:04x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
+        g1, g2, g3, b[8], b[9], b[10], b[11], b[12], b[13], b[14], b[15]
+    )
+}
+
+fn collect_request_part(request: &[String], want_context_id: bool) -> Option<Vec<u64>> {
+    if request.is_empty() {
+        return None;
+    }
+
+    request
+        .iter()
+        .map(|entry| {
+            let (context_id, opnum) = entry.split_once(REQUEST_SEPARATOR)?;
+            let target = if want_context_id { context_id } else { opnum };
+            target.parse::<u64>().ok()
+        })
+        .collect::<Option<Vec<_>>>()
+}
+
+macro_rules! find_dce_rpc_attr_by_kind {
+    ($event: expr, $raw_event_attr: expr) => {{
+        if let RawEventAttrKind::DceRpc(attr) = $raw_event_attr {
+            let target_value = match attr {
+                DceRpcAttr::SrcAddr => AttrValue::Addr($event.orig_addr),
+                DceRpcAttr::SrcPort => AttrValue::UInt($event.orig_port.into()),
+                DceRpcAttr::DstAddr => AttrValue::Addr($event.resp_addr),
+                DceRpcAttr::DstPort => AttrValue::UInt($event.resp_port.into()),
+                DceRpcAttr::Proto => AttrValue::UInt($event.proto.into()),
+                DceRpcAttr::Duration => AttrValue::SInt($event.duration),
+                DceRpcAttr::OrigPkts => AttrValue::UInt($event.orig_pkts),
+                DceRpcAttr::RespPkts => AttrValue::UInt($event.resp_pkts),
+                DceRpcAttr::OrigL2Bytes => AttrValue::UInt($event.orig_l2_bytes),
+                DceRpcAttr::RespL2Bytes => AttrValue::UInt($event.resp_l2_bytes),
+                DceRpcAttr::ContextId => {
+                    let values = $event
+                        .context
+                        .iter()
+                        .map(|c| u64::from(c.id))
+                        .collect::<Vec<_>>();
+                    if values.is_empty() {
+                        return None;
+                    }
+                    AttrValue::VecUInt(std::borrow::Cow::Owned(values))
+                }
+                DceRpcAttr::AbstractSyntax => {
+                    let values = $event
+                        .context
+                        .iter()
+                        .map(|c| format_dce_uuid(c.abstract_syntax))
+                        .collect::<Vec<_>>();
+                    if values.is_empty() {
+                        return None;
+                    }
+                    AttrValue::VecString(std::borrow::Cow::Owned(values))
+                }
+                DceRpcAttr::AbstractMajor => {
+                    let values = $event
+                        .context
+                        .iter()
+                        .map(|c| u64::from(c.abstract_major))
+                        .collect::<Vec<_>>();
+                    if values.is_empty() {
+                        return None;
+                    }
+                    AttrValue::VecUInt(std::borrow::Cow::Owned(values))
+                }
+                DceRpcAttr::AbstractMinor => {
+                    let values = $event
+                        .context
+                        .iter()
+                        .map(|c| u64::from(c.abstract_minor))
+                        .collect::<Vec<_>>();
+                    if values.is_empty() {
+                        return None;
+                    }
+                    AttrValue::VecUInt(std::borrow::Cow::Owned(values))
+                }
+                DceRpcAttr::TransferSyntax => {
+                    let values = $event
+                        .context
+                        .iter()
+                        .map(|c| format_dce_uuid(c.transfer_syntax))
+                        .collect::<Vec<_>>();
+                    if values.is_empty() {
+                        return None;
+                    }
+                    AttrValue::VecString(std::borrow::Cow::Owned(values))
+                }
+                DceRpcAttr::TransferMajor => {
+                    let values = $event
+                        .context
+                        .iter()
+                        .map(|c| u64::from(c.transfer_major))
+                        .collect::<Vec<_>>();
+                    if values.is_empty() {
+                        return None;
+                    }
+                    AttrValue::VecUInt(std::borrow::Cow::Owned(values))
+                }
+                DceRpcAttr::TransferMinor => {
+                    let values = $event
+                        .context
+                        .iter()
+                        .map(|c| u64::from(c.transfer_minor))
+                        .collect::<Vec<_>>();
+                    if values.is_empty() {
+                        return None;
+                    }
+                    AttrValue::VecUInt(std::borrow::Cow::Owned(values))
+                }
+                DceRpcAttr::Acceptance => {
+                    let values = $event
+                        .context
+                        .iter()
+                        .map(|c| u64::from(c.acceptance))
+                        .collect::<Vec<_>>();
+                    if values.is_empty() {
+                        return None;
+                    }
+                    AttrValue::VecUInt(std::borrow::Cow::Owned(values))
+                }
+                DceRpcAttr::Reason => {
+                    let values = $event
+                        .context
+                        .iter()
+                        .map(|c| u64::from(c.reason))
+                        .collect::<Vec<_>>();
+                    if values.is_empty() {
+                        return None;
+                    }
+                    AttrValue::VecUInt(std::borrow::Cow::Owned(values))
+                }
+                DceRpcAttr::RequestContextId => {
+                    let values = collect_request_part(&$event.request, true)?;
+                    AttrValue::VecUInt(std::borrow::Cow::Owned(values))
+                }
+                DceRpcAttr::RequestOpnum => {
+                    let values = collect_request_part(&$event.request, false)?;
+                    AttrValue::VecUInt(std::borrow::Cow::Owned(values))
+                }
+            };
+            Some(target_value)
+        } else {
+            None
+        }
+    }};
+}
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct DceRpcContext {
     pub id: u16,
@@ -299,10 +468,134 @@ impl Match for BlocklistDceRpc {
         LearningMethod::SemiSupervised
     }
 
-    // Since `dcerpc` is not currently an event type collected by Feature Sensor, and as a result,
-    // the notation for each attribute of `dcerpc` has not been finalized. Therefore, we will
-    // proceed with this part after the collection and notation of dcerpc events is finalized.
-    fn find_attr_by_kind(&self, _raw_event_attr: RawEventAttrKind) -> Option<AttrValue<'_>> {
-        None
+    fn find_attr_by_kind(&self, raw_event_attr: RawEventAttrKind) -> Option<AttrValue<'_>> {
+        find_dce_rpc_attr_by_kind!(self, raw_event_attr)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::net::{IpAddr, Ipv4Addr};
+
+    use attrievent::attribute::{DceRpcAttr, RawEventAttrKind};
+    use chrono::{TimeZone, Utc};
+
+    use super::{
+        BlocklistDceRpc, BlocklistDceRpcFieldsStored, DceRpcContext, collect_request_part,
+        format_dce_uuid,
+    };
+    use crate::event::common::{AttrValue, Match};
+
+    #[test]
+    fn format_dce_uuid_produces_canonical_text() {
+        // Wire bytes for UUID 12345678-1234-5678-1234-56789abcdef0 in DCE/RPC layout.
+        let wire = [
+            0x78, 0x56, 0x34, 0x12, 0x34, 0x12, 0x78, 0x56, 0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc,
+            0xde, 0xf0,
+        ];
+        let value = u128::from_be_bytes(wire);
+        assert_eq!(
+            format_dce_uuid(value),
+            "12345678-1234-5678-1234-56789abcdef0"
+        );
+    }
+
+    #[test]
+    fn collect_request_part_splits_context_id_and_opnum() {
+        let request = vec!["0:1".to_string(), "2:3".to_string()];
+        assert_eq!(collect_request_part(&request, true), Some(vec![0, 2]));
+        assert_eq!(collect_request_part(&request, false), Some(vec![1, 3]));
+    }
+
+    #[test]
+    fn collect_request_part_returns_none_for_invalid_entries() {
+        let request = vec!["0:1".to_string(), "invalid".to_string()];
+        assert_eq!(collect_request_part(&request, true), None);
+        assert_eq!(collect_request_part(&[], true), None);
+    }
+
+    fn dcerpc_fields_with_context() -> BlocklistDceRpcFieldsStored {
+        BlocklistDceRpcFieldsStored {
+            sensor: "sensor".to_string(),
+            orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
+            orig_port: 10000,
+            resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
+            resp_port: 135,
+            proto: 6,
+            start_time: Utc
+                .with_ymd_and_hms(1970, 1, 1, 0, 0, 0)
+                .unwrap()
+                .timestamp_nanos_opt()
+                .unwrap(),
+            duration: 10,
+            orig_pkts: 1,
+            resp_pkts: 2,
+            orig_l2_bytes: 100,
+            resp_l2_bytes: 200,
+            context: vec![DceRpcContext {
+                id: 0,
+                abstract_syntax: u128::from_be_bytes([
+                    0x78, 0x56, 0x34, 0x12, 0x34, 0x12, 0x78, 0x56, 0x12, 0x34, 0x56, 0x78, 0x9a,
+                    0xbc, 0xde, 0xf0,
+                ]),
+                abstract_major: 1,
+                abstract_minor: 0,
+                transfer_syntax: u128::from_be_bytes([
+                    0x78, 0x56, 0x34, 0x12, 0x34, 0x12, 0x78, 0x56, 0x12, 0x34, 0x56, 0x78, 0x9a,
+                    0xbc, 0xde, 0xf0,
+                ]),
+                transfer_major: 2,
+                transfer_minor: 0,
+                acceptance: 0,
+                reason: 0,
+            }],
+            request: vec!["0:42".to_string()],
+            confidence: 1.0,
+            category: None,
+        }
+    }
+
+    #[test]
+    fn dcerpc_context_attr_mappings() {
+        let time = Utc.with_ymd_and_hms(1970, 1, 1, 0, 0, 0).unwrap();
+        let event = BlocklistDceRpc::new(time, dcerpc_fields_with_context());
+
+        let Some(AttrValue::VecUInt(ids)) =
+            event.find_attr_by_kind(RawEventAttrKind::DceRpc(DceRpcAttr::ContextId))
+        else {
+            panic!("Expected ContextId");
+        };
+        assert_eq!(ids.as_ref(), &[0_u64]);
+
+        let Some(AttrValue::VecString(syntaxes)) =
+            event.find_attr_by_kind(RawEventAttrKind::DceRpc(DceRpcAttr::AbstractSyntax))
+        else {
+            panic!("Expected AbstractSyntax");
+        };
+        assert_eq!(
+            syntaxes.as_ref(),
+            &["12345678-1234-5678-1234-56789abcdef0".to_string()]
+        );
+
+        let Some(AttrValue::VecUInt(opnums)) =
+            event.find_attr_by_kind(RawEventAttrKind::DceRpc(DceRpcAttr::RequestOpnum))
+        else {
+            panic!("Expected RequestOpnum");
+        };
+        assert_eq!(opnums.as_ref(), &[42_u64]);
+    }
+
+    #[test]
+    fn dcerpc_empty_context_returns_none_for_vector_attrs() {
+        let time = Utc.with_ymd_and_hms(1970, 1, 1, 0, 0, 0).unwrap();
+        let mut fields = dcerpc_fields_with_context();
+        fields.context.clear();
+        let event = BlocklistDceRpc::new(time, fields);
+
+        assert!(
+            event
+                .find_attr_by_kind(RawEventAttrKind::DceRpc(DceRpcAttr::ContextId))
+                .is_none()
+        );
     }
 }

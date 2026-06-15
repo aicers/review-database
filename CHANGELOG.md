@@ -7,6 +7,11 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- Triage rules can now match DHCP option codes and option payloads, and
+  DCE/RPC connection, context, and request attributes on blocklist events.
+
 ### Changed
 
 - **BREAKING**: Bumped the database format to `0.46.0-alpha.1`, changed

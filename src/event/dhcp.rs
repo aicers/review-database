@@ -52,6 +52,20 @@ macro_rules! find_dhcp_attr_by_kind {
                 DhcpAttr::ClassId => AttrValue::VecRaw(&$event.class_id),
                 DhcpAttr::ClientIdType => AttrValue::UInt($event.client_id_type.into()),
                 DhcpAttr::ClientId => AttrValue::VecRaw(&$event.client_id),
+                DhcpAttr::OptionCode => AttrValue::VecUInt(std::borrow::Cow::Owned(
+                    $event
+                        .options
+                        .iter()
+                        .map(|(code, _)| u64::from(*code))
+                        .collect(),
+                )),
+                DhcpAttr::OptionData => AttrValue::VecRawList(std::borrow::Cow::Owned(
+                    $event
+                        .options
+                        .iter()
+                        .map(|(_, data)| data.as_slice())
+                        .collect(),
+                )),
             };
             Some(target_value)
         } else {
@@ -417,5 +431,82 @@ impl Match for BlocklistDhcp {
 
     fn find_attr_by_kind(&self, raw_event_attr: RawEventAttrKind) -> Option<AttrValue<'_>> {
         find_dhcp_attr_by_kind!(self, raw_event_attr)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::net::{IpAddr, Ipv4Addr};
+
+    use attrievent::attribute::{DhcpAttr, RawEventAttrKind};
+    use chrono::{TimeZone, Utc};
+
+    use super::{BlocklistDhcp, BlocklistDhcpFieldsStored};
+    use crate::event::common::{AttrValue, Match};
+
+    fn dhcp_fields_with_options() -> BlocklistDhcpFieldsStored {
+        BlocklistDhcpFieldsStored {
+            sensor: "sensor".to_string(),
+            orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
+            orig_port: 68,
+            resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
+            resp_port: 67,
+            proto: 17,
+            start_time: Utc
+                .with_ymd_and_hms(1970, 1, 1, 0, 0, 0)
+                .unwrap()
+                .timestamp_nanos_opt()
+                .unwrap(),
+            duration: 0,
+            orig_pkts: 0,
+            resp_pkts: 0,
+            orig_l2_bytes: 0,
+            resp_l2_bytes: 0,
+            msg_type: 1,
+            ciaddr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 5)),
+            yiaddr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 6)),
+            siaddr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 7)),
+            giaddr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 8)),
+            subnet_mask: IpAddr::V4(Ipv4Addr::new(255, 255, 255, 0)),
+            router: vec![IpAddr::V4(Ipv4Addr::LOCALHOST)],
+            domain_name_server: vec![IpAddr::V4(Ipv4Addr::LOCALHOST)],
+            req_ip_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 100)),
+            lease_time: 100,
+            server_id: IpAddr::V4(Ipv4Addr::LOCALHOST),
+            param_req_list: vec![1, 2, 3],
+            message: "message".to_string(),
+            renewal_time: 100,
+            rebinding_time: 200,
+            class_id: "MSFT 5.0".as_bytes().to_vec(),
+            client_id_type: 1,
+            client_id: vec![7, 8, 9],
+            options: vec![(53, vec![1]), (61, vec![0x01, 0x02, 0x03])],
+            confidence: 1.0,
+            category: None,
+        }
+    }
+
+    #[test]
+    fn dhcp_option_code_attr_mapping() {
+        let time = Utc.with_ymd_and_hms(1970, 1, 1, 0, 0, 0).unwrap();
+        let event = BlocklistDhcp::new(time, dhcp_fields_with_options());
+        let attr = RawEventAttrKind::Dhcp(DhcpAttr::OptionCode);
+
+        let Some(AttrValue::VecUInt(codes)) = event.find_attr_by_kind(attr) else {
+            panic!("Expected OptionCode as VecUInt");
+        };
+        assert_eq!(codes.as_ref(), &[53_u64, 61_u64]);
+    }
+
+    #[test]
+    fn dhcp_option_data_attr_mapping() {
+        let time = Utc.with_ymd_and_hms(1970, 1, 1, 0, 0, 0).unwrap();
+        let event = BlocklistDhcp::new(time, dhcp_fields_with_options());
+        let attr = RawEventAttrKind::Dhcp(DhcpAttr::OptionData);
+
+        let Some(AttrValue::VecRawList(data)) = event.find_attr_by_kind(attr) else {
+            panic!("Expected OptionData as VecRawList");
+        };
+        assert_eq!(data.as_ref(), &[&[1_u8][..], &[0x01, 0x02, 0x03][..]]);
     }
 }
