@@ -49,8 +49,12 @@ pub(crate) fn lookup_country_code(locator: &ip2location::DB, addr: IpAddr) -> [u
     locator
         .ip_lookup(addr)
         .ok()
-        .and_then(|record| get_record_country_short_name(&record).and_then(parse_country_code))
+        .and_then(|record| record_country_code(&record))
         .unwrap_or(COUNTRY_CODE_INVALID)
+}
+
+pub(crate) fn record_country_code(record: &ip2location::Record<'_>) -> Option<[u8; 2]> {
+    get_record_country_short_name(record).and_then(parse_country_code)
 }
 
 fn parse_country_code(code: &str) -> Option<[u8; 2]> {

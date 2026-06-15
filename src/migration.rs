@@ -232,7 +232,11 @@ pub(crate) fn migrate_event_country_codes(
         };
 
         let v0_46 = migrate_event_stored_schema_to_v0_46(kind, &value)?;
-        let resolved = resolve_stored_country_codes(kind, &v0_46, locator)?;
+        let resolved = resolve_stored_country_codes(
+            kind,
+            &v0_46,
+            locator.map(|db| db as &dyn crate::geo::CountryLookup),
+        )?;
 
         if resolved != value {
             events.update((&key, &value), (&key, &resolved))?;

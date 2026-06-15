@@ -32,6 +32,18 @@ flexible database interface for efficient data management.
 - Data Analysis: Support for outlier detection, time series analysis, and
   statistical computations
 
+## Country Codes At Ingestion
+
+Use `Store::new_with_ip2location` to open an IP2Location database once and
+share it with event writers. `EventDb::put` then resolves endpoint country
+codes while converting producer-facing fields to the stored schema. Producers
+do not provide country-code fields.
+
+`ZZ` means no lookup was performed because the store was opened with
+`Store::new`. `XX` means a configured lookup was attempted but failed or did
+not return a valid two-letter code. Vector country-code fields retain the same
+length and ordering as their corresponding address vectors.
+
 ## License
 
 Copyright 2018-2025 Petabi, Inc.

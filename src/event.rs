@@ -2684,7 +2684,7 @@ fn convert_for_storage(kind: EventKind, bytes: &[u8]) -> Result<Vec<u8>> {
 pub(crate) fn resolve_stored_country_codes(
     kind: EventKind,
     bytes: &[u8],
-    locator: Option<&ip2location::DB>,
+    locator: Option<&dyn crate::geo::CountryLookup>,
 ) -> Result<Vec<u8>> {
     fn reserialize<T, F>(bytes: &[u8], mut update: F) -> Result<Vec<u8>>
     where
@@ -2701,27 +2701,27 @@ pub(crate) fn resolve_stored_country_codes(
         return Ok(bytes.to_vec());
     };
 
+    let lookup = |addr| {
+        locator
+            .lookup(addr)
+            .ok()
+            .flatten()
+            .unwrap_or(crate::util::COUNTRY_CODE_INVALID)
+    };
+
     macro_rules! pair {
         ($ty:ty) => {
             reserialize::<$ty, _>(bytes, |fields| {
-                fields.orig_country_code =
-                    crate::util::lookup_country_code(locator, fields.orig_addr);
-                fields.resp_country_code =
-                    crate::util::lookup_country_code(locator, fields.resp_addr);
+                fields.orig_country_code = lookup(fields.orig_addr);
+                fields.resp_country_code = lookup(fields.resp_addr);
             })
         };
     }
     macro_rules! resp_vec {
         ($ty:ty) => {
             reserialize::<$ty, _>(bytes, |fields| {
-                fields.orig_country_code =
-                    crate::util::lookup_country_code(locator, fields.orig_addr);
-                fields.resp_country_codes = fields
-                    .resp_addrs
-                    .iter()
-                    .copied()
-                    .map(|addr| crate::util::lookup_country_code(locator, addr))
-                    .collect();
+                fields.orig_country_code = lookup(fields.orig_addr);
+                fields.resp_country_codes = fields.resp_addrs.iter().copied().map(lookup).collect();
             })
         };
     }
@@ -2758,13 +2758,8 @@ pub(crate) fn resolve_stored_country_codes(
         }
         EventKind::DomainGenerationAlgorithm => pair!(DgaFieldsStored),
         EventKind::ExternalDdos => reserialize::<ExternalDdosFieldsStored, _>(bytes, |fields| {
-            fields.orig_country_codes = fields
-                .orig_addrs
-                .iter()
-                .copied()
-                .map(|addr| crate::util::lookup_country_code(locator, addr))
-                .collect();
-            fields.resp_country_code = crate::util::lookup_country_code(locator, fields.resp_addr);
+            fields.orig_country_codes = fields.orig_addrs.iter().copied().map(lookup).collect();
+            fields.resp_country_code = lookup(fields.resp_addr);
         }),
         EventKind::FtpBruteForce => pair!(FtpBruteForceFieldsStored),
         EventKind::HttpThreat => pair!(HttpThreatFieldsStored),
@@ -2777,12 +2772,8 @@ pub(crate) fn resolve_stored_country_codes(
         EventKind::RepeatedHttpSessions => pair!(RepeatedHttpSessionsFieldsStored),
         EventKind::UnusualDestinationPattern => {
             reserialize::<UnusualDestinationPatternFieldsStored, _>(bytes, |fields| {
-                fields.resp_country_codes = fields
-                    .destination_ips
-                    .iter()
-                    .copied()
-                    .map(|addr| crate::util::lookup_country_code(locator, addr))
-                    .collect();
+                fields.resp_country_codes =
+                    fields.destination_ips.iter().copied().map(lookup).collect();
             })
         }
         EventKind::ExtraThreat | EventKind::WindowsThreat => Ok(bytes.to_vec()),
@@ -2792,12 +2783,27 @@ pub(crate) fn resolve_stored_country_codes(
 #[allow(clippy::module_name_repetitions)]
 pub struct EventDb<'a> {
     inner: &'a rocksdb::OptimisticTransactionDB,
+    country_lookup: Option<crate::geo::SharedCountryLookup>,
 }
 
 impl<'a> EventDb<'a> {
     #[must_use]
     pub fn new(inner: &'a rocksdb::OptimisticTransactionDB) -> EventDb<'a> {
-        Self { inner }
+        Self {
+            inner,
+            country_lookup: None,
+        }
+    }
+
+    #[must_use]
+    pub(crate) fn new_with_country_lookup(
+        inner: &'a rocksdb::OptimisticTransactionDB,
+        country_lookup: Option<crate::geo::SharedCountryLookup>,
+    ) -> EventDb<'a> {
+        Self {
+            inner,
+            country_lookup,
+        }
     }
 
     /// Creates an iterator over key-value pairs, starting from `key`.
@@ -2835,6 +2841,11 @@ impl<'a> EventDb<'a> {
     pub fn put(&self, event: &EventMessage) -> Result<i128> {
         use anyhow::anyhow;
         let stored_fields = convert_for_storage(event.kind, &event.fields)?;
+        let stored_fields = resolve_stored_country_codes(
+            event.kind,
+            &stored_fields,
+            self.country_lookup.as_deref(),
+        )?;
         let mut key = (i128::from(event.time.timestamp_nanos_opt().unwrap_or(i64::MAX)) << 64)
             | (event
                 .kind
@@ -3504,7 +3515,7 @@ fn eq_ip_country(locator: &ip2location::DB, addr: IpAddr, country: [u8; 2]) -> b
 #[cfg(test)]
 mod tests {
     use std::{
-        collections::HashMap,
+        collections::{HashMap, HashSet},
         net::{IpAddr, Ipv4Addr},
         str::FromStr,
         sync::Arc,
@@ -3539,11 +3550,41 @@ mod tests {
         types::EventCategory,
     };
 
+    #[derive(Default)]
+    struct FakeCountryLookup {
+        codes: HashMap<IpAddr, [u8; 2]>,
+        failures: HashSet<IpAddr>,
+    }
+
+    impl crate::geo::CountryLookup for FakeCountryLookup {
+        fn lookup(&self, addr: IpAddr) -> anyhow::Result<Option<[u8; 2]>> {
+            if self.failures.contains(&addr) {
+                anyhow::bail!("configured lookup failure");
+            }
+            Ok(self.codes.get(&addr).copied())
+        }
+    }
+
     fn setup_store() -> (DbGuard<'static>, Arc<Store>) {
         let permit = acquire_db_permit();
         let db_dir = tempfile::tempdir().unwrap();
         let backup_dir = tempfile::tempdir().unwrap();
         let store = Arc::new(Store::new(db_dir.path(), backup_dir.path()).unwrap());
+        (permit, store)
+    }
+
+    fn setup_store_with_lookup(lookup: FakeCountryLookup) -> (DbGuard<'static>, Arc<Store>) {
+        let permit = acquire_db_permit();
+        let db_dir = tempfile::tempdir().unwrap();
+        let backup_dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(
+            Store::new_with_country_lookup(
+                db_dir.path(),
+                backup_dir.path(),
+                Some(Arc::new(lookup)),
+            )
+            .unwrap(),
+        );
         (permit, store)
     }
 
@@ -3614,6 +3655,91 @@ mod tests {
         assert!(iter.next().is_some());
         assert!(iter.next().is_some());
         assert!(iter.next().is_none());
+    }
+
+    #[test]
+    fn event_db_put_resolves_country_codes() {
+        let orig_addr = IpAddr::V4(Ipv4Addr::LOCALHOST);
+        let resp_addr = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2));
+        let lookup = FakeCountryLookup {
+            codes: HashMap::from([(orig_addr, *b"US"), (resp_addr, *b"KR")]),
+            failures: HashSet::new(),
+        };
+        let (_permit, store) = setup_store_with_lookup(lookup);
+        let db = store.events();
+        db.put(&example_message(
+            EventKind::DnsCovertChannel,
+            EventCategory::CommandAndControl,
+        ))
+        .unwrap();
+
+        let (_, bytes) = db.raw_iter().next().unwrap().unwrap();
+        let stored: super::DnsEventFieldsStored = bincode::deserialize(&bytes).unwrap();
+        assert_eq!(stored.orig_country_code, *b"US");
+        assert_eq!(stored.resp_country_code, *b"KR");
+    }
+
+    #[test]
+    fn event_db_put_resolves_vector_country_codes_in_address_order() {
+        let orig_addr = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
+        let resp_addrs = vec![
+            IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)),
+            IpAddr::V6(std::net::Ipv6Addr::LOCALHOST),
+        ];
+        let lookup = FakeCountryLookup {
+            codes: HashMap::from([
+                (orig_addr, *b"US"),
+                (resp_addrs[0], *b"JP"),
+                (resp_addrs[1], *b"DE"),
+            ]),
+            failures: HashSet::new(),
+        };
+        let (_permit, store) = setup_store_with_lookup(lookup);
+        let db = store.events();
+        let fields = MultiHostPortScanFields {
+            sensor: "collector1".to_string(),
+            orig_addr,
+            resp_port: 443,
+            resp_addrs,
+            proto: 6,
+            start_time: 1,
+            end_time: 2,
+            confidence: 0.9,
+            category: Some(EventCategory::Reconnaissance),
+        };
+        db.put(&EventMessage {
+            time: Utc::now(),
+            kind: EventKind::MultiHostPortScan,
+            fields: bincode::serialize(&fields).unwrap(),
+        })
+        .unwrap();
+
+        let (_, bytes) = db.raw_iter().next().unwrap().unwrap();
+        let stored: super::MultiHostPortScanFieldsStored = bincode::deserialize(&bytes).unwrap();
+        assert_eq!(stored.orig_country_code, *b"US");
+        assert_eq!(stored.resp_country_codes, vec![*b"JP", *b"DE"]);
+        assert_eq!(stored.resp_country_codes.len(), stored.resp_addrs.len());
+    }
+
+    #[test]
+    fn event_db_put_uses_invalid_code_after_attempted_lookup_failure() {
+        let orig_addr = IpAddr::V4(Ipv4Addr::LOCALHOST);
+        let lookup = FakeCountryLookup {
+            codes: HashMap::new(),
+            failures: HashSet::from([orig_addr]),
+        };
+        let (_permit, store) = setup_store_with_lookup(lookup);
+        let db = store.events();
+        db.put(&example_message(
+            EventKind::DnsCovertChannel,
+            EventCategory::CommandAndControl,
+        ))
+        .unwrap();
+
+        let (_, bytes) = db.raw_iter().next().unwrap().unwrap();
+        let stored: super::DnsEventFieldsStored = bincode::deserialize(&bytes).unwrap();
+        assert_eq!(stored.orig_country_code, crate::util::COUNTRY_CODE_INVALID);
+        assert_eq!(stored.resp_country_code, crate::util::COUNTRY_CODE_INVALID);
     }
 
     #[test]

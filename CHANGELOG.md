@@ -13,7 +13,9 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   `migrate_data_dir` to accept `Option<&ip2location::DB>`. Event stored schemas
   and runtime event types that track endpoints now include country-code fields.
   Producer-facing event fields still do not require country-code input; new
-  writes store `ZZ` placeholders. The `0.45.x` to `0.46.0-alpha.1` migration
+  writes resolve country codes when `Store::new_with_ip2location` is used and
+  store `ZZ` placeholders when no locator is configured. The `0.45.x` to
+  `0.46.0-alpha.1` migration
   rewrites existing endpoint event records into the new stored schema, resolves
   country codes when an IP2Location database is provided, preserves `ZZ` when
   no lookup is performed, and uses `XX` when lookup fails or returns an invalid

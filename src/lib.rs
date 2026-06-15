@@ -7,6 +7,7 @@ mod cluster;
 mod collections;
 mod column_statistics;
 pub mod event;
+mod geo;
 mod migration;
 mod model;
 mod scores;
@@ -21,7 +22,7 @@ mod util;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use anyhow::{Result, anyhow};
+use anyhow::{Context, Result, anyhow};
 pub use attrievent::attribute::RawEventKind;
 pub use rocksdb::backup::BackupEngineInfo;
 pub use tags::{CustomerTagSet, TagSet};
@@ -74,6 +75,7 @@ pub struct Store {
     states: StateDb,
     pretrained: PathBuf,
     classifier_fm: classifier_fs::ClassifierFileManager,
+    country_lookup: Option<geo::SharedCountryLookup>,
 }
 
 impl Store {
@@ -84,6 +86,35 @@ impl Store {
     ///
     /// Returns an error if the key-value store or its backup cannot be opened.
     pub fn new(path: &Path, backup: &Path) -> Result<Self, anyhow::Error> {
+        Self::new_with_country_lookup(path, backup, None)
+    }
+
+    /// Opens a key-value store with an `IP2Location` database for ingestion-time
+    /// endpoint country-code resolution.
+    ///
+    /// The `IP2Location` database is opened once and shared by all event writers.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the key-value store, backup, or `IP2Location` database
+    /// cannot be opened.
+    pub fn new_with_ip2location(
+        path: &Path,
+        backup: &Path,
+        ip2location: &Path,
+    ) -> Result<Self, anyhow::Error> {
+        let db = ip2location::DB::from_file(ip2location)
+            .map_err(anyhow::Error::new)
+            .context("failed to open ip2location database")?;
+        let lookup = std::sync::Arc::new(geo::Ip2LocationResolver::new(db));
+        Self::new_with_country_lookup(path, backup, Some(lookup))
+    }
+
+    fn new_with_country_lookup(
+        path: &Path,
+        backup: &Path,
+        country_lookup: Option<geo::SharedCountryLookup>,
+    ) -> Result<Self, anyhow::Error> {
         let db_path = path.join(DEFAULT_STATES);
         let backup_path = backup.join(DEFAULT_STATES);
         let states = StateDb::open(&db_path, backup_path)?;
@@ -98,6 +129,7 @@ impl Store {
             states,
             pretrained,
             classifier_fm,
+            country_lookup,
         };
         Ok(store)
     }
@@ -105,7 +137,7 @@ impl Store {
     #[must_use]
     #[allow(clippy::missing_panics_doc)]
     pub fn events(&self) -> EventDb<'_> {
-        self.states.events()
+        self.states.events(self.country_lookup.clone())
     }
 
     #[must_use]
