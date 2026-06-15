@@ -236,10 +236,6 @@ mod test {
 
     const SENSOR: &str = "sensor-a";
 
-    // Pinned big-endian `i64` nanosecond suffix bytes for the chrono key contract.
-    // These literals document the historical bytes preserved in existing keys and are
-    // independent of the test's expected-value computation path.
-
     /// `2023-03-15T12:34:56.123456789Z` as chrono `timestamp_nanos_opt()`.
     const TIMESTAMP_2023_SUFFIX: [u8; size_of::<i64>()] =
         1_678_883_696_123_456_789i64.to_be_bytes();
@@ -250,19 +246,15 @@ mod test {
     /// Suffix substituted when chrono `timestamp_nanos_opt()` returns `None`.
     const TIMESTAMP_OUT_OF_RANGE_SUFFIX: [u8; size_of::<i64>()] = 0i64.to_be_bytes();
 
-    /// Extracts the big-endian `i64` nanosecond timestamp suffix from a
-    /// `TriageResponse` unique key.
+    /// Extracts the 8-byte timestamp suffix from a `TriageResponse` unique key.
     fn timestamp_bytes_from_key(key: &[u8], sensor: &str) -> [u8; size_of::<i64>()] {
         let offset = sensor.len();
         let suffix = key
             .get(offset..)
             .unwrap_or_else(|| panic!("key shorter than sensor prefix: {key:?}"));
-        assert_eq!(
-            suffix.len(),
-            size_of::<i64>(),
-            "timestamp must be encoded as i64 big-endian nanoseconds, not seconds or i128"
-        );
-        suffix.try_into().expect("i64 timestamp suffix")
+        suffix
+            .try_into()
+            .expect("timestamp suffix must be exactly 8 bytes")
     }
 
     fn assert_unique_key_timestamp(
@@ -282,11 +274,6 @@ mod test {
             "unique key timestamp suffix must match the pinned chrono i64 nanosecond bytes"
         );
     }
-
-    // Baseline tests for the `TriageResponse` unique-key timestamp contract.
-    // They pin big-endian `i64` nanosecond suffix bytes so a future chrono-to-Jiff
-    // migration cannot silently switch to seconds, Jiff default serde, or Jiff
-    // `i128` nanoseconds.
 
     #[test]
     fn unique_key_timestamp_nanosecond_precision() {
