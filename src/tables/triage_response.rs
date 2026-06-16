@@ -232,10 +232,10 @@ mod test {
     use anyhow::Result;
     use chrono::{DateTime, NaiveDate, Utc};
 
-    use crate::test::{DbGuard, acquire_db_permit};
-    use crate::{Iterable, Store, TriageResponse, TriageResponseUpdate, UniqueKey};
-    use crate::types::FromKeyValue;
     use crate::Indexable;
+    use crate::test::{DbGuard, acquire_db_permit};
+    use crate::types::FromKeyValue;
+    use crate::{Iterable, Store, TriageResponse, TriageResponseUpdate, UniqueKey};
 
     const SENSOR: &str = "sensor-a";
 
