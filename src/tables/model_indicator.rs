@@ -132,10 +132,60 @@ impl<'d> Table<'d, ModelIndicator> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashSet;
     use std::sync::Arc;
 
+    use chrono::{TimeZone, Utc};
+
     use crate::test::{DbGuard, acquire_db_permit};
+    use crate::types::FromKeyValue;
     use crate::{ModelIndicator, Store};
+
+    const TS_SECONDS: i64 = 1_650_000_000;
+
+    /// One day before the Unix epoch; exercises signed `i64` epoch seconds.
+    const NEGATIVE_TS_SECONDS: i64 = -86_400;
+
+    const SUBSECOND_NANOS: u32 = 500_000_000;
+
+    const FIXTURE_NAME: &str = "baseline-mi";
+
+    /// Pinned table-value bytes produced by the production `tables::serialize`
+    /// path for a `ModelIndicator` value.
+    ///
+    /// `last_modification_time` is stored with `chrono::serde::ts_seconds`
+    /// (`i64` epoch seconds). This baseline is separate from the default
+    /// bincode table-value baseline because that contract uses default chrono
+    /// serde instead of `ts_seconds`, so the timestamp encoding must be pinned
+    /// on its own to catch accidental migration during future changes.
+    const TABLE_VALUE_FIXTURE: &[u8] = &[
+        16, 98, 97, 115, 101, 108, 105, 110, 101, 32, 102, 105, 120, 116, 117, 114, 101, 42, 1, 1,
+        7, 116, 111, 107, 101, 110, 45, 97, 252, 0, 1, 178, 196,
+    ];
+
+    /// Pinned table-value bytes for a pre-1970 `last_modification_time`.
+    const NEGATIVE_TABLE_VALUE_FIXTURE: &[u8] = &[
+        16, 98, 97, 115, 101, 108, 105, 110, 101, 32, 102, 105, 120, 116, 117, 114, 101, 42, 1, 1,
+        7, 116, 111, 107, 101, 110, 45, 97, 252, 255, 162, 2, 0,
+    ];
+
+    fn fixture_last_modification_time(ts_seconds: i64, subsec_nanos: u32) -> chrono::DateTime<Utc> {
+        Utc.timestamp_opt(ts_seconds, subsec_nanos)
+            .single()
+            .expect("canonical timestamp must be valid")
+    }
+
+    fn fixture_model_indicator(ts_seconds: i64, subsec_nanos: u32) -> ModelIndicator {
+        let mut tokens = HashSet::new();
+        tokens.insert(vec!["token-a".to_string()]);
+        ModelIndicator {
+            name: FIXTURE_NAME.to_string(),
+            description: "baseline fixture".to_string(),
+            model_id: 42,
+            tokens,
+            last_modification_time: fixture_last_modification_time(ts_seconds, subsec_nanos),
+        }
+    }
 
     fn setup_store() -> (DbGuard<'static>, Arc<Store>) {
         let permit = acquire_db_permit();
@@ -143,6 +193,102 @@ mod tests {
         let backup_dir = tempfile::tempdir().unwrap();
         let store = Arc::new(Store::new(db_dir.path(), backup_dir.path()).unwrap());
         (permit, store)
+    }
+
+    // Baseline tests for `ModelIndicator.last_modification_time` storage.
+
+    #[test]
+    fn baseline_last_modification_time_decodes_pinned_table_value_bytes() {
+        let indicator =
+            super::ModelIndicator::from_key_value(FIXTURE_NAME.as_bytes(), TABLE_VALUE_FIXTURE)
+                .expect("production table-value decoder must accept pinned bytes");
+
+        assert_eq!(
+            indicator.last_modification_time.timestamp(),
+            TS_SECONDS,
+            "stored timestamp must be i64 epoch seconds via chrono::serde::ts_seconds"
+        );
+        assert_eq!(
+            indicator.last_modification_time.timestamp_subsec_nanos(),
+            0,
+            "ts_seconds encoding must not preserve subsecond precision"
+        );
+        assert_eq!(indicator.description, "baseline fixture");
+        assert_eq!(indicator.model_id, 42);
+    }
+
+    #[test]
+    fn baseline_last_modification_time_encodes_pinned_table_value_bytes() {
+        let indicator = fixture_model_indicator(TS_SECONDS, 0);
+        let (_key, encoded) = indicator
+            .into_key_value()
+            .expect("production table-value encoder must succeed");
+
+        assert_eq!(
+            encoded.as_slice(),
+            TABLE_VALUE_FIXTURE,
+            "production encoder must match pinned bytes; nanosecond or default Jiff \
+             serde would change the timestamp suffix"
+        );
+    }
+
+    #[test]
+    fn baseline_last_modification_time_decodes_negative_pinned_table_value_bytes() {
+        let indicator = super::ModelIndicator::from_key_value(
+            FIXTURE_NAME.as_bytes(),
+            NEGATIVE_TABLE_VALUE_FIXTURE,
+        )
+        .expect("production table-value decoder must accept pinned pre-1970 bytes");
+
+        assert_eq!(
+            indicator.last_modification_time.timestamp(),
+            NEGATIVE_TS_SECONDS,
+            "stored timestamp must be signed i64 epoch seconds via chrono::serde::ts_seconds"
+        );
+        assert_eq!(
+            indicator.last_modification_time.timestamp_subsec_nanos(),
+            0,
+            "ts_seconds encoding must not preserve subsecond precision"
+        );
+    }
+
+    #[test]
+    fn baseline_last_modification_time_encodes_negative_pinned_table_value_bytes() {
+        let indicator = fixture_model_indicator(NEGATIVE_TS_SECONDS, 0);
+        let (_key, encoded) = indicator
+            .into_key_value()
+            .expect("production table-value encoder must succeed");
+
+        assert_eq!(
+            encoded.as_slice(),
+            NEGATIVE_TABLE_VALUE_FIXTURE,
+            "production encoder must match pinned pre-1970 bytes; unsigned or nanosecond \
+             serde would change the timestamp suffix"
+        );
+    }
+
+    #[test]
+    fn baseline_last_modification_time_encodes_truncates_subseconds_to_whole_seconds() {
+        let indicator = fixture_model_indicator(TS_SECONDS, SUBSECOND_NANOS);
+        let timestamp = indicator.last_modification_time.timestamp();
+        let subsec_nanos = indicator.last_modification_time.timestamp_subsec_nanos();
+        let (_key, encoded) = indicator
+            .into_key_value()
+            .expect("production table-value encoder must succeed");
+
+        assert_eq!(
+            encoded.as_slice(),
+            TABLE_VALUE_FIXTURE,
+            "ts_seconds must truncate subsecond precision before serialization"
+        );
+        assert_eq!(
+            timestamp, TS_SECONDS,
+            "fixture input must carry non-zero subseconds to exercise truncation"
+        );
+        assert_ne!(
+            subsec_nanos, 0,
+            "fixture input must carry non-zero subseconds to exercise truncation"
+        );
     }
 
     #[test]
