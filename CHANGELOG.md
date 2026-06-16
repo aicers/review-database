@@ -22,6 +22,25 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   is performed, and uses `XX` when lookup fails or returns an invalid code. Event
   `Display` output now includes country-code fields rendered as two-letter
   strings.
+- **BREAKING**: Bumped the database format to `0.46.0-alpha.1` and changed
+  `migrate_data_dir` to accept `Option<&ip2location::DB>`. Event stored schemas
+  and runtime event types that track endpoints now include country-code fields.
+  Producer-facing event fields still do not require country-code input; new
+  writes store `ZZ` placeholders. The `0.45.x` to `0.46.0-alpha.1` migration
+  rewrites existing endpoint event records into the new stored schema, resolves
+  country codes when an IP2Location database is provided, preserves `ZZ` when
+  no lookup is performed, and uses `XX` when lookup fails or returns an invalid
+  code. Event `Display` output now includes country-code fields rendered as
+  two-letter strings.
+- **BREAKING**: Renamed multi-raw detection event time fields to clarify
+  semantics. `PortScan`, `MultiHostPortScan`, `ExternalDdos`,
+  `FtpBruteForce`, `LdapBruteForce`, `RdpBruteForce`, and
+  `RepeatedHttpSessions` now use `first_event_start_time` and
+  `last_event_start_time` instead of `start_time` and `end_time`.
+  `UnusualDestinationPattern` now uses
+  `sampling_window_start_time`/`sampling_window_end_time` to clarify that
+  those timestamps represent the anomaly sampling window. This changes the
+  Rust API and text output schema while preserving bincode compatibility.
 - **BREAKING**: Renamed `TrafficFilter::agent` to `host_fqdn` to clarify
   that it stores a host fully-qualified domain name. Related
   `Table<'_, TrafficFilter>` method parameters were also renamed from

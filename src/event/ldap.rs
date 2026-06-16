@@ -56,9 +56,9 @@ pub struct LdapBruteForceFields {
     pub proto: u8,
     pub user_pw_list: Vec<(String, String)>,
     /// Timestamp in nanoseconds since the Unix epoch (UTC).
-    pub start_time: i64,
+    pub first_event_start_time: i64,
     /// Timestamp in nanoseconds since the Unix epoch (UTC).
-    pub end_time: i64,
+    pub last_event_start_time: i64,
     pub confidence: f32,
     pub category: Option<EventCategory>,
 }
@@ -75,8 +75,8 @@ pub(crate) struct LdapBruteForceFieldsStoredV0_46 {
     pub resp_country_code: [u8; 2],
     pub proto: u8,
     pub user_pw_list: Vec<(String, String)>,
-    pub start_time: i64,
-    pub end_time: i64,
+    pub first_event_start_time: i64,
+    pub last_event_start_time: i64,
     pub confidence: f32,
     pub category: Option<EventCategory>,
 }
@@ -92,8 +92,8 @@ impl From<LdapBruteForceFields> for LdapBruteForceFieldsStored {
             resp_country_code: crate::util::COUNTRY_CODE_PENDING,
             proto: value.proto,
             user_pw_list: value.user_pw_list,
-            start_time: value.start_time,
-            end_time: value.end_time,
+            first_event_start_time: value.first_event_start_time,
+            last_event_start_time: value.last_event_start_time,
             confidence: value.confidence,
             category: value.category,
         }
@@ -103,10 +103,10 @@ impl From<LdapBruteForceFields> for LdapBruteForceFieldsStored {
 impl LdapBruteForceFields {
     #[must_use]
     pub fn syslog_rfc5424(&self) -> String {
-        let start_time_dt = DateTime::from_timestamp_nanos(self.start_time);
-        let end_time_dt = DateTime::from_timestamp_nanos(self.end_time);
+        let first_event_start_time_dt = DateTime::from_timestamp_nanos(self.first_event_start_time);
+        let last_event_start_time_dt = DateTime::from_timestamp_nanos(self.last_event_start_time);
         format!(
-            "category={:?} sensor={:?} orig_addr={:?} resp_addr={:?} resp_port={:?} proto={:?} user_pw_list={:?} start_time={:?} end_time={:?} confidence={:?}",
+            "category={:?} sensor={:?} orig_addr={:?} resp_addr={:?} resp_port={:?} proto={:?} user_pw_list={:?} first_event_start_time={:?} last_event_start_time={:?} confidence={:?}",
             self.category.as_ref().map_or_else(
                 || "Unspecified".to_string(),
                 std::string::ToString::to_string
@@ -117,8 +117,8 @@ impl LdapBruteForceFields {
             self.resp_port.to_string(),
             self.proto.to_string(),
             get_user_pw_list(&self.user_pw_list),
-            start_time_dt.to_rfc3339(),
-            end_time_dt.to_rfc3339(),
+            first_event_start_time_dt.to_rfc3339(),
+            last_event_start_time_dt.to_rfc3339(),
             self.confidence.to_string()
         )
     }
@@ -147,8 +147,8 @@ pub struct LdapBruteForce {
     pub resp_country_code: [u8; 2],
     pub proto: u8,
     pub user_pw_list: Vec<(String, String)>,
-    pub start_time: DateTime<Utc>,
-    pub end_time: DateTime<Utc>,
+    pub first_event_start_time: DateTime<Utc>,
+    pub last_event_start_time: DateTime<Utc>,
     pub confidence: f32,
     pub category: Option<EventCategory>,
     pub triage_scores: Option<Vec<TriageScore>>,
@@ -158,7 +158,7 @@ impl fmt::Display for LdapBruteForce {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "orig_addr={:?} orig_country_code={:?} resp_addr={:?} resp_port={:?} resp_country_code={:?} proto={:?} user_pw_list={:?} start_time={:?} end_time={:?} triage_scores={:?}",
+            "orig_addr={:?} orig_country_code={:?} resp_addr={:?} resp_port={:?} resp_country_code={:?} proto={:?} user_pw_list={:?} first_event_start_time={:?} last_event_start_time={:?} triage_scores={:?}",
             self.orig_addr.to_string(),
             crate::util::country_code_as_str(&self.orig_country_code),
             self.resp_addr.to_string(),
@@ -166,8 +166,8 @@ impl fmt::Display for LdapBruteForce {
             crate::util::country_code_as_str(&self.resp_country_code),
             self.proto.to_string(),
             get_user_pw_list(&self.user_pw_list),
-            self.start_time.to_rfc3339(),
-            self.end_time.to_rfc3339(),
+            self.first_event_start_time.to_rfc3339(),
+            self.last_event_start_time.to_rfc3339(),
             triage_scores_to_string(self.triage_scores.as_ref())
         )
     }
@@ -185,8 +185,8 @@ impl LdapBruteForce {
             resp_country_code: fields.resp_country_code,
             proto: fields.proto,
             user_pw_list: fields.user_pw_list.clone(),
-            start_time: DateTime::from_timestamp_nanos(fields.start_time),
-            end_time: DateTime::from_timestamp_nanos(fields.end_time),
+            first_event_start_time: DateTime::from_timestamp_nanos(fields.first_event_start_time),
+            last_event_start_time: DateTime::from_timestamp_nanos(fields.last_event_start_time),
             confidence: fields.confidence,
             category: fields.category,
             triage_scores: None,
@@ -675,5 +675,45 @@ impl Match for BlocklistLdap {
 
     fn find_attr_by_kind(&self, raw_event_attr: RawEventAttrKind) -> Option<AttrValue<'_>> {
         find_ldap_attr_by_kind!(self, raw_event_attr)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[derive(Serialize)]
+    struct LdapBruteForceFieldsLegacy {
+        sensor: String,
+        orig_addr: IpAddr,
+        resp_addr: IpAddr,
+        resp_port: u16,
+        proto: u8,
+        user_pw_list: Vec<(String, String)>,
+        start_time: i64,
+        end_time: i64,
+        confidence: f32,
+        category: Option<EventCategory>,
+    }
+
+    #[test]
+    fn ldap_bruteforce_bincode_compatibility() {
+        let old = LdapBruteForceFieldsLegacy {
+            sensor: "sensor".to_string(),
+            orig_addr: IpAddr::from([127, 0, 0, 1]),
+            resp_addr: IpAddr::from([127, 0, 0, 2]),
+            resp_port: 389,
+            proto: 6,
+            user_pw_list: vec![("u".to_string(), "p".to_string())],
+            start_time: 99,
+            end_time: 111,
+            confidence: 0.3,
+            category: Some(EventCategory::CredentialAccess),
+        };
+        let bytes = bincode::serialize(&old).expect("legacy fields should serialize");
+        let parsed: LdapBruteForceFields =
+            bincode::deserialize(&bytes).expect("new fields should deserialize");
+        assert_eq!(parsed.first_event_start_time, 99);
+        assert_eq!(parsed.last_event_start_time, 111);
     }
 }

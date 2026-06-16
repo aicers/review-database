@@ -239,9 +239,9 @@ pub struct RepeatedHttpSessionsFields {
     pub resp_port: u16,
     pub proto: u8,
     /// Timestamp in nanoseconds since the Unix epoch (UTC).
-    pub start_time: i64,
+    pub first_event_start_time: i64,
     /// Timestamp in nanoseconds since the Unix epoch (UTC).
-    pub end_time: i64,
+    pub last_event_start_time: i64,
     pub confidence: f32,
     pub category: Option<EventCategory>,
 }
@@ -258,8 +258,8 @@ pub(crate) struct RepeatedHttpSessionsFieldsStoredV0_46 {
     pub resp_port: u16,
     pub resp_country_code: [u8; 2],
     pub proto: u8,
-    pub start_time: i64,
-    pub end_time: i64,
+    pub first_event_start_time: i64,
+    pub last_event_start_time: i64,
     pub confidence: f32,
     pub category: Option<EventCategory>,
 }
@@ -275,8 +275,8 @@ impl From<RepeatedHttpSessionsFields> for RepeatedHttpSessionsFieldsStored {
             resp_port: value.resp_port,
             resp_country_code: crate::util::COUNTRY_CODE_PENDING,
             proto: value.proto,
-            start_time: value.start_time,
-            end_time: value.end_time,
+            first_event_start_time: value.first_event_start_time,
+            last_event_start_time: value.last_event_start_time,
             confidence: value.confidence,
             category: value.category,
         }
@@ -286,10 +286,10 @@ impl From<RepeatedHttpSessionsFields> for RepeatedHttpSessionsFieldsStored {
 impl RepeatedHttpSessionsFields {
     #[must_use]
     pub fn syslog_rfc5424(&self) -> String {
-        let start_time_dt = DateTime::from_timestamp_nanos(self.start_time);
-        let end_time_dt = DateTime::from_timestamp_nanos(self.end_time);
+        let first_event_start_time_dt = DateTime::from_timestamp_nanos(self.first_event_start_time);
+        let last_event_start_time_dt = DateTime::from_timestamp_nanos(self.last_event_start_time);
         format!(
-            "category={:?} sensor={:?} orig_addr={:?} orig_port={:?} resp_addr={:?} resp_port={:?} proto={:?} start_time={:?} end_time={:?} confidence={:?}",
+            "category={:?} sensor={:?} orig_addr={:?} orig_port={:?} resp_addr={:?} resp_port={:?} proto={:?} first_event_start_time={:?} last_event_start_time={:?} confidence={:?}",
             self.category.as_ref().map_or_else(
                 || "Unspecified".to_string(),
                 std::string::ToString::to_string
@@ -300,8 +300,8 @@ impl RepeatedHttpSessionsFields {
             self.resp_addr.to_string(),
             self.resp_port.to_string(),
             self.proto.to_string(),
-            start_time_dt.to_rfc3339(),
-            end_time_dt.to_rfc3339(),
+            first_event_start_time_dt.to_rfc3339(),
+            last_event_start_time_dt.to_rfc3339(),
             self.confidence.to_string()
         )
     }
@@ -318,8 +318,8 @@ pub struct RepeatedHttpSessions {
     pub resp_port: u16,
     pub resp_country_code: [u8; 2],
     pub proto: u8,
-    pub start_time: DateTime<Utc>,
-    pub end_time: DateTime<Utc>,
+    pub first_event_start_time: DateTime<Utc>,
+    pub last_event_start_time: DateTime<Utc>,
     pub confidence: f32,
     pub category: Option<EventCategory>,
     pub triage_scores: Option<Vec<TriageScore>>,
@@ -329,7 +329,7 @@ impl fmt::Display for RepeatedHttpSessions {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "sensor={:?} orig_addr={:?} orig_port={:?} orig_country_code={:?} resp_addr={:?} resp_port={:?} resp_country_code={:?} proto={:?} start_time={:?} end_time={:?} triage_scores={:?}",
+            "sensor={:?} orig_addr={:?} orig_port={:?} orig_country_code={:?} resp_addr={:?} resp_port={:?} resp_country_code={:?} proto={:?} first_event_start_time={:?} last_event_start_time={:?} triage_scores={:?}",
             self.sensor,
             self.orig_addr.to_string(),
             self.orig_port.to_string(),
@@ -338,8 +338,8 @@ impl fmt::Display for RepeatedHttpSessions {
             self.resp_port.to_string(),
             crate::util::country_code_as_str(&self.resp_country_code),
             self.proto.to_string(),
-            self.start_time.to_rfc3339(),
-            self.end_time.to_rfc3339(),
+            self.first_event_start_time.to_rfc3339(),
+            self.last_event_start_time.to_rfc3339(),
             triage_scores_to_string(self.triage_scores.as_ref())
         )
     }
@@ -357,8 +357,8 @@ impl RepeatedHttpSessions {
             resp_port: fields.resp_port,
             resp_country_code: fields.resp_country_code,
             proto: fields.proto,
-            start_time: DateTime::from_timestamp_nanos(fields.start_time),
-            end_time: DateTime::from_timestamp_nanos(fields.end_time),
+            first_event_start_time: DateTime::from_timestamp_nanos(fields.first_event_start_time),
+            last_event_start_time: DateTime::from_timestamp_nanos(fields.last_event_start_time),
             confidence: fields.confidence,
             category: fields.category,
             triage_scores: None,
@@ -1676,5 +1676,45 @@ impl Match for BlocklistHttp {
             TriageExclusion::Uri(uris) => uris.contains(&self.uri),
         });
         if matched { f64::MIN } else { 0.0 }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[derive(Serialize)]
+    struct RepeatedHttpSessionsFieldsLegacy {
+        sensor: String,
+        orig_addr: IpAddr,
+        orig_port: u16,
+        resp_addr: IpAddr,
+        resp_port: u16,
+        proto: u8,
+        start_time: i64,
+        end_time: i64,
+        confidence: f32,
+        category: Option<EventCategory>,
+    }
+
+    #[test]
+    fn repeated_http_sessions_bincode_compatibility() {
+        let old = RepeatedHttpSessionsFieldsLegacy {
+            sensor: "sensor".to_string(),
+            orig_addr: IpAddr::from([127, 0, 0, 1]),
+            orig_port: 10000,
+            resp_addr: IpAddr::from([127, 0, 0, 2]),
+            resp_port: 443,
+            proto: 6,
+            start_time: 555,
+            end_time: 666,
+            confidence: 0.3,
+            category: Some(EventCategory::Exfiltration),
+        };
+        let bytes = bincode::serialize(&old).expect("legacy fields should serialize");
+        let parsed: RepeatedHttpSessionsFields =
+            bincode::deserialize(&bytes).expect("new fields should deserialize");
+        assert_eq!(parsed.first_event_start_time, 555);
+        assert_eq!(parsed.last_event_start_time, 666);
     }
 }

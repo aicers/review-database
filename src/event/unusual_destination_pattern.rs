@@ -10,8 +10,8 @@ use crate::event::common::{AttrValue, triage_scores_to_string};
 #[derive(Serialize, Deserialize)]
 pub struct UnusualDestinationPatternFields {
     pub sensor: String,
-    pub start_time: i64,
-    pub end_time: i64,
+    pub sampling_window_start_time: i64,
+    pub sampling_window_end_time: i64,
     pub destination_ips: Vec<IpAddr>,
     pub count: usize,
     pub expected_mean: f64,
@@ -26,8 +26,8 @@ pub(crate) type UnusualDestinationPatternFieldsStored = UnusualDestinationPatter
 #[derive(Deserialize, Serialize)]
 pub(crate) struct UnusualDestinationPatternFieldsStoredV0_46 {
     pub sensor: String,
-    pub start_time: i64,
-    pub end_time: i64,
+    pub sampling_window_start_time: i64,
+    pub sampling_window_end_time: i64,
     pub destination_ips: Vec<IpAddr>,
     pub resp_country_codes: Vec<[u8; 2]>,
     pub count: usize,
@@ -43,8 +43,8 @@ impl From<UnusualDestinationPatternFields> for UnusualDestinationPatternFieldsSt
         let destination_ip_count = value.destination_ips.len();
         Self {
             sensor: value.sensor,
-            start_time: value.start_time,
-            end_time: value.end_time,
+            sampling_window_start_time: value.sampling_window_start_time,
+            sampling_window_end_time: value.sampling_window_end_time,
             destination_ips: value.destination_ips,
             resp_country_codes: vec![crate::util::COUNTRY_CODE_PENDING; destination_ip_count],
             count: value.count,
@@ -60,17 +60,19 @@ impl From<UnusualDestinationPatternFields> for UnusualDestinationPatternFieldsSt
 impl UnusualDestinationPatternFields {
     #[must_use]
     pub fn syslog_rfc5424(&self) -> String {
-        let start_time_dt = DateTime::from_timestamp_nanos(self.start_time);
-        let end_time_dt = DateTime::from_timestamp_nanos(self.end_time);
+        let sampling_window_start_time_dt =
+            DateTime::from_timestamp_nanos(self.sampling_window_start_time);
+        let sampling_window_end_time_dt =
+            DateTime::from_timestamp_nanos(self.sampling_window_end_time);
         format!(
-            "category={:?} sensor={:?} start_time={:?} end_time={:?} destination_ips={:?} count={:?} expected_mean={:?} std_deviation={:?} z_score={:?} confidence={:?}",
+            "category={:?} sensor={:?} sampling_window_start_time={:?} sampling_window_end_time={:?} destination_ips={:?} count={:?} expected_mean={:?} std_deviation={:?} z_score={:?} confidence={:?}",
             self.category.as_ref().map_or_else(
                 || "Unspecified".to_string(),
                 std::string::ToString::to_string
             ),
             self.sensor,
-            start_time_dt.to_rfc3339(),
-            end_time_dt.to_rfc3339(),
+            sampling_window_start_time_dt.to_rfc3339(),
+            sampling_window_end_time_dt.to_rfc3339(),
             format_ip_vec(&self.destination_ips),
             self.count.to_string(),
             self.expected_mean.to_string(),
@@ -92,8 +94,8 @@ fn format_ip_vec(ips: &[IpAddr]) -> String {
 pub struct UnusualDestinationPattern {
     pub time: DateTime<Utc>,
     pub sensor: String,
-    pub start_time: DateTime<Utc>,
-    pub end_time: DateTime<Utc>,
+    pub sampling_window_start_time: DateTime<Utc>,
+    pub sampling_window_end_time: DateTime<Utc>,
     pub destination_ips: Vec<IpAddr>,
     pub resp_country_codes: Vec<[u8; 2]>,
     pub count: usize,
@@ -109,10 +111,10 @@ impl fmt::Display for UnusualDestinationPattern {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "sensor={:?} start_time={:?} end_time={:?} destination_ips={:?} resp_country_codes={:?} count={:?} expected_mean={:?} std_deviation={:?} z_score={:?} triage_scores={:?}",
+            "sensor={:?} sampling_window_start_time={:?} sampling_window_end_time={:?} destination_ips={:?} resp_country_codes={:?} count={:?} expected_mean={:?} std_deviation={:?} z_score={:?} triage_scores={:?}",
             self.sensor,
-            self.start_time.to_rfc3339(),
-            self.end_time.to_rfc3339(),
+            self.sampling_window_start_time.to_rfc3339(),
+            self.sampling_window_end_time.to_rfc3339(),
             format_ip_vec(&self.destination_ips),
             crate::util::country_codes_to_string(&self.resp_country_codes),
             self.count.to_string(),
@@ -129,8 +131,12 @@ impl UnusualDestinationPattern {
         Self {
             time,
             sensor: fields.sensor,
-            start_time: DateTime::from_timestamp_nanos(fields.start_time),
-            end_time: DateTime::from_timestamp_nanos(fields.end_time),
+            sampling_window_start_time: DateTime::from_timestamp_nanos(
+                fields.sampling_window_start_time,
+            ),
+            sampling_window_end_time: DateTime::from_timestamp_nanos(
+                fields.sampling_window_end_time,
+            ),
             destination_ips: fields.destination_ips,
             resp_country_codes: fields.resp_country_codes.clone(),
             count: fields.count,
@@ -206,5 +212,45 @@ impl Match for UnusualDestinationPattern {
         } else {
             None
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[derive(Serialize)]
+    struct UnusualDestinationPatternFieldsLegacy {
+        sensor: String,
+        start_time: i64,
+        end_time: i64,
+        destination_ips: Vec<IpAddr>,
+        count: usize,
+        expected_mean: f64,
+        std_deviation: f64,
+        z_score: f64,
+        confidence: f32,
+        category: Option<EventCategory>,
+    }
+
+    #[test]
+    fn unusual_destination_pattern_bincode_compatibility() {
+        let old = UnusualDestinationPatternFieldsLegacy {
+            sensor: "sensor".to_string(),
+            start_time: 777,
+            end_time: 888,
+            destination_ips: vec![IpAddr::from([127, 0, 0, 1])],
+            count: 1,
+            expected_mean: 1.0,
+            std_deviation: 0.1,
+            z_score: 2.0,
+            confidence: 0.3,
+            category: Some(EventCategory::Reconnaissance),
+        };
+        let bytes = bincode::serialize(&old).expect("legacy fields should serialize");
+        let parsed: UnusualDestinationPatternFields =
+            bincode::deserialize(&bytes).expect("new fields should deserialize");
+        assert_eq!(parsed.sampling_window_start_time, 777);
+        assert_eq!(parsed.sampling_window_end_time, 888);
     }
 }

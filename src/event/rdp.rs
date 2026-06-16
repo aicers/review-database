@@ -41,9 +41,9 @@ pub struct RdpBruteForceFields {
     pub orig_addr: IpAddr,
     pub resp_addrs: Vec<IpAddr>,
     /// Timestamp in nanoseconds since the Unix epoch (UTC).
-    pub start_time: i64,
+    pub first_event_start_time: i64,
     /// Timestamp in nanoseconds since the Unix epoch (UTC).
-    pub end_time: i64,
+    pub last_event_start_time: i64,
     pub proto: u8,
     pub confidence: f32,
     pub category: Option<EventCategory>,
@@ -58,8 +58,8 @@ pub(crate) struct RdpBruteForceFieldsStoredV0_46 {
     pub orig_country_code: [u8; 2],
     pub resp_addrs: Vec<IpAddr>,
     pub resp_country_codes: Vec<[u8; 2]>,
-    pub start_time: i64,
-    pub end_time: i64,
+    pub first_event_start_time: i64,
+    pub last_event_start_time: i64,
     pub proto: u8,
     pub confidence: f32,
     pub category: Option<EventCategory>,
@@ -74,8 +74,8 @@ impl From<RdpBruteForceFields> for RdpBruteForceFieldsStored {
             orig_country_code: crate::util::COUNTRY_CODE_PENDING,
             resp_addrs: value.resp_addrs,
             resp_country_codes: vec![crate::util::COUNTRY_CODE_PENDING; resp_addr_count],
-            start_time: value.start_time,
-            end_time: value.end_time,
+            first_event_start_time: value.first_event_start_time,
+            last_event_start_time: value.last_event_start_time,
             proto: value.proto,
             confidence: value.confidence,
             category: value.category,
@@ -86,10 +86,10 @@ impl From<RdpBruteForceFields> for RdpBruteForceFieldsStored {
 impl RdpBruteForceFields {
     #[must_use]
     pub fn syslog_rfc5424(&self) -> String {
-        let start_time_dt = DateTime::from_timestamp_nanos(self.start_time);
-        let end_time_dt = DateTime::from_timestamp_nanos(self.end_time);
+        let first_event_start_time_dt = DateTime::from_timestamp_nanos(self.first_event_start_time);
+        let last_event_start_time_dt = DateTime::from_timestamp_nanos(self.last_event_start_time);
         format!(
-            "category={:?} sensor={:?} orig_addr={:?} resp_addrs={:?} start_time={:?} end_time={:?} proto={:?} confidence={:?}",
+            "category={:?} sensor={:?} orig_addr={:?} resp_addrs={:?} first_event_start_time={:?} last_event_start_time={:?} proto={:?} confidence={:?}",
             self.category.as_ref().map_or_else(
                 || "Unspecified".to_string(),
                 std::string::ToString::to_string
@@ -97,8 +97,8 @@ impl RdpBruteForceFields {
             self.sensor,
             self.orig_addr.to_string(),
             vector_to_string(&self.resp_addrs),
-            start_time_dt.to_rfc3339(),
-            end_time_dt.to_rfc3339(),
+            first_event_start_time_dt.to_rfc3339(),
+            last_event_start_time_dt.to_rfc3339(),
             self.proto.to_string(),
             self.confidence.to_string()
         )
@@ -113,8 +113,8 @@ pub struct RdpBruteForce {
     pub orig_country_code: [u8; 2],
     pub resp_addrs: Vec<IpAddr>,
     pub resp_country_codes: Vec<[u8; 2]>,
-    pub start_time: DateTime<Utc>,
-    pub end_time: DateTime<Utc>,
+    pub first_event_start_time: DateTime<Utc>,
+    pub last_event_start_time: DateTime<Utc>,
     pub proto: u8,
     pub confidence: f32,
     pub category: Option<EventCategory>,
@@ -125,13 +125,13 @@ impl fmt::Display for RdpBruteForce {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "orig_addr={:?} orig_country_code={:?} resp_addrs={:?} resp_country_codes={:?} start_time={:?} end_time={:?} proto={:?} triage_scores={:?}",
+            "orig_addr={:?} orig_country_code={:?} resp_addrs={:?} resp_country_codes={:?} first_event_start_time={:?} last_event_start_time={:?} proto={:?} triage_scores={:?}",
             self.orig_addr.to_string(),
             crate::util::country_code_as_str(&self.orig_country_code),
             vector_to_string(&self.resp_addrs),
             crate::util::country_codes_to_string(&self.resp_country_codes),
-            self.start_time.to_rfc3339(),
-            self.end_time.to_rfc3339(),
+            self.first_event_start_time.to_rfc3339(),
+            self.last_event_start_time.to_rfc3339(),
             self.proto.to_string(),
             triage_scores_to_string(self.triage_scores.as_ref())
         )
@@ -147,8 +147,8 @@ impl RdpBruteForce {
             orig_country_code: fields.orig_country_code,
             resp_addrs: fields.resp_addrs.clone(),
             resp_country_codes: fields.resp_country_codes.clone(),
-            start_time: DateTime::from_timestamp_nanos(fields.start_time),
-            end_time: DateTime::from_timestamp_nanos(fields.end_time),
+            first_event_start_time: DateTime::from_timestamp_nanos(fields.first_event_start_time),
+            last_event_start_time: DateTime::from_timestamp_nanos(fields.last_event_start_time),
             proto: fields.proto,
             confidence: fields.confidence,
             category: fields.category,
@@ -446,5 +446,41 @@ impl Match for BlocklistRdp {
 
     fn find_attr_by_kind(&self, raw_event_attr: RawEventAttrKind) -> Option<AttrValue<'_>> {
         find_rdp_attr_by_kind!(self, raw_event_attr)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[derive(Serialize)]
+    struct RdpBruteForceFieldsLegacy {
+        sensor: String,
+        orig_addr: IpAddr,
+        resp_addrs: Vec<IpAddr>,
+        start_time: i64,
+        end_time: i64,
+        proto: u8,
+        confidence: f32,
+        category: Option<EventCategory>,
+    }
+
+    #[test]
+    fn rdp_bruteforce_bincode_compatibility() {
+        let old = RdpBruteForceFieldsLegacy {
+            sensor: "sensor".to_string(),
+            orig_addr: IpAddr::from([127, 0, 0, 1]),
+            resp_addrs: vec![IpAddr::from([127, 0, 0, 2])],
+            start_time: 123,
+            end_time: 456,
+            proto: 6,
+            confidence: 0.3,
+            category: Some(EventCategory::Discovery),
+        };
+        let bytes = bincode::serialize(&old).expect("legacy fields should serialize");
+        let parsed: RdpBruteForceFields =
+            bincode::deserialize(&bytes).expect("new fields should deserialize");
+        assert_eq!(parsed.first_event_start_time, 123);
+        assert_eq!(parsed.last_event_start_time, 456);
     }
 }
