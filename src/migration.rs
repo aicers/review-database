@@ -5,6 +5,7 @@ use std::{
     fs::{File, create_dir_all},
     io::{Read, Write},
     path::{Path, PathBuf},
+    sync::Arc,
 };
 
 use anyhow::{Context, Result, anyhow};
@@ -124,16 +125,19 @@ const COMPATIBLE_VERSION_REQ: &str = ">=0.46.0-alpha.1,<0.46.0-alpha.2";
 pub fn migrate_data_dir<P: AsRef<Path>>(
     data_dir: P,
     backup_dir: P,
-    locator: Option<&ip2location::DB>,
+    locator: Option<Arc<ip2location::DB>>,
 ) -> Result<()> {
     type Migration = (
         VersionReq,
         Version,
-        fn(&Path, &Path, Option<&ip2location::DB>) -> anyhow::Result<()>,
+        fn(&Path, &Path, Option<&dyn crate::geo::CountryLookup>) -> anyhow::Result<()>,
     );
 
     let data_dir = data_dir.as_ref();
     let backup_dir = backup_dir.as_ref();
+    let resolver = locator
+        .map(crate::geo::Ip2LocationResolver::new)
+        .map(|resolver| Box::new(resolver) as Box<dyn crate::geo::CountryLookup>);
 
     let Ok(compatible) = VersionReq::parse(COMPATIBLE_VERSION_REQ) else {
         unreachable!("COMPATIBLE_VERSION_REQ must be valid")
@@ -192,7 +196,7 @@ pub fn migrate_data_dir<P: AsRef<Path>>(
         .find(|(req, _to, _m)| req.matches(&version))
     {
         info!("Migrating database to {to}");
-        m(data_dir, backup_dir, locator)?;
+        m(data_dir, backup_dir, resolver.as_deref())?;
         version = to.clone();
         if compatible.matches(&version) {
             create_version_file(&backup).context("failed to update VERSION")?;
@@ -206,16 +210,16 @@ pub fn migrate_data_dir<P: AsRef<Path>>(
 fn migrate_0_45_to_0_46(
     data_dir: &Path,
     backup_dir: &Path,
-    locator: Option<&ip2location::DB>,
+    locator: Option<&dyn crate::geo::CountryLookup>,
 ) -> Result<()> {
-    let store = crate::Store::new(data_dir, backup_dir)
+    let store = crate::Store::new(data_dir, backup_dir, None)
         .context("Failed to open Store for event migration")?;
     migrate_event_country_codes(&store, locator)
 }
 
 pub(crate) fn migrate_event_country_codes(
     store: &crate::Store,
-    locator: Option<&ip2location::DB>,
+    locator: Option<&dyn crate::geo::CountryLookup>,
 ) -> Result<()> {
     let events = store.events();
     let mut migrated = 0usize;
@@ -232,11 +236,7 @@ pub(crate) fn migrate_event_country_codes(
         };
 
         let v0_46 = migrate_event_stored_schema_to_v0_46(kind, &value)?;
-        let resolved = resolve_stored_country_codes(
-            kind,
-            &v0_46,
-            locator.map(|db| db as &dyn crate::geo::CountryLookup),
-        )?;
+        let resolved = resolve_stored_country_codes(kind, &v0_46, locator)?;
 
         if resolved != value {
             events.update((&key, &value), (&key, &resolved))?;
@@ -1406,7 +1406,7 @@ mod tests {
         let _permit = acquire_db_permit();
         let data_dir = tempfile::tempdir().unwrap();
         let backup_dir = tempfile::tempdir().unwrap();
-        let store = Store::new(data_dir.path(), backup_dir.path()).unwrap();
+        let store = Store::new(data_dir.path(), backup_dir.path(), None).unwrap();
         let events = store.events();
         let legacy = legacy_blocklist_conn();
         let message = EventMessage {
@@ -1747,7 +1747,7 @@ mod tests {
             let permit = acquire_db_permit();
             let db_dir = tempfile::tempdir().unwrap();
             let backup_dir = tempfile::tempdir().unwrap();
-            let store = Store::new(db_dir.path(), backup_dir.path()).unwrap();
+            let store = Store::new(db_dir.path(), backup_dir.path(), None).unwrap();
             TestSchema {
                 permit,
                 db_dir,
@@ -1762,7 +1762,7 @@ mod tests {
             db_dir: tempfile::TempDir,
             backup_dir: tempfile::TempDir,
         ) -> Self {
-            let store = Store::new(db_dir.path(), backup_dir.path()).unwrap();
+            let store = Store::new(db_dir.path(), backup_dir.path(), None).unwrap();
             TestSchema {
                 permit,
                 db_dir,

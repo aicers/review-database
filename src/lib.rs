@@ -19,10 +19,10 @@ mod top_n;
 pub mod types;
 mod util;
 
-use std::io;
 use std::path::{Path, PathBuf};
+use std::{io, sync::Arc};
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Result, anyhow};
 pub use attrievent::attribute::RawEventKind;
 pub use rocksdb::backup::BackupEngineInfo;
 pub use tags::{CustomerTagSet, TagSet};
@@ -85,31 +85,20 @@ impl Store {
     /// # Errors
     ///
     /// Returns an error if the key-value store or its backup cannot be opened.
-    pub fn new(path: &Path, backup: &Path) -> Result<Self, anyhow::Error> {
-        Self::new_with_country_lookup(path, backup, None)
-    }
-
-    /// Opens a key-value store with an `IP2Location` database for ingestion-time
-    /// endpoint country-code resolution.
-    ///
-    /// The `IP2Location` database is opened once and shared by all event writers.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the key-value store, backup, or `IP2Location` database
-    /// cannot be opened.
-    pub fn new_with_ip2location(
+    pub fn new(
         path: &Path,
         backup: &Path,
-        ip2location: &Path,
+        ip2location: Option<Arc<ip2location::DB>>,
     ) -> Result<Self, anyhow::Error> {
-        let db = ip2location::DB::from_file(ip2location)
-            .map_err(anyhow::Error::new)
-            .context("failed to open ip2location database")?;
-        let lookup = std::sync::Arc::new(geo::Ip2LocationResolver::new(db));
-        Self::new_with_country_lookup(path, backup, Some(lookup))
+        let country_lookup = ip2location
+            .map(|db| Arc::new(geo::Ip2LocationResolver::new(db)) as geo::SharedCountryLookup);
+        Self::new_with_country_lookup(path, backup, country_lookup)
     }
 
+    /// Opens a key-value store with a country lookup for ingestion-time
+    /// endpoint country-code resolution.
+    ///
+    /// Used by tests to inject deterministic lookup behavior.
     fn new_with_country_lookup(
         path: &Path,
         backup: &Path,

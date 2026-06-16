@@ -2701,26 +2701,20 @@ pub(crate) fn resolve_stored_country_codes(
         return Ok(bytes.to_vec());
     };
 
-    let lookup = |addr| {
-        locator
-            .lookup(addr)
-            .ok()
-            .flatten()
-            .unwrap_or(crate::util::COUNTRY_CODE_INVALID)
-    };
+    let lookup = |addr| locator.lookup_country_code(addr);
 
     macro_rules! pair {
         ($ty:ty) => {
             reserialize::<$ty, _>(bytes, |fields| {
-                fields.orig_country_code = lookup(fields.orig_addr);
-                fields.resp_country_code = lookup(fields.resp_addr);
+                fields.orig_country_code = locator.lookup_country_code(fields.orig_addr);
+                fields.resp_country_code = locator.lookup_country_code(fields.resp_addr);
             })
         };
     }
     macro_rules! resp_vec {
         ($ty:ty) => {
             reserialize::<$ty, _>(bytes, |fields| {
-                fields.orig_country_code = lookup(fields.orig_addr);
+                fields.orig_country_code = locator.lookup_country_code(fields.orig_addr);
                 fields.resp_country_codes = fields.resp_addrs.iter().copied().map(lookup).collect();
             })
         };
@@ -3557,11 +3551,14 @@ mod tests {
     }
 
     impl crate::geo::CountryLookup for FakeCountryLookup {
-        fn lookup(&self, addr: IpAddr) -> anyhow::Result<Option<[u8; 2]>> {
+        fn lookup_country_code(&self, addr: IpAddr) -> [u8; 2] {
             if self.failures.contains(&addr) {
-                anyhow::bail!("configured lookup failure");
+                return crate::util::COUNTRY_CODE_INVALID;
             }
-            Ok(self.codes.get(&addr).copied())
+            self.codes
+                .get(&addr)
+                .copied()
+                .unwrap_or(crate::util::COUNTRY_CODE_INVALID)
         }
     }
 
@@ -3569,7 +3566,7 @@ mod tests {
         let permit = acquire_db_permit();
         let db_dir = tempfile::tempdir().unwrap();
         let backup_dir = tempfile::tempdir().unwrap();
-        let store = Arc::new(Store::new(db_dir.path(), backup_dir.path()).unwrap());
+        let store = Arc::new(Store::new(db_dir.path(), backup_dir.path(), None).unwrap());
         (permit, store)
     }
 
@@ -3682,15 +3679,14 @@ mod tests {
     #[test]
     fn event_db_put_resolves_vector_country_codes_in_address_order() {
         let orig_addr = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
-        let resp_addrs = vec![
-            IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)),
-            IpAddr::V6(std::net::Ipv6Addr::LOCALHOST),
-        ];
+        let first_resp_addr = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2));
+        let second_resp_addr = IpAddr::V6(std::net::Ipv6Addr::LOCALHOST);
+        let resp_addrs = vec![first_resp_addr, second_resp_addr];
         let lookup = FakeCountryLookup {
             codes: HashMap::from([
                 (orig_addr, *b"US"),
-                (resp_addrs[0], *b"JP"),
-                (resp_addrs[1], *b"DE"),
+                (first_resp_addr, *b"JP"),
+                (second_resp_addr, *b"DE"),
             ]),
             failures: HashSet::new(),
         };
@@ -4140,7 +4136,7 @@ mod tests {
         let backup_dir = tempfile::tempdir().unwrap();
 
         let store = Arc::new(RwLock::new(
-            Store::new(db_dir.path(), backup_dir.path()).unwrap(),
+            Store::new(db_dir.path(), backup_dir.path(), None).unwrap(),
         ));
         {
             let store = store.read().expect("test holds no other locks");
@@ -4199,7 +4195,7 @@ mod tests {
         );
 
         let store = Arc::new(RwLock::new(
-            Store::new(db_dir.path(), backup_dir.path()).unwrap(),
+            Store::new(db_dir.path(), backup_dir.path(), None).unwrap(),
         ));
         {
             let store = store.read().expect("test holds no other locks");

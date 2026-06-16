@@ -9,12 +9,14 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
-- **BREAKING**: Bumped the database format to `0.46.0-alpha.1` and changed
-  `migrate_data_dir` to accept `Option<&ip2location::DB>`. Event stored schemas
-  and runtime event types that track endpoints now include country-code fields.
-  Producer-facing event fields still do not require country-code input; new
-  writes resolve country codes when `Store::new_with_ip2location` is used and
-  store `ZZ` placeholders when no locator is configured. The `0.45.x` to
+- **BREAKING**: Bumped the database format to `0.46.0-alpha.1` and replaced
+  `Store::new_with_ip2location` with `Store::new` taking
+  `Option<Arc<ip2location::DB>>`; `migrate_data_dir` takes the same optional
+  shared locator. Event stored schemas and runtime event types that track
+  endpoints now include country-code fields. Producer-facing event fields
+  still do not require country-code input; new writes resolve country codes
+  when `Store::new` receives a locator and store `ZZ` placeholders when no
+  locator is configured. The `0.45.x` to
   `0.46.0-alpha.1` migration
   rewrites existing endpoint event records into the new stored schema, resolves
   country codes when an IP2Location database is provided, preserves `ZZ` when

@@ -1,4 +1,4 @@
-use std::{env, path::PathBuf, process::exit};
+use std::{env, path::PathBuf, process::exit, sync::Arc};
 
 use anyhow::{Context, Result};
 use config::File;
@@ -15,10 +15,10 @@ fn main() -> Result<()> {
         .as_ref()
         .map(ip2location::DB::from_file)
         .transpose()
-        .context("failed to open ip2location database")?;
+        .context("failed to open ip2location database")?
+        .map(Arc::new);
     println!("Migrating data directory...");
-    migrate_data_dir(&config.data_dir, &config.backup_dir, locator.as_ref())
-        .context("migration failed")?;
+    migrate_data_dir(&config.data_dir, &config.backup_dir, locator).context("migration failed")?;
     Ok(())
 }
 

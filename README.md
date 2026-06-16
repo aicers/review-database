@@ -34,14 +34,15 @@ flexible database interface for efficient data management.
 
 ## Country Codes At Ingestion
 
-Use `Store::new_with_ip2location` to open an IP2Location database once and
-share it with event writers. `EventDb::put` then resolves endpoint country
-codes while converting producer-facing fields to the stored schema. Producers
-do not provide country-code fields.
+Open an IP2Location database in the parent application and pass it to
+`Store::new` as `Some(Arc<ip2location::DB>)` to share it with event writers.
+`EventDb::put` then resolves endpoint country codes while converting
+producer-facing fields to the stored schema. Producers do not provide
+country-code fields.
 
 `ZZ` means no lookup was performed because the store was opened with
-`Store::new`. `XX` means a configured lookup was attempted but failed or did
-not return a valid two-letter code. Vector country-code fields retain the same
+`None`. `XX` means a configured lookup was attempted but failed or did not
+return a valid two-letter code. Vector country-code fields retain the same
 length and ordering as their corresponding address vectors.
 
 ## License

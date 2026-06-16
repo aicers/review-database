@@ -155,7 +155,7 @@ mod tests {
         let backup_dir = tempfile::tempdir().unwrap();
 
         let store = Arc::new(RwLock::new(
-            Store::new(db_dir.path(), backup_dir.path()).unwrap(),
+            Store::new(db_dir.path(), backup_dir.path(), None).unwrap(),
         ));
 
         {
