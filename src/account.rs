@@ -350,8 +350,8 @@ mod tests {
 
     /// Builds a deterministic `Account` for literal-byte compatibility tests.
     ///
-    /// Part of #746 / #762: fixed field values and timestamps pin the bincode wire
-    /// format exercised by `Value::value` and `FromKeyValue::from_key_value`.
+    /// Fixed field values and timestamps pin the bincode wire format exercised by
+    /// `Value::value` and `FromKeyValue::from_key_value`.
     fn bytes_fixture_account() -> Account {
         use std::num::NonZeroU32;
 
@@ -393,7 +393,7 @@ mod tests {
         }
     }
 
-    /// Literal-byte contract test for `Account` table values (issue #762, part of #746).
+    /// Verifies literal-byte compatibility for `Account` table values.
     ///
     /// `tests/fixtures/account_bytes.bin` was produced once by calling
     /// `bytes_fixture_account()` and serializing with `Account::value()`, which uses
