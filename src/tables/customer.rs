@@ -157,10 +157,50 @@ impl<'d> IndexedTable<'d, Customer> {
 
 #[cfg(test)]
 mod test {
-    use std::sync::Arc;
+    use std::{
+        net::{IpAddr, Ipv4Addr, Ipv6Addr},
+        ops::RangeInclusive,
+        str::FromStr,
+        sync::Arc,
+    };
 
+    use chrono::{DateTime, Utc};
+    use ipnet::IpNet;
+
+    use crate::event::NetworkType;
     use crate::test::{DbGuard, acquire_db_permit};
-    use crate::{Customer, CustomerUpdate, Store};
+    use crate::{
+        Customer, CustomerNetwork, CustomerUpdate, HostNetworkGroup, Indexable, Store,
+        types::FromKeyValue,
+    };
+
+    /// Canonical timestamp for deterministic Customer value-byte fixtures.
+    const FIXTURE_CREATION_TIME: &str = "2000-02-29T12:34:56.123456789Z";
+
+    /// Historical `Customer` stored value bytes for the deterministic fixture
+    /// record below.
+    ///
+    /// Captured once from `review-database` v0.45.0 (`3dd96ec`) via the
+    /// production `Indexable::value` path (bincode `DefaultOptions`).
+    const CUSTOMER_STORED_VALUE_V0: &[u8] = &[
+        0x07, 0x09, 0x61, 0x63, 0x6d, 0x65, 0x2d, 0x63, 0x6f, 0x72, 0x70, 0x1e, 0x44, 0x65, 0x74,
+        0x65, 0x72, 0x6d, 0x69, 0x6e, 0x69, 0x73, 0x74, 0x69, 0x63, 0x20, 0x66, 0x69, 0x78, 0x74,
+        0x75, 0x72, 0x65, 0x20, 0x63, 0x75, 0x73, 0x74, 0x6f, 0x6d, 0x65, 0x72, 0x03, 0x0e, 0x69,
+        0x6e, 0x74, 0x72, 0x61, 0x6e, 0x65, 0x74, 0x2d, 0x61, 0x6c, 0x70, 0x68, 0x61, 0x18, 0x50,
+        0x72, 0x69, 0x6d, 0x61, 0x72, 0x79, 0x20, 0x69, 0x6e, 0x74, 0x72, 0x61, 0x6e, 0x65, 0x74,
+        0x20, 0x73, 0x65, 0x67, 0x6d, 0x65, 0x6e, 0x74, 0x00, 0x02, 0x00, 0x0a, 0x00, 0x00, 0x01,
+        0x00, 0xc0, 0xa8, 0x01, 0x0a, 0x01, 0x00, 0x0a, 0x00, 0x00, 0x00, 0x08, 0x01, 0x00, 0xac,
+        0x10, 0x00, 0x01, 0x00, 0xac, 0x10, 0xff, 0xfe, 0x0c, 0x67, 0x61, 0x74, 0x65, 0x77, 0x61,
+        0x79, 0x2d, 0x62, 0x65, 0x74, 0x61, 0x10, 0x45, 0x78, 0x74, 0x65, 0x72, 0x6e, 0x61, 0x6c,
+        0x20, 0x67, 0x61, 0x74, 0x65, 0x77, 0x61, 0x79, 0x02, 0x01, 0x01, 0x20, 0x01, 0x0d, 0xb8,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x01, 0x01, 0x20,
+        0x01, 0x0d, 0xb8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x20, 0x00, 0x0e, 0x65, 0x78, 0x74, 0x72, 0x61, 0x6e, 0x65, 0x74, 0x2d, 0x67, 0x61, 0x6d,
+        0x6d, 0x61, 0x10, 0x50, 0x61, 0x72, 0x74, 0x6e, 0x65, 0x72, 0x20, 0x65, 0x78, 0x74, 0x72,
+        0x61, 0x6e, 0x65, 0x74, 0x01, 0x00, 0x00, 0x00, 0x1e, 0x32, 0x30, 0x30, 0x30, 0x2d, 0x30,
+        0x32, 0x2d, 0x32, 0x39, 0x54, 0x31, 0x32, 0x3a, 0x33, 0x34, 0x3a, 0x35, 0x36, 0x2e, 0x31,
+        0x32, 0x33, 0x34, 0x35, 0x36, 0x37, 0x38, 0x39, 0x5a,
+    ];
 
     #[test]
     fn update() {
@@ -204,5 +244,91 @@ mod test {
             networks: Vec::new(),
             creation_time: chrono::Utc::now(),
         }
+    }
+
+    fn fixture_creation_time() -> DateTime<Utc> {
+        DateTime::parse_from_rfc3339(FIXTURE_CREATION_TIME)
+            .expect("valid RFC 3339 timestamp")
+            .with_timezone(&Utc)
+    }
+
+    /// Builds a deterministic `Customer` covering all stored value fields.
+    fn deterministic_fixture_customer() -> Customer {
+        let intranet_group = HostNetworkGroup::new(
+            vec![
+                IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)),
+                IpAddr::V4(Ipv4Addr::new(192, 168, 1, 10)),
+            ],
+            vec![IpNet::from_str("10.0.0.0/8").expect("valid CIDR")],
+            vec![
+                IpAddr::V4(Ipv4Addr::new(172, 16, 0, 1))
+                    ..=IpAddr::V4(Ipv4Addr::new(172, 16, 255, 254)),
+            ],
+        );
+        let gateway_group = HostNetworkGroup::new(
+            vec![IpAddr::V6(
+                Ipv6Addr::from_str("2001:db8::1").expect("valid IPv6"),
+            )],
+            vec![IpNet::from_str("2001:db8::/32").expect("valid CIDR")],
+            Vec::<RangeInclusive<IpAddr>>::new(),
+        );
+
+        Customer {
+            id: 7,
+            name: "acme-corp".to_string(),
+            description: "Deterministic fixture customer".to_string(),
+            networks: vec![
+                CustomerNetwork {
+                    name: "intranet-alpha".to_string(),
+                    description: "Primary intranet segment".to_string(),
+                    network_type: NetworkType::Intranet,
+                    network_group: intranet_group,
+                },
+                CustomerNetwork {
+                    name: "gateway-beta".to_string(),
+                    description: "External gateway".to_string(),
+                    network_type: NetworkType::Gateway,
+                    network_group: gateway_group,
+                },
+                CustomerNetwork {
+                    name: "extranet-gamma".to_string(),
+                    description: "Partner extranet".to_string(),
+                    network_type: NetworkType::Extranet,
+                    network_group: HostNetworkGroup::default(),
+                },
+            ],
+            creation_time: fixture_creation_time(),
+        }
+    }
+
+    #[test]
+    fn customer_stored_value_backward_compatibility() -> anyhow::Result<()> {
+        let expected = deterministic_fixture_customer();
+
+        let decoded = Customer::from_key_value(expected.name.as_bytes(), CUSTOMER_STORED_VALUE_V0)?;
+        assert_eq!(decoded.id, expected.id);
+        assert_eq!(decoded.name, expected.name);
+        assert_eq!(decoded.description, expected.description);
+        assert_eq!(decoded.creation_time, expected.creation_time);
+        assert_eq!(decoded.networks.len(), expected.networks.len());
+        for (decoded_network, expected_network) in
+            decoded.networks.iter().zip(expected.networks.iter())
+        {
+            assert_eq!(decoded_network.name, expected_network.name);
+            assert_eq!(decoded_network.description, expected_network.description);
+            assert!(
+                decoded_network.network_type == expected_network.network_type,
+                "network_type mismatch"
+            );
+            assert_eq!(
+                decoded_network.network_group,
+                expected_network.network_group
+            );
+        }
+
+        let written = expected.value();
+        assert_eq!(written.as_slice(), CUSTOMER_STORED_VALUE_V0);
+
+        Ok(())
     }
 }
