@@ -475,16 +475,24 @@ impl Match for BlocklistDceRpc {
 
 #[cfg(test)]
 mod tests {
-    use std::net::{IpAddr, Ipv4Addr};
+    use std::{
+        cmp::Ordering,
+        net::{IpAddr, Ipv4Addr},
+    };
 
-    use attrievent::attribute::{DceRpcAttr, RawEventAttrKind};
+    use attrievent::attribute::{DceRpcAttr, RawEventAttrKind, RawEventKind};
+    use bincode::Options;
     use chrono::{TimeZone, Utc};
+    use serde::Serialize;
 
     use super::{
         BlocklistDceRpc, BlocklistDceRpcFieldsStored, DceRpcContext, collect_request_part,
         format_dce_uuid,
     };
-    use crate::event::common::{AttrValue, Match};
+    use crate::{
+        AttrCmpKind, PacketAttr, ValueKind,
+        event::common::{AttrValue, Match},
+    };
 
     #[test]
     fn format_dce_uuid_produces_canonical_text() {
@@ -596,6 +604,53 @@ mod tests {
             event
                 .find_attr_by_kind(RawEventAttrKind::DceRpc(DceRpcAttr::ContextId))
                 .is_none()
+        );
+    }
+
+    fn serialize<T>(value: &T) -> Option<Vec<u8>>
+    where
+        T: Serialize,
+    {
+        bincode::DefaultOptions::new().serialize(value).ok()
+    }
+
+    #[test]
+    fn dcerpc_score_by_attr() {
+        let time = Utc.with_ymd_and_hms(1970, 1, 1, 0, 0, 0).unwrap();
+        let event = BlocklistDceRpc::new(time, dcerpc_fields_with_context());
+
+        let packet_attrs = vec![
+            PacketAttr {
+                raw_event_kind: RawEventKind::DceRpc,
+                attr_name: DceRpcAttr::AbstractSyntax.to_string(),
+                value_kind: ValueKind::String,
+                cmp_kind: AttrCmpKind::Contain,
+                first_value: serialize(&"12345678-1234-5678-1234-56789abcdef0").unwrap(),
+                second_value: None,
+                weight: Some(0.5),
+            },
+            PacketAttr {
+                raw_event_kind: RawEventKind::DceRpc,
+                attr_name: DceRpcAttr::RequestContextId.to_string(),
+                value_kind: ValueKind::UInteger,
+                cmp_kind: AttrCmpKind::Equal,
+                first_value: serialize(&0_u64).unwrap(),
+                second_value: None,
+                weight: Some(0.25),
+            },
+            PacketAttr {
+                raw_event_kind: RawEventKind::DceRpc,
+                attr_name: DceRpcAttr::RequestOpnum.to_string(),
+                value_kind: ValueKind::UInteger,
+                cmp_kind: AttrCmpKind::Equal,
+                first_value: serialize(&42_u64).unwrap(),
+                second_value: None,
+                weight: Some(0.25),
+            },
+        ];
+        assert_eq!(
+            event.score_by_attr(&packet_attrs).partial_cmp(&1.0),
+            Some(Ordering::Equal)
         );
     }
 }

@@ -436,13 +436,19 @@ impl Match for BlocklistDhcp {
 
 #[cfg(test)]
 mod tests {
-    use std::net::{IpAddr, Ipv4Addr};
+    use std::{
+        cmp::Ordering,
+        net::{IpAddr, Ipv4Addr},
+    };
 
-    use attrievent::attribute::{DhcpAttr, RawEventAttrKind};
+    use attrievent::attribute::{DhcpAttr, RawEventAttrKind, RawEventKind};
     use chrono::{TimeZone, Utc};
 
     use super::{BlocklistDhcp, BlocklistDhcpFieldsStored};
-    use crate::event::common::{AttrValue, Match};
+    use crate::{
+        AttrCmpKind, PacketAttr, ValueKind,
+        event::common::{AttrValue, Match},
+    };
 
     fn dhcp_fields_with_options() -> BlocklistDhcpFieldsStored {
         BlocklistDhcpFieldsStored {
@@ -508,5 +514,39 @@ mod tests {
             panic!("Expected OptionData as VecRawList");
         };
         assert_eq!(data.as_ref(), &[&[1_u8][..], &[0x01, 0x02, 0x03][..]]);
+    }
+
+    #[test]
+    fn dhcp_option_data_score_by_attr() {
+        let time = Utc.with_ymd_and_hms(1970, 1, 1, 0, 0, 0).unwrap();
+        let event = BlocklistDhcp::new(time, dhcp_fields_with_options());
+
+        let match_attr = vec![PacketAttr {
+            raw_event_kind: RawEventKind::Dhcp,
+            attr_name: DhcpAttr::OptionData.to_string(),
+            value_kind: ValueKind::Vector,
+            cmp_kind: AttrCmpKind::Contain,
+            first_value: vec![0x02, 0x03],
+            second_value: None,
+            weight: Some(1.0),
+        }];
+        assert_eq!(
+            event.score_by_attr(&match_attr).partial_cmp(&1.0),
+            Some(Ordering::Equal)
+        );
+
+        let no_match_attr = vec![PacketAttr {
+            raw_event_kind: RawEventKind::Dhcp,
+            attr_name: DhcpAttr::OptionData.to_string(),
+            value_kind: ValueKind::Vector,
+            cmp_kind: AttrCmpKind::Contain,
+            first_value: vec![0xff],
+            second_value: None,
+            weight: Some(1.0),
+        }];
+        assert_eq!(
+            event.score_by_attr(&no_match_attr).partial_cmp(&0.0),
+            Some(Ordering::Equal)
+        );
     }
 }
