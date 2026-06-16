@@ -274,8 +274,8 @@ mod test {
 
     /// Builds a deterministic `Network` for literal-byte compatibility tests.
     ///
-    /// Part of #746 / #764: fixed field values and timestamps pin the bincode wire
-    /// format exercised by `Indexable::value` (private projected `Value`) and
+    /// Fixed field values and timestamps pin the bincode wire format exercised
+    /// by `Indexable::value` for the private projected `Value` and by
     /// `FromKeyValue::from_key_value`.
     fn deterministic_fixture_network() -> Network {
         let creation_time: DateTime<Utc> =
@@ -309,7 +309,7 @@ mod test {
     /// `tests/fixtures/network_projected_private_value.bin` was produced once by
     /// calling `Indexable::value` on `deterministic_fixture_network()`, which
     /// serializes the private `Value` struct (name excluded; stored in the key)
-    /// via `tables::serialize` (`bincode::DefaultOptions`). Part of #746 / #764.
+    /// via `tables::serialize` (`bincode::DefaultOptions`).
     #[test]
     fn network_projected_private_value_backward_compatibility() {
         const FIXTURE_BYTES: &[u8] = include_bytes!(concat!(
