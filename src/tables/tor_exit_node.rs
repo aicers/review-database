@@ -115,4 +115,115 @@ mod tests {
         assert_eq!(&entries[0].ip_address, "1.0.0.127");
         assert_eq!(entries[0].updated_at, t2);
     }
+
+    /// Baseline tests for the chrono string bytes stored in `updated_at`.
+    ///
+    /// These tests pin the current `DateTime<Utc>::to_string()` write format and
+    /// read parsing behavior. A follow-up migration will normalize these values
+    /// to `i64` epoch seconds; that migration is out of scope for this issue.
+    mod timestamp_contract {
+        use anyhow::Result;
+        use chrono::{DateTime, NaiveDateTime, Utc};
+        use rocksdb::Direction;
+
+        use super::*;
+        use crate::types::FromKeyValue;
+
+        const WHOLE_SECOND_TS: i64 = 951_827_696;
+        const FRACTIONAL_NSEC: u32 = 123_456_789;
+
+        const WHOLE_SECOND_BYTES: &[u8] = b"2000-02-29 12:34:56 UTC";
+        const FRACTIONAL_SECOND_BYTES: &[u8] = b"2000-02-29 12:34:56.123456789 UTC";
+
+        // `from_utc` / `from_timestamp_opt` match the construction style documented in
+        // issue #747; both are deprecated but still mirror production chrono usage.
+        #[allow(deprecated)]
+        fn whole_second_datetime() -> DateTime<Utc> {
+            DateTime::from_utc(
+                NaiveDateTime::from_timestamp_opt(WHOLE_SECOND_TS, 0)
+                    .expect("valid whole-second timestamp"),
+                Utc,
+            )
+        }
+
+        #[allow(deprecated)]
+        fn fractional_second_datetime() -> DateTime<Utc> {
+            DateTime::from_utc(
+                NaiveDateTime::from_timestamp_opt(WHOLE_SECOND_TS, FRACTIONAL_NSEC)
+                    .expect("valid fractional-second timestamp"),
+                Utc,
+            )
+        }
+
+        #[test]
+        fn test_updated_at_writer_stores_chrono_string_bytes() {
+            let (_permit, store) = super::setup_store();
+            let table = store.tor_exit_node_map();
+
+            let whole = whole_second_datetime();
+            let fractional = fractional_second_datetime();
+
+            table
+                .replace_all(
+                    [
+                        TorExitNode {
+                            ip_address: "10.0.0.1".to_string(),
+                            updated_at: whole,
+                        },
+                        TorExitNode {
+                            ip_address: "10.0.0.2".to_string(),
+                            updated_at: fractional,
+                        },
+                    ]
+                    .into_iter(),
+                )
+                .unwrap();
+
+            let whole_value = table.map.get(b"10.0.0.1").unwrap().unwrap();
+            assert_eq!(whole_value.as_ref(), WHOLE_SECOND_BYTES);
+
+            let fractional_value = table.map.get(b"10.0.0.2").unwrap().unwrap();
+            assert_eq!(fractional_value.as_ref(), FRACTIONAL_SECOND_BYTES);
+        }
+
+        #[test]
+        fn test_updated_at_reads_legacy_chrono_string_bytes() {
+            let (_permit, store) = super::setup_store();
+            let table = store.tor_exit_node_map();
+
+            let whole = whole_second_datetime();
+            let fractional = fractional_second_datetime();
+
+            table.map.put(b"10.0.0.1", WHOLE_SECOND_BYTES).unwrap();
+            table.map.put(b"10.0.0.2", FRACTIONAL_SECOND_BYTES).unwrap();
+
+            let entries: Vec<_> = table
+                .iter(Direction::Forward, None)
+                .collect::<Result<Vec<_>>>()
+                .unwrap();
+            assert_eq!(entries.len(), 2);
+
+            let whole_entry = entries
+                .iter()
+                .find(|entry| entry.ip_address == "10.0.0.1")
+                .expect("whole-second entry");
+            assert_eq!(whole_entry.updated_at, whole);
+
+            let fractional_entry = entries
+                .iter()
+                .find(|entry| entry.ip_address == "10.0.0.2")
+                .expect("fractional-second entry");
+            assert_eq!(fractional_entry.updated_at, fractional);
+
+            let parsed_whole =
+                TorExitNode::from_key_value(b"10.0.0.1", WHOLE_SECOND_BYTES).unwrap();
+            assert_eq!(parsed_whole.ip_address, "10.0.0.1");
+            assert_eq!(parsed_whole.updated_at, whole);
+
+            let parsed_fractional =
+                TorExitNode::from_key_value(b"10.0.0.2", FRACTIONAL_SECOND_BYTES).unwrap();
+            assert_eq!(parsed_fractional.ip_address, "10.0.0.2");
+            assert_eq!(parsed_fractional.updated_at, fractional);
+        }
+    }
 }

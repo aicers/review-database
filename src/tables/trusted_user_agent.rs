@@ -137,4 +137,122 @@ mod test {
             updated_at: Utc::now(),
         }
     }
+
+    /// Baseline tests for the chrono string bytes stored in `updated_at`.
+    ///
+    /// These tests pin the current `DateTime<Utc>::to_string()` write format and
+    /// read parsing behavior. A follow-up migration will normalize these values
+    /// to `i64` epoch seconds; that migration is out of scope for this issue.
+    mod timestamp_contract {
+        use anyhow::Result;
+        use chrono::{DateTime, NaiveDateTime, Utc};
+        use rocksdb::Direction;
+
+        use super::*;
+        use crate::types::FromKeyValue;
+
+        const WHOLE_SECOND_TS: i64 = 951_827_696;
+        const FRACTIONAL_NSEC: u32 = 123_456_789;
+
+        const WHOLE_SECOND_BYTES: &[u8] = b"2000-02-29 12:34:56 UTC";
+        const FRACTIONAL_SECOND_BYTES: &[u8] = b"2000-02-29 12:34:56.123456789 UTC";
+
+        // `from_utc` / `from_timestamp_opt` match the construction style documented in
+        // issue #747; both are deprecated but still mirror production chrono usage.
+        #[allow(deprecated)]
+        fn whole_second_datetime() -> DateTime<Utc> {
+            DateTime::from_utc(
+                NaiveDateTime::from_timestamp_opt(WHOLE_SECOND_TS, 0)
+                    .expect("valid whole-second timestamp"),
+                Utc,
+            )
+        }
+
+        #[allow(deprecated)]
+        fn fractional_second_datetime() -> DateTime<Utc> {
+            DateTime::from_utc(
+                NaiveDateTime::from_timestamp_opt(WHOLE_SECOND_TS, FRACTIONAL_NSEC)
+                    .expect("valid fractional-second timestamp"),
+                Utc,
+            )
+        }
+
+        #[test]
+        fn test_updated_at_writer_stores_chrono_string_bytes() {
+            let (_permit, store) = super::setup_store();
+            let table = store.trusted_user_agent_map();
+
+            let whole = whole_second_datetime();
+            let fractional = fractional_second_datetime();
+
+            table
+                .insert(&TrustedUserAgent {
+                    user_agent: "whole-second-agent".to_string(),
+                    updated_at: whole,
+                })
+                .unwrap();
+            table
+                .insert(&TrustedUserAgent {
+                    user_agent: "fractional-second-agent".to_string(),
+                    updated_at: fractional,
+                })
+                .unwrap();
+
+            let whole_value = table.map.get(b"whole-second-agent").unwrap().unwrap();
+            assert_eq!(whole_value.as_ref(), WHOLE_SECOND_BYTES);
+
+            let fractional_value = table.map.get(b"fractional-second-agent").unwrap().unwrap();
+            assert_eq!(fractional_value.as_ref(), FRACTIONAL_SECOND_BYTES);
+        }
+
+        #[test]
+        fn test_updated_at_reads_legacy_chrono_string_bytes() {
+            let (_permit, store) = super::setup_store();
+            let table = store.trusted_user_agent_map();
+
+            let whole = whole_second_datetime();
+            let fractional = fractional_second_datetime();
+
+            table
+                .map
+                .put(b"whole-second-agent", WHOLE_SECOND_BYTES)
+                .unwrap();
+            table
+                .map
+                .put(b"fractional-second-agent", FRACTIONAL_SECOND_BYTES)
+                .unwrap();
+
+            let entries: Vec<_> = table
+                .iter(Direction::Forward, None)
+                .collect::<Result<Vec<_>>>()
+                .unwrap();
+            assert_eq!(entries.len(), 2);
+
+            let whole_entry = entries
+                .iter()
+                .find(|entry| entry.user_agent == "whole-second-agent")
+                .expect("whole-second entry");
+            assert_eq!(whole_entry.updated_at, whole);
+
+            let fractional_entry = entries
+                .iter()
+                .find(|entry| entry.user_agent == "fractional-second-agent")
+                .expect("fractional-second entry");
+            assert_eq!(fractional_entry.updated_at, fractional);
+
+            let parsed_whole =
+                TrustedUserAgent::from_key_value(b"whole-second-agent", WHOLE_SECOND_BYTES)
+                    .unwrap();
+            assert_eq!(parsed_whole.user_agent, "whole-second-agent");
+            assert_eq!(parsed_whole.updated_at, whole);
+
+            let parsed_fractional = TrustedUserAgent::from_key_value(
+                b"fractional-second-agent",
+                FRACTIONAL_SECOND_BYTES,
+            )
+            .unwrap();
+            assert_eq!(parsed_fractional.user_agent, "fractional-second-agent");
+            assert_eq!(parsed_fractional.updated_at, fractional);
+        }
+    }
 }
