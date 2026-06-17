@@ -325,9 +325,12 @@ mod test {
     /// (`bincode::DefaultOptions`). Regenerate with
     /// `dump_triage_response_literal_fixture_bytes` if the stored layout changes.
     ///
-    /// Not covered: empty `tag_ids`; unsorted `tag_ids` input (production sorts
-    /// on insert); `id: u32::MAX` placeholder; empty `sensor`/`remarks`; key
-    /// bytes (see issue #750).
+    /// Intentionally out of scope: value bytes for empty `tag_ids`; value bytes
+    /// when `tag_ids` are provided unsorted (production sorts on insert); the
+    /// `u32::MAX` id placeholder used by `TriageResponse::new`; empty `sensor`
+    /// or `remarks`; and RocksDB key bytes (sensor UTF-8 followed by
+    /// big-endian nanosecond timestamp), which are covered by the
+    /// `unique_key_timestamp_*` tests above.
     #[test]
     fn triage_response_literal_bytes_contract() -> Result<()> {
         const FIXTURE_BYTES: &[u8] =
