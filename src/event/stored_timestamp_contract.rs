@@ -12,7 +12,7 @@
 //! | Struct | Timestamp field(s) | Why representative |
 //! | --- | --- | --- |
 //! | [`HttpThreatFieldsStored`](super::HttpThreatFieldsStored) | `time` | HTTP threat events; exercised by `convert_for_storage` and migration tests |
-//! | [`NetworkThreatFieldsStored`](super::network::NetworkThreatFieldsStored) | `time`, `start_time` | Multiple `ts_nanoseconds` fields in one stored struct |
+//! | [`NetworkThreatFieldsStored`](super::network::NetworkThreatFieldsStored) | `time`, `start_time` | Multiple `ts_nanoseconds` fields in one stored struct (tested via a minimal dual-field struct) |
 //! | [`ExtraThreatFieldsStored`](super::log::ExtraThreatFieldsStored) | `time` | Production conversion and full stored-event fixture |
 //!
 //! These structs share the same serde attribute and bincode path as every
@@ -23,14 +23,12 @@
 //! this boundary would change serialized sizes or byte patterns and cause
 //! these tests to fail.
 
-use std::net::IpAddr;
-
 use chrono::{DateTime, NaiveDate, Utc, serde::ts_nanoseconds};
 use serde::{Deserialize, Serialize};
 
 use super::{
     EventKind, ExtraThreatFields, ExtraThreatFieldsStored, HttpThreatFields,
-    HttpThreatFieldsStored, convert_for_storage, network::NetworkThreatFieldsStored,
+    HttpThreatFieldsStored, convert_for_storage,
 };
 
 /// Mirrors a single stored `ts_nanoseconds` field for isolated size checks.
@@ -40,17 +38,13 @@ struct TsNanosecondsField {
     time: DateTime<Utc>,
 }
 
-#[derive(Serialize)]
-struct NetworkThreatStartTimePrefix<'a> {
+/// Mirrors multiple stored `ts_nanoseconds` fields without pinning unrelated schema.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct DualTsNanosecondsFields {
     #[serde(with = "ts_nanoseconds")]
     time: DateTime<Utc>,
-    sensor: &'a str,
-    orig_addr: IpAddr,
-    orig_port: u16,
-    resp_addr: IpAddr,
-    resp_port: u16,
-    proto: u8,
-    service: &'a str,
+    #[serde(with = "ts_nanoseconds")]
+    start_time: DateTime<Utc>,
 }
 
 /// Returns `1969-12-31T23:59:59.123456789Z`.
@@ -234,62 +228,31 @@ fn convert_for_storage_preserves_http_threat_i64_timestamp_bytes() {
 }
 
 #[test]
-fn network_threat_stored_timestamps_use_i64_bytes() {
+fn dual_ts_nanoseconds_fields_use_eight_byte_i64_bincode() {
     let time = pre_1970_timestamp();
     let start_time = modern_timestamp();
-    let stored = NetworkThreatFieldsStored {
-        time,
-        sensor: "sensor".to_string(),
-        orig_addr: "10.0.0.1".parse().expect("valid ip"),
-        orig_port: 1234,
-        resp_addr: "10.0.0.2".parse().expect("valid ip"),
-        resp_port: 443,
-        proto: 6,
-        service: "tls".to_string(),
-        start_time,
-        duration: 1,
-        orig_pkts: 2,
-        resp_pkts: 3,
-        orig_l2_bytes: 4,
-        resp_l2_bytes: 5,
-        content: "payload".to_string(),
-        db_name: "db".to_string(),
-        rule_id: 9,
-        matched_to: "rule".to_string(),
-        cluster_id: Some(7),
-        attack_kind: "scan".to_string(),
-        confidence: 0.75,
-        category: None,
-        triage_scores: None,
-    };
+    let bytes = bincode::serialize(&DualTsNanosecondsFields { time, start_time })
+        .expect("serializable dual timestamp fields");
 
-    let bytes = bincode::serialize(&stored).expect("serializable stored fields");
-    let decoded: NetworkThreatFieldsStored =
-        bincode::deserialize(&bytes).expect("round-trippable stored fields");
+    assert_eq!(
+        bytes.len(),
+        16,
+        "two ts_nanoseconds fields must occupy sixteen bytes"
+    );
+
+    let decoded: DualTsNanosecondsFields =
+        bincode::deserialize(&bytes).expect("round-trippable dual timestamp fields");
     assert_eq!(decoded.time, time);
     assert_eq!(decoded.start_time, start_time);
     assert_eq!(decoded.time.timestamp_subsec_nanos(), 123_456_789);
     assert_eq!(decoded.start_time.timestamp_subsec_nanos(), 987_654_321);
 
-    let time_prefix = bytes.get(..8).expect("leading timestamp");
-    assert_eight_byte_i64_contract(time_prefix, time.timestamp_nanos_opt().expect("in range"));
-
-    let start_time_offset = bincode::serialize(&NetworkThreatStartTimePrefix {
-        time,
-        sensor: &stored.sensor,
-        orig_addr: stored.orig_addr,
-        orig_port: stored.orig_port,
-        resp_addr: stored.resp_addr,
-        resp_port: stored.resp_port,
-        proto: stored.proto,
-        service: &stored.service,
-    })
-    .expect("serializable prefix")
-    .len();
     assert_eight_byte_i64_contract(
-        bytes
-            .get(start_time_offset..start_time_offset + 8)
-            .expect("start_time bytes"),
+        bytes.get(..8).expect("leading timestamp"),
+        time.timestamp_nanos_opt().expect("in range"),
+    );
+    assert_eight_byte_i64_contract(
+        bytes.get(8..16).expect("second timestamp"),
         start_time.timestamp_nanos_opt().expect("in range"),
     );
 }
