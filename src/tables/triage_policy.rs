@@ -946,7 +946,7 @@ mod test {
     }
 
     // =========================================================================
-    // Literal-byte fixture: stored table-value bytes for TriagePolicy (#768)
+    // Literal-byte fixture: stored table-value bytes for TriagePolicy
     // =========================================================================
 
     use attrievent::attribute::RawEventKind;
@@ -954,8 +954,11 @@ mod test {
 
     use crate::{Indexable, types::FromKeyValue};
 
-    /// Builds the deterministic `TriagePolicy` whose production encoding must
-    /// match `TRIAGE_POLICY_LITERAL_BYTES`.
+    const FIXTURE_BYTES: &[u8] =
+        include_bytes!("../../tests/fixtures/triage_policy_literal_bytes.bin");
+
+    /// Builds the deterministic `TriagePolicy` encoded by the literal-byte
+    /// fixture.
     fn deterministic_fixture_triage_policy() -> TriagePolicy {
         let creation_time = Utc.with_ymd_and_hms(2024, 3, 15, 10, 30, 45).unwrap()
             + chrono::Duration::nanoseconds(123_456_789);
@@ -997,16 +1000,15 @@ mod test {
     }
 
     /// Verifies production decode/encode round-trip against a committed literal
-    /// fixture captured from a stored `TriagePolicy` table value (Part of #746).
+    /// fixture captured from a stored `TriagePolicy` table value.
     ///
-    /// The fixture bytes are the single source of truth; this test reconstructs
-    /// the policy in code and asserts the production write path reproduces them.
+    /// Expected bytes come from the committed literal fixture (not from the
+    /// production serializer inside this test). `creation_time` is pinned to
+    /// `2024-03-15T10:30:45.123456789Z` so the encoding stays deterministic.
     #[test]
     fn stored_table_value_bytes_match_literal_fixture() {
-        let fixture_bytes = include_bytes!("../../tests/fixtures/triage_policy_literal_bytes.bin");
-
         let decoded =
-            TriagePolicy::from_key_value(&[], fixture_bytes).expect("fixture must decode");
+            TriagePolicy::from_key_value(&[], FIXTURE_BYTES).expect("fixture must decode");
         let expected = deterministic_fixture_triage_policy();
         assert_eq!(decoded.id, expected.id);
         assert_eq!(decoded.name, expected.name);
@@ -1018,7 +1020,7 @@ mod test {
         assert_eq!(decoded.customer_id, expected.customer_id);
 
         let encoded = expected.value();
-        assert_eq!(encoded.as_slice(), fixture_bytes);
+        assert_eq!(encoded.as_slice(), FIXTURE_BYTES);
     }
 
     #[test]
