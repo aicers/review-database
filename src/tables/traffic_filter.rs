@@ -301,12 +301,78 @@ impl<'d> Table<'d, TrafficFilter> {
 
 #[cfg(test)]
 mod test {
+    use std::collections::HashMap;
     use std::sync::Arc;
 
+    use anyhow::Result;
+    use chrono::{DateTime, Utc};
+    use ipnet::IpNet;
     use rocksdb::Direction;
 
+    use super::{ProtocolPorts, TrafficFilter};
+    use crate::tables::Value;
     use crate::test::{DbGuard, acquire_db_permit};
-    use crate::{Iterable, Store, TrafficFilter};
+    use crate::types::FromKeyValue;
+    use crate::{Iterable, Store};
+
+    const FIXTURE_TIMESTAMP: &str = "2000-02-29T12:34:56.123456789Z";
+    const FIXTURE_BYTES: &[u8] = include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/traffic_filter_literal_bytes.bin"
+    ));
+
+    /// Builds the deterministic `TrafficFilter` encoded by the literal-byte fixture.
+    ///
+    /// Uses exactly one rule entry so `HashMap` iteration order does not affect
+    /// serialized bytes.
+    fn fixture_traffic_filter() -> TrafficFilter {
+        let timestamp = DateTime::parse_from_rfc3339(FIXTURE_TIMESTAMP)
+            .expect("valid RFC3339 timestamp")
+            .with_timezone(&Utc);
+        let mut rules = HashMap::new();
+        rules.insert(
+            "192.168.1.0/24".parse::<IpNet>().expect("valid IpNet"),
+            ProtocolPorts {
+                tcp_ports: Some(vec![80, 443]),
+                udp_ports: Some(vec![53]),
+            },
+        );
+        TrafficFilter {
+            host_fqdn: "fixture.example.com".to_string(),
+            rules,
+            last_modification_time: timestamp,
+            update_time: Some(timestamp),
+            description: Some("literal-byte fixture".to_string()),
+        }
+    }
+
+    #[test]
+    fn stored_value_bytes_match_literal_fixture() -> Result<()> {
+        let record = TrafficFilter::from_key_value(b"fixture.example.com", FIXTURE_BYTES)?;
+        let expected = fixture_traffic_filter();
+
+        assert_eq!(record.host_fqdn, expected.host_fqdn);
+        assert_eq!(
+            record.last_modification_time,
+            expected.last_modification_time
+        );
+        assert_eq!(record.update_time, expected.update_time);
+        assert_eq!(record.description, expected.description);
+        assert_eq!(record.rules.len(), expected.rules.len());
+        for (net, ports) in &expected.rules {
+            let decoded_ports = record
+                .rules
+                .get(net)
+                .expect("fixture rule network present after decode");
+            assert_eq!(decoded_ports.tcp_ports(), ports.tcp_ports());
+            assert_eq!(decoded_ports.udp_ports(), ports.udp_ports());
+        }
+
+        let written_bytes = expected.value();
+        assert_eq!(written_bytes, FIXTURE_BYTES);
+
+        Ok(())
+    }
 
     #[test]
     fn insert_get_remove() {
