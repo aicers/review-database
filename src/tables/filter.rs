@@ -259,7 +259,6 @@ mod tests {
     ///
     /// Captured once from `review-database` v0.45.0 via `tables::serialize`
     /// (`bincode::DefaultOptions`) on `deterministic_period_for_search_custom()`.
-    /// Part of #771.
     const PERIOD_FOR_SEARCH_CUSTOM_V0: &[u8] = &[
         0x01, 0x14, 0x32, 0x30, 0x30, 0x30, 0x2d, 0x30, 0x31, 0x2d, 0x30, 0x31, 0x54, 0x30, 0x30,
         0x3a, 0x30, 0x30, 0x3a, 0x30, 0x30, 0x5a, 0x1e, 0x32, 0x30, 0x30, 0x30, 0x2d, 0x30, 0x31,
@@ -269,8 +268,8 @@ mod tests {
 
     /// Builds a deterministic public `PeriodForSearch::Custom` for serde baselines.
     ///
-    /// Part of #771: fixed RFC3339 timestamps pin the chrono-bearing public
-    /// `Serialize` / `Deserialize` surface for `PeriodForSearch`.
+    /// Fixed RFC3339 timestamps pin the chrono-bearing public `Serialize` /
+    /// `Deserialize` surface for `PeriodForSearch`.
     fn deterministic_period_for_search_custom() -> PeriodForSearch {
         let period_start: DateTime<Utc> = FIXTURE_PERIOD_START
             .parse()
@@ -284,9 +283,9 @@ mod tests {
 
     /// Builds a deterministic `Filter` for literal-byte compatibility tests.
     ///
-    /// Part of #746 / #771: fixed `PeriodForSearch::Custom` timestamps pin the
-    /// bincode wire format exercised by `Filter::into_key_value` (private
-    /// projected `Value`) and `FromKeyValue::from_key_value`.
+    /// Fixed `PeriodForSearch::Custom` timestamps pin the bincode wire format
+    /// exercised by `Filter::into_key_value` (private projected `Value`) and
+    /// `FromKeyValue::from_key_value`.
     fn deterministic_fixture_filter() -> Filter {
         Filter {
             username: FIXTURE_USERNAME.to_string(),
@@ -346,7 +345,6 @@ mod tests {
     /// The active test decodes those literal bytes and round-trips through the
     /// production `tables::deserialize` / `tables::serialize` helpers without
     /// deriving expected bytes from the serializer under assertion.
-    /// Part of #771.
     #[test]
     fn period_for_search_custom_backward_compatibility() -> anyhow::Result<()> {
         let expected = deterministic_period_for_search_custom();
@@ -367,7 +365,6 @@ mod tests {
     /// calling `Filter::into_key_value` on `deterministic_fixture_filter()`,
     /// which serializes the private `Value` struct (username/name excluded;
     /// stored in the key) via `tables::serialize` (`bincode::DefaultOptions`).
-    /// Part of #746 / #771.
     #[test]
     fn filter_period_projected_value_backward_compatibility() {
         const FIXTURE_BYTES: &[u8] = include_bytes!(concat!(
