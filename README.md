@@ -34,7 +34,7 @@ flexible database interface for efficient data management.
 
 ## Country Codes At Ingestion
 
-Open an IP2Location database in the parent application and pass it to
+Open an IP2Location database in the caller application and pass it to
 `Store::new` as `Some(Arc<ip2location::DB>)` to share it with event writers.
 `EventDb::put` then resolves endpoint country codes while converting
 producer-facing fields to the stored schema. Producers do not provide

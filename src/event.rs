@@ -2706,15 +2706,15 @@ pub(crate) fn resolve_stored_country_codes(
     macro_rules! pair {
         ($ty:ty) => {
             reserialize::<$ty, _>(bytes, |fields| {
-                fields.orig_country_code = locator.lookup_country_code(fields.orig_addr);
-                fields.resp_country_code = locator.lookup_country_code(fields.resp_addr);
+                fields.orig_country_code = lookup(fields.orig_addr);
+                fields.resp_country_code = lookup(fields.resp_addr);
             })
         };
     }
     macro_rules! resp_vec {
         ($ty:ty) => {
             reserialize::<$ty, _>(bytes, |fields| {
-                fields.orig_country_code = locator.lookup_country_code(fields.orig_addr);
+                fields.orig_country_code = lookup(fields.orig_addr);
                 fields.resp_country_codes = fields.resp_addrs.iter().copied().map(lookup).collect();
             })
         };
