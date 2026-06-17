@@ -219,12 +219,79 @@ impl IndexedMapUpdate for Update {
 
 #[cfg(test)]
 mod test {
-    use std::sync::Arc;
+    use std::{
+        net::{IpAddr, Ipv4Addr},
+        sync::Arc,
+    };
+
+    use anyhow::Result;
+    use chrono::DateTime;
 
     use crate::test::{DbGuard, acquire_db_permit};
+    use crate::types::FromKeyValue;
     use crate::{
-        SamplingInterval, SamplingKind, SamplingPeriod, SamplingPolicy, SamplingPolicyUpdate, Store,
+        Indexable, SamplingInterval, SamplingKind, SamplingPeriod, SamplingPolicy,
+        SamplingPolicyUpdate, Store,
     };
+
+    /// Builds a deterministic `SamplingPolicy` for the literal-byte contract test.
+    fn deterministic_sampling_policy() -> SamplingPolicy {
+        let creation_time =
+            DateTime::from_timestamp(1_700_000_000, 123_456_789).expect("valid timestamp");
+        SamplingPolicy {
+            id: 42,
+            name: "fixture-policy".to_string(),
+            kind: SamplingKind::Http,
+            interval: SamplingInterval::ThirtyMinutes,
+            period: SamplingPeriod::OneDay,
+            offset: -300,
+            src_ip: Some(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 10))),
+            dst_ip: Some(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 5))),
+            node: Some("sensor-node-1".to_string()),
+            column: Some(7),
+            immutable: true,
+            creation_time,
+        }
+    }
+
+    /// Locks the on-disk bincode byte contract for the persisted `SamplingPolicy`
+    /// record.
+    ///
+    /// Expected bytes come from the committed literal fixture (not from the
+    /// production serializer inside this test). `creation_time` is pinned to
+    /// `2023-11-14T22:13:20.123456789Z` so the encoding stays deterministic.
+    ///
+    /// `SamplingPolicy` was chosen as a representative case for shared
+    /// `DefaultOptions` serialization with `chrono::DateTime<Utc>` fields.
+    ///
+    /// Variants not covered: `Kind::{Conn,Dns,Rdp}`; `Interval` values other than
+    /// `ThirtyMinutes`; `Period` values other than `OneDay`; `None` optional
+    /// fields; `immutable: false`; zero `offset`; `IPv6` addresses; empty `name`.
+    #[test]
+    fn sampling_policy_literal_bytes_contract() -> Result<()> {
+        const FIXTURE_BYTES: &[u8] =
+            include_bytes!("../../tests/fixtures/sampling_policy_literal_bytes.bin");
+
+        let decoded = SamplingPolicy::from_key_value(b"fixture-policy", FIXTURE_BYTES)?;
+        let expected = deterministic_sampling_policy();
+        assert_eq!(decoded.id, expected.id);
+        assert_eq!(decoded.name, expected.name);
+        assert!(decoded.kind == expected.kind);
+        assert!(decoded.interval == expected.interval);
+        assert!(decoded.period == expected.period);
+        assert_eq!(decoded.offset, expected.offset);
+        assert_eq!(decoded.src_ip, expected.src_ip);
+        assert_eq!(decoded.dst_ip, expected.dst_ip);
+        assert_eq!(decoded.node, expected.node);
+        assert_eq!(decoded.column, expected.column);
+        assert_eq!(decoded.immutable, expected.immutable);
+        assert_eq!(decoded.creation_time, expected.creation_time);
+
+        let serialized = Indexable::value(&expected);
+        assert_eq!(serialized.as_slice(), FIXTURE_BYTES);
+
+        Ok(())
+    }
 
     #[test]
     fn update() {
