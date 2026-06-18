@@ -79,6 +79,23 @@ pub(crate) struct LdapBruteForceFieldsStoredV0_42 {
     pub category: Option<EventCategory>,
 }
 
+#[allow(dead_code)]
+#[derive(Deserialize, Serialize)]
+pub(crate) struct LdapBruteForceFieldsStoredV0_46 {
+    pub sensor: String,
+    pub orig_addr: IpAddr,
+    pub orig_country_code: [u8; 2],
+    pub resp_addr: IpAddr,
+    pub resp_port: u16,
+    pub resp_country_code: [u8; 2],
+    pub proto: u8,
+    pub user_pw_list: Vec<(String, String)>,
+    pub start_time: i64,
+    pub end_time: i64,
+    pub confidence: f32,
+    pub category: Option<EventCategory>,
+}
+
 impl From<LdapBruteForceFields> for LdapBruteForceFieldsStored {
     fn from(value: LdapBruteForceFields) -> Self {
         Self {
@@ -137,8 +154,10 @@ pub struct LdapBruteForce {
     pub sensor: String,
     pub time: DateTime<Utc>,
     pub orig_addr: IpAddr,
+    pub orig_country_code: [u8; 2],
     pub resp_addr: IpAddr,
     pub resp_port: u16,
+    pub resp_country_code: [u8; 2],
     pub proto: u8,
     pub user_pw_list: Vec<(String, String)>,
     pub start_time: DateTime<Utc>,
@@ -152,9 +171,11 @@ impl fmt::Display for LdapBruteForce {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "orig_addr={:?} resp_addr={:?} resp_port={:?} proto={:?} user_pw_list={:?} start_time={:?} end_time={:?} triage_scores={:?}",
+            "orig_addr={:?} orig_country_code={:?} resp_addr={:?} resp_country_code={:?} resp_port={:?} proto={:?} user_pw_list={:?} start_time={:?} end_time={:?} triage_scores={:?}",
             self.orig_addr.to_string(),
+            crate::util::country_code_to_string(&self.orig_country_code),
             self.resp_addr.to_string(),
+            crate::util::country_code_to_string(&self.resp_country_code),
             self.resp_port.to_string(),
             self.proto.to_string(),
             get_user_pw_list(&self.user_pw_list),
@@ -171,8 +192,10 @@ impl LdapBruteForce {
             sensor: fields.sensor.clone(),
             time,
             orig_addr: fields.orig_addr,
+            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
             resp_addr: fields.resp_addr,
             resp_port: fields.resp_port,
+            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
             proto: fields.proto,
             user_pw_list: fields.user_pw_list.clone(),
             start_time: DateTime::from_timestamp_nanos(fields.start_time),
@@ -304,6 +327,34 @@ pub(crate) struct LdapEventFieldsStoredV0_42 {
     pub category: Option<EventCategory>,
 }
 
+#[allow(dead_code)]
+#[derive(Deserialize, Serialize)]
+pub(crate) struct LdapEventFieldsStoredV0_46 {
+    pub sensor: String,
+    pub orig_addr: IpAddr,
+    pub orig_port: u16,
+    pub orig_country_code: [u8; 2],
+    pub resp_addr: IpAddr,
+    pub resp_port: u16,
+    pub resp_country_code: [u8; 2],
+    pub proto: u8,
+    pub start_time: i64,
+    pub duration: i64,
+    pub orig_pkts: u64,
+    pub resp_pkts: u64,
+    pub orig_l2_bytes: u64,
+    pub resp_l2_bytes: u64,
+    pub message_id: u32,
+    pub version: u8,
+    pub opcode: Vec<String>,
+    pub result: Vec<String>,
+    pub diagnostic_message: Vec<String>,
+    pub object: Vec<String>,
+    pub argument: Vec<String>,
+    pub confidence: f32,
+    pub category: Option<EventCategory>,
+}
+
 impl From<LdapEventFields> for LdapEventFieldsStored {
     fn from(value: LdapEventFields) -> Self {
         Self {
@@ -372,8 +423,10 @@ pub struct LdapPlainText {
     pub sensor: String,
     pub orig_addr: IpAddr,
     pub orig_port: u16,
+    pub orig_country_code: [u8; 2],
     pub resp_addr: IpAddr,
     pub resp_port: u16,
+    pub resp_country_code: [u8; 2],
     pub proto: u8,
     pub start_time: DateTime<Utc>,
     pub duration: i64,
@@ -397,11 +450,13 @@ impl fmt::Display for LdapPlainText {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "sensor={:?} orig_addr={:?} orig_port={:?} resp_addr={:?} resp_port={:?} proto={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} message_id={:?} version={:?} opcode={:?} result={:?} diagnostic_message={:?} object={:?} argument={:?} triage_scores={:?}",
+            "sensor={:?} orig_addr={:?} orig_country_code={:?} orig_port={:?} resp_addr={:?} resp_country_code={:?} resp_port={:?} proto={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} message_id={:?} version={:?} opcode={:?} result={:?} diagnostic_message={:?} object={:?} argument={:?} triage_scores={:?}",
             self.sensor,
             self.orig_addr.to_string(),
+            crate::util::country_code_to_string(&self.orig_country_code),
             self.orig_port.to_string(),
             self.resp_addr.to_string(),
+            crate::util::country_code_to_string(&self.resp_country_code),
             self.resp_port.to_string(),
             self.proto.to_string(),
             self.start_time.to_rfc3339(),
@@ -430,8 +485,10 @@ impl LdapPlainText {
             start_time: DateTime::from_timestamp_nanos(fields.start_time),
             orig_addr: fields.orig_addr,
             orig_port: fields.orig_port,
+            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
             resp_addr: fields.resp_addr,
             resp_port: fields.resp_port,
+            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
             proto: fields.proto,
             duration: fields.duration,
             orig_pkts: fields.orig_pkts,
@@ -515,8 +572,10 @@ pub struct BlocklistLdap {
     pub sensor: String,
     pub orig_addr: IpAddr,
     pub orig_port: u16,
+    pub orig_country_code: [u8; 2],
     pub resp_addr: IpAddr,
     pub resp_port: u16,
+    pub resp_country_code: [u8; 2],
     pub proto: u8,
     pub start_time: DateTime<Utc>,
     pub duration: i64,
@@ -540,11 +599,13 @@ impl fmt::Display for BlocklistLdap {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "sensor={:?} orig_addr={:?} orig_port={:?} resp_addr={:?} resp_port={:?} proto={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} message_id={:?} version={:?} opcode={:?} result={:?} diagnostic_message={:?} object={:?} argument={:?} triage_scores={:?}",
+            "sensor={:?} orig_addr={:?} orig_country_code={:?} orig_port={:?} resp_addr={:?} resp_country_code={:?} resp_port={:?} proto={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} message_id={:?} version={:?} opcode={:?} result={:?} diagnostic_message={:?} object={:?} argument={:?} triage_scores={:?}",
             self.sensor,
             self.orig_addr.to_string(),
+            crate::util::country_code_to_string(&self.orig_country_code),
             self.orig_port.to_string(),
             self.resp_addr.to_string(),
+            crate::util::country_code_to_string(&self.resp_country_code),
             self.resp_port.to_string(),
             self.proto.to_string(),
             self.start_time.to_rfc3339(),
@@ -573,8 +634,10 @@ impl BlocklistLdap {
             start_time: DateTime::from_timestamp_nanos(fields.start_time),
             orig_addr: fields.orig_addr,
             orig_port: fields.orig_port,
+            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
             resp_addr: fields.resp_addr,
             resp_port: fields.resp_port,
+            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
             proto: fields.proto,
             duration: fields.duration,
             orig_pkts: fields.orig_pkts,

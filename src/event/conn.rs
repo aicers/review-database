@@ -65,6 +65,22 @@ pub(crate) struct PortScanFieldsStoredV0_42 {
     pub category: Option<EventCategory>,
 }
 
+#[allow(dead_code)]
+#[derive(Deserialize, Serialize)]
+pub(crate) struct PortScanFieldsStoredV0_46 {
+    pub sensor: String,
+    pub orig_addr: IpAddr,
+    pub orig_country_code: [u8; 2],
+    pub resp_addr: IpAddr,
+    pub resp_ports: Vec<u16>,
+    pub resp_country_code: [u8; 2],
+    pub start_time: i64,
+    pub end_time: i64,
+    pub proto: u8,
+    pub confidence: f32,
+    pub category: Option<EventCategory>,
+}
+
 impl From<PortScanFields> for PortScanFieldsStored {
     fn from(value: PortScanFields) -> Self {
         Self {
@@ -110,8 +126,10 @@ pub struct PortScan {
     pub sensor: String,
     pub time: DateTime<Utc>,
     pub orig_addr: IpAddr,
+    pub orig_country_code: [u8; 2],
     pub resp_addr: IpAddr,
     pub resp_ports: Vec<u16>,
+    pub resp_country_code: [u8; 2],
     pub start_time: DateTime<Utc>,
     pub end_time: DateTime<Utc>,
     pub proto: u8,
@@ -124,9 +142,11 @@ impl fmt::Display for PortScan {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(
             f,
-            "orig_addr={:?} resp_addr={:?} resp_ports={:?} start_time={:?} end_time={:?} proto={:?} triage_scores={:?}",
+            "orig_addr={:?} orig_country_code={:?} resp_addr={:?} resp_country_code={:?} resp_ports={:?} start_time={:?} end_time={:?} proto={:?} triage_scores={:?}",
             self.orig_addr.to_string(),
+            crate::util::country_code_to_string(&self.orig_country_code),
             self.resp_addr.to_string(),
+            crate::util::country_code_to_string(&self.resp_country_code),
             vector_to_string(&self.resp_ports),
             self.start_time.to_rfc3339(),
             self.end_time.to_rfc3339(),
@@ -142,7 +162,9 @@ impl PortScan {
             sensor: fields.sensor.clone(),
             time,
             orig_addr: fields.orig_addr,
+            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
             resp_addr: fields.resp_addr,
+            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
             resp_ports: fields.resp_ports.clone(),
             proto: fields.proto,
             start_time: DateTime::from_timestamp_nanos(fields.start_time),
@@ -252,6 +274,22 @@ pub(crate) struct MultiHostPortScanFieldsStoredV0_42 {
     pub category: Option<EventCategory>,
 }
 
+#[allow(dead_code)]
+#[derive(Deserialize, Serialize)]
+pub(crate) struct MultiHostPortScanFieldsStoredV0_46 {
+    pub sensor: String,
+    pub orig_addr: IpAddr,
+    pub orig_country_code: [u8; 2],
+    pub resp_addrs: Vec<IpAddr>,
+    pub resp_port: u16,
+    pub resp_country_codes: Vec<[u8; 2]>,
+    pub proto: u8,
+    pub start_time: i64,
+    pub end_time: i64,
+    pub confidence: f32,
+    pub category: Option<EventCategory>,
+}
+
 impl From<MultiHostPortScanFields> for MultiHostPortScanFieldsStored {
     fn from(value: MultiHostPortScanFields) -> Self {
         Self {
@@ -297,8 +335,10 @@ pub struct MultiHostPortScan {
     pub sensor: String,
     pub time: DateTime<Utc>,
     pub orig_addr: IpAddr,
-    pub resp_port: u16,
+    pub orig_country_code: [u8; 2],
     pub resp_addrs: Vec<IpAddr>,
+    pub resp_port: u16,
+    pub resp_country_codes: Vec<[u8; 2]>,
     pub proto: u8,
     pub start_time: DateTime<Utc>,
     pub end_time: DateTime<Utc>,
@@ -311,9 +351,11 @@ impl fmt::Display for MultiHostPortScan {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(
             f,
-            "orig_addr={:?} resp_addrs={:?} resp_port={:?} proto={:?} start_time={:?} end_time={:?} triage_scores={:?}",
+            "orig_addr={:?} orig_country_code={:?} resp_addrs={:?} resp_country_codes={:?} resp_port={:?} proto={:?} start_time={:?} end_time={:?} triage_scores={:?}",
             self.orig_addr.to_string(),
+            crate::util::country_code_to_string(&self.orig_country_code),
             vector_to_string(&self.resp_addrs),
+            crate::util::country_codes_to_string(&self.resp_country_codes),
             self.resp_port.to_string(),
             self.proto.to_string(),
             self.start_time.to_rfc3339(),
@@ -329,8 +371,10 @@ impl MultiHostPortScan {
             sensor: fields.sensor.clone(),
             time,
             orig_addr: fields.orig_addr,
+            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
             resp_port: fields.resp_port,
             resp_addrs: fields.resp_addrs.clone(),
+            resp_country_codes: vec![crate::util::COUNTRY_CODE_PENDING; fields.resp_addrs.len()],
             proto: fields.proto,
             start_time: DateTime::from_timestamp_nanos(fields.start_time),
             end_time: DateTime::from_timestamp_nanos(fields.end_time),
@@ -438,6 +482,21 @@ pub(crate) struct ExternalDdosFieldsStoredV0_42 {
     pub category: Option<EventCategory>,
 }
 
+#[allow(dead_code)]
+#[derive(Deserialize, Serialize)]
+pub(crate) struct ExternalDdosFieldsStoredV0_46 {
+    pub sensor: String,
+    pub orig_addrs: Vec<IpAddr>,
+    pub orig_country_codes: Vec<[u8; 2]>,
+    pub resp_addr: IpAddr,
+    pub resp_country_code: [u8; 2],
+    pub proto: u8,
+    pub start_time: i64,
+    pub end_time: i64,
+    pub confidence: f32,
+    pub category: Option<EventCategory>,
+}
+
 impl From<ExternalDdosFields> for ExternalDdosFieldsStored {
     fn from(value: ExternalDdosFields) -> Self {
         Self {
@@ -481,7 +540,9 @@ pub struct ExternalDdos {
     pub sensor: String,
     pub time: DateTime<Utc>,
     pub orig_addrs: Vec<IpAddr>,
+    pub orig_country_codes: Vec<[u8; 2]>,
     pub resp_addr: IpAddr,
+    pub resp_country_code: [u8; 2],
     pub proto: u8,
     pub start_time: DateTime<Utc>,
     pub end_time: DateTime<Utc>,
@@ -494,9 +555,11 @@ impl fmt::Display for ExternalDdos {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(
             f,
-            "orig_addrs={:?} resp_addr={:?} proto={:?} start_time={:?} end_time={:?} triage_scores={:?}",
+            "orig_addrs={:?} orig_country_codes={:?} resp_addr={:?} resp_country_code={:?} proto={:?} start_time={:?} end_time={:?} triage_scores={:?}",
             vector_to_string(&self.orig_addrs),
+            crate::util::country_codes_to_string(&self.orig_country_codes),
             self.resp_addr.to_string(),
+            crate::util::country_code_to_string(&self.resp_country_code),
             self.proto.to_string(),
             self.start_time.to_rfc3339(),
             self.end_time.to_rfc3339(),
@@ -511,7 +574,9 @@ impl ExternalDdos {
             sensor: fields.sensor.clone(),
             time,
             orig_addrs: fields.orig_addrs.clone(),
+            orig_country_codes: vec![crate::util::COUNTRY_CODE_PENDING; fields.orig_addrs.len()],
             resp_addr: fields.resp_addr,
+            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
             proto: fields.proto,
             start_time: DateTime::from_timestamp_nanos(fields.start_time),
             end_time: DateTime::from_timestamp_nanos(fields.end_time),
@@ -637,6 +702,31 @@ pub(crate) struct BlocklistConnFieldsStoredV0_42 {
     pub category: Option<EventCategory>,
 }
 
+#[allow(dead_code)]
+#[derive(Deserialize, Serialize)]
+pub(crate) struct BlocklistConnFieldsStoredV0_46 {
+    pub sensor: String,
+    pub orig_addr: IpAddr,
+    pub orig_port: u16,
+    pub orig_country_code: [u8; 2],
+    pub resp_addr: IpAddr,
+    pub resp_port: u16,
+    pub resp_country_code: [u8; 2],
+    pub proto: u8,
+    pub conn_state: String,
+    pub start_time: i64,
+    pub duration: i64,
+    pub service: String,
+    pub orig_bytes: u64,
+    pub resp_bytes: u64,
+    pub orig_pkts: u64,
+    pub resp_pkts: u64,
+    pub orig_l2_bytes: u64,
+    pub resp_l2_bytes: u64,
+    pub confidence: f32,
+    pub category: Option<EventCategory>,
+}
+
 impl From<BlocklistConnFields> for BlocklistConnFieldsStored {
     fn from(value: BlocklistConnFields) -> Self {
         Self {
@@ -700,8 +790,10 @@ pub struct BlocklistConn {
     pub time: DateTime<Utc>,
     pub orig_addr: IpAddr,
     pub orig_port: u16,
+    pub orig_country_code: [u8; 2],
     pub resp_addr: IpAddr,
     pub resp_port: u16,
+    pub resp_country_code: [u8; 2],
     pub proto: u8,
     pub conn_state: String,
     pub start_time: DateTime<Utc>,
@@ -722,11 +814,13 @@ impl fmt::Display for BlocklistConn {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(
             f,
-            "sensor={:?} orig_addr={:?} orig_port={:?} resp_addr={:?} resp_port={:?} proto={:?} conn_state={:?} start_time={:?} duration={:?} service={:?} orig_bytes={:?} resp_bytes={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} triage_scores={:?}",
+            "sensor={:?} orig_addr={:?} orig_country_code={:?} orig_port={:?} resp_addr={:?} resp_country_code={:?} resp_port={:?} proto={:?} conn_state={:?} start_time={:?} duration={:?} service={:?} orig_bytes={:?} resp_bytes={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} triage_scores={:?}",
             self.sensor,
             self.orig_addr.to_string(),
+            crate::util::country_code_to_string(&self.orig_country_code),
             self.orig_port.to_string(),
             self.resp_addr.to_string(),
+            crate::util::country_code_to_string(&self.resp_country_code),
             self.resp_port.to_string(),
             self.proto.to_string(),
             self.conn_state,
@@ -751,8 +845,10 @@ impl BlocklistConn {
             sensor: fields.sensor,
             orig_addr: fields.orig_addr,
             orig_port: fields.orig_port,
+            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
             resp_addr: fields.resp_addr,
             resp_port: fields.resp_port,
+            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
             proto: fields.proto,
             conn_state: fields.conn_state,
             start_time: DateTime::from_timestamp_nanos(fields.start_time),

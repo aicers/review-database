@@ -21,12 +21,30 @@ pub struct UnusualDestinationPatternFields {
     pub category: Option<EventCategory>,
 }
 
+pub(crate) type UnusualDestinationPatternFieldsStored = UnusualDestinationPatternFieldsStoredV0_45;
+
 #[derive(Deserialize, Serialize)]
-pub(crate) struct UnusualDestinationPatternFieldsStored {
+pub(crate) struct UnusualDestinationPatternFieldsStoredV0_45 {
     pub sensor: String,
     pub start_time: i64,
     pub end_time: i64,
     pub destination_ips: Vec<IpAddr>,
+    pub count: usize,
+    pub expected_mean: f64,
+    pub std_deviation: f64,
+    pub z_score: f64,
+    pub confidence: f32,
+    pub category: Option<EventCategory>,
+}
+
+#[allow(dead_code)]
+#[derive(Deserialize, Serialize)]
+pub(crate) struct UnusualDestinationPatternFieldsStoredV0_46 {
+    pub sensor: String,
+    pub start_time: i64,
+    pub end_time: i64,
+    pub destination_ips: Vec<IpAddr>,
+    pub resp_country_codes: Vec<[u8; 2]>,
     pub count: usize,
     pub expected_mean: f64,
     pub std_deviation: f64,
@@ -90,6 +108,7 @@ pub struct UnusualDestinationPattern {
     pub start_time: DateTime<Utc>,
     pub end_time: DateTime<Utc>,
     pub destination_ips: Vec<IpAddr>,
+    pub resp_country_codes: Vec<[u8; 2]>,
     pub count: usize,
     pub expected_mean: f64,
     pub std_deviation: f64,
@@ -103,11 +122,12 @@ impl fmt::Display for UnusualDestinationPattern {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "sensor={:?} start_time={:?} end_time={:?} destination_ips={:?} count={:?} expected_mean={:?} std_deviation={:?} z_score={:?} triage_scores={:?}",
+            "sensor={:?} start_time={:?} end_time={:?} destination_ips={:?} resp_country_codes={:?} count={:?} expected_mean={:?} std_deviation={:?} z_score={:?} triage_scores={:?}",
             self.sensor,
             self.start_time.to_rfc3339(),
             self.end_time.to_rfc3339(),
             format_ip_vec(&self.destination_ips),
+            crate::util::country_codes_to_string(&self.resp_country_codes),
             self.count.to_string(),
             self.expected_mean.to_string(),
             self.std_deviation.to_string(),
@@ -124,6 +144,10 @@ impl UnusualDestinationPattern {
             sensor: fields.sensor,
             start_time: DateTime::from_timestamp_nanos(fields.start_time),
             end_time: DateTime::from_timestamp_nanos(fields.end_time),
+            resp_country_codes: vec![
+                crate::util::COUNTRY_CODE_PENDING;
+                fields.destination_ips.len()
+            ],
             destination_ips: fields.destination_ips,
             count: fields.count,
             expected_mean: fields.expected_mean,
