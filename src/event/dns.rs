@@ -78,39 +78,8 @@ pub struct DnsEventFields {
     pub category: Option<EventCategory>,
 }
 
-pub(crate) type DnsEventFieldsStored = DnsEventFieldsStoredV0_42;
+pub(crate) type DnsEventFieldsStored = DnsEventFieldsStoredV0_46;
 
-#[derive(Deserialize, Serialize)]
-pub(crate) struct DnsEventFieldsStoredV0_42 {
-    pub sensor: String,
-    pub orig_addr: IpAddr,
-    pub orig_port: u16,
-    pub resp_addr: IpAddr,
-    pub resp_port: u16,
-    pub proto: u8,
-    pub start_time: i64,
-    pub duration: i64,
-    pub orig_pkts: u64,
-    pub resp_pkts: u64,
-    pub orig_l2_bytes: u64,
-    pub resp_l2_bytes: u64,
-    pub query: String,
-    pub answer: Vec<String>,
-    pub trans_id: u16,
-    pub rtt: i64,
-    pub qclass: u16,
-    pub qtype: u16,
-    pub rcode: u16,
-    pub aa_flag: bool,
-    pub tc_flag: bool,
-    pub rd_flag: bool,
-    pub ra_flag: bool,
-    pub ttl: Vec<i32>,
-    pub confidence: f32,
-    pub category: Option<EventCategory>,
-}
-
-#[allow(dead_code)]
 #[derive(Deserialize, Serialize)]
 pub(crate) struct DnsEventFieldsStoredV0_46 {
     pub sensor: String,
@@ -149,8 +118,10 @@ impl From<DnsEventFields> for DnsEventFieldsStored {
             sensor: value.sensor,
             orig_addr: value.orig_addr,
             orig_port: value.orig_port,
+            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
             resp_addr: value.resp_addr,
             resp_port: value.resp_port,
+            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
             proto: value.proto,
             start_time: value.start_time,
             duration: value.duration,
@@ -253,14 +224,14 @@ impl fmt::Display for DnsCovertChannel {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "sensor={:?} orig_addr={:?} orig_country_code={:?} orig_port={:?} resp_addr={:?} resp_country_code={:?} resp_port={:?} proto={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} query={:?} answer={:?} trans_id={:?} rtt={:?} qclass={:?} qtype={:?} rcode={:?} aa_flag={:?} tc_flag={:?} rd_flag={:?} ra_flag={:?} ttl={:?} confidence={:?} triage_scores={:?}",
+            "sensor={:?} orig_addr={:?} orig_port={:?} orig_country_code={:?} resp_addr={:?} resp_port={:?} resp_country_code={:?} proto={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} query={:?} answer={:?} trans_id={:?} rtt={:?} qclass={:?} qtype={:?} rcode={:?} aa_flag={:?} tc_flag={:?} rd_flag={:?} ra_flag={:?} ttl={:?} confidence={:?} triage_scores={:?}",
             self.sensor,
             self.orig_addr.to_string(),
-            crate::util::country_code_to_string(&self.orig_country_code),
             self.orig_port.to_string(),
+            crate::util::country_code_as_str(&self.orig_country_code),
             self.resp_addr.to_string(),
-            crate::util::country_code_to_string(&self.resp_country_code),
             self.resp_port.to_string(),
+            crate::util::country_code_as_str(&self.resp_country_code),
             self.proto.to_string(),
             self.start_time.to_rfc3339(),
             self.duration.to_string(),
@@ -299,10 +270,10 @@ impl DnsCovertChannel {
             resp_l2_bytes: fields.resp_l2_bytes,
             orig_addr: fields.orig_addr,
             orig_port: fields.orig_port,
-            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
+            orig_country_code: fields.orig_country_code,
             resp_addr: fields.resp_addr,
             resp_port: fields.resp_port,
-            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
+            resp_country_code: fields.resp_country_code,
             proto: fields.proto,
             query: fields.query,
             answer: fields.answer,
@@ -438,14 +409,14 @@ impl fmt::Display for LockyRansomware {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "sensor={:?} orig_addr={:?} orig_country_code={:?} orig_port={:?} resp_addr={:?} resp_country_code={:?} resp_port={:?} proto={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} query={:?} answer={:?} trans_id={:?} rtt={:?} qclass={:?} qtype={:?} rcode={:?} aa_flag={:?} tc_flag={:?} rd_flag={:?} ra_flag={:?} ttl={:?} confidence={:?} triage_scores={:?}",
+            "sensor={:?} orig_addr={:?} orig_port={:?} orig_country_code={:?} resp_addr={:?} resp_port={:?} resp_country_code={:?} proto={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} query={:?} answer={:?} trans_id={:?} rtt={:?} qclass={:?} qtype={:?} rcode={:?} aa_flag={:?} tc_flag={:?} rd_flag={:?} ra_flag={:?} ttl={:?} confidence={:?} triage_scores={:?}",
             self.sensor,
             self.orig_addr.to_string(),
-            crate::util::country_code_to_string(&self.orig_country_code),
             self.orig_port.to_string(),
+            crate::util::country_code_as_str(&self.orig_country_code),
             self.resp_addr.to_string(),
-            crate::util::country_code_to_string(&self.resp_country_code),
             self.resp_port.to_string(),
+            crate::util::country_code_as_str(&self.resp_country_code),
             self.proto.to_string(),
             self.start_time.to_rfc3339(),
             self.duration.to_string(),
@@ -484,10 +455,10 @@ impl LockyRansomware {
             resp_l2_bytes: fields.resp_l2_bytes,
             orig_addr: fields.orig_addr,
             orig_port: fields.orig_port,
-            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
+            orig_country_code: fields.orig_country_code,
             resp_addr: fields.resp_addr,
             resp_port: fields.resp_port,
-            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
+            resp_country_code: fields.resp_country_code,
             proto: fields.proto,
             query: fields.query,
             answer: fields.answer,
@@ -617,40 +588,8 @@ pub struct CryptocurrencyMiningPoolFields {
     pub category: Option<EventCategory>,
 }
 
-pub(crate) type CryptocurrencyMiningPoolFieldsStored = CryptocurrencyMiningPoolFieldsStoredV0_42;
+pub(crate) type CryptocurrencyMiningPoolFieldsStored = CryptocurrencyMiningPoolFieldsStoredV0_46;
 
-#[derive(Deserialize, Serialize)]
-pub(crate) struct CryptocurrencyMiningPoolFieldsStoredV0_42 {
-    pub sensor: String,
-    pub orig_addr: IpAddr,
-    pub orig_port: u16,
-    pub resp_addr: IpAddr,
-    pub resp_port: u16,
-    pub proto: u8,
-    pub start_time: i64,
-    pub duration: i64,
-    pub orig_pkts: u64,
-    pub resp_pkts: u64,
-    pub orig_l2_bytes: u64,
-    pub resp_l2_bytes: u64,
-    pub query: String,
-    pub answer: Vec<String>,
-    pub trans_id: u16,
-    pub rtt: i64,
-    pub qclass: u16,
-    pub qtype: u16,
-    pub rcode: u16,
-    pub aa_flag: bool,
-    pub tc_flag: bool,
-    pub rd_flag: bool,
-    pub ra_flag: bool,
-    pub ttl: Vec<i32>,
-    pub coins: Vec<String>,
-    pub confidence: f32,
-    pub category: Option<EventCategory>,
-}
-
-#[allow(dead_code)]
 #[derive(Deserialize, Serialize)]
 pub(crate) struct CryptocurrencyMiningPoolFieldsStoredV0_46 {
     pub sensor: String,
@@ -690,8 +629,10 @@ impl From<CryptocurrencyMiningPoolFields> for CryptocurrencyMiningPoolFieldsStor
             sensor: value.sensor,
             orig_addr: value.orig_addr,
             orig_port: value.orig_port,
+            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
             resp_addr: value.resp_addr,
             resp_port: value.resp_port,
+            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
             proto: value.proto,
             start_time: value.start_time,
             duration: value.duration,
@@ -797,14 +738,14 @@ impl fmt::Display for CryptocurrencyMiningPool {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "sensor={:?} orig_addr={:?} orig_country_code={:?} orig_port={:?} resp_addr={:?} resp_country_code={:?} resp_port={:?} proto={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} query={:?} answer={:?} trans_id={:?} rtt={:?} qclass={:?} qtype={:?} rcode={:?} aa_flag={:?} tc_flag={:?} rd_flag={:?} ra_flag={:?} ttl={:?} coins={:?} triage_scores={:?}",
+            "sensor={:?} orig_addr={:?} orig_port={:?} orig_country_code={:?} resp_addr={:?} resp_port={:?} resp_country_code={:?} proto={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} query={:?} answer={:?} trans_id={:?} rtt={:?} qclass={:?} qtype={:?} rcode={:?} aa_flag={:?} tc_flag={:?} rd_flag={:?} ra_flag={:?} ttl={:?} coins={:?} triage_scores={:?}",
             self.sensor,
             self.orig_addr.to_string(),
-            crate::util::country_code_to_string(&self.orig_country_code),
             self.orig_port.to_string(),
+            crate::util::country_code_as_str(&self.orig_country_code),
             self.resp_addr.to_string(),
-            crate::util::country_code_to_string(&self.resp_country_code),
             self.resp_port.to_string(),
+            crate::util::country_code_as_str(&self.resp_country_code),
             self.proto.to_string(),
             self.start_time.to_rfc3339(),
             self.duration.to_string(),
@@ -843,10 +784,10 @@ impl CryptocurrencyMiningPool {
             resp_l2_bytes: fields.resp_l2_bytes,
             orig_addr: fields.orig_addr,
             orig_port: fields.orig_port,
-            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
+            orig_country_code: fields.orig_country_code,
             resp_addr: fields.resp_addr,
             resp_port: fields.resp_port,
-            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
+            resp_country_code: fields.resp_country_code,
             proto: fields.proto,
             query: fields.query,
             answer: fields.answer,
@@ -976,39 +917,8 @@ pub struct BlocklistDnsFields {
     pub category: Option<EventCategory>,
 }
 
-pub(crate) type BlocklistDnsFieldsStored = BlocklistDnsFieldsStoredV0_42;
+pub(crate) type BlocklistDnsFieldsStored = BlocklistDnsFieldsStoredV0_46;
 
-#[derive(Deserialize, Serialize)]
-pub(crate) struct BlocklistDnsFieldsStoredV0_42 {
-    pub sensor: String,
-    pub orig_addr: IpAddr,
-    pub orig_port: u16,
-    pub resp_addr: IpAddr,
-    pub resp_port: u16,
-    pub proto: u8,
-    pub start_time: i64,
-    pub duration: i64,
-    pub orig_pkts: u64,
-    pub resp_pkts: u64,
-    pub orig_l2_bytes: u64,
-    pub resp_l2_bytes: u64,
-    pub query: String,
-    pub answer: Vec<String>,
-    pub trans_id: u16,
-    pub rtt: i64,
-    pub qclass: u16,
-    pub qtype: u16,
-    pub rcode: u16,
-    pub aa_flag: bool,
-    pub tc_flag: bool,
-    pub rd_flag: bool,
-    pub ra_flag: bool,
-    pub ttl: Vec<i32>,
-    pub confidence: f32,
-    pub category: Option<EventCategory>,
-}
-
-#[allow(dead_code)]
 #[derive(Deserialize, Serialize)]
 pub(crate) struct BlocklistDnsFieldsStoredV0_46 {
     pub sensor: String,
@@ -1047,8 +957,10 @@ impl From<BlocklistDnsFields> for BlocklistDnsFieldsStored {
             sensor: value.sensor,
             orig_addr: value.orig_addr,
             orig_port: value.orig_port,
+            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
             resp_addr: value.resp_addr,
             resp_port: value.resp_port,
+            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
             proto: value.proto,
             start_time: value.start_time,
             duration: value.duration,
@@ -1151,14 +1063,14 @@ impl fmt::Display for BlocklistDns {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "sensor={:?} orig_addr={:?} orig_country_code={:?} orig_port={:?} resp_addr={:?} resp_country_code={:?} resp_port={:?} proto={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} query={:?} answer={:?} trans_id={:?} rtt={:?} qclass={:?} qtype={:?} rcode={:?} aa_flag={:?} tc_flag={:?} rd_flag={:?} ra_flag={:?} ttl={:?} triage_scores={:?}",
+            "sensor={:?} orig_addr={:?} orig_port={:?} orig_country_code={:?} resp_addr={:?} resp_port={:?} resp_country_code={:?} proto={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} query={:?} answer={:?} trans_id={:?} rtt={:?} qclass={:?} qtype={:?} rcode={:?} aa_flag={:?} tc_flag={:?} rd_flag={:?} ra_flag={:?} ttl={:?} triage_scores={:?}",
             self.sensor,
             self.orig_addr.to_string(),
-            crate::util::country_code_to_string(&self.orig_country_code),
             self.orig_port.to_string(),
+            crate::util::country_code_as_str(&self.orig_country_code),
             self.resp_addr.to_string(),
-            crate::util::country_code_to_string(&self.resp_country_code),
             self.resp_port.to_string(),
+            crate::util::country_code_as_str(&self.resp_country_code),
             self.proto.to_string(),
             self.start_time.to_rfc3339(),
             self.duration.to_string(),
@@ -1191,10 +1103,10 @@ impl BlocklistDns {
             start_time: DateTime::from_timestamp_nanos(fields.start_time),
             orig_addr: fields.orig_addr,
             orig_port: fields.orig_port,
-            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
+            orig_country_code: fields.orig_country_code,
             resp_addr: fields.resp_addr,
             resp_port: fields.resp_port,
-            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
+            resp_country_code: fields.resp_country_code,
             proto: fields.proto,
             duration: fields.duration,
             orig_pkts: fields.orig_pkts,

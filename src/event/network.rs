@@ -62,38 +62,8 @@ pub struct NetworkThreatFields {
     pub triage_scores: Option<Vec<TriageScore>>,
 }
 
-pub type NetworkThreatFieldsStored = NetworkThreatFieldsStoredV0_45;
+pub type NetworkThreatFieldsStored = NetworkThreatFieldsStoredV0_46;
 
-#[derive(Deserialize, Serialize)]
-pub struct NetworkThreatFieldsStoredV0_45 {
-    #[serde(with = "ts_nanoseconds")]
-    pub time: DateTime<Utc>,
-    pub sensor: String,
-    pub orig_addr: IpAddr,
-    pub orig_port: u16,
-    pub resp_addr: IpAddr,
-    pub resp_port: u16,
-    pub proto: u8,
-    pub service: String,
-    #[serde(with = "ts_nanoseconds")]
-    pub start_time: DateTime<Utc>,
-    pub duration: i64,
-    pub orig_pkts: u64,
-    pub resp_pkts: u64,
-    pub orig_l2_bytes: u64,
-    pub resp_l2_bytes: u64,
-    pub content: String,
-    pub db_name: String,
-    pub rule_id: u32,
-    pub matched_to: String,
-    pub cluster_id: Option<u32>,
-    pub attack_kind: String,
-    pub confidence: f32,
-    pub category: Option<EventCategory>,
-    pub triage_scores: Option<Vec<TriageScore>>,
-}
-
-#[allow(dead_code)]
 #[derive(Deserialize, Serialize)]
 pub struct NetworkThreatFieldsStoredV0_46 {
     #[serde(with = "ts_nanoseconds")]
@@ -132,8 +102,10 @@ impl From<NetworkThreatFields> for NetworkThreatFieldsStored {
             sensor: value.sensor,
             orig_addr: value.orig_addr,
             orig_port: value.orig_port,
+            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
             resp_addr: value.resp_addr,
             resp_port: value.resp_port,
+            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
             proto: value.proto,
             service: value.service,
             start_time: value.start_time,
@@ -223,10 +195,10 @@ impl NetworkThreat {
             sensor: fields.sensor,
             orig_addr: fields.orig_addr,
             orig_port: fields.orig_port,
-            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
+            orig_country_code: fields.orig_country_code,
             resp_addr: fields.resp_addr,
             resp_port: fields.resp_port,
-            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
+            resp_country_code: fields.resp_country_code,
             proto: fields.proto,
             service: fields.service,
             start_time: fields.start_time,
@@ -257,14 +229,14 @@ impl fmt::Display for NetworkThreat {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "sensor={:?} orig_addr={:?} orig_country_code={:?} orig_port={:?} resp_addr={:?} resp_country_code={:?} resp_port={:?} proto={:?} service={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} content={:?} db_name={:?} rule_id={:?} matched_to={:?} cluster_id={:?} attack_kind={:?} confidence={:?} triage_scores={:?}",
+            "sensor={:?} orig_addr={:?} orig_port={:?} orig_country_code={:?} resp_addr={:?} resp_port={:?} resp_country_code={:?} proto={:?} service={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} content={:?} db_name={:?} rule_id={:?} matched_to={:?} cluster_id={:?} attack_kind={:?} confidence={:?} triage_scores={:?}",
             self.sensor,
             self.orig_addr.to_string(),
-            crate::util::country_code_to_string(&self.orig_country_code),
             self.orig_port.to_string(),
+            crate::util::country_code_as_str(&self.orig_country_code),
             self.resp_addr.to_string(),
-            crate::util::country_code_to_string(&self.resp_country_code),
             self.resp_port.to_string(),
+            crate::util::country_code_as_str(&self.resp_country_code),
             self.proto.to_string(),
             self.service,
             self.start_time.to_rfc3339(),

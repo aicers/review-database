@@ -70,36 +70,8 @@ pub struct BlocklistKerberosFields {
     pub category: Option<EventCategory>,
 }
 
-pub(crate) type BlocklistKerberosFieldsStored = BlocklistKerberosFieldsStoredV0_42;
+pub(crate) type BlocklistKerberosFieldsStored = BlocklistKerberosFieldsStoredV0_46;
 
-#[derive(Deserialize, Serialize)]
-pub(crate) struct BlocklistKerberosFieldsStoredV0_42 {
-    pub sensor: String,
-    pub orig_addr: IpAddr,
-    pub orig_port: u16,
-    pub resp_addr: IpAddr,
-    pub resp_port: u16,
-    pub proto: u8,
-    pub start_time: i64,
-    pub duration: i64,
-    pub orig_pkts: u64,
-    pub resp_pkts: u64,
-    pub orig_l2_bytes: u64,
-    pub resp_l2_bytes: u64,
-    pub client_time: i64,
-    pub server_time: i64,
-    pub error_code: u32,
-    pub client_realm: String,
-    pub cname_type: u8,
-    pub cname: Vec<String>,
-    pub realm: String,
-    pub sname_type: u8,
-    pub sname: Vec<String>,
-    pub confidence: f32,
-    pub category: Option<EventCategory>,
-}
-
-#[allow(dead_code)]
 #[derive(Deserialize, Serialize)]
 pub(crate) struct BlocklistKerberosFieldsStoredV0_46 {
     pub sensor: String,
@@ -135,8 +107,10 @@ impl From<BlocklistKerberosFields> for BlocklistKerberosFieldsStored {
             sensor: value.sensor,
             orig_addr: value.orig_addr,
             orig_port: value.orig_port,
+            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
             resp_addr: value.resp_addr,
             resp_port: value.resp_port,
+            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
             proto: value.proto,
             start_time: value.start_time,
             duration: value.duration,
@@ -230,14 +204,14 @@ impl fmt::Display for BlocklistKerberos {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "sensor={:?} orig_addr={:?} orig_country_code={:?} orig_port={:?} resp_addr={:?} resp_country_code={:?} resp_port={:?} proto={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} client_time={:?} server_time={:?} error_code={:?} client_realm={:?} cname_type={:?} cname={:?} realm={:?} sname_type={:?} sname={:?} triage_scores={:?}",
+            "sensor={:?} orig_addr={:?} orig_port={:?} orig_country_code={:?} resp_addr={:?} resp_port={:?} resp_country_code={:?} proto={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} client_time={:?} server_time={:?} error_code={:?} client_realm={:?} cname_type={:?} cname={:?} realm={:?} sname_type={:?} sname={:?} triage_scores={:?}",
             self.sensor,
             self.orig_addr.to_string(),
-            crate::util::country_code_to_string(&self.orig_country_code),
             self.orig_port.to_string(),
+            crate::util::country_code_as_str(&self.orig_country_code),
             self.resp_addr.to_string(),
-            crate::util::country_code_to_string(&self.resp_country_code),
             self.resp_port.to_string(),
+            crate::util::country_code_as_str(&self.resp_country_code),
             self.proto.to_string(),
             self.start_time.to_rfc3339(),
             self.duration.to_string(),
@@ -266,10 +240,10 @@ impl BlocklistKerberos {
             sensor: fields.sensor,
             orig_addr: fields.orig_addr,
             orig_port: fields.orig_port,
-            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
+            orig_country_code: fields.orig_country_code,
             resp_addr: fields.resp_addr,
             resp_port: fields.resp_port,
-            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
+            resp_country_code: fields.resp_country_code,
             proto: fields.proto,
             start_time: DateTime::from_timestamp_nanos(fields.start_time),
             duration: fields.duration,

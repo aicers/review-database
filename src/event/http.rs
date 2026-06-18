@@ -98,47 +98,8 @@ pub struct HttpEventFields {
     pub category: Option<EventCategory>,
 }
 
-pub(crate) type HttpEventFieldsStored = HttpEventFieldsStoredV0_42;
+pub(crate) type HttpEventFieldsStored = HttpEventFieldsStoredV0_46;
 
-#[derive(Deserialize, Serialize)]
-pub(crate) struct HttpEventFieldsStoredV0_42 {
-    pub sensor: String,
-    pub orig_addr: IpAddr,
-    pub orig_port: u16,
-    pub resp_addr: IpAddr,
-    pub resp_port: u16,
-    pub proto: u8,
-    pub start_time: i64,
-    pub duration: i64,
-    pub orig_pkts: u64,
-    pub resp_pkts: u64,
-    pub orig_l2_bytes: u64,
-    pub resp_l2_bytes: u64,
-    pub method: String,
-    pub host: String,
-    pub uri: String,
-    pub referer: String,
-    pub version: String,
-    pub user_agent: String,
-    pub request_len: usize,
-    pub response_len: usize,
-    pub status_code: u16,
-    pub status_msg: String,
-    pub username: String,
-    pub password: String,
-    pub cookie: String,
-    pub content_encoding: String,
-    pub content_type: String,
-    pub cache_control: String,
-    pub filenames: Vec<String>,
-    pub mime_types: Vec<String>,
-    pub body: Vec<u8>,
-    pub state: String,
-    pub confidence: f32,
-    pub category: Option<EventCategory>,
-}
-
-#[allow(dead_code)]
 #[derive(Deserialize, Serialize)]
 pub(crate) struct HttpEventFieldsStoredV0_46 {
     pub sensor: String,
@@ -185,8 +146,10 @@ impl From<HttpEventFields> for HttpEventFieldsStored {
             sensor: value.sensor,
             orig_addr: value.orig_addr,
             orig_port: value.orig_port,
+            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
             resp_addr: value.resp_addr,
             resp_port: value.resp_port,
+            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
             proto: value.proto,
             start_time: value.start_time,
             duration: value.duration,
@@ -283,23 +246,8 @@ pub struct RepeatedHttpSessionsFields {
     pub category: Option<EventCategory>,
 }
 
-pub(crate) type RepeatedHttpSessionsFieldsStored = RepeatedHttpSessionsFieldsStoredV0_42;
+pub(crate) type RepeatedHttpSessionsFieldsStored = RepeatedHttpSessionsFieldsStoredV0_46;
 
-#[derive(Deserialize, Serialize)]
-pub(crate) struct RepeatedHttpSessionsFieldsStoredV0_42 {
-    pub sensor: String,
-    pub orig_addr: IpAddr,
-    pub orig_port: u16,
-    pub resp_addr: IpAddr,
-    pub resp_port: u16,
-    pub proto: u8,
-    pub start_time: i64,
-    pub end_time: i64,
-    pub confidence: f32,
-    pub category: Option<EventCategory>,
-}
-
-#[allow(dead_code)]
 #[derive(Deserialize, Serialize)]
 pub(crate) struct RepeatedHttpSessionsFieldsStoredV0_46 {
     pub sensor: String,
@@ -322,8 +270,10 @@ impl From<RepeatedHttpSessionsFields> for RepeatedHttpSessionsFieldsStored {
             sensor: value.sensor,
             orig_addr: value.orig_addr,
             orig_port: value.orig_port,
+            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
             resp_addr: value.resp_addr,
             resp_port: value.resp_port,
+            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
             proto: value.proto,
             start_time: value.start_time,
             end_time: value.end_time,
@@ -379,14 +329,14 @@ impl fmt::Display for RepeatedHttpSessions {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "sensor={:?} orig_addr={:?} orig_country_code={:?} orig_port={:?} resp_addr={:?} resp_country_code={:?} resp_port={:?} proto={:?} start_time={:?} end_time={:?} triage_scores={:?}",
+            "sensor={:?} orig_addr={:?} orig_port={:?} orig_country_code={:?} resp_addr={:?} resp_port={:?} resp_country_code={:?} proto={:?} start_time={:?} end_time={:?} triage_scores={:?}",
             self.sensor,
             self.orig_addr.to_string(),
-            crate::util::country_code_to_string(&self.orig_country_code),
             self.orig_port.to_string(),
+            crate::util::country_code_as_str(&self.orig_country_code),
             self.resp_addr.to_string(),
-            crate::util::country_code_to_string(&self.resp_country_code),
             self.resp_port.to_string(),
+            crate::util::country_code_as_str(&self.resp_country_code),
             self.proto.to_string(),
             self.start_time.to_rfc3339(),
             self.end_time.to_rfc3339(),
@@ -402,10 +352,10 @@ impl RepeatedHttpSessions {
             sensor: fields.sensor.clone(),
             orig_addr: fields.orig_addr,
             orig_port: fields.orig_port,
-            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
+            orig_country_code: fields.orig_country_code,
             resp_addr: fields.resp_addr,
             resp_port: fields.resp_port,
-            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
+            resp_country_code: fields.resp_country_code,
             proto: fields.proto,
             start_time: DateTime::from_timestamp_nanos(fields.start_time),
             end_time: DateTime::from_timestamp_nanos(fields.end_time),
@@ -531,55 +481,8 @@ pub struct HttpThreatFields {
     pub category: Option<EventCategory>,
 }
 
-pub(crate) type HttpThreatFieldsStored = HttpThreatFieldsStoredV0_44;
+pub(crate) type HttpThreatFieldsStored = HttpThreatFieldsStoredV0_46;
 
-/// `HttpThreatFieldsStored` structure from version 0.44.x.
-#[derive(::serde::Deserialize, ::serde::Serialize)]
-pub(crate) struct HttpThreatFieldsStoredV0_44 {
-    #[serde(with = "ts_nanoseconds")]
-    pub time: DateTime<Utc>,
-    pub sensor: String,
-    pub orig_addr: IpAddr,
-    pub orig_port: u16,
-    pub resp_addr: IpAddr,
-    pub resp_port: u16,
-    pub proto: u8,
-    pub start_time: i64,
-    pub duration: i64,
-    pub orig_pkts: u64,
-    pub resp_pkts: u64,
-    pub orig_l2_bytes: u64,
-    pub resp_l2_bytes: u64,
-    pub method: String,
-    pub host: String,
-    pub uri: String,
-    pub referer: String,
-    pub version: String,
-    pub user_agent: String,
-    pub request_len: usize,
-    pub response_len: usize,
-    pub status_code: u16,
-    pub status_msg: String,
-    pub username: String,
-    pub password: String,
-    pub cookie: String,
-    pub content_encoding: String,
-    pub content_type: String,
-    pub cache_control: String,
-    pub filenames: Vec<String>,
-    pub mime_types: Vec<String>,
-    pub body: Vec<u8>,
-    pub state: String,
-    pub db_name: String,
-    pub rule_id: u32,
-    pub matched_to: String,
-    pub cluster_id: Option<u32>,
-    pub attack_kind: String,
-    pub confidence: f32,
-    pub category: Option<EventCategory>,
-}
-
-#[allow(dead_code)]
 #[derive(::serde::Deserialize, ::serde::Serialize)]
 pub(crate) struct HttpThreatFieldsStoredV0_46 {
     #[serde(with = "ts_nanoseconds")]
@@ -634,8 +537,10 @@ impl From<HttpThreatFields> for HttpThreatFieldsStored {
             sensor: value.sensor,
             orig_addr: value.orig_addr,
             orig_port: value.orig_port,
+            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
             resp_addr: value.resp_addr,
             resp_port: value.resp_port,
+            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
             proto: value.proto,
             start_time: value.start_time,
             duration: value.duration,
@@ -794,14 +699,14 @@ impl fmt::Display for HttpThreat {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "sensor={:?} orig_addr={:?} orig_country_code={:?} orig_port={:?} resp_addr={:?} resp_country_code={:?} resp_port={:?} proto={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} method={:?} host={:?} uri={:?} referer={:?} version={:?} user_agent={:?} request_len={:?} response_len={:?} status_code={:?} status_msg={:?} username={:?} password={:?} cookie={:?} content_encoding={:?} content_type={:?} cache_control={:?} filenames={:?} mime_types={:?} body={:?} state={:?} db_name={:?} rule_id={:?} matched_to={:?} cluster_id={:?} attack_kind={:?} confidence={:?} triage_scores={:?}",
+            "sensor={:?} orig_addr={:?} orig_port={:?} orig_country_code={:?} resp_addr={:?} resp_port={:?} resp_country_code={:?} proto={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} method={:?} host={:?} uri={:?} referer={:?} version={:?} user_agent={:?} request_len={:?} response_len={:?} status_code={:?} status_msg={:?} username={:?} password={:?} cookie={:?} content_encoding={:?} content_type={:?} cache_control={:?} filenames={:?} mime_types={:?} body={:?} state={:?} db_name={:?} rule_id={:?} matched_to={:?} cluster_id={:?} attack_kind={:?} confidence={:?} triage_scores={:?}",
             self.sensor,
             self.orig_addr.to_string(),
-            crate::util::country_code_to_string(&self.orig_country_code),
             self.orig_port.to_string(),
+            crate::util::country_code_as_str(&self.orig_country_code),
             self.resp_addr.to_string(),
-            crate::util::country_code_to_string(&self.resp_country_code),
             self.resp_port.to_string(),
+            crate::util::country_code_as_str(&self.resp_country_code),
             self.proto.to_string(),
             self.start_time.to_rfc3339(),
             self.duration.to_string(),
@@ -848,10 +753,10 @@ impl HttpThreat {
             start_time: DateTime::from_timestamp_nanos(fields.start_time),
             orig_addr: fields.orig_addr,
             orig_port: fields.orig_port,
-            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
+            orig_country_code: fields.orig_country_code,
             resp_addr: fields.resp_addr,
             resp_port: fields.resp_port,
-            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
+            resp_country_code: fields.resp_country_code,
             proto: fields.proto,
             duration: fields.duration,
             orig_pkts: fields.orig_pkts,
@@ -1026,47 +931,8 @@ pub struct DgaFields {
     pub category: Option<EventCategory>,
 }
 
-pub(crate) type DgaFieldsStored = DgaFieldsStoredV0_42;
+pub(crate) type DgaFieldsStored = DgaFieldsStoredV0_46;
 
-#[derive(Deserialize, Serialize)]
-pub(crate) struct DgaFieldsStoredV0_42 {
-    pub sensor: String,
-    pub orig_addr: IpAddr,
-    pub orig_port: u16,
-    pub resp_addr: IpAddr,
-    pub resp_port: u16,
-    pub proto: u8,
-    pub start_time: i64,
-    pub duration: i64,
-    pub orig_pkts: u64,
-    pub resp_pkts: u64,
-    pub orig_l2_bytes: u64,
-    pub resp_l2_bytes: u64,
-    pub method: String,
-    pub host: String,
-    pub uri: String,
-    pub referer: String,
-    pub version: String,
-    pub user_agent: String,
-    pub request_len: usize,
-    pub response_len: usize,
-    pub status_code: u16,
-    pub status_msg: String,
-    pub username: String,
-    pub password: String,
-    pub cookie: String,
-    pub content_encoding: String,
-    pub content_type: String,
-    pub cache_control: String,
-    pub filenames: Vec<String>,
-    pub mime_types: Vec<String>,
-    pub body: Vec<u8>,
-    pub state: String,
-    pub confidence: f32,
-    pub category: Option<EventCategory>,
-}
-
-#[allow(dead_code)]
 #[derive(Deserialize, Serialize)]
 pub(crate) struct DgaFieldsStoredV0_46 {
     pub sensor: String,
@@ -1113,8 +979,10 @@ impl From<DgaFields> for DgaFieldsStored {
             sensor: value.sensor,
             orig_addr: value.orig_addr,
             orig_port: value.orig_port,
+            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
             resp_addr: value.resp_addr,
             resp_port: value.resp_port,
+            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
             proto: value.proto,
             start_time: value.start_time,
             duration: value.duration,
@@ -1244,14 +1112,14 @@ impl fmt::Display for DomainGenerationAlgorithm {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "sensor={:?} orig_addr={:?} orig_country_code={:?} orig_port={:?} resp_addr={:?} resp_country_code={:?} resp_port={:?} proto={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} method={:?} host={:?} uri={:?} referer={:?} version={:?} user_agent={:?} request_len={:?} response_len={:?} status_code={:?} status_msg={:?} username={:?} password={:?} cookie={:?} content_encoding={:?} content_type={:?} cache_control={:?} filenames={:?} mime_types={:?} body={:?} state={:?} confidence={:?} triage_scores={:?}",
+            "sensor={:?} orig_addr={:?} orig_port={:?} orig_country_code={:?} resp_addr={:?} resp_port={:?} resp_country_code={:?} proto={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} method={:?} host={:?} uri={:?} referer={:?} version={:?} user_agent={:?} request_len={:?} response_len={:?} status_code={:?} status_msg={:?} username={:?} password={:?} cookie={:?} content_encoding={:?} content_type={:?} cache_control={:?} filenames={:?} mime_types={:?} body={:?} state={:?} confidence={:?} triage_scores={:?}",
             self.sensor,
             self.orig_addr.to_string(),
-            crate::util::country_code_to_string(&self.orig_country_code),
             self.orig_port.to_string(),
+            crate::util::country_code_as_str(&self.orig_country_code),
             self.resp_addr.to_string(),
-            crate::util::country_code_to_string(&self.resp_country_code),
             self.resp_port.to_string(),
+            crate::util::country_code_as_str(&self.resp_country_code),
             self.proto.to_string(),
             self.start_time.to_rfc3339(),
             self.duration.to_string(),
@@ -1293,10 +1161,10 @@ impl DomainGenerationAlgorithm {
             start_time: DateTime::from_timestamp_nanos(fields.start_time),
             orig_addr: fields.orig_addr,
             orig_port: fields.orig_port,
-            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
+            orig_country_code: fields.orig_country_code,
             resp_addr: fields.resp_addr,
             resp_port: fields.resp_port,
-            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
+            resp_country_code: fields.resp_country_code,
             proto: fields.proto,
             duration: fields.duration,
             orig_pkts: fields.orig_pkts,
@@ -1448,14 +1316,14 @@ impl fmt::Display for NonBrowser {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "sensor={:?} orig_addr={:?} orig_country_code={:?} orig_port={:?} resp_addr={:?} resp_country_code={:?} resp_port={:?} proto={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} method={:?} host={:?} uri={:?} referer={:?} version={:?} user_agent={:?} request_len={:?} response_len={:?} status_code={:?} status_msg={:?} username={:?} password={:?} cookie={:?} content_encoding={:?} content_type={:?} cache_control={:?} filenames={:?} mime_types={:?} body={:?} state={:?} triage_scores={:?}",
+            "sensor={:?} orig_addr={:?} orig_port={:?} orig_country_code={:?} resp_addr={:?} resp_port={:?} resp_country_code={:?} proto={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} method={:?} host={:?} uri={:?} referer={:?} version={:?} user_agent={:?} request_len={:?} response_len={:?} status_code={:?} status_msg={:?} username={:?} password={:?} cookie={:?} content_encoding={:?} content_type={:?} cache_control={:?} filenames={:?} mime_types={:?} body={:?} state={:?} triage_scores={:?}",
             self.sensor,
             self.orig_addr.to_string(),
-            crate::util::country_code_to_string(&self.orig_country_code),
             self.orig_port.to_string(),
+            crate::util::country_code_as_str(&self.orig_country_code),
             self.resp_addr.to_string(),
-            crate::util::country_code_to_string(&self.resp_country_code),
             self.resp_port.to_string(),
+            crate::util::country_code_as_str(&self.resp_country_code),
             self.proto.to_string(),
             self.start_time.to_rfc3339(),
             self.duration.to_string(),
@@ -1501,10 +1369,10 @@ impl NonBrowser {
             resp_l2_bytes: fields.resp_l2_bytes,
             orig_addr: fields.orig_addr,
             orig_port: fields.orig_port,
-            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
+            orig_country_code: fields.orig_country_code,
             resp_addr: fields.resp_addr,
             resp_port: fields.resp_port,
-            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
+            resp_country_code: fields.resp_country_code,
             proto: fields.proto,
             method: fields.method.clone(),
             host: fields.host.clone(),
@@ -1655,14 +1523,14 @@ impl fmt::Display for BlocklistHttp {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "sensor={:?} orig_addr={:?} orig_country_code={:?} orig_port={:?} resp_addr={:?} resp_country_code={:?} resp_port={:?} proto={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} method={:?} host={:?} uri={:?} referer={:?} version={:?} user_agent={:?} request_len={:?} response_len={:?} status_code={:?} status_msg={:?} username={:?} password={:?} cookie={:?} content_encoding={:?} content_type={:?} cache_control={:?} filenames={:?} mime_types={:?} body={:?} state={:?} triage_scores={:?}",
+            "sensor={:?} orig_addr={:?} orig_port={:?} orig_country_code={:?} resp_addr={:?} resp_port={:?} resp_country_code={:?} proto={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} method={:?} host={:?} uri={:?} referer={:?} version={:?} user_agent={:?} request_len={:?} response_len={:?} status_code={:?} status_msg={:?} username={:?} password={:?} cookie={:?} content_encoding={:?} content_type={:?} cache_control={:?} filenames={:?} mime_types={:?} body={:?} state={:?} triage_scores={:?}",
             self.sensor,
             self.orig_addr.to_string(),
-            crate::util::country_code_to_string(&self.orig_country_code),
             self.orig_port.to_string(),
+            crate::util::country_code_as_str(&self.orig_country_code),
             self.resp_addr.to_string(),
-            crate::util::country_code_to_string(&self.resp_country_code),
             self.resp_port.to_string(),
+            crate::util::country_code_as_str(&self.resp_country_code),
             self.proto.to_string(),
             self.start_time.to_rfc3339(),
             self.duration.to_string(),
@@ -1703,10 +1571,10 @@ impl BlocklistHttp {
             start_time: DateTime::from_timestamp_nanos(fields.start_time),
             orig_addr: fields.orig_addr,
             orig_port: fields.orig_port,
-            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
+            orig_country_code: fields.orig_country_code,
             resp_addr: fields.resp_addr,
             resp_port: fields.resp_port,
-            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
+            resp_country_code: fields.resp_country_code,
             proto: fields.proto,
             duration: fields.duration,
             orig_pkts: fields.orig_pkts,

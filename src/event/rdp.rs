@@ -49,21 +49,8 @@ pub struct RdpBruteForceFields {
     pub category: Option<EventCategory>,
 }
 
-pub(crate) type RdpBruteForceFieldsStored = RdpBruteForceFieldsStoredV0_42;
+pub(crate) type RdpBruteForceFieldsStored = RdpBruteForceFieldsStoredV0_46;
 
-#[derive(Deserialize, Serialize)]
-pub(crate) struct RdpBruteForceFieldsStoredV0_42 {
-    pub sensor: String,
-    pub orig_addr: IpAddr,
-    pub resp_addrs: Vec<IpAddr>,
-    pub start_time: i64,
-    pub end_time: i64,
-    pub proto: u8,
-    pub confidence: f32,
-    pub category: Option<EventCategory>,
-}
-
-#[allow(dead_code)]
 #[derive(Deserialize, Serialize)]
 pub(crate) struct RdpBruteForceFieldsStoredV0_46 {
     pub sensor: String,
@@ -80,10 +67,13 @@ pub(crate) struct RdpBruteForceFieldsStoredV0_46 {
 
 impl From<RdpBruteForceFields> for RdpBruteForceFieldsStored {
     fn from(value: RdpBruteForceFields) -> Self {
+        let resp_addr_count = value.resp_addrs.len();
         Self {
             sensor: value.sensor,
             orig_addr: value.orig_addr,
+            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
             resp_addrs: value.resp_addrs,
+            resp_country_codes: vec![crate::util::COUNTRY_CODE_PENDING; resp_addr_count],
             start_time: value.start_time,
             end_time: value.end_time,
             proto: value.proto,
@@ -137,7 +127,7 @@ impl fmt::Display for RdpBruteForce {
             f,
             "orig_addr={:?} orig_country_code={:?} resp_addrs={:?} resp_country_codes={:?} start_time={:?} end_time={:?} proto={:?} triage_scores={:?}",
             self.orig_addr.to_string(),
-            crate::util::country_code_to_string(&self.orig_country_code),
+            crate::util::country_code_as_str(&self.orig_country_code),
             vector_to_string(&self.resp_addrs),
             crate::util::country_codes_to_string(&self.resp_country_codes),
             self.start_time.to_rfc3339(),
@@ -154,9 +144,9 @@ impl RdpBruteForce {
             sensor: fields.sensor.clone(),
             time,
             orig_addr: fields.orig_addr,
-            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
+            orig_country_code: fields.orig_country_code,
             resp_addrs: fields.resp_addrs.clone(),
-            resp_country_codes: vec![crate::util::COUNTRY_CODE_PENDING; fields.resp_addrs.len()],
+            resp_country_codes: fields.resp_country_codes.clone(),
             start_time: DateTime::from_timestamp_nanos(fields.start_time),
             end_time: DateTime::from_timestamp_nanos(fields.end_time),
             proto: fields.proto,
@@ -255,28 +245,8 @@ pub struct BlocklistRdpFields {
     pub category: Option<EventCategory>,
 }
 
-pub(crate) type BlocklistRdpFieldsStored = BlocklistRdpFieldsStoredV0_42;
+pub(crate) type BlocklistRdpFieldsStored = BlocklistRdpFieldsStoredV0_46;
 
-#[derive(Deserialize, Serialize)]
-pub(crate) struct BlocklistRdpFieldsStoredV0_42 {
-    pub sensor: String,
-    pub orig_addr: IpAddr,
-    pub orig_port: u16,
-    pub resp_addr: IpAddr,
-    pub resp_port: u16,
-    pub proto: u8,
-    pub start_time: i64,
-    pub duration: i64,
-    pub orig_pkts: u64,
-    pub resp_pkts: u64,
-    pub orig_l2_bytes: u64,
-    pub resp_l2_bytes: u64,
-    pub cookie: String,
-    pub confidence: f32,
-    pub category: Option<EventCategory>,
-}
-
-#[allow(dead_code)]
 #[derive(Deserialize, Serialize)]
 pub(crate) struct BlocklistRdpFieldsStoredV0_46 {
     pub sensor: String,
@@ -304,8 +274,10 @@ impl From<BlocklistRdpFields> for BlocklistRdpFieldsStored {
             sensor: value.sensor,
             orig_addr: value.orig_addr,
             orig_port: value.orig_port,
+            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
             resp_addr: value.resp_addr,
             resp_port: value.resp_port,
+            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
             proto: value.proto,
             start_time: value.start_time,
             duration: value.duration,
@@ -373,14 +345,14 @@ impl fmt::Display for BlocklistRdp {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "sensor={:?} orig_addr={:?} orig_country_code={:?} orig_port={:?} resp_addr={:?} resp_country_code={:?} resp_port={:?} proto={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} cookie={:?} triage_scores={:?}",
+            "sensor={:?} orig_addr={:?} orig_port={:?} orig_country_code={:?} resp_addr={:?} resp_port={:?} resp_country_code={:?} proto={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} cookie={:?} triage_scores={:?}",
             self.sensor,
             self.orig_addr.to_string(),
-            crate::util::country_code_to_string(&self.orig_country_code),
             self.orig_port.to_string(),
+            crate::util::country_code_as_str(&self.orig_country_code),
             self.resp_addr.to_string(),
-            crate::util::country_code_to_string(&self.resp_country_code),
             self.resp_port.to_string(),
+            crate::util::country_code_as_str(&self.resp_country_code),
             self.proto.to_string(),
             self.start_time.to_rfc3339(),
             self.duration.to_string(),
@@ -401,10 +373,10 @@ impl BlocklistRdp {
             sensor: fields.sensor,
             orig_addr: fields.orig_addr,
             orig_port: fields.orig_port,
-            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
+            orig_country_code: fields.orig_country_code,
             resp_addr: fields.resp_addr,
             resp_port: fields.resp_port,
-            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
+            resp_country_code: fields.resp_country_code,
             proto: fields.proto,
             start_time: DateTime::from_timestamp_nanos(fields.start_time),
             duration: fields.duration,

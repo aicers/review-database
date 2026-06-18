@@ -47,13 +47,11 @@ use rocksdb::IteratorMode;
 use serde::{Deserialize, Serialize};
 use tracing::warn;
 
+pub(crate) use self::conn::{BlocklistConnFieldsStored, MultiHostPortScanFieldsStored};
 use self::{
     bootp::BlocklistBootpFieldsStored,
     common::Match,
-    conn::{
-        BlocklistConnFieldsStored, ExternalDdosFieldsStored, MultiHostPortScanFieldsStored,
-        PortScanFieldsStored,
-    },
+    conn::{ExternalDdosFieldsStored, PortScanFieldsStored},
     dns::{BlocklistDnsFieldsStored, CryptocurrencyMiningPoolFieldsStored, DnsEventFieldsStored},
     ftp::{FtpBruteForceFieldsStored, FtpEventFieldsStored},
     http::{
@@ -76,6 +74,38 @@ use self::{
     sysmon::WindowsThreatFieldsStored,
     tls::BlocklistTlsFieldsStored,
     unusual_destination_pattern::UnusualDestinationPatternFieldsStored,
+};
+pub(crate) use self::{
+    bootp::BlocklistBootpFieldsStoredV0_46,
+    conn::{
+        BlocklistConnFieldsStoredV0_46, ExternalDdosFieldsStoredV0_46,
+        MultiHostPortScanFieldsStoredV0_46, PortScanFieldsStoredV0_46,
+    },
+    dcerpc::{BlocklistDceRpcFieldsStored, BlocklistDceRpcFieldsStoredV0_46},
+    dhcp::{BlocklistDhcpFieldsStored, BlocklistDhcpFieldsStoredV0_46},
+    dns::{
+        BlocklistDnsFieldsStoredV0_46, CryptocurrencyMiningPoolFieldsStoredV0_46,
+        DnsEventFieldsStoredV0_46,
+    },
+    ftp::{FtpBruteForceFieldsStoredV0_46, FtpEventFieldsStoredV0_46},
+    http::{
+        DgaFieldsStoredV0_46, HttpEventFieldsStoredV0_46, HttpThreatFieldsStored,
+        HttpThreatFieldsStoredV0_46, RepeatedHttpSessionsFieldsStoredV0_46,
+    },
+    kerberos::BlocklistKerberosFieldsStoredV0_46,
+    ldap::{LdapBruteForceFieldsStoredV0_46, LdapEventFieldsStoredV0_46},
+    malformed_dns::BlocklistMalformedDnsFieldsStoredV0_46,
+    mqtt::BlocklistMqttFieldsStoredV0_46,
+    network::NetworkThreatFieldsStoredV0_46,
+    nfs::BlocklistNfsFieldsStoredV0_46,
+    ntlm::BlocklistNtlmFieldsStoredV0_46,
+    radius::BlocklistRadiusFieldsStoredV0_46,
+    rdp::{BlocklistRdpFieldsStoredV0_46, RdpBruteForceFieldsStoredV0_46},
+    smb::BlocklistSmbFieldsStoredV0_46,
+    smtp::BlocklistSmtpFieldsStoredV0_46,
+    ssh::BlocklistSshFieldsStoredV0_46,
+    tls::BlocklistTlsFieldsStoredV0_46,
+    unusual_destination_pattern::UnusualDestinationPatternFieldsStoredV0_46,
 };
 pub use self::{
     bootp::{BlocklistBootp, BlocklistBootpFields},
@@ -114,11 +144,6 @@ pub use self::{
     tls::{BlocklistTls, BlocklistTlsFields, SuspiciousTlsTraffic},
     tor::{TorConnection, TorConnectionConn},
     unusual_destination_pattern::{UnusualDestinationPattern, UnusualDestinationPatternFields},
-};
-pub(crate) use self::{
-    dcerpc::{BlocklistDceRpcFieldsStored, BlocklistDceRpcFieldsStoredV0_44},
-    dhcp::{BlocklistDhcpFieldsStored, BlocklistDhcpFieldsStoredV0_44},
-    http::{HttpThreatFieldsStored, HttpThreatFieldsStoredV0_44},
 };
 use super::{
     Customer, EventCategory, Network, TriageExclusion, TriagePolicyInput,
@@ -2656,6 +2681,114 @@ fn convert_for_storage(kind: EventKind, bytes: &[u8]) -> Result<Vec<u8>> {
     }
 }
 
+pub(crate) fn resolve_stored_country_codes(
+    kind: EventKind,
+    bytes: &[u8],
+    locator: Option<&ip2location::DB>,
+) -> Result<Vec<u8>> {
+    fn reserialize<T, F>(bytes: &[u8], mut update: F) -> Result<Vec<u8>>
+    where
+        T: for<'de> Deserialize<'de> + Serialize,
+        F: FnMut(&mut T),
+    {
+        let mut fields: T = bincode::deserialize(bytes)
+            .context("failed to deserialize stored event fields for country-code resolution")?;
+        update(&mut fields);
+        bincode::serialize(&fields).context("failed to serialize resolved event fields")
+    }
+
+    let Some(locator) = locator else {
+        return Ok(bytes.to_vec());
+    };
+
+    macro_rules! pair {
+        ($ty:ty) => {
+            reserialize::<$ty, _>(bytes, |fields| {
+                fields.orig_country_code =
+                    crate::util::lookup_country_code(locator, fields.orig_addr);
+                fields.resp_country_code =
+                    crate::util::lookup_country_code(locator, fields.resp_addr);
+            })
+        };
+    }
+    macro_rules! resp_vec {
+        ($ty:ty) => {
+            reserialize::<$ty, _>(bytes, |fields| {
+                fields.orig_country_code =
+                    crate::util::lookup_country_code(locator, fields.orig_addr);
+                fields.resp_country_codes = fields
+                    .resp_addrs
+                    .iter()
+                    .copied()
+                    .map(|addr| crate::util::lookup_country_code(locator, addr))
+                    .collect();
+            })
+        };
+    }
+
+    match kind {
+        EventKind::BlocklistBootp => pair!(BlocklistBootpFieldsStored),
+        EventKind::BlocklistConn | EventKind::TorConnectionConn => {
+            pair!(BlocklistConnFieldsStored)
+        }
+        EventKind::BlocklistDceRpc => pair!(BlocklistDceRpcFieldsStored),
+        EventKind::BlocklistDhcp => pair!(BlocklistDhcpFieldsStored),
+        EventKind::BlocklistDns => pair!(BlocklistDnsFieldsStored),
+        EventKind::BlocklistFtp | EventKind::FtpPlainText => pair!(FtpEventFieldsStored),
+        EventKind::BlocklistHttp => pair!(BlocklistHttpFieldsStored),
+        EventKind::BlocklistKerberos => pair!(BlocklistKerberosFieldsStored),
+        EventKind::BlocklistLdap | EventKind::LdapPlainText => {
+            pair!(LdapEventFieldsStored)
+        }
+        EventKind::BlocklistMalformedDns => pair!(BlocklistMalformedDnsFieldsStored),
+        EventKind::BlocklistMqtt => pair!(BlocklistMqttFieldsStored),
+        EventKind::BlocklistNfs => pair!(BlocklistNfsFieldsStored),
+        EventKind::BlocklistNtlm => pair!(BlocklistNtlmFieldsStored),
+        EventKind::BlocklistRadius => pair!(BlocklistRadiusFieldsStored),
+        EventKind::BlocklistRdp => pair!(BlocklistRdpFieldsStored),
+        EventKind::BlocklistSmb => pair!(BlocklistSmbFieldsStored),
+        EventKind::BlocklistSmtp => pair!(BlocklistSmtpFieldsStored),
+        EventKind::BlocklistSsh => pair!(BlocklistSshFieldsStored),
+        EventKind::BlocklistTls | EventKind::SuspiciousTlsTraffic => {
+            pair!(BlocklistTlsFieldsStored)
+        }
+        EventKind::CryptocurrencyMiningPool => pair!(CryptocurrencyMiningPoolFieldsStored),
+        EventKind::DnsCovertChannel | EventKind::LockyRansomware => {
+            pair!(DnsEventFieldsStored)
+        }
+        EventKind::DomainGenerationAlgorithm => pair!(DgaFieldsStored),
+        EventKind::ExternalDdos => reserialize::<ExternalDdosFieldsStored, _>(bytes, |fields| {
+            fields.orig_country_codes = fields
+                .orig_addrs
+                .iter()
+                .copied()
+                .map(|addr| crate::util::lookup_country_code(locator, addr))
+                .collect();
+            fields.resp_country_code = crate::util::lookup_country_code(locator, fields.resp_addr);
+        }),
+        EventKind::FtpBruteForce => pair!(FtpBruteForceFieldsStored),
+        EventKind::HttpThreat => pair!(HttpThreatFieldsStored),
+        EventKind::LdapBruteForce => pair!(LdapBruteForceFieldsStored),
+        EventKind::MultiHostPortScan => resp_vec!(MultiHostPortScanFieldsStored),
+        EventKind::NetworkThreat => pair!(NetworkThreatFieldsStored),
+        EventKind::NonBrowser | EventKind::TorConnection => pair!(HttpEventFieldsStored),
+        EventKind::PortScan => pair!(PortScanFieldsStored),
+        EventKind::RdpBruteForce => resp_vec!(RdpBruteForceFieldsStored),
+        EventKind::RepeatedHttpSessions => pair!(RepeatedHttpSessionsFieldsStored),
+        EventKind::UnusualDestinationPattern => {
+            reserialize::<UnusualDestinationPatternFieldsStored, _>(bytes, |fields| {
+                fields.resp_country_codes = fields
+                    .destination_ips
+                    .iter()
+                    .copied()
+                    .map(|addr| crate::util::lookup_country_code(locator, addr))
+                    .collect();
+            })
+        }
+        EventKind::ExtraThreat | EventKind::WindowsThreat => Ok(bytes.to_vec()),
+    }
+}
+
 #[allow(clippy::module_name_repetitions)]
 pub struct EventDb<'a> {
     inner: &'a rocksdb::OptimisticTransactionDB,
@@ -2681,6 +2814,12 @@ impl<'a> EventDb<'a> {
     pub fn iter_forward(&self) -> EventIterator<'_> {
         let iter = self.inner.iterator(IteratorMode::Start);
         EventIterator { inner: iter }
+    }
+
+    #[must_use]
+    pub(crate) fn raw_iter(&self) -> RawEventIterator<'_> {
+        let iter = self.inner.iterator(IteratorMode::Start);
+        RawEventIterator { inner: iter }
     }
 
     /// Stores a new event into the database.
@@ -2873,6 +3012,25 @@ pub struct EventIterator<'i> {
         'i,
         rocksdb::OptimisticTransactionDB<rocksdb::SingleThreaded>,
     >,
+}
+
+#[allow(clippy::module_name_repetitions)]
+pub(crate) struct RawEventIterator<'i> {
+    inner: rocksdb::DBIteratorWithThreadMode<
+        'i,
+        rocksdb::OptimisticTransactionDB<rocksdb::SingleThreaded>,
+    >,
+}
+
+impl Iterator for RawEventIterator<'_> {
+    type Item = Result<(Vec<u8>, Vec<u8>)>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.inner.next().map(|item| {
+            let (key, value) = item.context("cannot read from event database")?;
+            Ok((key.to_vec(), value.to_vec()))
+        })
+    }
 }
 
 impl Iterator for EventIterator<'_> {
@@ -3440,6 +3598,13 @@ mod tests {
             EventCategory::CommandAndControl,
         );
         db.put(&msg).unwrap();
+        let raw: Vec<_> = db
+            .raw_iter()
+            .collect::<std::result::Result<_, _>>()
+            .unwrap();
+        let stored: super::DnsEventFieldsStored = bincode::deserialize(&raw[0].1).unwrap();
+        assert_eq!(stored.orig_country_code, crate::util::COUNTRY_CODE_PENDING);
+        assert_eq!(stored.resp_country_code, crate::util::COUNTRY_CODE_PENDING);
         let mut iter = db.iter_forward();
         assert!(iter.next().is_some());
         assert!(iter.next().is_none());
@@ -3834,7 +3999,7 @@ mod tests {
         let dga_display = format!("{event}");
         assert_eq!(
             &dga_display,
-            r#"time="1970-01-01T00:01:01+00:00" event_kind="DomainGenerationAlgorithm" category="CommandAndControl" sensor="collector1" orig_addr="127.0.0.1" orig_country_code="ZZ" orig_port="10000" resp_addr="127.0.0.2" resp_country_code="ZZ" resp_port="80" proto="6" start_time="1970-01-01T00:00:00+00:00" duration="0" orig_pkts="0" resp_pkts="0" orig_l2_bytes="0" resp_l2_bytes="0" method="GET" host="example.com" uri="/uri/path" referer="-" version="1.1" user_agent="browser" request_len="100" response_len="100" status_code="200" status_msg="-" username="-" password="-" cookie="cookie" content_encoding="encoding type" content_type="content type" cache_control="no cache" filenames="a1,a2" mime_types="b1,b2" body="1234567890..." state="" confidence="0.8" triage_scores="""#
+            r#"time="1970-01-01T00:01:01+00:00" event_kind="DomainGenerationAlgorithm" category="CommandAndControl" sensor="collector1" orig_addr="127.0.0.1" orig_port="10000" orig_country_code="ZZ" resp_addr="127.0.0.2" resp_port="80" resp_country_code="ZZ" proto="6" start_time="1970-01-01T00:00:00+00:00" duration="0" orig_pkts="0" resp_pkts="0" orig_l2_bytes="0" resp_l2_bytes="0" method="GET" host="example.com" uri="/uri/path" referer="-" version="1.1" user_agent="browser" request_len="100" response_len="100" status_code="200" status_msg="-" username="-" password="-" cookie="cookie" content_encoding="encoding type" content_type="content type" cache_control="no cache" filenames="a1,a2" mime_types="b1,b2" body="1234567890..." state="" confidence="0.8" triage_scores="""#
         );
     }
 
@@ -4283,7 +4448,7 @@ mod tests {
         .to_string();
         assert_eq!(
             &multi_host_port_scan,
-            r#"time="1970-01-01T00:01:01+00:00" event_kind="MultiHostPortScan" category="Reconnaissance" orig_addr="127.0.0.1" orig_country_code="ZZ" resp_addrs="127.0.0.2,127.0.0.3" resp_country_codes="ZZ,ZZ" resp_port="80" proto="6" start_time="1970-01-01T00:01:01+00:00" end_time="1970-01-01T00:01:02+00:00" triage_scores="""#
+            r#"time="1970-01-01T00:01:01+00:00" event_kind="MultiHostPortScan" category="Reconnaissance" orig_addr="127.0.0.1" orig_country_code="ZZ" resp_addrs="127.0.0.2,127.0.0.3" resp_port="80" resp_country_codes="ZZ,ZZ" proto="6" start_time="1970-01-01T00:01:01+00:00" end_time="1970-01-01T00:01:02+00:00" triage_scores="""#
         );
     }
 
@@ -4394,7 +4559,7 @@ mod tests {
 
         assert_eq!(
             &blocklist_bootp,
-            r#"time="1970-01-01T01:01:01+00:00" event_kind="BlocklistBootp" category="InitialAccess" sensor="collector1" orig_addr="127.0.0.1" orig_country_code="ZZ" orig_port="68" resp_addr="127.0.0.2" resp_country_code="ZZ" resp_port="67" proto="17" start_time="1970-01-01T00:00:00+00:00" duration="0" orig_pkts="0" resp_pkts="0" orig_l2_bytes="0" resp_l2_bytes="0" op="1" htype="2" hops="1" xid="1" ciaddr="127.0.0.5" yiaddr="127.0.0.6" siaddr="127.0.0.7" giaddr="127.0.0.8" chaddr="01:02:03:04:05:06" sname="server_name" file="boot_file_name" triage_scores="""#
+            r#"time="1970-01-01T01:01:01+00:00" event_kind="BlocklistBootp" category="InitialAccess" sensor="collector1" orig_addr="127.0.0.1" orig_port="68" orig_country_code="ZZ" resp_addr="127.0.0.2" resp_port="67" resp_country_code="ZZ" proto="17" start_time="1970-01-01T00:00:00+00:00" duration="0" orig_pkts="0" resp_pkts="0" orig_l2_bytes="0" resp_l2_bytes="0" op="1" htype="2" hops="1" xid="1" ciaddr="127.0.0.5" yiaddr="127.0.0.6" siaddr="127.0.0.7" giaddr="127.0.0.8" chaddr="01:02:03:04:05:06" sname="server_name" file="boot_file_name" triage_scores="""#
         );
     }
 
@@ -4513,7 +4678,7 @@ mod tests {
         .to_string();
         assert_eq!(
             &blocklist_conn,
-            r#"time="1970-01-01T01:01:01+00:00" event_kind="BlocklistConn" category="InitialAccess" sensor="collector1" orig_addr="127.0.0.1" orig_country_code="ZZ" orig_port="10000" resp_addr="127.0.0.2" resp_country_code="ZZ" resp_port="80" proto="6" conn_state="SAF" start_time="1970-01-01T00:00:00+00:00" duration="0" service="http" orig_bytes="100" resp_bytes="100" orig_pkts="1" resp_pkts="1" orig_l2_bytes="122" resp_l2_bytes="122" triage_scores="""#
+            r#"time="1970-01-01T01:01:01+00:00" event_kind="BlocklistConn" category="InitialAccess" sensor="collector1" orig_addr="127.0.0.1" orig_port="10000" orig_country_code="ZZ" resp_addr="127.0.0.2" resp_port="80" resp_country_code="ZZ" proto="6" conn_state="SAF" start_time="1970-01-01T00:00:00+00:00" duration="0" service="http" orig_bytes="100" resp_bytes="100" orig_pkts="1" resp_pkts="1" orig_l2_bytes="122" resp_l2_bytes="122" triage_scores="""#
         );
     }
 
@@ -4601,11 +4766,11 @@ mod tests {
              category=\"InitialAccess\" \
              sensor=\"collector1\" \
              orig_addr=\"127.0.0.1\" \
-             orig_country_code=\"ZZ\" \
              orig_port=\"10000\" \
+             orig_country_code=\"ZZ\" \
              resp_addr=\"127.0.0.2\" \
-             resp_country_code=\"ZZ\" \
              resp_port=\"135\" \
+             resp_country_code=\"ZZ\" \
              proto=\"6\" \
              start_time=\"1970-01-01T00:00:00+00:00\" \
              duration=\"0\" \
@@ -4688,7 +4853,7 @@ mod tests {
 
         assert_eq!(
             &blocklist_dhcp,
-            r#"time="1970-01-01T01:01:01+00:00" event_kind="BlocklistDhcp" category="InitialAccess" sensor="collector1" orig_addr="127.0.0.1" orig_country_code="ZZ" orig_port="68" resp_addr="127.0.0.2" resp_country_code="ZZ" resp_port="67" proto="17" start_time="1970-01-01T00:00:00+00:00" duration="0" orig_pkts="0" resp_pkts="0" orig_l2_bytes="0" resp_l2_bytes="0" msg_type="1" ciaddr="127.0.0.5" yiaddr="127.0.0.6" siaddr="127.0.0.7" giaddr="127.0.0.8" subnet_mask="255.255.255.0" router="127.0.0.1" domain_name_server="127.0.0.1" req_ip_addr="127.0.0.100" lease_time="100" server_id="127.0.0.1" param_req_list="1,2,3" message="message" renewal_time="100" rebinding_time="200" class_id="MSFT 5.0" client_id_type="1" client_id="07:08:09" options="1:010203,3:0a0b0c" triage_scores="""#
+            r#"time="1970-01-01T01:01:01+00:00" event_kind="BlocklistDhcp" category="InitialAccess" sensor="collector1" orig_addr="127.0.0.1" orig_port="68" orig_country_code="ZZ" resp_addr="127.0.0.2" resp_port="67" resp_country_code="ZZ" proto="17" start_time="1970-01-01T00:00:00+00:00" duration="0" orig_pkts="0" resp_pkts="0" orig_l2_bytes="0" resp_l2_bytes="0" msg_type="1" ciaddr="127.0.0.5" yiaddr="127.0.0.6" siaddr="127.0.0.7" giaddr="127.0.0.8" subnet_mask="255.255.255.0" router="127.0.0.1" domain_name_server="127.0.0.1" req_ip_addr="127.0.0.100" lease_time="100" server_id="127.0.0.1" param_req_list="1,2,3" message="message" renewal_time="100" rebinding_time="200" class_id="MSFT 5.0" client_id_type="1" client_id="07:08:09" options="1:010203,3:0a0b0c" triage_scores="""#
         );
     }
 
@@ -4821,7 +4986,7 @@ mod tests {
 
         assert_eq!(
             &dns_covert_channel,
-            r#"time="1970-01-01T01:01:01+00:00" event_kind="DnsCovertChannel" category="CommandAndControl" sensor="collector1" orig_addr="127.0.0.1" orig_country_code="ZZ" orig_port="10000" resp_addr="127.0.0.2" resp_country_code="ZZ" resp_port="53" proto="17" start_time="1970-01-01T00:01:01+00:00" duration="0" orig_pkts="0" resp_pkts="0" orig_l2_bytes="0" resp_l2_bytes="0" query="foo.com" answer="10.10.10.10,20.20.20.20" trans_id="123" rtt="1" qclass="0" qtype="0" rcode="0" aa_flag="false" tc_flag="false" rd_flag="false" ra_flag="true" ttl="120,120,120,120,120" confidence="0.9" triage_scores="109:0.90""#
+            r#"time="1970-01-01T01:01:01+00:00" event_kind="DnsCovertChannel" category="CommandAndControl" sensor="collector1" orig_addr="127.0.0.1" orig_port="10000" orig_country_code="ZZ" resp_addr="127.0.0.2" resp_port="53" resp_country_code="ZZ" proto="17" start_time="1970-01-01T00:01:01+00:00" duration="0" orig_pkts="0" resp_pkts="0" orig_l2_bytes="0" resp_l2_bytes="0" query="foo.com" answer="10.10.10.10,20.20.20.20" trans_id="123" rtt="1" qclass="0" qtype="0" rcode="0" aa_flag="false" tc_flag="false" rd_flag="false" ra_flag="true" ttl="120,120,120,120,120" confidence="0.9" triage_scores="109:0.90""#
         );
     }
 
@@ -4883,7 +5048,7 @@ mod tests {
             .to_string();
         assert_eq!(
             &cryptocurrency_mining_pool,
-            r#"time="1970-01-01T01:01:01+00:00" event_kind="CryptocurrencyMiningPool" category="CommandAndControl" sensor="collector1" orig_addr="127.0.0.1" orig_country_code="ZZ" orig_port="10000" resp_addr="127.0.0.2" resp_country_code="ZZ" resp_port="53" proto="17" start_time="1970-01-01T00:01:01+00:00" duration="0" orig_pkts="0" resp_pkts="0" orig_l2_bytes="0" resp_l2_bytes="0" query="foo.com" answer="10.10.10.10,20.20.20.20" trans_id="123" rtt="1" qclass="0" qtype="0" rcode="0" aa_flag="false" tc_flag="false" rd_flag="false" ra_flag="true" ttl="120,120,120,120,120" coins="bitcoin,monero" triage_scores="""#
+            r#"time="1970-01-01T01:01:01+00:00" event_kind="CryptocurrencyMiningPool" category="CommandAndControl" sensor="collector1" orig_addr="127.0.0.1" orig_port="10000" orig_country_code="ZZ" resp_addr="127.0.0.2" resp_port="53" resp_country_code="ZZ" proto="17" start_time="1970-01-01T00:01:01+00:00" duration="0" orig_pkts="0" resp_pkts="0" orig_l2_bytes="0" resp_l2_bytes="0" query="foo.com" answer="10.10.10.10,20.20.20.20" trans_id="123" rtt="1" qclass="0" qtype="0" rcode="0" aa_flag="false" tc_flag="false" rd_flag="false" ra_flag="true" ttl="120,120,120,120,120" coins="bitcoin,monero" triage_scores="""#
         );
     }
 
@@ -4942,7 +5107,7 @@ mod tests {
         .to_string();
         assert_eq!(
             &blocklist_dns,
-            r#"time="1970-01-01T01:01:01+00:00" event_kind="BlocklistDns" category="InitialAccess" sensor="collector1" orig_addr="127.0.0.1" orig_country_code="ZZ" orig_port="10000" resp_addr="127.0.0.2" resp_country_code="ZZ" resp_port="53" proto="17" start_time="1970-01-01T00:00:00+00:00" duration="0" orig_pkts="0" resp_pkts="0" orig_l2_bytes="0" resp_l2_bytes="0" query="foo.com" answer="10.10.10.10,20.20.20.20" trans_id="123" rtt="1" qclass="0" qtype="0" rcode="0" aa_flag="false" tc_flag="false" rd_flag="false" ra_flag="true" ttl="120,120,120,120,120" triage_scores="""#
+            r#"time="1970-01-01T01:01:01+00:00" event_kind="BlocklistDns" category="InitialAccess" sensor="collector1" orig_addr="127.0.0.1" orig_port="10000" orig_country_code="ZZ" resp_addr="127.0.0.2" resp_port="53" resp_country_code="ZZ" proto="17" start_time="1970-01-01T00:00:00+00:00" duration="0" orig_pkts="0" resp_pkts="0" orig_l2_bytes="0" resp_l2_bytes="0" query="foo.com" answer="10.10.10.10,20.20.20.20" trans_id="123" rtt="1" qclass="0" qtype="0" rcode="0" aa_flag="false" tc_flag="false" rd_flag="false" ra_flag="true" ttl="120,120,120,120,120" triage_scores="""#
         );
     }
 
@@ -4992,7 +5157,7 @@ mod tests {
 
         assert_eq!(
             &ftp_brute_force,
-            r#"time="1970-01-01T00:01:01+00:00" event_kind="FtpBruteForce" category="CredentialAccess" orig_addr="127.0.0.1" orig_country_code="ZZ" resp_addr="127.0.0.2" resp_country_code="ZZ" resp_port="21" proto="6" user_list="user1,user_2" start_time="1970-01-01T00:01:01+00:00" end_time="1970-01-01T00:01:02+00:00" is_internal="true" triage_scores="""#
+            r#"time="1970-01-01T00:01:01+00:00" event_kind="FtpBruteForce" category="CredentialAccess" orig_addr="127.0.0.1" orig_country_code="ZZ" resp_addr="127.0.0.2" resp_port="21" resp_country_code="ZZ" proto="6" user_list="user1,user_2" start_time="1970-01-01T00:01:01+00:00" end_time="1970-01-01T00:01:02+00:00" is_internal="true" triage_scores="""#
         );
     }
 
@@ -5058,7 +5223,7 @@ mod tests {
         .to_string();
         assert_eq!(
             &ftp_plain_text,
-            r#"time="1970-01-01T01:01:01+00:00" event_kind="FtpPlainText" category="LateralMovement" sensor="collector1" orig_addr="127.0.0.1" orig_country_code="ZZ" orig_port="10000" resp_addr="127.0.0.2" resp_country_code="ZZ" resp_port="21" proto="6" start_time="1970-01-01T00:01:01+00:00" duration="0" orig_pkts="0" resp_pkts="0" orig_l2_bytes="0" resp_l2_bytes="0" user="user1" password="password" commands="ls:200:OK" triage_scores="""#
+            r#"time="1970-01-01T01:01:01+00:00" event_kind="FtpPlainText" category="LateralMovement" sensor="collector1" orig_addr="127.0.0.1" orig_port="10000" orig_country_code="ZZ" resp_addr="127.0.0.2" resp_port="21" resp_country_code="ZZ" proto="6" start_time="1970-01-01T00:01:01+00:00" duration="0" orig_pkts="0" resp_pkts="0" orig_l2_bytes="0" resp_l2_bytes="0" user="user1" password="password" commands="ls:200:OK" triage_scores="""#
         );
     }
 
@@ -5129,7 +5294,7 @@ mod tests {
 
         assert_eq!(
             &blocklist_ftp,
-            r#"time="1970-01-01T01:01:01+00:00" event_kind="BlocklistFtp" category="InitialAccess" sensor="collector1" orig_addr="127.0.0.1" orig_country_code="ZZ" orig_port="10000" resp_addr="127.0.0.2" resp_country_code="ZZ" resp_port="21" proto="6" start_time="1970-01-01T00:01:01+00:00" duration="0" orig_pkts="0" resp_pkts="0" orig_l2_bytes="0" resp_l2_bytes="0" user="user1" password="password" commands="ls:200:OK" triage_scores="""#
+            r#"time="1970-01-01T01:01:01+00:00" event_kind="BlocklistFtp" category="InitialAccess" sensor="collector1" orig_addr="127.0.0.1" orig_port="10000" orig_country_code="ZZ" resp_addr="127.0.0.2" resp_port="21" resp_country_code="ZZ" proto="6" start_time="1970-01-01T00:01:01+00:00" duration="0" orig_pkts="0" resp_pkts="0" orig_l2_bytes="0" resp_l2_bytes="0" user="user1" password="password" commands="ls:200:OK" triage_scores="""#
         );
     }
 
@@ -5240,7 +5405,7 @@ mod tests {
         .to_string();
         assert_eq!(
             &repeated_http_sessions,
-            r#"time="1970-01-01T01:01:01+00:00" event_kind="RepeatedHttpSessions" category="Exfiltration" sensor="collector1" orig_addr="127.0.0.1" orig_country_code="ZZ" orig_port="10000" resp_addr="127.0.0.2" resp_country_code="ZZ" resp_port="443" proto="6" start_time="1970-01-01T01:01:01+00:00" end_time="1970-01-01T01:01:01+00:00" triage_scores="""#
+            r#"time="1970-01-01T01:01:01+00:00" event_kind="RepeatedHttpSessions" category="Exfiltration" sensor="collector1" orig_addr="127.0.0.1" orig_port="10000" orig_country_code="ZZ" resp_addr="127.0.0.2" resp_port="443" resp_country_code="ZZ" proto="6" start_time="1970-01-01T01:01:01+00:00" end_time="1970-01-01T01:01:01+00:00" triage_scores="""#
         );
     }
 
@@ -5298,7 +5463,7 @@ mod tests {
 
         assert_eq!(
             &blocklist_kerberos,
-            r#"time="1970-01-01T01:01:01+00:00" event_kind="BlocklistKerberos" category="InitialAccess" sensor="collector1" orig_addr="127.0.0.1" orig_country_code="ZZ" orig_port="10000" resp_addr="127.0.0.2" resp_country_code="ZZ" resp_port="88" proto="17" start_time="1970-01-01T00:00:00+00:00" duration="0" orig_pkts="0" resp_pkts="0" orig_l2_bytes="0" resp_l2_bytes="0" client_time="100" server_time="101" error_code="0" client_realm="EXAMPLE.COM" cname_type="1" cname="user1" realm="EXAMPLE.COM" sname_type="1" sname="krbtgt/EXAMPLE.COM" triage_scores="""#
+            r#"time="1970-01-01T01:01:01+00:00" event_kind="BlocklistKerberos" category="InitialAccess" sensor="collector1" orig_addr="127.0.0.1" orig_port="10000" orig_country_code="ZZ" resp_addr="127.0.0.2" resp_port="88" resp_country_code="ZZ" proto="17" start_time="1970-01-01T00:00:00+00:00" duration="0" orig_pkts="0" resp_pkts="0" orig_l2_bytes="0" resp_l2_bytes="0" client_time="100" server_time="101" error_code="0" client_realm="EXAMPLE.COM" cname_type="1" cname="user1" realm="EXAMPLE.COM" sname_type="1" sname="krbtgt/EXAMPLE.COM" triage_scores="""#
         );
     }
 
@@ -5350,7 +5515,7 @@ mod tests {
 
         assert_eq!(
             &ldap_brute_force,
-            r#"time="1970-01-01T00:01:01+00:00" event_kind="LdapBruteForce" category="CredentialAccess" orig_addr="127.0.0.1" orig_country_code="ZZ" resp_addr="127.0.0.2" resp_country_code="ZZ" resp_port="389" proto="6" user_pw_list="user1:pw1,user_2:pw2" start_time="1970-01-01T00:01:01+00:00" end_time="1970-01-01T00:01:02+00:00" triage_scores="""#
+            r#"time="1970-01-01T00:01:01+00:00" event_kind="LdapBruteForce" category="CredentialAccess" orig_addr="127.0.0.1" orig_country_code="ZZ" resp_addr="127.0.0.2" resp_port="389" resp_country_code="ZZ" proto="6" user_pw_list="user1:pw1,user_2:pw2" start_time="1970-01-01T00:01:01+00:00" end_time="1970-01-01T00:01:02+00:00" triage_scores="""#
         );
     }
 
@@ -5406,7 +5571,7 @@ mod tests {
 
         assert_eq!(
             &ldap_plain_text,
-            r#"time="1970-01-01T01:01:01+00:00" event_kind="LdapPlainText" category="LateralMovement" sensor="collector1" orig_addr="127.0.0.1" orig_country_code="ZZ" orig_port="10000" resp_addr="127.0.0.2" resp_country_code="ZZ" resp_port="389" proto="6" start_time="1970-01-01T00:01:01+00:00" duration="0" orig_pkts="0" resp_pkts="0" orig_l2_bytes="0" resp_l2_bytes="0" message_id="1" version="3" opcode="bind" result="success" diagnostic_message="msg" object="object" argument="argument" triage_scores="""#
+            r#"time="1970-01-01T01:01:01+00:00" event_kind="LdapPlainText" category="LateralMovement" sensor="collector1" orig_addr="127.0.0.1" orig_port="10000" orig_country_code="ZZ" resp_addr="127.0.0.2" resp_port="389" resp_country_code="ZZ" proto="6" start_time="1970-01-01T00:01:01+00:00" duration="0" orig_pkts="0" resp_pkts="0" orig_l2_bytes="0" resp_l2_bytes="0" message_id="1" version="3" opcode="bind" result="success" diagnostic_message="msg" object="object" argument="argument" triage_scores="""#
         );
     }
 
@@ -5466,7 +5631,7 @@ mod tests {
 
         assert_eq!(
             &blocklist_ldap,
-            r#"time="1970-01-01T01:01:01+00:00" event_kind="BlocklistLdap" category="InitialAccess" sensor="collector1" orig_addr="127.0.0.1" orig_country_code="ZZ" orig_port="10000" resp_addr="127.0.0.2" resp_country_code="ZZ" resp_port="389" proto="6" start_time="1970-01-01T00:01:01+00:00" duration="0" orig_pkts="0" resp_pkts="0" orig_l2_bytes="0" resp_l2_bytes="0" message_id="1" version="3" opcode="bind" result="success" diagnostic_message="msg" object="object" argument="argument" triage_scores="""#
+            r#"time="1970-01-01T01:01:01+00:00" event_kind="BlocklistLdap" category="InitialAccess" sensor="collector1" orig_addr="127.0.0.1" orig_port="10000" orig_country_code="ZZ" resp_addr="127.0.0.2" resp_port="389" resp_country_code="ZZ" proto="6" start_time="1970-01-01T00:01:01+00:00" duration="0" orig_pkts="0" resp_pkts="0" orig_l2_bytes="0" resp_l2_bytes="0" message_id="1" version="3" opcode="bind" result="success" diagnostic_message="msg" object="object" argument="argument" triage_scores="""#
         );
     }
 
@@ -5720,7 +5885,7 @@ mod tests {
 
         assert_eq!(
             &blocklist_mqtt,
-            r#"time="1970-01-01T01:01:01+00:00" event_kind="BlocklistMqtt" category="InitialAccess" sensor="collector1" orig_addr="127.0.0.1" orig_country_code="ZZ" orig_port="10000" resp_addr="127.0.0.2" resp_country_code="ZZ" resp_port="1883" proto="6" start_time="1970-01-01T00:00:00+00:00" duration="0" orig_pkts="0" resp_pkts="0" orig_l2_bytes="0" resp_l2_bytes="0" protocol="mqtt" version="211" client_id="client1" connack_reason="0" subscribe="topic" suback_reason="error" triage_scores="""#
+            r#"time="1970-01-01T01:01:01+00:00" event_kind="BlocklistMqtt" category="InitialAccess" sensor="collector1" orig_addr="127.0.0.1" orig_port="10000" orig_country_code="ZZ" resp_addr="127.0.0.2" resp_port="1883" resp_country_code="ZZ" proto="6" start_time="1970-01-01T00:00:00+00:00" duration="0" orig_pkts="0" resp_pkts="0" orig_l2_bytes="0" resp_l2_bytes="0" protocol="mqtt" version="211" client_id="client1" connack_reason="0" subscribe="topic" suback_reason="error" triage_scores="""#
         );
     }
 
@@ -5814,7 +5979,7 @@ mod tests {
 
         assert_eq!(
             &blocklist_nfs,
-            r#"time="1970-01-01T01:01:01+00:00" event_kind="BlocklistNfs" category="InitialAccess" sensor="collector1" orig_addr="127.0.0.1" orig_country_code="ZZ" orig_port="10000" resp_addr="127.0.0.2" resp_country_code="ZZ" resp_port="2049" proto="6" start_time="1970-01-01T00:00:00+00:00" duration="0" orig_pkts="0" resp_pkts="0" orig_l2_bytes="0" resp_l2_bytes="0" read_files="/etc/passwd" write_files="/etc/shadow" triage_scores="""#
+            r#"time="1970-01-01T01:01:01+00:00" event_kind="BlocklistNfs" category="InitialAccess" sensor="collector1" orig_addr="127.0.0.1" orig_port="10000" orig_country_code="ZZ" resp_addr="127.0.0.2" resp_port="2049" resp_country_code="ZZ" proto="6" start_time="1970-01-01T00:00:00+00:00" duration="0" orig_pkts="0" resp_pkts="0" orig_l2_bytes="0" resp_l2_bytes="0" read_files="/etc/passwd" write_files="/etc/shadow" triage_scores="""#
         );
     }
 
@@ -5868,7 +6033,7 @@ mod tests {
 
         assert_eq!(
             &blocklist_ntlm,
-            r#"time="1970-01-01T01:01:01+00:00" event_kind="BlocklistNtlm" category="InitialAccess" sensor="collector1" orig_addr="127.0.0.1" orig_country_code="ZZ" orig_port="10000" resp_addr="127.0.0.2" resp_country_code="ZZ" resp_port="445" proto="6" start_time="1970-01-01T00:00:00+00:00" duration="0" orig_pkts="0" resp_pkts="0" orig_l2_bytes="0" resp_l2_bytes="0" protocol="ntlm" username="user1" hostname="host1" domainname="domain1" success="true" triage_scores="""#
+            r#"time="1970-01-01T01:01:01+00:00" event_kind="BlocklistNtlm" category="InitialAccess" sensor="collector1" orig_addr="127.0.0.1" orig_port="10000" orig_country_code="ZZ" resp_addr="127.0.0.2" resp_port="445" resp_country_code="ZZ" proto="6" start_time="1970-01-01T00:00:00+00:00" duration="0" orig_pkts="0" resp_pkts="0" orig_l2_bytes="0" resp_l2_bytes="0" protocol="ntlm" username="user1" hostname="host1" domainname="domain1" success="true" triage_scores="""#
         );
     }
 
@@ -5898,7 +6063,7 @@ mod tests {
 
         assert_eq!(
             &blocklist_radius,
-            r#"time="1970-01-01T01:01:01+00:00" event_kind="BlocklistRadius" category="InitialAccess" sensor="collector1" orig_addr="127.0.0.1" orig_country_code="ZZ" orig_port="10000" resp_addr="127.0.0.2" resp_country_code="ZZ" resp_port="1812" proto="17" start_time="1970-01-01T00:00:00+00:00" duration="0" orig_pkts="0" resp_pkts="0" orig_l2_bytes="0" resp_l2_bytes="0" id="1" code="1" resp_code="2" auth="auth_string" resp_auth="resp_auth_string" user_name="user1" user_passwd="password" chap_passwd="chap_pass" nas_ip="127.0.0.3" nas_port="5060" state="state" nas_id="nas_identifier" nas_port_type="15" message="RADIUS message" triage_scores="""#
+            r#"time="1970-01-01T01:01:01+00:00" event_kind="BlocklistRadius" category="InitialAccess" sensor="collector1" orig_addr="127.0.0.1" orig_port="10000" orig_country_code="ZZ" resp_addr="127.0.0.2" resp_port="1812" resp_country_code="ZZ" proto="17" start_time="1970-01-01T00:00:00+00:00" duration="0" orig_pkts="0" resp_pkts="0" orig_l2_bytes="0" resp_l2_bytes="0" id="1" code="1" resp_code="2" auth="auth_string" resp_auth="resp_auth_string" user_name="user1" user_passwd="password" chap_passwd="chap_pass" nas_ip="127.0.0.3" nas_port="5060" state="state" nas_id="nas_identifier" nas_port_type="15" message="RADIUS message" triage_scores="""#
         );
     }
 
@@ -6031,7 +6196,7 @@ mod tests {
 
         assert_eq!(
             &blocklist_malformed_dns,
-            r#"time="1970-01-01T01:01:01+00:00" event_kind="BlocklistMalformedDns" category="InitialAccess" sensor="collector1" orig_addr="127.0.0.1" orig_country_code="ZZ" orig_port="10000" resp_addr="127.0.0.2" resp_country_code="ZZ" resp_port="53" proto="17" start_time="1970-01-01T00:00:00+00:00" duration="1000000000" orig_pkts="10" resp_pkts="5" orig_l2_bytes="500" resp_l2_bytes="300" trans_id="1234" flags="33152" question_count="1" answer_count="1" authority_count="0" additional_count="0" query_count="1" resp_count="1" query_bytes="50" resp_bytes="100" query_body="example.com" resp_body="192.0.2.1" triage_scores="""#
+            r#"time="1970-01-01T01:01:01+00:00" event_kind="BlocklistMalformedDns" category="InitialAccess" sensor="collector1" orig_addr="127.0.0.1" orig_port="10000" orig_country_code="ZZ" resp_addr="127.0.0.2" resp_port="53" resp_country_code="ZZ" proto="17" start_time="1970-01-01T00:00:00+00:00" duration="1000000000" orig_pkts="10" resp_pkts="5" orig_l2_bytes="500" resp_l2_bytes="300" trans_id="1234" flags="33152" question_count="1" answer_count="1" authority_count="0" additional_count="0" query_count="1" resp_count="1" query_bytes="50" resp_bytes="100" query_body="example.com" resp_body="192.0.2.1" triage_scores="""#
         );
     }
 
@@ -6131,7 +6296,7 @@ mod tests {
 
         assert_eq!(
             &blocklist_rdp,
-            r#"time="1970-01-01T01:01:01+00:00" event_kind="BlocklistRdp" category="InitialAccess" sensor="collector1" orig_addr="127.0.0.1" orig_country_code="ZZ" orig_port="10000" resp_addr="127.0.0.2" resp_country_code="ZZ" resp_port="3389" proto="6" start_time="1970-01-01T00:00:00+00:00" duration="0" orig_pkts="0" resp_pkts="0" orig_l2_bytes="0" resp_l2_bytes="0" cookie="cookie" triage_scores="""#
+            r#"time="1970-01-01T01:01:01+00:00" event_kind="BlocklistRdp" category="InitialAccess" sensor="collector1" orig_addr="127.0.0.1" orig_port="10000" orig_country_code="ZZ" resp_addr="127.0.0.2" resp_port="3389" resp_country_code="ZZ" proto="6" start_time="1970-01-01T00:00:00+00:00" duration="0" orig_pkts="0" resp_pkts="0" orig_l2_bytes="0" resp_l2_bytes="0" cookie="cookie" triage_scores="""#
         );
     }
 
@@ -6191,7 +6356,7 @@ mod tests {
 
         assert_eq!(
             &blocklist_smb,
-            r#"time="1970-01-01T01:01:01+00:00" event_kind="BlocklistSmb" category="InitialAccess" sensor="collector1" orig_addr="127.0.0.1" orig_country_code="ZZ" orig_port="10000" resp_addr="127.0.0.2" resp_country_code="ZZ" resp_port="445" proto="6" start_time="1970-01-01T00:00:00+00:00" duration="0" orig_pkts="0" resp_pkts="0" orig_l2_bytes="0" resp_l2_bytes="0" command="1" path="path" service="service" file_name="file_name" file_size="100" resource_type="1" fid="1" create_time="100" access_time="200" write_time="300" change_time="400" triage_scores="""#
+            r#"time="1970-01-01T01:01:01+00:00" event_kind="BlocklistSmb" category="InitialAccess" sensor="collector1" orig_addr="127.0.0.1" orig_port="10000" orig_country_code="ZZ" resp_addr="127.0.0.2" resp_port="445" resp_country_code="ZZ" proto="6" start_time="1970-01-01T00:00:00+00:00" duration="0" orig_pkts="0" resp_pkts="0" orig_l2_bytes="0" resp_l2_bytes="0" command="1" path="path" service="service" file_name="file_name" file_size="100" resource_type="1" fid="1" create_time="100" access_time="200" write_time="300" change_time="400" triage_scores="""#
         );
     }
 
@@ -6247,7 +6412,7 @@ mod tests {
 
         assert_eq!(
             &blocklist_smtp,
-            r#"time="1970-01-01T01:01:01+00:00" event_kind="BlocklistSmtp" category="InitialAccess" sensor="collector1" orig_addr="127.0.0.1" orig_country_code="ZZ" orig_port="10000" resp_addr="127.0.0.2" resp_country_code="ZZ" resp_port="25" proto="6" start_time="1970-01-01T00:00:00+00:00" duration="0" orig_pkts="0" resp_pkts="0" orig_l2_bytes="0" resp_l2_bytes="0" mailfrom="mailfrom" date="date" from="from" to="to" subject="subject" agent="agent" state="state" triage_scores="""#
+            r#"time="1970-01-01T01:01:01+00:00" event_kind="BlocklistSmtp" category="InitialAccess" sensor="collector1" orig_addr="127.0.0.1" orig_port="10000" orig_country_code="ZZ" resp_addr="127.0.0.2" resp_port="25" resp_country_code="ZZ" proto="6" start_time="1970-01-01T00:00:00+00:00" duration="0" orig_pkts="0" resp_pkts="0" orig_l2_bytes="0" resp_l2_bytes="0" mailfrom="mailfrom" date="date" from="from" to="to" subject="subject" agent="agent" state="state" triage_scores="""#
         );
     }
 
@@ -6309,7 +6474,7 @@ mod tests {
 
         assert_eq!(
             &blocklist_ssh,
-            r#"time="1970-01-01T01:01:01+00:00" event_kind="BlocklistSsh" category="InitialAccess" sensor="collector1" orig_addr="127.0.0.1" orig_country_code="ZZ" orig_port="10000" resp_addr="127.0.0.2" resp_country_code="ZZ" resp_port="22" proto="6" start_time="1970-01-01T00:00:00+00:00" duration="0" orig_pkts="0" resp_pkts="0" orig_l2_bytes="0" resp_l2_bytes="0" client="client" server="server" cipher_alg="cipher_alg" mac_alg="mac_alg" compression_alg="compression_alg" kex_alg="kex_alg" host_key_alg="host_key_alg" hassh_algorithms="hassh_algorithms" hassh="hassh" hassh_server_algorithms="hassh_server_algorithms" hassh_server="hassh_server" client_shka="client_shka" server_shka="server_shka" triage_scores="""#
+            r#"time="1970-01-01T01:01:01+00:00" event_kind="BlocklistSsh" category="InitialAccess" sensor="collector1" orig_addr="127.0.0.1" orig_port="10000" orig_country_code="ZZ" resp_addr="127.0.0.2" resp_port="22" resp_country_code="ZZ" proto="6" start_time="1970-01-01T00:00:00+00:00" duration="0" orig_pkts="0" resp_pkts="0" orig_l2_bytes="0" resp_l2_bytes="0" client="client" server="server" cipher_alg="cipher_alg" mac_alg="mac_alg" compression_alg="compression_alg" kex_alg="kex_alg" host_key_alg="host_key_alg" hassh_algorithms="hassh_algorithms" hassh="hassh" hassh_server_algorithms="hassh_server_algorithms" hassh_server="hassh_server" client_shka="client_shka" server_shka="server_shka" triage_scores="""#
         );
     }
 
@@ -6437,7 +6602,7 @@ mod tests {
 
         assert_eq!(
             &blocklist_tls,
-            r#"time="1970-01-01T01:01:01+00:00" event_kind="BlocklistTls" category="InitialAccess" sensor="collector1" orig_addr="127.0.0.1" orig_country_code="ZZ" orig_port="10000" resp_addr="127.0.0.2" resp_country_code="ZZ" resp_port="443" proto="6" start_time="1970-01-01T00:00:00+00:00" duration="0" orig_pkts="0" resp_pkts="0" orig_l2_bytes="0" resp_l2_bytes="0" server_name="server" alpn_protocol="alpn" ja3="ja3" version="version" client_cipher_suites="1,2,3" client_extensions="4,5,6" cipher="1" extensions="7,8,9" ja3s="ja3s" serial="serial" subject_country="country" subject_org_name="org" subject_common_name="common" validity_not_before="100" validity_not_after="200" subject_alt_name="alt" issuer_country="country" issuer_org_name="org" issuer_org_unit_name="unit" issuer_common_name="common" last_alert="1" confidence="0.9" triage_scores="""#
+            r#"time="1970-01-01T01:01:01+00:00" event_kind="BlocklistTls" category="InitialAccess" sensor="collector1" orig_addr="127.0.0.1" orig_port="10000" orig_country_code="ZZ" resp_addr="127.0.0.2" resp_port="443" resp_country_code="ZZ" proto="6" start_time="1970-01-01T00:00:00+00:00" duration="0" orig_pkts="0" resp_pkts="0" orig_l2_bytes="0" resp_l2_bytes="0" server_name="server" alpn_protocol="alpn" ja3="ja3" version="version" client_cipher_suites="1,2,3" client_extensions="4,5,6" cipher="1" extensions="7,8,9" ja3s="ja3s" serial="serial" subject_country="country" subject_org_name="org" subject_common_name="common" validity_not_before="100" validity_not_after="200" subject_alt_name="alt" issuer_country="country" issuer_org_name="org" issuer_org_unit_name="unit" issuer_common_name="common" last_alert="1" confidence="0.9" triage_scores="""#
         );
     }
 
@@ -6510,7 +6675,7 @@ mod tests {
 
         assert_eq!(
             &tor_connection,
-            r#"time="1970-01-01T01:01:01+00:00" event_kind="TorConnection" category="CommandAndControl" sensor="collector1" orig_addr="127.0.0.1" orig_country_code="ZZ" orig_port="10000" resp_addr="127.0.0.2" resp_country_code="ZZ" resp_port="443" proto="6" start_time="1970-01-01T00:01:01+00:00" duration="0" orig_pkts="0" resp_pkts="0" orig_l2_bytes="0" resp_l2_bytes="0" method="GET" host="host" uri="uri" referer="referer" version="version" user_agent="user_agent" request_len="100" response_len="200" status_code="200" status_msg="OK" username="user" password="password" cookie="cookie" content_encoding="content_encoding" content_type="content_type" cache_control="cache_control" filenames="filename" mime_types="mime_type" body="post_body" state="state" triage_scores="""#
+            r#"time="1970-01-01T01:01:01+00:00" event_kind="TorConnection" category="CommandAndControl" sensor="collector1" orig_addr="127.0.0.1" orig_port="10000" orig_country_code="ZZ" resp_addr="127.0.0.2" resp_port="443" resp_country_code="ZZ" proto="6" start_time="1970-01-01T00:01:01+00:00" duration="0" orig_pkts="0" resp_pkts="0" orig_l2_bytes="0" resp_l2_bytes="0" method="GET" host="host" uri="uri" referer="referer" version="version" user_agent="user_agent" request_len="100" response_len="200" status_code="200" status_msg="OK" username="user" password="password" cookie="cookie" content_encoding="content_encoding" content_type="content_type" cache_control="cache_control" filenames="filename" mime_types="mime_type" body="post_body" state="state" triage_scores="""#
         );
     }
 
@@ -6668,7 +6833,7 @@ mod tests {
 
         assert_eq!(
             &blocklist_tls,
-            r#"time="1970-01-01T01:01:01+00:00" event_kind="SuspiciousTlsTraffic" category="InitialAccess" sensor="collector1" orig_addr="127.0.0.1" orig_country_code="ZZ" orig_port="10000" resp_addr="127.0.0.2" resp_country_code="ZZ" resp_port="443" proto="6" start_time="1970-01-01T00:00:00+00:00" duration="0" orig_pkts="0" resp_pkts="0" orig_l2_bytes="0" resp_l2_bytes="0" server_name="server" alpn_protocol="alpn" ja3="ja3" version="version" client_cipher_suites="1,2,3" client_extensions="4,5,6" cipher="1" extensions="7,8,9" ja3s="ja3s" serial="serial" subject_country="country" subject_org_name="org" subject_common_name="common" validity_not_before="100" validity_not_after="200" subject_alt_name="alt" issuer_country="country" issuer_org_name="org" issuer_org_unit_name="unit" issuer_common_name="common" last_alert="1" confidence="0.9" triage_scores="""#
+            r#"time="1970-01-01T01:01:01+00:00" event_kind="SuspiciousTlsTraffic" category="InitialAccess" sensor="collector1" orig_addr="127.0.0.1" orig_port="10000" orig_country_code="ZZ" resp_addr="127.0.0.2" resp_port="443" resp_country_code="ZZ" proto="6" start_time="1970-01-01T00:00:00+00:00" duration="0" orig_pkts="0" resp_pkts="0" orig_l2_bytes="0" resp_l2_bytes="0" server_name="server" alpn_protocol="alpn" ja3="ja3" version="version" client_cipher_suites="1,2,3" client_extensions="4,5,6" cipher="1" extensions="7,8,9" ja3s="ja3s" serial="serial" subject_country="country" subject_org_name="org" subject_common_name="common" validity_not_before="100" validity_not_after="200" subject_alt_name="alt" issuer_country="country" issuer_org_name="org" issuer_org_unit_name="unit" issuer_common_name="common" last_alert="1" confidence="0.9" triage_scores="""#
         );
     }
 
