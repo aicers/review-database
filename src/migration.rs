@@ -114,9 +114,10 @@ const COMPATIBLE_VERSION_REQ: &str = ">=0.46.0-alpha.1,<0.46.0-alpha.2";
 ///
 /// Migration is supported between released versions only. The prelease versions (alpha, beta,
 /// etc.) should be assumed to be incompatible with each other.
-/// Pass an `ip2location::DB` when available so endpoint country-code fields can
-/// be resolved during the stored event schema migration. If no locator is
-/// provided, endpoint country codes remain at the pre-lookup value `ZZ`.
+/// Pass a shared `IP2Location` database handle when available so endpoint
+/// country-code fields can be resolved during the stored event schema
+/// migration. If no locator is provided, endpoint country codes remain at the
+/// pre-lookup value `ZZ`.
 ///
 /// # Errors
 ///
@@ -126,7 +127,7 @@ const COMPATIBLE_VERSION_REQ: &str = ">=0.46.0-alpha.1,<0.46.0-alpha.2";
 pub fn migrate_data_dir<P: AsRef<Path>>(
     data_dir: P,
     backup_dir: P,
-    locator: Option<Arc<ip2location::DB>>,
+    ip2location: Option<Arc<ip2location::DB>>,
 ) -> Result<()> {
     type Migration = (
         VersionReq,
@@ -136,7 +137,10 @@ pub fn migrate_data_dir<P: AsRef<Path>>(
 
     let data_dir = data_dir.as_ref();
     let backup_dir = backup_dir.as_ref();
-    let resolver = locator.map(Ip2LocationResolver::new);
+    let resolver = ip2location.map(Ip2LocationResolver::new);
+    let locator = resolver
+        .as_ref()
+        .map(|resolver| resolver as &dyn CountryLookup);
 
     let Ok(compatible) = VersionReq::parse(COMPATIBLE_VERSION_REQ) else {
         unreachable!("COMPATIBLE_VERSION_REQ must be valid")
@@ -195,13 +199,7 @@ pub fn migrate_data_dir<P: AsRef<Path>>(
         .find(|(req, _to, _m)| req.matches(&version))
     {
         info!("Migrating database to {to}");
-        m(
-            data_dir,
-            backup_dir,
-            resolver
-                .as_ref()
-                .map(|resolver| resolver as &dyn CountryLookup),
-        )?;
+        m(data_dir, backup_dir, locator)?;
         version = to.clone();
         if compatible.matches(&version) {
             create_version_file(&backup).context("failed to update VERSION")?;
