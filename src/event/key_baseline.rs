@@ -83,7 +83,7 @@ fn minimal_dns_message(time: DateTime<Utc>) -> EventMessage {
 fn put_and_read_timestamp_regions(time: DateTime<Utc>) -> ([u8; 8], [u8; 8], [u8; 8]) {
     let data_dir = tempdir().expect("temp data dir");
     let backup_dir = tempdir().expect("temp backup dir");
-    let store = Store::new(data_dir.path(), backup_dir.path()).expect("open store");
+    let store = Store::new(data_dir.path(), backup_dir.path(), None).expect("open store");
     let db = store.events();
 
     let key = db.put(&minimal_dns_message(time)).expect("put event");
