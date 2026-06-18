@@ -293,26 +293,11 @@ impl CompareIp {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct NetworkFilter {
     netmask_v4: Option<IpAddr>,
     netmask_v6: Option<IpAddr>,
     tree: HashMap<IpAddr, Vec<CompareIp>>,
-}
-
-impl Default for NetworkFilter {
-    fn default() -> Self {
-        Self {
-            // This ipv4 is always parsable.
-            netmask_v4: Some(
-                Ipv4Net::new(Ipv4Addr::UNSPECIFIED, 0)
-                    .map(|net| IpNet::V4(net).netmask())
-                    .expect("Failed to parse default ip address"),
-            ),
-            netmask_v6: None,
-            tree: HashMap::new(),
-        }
-    }
 }
 
 impl NetworkFilter {
