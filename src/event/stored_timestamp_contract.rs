@@ -7,17 +7,20 @@
 //! encoding), so each timestamp field occupies exactly eight little-endian
 //! bytes on disk.
 //!
-//! # Covered stored fields
+//! # Test approach
 //!
-//! | Struct | Timestamp field(s) | Why representative |
+//! Core `i64` nanosecond contract checks use minimal test-only structs
+//! (`TsNanosecondsField` and `DualTsNanosecondsFields`) so serde behavior
+//! is pinned without coupling to unrelated stored-schema field ordering.
+//! Production-path smoke tests exercise `convert_for_storage` for
+//! representative event kinds and decode a checked-in raw binary fixture.
+//!
+//! | Coverage | Mechanism | Representative stored struct |
 //! | --- | --- | --- |
-//! | [`HttpThreatFieldsStored`](super::HttpThreatFieldsStored) | `time` | HTTP threat events; exercised by `convert_for_storage` and migration tests |
-//! | [`NetworkThreatFieldsStored`](super::network::NetworkThreatFieldsStored) | `time`, `start_time` | Multiple `ts_nanoseconds` fields in one stored struct (tested via a minimal dual-field struct) |
-//! | [`ExtraThreatFieldsStored`](super::log::ExtraThreatFieldsStored) | `time` | Production conversion and full stored-event fixture |
-//!
-//! These structs share the same serde attribute and bincode path as every
-//! other event stored field that uses `ts_nanoseconds`. Pinning the contract
-//! on this set guards the storage boundary before a Jiff migration.
+//! | Single `ts_nanoseconds` field | `TsNanosecondsField` round-trip and size checks | [`HttpThreatFieldsStored`](super::HttpThreatFieldsStored) (`time`) |
+//! | Multiple `ts_nanoseconds` fields | `DualTsNanosecondsFields` adjacent eight-byte values | [`NetworkThreatFieldsStored`](super::network::NetworkThreatFieldsStored) (`time`, `start_time`) |
+//! | Full stored-event bytes | Checked-in fixture + `convert_for_storage` | [`ExtraThreatFieldsStored`](super::log::ExtraThreatFieldsStored) (`time`) |
+//! | Production conversion | `convert_for_storage` byte prefix check | [`HttpThreatFieldsStored`](super::HttpThreatFieldsStored) (`time`) |
 //!
 //! A switch to Jiff default serde or an `i128` nanosecond representation at
 //! this boundary would change serialized sizes or byte patterns and cause
