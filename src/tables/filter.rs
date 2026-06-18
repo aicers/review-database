@@ -244,8 +244,159 @@ impl<'d> Table<'d, Filter> {
 mod tests {
     use std::sync::Arc;
 
+    use chrono::{DateTime, Utc};
+
     use crate::test::{DbGuard, acquire_db_permit};
-    use crate::{Filter, Store};
+    use crate::types::FromKeyValue;
+    use crate::{Filter, PeriodForSearch, Store};
+
+    const FIXTURE_PERIOD_START: &str = "2000-01-01T00:00:00Z";
+    const FIXTURE_PERIOD_END: &str = "2000-01-31T23:59:59.999999999Z";
+    const FIXTURE_USERNAME: &str = "fixture-user";
+    const FIXTURE_FILTER_NAME: &str = "fixture-filter";
+
+    /// Historical bincode bytes for public `PeriodForSearch::Custom` serde.
+    ///
+    /// Captured once from `review-database` v0.45.0 via `tables::serialize`
+    /// (`bincode::DefaultOptions`) on `deterministic_period_for_search_custom()`.
+    const PERIOD_FOR_SEARCH_CUSTOM_V0: &[u8] = &[
+        0x01, 0x14, 0x32, 0x30, 0x30, 0x30, 0x2d, 0x30, 0x31, 0x2d, 0x30, 0x31, 0x54, 0x30, 0x30,
+        0x3a, 0x30, 0x30, 0x3a, 0x30, 0x30, 0x5a, 0x1e, 0x32, 0x30, 0x30, 0x30, 0x2d, 0x30, 0x31,
+        0x2d, 0x33, 0x31, 0x54, 0x32, 0x33, 0x3a, 0x35, 0x39, 0x3a, 0x35, 0x39, 0x2e, 0x39, 0x39,
+        0x39, 0x39, 0x39, 0x39, 0x39, 0x39, 0x39, 0x5a,
+    ];
+
+    /// Builds a deterministic public `PeriodForSearch::Custom` for serde baselines.
+    ///
+    /// Fixed RFC3339 timestamps pin the chrono-bearing public `Serialize` /
+    /// `Deserialize` surface for `PeriodForSearch`.
+    fn deterministic_period_for_search_custom() -> PeriodForSearch {
+        let period_start: DateTime<Utc> = FIXTURE_PERIOD_START
+            .parse()
+            .expect("valid RFC 3339 timestamp");
+        let period_end: DateTime<Utc> = FIXTURE_PERIOD_END
+            .parse()
+            .expect("valid RFC 3339 timestamp");
+
+        PeriodForSearch::Custom(period_start, period_end)
+    }
+
+    /// Builds a deterministic `Filter` for literal-byte compatibility tests.
+    ///
+    /// Fixed `PeriodForSearch::Custom` timestamps pin the bincode wire format
+    /// exercised by `Filter::into_key_value` (private projected `Value`) and
+    /// `FromKeyValue::from_key_value`.
+    fn deterministic_fixture_filter() -> Filter {
+        Filter {
+            username: FIXTURE_USERNAME.to_string(),
+            name: FIXTURE_FILTER_NAME.to_string(),
+            directions: None,
+            keywords: None,
+            network_tags: None,
+            customers: None,
+            endpoints: None,
+            sensors: None,
+            os: None,
+            devices: None,
+            hostnames: None,
+            user_ids: None,
+            user_names: None,
+            user_departments: None,
+            countries: None,
+            categories: None,
+            levels: None,
+            kinds: None,
+            learning_methods: None,
+            confidence_min: None,
+            confidence_max: None,
+            period: deterministic_period_for_search_custom(),
+        }
+    }
+
+    fn assert_filter_eq(actual: &Filter, expected: &Filter) {
+        assert_eq!(actual.username, expected.username);
+        assert_eq!(actual.name, expected.name);
+        assert_eq!(actual.directions, expected.directions);
+        assert_eq!(actual.keywords, expected.keywords);
+        assert_eq!(actual.network_tags, expected.network_tags);
+        assert_eq!(actual.customers, expected.customers);
+        assert_eq!(actual.endpoints, expected.endpoints);
+        assert_eq!(actual.sensors, expected.sensors);
+        assert_eq!(actual.os, expected.os);
+        assert_eq!(actual.devices, expected.devices);
+        assert_eq!(actual.hostnames, expected.hostnames);
+        assert_eq!(actual.user_ids, expected.user_ids);
+        assert_eq!(actual.user_names, expected.user_names);
+        assert_eq!(actual.user_departments, expected.user_departments);
+        assert_eq!(actual.countries, expected.countries);
+        assert_eq!(actual.categories, expected.categories);
+        assert_eq!(actual.levels, expected.levels);
+        assert_eq!(actual.kinds, expected.kinds);
+        assert_eq!(actual.learning_methods, expected.learning_methods);
+        assert_eq!(actual.confidence_min, expected.confidence_min);
+        assert_eq!(actual.confidence_max, expected.confidence_max);
+        assert_eq!(actual.period, expected.period);
+    }
+
+    /// Verifies the public bincode serde surface for `PeriodForSearch::Custom`.
+    ///
+    /// `PERIOD_FOR_SEARCH_CUSTOM_V0` was produced once by calling
+    /// `tables::serialize` on `deterministic_period_for_search_custom()`.
+    /// The active test decodes those literal bytes and round-trips through the
+    /// production `tables::deserialize` / `tables::serialize` helpers without
+    /// deriving expected bytes from the serializer under assertion.
+    #[test]
+    fn period_for_search_custom_backward_compatibility() -> anyhow::Result<()> {
+        let expected = deterministic_period_for_search_custom();
+
+        let decoded: PeriodForSearch = crate::tables::deserialize(PERIOD_FOR_SEARCH_CUSTOM_V0)
+            .expect("fixture bytes must deserialize");
+        assert_eq!(decoded, expected);
+
+        let produced = crate::tables::serialize(&expected)?;
+        assert_eq!(produced.as_slice(), PERIOD_FOR_SEARCH_CUSTOM_V0);
+
+        Ok(())
+    }
+
+    /// Verifies the private projected `Value` wire format for `Filter.period`.
+    ///
+    /// `tests/fixtures/filter_period_value_literal.bin` was produced once by
+    /// calling `Filter::into_key_value` on `deterministic_fixture_filter()`,
+    /// which serializes the private `Value` struct (username/name excluded;
+    /// stored in the key) via `tables::serialize` (`bincode::DefaultOptions`).
+    #[test]
+    fn filter_period_projected_value_backward_compatibility() {
+        const FIXTURE_BYTES: &[u8] = include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/filter_period_value_literal.bin"
+        ));
+
+        let expected = deterministic_fixture_filter();
+        let key = Filter::create_key(FIXTURE_USERNAME, FIXTURE_FILTER_NAME);
+
+        let decoded = Filter::from_key_value(&key, FIXTURE_BYTES)
+            .expect("fixture bytes must deserialize via FromKeyValue");
+        assert_filter_eq(&decoded, &expected);
+
+        let (_produced_key, produced_value) = deterministic_fixture_filter()
+            .into_key_value()
+            .expect("deterministic filter must serialize");
+        assert_eq!(produced_value.as_slice(), FIXTURE_BYTES);
+    }
+
+    #[test]
+    #[ignore = "one-shot helper to regenerate tests/fixtures/filter_period_value_literal.bin"]
+    fn write_filter_period_value_literal_fixture() {
+        let (_key, value) = deterministic_fixture_filter()
+            .into_key_value()
+            .expect("deterministic filter must serialize");
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/filter_period_value_literal.bin"
+        );
+        std::fs::write(path, &value).expect("write fixture");
+    }
 
     fn setup_store() -> (DbGuard<'static>, Arc<Store>) {
         let permit = acquire_db_permit();
