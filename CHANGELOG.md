@@ -61,7 +61,9 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   fields are NetBIOS-style identifiers, not DNS names.
 - Fixed `Table<'_, ColumnStats>::load_rounds_by_cluster` pagination to seek
   from the round key itself, which preserves correct forward and reverse
-  paging when an `after` or `before` boundary is supplied.
+  paging when an `after` or `before` boundary is supplied. Also, a zero
+  `limit` now returns an empty round list instead of reading and returning
+  one round as before.
 
 ## [0.45.0] - 2026-05-09
 
