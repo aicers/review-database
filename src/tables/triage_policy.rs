@@ -14,6 +14,7 @@ use chrono::{DateTime, Utc};
 use ipnet::{IpNet, Ipv4Net, Ipv6Net};
 use rocksdb::OptimisticTransactionDB;
 use serde::{Deserialize, Serialize};
+use tracing::warn;
 
 use super::UniqueKey;
 use crate::{
@@ -24,6 +25,12 @@ use crate::{
 
 const IP_V4_MAX_PREFIX_LEN: u8 = 32;
 const IP_V6_MAX_PREFIX_LEN: u8 = 128;
+
+#[derive(Clone, Copy)]
+enum IpFamily {
+    V4,
+    V6,
+}
 
 #[derive(Clone, Deserialize, Serialize)]
 pub struct TriagePolicy {
@@ -325,15 +332,15 @@ impl NetworkFilter {
         v4_networks.sort_unstable_by_key(|(net, _)| net.prefix_len());
         v6_networks.sort_unstable_by_key(|(net, _)| net.prefix_len());
 
-        let netmask_v4 = min_netmask_for_family(&v4_networks, true)?;
-        let netmask_v6 = min_netmask_for_family(&v6_networks, false)?;
+        let netmask_v4 = min_netmask_for_family(&v4_networks, IpFamily::V4)?;
+        let netmask_v6 = min_netmask_for_family(&v6_networks, IpFamily::V6)?;
 
         let mut compare_tree: HashMap<IpAddr, Vec<CompareIp>> = HashMap::new();
         if let Some(netmask) = netmask_v4 {
-            insert_networks_into_tree(&mut compare_tree, &v4_networks, netmask);
+            insert_networks_into_tree(&mut compare_tree, v4_networks, netmask)?;
         }
         if let Some(netmask) = netmask_v6 {
-            insert_networks_into_tree(&mut compare_tree, &v6_networks, netmask);
+            insert_networks_into_tree(&mut compare_tree, v6_networks, netmask)?;
         }
 
         Ok(Self {
@@ -373,7 +380,13 @@ impl From<ExclusionReason> for TriageExclusion {
     fn from(reason: ExclusionReason) -> Self {
         match reason {
             ExclusionReason::IpAddress(mut group) => {
-                TriageExclusion::IpAddress(NetworkFilter::new(&mut group).unwrap_or_default())
+                TriageExclusion::IpAddress(match NetworkFilter::new(&mut group) {
+                    Ok(filter) => filter,
+                    Err(error) => {
+                        warn!("Failed to build IP triage exclusion filter: {error}");
+                        NetworkFilter::default()
+                    }
+                })
             }
             ExclusionReason::Domain(domains) => {
                 // Create regex patterns for domain matching
@@ -702,33 +715,33 @@ fn network_by_hosts_network_group(
 
 fn min_netmask_for_family(
     networks: &[(IpNet, CompareIp)],
-    is_ipv4: bool,
+    family: IpFamily,
 ) -> Result<Option<IpAddr>> {
     let Some((first, _)) = networks.first() else {
         return Ok(None);
     };
     let min_prefix_len = first.prefix_len();
-    let netmask = if is_ipv4 {
-        Ipv4Net::new(Ipv4Addr::UNSPECIFIED, min_prefix_len).map(|net| IpNet::V4(net).netmask())?
-    } else {
-        Ipv6Net::new(Ipv6Addr::UNSPECIFIED, min_prefix_len).map(|net| IpNet::V6(net).netmask())?
+    let netmask = match family {
+        IpFamily::V4 => Ipv4Net::new(Ipv4Addr::UNSPECIFIED, min_prefix_len)
+            .map(|net| IpNet::V4(net).netmask())?,
+        IpFamily::V6 => Ipv6Net::new(Ipv6Addr::UNSPECIFIED, min_prefix_len)
+            .map(|net| IpNet::V6(net).netmask())?,
     };
     Ok(Some(netmask))
 }
 
 fn insert_networks_into_tree(
     tree: &mut HashMap<IpAddr, Vec<CompareIp>>,
-    networks: &[(IpNet, CompareIp)],
+    networks: Vec<(IpNet, CompareIp)>,
     netmask: IpAddr,
-) {
+) -> Result<()> {
     for (net, compare_ip) in networks {
-        let Some(masked) = netmask_by_ipnet(net, netmask) else {
-            continue;
-        };
-        tree.entry(masked)
-            .and_modify(|v| v.push(compare_ip.clone()))
-            .or_insert_with(|| vec![compare_ip.clone()]);
+        let masked = netmask_by_ipnet(&net, netmask).ok_or_else(|| {
+            anyhow!("IP family mismatch inserting network {net} with netmask {netmask}")
+        })?;
+        tree.entry(masked).or_default().push(compare_ip);
     }
+    Ok(())
 }
 
 fn netmask_by_ipnet(ipnet: &IpNet, netmask: IpAddr) -> Option<IpAddr> {
