@@ -217,7 +217,65 @@ impl Match for UnusualDestinationPattern {
 
 #[cfg(test)]
 mod tests {
+    use std::net::Ipv4Addr;
+
+    use chrono::TimeZone;
+
     use super::*;
+
+    fn sample_fields(category: Option<EventCategory>) -> UnusualDestinationPatternFields {
+        UnusualDestinationPatternFields {
+            sensor: "sensor".to_string(),
+            sampling_window_start_time: Utc
+                .with_ymd_and_hms(1970, 1, 1, 0, 1, 1)
+                .unwrap()
+                .timestamp_nanos_opt()
+                .unwrap(),
+            sampling_window_end_time: Utc
+                .with_ymd_and_hms(1970, 1, 1, 0, 1, 2)
+                .unwrap()
+                .timestamp_nanos_opt()
+                .unwrap(),
+            destination_ips: vec![IpAddr::V4(Ipv4Addr::LOCALHOST)],
+            count: 1,
+            expected_mean: 1.0,
+            std_deviation: 0.1,
+            z_score: 2.0,
+            confidence: 0.3,
+            category,
+        }
+    }
+
+    #[test]
+    fn unusual_destination_pattern_fields_syslog_rfc5424() {
+        let fields = sample_fields(Some(EventCategory::Reconnaissance));
+        let syslog = fields.syslog_rfc5424();
+        assert!(syslog.contains("sampling_window_start_time=\"1970-01-01T00:01:01+00:00\""));
+        assert!(syslog.contains("sampling_window_end_time=\"1970-01-01T00:01:02+00:00\""));
+        assert!(syslog.contains("category=\"Reconnaissance\""));
+        assert!(syslog.contains("destination_ips=\"127.0.0.1\""));
+    }
+
+    #[test]
+    fn unusual_destination_pattern_fields_syslog_rfc5424_unspecified_category() {
+        let fields = sample_fields(None);
+        let syslog = fields.syslog_rfc5424();
+        assert!(syslog.contains("category=\"Unspecified\""));
+    }
+
+    #[test]
+    fn unusual_destination_pattern_fields_stored_from() {
+        let fields = sample_fields(Some(EventCategory::Reconnaissance));
+        let start = fields.sampling_window_start_time;
+        let end = fields.sampling_window_end_time;
+        let stored: UnusualDestinationPatternFieldsStored = fields.into();
+        assert_eq!(stored.sampling_window_start_time, start);
+        assert_eq!(stored.sampling_window_end_time, end);
+        assert_eq!(
+            stored.resp_country_codes.len(),
+            stored.destination_ips.len()
+        );
+    }
 
     #[derive(Serialize)]
     struct UnusualDestinationPatternFieldsLegacy {
