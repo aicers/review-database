@@ -558,7 +558,22 @@ impl<'d> Table<'d, ColumnStats> {
         .map_err(|_| anyhow::anyhow!("Failed to convert count to i64"))
     }
 
-    /// Returns the rounds in the given cluster.
+    /// Returns a page of distinct round timestamps for the given cluster.
+    ///
+    /// Each round corresponds to a unique `batch_ts`. Multiple column-statistics
+    /// rows that share the same `batch_ts` are collapsed into a single entry.
+    ///
+    /// When `is_first` is `true`, pagination proceeds forward from the oldest
+    /// rounds and `after` is an exclusive lower bound: rounds at exactly
+    /// `after` are omitted and only strictly later rounds are returned.
+    ///
+    /// When `is_first` is `false`, pagination proceeds backward from the newest
+    /// rounds and `before` is an exclusive upper bound: rounds at exactly
+    /// `before` are omitted and only strictly earlier rounds are returned.
+    /// Results are still returned in ascending timestamp order.
+    ///
+    /// Returns at most `limit` rounds. When `limit` is `0`, returns an empty
+    /// list without scanning the table.
     ///
     /// # Errors
     ///
