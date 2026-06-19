@@ -59,6 +59,11 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   exclusions remain unmatched for TLS, since TLS records do not carry URIs.
   NTLM remains intentionally out of scope: its `hostname` and `domainname`
   fields are NetBIOS-style identifiers, not DNS names.
+- Fixed `Table<'_, ColumnStats>::load_rounds_by_cluster` pagination to seek
+  from the round key itself, which preserves correct forward and reverse
+  paging when an `after` or `before` boundary is supplied. Also, a zero
+  `limit` now returns an empty round list instead of reading and returning
+  one round as before.
 
 ## [0.45.0] - 2026-05-09
 
