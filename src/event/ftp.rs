@@ -306,6 +306,7 @@ impl FtpBruteForce {
 }
 
 impl Match for FtpBruteForce {
+    crate::event::common::impl_match_pair_country_codes!();
     fn src_addrs(&self) -> &[IpAddr] {
         std::slice::from_ref(&self.orig_addr)
     }
@@ -573,6 +574,7 @@ impl FtpPlainText {
 }
 
 impl Match for FtpPlainText {
+    crate::event::common::impl_match_pair_country_codes!();
     fn src_addrs(&self) -> &[IpAddr] {
         std::slice::from_ref(&self.orig_addr)
     }
@@ -717,6 +719,7 @@ impl BlocklistFtp {
 }
 
 impl Match for BlocklistFtp {
+    crate::event::common::impl_match_pair_country_codes!();
     fn src_addrs(&self) -> &[IpAddr] {
         std::slice::from_ref(&self.orig_addr)
     }

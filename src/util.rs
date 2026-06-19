@@ -53,6 +53,18 @@ pub(crate) fn lookup_country_code(locator: &ip2location::DB, addr: IpAddr) -> [u
         .unwrap_or(COUNTRY_CODE_INVALID)
 }
 
+/// Returns whether a stored country code matches a filter value.
+///
+/// Pending (`ZZ`) and invalid (`XX`) codes never match. Comparison is
+/// case-insensitive on ASCII letters.
+#[must_use]
+pub(crate) fn stored_country_code_matches(stored: [u8; 2], filter: [u8; 2]) -> bool {
+    if stored == COUNTRY_CODE_PENDING || stored == COUNTRY_CODE_INVALID {
+        return false;
+    }
+    stored[0].eq_ignore_ascii_case(&filter[0]) && stored[1].eq_ignore_ascii_case(&filter[1])
+}
+
 fn parse_country_code(code: &str) -> Option<[u8; 2]> {
     let bytes = code.as_bytes();
     if bytes.len() == 2 && bytes.iter().all(u8::is_ascii_alphabetic) {
@@ -73,7 +85,8 @@ fn get_record_country_short_name<'a>(record: &'a ip2location::Record<'_>) -> Opt
 #[cfg(test)]
 mod tests {
     use super::{
-        COUNTRY_CODE_PENDING, country_code_as_str, country_codes_to_string, parse_country_code,
+        COUNTRY_CODE_INVALID, COUNTRY_CODE_PENDING, country_code_as_str, country_codes_to_string,
+        parse_country_code, stored_country_code_matches,
     };
 
     #[test]
@@ -91,6 +104,18 @@ mod tests {
         assert_eq!(parse_country_code("US"), Some(*b"US"));
         assert_eq!(parse_country_code("USA"), None);
         assert_eq!(parse_country_code("1A"), None);
+    }
+
+    #[test]
+    fn stored_country_code_matches_rejects_pending_and_invalid_codes() {
+        assert!(!stored_country_code_matches(COUNTRY_CODE_PENDING, *b"US"));
+        assert!(!stored_country_code_matches(COUNTRY_CODE_INVALID, *b"US"));
+    }
+
+    #[test]
+    fn stored_country_code_matches_is_case_insensitive() {
+        assert!(stored_country_code_matches(*b"US", *b"us"));
+        assert!(stored_country_code_matches(*b"us", *b"US"));
     }
 
     #[test]

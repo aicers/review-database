@@ -202,6 +202,7 @@ impl LdapBruteForce {
 }
 
 impl Match for LdapBruteForce {
+    crate::event::common::impl_match_pair_country_codes!();
     fn src_addrs(&self) -> &[IpAddr] {
         std::slice::from_ref(&self.orig_addr)
     }
@@ -480,6 +481,7 @@ impl LdapPlainText {
 }
 
 impl Match for LdapPlainText {
+    crate::event::common::impl_match_pair_country_codes!();
     fn src_addrs(&self) -> &[IpAddr] {
         std::slice::from_ref(&self.orig_addr)
     }
@@ -629,6 +631,7 @@ impl BlocklistLdap {
 }
 
 impl Match for BlocklistLdap {
+    crate::event::common::impl_match_pair_country_codes!();
     fn src_addrs(&self) -> &[IpAddr] {
         std::slice::from_ref(&self.orig_addr)
     }

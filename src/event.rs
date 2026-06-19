@@ -568,10 +568,13 @@ impl Event {
     /// Returns whether the event matches the given filter. If the event matches, returns the
     /// triage score for the event.
     ///
+    /// Country filters compare stored origin and response country codes on the
+    /// event record and do not perform `IP2Location` lookups at query time.
+    ///
     /// # Errors
     ///
-    /// Returns an error if the filter contains a country filter but the ip2location database is
-    /// not available.
+    /// Returns an error if triage-policy scoring fails while evaluating a
+    /// matching event.
     pub fn matches(
         &self,
         locator: Option<&ip2location::DB>,
@@ -3501,11 +3504,6 @@ pub enum TrafficDirection {
     To,
 }
 
-fn eq_ip_country(locator: &ip2location::DB, addr: IpAddr, country: [u8; 2]) -> bool {
-    let country_code = crate::util::find_ip_country(locator, addr);
-    country_code.as_bytes() == country
-}
-
 #[cfg(test)]
 mod stored_timestamp_contract;
 
@@ -3677,6 +3675,48 @@ mod tests {
         let stored: super::DnsEventFieldsStored = bincode::deserialize(&bytes).unwrap();
         assert_eq!(stored.orig_country_code, *b"US");
         assert_eq!(stored.resp_country_code, *b"KR");
+    }
+
+    #[test]
+    fn country_filter_search_uses_stored_codes_without_ip2location() {
+        fn country_only_filter(country: [u8; 2]) -> EventFilter {
+            EventFilter {
+                customers: None,
+                endpoints: None,
+                directions: None,
+                source: None,
+                destination: None,
+                countries: Some(vec![country]),
+                categories: None,
+                levels: None,
+                kinds: None,
+                learning_methods: None,
+                sensors: None,
+                confidence_min: None,
+                confidence_max: None,
+                triage_policies: None,
+            }
+        }
+
+        let orig_addr = IpAddr::V4(Ipv4Addr::LOCALHOST);
+        let resp_addr = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2));
+        let lookup = FakeCountryLookup {
+            codes: HashMap::from([(orig_addr, *b"US"), (resp_addr, *b"KR")]),
+            failures: HashSet::new(),
+        };
+        let (_permit, store) = setup_store_with_lookup(lookup);
+        let db = store.events();
+        db.put(&example_message(
+            EventKind::DnsCovertChannel,
+            EventCategory::CommandAndControl,
+        ))
+        .unwrap();
+
+        let event = db.iter_forward().next().unwrap().unwrap().1;
+
+        assert!(event.matches(None, &country_only_filter(*b"US")).unwrap().0);
+        assert!(event.matches(None, &country_only_filter(*b"KR")).unwrap().0);
+        assert!(!event.matches(None, &country_only_filter(*b"JP")).unwrap().0);
     }
 
     #[test]

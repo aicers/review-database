@@ -374,6 +374,7 @@ impl RepeatedHttpSessions {
 }
 
 impl Match for RepeatedHttpSessions {
+    crate::event::common::impl_match_pair_country_codes!();
     fn src_addrs(&self) -> &[IpAddr] {
         std::slice::from_ref(&self.orig_addr)
     }
@@ -803,6 +804,7 @@ impl HttpThreat {
 }
 
 impl Match for HttpThreat {
+    crate::event::common::impl_match_pair_country_codes!();
     fn src_addrs(&self) -> &[IpAddr] {
         std::slice::from_ref(&self.orig_addr)
     }
@@ -1206,6 +1208,7 @@ impl DomainGenerationAlgorithm {
 }
 
 impl Match for DomainGenerationAlgorithm {
+    crate::event::common::impl_match_pair_country_codes!();
     fn src_addrs(&self) -> &[IpAddr] {
         std::slice::from_ref(&self.orig_addr)
     }
@@ -1409,6 +1412,7 @@ impl NonBrowser {
 }
 
 impl Match for NonBrowser {
+    crate::event::common::impl_match_pair_country_codes!();
     fn src_addrs(&self) -> &[IpAddr] {
         std::slice::from_ref(&self.orig_addr)
     }
@@ -1616,6 +1620,7 @@ impl BlocklistHttp {
 }
 
 impl Match for BlocklistHttp {
+    crate::event::common::impl_match_pair_country_codes!();
     fn src_addrs(&self) -> &[IpAddr] {
         std::slice::from_ref(&self.orig_addr)
     }

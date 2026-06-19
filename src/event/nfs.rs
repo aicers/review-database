@@ -218,6 +218,7 @@ impl BlocklistNfs {
 }
 
 impl Match for BlocklistNfs {
+    crate::event::common::impl_match_pair_country_codes!();
     fn src_addrs(&self) -> &[IpAddr] {
         std::slice::from_ref(&self.orig_addr)
     }

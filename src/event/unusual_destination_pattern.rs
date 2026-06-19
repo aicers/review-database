@@ -158,6 +158,7 @@ impl UnusualDestinationPattern {
 }
 
 impl Match for UnusualDestinationPattern {
+    crate::event::common::impl_match_resp_vec_country_codes!();
     fn src_addrs(&self) -> &[IpAddr] {
         &[]
     }

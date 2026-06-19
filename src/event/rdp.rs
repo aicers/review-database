@@ -165,6 +165,7 @@ impl RdpBruteForce {
 }
 
 impl Match for RdpBruteForce {
+    crate::event::common::impl_match_orig_resp_vec_country_codes!();
     fn src_addrs(&self) -> &[IpAddr] {
         std::slice::from_ref(&self.orig_addr)
     }
@@ -400,6 +401,7 @@ impl BlocklistRdp {
 }
 
 impl Match for BlocklistRdp {
+    crate::event::common::impl_match_pair_country_codes!();
     fn src_addrs(&self) -> &[IpAddr] {
         std::slice::from_ref(&self.orig_addr)
     }

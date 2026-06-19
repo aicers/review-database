@@ -387,6 +387,7 @@ impl BlocklistTls {
 }
 
 impl Match for BlocklistTls {
+    crate::event::common::impl_match_pair_country_codes!();
     fn src_addrs(&self) -> &[IpAddr] {
         std::slice::from_ref(&self.orig_addr)
     }
@@ -592,6 +593,7 @@ impl SuspiciousTlsTraffic {
 }
 
 impl Match for SuspiciousTlsTraffic {
+    crate::event::common::impl_match_pair_country_codes!();
     fn src_addrs(&self) -> &[IpAddr] {
         std::slice::from_ref(&self.orig_addr)
     }

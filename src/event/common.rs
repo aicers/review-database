@@ -10,13 +10,68 @@ use bincode::Options;
 use num_traits::ToPrimitive;
 use serde::{Deserialize, Serialize};
 
-use super::{
-    EventCategory, EventFilter, FlowKind, LearningMethod, ThreatLevel, TrafficDirection,
-    eq_ip_country,
-};
+use super::{EventCategory, EventFilter, FlowKind, LearningMethod, ThreatLevel, TrafficDirection};
 use crate::{
     AttrCmpKind, Confidence, PacketAttr, Response, TriageExclusion, TriagePolicyInput, ValueKind,
 };
+
+/// Adds country-code accessors for events with single origin and response codes.
+macro_rules! impl_match_pair_country_codes {
+    () => {
+        fn orig_country_codes(&self) -> &[[u8; 2]] {
+            std::slice::from_ref(&self.orig_country_code)
+        }
+
+        fn resp_country_codes(&self) -> &[[u8; 2]] {
+            std::slice::from_ref(&self.resp_country_code)
+        }
+    };
+}
+pub(crate) use impl_match_pair_country_codes;
+
+/// Adds country-code accessors for events with one origin code and many
+/// response codes.
+macro_rules! impl_match_orig_resp_vec_country_codes {
+    () => {
+        fn orig_country_codes(&self) -> &[[u8; 2]] {
+            std::slice::from_ref(&self.orig_country_code)
+        }
+
+        fn resp_country_codes(&self) -> &[[u8; 2]] {
+            &self.resp_country_codes
+        }
+    };
+}
+pub(crate) use impl_match_orig_resp_vec_country_codes;
+
+/// Adds country-code accessors for events with many origin codes and one
+/// response code.
+macro_rules! impl_match_orig_vec_resp_country_codes {
+    () => {
+        fn orig_country_codes(&self) -> &[[u8; 2]] {
+            &self.orig_country_codes
+        }
+
+        fn resp_country_codes(&self) -> &[[u8; 2]] {
+            std::slice::from_ref(&self.resp_country_code)
+        }
+    };
+}
+pub(crate) use impl_match_orig_vec_resp_country_codes;
+
+/// Adds country-code accessors for events with many response codes only.
+macro_rules! impl_match_resp_vec_country_codes {
+    () => {
+        fn orig_country_codes(&self) -> &[[u8; 2]] {
+            &[]
+        }
+
+        fn resp_country_codes(&self) -> &[[u8; 2]] {
+            &self.resp_country_codes
+        }
+    };
+}
+pub(crate) use impl_match_resp_vec_country_codes;
 
 /// Epsilon value for inclusive confidence comparisons
 const CONFIDENCE_EPSILON: f32 = 1e-6;
@@ -38,6 +93,12 @@ pub(super) trait Match {
     fn confidence(&self) -> Option<f32>;
     fn learning_method(&self) -> LearningMethod;
     fn find_attr_by_kind(&self, raw_event_attr: RawEventAttrKind) -> Option<AttrValue<'_>>;
+    fn orig_country_codes(&self) -> &[[u8; 2]] {
+        &[]
+    }
+    fn resp_country_codes(&self) -> &[[u8; 2]] {
+        &[]
+    }
     fn score_by_attr(&self, attr_triage: &[PacketAttr]) -> f64 {
         let total_score = attr_triage.iter().fold(0.0, |score_acc, item| {
             let Ok(kind) =
@@ -61,20 +122,15 @@ pub(super) trait Match {
 
     /// Returns whether the event matches the filter and the triage scores. The triage scores are
     /// only returned if the event matches the filter.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the filter contains a country filter but the ip2location database is
-    /// not available.
     fn matches(
         &self,
-        locator: Option<&ip2location::DB>,
+        _locator: Option<&ip2location::DB>,
         filter: &EventFilter,
     ) -> Result<(bool, Option<Vec<TriageScore>>)> {
         if !self.kind_matches(filter) {
             return Ok((false, None));
         }
-        self.other_matches(filter, locator)
+        self.other_matches(filter)
     }
 
     fn kind_matches(&self, filter: &EventFilter) -> bool {
@@ -89,17 +145,8 @@ pub(super) trait Match {
 
     /// Returns whether the event matches the filter (excluding `kinds`) and the triage scores. The
     /// triage scores are only returned if the event matches the filter.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the filter contains a country filter but the ip2location database is
-    /// not available.
     #[allow(clippy::too_many_lines)]
-    fn other_matches(
-        &self,
-        filter: &EventFilter,
-        locator: Option<&ip2location::DB>,
-    ) -> Result<(bool, Option<Vec<TriageScore>>)> {
+    fn other_matches(&self, filter: &EventFilter) -> Result<(bool, Option<Vec<TriageScore>>)> {
         // Customer matching uses the customer's registered network ranges to
         // test event addresses (src_addrs/dst_addrs). It does NOT filter based
         // on a customer ID attached to the event. If you need per-event
@@ -188,19 +235,16 @@ pub(super) trait Match {
         }
 
         if let Some(countries) = &filter.countries {
-            if let Some(locator) = locator {
-                if countries.iter().all(|country| {
-                    self.src_addrs()
+            let orig_codes = self.orig_country_codes();
+            let resp_codes = self.resp_country_codes();
+            if countries.iter().all(|country| {
+                orig_codes
+                    .iter()
+                    .all(|&code| !crate::util::stored_country_code_matches(code, *country))
+                    && resp_codes
                         .iter()
-                        .all(|&src_addr| !eq_ip_country(locator, src_addr, *country))
-                        && self
-                            .dst_addrs()
-                            .iter()
-                            .all(|&dst_addr| !eq_ip_country(locator, dst_addr, *country))
-                }) {
-                    return Ok((false, None));
-                }
-            } else {
+                        .all(|&code| !crate::util::stored_country_code_matches(code, *country))
+            }) {
                 return Ok((false, None));
             }
         }
@@ -3144,5 +3188,69 @@ mod tests {
         let (matched, scores) = event.matches(None, &filter).unwrap();
         assert!(!matched);
         assert!(scores.is_none());
+    }
+
+    fn http_threat_event_with_country_codes(orig: [u8; 2], resp: [u8; 2]) -> Event {
+        let time = Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap();
+        let mut fields = http_threat_fields();
+        fields.orig_country_code = orig;
+        fields.resp_country_code = resp;
+        Event::HttpThreat(HttpThreat::new(time, fields))
+    }
+
+    fn country_filter(orig: [u8; 2]) -> EventFilter {
+        EventFilter {
+            countries: Some(vec![orig]),
+            ..event_filter()
+        }
+    }
+
+    #[test]
+    fn country_filter_matches_stored_orig_country_code() {
+        let event = http_threat_event_with_country_codes(*b"US", *b"KR");
+        let filter = country_filter(*b"US");
+        assert!(event.matches(None, &filter).unwrap().0);
+    }
+
+    #[test]
+    fn country_filter_matches_stored_resp_country_code() {
+        let event = http_threat_event_with_country_codes(*b"US", *b"KR");
+        let filter = country_filter(*b"KR");
+        assert!(event.matches(None, &filter).unwrap().0);
+    }
+
+    #[test]
+    fn country_filter_rejects_when_no_stored_code_matches() {
+        let event = http_threat_event_with_country_codes(*b"US", *b"KR");
+        let filter = country_filter(*b"JP");
+        assert!(!event.matches(None, &filter).unwrap().0);
+    }
+
+    #[test]
+    fn country_filter_rejects_pending_stored_codes() {
+        let event = http_threat_event_with_country_codes(
+            crate::util::COUNTRY_CODE_PENDING,
+            crate::util::COUNTRY_CODE_PENDING,
+        );
+        let filter = country_filter(*b"US");
+        assert!(!event.matches(None, &filter).unwrap().0);
+    }
+
+    #[test]
+    fn country_filter_is_case_insensitive() {
+        let event = http_threat_event_with_country_codes(*b"US", *b"KR");
+        let filter = country_filter(*b"us");
+        assert!(event.matches(None, &filter).unwrap().0);
+    }
+
+    #[test]
+    fn country_filter_matches_any_vector_response_code() {
+        let time = Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap();
+        let mut fields = multi_host_port_scan_fields();
+        fields.orig_country_code = *b"US";
+        fields.resp_country_codes = vec![*b"JP", *b"DE"];
+        let event = Event::MultiHostPortScan(MultiHostPortScan::new(time, &fields));
+        let filter = country_filter(*b"DE");
+        assert!(event.matches(None, &filter).unwrap().0);
     }
 }

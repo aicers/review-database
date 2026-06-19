@@ -45,6 +45,19 @@ country-code fields.
 return a valid two-letter code. Vector country-code fields retain the same
 length and ordering as their corresponding address vectors.
 
+## Searching By Country Code
+
+`EventFilter::countries` matches events whose stored origin or response
+country code equals one of the requested two-letter codes. Matching uses
+only the country-code fields written at ingestion or migration time, so
+searches do not load or query an IP2Location database. Pending (`ZZ`) and
+invalid (`XX`) stored codes never match a country filter. Filter values
+are compared case-insensitively.
+
+Because country resolution happens when events are stored, opening the
+store without an IP2Location database does not prevent country-based
+search from working on events that already have resolved codes.
+
 ## License
 
 Copyright 2018-2025 Petabi, Inc.

@@ -152,6 +152,7 @@ impl TorConnection {
 }
 
 impl Match for TorConnection {
+    crate::event::common::impl_match_pair_country_codes!();
     fn src_addrs(&self) -> &[IpAddr] {
         std::slice::from_ref(&self.orig_addr)
     }
@@ -306,6 +307,7 @@ impl TorConnectionConn {
 }
 
 impl Match for TorConnectionConn {
+    crate::event::common::impl_match_pair_country_codes!();
     fn src_addrs(&self) -> &[IpAddr] {
         std::slice::from_ref(&self.orig_addr)
     }

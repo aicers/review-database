@@ -14,6 +14,12 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- Event country filtering now compares stored origin and response country
+  codes on event records instead of performing IP2Location lookups during
+  search. `EventFilter::countries` matches when either stored endpoint code
+  equals a requested code; pending (`ZZ`) and invalid (`XX`) codes never
+  match. Country-based search no longer requires an IP2Location database at
+  query time.
 - **BREAKING**: Bumped the database format to `0.46.0-alpha.1`, changed
   `Store::new` to take an `Option<Arc<ip2location::DB>>` argument, and changed
   `migrate_data_dir` to accept the same optional shared database handle. Event

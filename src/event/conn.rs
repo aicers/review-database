@@ -172,6 +172,7 @@ impl PortScan {
 }
 
 impl Match for PortScan {
+    crate::event::common::impl_match_pair_country_codes!();
     fn src_addrs(&self) -> &[IpAddr] {
         std::slice::from_ref(&self.orig_addr)
     }
@@ -370,6 +371,7 @@ impl MultiHostPortScan {
 }
 
 impl Match for MultiHostPortScan {
+    crate::event::common::impl_match_orig_resp_vec_country_codes!();
     fn src_addrs(&self) -> &[IpAddr] {
         std::slice::from_ref(&self.orig_addr)
     }
@@ -562,6 +564,7 @@ impl ExternalDdos {
 }
 
 impl Match for ExternalDdos {
+    crate::event::common::impl_match_orig_vec_resp_country_codes!();
     fn src_addrs(&self) -> &[IpAddr] {
         &self.orig_addrs
     }
@@ -821,6 +824,7 @@ impl BlocklistConn {
 }
 
 impl Match for BlocklistConn {
+    crate::event::common::impl_match_pair_country_codes!();
     fn src_addrs(&self) -> &[IpAddr] {
         std::slice::from_ref(&self.orig_addr)
     }
