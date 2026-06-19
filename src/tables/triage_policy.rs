@@ -723,8 +723,9 @@ mod test {
 
     use crate::test::{DbGuard, acquire_db_permit};
     use crate::{
-        ExclusionReason, Store, TriageExclusionReason, TriageExclusionReasonUpdate, TriagePolicy,
-        TriagePolicyUpdate,
+        AttrCmpKind, ExclusionReason, PacketAttr, Response, ResponseKind, Store,
+        TriageExclusionReason, TriageExclusionReasonUpdate, TriagePolicy, TriagePolicyUpdate,
+        ValueKind,
     };
 
     #[test]
@@ -942,5 +943,92 @@ mod test {
             Some(EventCategory::Exfiltration)
         );
         assert_eq!(retrieved.confidence[1].threat_category, None);
+    }
+
+    // =========================================================================
+    // Literal-byte fixture: stored table-value bytes for TriagePolicy
+    // =========================================================================
+
+    use attrievent::attribute::RawEventKind;
+    use chrono::TimeZone;
+
+    use crate::{Indexable, types::FromKeyValue};
+
+    const FIXTURE_BYTES: &[u8] =
+        include_bytes!("../../tests/fixtures/triage_policy_literal_bytes.bin");
+
+    /// Builds the deterministic `TriagePolicy` encoded by the literal-byte
+    /// fixture.
+    fn deterministic_fixture_triage_policy() -> TriagePolicy {
+        let creation_time = Utc.with_ymd_and_hms(2024, 3, 15, 10, 30, 45).unwrap()
+            + chrono::Duration::nanoseconds(123_456_789);
+
+        TriagePolicy {
+            id: 42,
+            name: "fixture-policy".to_string(),
+            triage_exclusion_id: vec![1, 2],
+            packet_attr: vec![PacketAttr {
+                raw_event_kind: RawEventKind::Http,
+                attr_name: "host".to_string(),
+                value_kind: ValueKind::String,
+                cmp_kind: AttrCmpKind::Contain,
+                first_value: b"example.com".to_vec(),
+                second_value: None,
+                weight: Some(1.5),
+            }],
+            confidence: vec![
+                Confidence {
+                    threat_category: Some(EventCategory::Reconnaissance),
+                    threat_kind: "port_scan".to_string(),
+                    confidence: 0.85,
+                    weight: Some(2.0),
+                },
+                Confidence {
+                    threat_category: None,
+                    threat_kind: "generic".to_string(),
+                    confidence: 0.3,
+                    weight: None,
+                },
+            ],
+            response: vec![Response {
+                minimum_score: 0.7,
+                kind: ResponseKind::Manual,
+            }],
+            creation_time,
+            customer_id: Some(1001),
+        }
+    }
+
+    /// Verifies production decode/encode round-trip against a committed literal
+    /// fixture captured from a stored `TriagePolicy` table value.
+    ///
+    /// Expected bytes come from the committed literal fixture (not from the
+    /// production serializer inside this test). `creation_time` is pinned to
+    /// `2024-03-15T10:30:45.123456789Z` so the encoding stays deterministic.
+    #[test]
+    fn stored_table_value_bytes_match_literal_fixture() {
+        let decoded =
+            TriagePolicy::from_key_value(&[], FIXTURE_BYTES).expect("fixture must decode");
+        let expected = deterministic_fixture_triage_policy();
+        assert_eq!(decoded.id, expected.id);
+        assert_eq!(decoded.name, expected.name);
+        assert_eq!(decoded.triage_exclusion_id, expected.triage_exclusion_id);
+        assert!(decoded.packet_attr == expected.packet_attr);
+        assert_eq!(decoded.confidence, expected.confidence);
+        assert!(decoded.response == expected.response);
+        assert_eq!(decoded.creation_time, expected.creation_time);
+        assert_eq!(decoded.customer_id, expected.customer_id);
+
+        let encoded = expected.value();
+        assert_eq!(encoded.as_slice(), FIXTURE_BYTES);
+    }
+
+    #[test]
+    #[ignore = "run manually to regenerate tests/fixtures/triage_policy_literal_bytes.bin"]
+    fn dump_triage_policy_literal_fixture_bytes() {
+        let bytes = deterministic_fixture_triage_policy().value();
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/triage_policy_literal_bytes.bin");
+        std::fs::write(path, &bytes).expect("write fixture");
     }
 }
