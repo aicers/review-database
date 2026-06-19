@@ -5,6 +5,7 @@ use std::{
     fs::{File, create_dir_all},
     io::{Read, Write},
     path::{Path, PathBuf},
+    sync::Arc,
 };
 
 use anyhow::{Context, Result, anyhow};
@@ -16,6 +17,7 @@ use tracing::{info, warn};
 use crate::{
     AllowNetwork, BlockNetwork, Customer,
     event::{EventKind, resolve_stored_country_codes},
+    geo::{CountryLookup, Ip2LocationResolver},
     migration::migration_structures::{
         AllowNetworkV0_42, BlockNetworkV0_42, BlocklistDceRpcFieldsStoredV0_42,
         BlocklistDceRpcFieldsStoredV0_44, BlocklistDhcpFieldsStoredV0_42,
@@ -112,9 +114,10 @@ const COMPATIBLE_VERSION_REQ: &str = ">=0.46.0-alpha.1,<0.46.0-alpha.2";
 ///
 /// Migration is supported between released versions only. The prelease versions (alpha, beta,
 /// etc.) should be assumed to be incompatible with each other.
-/// Pass an `ip2location::DB` when available so endpoint country-code fields can
-/// be resolved during the stored event schema migration. If no locator is
-/// provided, endpoint country codes remain at the pre-lookup value `ZZ`.
+/// Pass a shared `IP2Location` database handle when available so endpoint
+/// country-code fields can be resolved during the stored event schema
+/// migration. If no locator is provided, endpoint country codes remain at the
+/// pre-lookup value `ZZ`.
 ///
 /// # Errors
 ///
@@ -124,16 +127,20 @@ const COMPATIBLE_VERSION_REQ: &str = ">=0.46.0-alpha.1,<0.46.0-alpha.2";
 pub fn migrate_data_dir<P: AsRef<Path>>(
     data_dir: P,
     backup_dir: P,
-    locator: Option<&ip2location::DB>,
+    ip2location: Option<Arc<ip2location::DB>>,
 ) -> Result<()> {
     type Migration = (
         VersionReq,
         Version,
-        fn(&Path, &Path, Option<&ip2location::DB>) -> anyhow::Result<()>,
+        fn(&Path, &Path, Option<&dyn CountryLookup>) -> anyhow::Result<()>,
     );
 
     let data_dir = data_dir.as_ref();
     let backup_dir = backup_dir.as_ref();
+    let resolver = ip2location.map(Ip2LocationResolver::new);
+    let locator = resolver
+        .as_ref()
+        .map(|resolver| resolver as &dyn CountryLookup);
 
     let Ok(compatible) = VersionReq::parse(COMPATIBLE_VERSION_REQ) else {
         unreachable!("COMPATIBLE_VERSION_REQ must be valid")
@@ -206,16 +213,16 @@ pub fn migrate_data_dir<P: AsRef<Path>>(
 fn migrate_0_45_to_0_46(
     data_dir: &Path,
     backup_dir: &Path,
-    locator: Option<&ip2location::DB>,
+    locator: Option<&dyn CountryLookup>,
 ) -> Result<()> {
-    let store = crate::Store::new(data_dir, backup_dir)
+    let store = crate::Store::new(data_dir, backup_dir, None)
         .context("Failed to open Store for event migration")?;
     migrate_event_country_codes(&store, locator)
 }
 
 pub(crate) fn migrate_event_country_codes(
     store: &crate::Store,
-    locator: Option<&ip2location::DB>,
+    locator: Option<&dyn CountryLookup>,
 ) -> Result<()> {
     let events = store.events();
     let mut migrated = 0usize;
@@ -1280,8 +1287,7 @@ fn read_version_file(path: &Path) -> Result<Version> {
 
 #[cfg(test)]
 mod tests {
-    use std::io::Write;
-    use std::path::Path;
+    use std::{collections::HashMap, io::Write, net::IpAddr, path::Path};
 
     use semver::{Version, VersionReq};
 
@@ -1293,12 +1299,27 @@ mod tests {
         BlocklistConnFields, BlocklistConnFieldsStored, EventKind, EventMessage,
         MultiHostPortScanFieldsStored, resolve_stored_country_codes,
     };
+    use crate::geo::CountryLookup;
     use crate::migration::migration_structures::{
         BlocklistConnFieldsStoredV0_42, MultiHostPortScanFieldsStoredV0_42,
     };
     use crate::tables::NETWORK_TAGS;
     use crate::test::{DbGuard, acquire_db_permit};
     use crate::{Indexable, Store};
+
+    #[derive(Default)]
+    struct FakeCountryLookup {
+        codes: HashMap<IpAddr, [u8; 2]>,
+    }
+
+    impl CountryLookup for FakeCountryLookup {
+        fn lookup_country_code(&self, addr: IpAddr) -> [u8; 2] {
+            self.codes
+                .get(&addr)
+                .copied()
+                .unwrap_or(crate::util::COUNTRY_CODE_INVALID)
+        }
+    }
 
     /// Helper to write a specific version to a VERSION file.
     fn write_version(path: &Path, version: &str) {
@@ -1402,7 +1423,7 @@ mod tests {
         let _permit = acquire_db_permit();
         let data_dir = tempfile::tempdir().unwrap();
         let backup_dir = tempfile::tempdir().unwrap();
-        let store = Store::new(data_dir.path(), backup_dir.path()).unwrap();
+        let store = Store::new(data_dir.path(), backup_dir.path(), None).unwrap();
         let events = store.events();
         let legacy = legacy_blocklist_conn();
         let message = EventMessage {
@@ -1453,6 +1474,61 @@ mod tests {
             migrated.resp_country_code,
             crate::util::COUNTRY_CODE_PENDING
         );
+    }
+
+    #[test]
+    fn event_country_code_migration_resolves_codes_with_locator() {
+        let _permit = acquire_db_permit();
+        let data_dir = tempfile::tempdir().unwrap();
+        let backup_dir = tempfile::tempdir().unwrap();
+        let store = Store::new(data_dir.path(), backup_dir.path(), None).unwrap();
+        let events = store.events();
+        let legacy = legacy_blocklist_conn();
+        let message = EventMessage {
+            time: chrono::Utc::now(),
+            kind: EventKind::BlocklistConn,
+            fields: bincode::serialize(&BlocklistConnFields {
+                sensor: legacy.sensor.clone(),
+                orig_addr: legacy.orig_addr,
+                orig_port: legacy.orig_port,
+                resp_addr: legacy.resp_addr,
+                resp_port: legacy.resp_port,
+                proto: legacy.proto,
+                conn_state: legacy.conn_state.clone(),
+                start_time: legacy.start_time,
+                duration: legacy.duration,
+                service: legacy.service.clone(),
+                orig_bytes: legacy.orig_bytes,
+                resp_bytes: legacy.resp_bytes,
+                orig_pkts: legacy.orig_pkts,
+                resp_pkts: legacy.resp_pkts,
+                orig_l2_bytes: legacy.orig_l2_bytes,
+                resp_l2_bytes: legacy.resp_l2_bytes,
+                confidence: legacy.confidence,
+                category: legacy.category,
+            })
+            .unwrap(),
+        };
+        events.put(&message).unwrap();
+        let (key, current_value) = events.raw_iter().next().unwrap().unwrap();
+        let legacy_value = bincode::serialize(&legacy).unwrap();
+        events
+            .update((&key, &current_value), (&key, &legacy_value))
+            .unwrap();
+
+        let lookup = FakeCountryLookup {
+            codes: HashMap::from([(legacy.orig_addr, *b"US"), (legacy.resp_addr, *b"KR")]),
+        };
+        migrate_event_country_codes(&store, Some(&lookup)).unwrap();
+
+        let (migrated_key, migrated_value) = events.raw_iter().next().unwrap().unwrap();
+        let migrated: BlocklistConnFieldsStored = bincode::deserialize(&migrated_value).unwrap();
+        assert_eq!(migrated_key, key);
+        assert_ne!(migrated_value, legacy_value);
+        assert_eq!(migrated.orig_addr, legacy.orig_addr);
+        assert_eq!(migrated.orig_country_code, *b"US");
+        assert_eq!(migrated.resp_addr, legacy.resp_addr);
+        assert_eq!(migrated.resp_country_code, *b"KR");
     }
 
     // =========================================================================
@@ -1743,7 +1819,7 @@ mod tests {
             let permit = acquire_db_permit();
             let db_dir = tempfile::tempdir().unwrap();
             let backup_dir = tempfile::tempdir().unwrap();
-            let store = Store::new(db_dir.path(), backup_dir.path()).unwrap();
+            let store = Store::new(db_dir.path(), backup_dir.path(), None).unwrap();
             TestSchema {
                 permit,
                 db_dir,
@@ -1758,7 +1834,7 @@ mod tests {
             db_dir: tempfile::TempDir,
             backup_dir: tempfile::TempDir,
         ) -> Self {
-            let store = Store::new(db_dir.path(), backup_dir.path()).unwrap();
+            let store = Store::new(db_dir.path(), backup_dir.path(), None).unwrap();
             TestSchema {
                 permit,
                 db_dir,

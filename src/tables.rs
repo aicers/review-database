@@ -375,9 +375,12 @@ impl StateDb {
     }
 
     #[must_use]
-    pub fn events(&self) -> event::EventDb<'_> {
+    pub fn events(
+        &self,
+        country_lookup: Option<crate::geo::SharedCountryLookup>,
+    ) -> event::EventDb<'_> {
         let inner = self.inner.as_ref().expect("database must be open");
-        event::EventDb::new(inner)
+        event::EventDb::new_with_country_lookup(inner, country_lookup)
     }
 
     #[must_use]

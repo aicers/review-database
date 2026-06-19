@@ -7,6 +7,7 @@ mod cluster;
 mod collections;
 mod column_statistics;
 pub mod event;
+mod geo;
 mod migration;
 mod model;
 mod scores;
@@ -18,8 +19,8 @@ mod top_n;
 pub mod types;
 mod util;
 
-use std::io;
 use std::path::{Path, PathBuf};
+use std::{io, sync::Arc};
 
 use anyhow::{Result, anyhow};
 pub use attrievent::attribute::RawEventKind;
@@ -74,6 +75,7 @@ pub struct Store {
     states: StateDb,
     pretrained: PathBuf,
     classifier_fm: classifier_fs::ClassifierFileManager,
+    country_lookup: Option<geo::SharedCountryLookup>,
 }
 
 impl Store {
@@ -83,7 +85,25 @@ impl Store {
     /// # Errors
     ///
     /// Returns an error if the key-value store or its backup cannot be opened.
-    pub fn new(path: &Path, backup: &Path) -> Result<Self, anyhow::Error> {
+    pub fn new(
+        path: &Path,
+        backup: &Path,
+        ip2location: Option<Arc<ip2location::DB>>,
+    ) -> Result<Self, anyhow::Error> {
+        let country_lookup = ip2location
+            .map(|db| Arc::new(geo::Ip2LocationResolver::new(db)) as geo::SharedCountryLookup);
+        Self::new_with_country_lookup(path, backup, country_lookup)
+    }
+
+    /// Opens a key-value store with a country lookup for ingestion-time
+    /// endpoint country-code resolution.
+    ///
+    /// Used by tests to inject deterministic lookup behavior.
+    fn new_with_country_lookup(
+        path: &Path,
+        backup: &Path,
+        country_lookup: Option<geo::SharedCountryLookup>,
+    ) -> Result<Self, anyhow::Error> {
         let db_path = path.join(DEFAULT_STATES);
         let backup_path = backup.join(DEFAULT_STATES);
         let states = StateDb::open(&db_path, backup_path)?;
@@ -98,6 +118,7 @@ impl Store {
             states,
             pretrained,
             classifier_fm,
+            country_lookup,
         };
         Ok(store)
     }
@@ -105,7 +126,7 @@ impl Store {
     #[must_use]
     #[allow(clippy::missing_panics_doc)]
     pub fn events(&self) -> EventDb<'_> {
-        self.states.events()
+        self.states.events(self.country_lookup.clone())
     }
 
     #[must_use]
