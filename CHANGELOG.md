@@ -22,6 +22,15 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   is performed, and uses `XX` when lookup fails or returns an invalid code. Event
   `Display` output now includes country-code fields rendered as two-letter
   strings.
+- **BREAKING**: Renamed multi-raw detection event time fields to clarify
+  semantics. `PortScan`, `MultiHostPortScan`, `ExternalDdos`,
+  `FtpBruteForce`, `LdapBruteForce`, `RdpBruteForce`, and
+  `RepeatedHttpSessions` now use `first_event_start_time` and
+  `last_event_start_time` instead of `start_time` and `end_time`.
+  `UnusualDestinationPattern` now uses
+  `sampling_window_start_time`/`sampling_window_end_time` to clarify that
+  those timestamps represent the anomaly sampling window. This changes the
+  Rust API and text output schema while preserving bincode compatibility.
 - **BREAKING**: Renamed `TrafficFilter::agent` to `host_fqdn` to clarify
   that it stores a host fully-qualified domain name. Related
   `Table<'_, TrafficFilter>` method parameters were also renamed from

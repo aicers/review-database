@@ -42,9 +42,9 @@ pub struct PortScanFields {
     pub resp_addr: IpAddr,
     pub resp_ports: Vec<u16>,
     /// Timestamp in nanoseconds since the Unix epoch (UTC).
-    pub start_time: i64,
+    pub first_event_start_time: i64,
     /// Timestamp in nanoseconds since the Unix epoch (UTC).
-    pub end_time: i64,
+    pub last_event_start_time: i64,
     pub proto: u8,
     pub confidence: f32,
     pub category: Option<EventCategory>,
@@ -60,8 +60,8 @@ pub(crate) struct PortScanFieldsStoredV0_46 {
     pub resp_addr: IpAddr,
     pub resp_ports: Vec<u16>,
     pub resp_country_code: [u8; 2],
-    pub start_time: i64,
-    pub end_time: i64,
+    pub first_event_start_time: i64,
+    pub last_event_start_time: i64,
     pub proto: u8,
     pub confidence: f32,
     pub category: Option<EventCategory>,
@@ -76,8 +76,8 @@ impl From<PortScanFields> for PortScanFieldsStored {
             resp_addr: value.resp_addr,
             resp_ports: value.resp_ports,
             resp_country_code: crate::util::COUNTRY_CODE_PENDING,
-            start_time: value.start_time,
-            end_time: value.end_time,
+            first_event_start_time: value.first_event_start_time,
+            last_event_start_time: value.last_event_start_time,
             proto: value.proto,
             confidence: value.confidence,
             category: value.category,
@@ -88,10 +88,10 @@ impl From<PortScanFields> for PortScanFieldsStored {
 impl PortScanFields {
     #[must_use]
     pub fn syslog_rfc5424(&self) -> String {
-        let start_time_dt = DateTime::from_timestamp_nanos(self.start_time);
-        let end_time_dt = DateTime::from_timestamp_nanos(self.end_time);
+        let first_event_start_time_dt = DateTime::from_timestamp_nanos(self.first_event_start_time);
+        let last_event_start_time_dt = DateTime::from_timestamp_nanos(self.last_event_start_time);
         format!(
-            "category={:?} sensor={:?} orig_addr={:?} resp_addr={:?} resp_ports={:?} start_time={:?} end_time={:?} proto={:?} confidence={:?}",
+            "category={:?} sensor={:?} orig_addr={:?} resp_addr={:?} resp_ports={:?} first_event_start_time={:?} last_event_start_time={:?} proto={:?} confidence={:?}",
             self.category.as_ref().map_or_else(
                 || "Unspecified".to_string(),
                 std::string::ToString::to_string
@@ -100,8 +100,8 @@ impl PortScanFields {
             self.orig_addr.to_string(),
             self.resp_addr.to_string(),
             vector_to_string(&self.resp_ports),
-            start_time_dt.to_rfc3339(),
-            end_time_dt.to_rfc3339(),
+            first_event_start_time_dt.to_rfc3339(),
+            last_event_start_time_dt.to_rfc3339(),
             self.proto.to_string(),
             self.confidence.to_string()
         )
@@ -118,8 +118,8 @@ pub struct PortScan {
     pub resp_addr: IpAddr,
     pub resp_ports: Vec<u16>,
     pub resp_country_code: [u8; 2],
-    pub start_time: DateTime<Utc>,
-    pub end_time: DateTime<Utc>,
+    pub first_event_start_time: DateTime<Utc>,
+    pub last_event_start_time: DateTime<Utc>,
     pub proto: u8,
     pub confidence: f32,
     pub category: Option<EventCategory>,
@@ -130,14 +130,14 @@ impl fmt::Display for PortScan {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(
             f,
-            "orig_addr={:?} orig_country_code={:?} resp_addr={:?} resp_country_code={:?} resp_ports={:?} start_time={:?} end_time={:?} proto={:?} triage_scores={:?}",
+            "orig_addr={:?} orig_country_code={:?} resp_addr={:?} resp_country_code={:?} resp_ports={:?} first_event_start_time={:?} last_event_start_time={:?} proto={:?} triage_scores={:?}",
             self.orig_addr.to_string(),
             crate::util::country_code_as_str(&self.orig_country_code),
             self.resp_addr.to_string(),
             crate::util::country_code_as_str(&self.resp_country_code),
             vector_to_string(&self.resp_ports),
-            self.start_time.to_rfc3339(),
-            self.end_time.to_rfc3339(),
+            self.first_event_start_time.to_rfc3339(),
+            self.last_event_start_time.to_rfc3339(),
             self.proto.to_string(),
             triage_scores_to_string(self.triage_scores.as_ref())
         )
@@ -155,8 +155,8 @@ impl PortScan {
             resp_ports: fields.resp_ports.clone(),
             resp_country_code: fields.resp_country_code,
             proto: fields.proto,
-            start_time: DateTime::from_timestamp_nanos(fields.start_time),
-            end_time: DateTime::from_timestamp_nanos(fields.end_time),
+            first_event_start_time: DateTime::from_timestamp_nanos(fields.first_event_start_time),
+            last_event_start_time: DateTime::from_timestamp_nanos(fields.last_event_start_time),
             confidence: fields.confidence,
             category: fields.category,
             triage_scores: None,
@@ -240,9 +240,9 @@ pub struct MultiHostPortScanFields {
     pub resp_addrs: Vec<IpAddr>,
     pub proto: u8,
     /// Timestamp in nanoseconds since the Unix epoch (UTC).
-    pub start_time: i64,
+    pub first_event_start_time: i64,
     /// Timestamp in nanoseconds since the Unix epoch (UTC).
-    pub end_time: i64,
+    pub last_event_start_time: i64,
     pub confidence: f32,
     pub category: Option<EventCategory>,
 }
@@ -258,8 +258,8 @@ pub(crate) struct MultiHostPortScanFieldsStoredV0_46 {
     pub resp_port: u16,
     pub resp_country_codes: Vec<[u8; 2]>,
     pub proto: u8,
-    pub start_time: i64,
-    pub end_time: i64,
+    pub first_event_start_time: i64,
+    pub last_event_start_time: i64,
     pub confidence: f32,
     pub category: Option<EventCategory>,
 }
@@ -275,8 +275,8 @@ impl From<MultiHostPortScanFields> for MultiHostPortScanFieldsStored {
             resp_port: value.resp_port,
             resp_country_codes: vec![crate::util::COUNTRY_CODE_PENDING; resp_addr_count],
             proto: value.proto,
-            start_time: value.start_time,
-            end_time: value.end_time,
+            first_event_start_time: value.first_event_start_time,
+            last_event_start_time: value.last_event_start_time,
             confidence: value.confidence,
             category: value.category,
         }
@@ -286,10 +286,10 @@ impl From<MultiHostPortScanFields> for MultiHostPortScanFieldsStored {
 impl MultiHostPortScanFields {
     #[must_use]
     pub fn syslog_rfc5424(&self) -> String {
-        let start_time_dt = DateTime::from_timestamp_nanos(self.start_time);
-        let end_time_dt = DateTime::from_timestamp_nanos(self.end_time);
+        let first_event_start_time_dt = DateTime::from_timestamp_nanos(self.first_event_start_time);
+        let last_event_start_time_dt = DateTime::from_timestamp_nanos(self.last_event_start_time);
         format!(
-            "category={:?} sensor={:?} orig_addr={:?} resp_addrs={:?} resp_port={:?} proto={:?} start_time={:?} end_time={:?} confidence={:?}",
+            "category={:?} sensor={:?} orig_addr={:?} resp_addrs={:?} resp_port={:?} proto={:?} first_event_start_time={:?} last_event_start_time={:?} confidence={:?}",
             self.category.as_ref().map_or_else(
                 || "Unspecified".to_string(),
                 std::string::ToString::to_string
@@ -299,8 +299,8 @@ impl MultiHostPortScanFields {
             vector_to_string(&self.resp_addrs),
             self.resp_port.to_string(),
             self.proto.to_string(),
-            start_time_dt.to_rfc3339(),
-            end_time_dt.to_rfc3339(),
+            first_event_start_time_dt.to_rfc3339(),
+            last_event_start_time_dt.to_rfc3339(),
             self.confidence.to_string()
         )
     }
@@ -317,8 +317,8 @@ pub struct MultiHostPortScan {
     pub resp_port: u16,
     pub resp_country_codes: Vec<[u8; 2]>,
     pub proto: u8,
-    pub start_time: DateTime<Utc>,
-    pub end_time: DateTime<Utc>,
+    pub first_event_start_time: DateTime<Utc>,
+    pub last_event_start_time: DateTime<Utc>,
     pub confidence: f32,
     pub category: Option<EventCategory>,
     pub triage_scores: Option<Vec<TriageScore>>,
@@ -328,15 +328,15 @@ impl fmt::Display for MultiHostPortScan {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(
             f,
-            "orig_addr={:?} orig_country_code={:?} resp_addrs={:?} resp_port={:?} resp_country_codes={:?} proto={:?} start_time={:?} end_time={:?} triage_scores={:?}",
+            "orig_addr={:?} orig_country_code={:?} resp_addrs={:?} resp_port={:?} resp_country_codes={:?} proto={:?} first_event_start_time={:?} last_event_start_time={:?} triage_scores={:?}",
             self.orig_addr.to_string(),
             crate::util::country_code_as_str(&self.orig_country_code),
             vector_to_string(&self.resp_addrs),
             self.resp_port.to_string(),
             crate::util::country_codes_to_string(&self.resp_country_codes),
             self.proto.to_string(),
-            self.start_time.to_rfc3339(),
-            self.end_time.to_rfc3339(),
+            self.first_event_start_time.to_rfc3339(),
+            self.last_event_start_time.to_rfc3339(),
             triage_scores_to_string(self.triage_scores.as_ref())
         )
     }
@@ -353,8 +353,8 @@ impl MultiHostPortScan {
             resp_port: fields.resp_port,
             resp_country_codes: fields.resp_country_codes.clone(),
             proto: fields.proto,
-            start_time: DateTime::from_timestamp_nanos(fields.start_time),
-            end_time: DateTime::from_timestamp_nanos(fields.end_time),
+            first_event_start_time: DateTime::from_timestamp_nanos(fields.first_event_start_time),
+            last_event_start_time: DateTime::from_timestamp_nanos(fields.last_event_start_time),
             confidence: fields.confidence,
             category: fields.category,
             triage_scores: None,
@@ -438,9 +438,9 @@ pub struct ExternalDdosFields {
     pub resp_addr: IpAddr,
     pub proto: u8,
     /// Timestamp in nanoseconds since the Unix epoch (UTC).
-    pub start_time: i64,
+    pub first_event_start_time: i64,
     /// Timestamp in nanoseconds since the Unix epoch (UTC).
-    pub end_time: i64,
+    pub last_event_start_time: i64,
     pub confidence: f32,
     pub category: Option<EventCategory>,
 }
@@ -455,8 +455,8 @@ pub(crate) struct ExternalDdosFieldsStoredV0_46 {
     pub resp_addr: IpAddr,
     pub resp_country_code: [u8; 2],
     pub proto: u8,
-    pub start_time: i64,
-    pub end_time: i64,
+    pub first_event_start_time: i64,
+    pub last_event_start_time: i64,
     pub confidence: f32,
     pub category: Option<EventCategory>,
 }
@@ -471,8 +471,8 @@ impl From<ExternalDdosFields> for ExternalDdosFieldsStored {
             resp_addr: value.resp_addr,
             resp_country_code: crate::util::COUNTRY_CODE_PENDING,
             proto: value.proto,
-            start_time: value.start_time,
-            end_time: value.end_time,
+            first_event_start_time: value.first_event_start_time,
+            last_event_start_time: value.last_event_start_time,
             confidence: value.confidence,
             category: value.category,
         }
@@ -482,10 +482,10 @@ impl From<ExternalDdosFields> for ExternalDdosFieldsStored {
 impl ExternalDdosFields {
     #[must_use]
     pub fn syslog_rfc5424(&self) -> String {
-        let start_time_dt = DateTime::from_timestamp_nanos(self.start_time);
-        let end_time_dt = DateTime::from_timestamp_nanos(self.end_time);
+        let first_event_start_time_dt = DateTime::from_timestamp_nanos(self.first_event_start_time);
+        let last_event_start_time_dt = DateTime::from_timestamp_nanos(self.last_event_start_time);
         format!(
-            "category={:?} sensor={:?} orig_addrs={:?} resp_addr={:?} proto={:?} start_time={:?} end_time={:?} confidence={:?}",
+            "category={:?} sensor={:?} orig_addrs={:?} resp_addr={:?} proto={:?} first_event_start_time={:?} last_event_start_time={:?} confidence={:?}",
             self.category.as_ref().map_or_else(
                 || "Unspecified".to_string(),
                 std::string::ToString::to_string
@@ -494,8 +494,8 @@ impl ExternalDdosFields {
             vector_to_string(&self.orig_addrs),
             self.resp_addr.to_string(),
             self.proto.to_string(),
-            start_time_dt.to_rfc3339(),
-            end_time_dt.to_rfc3339(),
+            first_event_start_time_dt.to_rfc3339(),
+            last_event_start_time_dt.to_rfc3339(),
             self.confidence.to_string()
         )
     }
@@ -511,8 +511,8 @@ pub struct ExternalDdos {
     pub resp_addr: IpAddr,
     pub resp_country_code: [u8; 2],
     pub proto: u8,
-    pub start_time: DateTime<Utc>,
-    pub end_time: DateTime<Utc>,
+    pub first_event_start_time: DateTime<Utc>,
+    pub last_event_start_time: DateTime<Utc>,
     pub confidence: f32,
     pub category: Option<EventCategory>,
     pub triage_scores: Option<Vec<TriageScore>>,
@@ -522,14 +522,14 @@ impl fmt::Display for ExternalDdos {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(
             f,
-            "orig_addrs={:?} orig_country_codes={:?} resp_addr={:?} resp_country_code={:?} proto={:?} start_time={:?} end_time={:?} triage_scores={:?}",
+            "orig_addrs={:?} orig_country_codes={:?} resp_addr={:?} resp_country_code={:?} proto={:?} first_event_start_time={:?} last_event_start_time={:?} triage_scores={:?}",
             vector_to_string(&self.orig_addrs),
             crate::util::country_codes_to_string(&self.orig_country_codes),
             self.resp_addr.to_string(),
             crate::util::country_code_as_str(&self.resp_country_code),
             self.proto.to_string(),
-            self.start_time.to_rfc3339(),
-            self.end_time.to_rfc3339(),
+            self.first_event_start_time.to_rfc3339(),
+            self.last_event_start_time.to_rfc3339(),
             triage_scores_to_string(self.triage_scores.as_ref())
         )
     }
@@ -545,8 +545,8 @@ impl ExternalDdos {
             resp_addr: fields.resp_addr,
             resp_country_code: fields.resp_country_code,
             proto: fields.proto,
-            start_time: DateTime::from_timestamp_nanos(fields.start_time),
-            end_time: DateTime::from_timestamp_nanos(fields.end_time),
+            first_event_start_time: DateTime::from_timestamp_nanos(fields.first_event_start_time),
+            last_event_start_time: DateTime::from_timestamp_nanos(fields.last_event_start_time),
             confidence: fields.confidence,
             category: fields.category,
             triage_scores: None,
@@ -867,5 +867,107 @@ impl Match for BlocklistConn {
 
     fn find_attr_by_kind(&self, raw_event_attr: RawEventAttrKind) -> Option<AttrValue<'_>> {
         find_conn_attr_by_kind!(self, raw_event_attr)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[derive(Serialize)]
+    struct PortScanFieldsLegacy {
+        sensor: String,
+        orig_addr: IpAddr,
+        resp_addr: IpAddr,
+        resp_ports: Vec<u16>,
+        start_time: i64,
+        end_time: i64,
+        proto: u8,
+        confidence: f32,
+        category: Option<EventCategory>,
+    }
+
+    #[derive(Serialize)]
+    struct MultiHostPortScanFieldsLegacy {
+        sensor: String,
+        orig_addr: IpAddr,
+        resp_port: u16,
+        resp_addrs: Vec<IpAddr>,
+        proto: u8,
+        start_time: i64,
+        end_time: i64,
+        confidence: f32,
+        category: Option<EventCategory>,
+    }
+
+    #[derive(Serialize)]
+    struct ExternalDdosFieldsLegacy {
+        sensor: String,
+        orig_addrs: Vec<IpAddr>,
+        resp_addr: IpAddr,
+        proto: u8,
+        start_time: i64,
+        end_time: i64,
+        confidence: f32,
+        category: Option<EventCategory>,
+    }
+
+    #[test]
+    fn port_scan_bincode_compatibility() {
+        let old = PortScanFieldsLegacy {
+            sensor: "sensor".to_string(),
+            orig_addr: IpAddr::from([127, 0, 0, 1]),
+            resp_addr: IpAddr::from([127, 0, 0, 2]),
+            resp_ports: vec![80, 443],
+            start_time: 11,
+            end_time: 22,
+            proto: 6,
+            confidence: 0.3,
+            category: Some(EventCategory::Reconnaissance),
+        };
+        let bytes = bincode::serialize(&old).expect("legacy fields should serialize");
+        let parsed: PortScanFields =
+            bincode::deserialize(&bytes).expect("new fields should deserialize");
+        assert_eq!(parsed.first_event_start_time, 11);
+        assert_eq!(parsed.last_event_start_time, 22);
+    }
+
+    #[test]
+    fn multi_host_port_scan_bincode_compatibility() {
+        let old = MultiHostPortScanFieldsLegacy {
+            sensor: "sensor".to_string(),
+            orig_addr: IpAddr::from([127, 0, 0, 1]),
+            resp_port: 80,
+            resp_addrs: vec![IpAddr::from([127, 0, 0, 2])],
+            proto: 6,
+            start_time: 33,
+            end_time: 44,
+            confidence: 0.3,
+            category: Some(EventCategory::Reconnaissance),
+        };
+        let bytes = bincode::serialize(&old).expect("legacy fields should serialize");
+        let parsed: MultiHostPortScanFields =
+            bincode::deserialize(&bytes).expect("new fields should deserialize");
+        assert_eq!(parsed.first_event_start_time, 33);
+        assert_eq!(parsed.last_event_start_time, 44);
+    }
+
+    #[test]
+    fn external_ddos_bincode_compatibility() {
+        let old = ExternalDdosFieldsLegacy {
+            sensor: "sensor".to_string(),
+            orig_addrs: vec![IpAddr::from([127, 0, 0, 2])],
+            resp_addr: IpAddr::from([127, 0, 0, 1]),
+            proto: 6,
+            start_time: 55,
+            end_time: 66,
+            confidence: 0.3,
+            category: Some(EventCategory::Impact),
+        };
+        let bytes = bincode::serialize(&old).expect("legacy fields should serialize");
+        let parsed: ExternalDdosFields =
+            bincode::deserialize(&bytes).expect("new fields should deserialize");
+        assert_eq!(parsed.first_event_start_time, 55);
+        assert_eq!(parsed.last_event_start_time, 66);
     }
 }

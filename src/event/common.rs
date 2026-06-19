@@ -2281,12 +2281,12 @@ mod tests {
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
             resp_ports: vec![80, 443, 8000, 8080, 8888, 8443, 9000, 9001, 9002],
             resp_country_code: crate::util::COUNTRY_CODE_PENDING,
-            start_time: Utc
+            first_event_start_time: Utc
                 .with_ymd_and_hms(1970, 1, 1, 0, 1, 1)
                 .unwrap()
                 .timestamp_nanos_opt()
                 .unwrap(),
-            end_time: Utc
+            last_event_start_time: Utc
                 .with_ymd_and_hms(1970, 1, 1, 0, 1, 2)
                 .unwrap()
                 .timestamp_nanos_opt()
@@ -2308,12 +2308,12 @@ mod tests {
             ],
             resp_port: 80,
             resp_country_codes: vec![crate::util::COUNTRY_CODE_PENDING; 2],
-            start_time: Utc
+            first_event_start_time: Utc
                 .with_ymd_and_hms(1970, 1, 1, 0, 1, 1)
                 .unwrap()
                 .timestamp_nanos_opt()
                 .unwrap(),
-            end_time: Utc
+            last_event_start_time: Utc
                 .with_ymd_and_hms(1970, 1, 1, 0, 1, 2)
                 .unwrap()
                 .timestamp_nanos_opt()
@@ -2334,12 +2334,12 @@ mod tests {
             orig_country_codes: vec![crate::util::COUNTRY_CODE_PENDING; 2],
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
             resp_country_code: crate::util::COUNTRY_CODE_PENDING,
-            start_time: Utc
+            first_event_start_time: Utc
                 .with_ymd_and_hms(1970, 1, 1, 0, 1, 1)
                 .unwrap()
                 .timestamp_nanos_opt()
                 .unwrap(),
-            end_time: Utc
+            last_event_start_time: Utc
                 .with_ymd_and_hms(1970, 1, 1, 0, 1, 2)
                 .unwrap()
                 .timestamp_nanos_opt()
@@ -2398,12 +2398,12 @@ mod tests {
             resp_country_code: crate::util::COUNTRY_CODE_PENDING,
             proto: 6,
             user_list: vec!["user1".to_string(), "user_2".to_string()],
-            start_time: Utc
+            first_event_start_time: Utc
                 .with_ymd_and_hms(1970, 1, 1, 0, 1, 1)
                 .unwrap()
                 .timestamp_nanos_opt()
                 .unwrap(),
-            end_time: Utc
+            last_event_start_time: Utc
                 .with_ymd_and_hms(1970, 1, 1, 0, 1, 2)
                 .unwrap()
                 .timestamp_nanos_opt()
@@ -2425,8 +2425,8 @@ mod tests {
             resp_port: 443,
             resp_country_code: crate::util::COUNTRY_CODE_PENDING,
             proto: 6,
-            start_time: now,
-            end_time: now,
+            first_event_start_time: now,
+            last_event_start_time: now,
             confidence: 0.3,
             category: Some(EventCategory::Exfiltration),
         }
@@ -2535,12 +2535,12 @@ mod tests {
                 ("user1".to_string(), "pw1".to_string()),
                 ("user_2".to_string(), "pw2".to_string()),
             ],
-            start_time: Utc
+            first_event_start_time: Utc
                 .with_ymd_and_hms(1970, 1, 1, 0, 1, 1)
                 .unwrap()
                 .timestamp_nanos_opt()
                 .unwrap(),
-            end_time: Utc
+            last_event_start_time: Utc
                 .with_ymd_and_hms(1970, 1, 1, 0, 1, 2)
                 .unwrap()
                 .timestamp_nanos_opt()
@@ -2560,12 +2560,12 @@ mod tests {
                 IpAddr::V4(Ipv4Addr::new(127, 0, 0, 3)),
             ],
             resp_country_codes: vec![crate::util::COUNTRY_CODE_PENDING; 2],
-            start_time: Utc
+            first_event_start_time: Utc
                 .with_ymd_and_hms(1970, 1, 1, 0, 1, 1)
                 .unwrap()
                 .timestamp_nanos_opt()
                 .unwrap(),
-            end_time: Utc
+            last_event_start_time: Utc
                 .with_ymd_and_hms(1970, 1, 1, 0, 10, 2)
                 .unwrap()
                 .timestamp_nanos_opt()
@@ -2812,12 +2812,12 @@ mod tests {
     fn unusual_destination_pattern_fields() -> UnusualDestinationPatternFieldsStored {
         UnusualDestinationPatternFieldsStored {
             sensor: "sensor".to_string(),
-            start_time: Utc
+            sampling_window_start_time: Utc
                 .with_ymd_and_hms(1970, 1, 1, 0, 0, 0)
                 .unwrap()
                 .timestamp_nanos_opt()
                 .unwrap(),
-            end_time: Utc
+            sampling_window_end_time: Utc
                 .with_ymd_and_hms(1970, 1, 1, 0, 0, 0)
                 .unwrap()
                 .timestamp_nanos_opt()

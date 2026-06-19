@@ -3701,8 +3701,8 @@ mod tests {
             resp_port: 443,
             resp_addrs,
             proto: 6,
-            start_time: 1,
-            end_time: 2,
+            first_event_start_time: 1,
+            last_event_start_time: 2,
             confidence: 0.9,
             category: Some(EventCategory::Reconnaissance),
         };
@@ -4487,12 +4487,12 @@ mod tests {
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
             resp_ports: vec![80, 443, 8000, 8080, 8888, 8443, 9000, 9001, 9002],
-            start_time: Utc
+            first_event_start_time: Utc
                 .with_ymd_and_hms(1970, 1, 1, 0, 1, 1)
                 .unwrap()
                 .timestamp_nanos_opt()
                 .unwrap(),
-            end_time: Utc
+            last_event_start_time: Utc
                 .with_ymd_and_hms(1970, 1, 1, 0, 1, 2)
                 .unwrap()
                 .timestamp_nanos_opt()
@@ -4513,7 +4513,7 @@ mod tests {
         let (_, _, syslog_message) = message.unwrap();
         assert_eq!(
             &syslog_message,
-            r#"time="1970-01-01T00:01:01+00:00" event_kind="PortScan" category="Reconnaissance" sensor="" orig_addr="127.0.0.1" resp_addr="127.0.0.2" resp_ports="80,443,8000,8080,8888,8443,9000,9001,9002" start_time="1970-01-01T00:01:01+00:00" end_time="1970-01-01T00:01:02+00:00" proto="6" confidence="0.3""#
+            r#"time="1970-01-01T00:01:01+00:00" event_kind="PortScan" category="Reconnaissance" sensor="" orig_addr="127.0.0.1" resp_addr="127.0.0.2" resp_ports="80,443,8000,8080,8888,8443,9000,9001,9002" first_event_start_time="1970-01-01T00:01:01+00:00" last_event_start_time="1970-01-01T00:01:02+00:00" proto="6" confidence="0.3""#
         );
 
         let port_scan = Event::PortScan(PortScan::new(
@@ -4523,7 +4523,7 @@ mod tests {
         .to_string();
         assert_eq!(
             &port_scan,
-            r#"time="1970-01-01T00:01:01+00:00" event_kind="PortScan" category="Reconnaissance" orig_addr="127.0.0.1" orig_country_code="ZZ" resp_addr="127.0.0.2" resp_country_code="ZZ" resp_ports="80,443,8000,8080,8888,8443,9000,9001,9002" start_time="1970-01-01T00:01:01+00:00" end_time="1970-01-01T00:01:02+00:00" proto="6" triage_scores="""#
+            r#"time="1970-01-01T00:01:01+00:00" event_kind="PortScan" category="Reconnaissance" orig_addr="127.0.0.1" orig_country_code="ZZ" resp_addr="127.0.0.2" resp_country_code="ZZ" resp_ports="80,443,8000,8080,8888,8443,9000,9001,9002" first_event_start_time="1970-01-01T00:01:01+00:00" last_event_start_time="1970-01-01T00:01:02+00:00" proto="6" triage_scores="""#
         );
     }
 
@@ -4537,12 +4537,12 @@ mod tests {
                 IpAddr::V4(Ipv4Addr::new(127, 0, 0, 3)),
             ],
             resp_port: 80,
-            start_time: Utc
+            first_event_start_time: Utc
                 .with_ymd_and_hms(1970, 1, 1, 0, 1, 1)
                 .unwrap()
                 .timestamp_nanos_opt()
                 .unwrap(),
-            end_time: Utc
+            last_event_start_time: Utc
                 .with_ymd_and_hms(1970, 1, 1, 0, 1, 2)
                 .unwrap()
                 .timestamp_nanos_opt()
@@ -4563,7 +4563,7 @@ mod tests {
         let (_, _, syslog_message) = message.unwrap();
         assert_eq!(
             &syslog_message,
-            r#"time="1970-01-01T00:01:01+00:00" event_kind="MultiHostPortScan" category="Reconnaissance" sensor="" orig_addr="127.0.0.1" resp_addrs="127.0.0.2,127.0.0.3" resp_port="80" proto="6" start_time="1970-01-01T00:01:01+00:00" end_time="1970-01-01T00:01:02+00:00" confidence="0.3""#
+            r#"time="1970-01-01T00:01:01+00:00" event_kind="MultiHostPortScan" category="Reconnaissance" sensor="" orig_addr="127.0.0.1" resp_addrs="127.0.0.2,127.0.0.3" resp_port="80" proto="6" first_event_start_time="1970-01-01T00:01:01+00:00" last_event_start_time="1970-01-01T00:01:02+00:00" confidence="0.3""#
         );
 
         let multi_host_port_scan = Event::MultiHostPortScan(MultiHostPortScan::new(
@@ -4573,7 +4573,7 @@ mod tests {
         .to_string();
         assert_eq!(
             &multi_host_port_scan,
-            r#"time="1970-01-01T00:01:01+00:00" event_kind="MultiHostPortScan" category="Reconnaissance" orig_addr="127.0.0.1" orig_country_code="ZZ" resp_addrs="127.0.0.2,127.0.0.3" resp_port="80" resp_country_codes="ZZ,ZZ" proto="6" start_time="1970-01-01T00:01:01+00:00" end_time="1970-01-01T00:01:02+00:00" triage_scores="""#
+            r#"time="1970-01-01T00:01:01+00:00" event_kind="MultiHostPortScan" category="Reconnaissance" orig_addr="127.0.0.1" orig_country_code="ZZ" resp_addrs="127.0.0.2,127.0.0.3" resp_port="80" resp_country_codes="ZZ,ZZ" proto="6" first_event_start_time="1970-01-01T00:01:01+00:00" last_event_start_time="1970-01-01T00:01:02+00:00" triage_scores="""#
         );
     }
 
@@ -4586,12 +4586,12 @@ mod tests {
                 IpAddr::V4(Ipv4Addr::new(127, 0, 0, 3)),
             ],
             resp_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
-            start_time: Utc
+            first_event_start_time: Utc
                 .with_ymd_and_hms(1970, 1, 1, 0, 1, 1)
                 .unwrap()
                 .timestamp_nanos_opt()
                 .unwrap(),
-            end_time: Utc
+            last_event_start_time: Utc
                 .with_ymd_and_hms(1970, 1, 1, 0, 1, 2)
                 .unwrap()
                 .timestamp_nanos_opt()
@@ -4611,7 +4611,7 @@ mod tests {
         let (_, _, syslog_message) = message.unwrap();
         assert_eq!(
             &syslog_message,
-            r#"time="1970-01-01T01:01:01+00:00" event_kind="ExternalDdos" category="Impact" sensor="" orig_addrs="127.0.0.2,127.0.0.3" resp_addr="127.0.0.1" proto="6" start_time="1970-01-01T00:01:01+00:00" end_time="1970-01-01T00:01:02+00:00" confidence="0.3""#
+            r#"time="1970-01-01T01:01:01+00:00" event_kind="ExternalDdos" category="Impact" sensor="" orig_addrs="127.0.0.2,127.0.0.3" resp_addr="127.0.0.1" proto="6" first_event_start_time="1970-01-01T00:01:01+00:00" last_event_start_time="1970-01-01T00:01:02+00:00" confidence="0.3""#
         );
 
         let external_ddos = Event::ExternalDdos(ExternalDdos::new(
@@ -4621,7 +4621,7 @@ mod tests {
         .to_string();
         assert_eq!(
             &external_ddos,
-            r#"time="1970-01-01T01:01:01+00:00" event_kind="ExternalDdos" category="Impact" orig_addrs="127.0.0.2,127.0.0.3" orig_country_codes="ZZ,ZZ" resp_addr="127.0.0.1" resp_country_code="ZZ" proto="6" start_time="1970-01-01T00:01:01+00:00" end_time="1970-01-01T00:01:02+00:00" triage_scores="""#
+            r#"time="1970-01-01T01:01:01+00:00" event_kind="ExternalDdos" category="Impact" orig_addrs="127.0.0.2,127.0.0.3" orig_country_codes="ZZ,ZZ" resp_addr="127.0.0.1" resp_country_code="ZZ" proto="6" first_event_start_time="1970-01-01T00:01:01+00:00" last_event_start_time="1970-01-01T00:01:02+00:00" triage_scores="""#
         );
     }
 
@@ -5245,12 +5245,12 @@ mod tests {
             resp_port: 21,
             proto: 6,
             user_list: vec!["user1".to_string(), "user_2".to_string()],
-            start_time: Utc
+            first_event_start_time: Utc
                 .with_ymd_and_hms(1970, 1, 1, 0, 1, 1)
                 .unwrap()
                 .timestamp_nanos_opt()
                 .unwrap(),
-            end_time: Utc
+            last_event_start_time: Utc
                 .with_ymd_and_hms(1970, 1, 1, 0, 1, 2)
                 .unwrap()
                 .timestamp_nanos_opt()
@@ -5271,7 +5271,7 @@ mod tests {
         let (_, _, syslog_message) = message.unwrap();
         assert_eq!(
             &syslog_message,
-            r#"time="1970-01-01T00:01:01+00:00" event_kind="FtpBruteForce" category="CredentialAccess" sensor="" orig_addr="127.0.0.1" resp_addr="127.0.0.2" resp_port="21" proto="6" user_list="user1,user_2" start_time="1970-01-01T00:01:01+00:00" end_time="1970-01-01T00:01:02+00:00" is_internal="true" confidence="0.3""#
+            r#"time="1970-01-01T00:01:01+00:00" event_kind="FtpBruteForce" category="CredentialAccess" sensor="" orig_addr="127.0.0.1" resp_addr="127.0.0.2" resp_port="21" proto="6" user_list="user1,user_2" first_event_start_time="1970-01-01T00:01:01+00:00" last_event_start_time="1970-01-01T00:01:02+00:00" is_internal="true" confidence="0.3""#
         );
 
         let ftp_brute_force = Event::FtpBruteForce(FtpBruteForce::new(
@@ -5282,7 +5282,7 @@ mod tests {
 
         assert_eq!(
             &ftp_brute_force,
-            r#"time="1970-01-01T00:01:01+00:00" event_kind="FtpBruteForce" category="CredentialAccess" orig_addr="127.0.0.1" orig_country_code="ZZ" resp_addr="127.0.0.2" resp_port="21" resp_country_code="ZZ" proto="6" user_list="user1,user_2" start_time="1970-01-01T00:01:01+00:00" end_time="1970-01-01T00:01:02+00:00" is_internal="true" triage_scores="""#
+            r#"time="1970-01-01T00:01:01+00:00" event_kind="FtpBruteForce" category="CredentialAccess" orig_addr="127.0.0.1" orig_country_code="ZZ" resp_addr="127.0.0.2" resp_port="21" resp_country_code="ZZ" proto="6" user_list="user1,user_2" first_event_start_time="1970-01-01T00:01:01+00:00" last_event_start_time="1970-01-01T00:01:02+00:00" is_internal="true" triage_scores="""#
         );
     }
 
@@ -5504,8 +5504,8 @@ mod tests {
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
             resp_port: 443,
             proto: 6,
-            start_time: now,
-            end_time: now,
+            first_event_start_time: now,
+            last_event_start_time: now,
             confidence: 0.3,
             category: Some(EventCategory::Exfiltration),
         };
@@ -5521,7 +5521,7 @@ mod tests {
         let (_, _, syslog_message) = message.unwrap();
         assert_eq!(
             &syslog_message,
-            r#"time="1970-01-01T01:01:01+00:00" event_kind="RepeatedHttpSessions" category="Exfiltration" sensor="collector1" orig_addr="127.0.0.1" orig_port="10000" resp_addr="127.0.0.2" resp_port="443" proto="6" start_time="1970-01-01T01:01:01+00:00" end_time="1970-01-01T01:01:01+00:00" confidence="0.3""#
+            r#"time="1970-01-01T01:01:01+00:00" event_kind="RepeatedHttpSessions" category="Exfiltration" sensor="collector1" orig_addr="127.0.0.1" orig_port="10000" resp_addr="127.0.0.2" resp_port="443" proto="6" first_event_start_time="1970-01-01T01:01:01+00:00" last_event_start_time="1970-01-01T01:01:01+00:00" confidence="0.3""#
         );
         let repeated_http_sessions = Event::RepeatedHttpSessions(RepeatedHttpSessions::new(
             Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap(),
@@ -5530,7 +5530,7 @@ mod tests {
         .to_string();
         assert_eq!(
             &repeated_http_sessions,
-            r#"time="1970-01-01T01:01:01+00:00" event_kind="RepeatedHttpSessions" category="Exfiltration" sensor="collector1" orig_addr="127.0.0.1" orig_port="10000" orig_country_code="ZZ" resp_addr="127.0.0.2" resp_port="443" resp_country_code="ZZ" proto="6" start_time="1970-01-01T01:01:01+00:00" end_time="1970-01-01T01:01:01+00:00" triage_scores="""#
+            r#"time="1970-01-01T01:01:01+00:00" event_kind="RepeatedHttpSessions" category="Exfiltration" sensor="collector1" orig_addr="127.0.0.1" orig_port="10000" orig_country_code="ZZ" resp_addr="127.0.0.2" resp_port="443" resp_country_code="ZZ" proto="6" first_event_start_time="1970-01-01T01:01:01+00:00" last_event_start_time="1970-01-01T01:01:01+00:00" triage_scores="""#
         );
     }
 
@@ -5604,12 +5604,12 @@ mod tests {
                 ("user1".to_string(), "pw1".to_string()),
                 ("user_2".to_string(), "pw2".to_string()),
             ],
-            start_time: Utc
+            first_event_start_time: Utc
                 .with_ymd_and_hms(1970, 1, 1, 0, 1, 1)
                 .unwrap()
                 .timestamp_nanos_opt()
                 .unwrap(),
-            end_time: Utc
+            last_event_start_time: Utc
                 .with_ymd_and_hms(1970, 1, 1, 0, 1, 2)
                 .unwrap()
                 .timestamp_nanos_opt()
@@ -5629,7 +5629,7 @@ mod tests {
         let (_, _, syslog_message) = message.unwrap();
         assert_eq!(
             &syslog_message,
-            r#"time="1970-01-01T00:01:01+00:00" event_kind="LdapBruteForce" category="CredentialAccess" sensor="" orig_addr="127.0.0.1" resp_addr="127.0.0.2" resp_port="389" proto="6" user_pw_list="user1:pw1,user_2:pw2" start_time="1970-01-01T00:01:01+00:00" end_time="1970-01-01T00:01:02+00:00" confidence="0.3""#
+            r#"time="1970-01-01T00:01:01+00:00" event_kind="LdapBruteForce" category="CredentialAccess" sensor="" orig_addr="127.0.0.1" resp_addr="127.0.0.2" resp_port="389" proto="6" user_pw_list="user1:pw1,user_2:pw2" first_event_start_time="1970-01-01T00:01:01+00:00" last_event_start_time="1970-01-01T00:01:02+00:00" confidence="0.3""#
         );
 
         let ldap_brute_force = Event::LdapBruteForce(LdapBruteForce::new(
@@ -5640,7 +5640,7 @@ mod tests {
 
         assert_eq!(
             &ldap_brute_force,
-            r#"time="1970-01-01T00:01:01+00:00" event_kind="LdapBruteForce" category="CredentialAccess" orig_addr="127.0.0.1" orig_country_code="ZZ" resp_addr="127.0.0.2" resp_port="389" resp_country_code="ZZ" proto="6" user_pw_list="user1:pw1,user_2:pw2" start_time="1970-01-01T00:01:01+00:00" end_time="1970-01-01T00:01:02+00:00" triage_scores="""#
+            r#"time="1970-01-01T00:01:01+00:00" event_kind="LdapBruteForce" category="CredentialAccess" orig_addr="127.0.0.1" orig_country_code="ZZ" resp_addr="127.0.0.2" resp_port="389" resp_country_code="ZZ" proto="6" user_pw_list="user1:pw1,user_2:pw2" first_event_start_time="1970-01-01T00:01:01+00:00" last_event_start_time="1970-01-01T00:01:02+00:00" triage_scores="""#
         );
     }
 
@@ -6334,12 +6334,12 @@ mod tests {
                 IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
                 IpAddr::V4(Ipv4Addr::new(127, 0, 0, 3)),
             ],
-            start_time: Utc
+            first_event_start_time: Utc
                 .with_ymd_and_hms(1970, 1, 1, 0, 1, 1)
                 .unwrap()
                 .timestamp_nanos_opt()
                 .unwrap(),
-            end_time: Utc
+            last_event_start_time: Utc
                 .with_ymd_and_hms(1970, 1, 1, 0, 10, 2)
                 .unwrap()
                 .timestamp_nanos_opt()
@@ -6360,7 +6360,7 @@ mod tests {
         let (_, _, syslog_message) = message.unwrap();
         assert_eq!(
             &syslog_message,
-            r#"time="1970-01-01T00:01:01+00:00" event_kind="RdpBruteForce" category="Discovery" sensor="" orig_addr="127.0.0.1" resp_addrs="127.0.0.2,127.0.0.3" start_time="1970-01-01T00:01:01+00:00" end_time="1970-01-01T00:10:02+00:00" proto="6" confidence="0.3""#
+            r#"time="1970-01-01T00:01:01+00:00" event_kind="RdpBruteForce" category="Discovery" sensor="" orig_addr="127.0.0.1" resp_addrs="127.0.0.2,127.0.0.3" first_event_start_time="1970-01-01T00:01:01+00:00" last_event_start_time="1970-01-01T00:10:02+00:00" proto="6" confidence="0.3""#
         );
 
         let rdp_brute_force = Event::RdpBruteForce(RdpBruteForce::new(
@@ -6371,7 +6371,7 @@ mod tests {
 
         assert_eq!(
             &rdp_brute_force,
-            r#"time="1970-01-01T00:01:01+00:00" event_kind="RdpBruteForce" category="Discovery" orig_addr="127.0.0.1" orig_country_code="ZZ" resp_addrs="127.0.0.2,127.0.0.3" resp_country_codes="ZZ,ZZ" start_time="1970-01-01T00:01:01+00:00" end_time="1970-01-01T00:10:02+00:00" proto="6" triage_scores="""#
+            r#"time="1970-01-01T00:01:01+00:00" event_kind="RdpBruteForce" category="Discovery" orig_addr="127.0.0.1" orig_country_code="ZZ" resp_addrs="127.0.0.2,127.0.0.3" resp_country_codes="ZZ,ZZ" first_event_start_time="1970-01-01T00:01:01+00:00" last_event_start_time="1970-01-01T00:10:02+00:00" proto="6" triage_scores="""#
         );
     }
 
