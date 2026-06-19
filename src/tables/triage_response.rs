@@ -229,9 +229,12 @@ mod test {
     use std::mem::size_of;
     use std::sync::Arc;
 
+    use anyhow::Result;
     use chrono::{DateTime, NaiveDate, Utc};
 
+    use crate::Indexable;
     use crate::test::{DbGuard, acquire_db_permit};
+    use crate::types::FromKeyValue;
     use crate::{Iterable, Store, TriageResponse, TriageResponseUpdate, UniqueKey};
 
     const SENSOR: &str = "sensor-a";
@@ -305,6 +308,84 @@ mod test {
         let response = TriageResponse::new(SENSOR.to_string(), time, Vec::new(), String::new());
         let actual = timestamp_bytes_from_key(response.unique_key(), SENSOR);
         assert_eq!(actual, TIMESTAMP_OUT_OF_RANGE_SUFFIX);
+    }
+
+    /// Locks the on-disk bincode byte contract for the persisted `TriageResponse`
+    /// record.
+    ///
+    /// Expected bytes come from the committed literal fixture (not from the
+    /// production serializer inside this test). Timestamp fields are pinned to
+    /// fixed UTC values with full nanosecond precision:
+    ///
+    /// - `time`: `2000-02-29T12:34:56.123456789Z`
+    /// - `creation_time`: `2000-01-15T08:00:00.111111111Z`
+    /// - `last_modified_time`: `2000-03-01T23:59:59.987654321Z`
+    ///
+    /// The fixture was captured once from the production `Indexable::value` path
+    /// (`bincode::DefaultOptions`). Regenerate with
+    /// `dump_triage_response_literal_fixture_bytes` if the stored layout changes.
+    ///
+    /// Intentionally out of scope: value bytes for empty `tag_ids`; value bytes
+    /// when `tag_ids` are provided unsorted (production sorts on insert); the
+    /// `u32::MAX` id placeholder used by `TriageResponse::new`; empty `sensor`
+    /// or `remarks`; and RocksDB key bytes (sensor UTF-8 followed by
+    /// big-endian nanosecond timestamp), which are covered by the
+    /// `unique_key_timestamp_*` tests above.
+    #[test]
+    fn triage_response_literal_bytes_contract() -> Result<()> {
+        const FIXTURE_BYTES: &[u8] =
+            include_bytes!("../../tests/fixtures/triage_response_literal.bin");
+
+        let decoded = TriageResponse::from_key_value(b"fixture-key", FIXTURE_BYTES)?;
+        let expected = deterministic_triage_response();
+        assert_eq!(decoded.id, expected.id);
+        assert_eq!(decoded.key, expected.key);
+        assert_eq!(decoded.sensor, expected.sensor);
+        assert_eq!(decoded.time, expected.time);
+        assert_eq!(decoded.tag_ids, expected.tag_ids);
+        assert_eq!(decoded.remarks, expected.remarks);
+        assert_eq!(decoded.creation_time, expected.creation_time);
+        assert_eq!(decoded.last_modified_time, expected.last_modified_time);
+
+        let serialized = Indexable::value(&expected);
+        assert_eq!(serialized.as_slice(), FIXTURE_BYTES);
+
+        Ok(())
+    }
+
+    #[test]
+    #[ignore = "run manually to regenerate tests/fixtures/triage_response_literal.bin"]
+    fn dump_triage_response_literal_fixture_bytes() {
+        let bytes = deterministic_triage_response().value();
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/triage_response_literal.bin");
+        std::fs::write(path, &bytes).expect("write fixture");
+    }
+
+    /// Builds a deterministic `TriageResponse` for the literal-byte contract test.
+    fn deterministic_triage_response() -> TriageResponse {
+        let time = DateTime::parse_from_rfc3339("2000-02-29T12:34:56.123456789Z")
+            .expect("valid RFC 3339 timestamp")
+            .with_timezone(&Utc);
+        let creation_time = DateTime::parse_from_rfc3339("2000-01-15T08:00:00.111111111Z")
+            .expect("valid RFC 3339 timestamp")
+            .with_timezone(&Utc);
+        let last_modified_time = DateTime::parse_from_rfc3339("2000-03-01T23:59:59.987654321Z")
+            .expect("valid RFC 3339 timestamp")
+            .with_timezone(&Utc);
+        let sensor = "fixture-sensor".to_string();
+        let key = TriageResponse::create_key(&sensor, &time);
+
+        TriageResponse {
+            id: 7,
+            key,
+            sensor,
+            time,
+            tag_ids: vec![2, 5, 11],
+            remarks: "fixture remarks".to_string(),
+            creation_time,
+            last_modified_time,
+        }
     }
 
     fn setup_store() -> (DbGuard<'static>, Arc<Store>) {
