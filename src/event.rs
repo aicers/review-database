@@ -3507,6 +3507,9 @@ fn eq_ip_country(locator: &ip2location::DB, addr: IpAddr, country: [u8; 2]) -> b
 }
 
 #[cfg(test)]
+mod stored_timestamp_contract;
+
+#[cfg(test)]
 mod tests {
     use std::{
         collections::{HashMap, HashSet},
