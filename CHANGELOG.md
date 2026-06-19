@@ -14,6 +14,13 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **BREAKING**: `EventMessage.time` is now a `jiff::Timestamp`. Event stored
+  schemas that persist timestamps (`ExtraThreatFieldsStored`,
+  `HttpThreatFieldsStored`, `NetworkThreatFieldsStored`, and
+  `WindowsThreatFieldsStored`) also use `jiff::Timestamp` in memory. On-disk
+  event keys and stored timestamp fields remain signed 64-bit epoch
+  nanoseconds; a custom serde adapter maps Jiff values to those bytes and
+  rejects timestamps outside the `i64` nanosecond range.
 - **BREAKING**: Bumped the database format to `0.46.0-alpha.1`, changed
   `Store::new` to take an `Option<Arc<ip2location::DB>>` argument, and changed
   `migrate_data_dir` to accept the same optional shared database handle. Event

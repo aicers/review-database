@@ -1289,6 +1289,8 @@ fn read_version_file(path: &Path) -> Result<Version> {
 mod tests {
     use std::{collections::HashMap, io::Write, net::IpAddr, path::Path};
 
+    use chrono::{DateTime, Utc};
+    use jiff::Timestamp;
     use semver::{Version, VersionReq};
 
     use super::{
@@ -1306,6 +1308,11 @@ mod tests {
     use crate::tables::NETWORK_TAGS;
     use crate::test::{DbGuard, acquire_db_permit};
     use crate::{Indexable, Store};
+
+    fn msg_time(time: DateTime<Utc>) -> Timestamp {
+        crate::event::timestamp::from_chrono(time)
+            .expect("test event message time must fit i64 nanoseconds")
+    }
 
     #[derive(Default)]
     struct FakeCountryLookup {
@@ -1427,7 +1434,7 @@ mod tests {
         let events = store.events();
         let legacy = legacy_blocklist_conn();
         let message = EventMessage {
-            time: chrono::Utc::now(),
+            time: msg_time(chrono::Utc::now()),
             kind: EventKind::BlocklistConn,
             fields: bincode::serialize(&BlocklistConnFields {
                 sensor: legacy.sensor.clone(),
@@ -1485,7 +1492,7 @@ mod tests {
         let events = store.events();
         let legacy = legacy_blocklist_conn();
         let message = EventMessage {
-            time: chrono::Utc::now(),
+            time: msg_time(chrono::Utc::now()),
             kind: EventKind::BlocklistConn,
             fields: bincode::serialize(&BlocklistConnFields {
                 sensor: legacy.sensor.clone(),

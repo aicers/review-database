@@ -645,10 +645,12 @@ mod tests {
         ConnAttr, DhcpAttr, DnsAttr, FtpAttr, HttpAttr, RadiusAttr, RawEventKind,
     };
     use bincode::Options;
-    use chrono::{TimeZone, Utc};
+    use chrono::{DateTime, TimeZone, Utc};
+    use jiff::Timestamp;
     use serde::Serialize;
 
     use super::{AttrValue, Match, is_attr_matched};
+    use crate::event::timestamp;
     use crate::{
         AttrCmpKind, Customer, CustomerNetwork, EventCategory, HostNetworkGroup, PacketAttr,
         ValueKind,
@@ -893,7 +895,7 @@ mod tests {
         let mut unsupervised_events = Vec::new();
 
         let http_threat_event = Event::HttpThreat(HttpThreat::new(
-            Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap(),
+            stored_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap()),
             http_threat_fields(),
         ));
         unsupervised_events.push(http_threat_event);
@@ -1092,7 +1094,8 @@ mod tests {
         )));
         single_address_events.push(blocklist_tls_event);
 
-        let http_threat_event = Event::HttpThreat(HttpThreat::new(time, http_threat_fields()));
+        let http_threat_event =
+            Event::HttpThreat(HttpThreat::new(stored_time(time), http_threat_fields()));
         single_address_events.push(http_threat_event);
 
         let network_threat_event = Event::NetworkThreat(network_threat());
@@ -2721,9 +2724,13 @@ mod tests {
         }
     }
 
+    fn stored_time(time: DateTime<Utc>) -> Timestamp {
+        timestamp::from_chrono(time).expect("test stored timestamp must fit i64 nanoseconds")
+    }
+
     fn http_threat_fields() -> HttpThreatFieldsStored {
         HttpThreatFieldsStored {
-            time: Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap(),
+            time: stored_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap()),
             sensor: "sensor".to_string(),
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             orig_port: 10000,
@@ -2896,12 +2903,12 @@ mod tests {
 
         // Event with category = Some(Reconnaissance)
         let fields_with_cat = http_threat_fields(); // category: Some(Reconnaissance)
-        let event_with_cat = HttpThreat::new(time, fields_with_cat);
+        let event_with_cat = HttpThreat::new(stored_time(time), fields_with_cat);
 
         // Event with category = None
         let mut fields_no_cat = http_threat_fields();
         fields_no_cat.category = None;
-        let event_no_cat = HttpThreat::new(time, fields_no_cat);
+        let event_no_cat = HttpThreat::new(stored_time(time), fields_no_cat);
 
         // Confidence targeting None category, matching kind "http threat"
         let conf_none = vec![make_confidence(None, "http threat", 0.0, Some(5.0))];

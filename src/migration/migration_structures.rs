@@ -1757,7 +1757,8 @@ impl From<FtpBruteForceFieldsStoredV0_42> for crate::event::FtpBruteForceFieldsS
 impl From<HttpThreatFieldsStoredV0_44> for crate::event::HttpThreatFieldsStoredV0_46 {
     fn from(old: HttpThreatFieldsStoredV0_44) -> Self {
         Self {
-            time: old.time,
+            time: crate::event::timestamp::from_chrono(old.time)
+                .expect("migrated timestamp must fit i64 nanosecond contract"),
             sensor: old.sensor,
             orig_addr: old.orig_addr,
             orig_port: old.orig_port,
@@ -1844,7 +1845,8 @@ impl From<MultiHostPortScanFieldsStoredV0_42> for crate::event::MultiHostPortSca
 impl From<NetworkThreatFieldsStoredV0_45> for crate::event::NetworkThreatFieldsStoredV0_46 {
     fn from(old: NetworkThreatFieldsStoredV0_45) -> Self {
         Self {
-            time: old.time,
+            time: crate::event::timestamp::from_chrono(old.time)
+                .expect("migrated timestamp must fit i64 nanosecond contract"),
             sensor: old.sensor,
             orig_addr: old.orig_addr,
             orig_port: old.orig_port,
@@ -1854,7 +1856,8 @@ impl From<NetworkThreatFieldsStoredV0_45> for crate::event::NetworkThreatFieldsS
             resp_country_code: crate::util::COUNTRY_CODE_PENDING,
             proto: old.proto,
             service: old.service,
-            start_time: old.start_time,
+            start_time: crate::event::timestamp::from_chrono(old.start_time)
+                .expect("migrated timestamp must fit i64 nanosecond contract"),
             duration: old.duration,
             orig_pkts: old.orig_pkts,
             resp_pkts: old.resp_pkts,

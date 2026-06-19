@@ -3,8 +3,10 @@ use std::{fmt, net::IpAddr};
 use aho_corasick::AhoCorasickBuilder;
 use attrievent::attribute::{HttpAttr, RawEventAttrKind};
 use chrono::{DateTime, Utc, serde::ts_nanoseconds};
+use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
+use super::timestamp::{self, ts_nanoseconds as jiff_ts_nanoseconds};
 use super::{EventCategory, EventFilter, LearningMethod, ThreatLevel, TriageScore, common::Match};
 use crate::{
     TriageExclusion,
@@ -485,8 +487,8 @@ pub(crate) type HttpThreatFieldsStored = HttpThreatFieldsStoredV0_46;
 
 #[derive(::serde::Deserialize, ::serde::Serialize)]
 pub(crate) struct HttpThreatFieldsStoredV0_46 {
-    #[serde(with = "ts_nanoseconds")]
-    pub time: DateTime<Utc>,
+    #[serde(with = "jiff_ts_nanoseconds")]
+    pub time: Timestamp,
     pub sensor: String,
     pub orig_addr: IpAddr,
     pub orig_port: u16,
@@ -533,7 +535,8 @@ pub(crate) struct HttpThreatFieldsStoredV0_46 {
 impl From<HttpThreatFields> for HttpThreatFieldsStored {
     fn from(value: HttpThreatFields) -> Self {
         Self {
-            time: value.time,
+            time: timestamp::from_chrono(value.time)
+                .expect("producer timestamp must fit i64 nanosecond contract"),
             sensor: value.sensor,
             orig_addr: value.orig_addr,
             orig_port: value.orig_port,
@@ -746,9 +749,10 @@ impl fmt::Display for HttpThreat {
 }
 
 impl HttpThreat {
-    pub(super) fn new(time: DateTime<Utc>, fields: HttpThreatFieldsStored) -> Self {
+    pub(super) fn new(time: Timestamp, fields: HttpThreatFieldsStored) -> Self {
         Self {
-            time,
+            time: timestamp::to_chrono(time)
+                .expect("stored timestamp must fit i64 nanosecond contract"),
             sensor: fields.sensor,
             start_time: DateTime::from_timestamp_nanos(fields.start_time),
             orig_addr: fields.orig_addr,

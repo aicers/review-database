@@ -3,8 +3,10 @@ use std::{fmt, net::IpAddr};
 
 use attrievent::attribute::{NetworkAttr, RawEventAttrKind};
 use chrono::{DateTime, Utc, serde::ts_nanoseconds};
+use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
+use super::timestamp::{self, ts_nanoseconds as jiff_ts_nanoseconds};
 use super::{EventCategory, LearningMethod, ThreatLevel, TriageScore, common::Match};
 use crate::event::common::{AttrValue, triage_scores_to_string};
 
@@ -66,8 +68,8 @@ pub type NetworkThreatFieldsStored = NetworkThreatFieldsStoredV0_46;
 
 #[derive(Deserialize, Serialize)]
 pub struct NetworkThreatFieldsStoredV0_46 {
-    #[serde(with = "ts_nanoseconds")]
-    pub time: DateTime<Utc>,
+    #[serde(with = "jiff_ts_nanoseconds")]
+    pub time: Timestamp,
     pub sensor: String,
     pub orig_addr: IpAddr,
     pub orig_port: u16,
@@ -77,8 +79,8 @@ pub struct NetworkThreatFieldsStoredV0_46 {
     pub resp_country_code: [u8; 2],
     pub proto: u8,
     pub service: String,
-    #[serde(with = "ts_nanoseconds")]
-    pub start_time: DateTime<Utc>,
+    #[serde(with = "jiff_ts_nanoseconds")]
+    pub start_time: Timestamp,
     pub duration: i64,
     pub orig_pkts: u64,
     pub resp_pkts: u64,
@@ -98,7 +100,8 @@ pub struct NetworkThreatFieldsStoredV0_46 {
 impl From<NetworkThreatFields> for NetworkThreatFieldsStored {
     fn from(value: NetworkThreatFields) -> Self {
         Self {
-            time: value.time,
+            time: timestamp::from_chrono(value.time)
+                .expect("producer timestamp must fit i64 nanosecond contract"),
             sensor: value.sensor,
             orig_addr: value.orig_addr,
             orig_port: value.orig_port,
@@ -108,7 +111,8 @@ impl From<NetworkThreatFields> for NetworkThreatFieldsStored {
             resp_country_code: crate::util::COUNTRY_CODE_PENDING,
             proto: value.proto,
             service: value.service,
-            start_time: value.start_time,
+            start_time: timestamp::from_chrono(value.start_time)
+                .expect("producer timestamp must fit i64 nanosecond contract"),
             duration: value.duration,
             orig_pkts: value.orig_pkts,
             resp_pkts: value.resp_pkts,
@@ -189,9 +193,10 @@ pub struct NetworkThreat {
 }
 
 impl NetworkThreat {
-    pub(super) fn new(time: DateTime<Utc>, fields: NetworkThreatFieldsStored) -> Self {
+    pub(super) fn new(time: Timestamp, fields: NetworkThreatFieldsStored) -> Self {
         Self {
-            time,
+            time: timestamp::to_chrono(time)
+                .expect("stored timestamp must fit i64 nanosecond contract"),
             sensor: fields.sensor,
             orig_addr: fields.orig_addr,
             orig_port: fields.orig_port,
@@ -201,7 +206,8 @@ impl NetworkThreat {
             resp_country_code: fields.resp_country_code,
             proto: fields.proto,
             service: fields.service,
-            start_time: fields.start_time,
+            start_time: timestamp::to_chrono(fields.start_time)
+                .expect("stored timestamp must fit i64 nanosecond contract"),
             duration: fields.duration,
             orig_pkts: fields.orig_pkts,
             resp_pkts: fields.resp_pkts,
