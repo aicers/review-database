@@ -1335,6 +1335,8 @@ fn read_version_file(path: &Path) -> Result<Version> {
 mod tests {
     use std::{collections::HashMap, io::Write, net::IpAddr, path::Path};
 
+    use chrono::{DateTime, Utc};
+    use jiff::Timestamp;
     use num_traits::ToPrimitive;
     use semver::{Version, VersionReq};
 
@@ -1353,6 +1355,11 @@ mod tests {
     use crate::tables::NETWORK_TAGS;
     use crate::test::{DbGuard, acquire_db_permit};
     use crate::{Indexable, Store};
+
+    fn msg_time(time: DateTime<Utc>) -> Timestamp {
+        crate::event::timestamp::from_chrono(time)
+            .expect("test event message time must fit i64 nanoseconds")
+    }
 
     #[derive(Default)]
     struct FakeCountryLookup {
@@ -1400,7 +1407,7 @@ mod tests {
 
     fn blocklist_conn_message(legacy: &BlocklistConnFieldsStoredV0_42) -> EventMessage {
         EventMessage {
-            time: chrono::Utc::now(),
+            time: msg_time(chrono::Utc::now()),
             kind: EventKind::BlocklistConn,
             fields: bincode::serialize(&BlocklistConnFields {
                 sensor: legacy.sensor.clone(),

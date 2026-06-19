@@ -6,8 +6,10 @@ use std::{
 
 use attrievent::attribute::{LogAttr, RawEventAttrKind};
 use chrono::{DateTime, Utc, serde::ts_nanoseconds};
+use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
+use super::timestamp::{self, ts_nanoseconds as jiff_ts_nanoseconds};
 use super::{EventCategory, LearningMethod, ThreatLevel, TriageScore, common::Match};
 use crate::event::common::{AttrValue, triage_scores_to_string};
 
@@ -30,8 +32,8 @@ pub struct ExtraThreatFields {
 
 #[derive(Deserialize, Serialize)]
 pub struct ExtraThreatFieldsStored {
-    #[serde(with = "ts_nanoseconds")]
-    pub time: DateTime<Utc>,
+    #[serde(with = "jiff_ts_nanoseconds")]
+    pub time: Timestamp,
     pub sensor: String,
     pub service: String,
     pub content: String,
@@ -48,7 +50,8 @@ pub struct ExtraThreatFieldsStored {
 impl From<ExtraThreatFields> for ExtraThreatFieldsStored {
     fn from(value: ExtraThreatFields) -> Self {
         Self {
-            time: value.time,
+            time: timestamp::from_chrono(value.time)
+                .expect("producer timestamp must fit i64 nanosecond contract"),
             sensor: value.sensor,
             service: value.service,
             content: value.content,
@@ -102,9 +105,10 @@ pub struct ExtraThreat {
 }
 
 impl ExtraThreat {
-    pub(super) fn new(time: DateTime<Utc>, fields: ExtraThreatFieldsStored) -> Self {
+    pub(super) fn new(time: Timestamp, fields: ExtraThreatFieldsStored) -> Self {
         Self {
-            time,
+            time: timestamp::to_chrono(time)
+                .expect("stored timestamp must fit i64 nanosecond contract"),
             sensor: fields.sensor,
             service: fields.service,
             content: fields.content,

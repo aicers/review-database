@@ -21,6 +21,7 @@ mod smb;
 mod smtp;
 mod ssh;
 mod sysmon;
+pub(crate) mod timestamp;
 mod tls;
 mod tor;
 mod unusual_destination_pattern;
@@ -37,7 +38,8 @@ use std::{
 
 use aho_corasick::AhoCorasickBuilder;
 use anyhow::{Context, Result, bail};
-use chrono::{DateTime, TimeZone, Utc, serde::ts_nanoseconds};
+use chrono::{DateTime, TimeZone, Utc};
+use jiff::Timestamp;
 use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive, ToPrimitive};
 use rand::{RngCore, rng};
@@ -2595,8 +2597,8 @@ fn moderate_kinds_by(kinds: &mut Vec<String>, patterns: &[&str], full_name: &str
 #[derive(Serialize, Deserialize, Debug)]
 #[allow(clippy::module_name_repetitions)]
 pub struct EventMessage {
-    #[serde(with = "ts_nanoseconds")]
-    pub time: DateTime<Utc>,
+    #[serde(with = "timestamp::ts_nanoseconds")]
+    pub time: Timestamp,
     pub kind: EventKind,
     #[serde(with = "serde_bytes")]
     pub fields: Vec<u8>,
@@ -2718,13 +2720,13 @@ impl EventMessage {
                 format!("{:?}", self.kind),
                 format!(
                     "time={:?} event_kind=\"{:?}\" {msg}",
-                    self.time.to_rfc3339(),
+                    timestamp::format_rfc3339(self.time)?,
                     self.kind
                 ),
             )),
             Err(e) => Err(anyhow::anyhow!(
                 "failed to deserialize event fields: {e}. time={:?}, event_kind={:?}",
-                self.time.to_rfc3339(),
+                timestamp::format_rfc3339(self.time)?,
                 self.kind
             )),
         }
@@ -3150,7 +3152,7 @@ impl<'a> EventDb<'a> {
         use anyhow::anyhow;
         let stored_fields =
             convert_for_storage(event.kind, &event.fields, self.country_lookup.as_deref())?;
-        let mut key = (i128::from(event.time.timestamp_nanos_opt().unwrap_or(i64::MAX)) << 64)
+        let mut key = (i128::from(timestamp::event_key_nanos(event.time)) << 64)
             | (event
                 .kind
                 .to_i128()
@@ -3826,7 +3828,9 @@ mod tests {
     };
 
     use chrono::{DateTime, TimeZone, Utc};
+    use jiff::Timestamp;
 
+    use super::timestamp;
     use crate::test::{DbGuard, acquire_db_permit};
     use crate::{
         Store,
@@ -3858,6 +3862,10 @@ mod tests {
     struct FakeCountryLookup {
         codes: HashMap<IpAddr, [u8; 2]>,
         failures: HashSet<IpAddr>,
+    }
+
+    fn msg_time(time: DateTime<Utc>) -> Timestamp {
+        timestamp::from_chrono(time).expect("test event message time must fit i64 nanoseconds")
     }
 
     impl crate::geo::CountryLookup for FakeCountryLookup {
@@ -3929,7 +3937,7 @@ mod tests {
             category: Some(category),
         };
         EventMessage {
-            time: Utc::now(),
+            time: msg_time(Utc::now()),
             kind,
             fields: bincode::serialize(&fields).expect("serializable"),
         }
@@ -4056,7 +4064,7 @@ mod tests {
             category: Some(EventCategory::Reconnaissance),
         };
         db.put(&EventMessage {
-            time: Utc::now(),
+            time: msg_time(Utc::now()),
             kind: EventKind::MultiHostPortScan,
             fields: bincode::serialize(&fields).unwrap(),
         })
@@ -4315,7 +4323,7 @@ mod tests {
             triage_scores: None,
         };
         EventMessage {
-            time: Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap(),
+            time: msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap()),
             kind: EventKind::ExtraThreat,
             fields: bincode::serialize(&fields).expect("serializable"),
         }
@@ -4348,7 +4356,7 @@ mod tests {
             triage_scores: None,
         };
         EventMessage {
-            time: Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap(),
+            time: msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap()),
             kind: EventKind::NetworkThreat,
             fields: bincode::serialize(&fields).expect("serializable"),
         }
@@ -4376,7 +4384,7 @@ mod tests {
             triage_scores: None,
         };
         EventMessage {
-            time: Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap(),
+            time: msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap()),
             kind: EventKind::WindowsThreat,
             fields: bincode::serialize(&fields).expect("serializable"),
         }
@@ -4474,7 +4482,10 @@ mod tests {
             triage_scores: None,
         };
         let stored: super::ExtraThreatFieldsStored = extra_fields.into();
-        let runtime = ExtraThreat::new(Utc.with_ymd_and_hms(1970, 1, 1, 0, 0, 0).unwrap(), stored);
+        let runtime = ExtraThreat::new(
+            msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 0, 0).unwrap()),
+            stored,
+        );
         assert_eq!(runtime.sensor, "s");
         assert!((runtime.confidence - 0.5).abs() < f32::EPSILON);
 
@@ -4505,7 +4516,7 @@ mod tests {
         };
         let net_stored: super::NetworkThreatFieldsStored = net_fields.into();
         let net_runtime = NetworkThreat::new(
-            Utc.with_ymd_and_hms(1970, 1, 1, 0, 0, 0).unwrap(),
+            msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 0, 0).unwrap()),
             net_stored,
         );
         assert_eq!(net_runtime.service, "http");
@@ -4532,7 +4543,7 @@ mod tests {
         };
         let win_stored: super::WindowsThreatFieldsStored = win_fields.into();
         let win_runtime = WindowsThreat::new(
-            Utc.with_ymd_and_hms(1970, 1, 1, 0, 0, 0).unwrap(),
+            msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 0, 0).unwrap()),
             win_stored,
         );
         assert_eq!(win_runtime.process_id, 1);
@@ -4631,7 +4642,7 @@ mod tests {
             category: Some(EventCategory::CommandAndControl),
         };
         let message = EventMessage {
-            time: Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap(),
+            time: msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap()),
             kind: EventKind::DomainGenerationAlgorithm,
             fields: bincode::serialize(&fields).expect("serializable"),
         };
@@ -4788,7 +4799,7 @@ mod tests {
             category: Some(EventCategory::Reconnaissance),
         };
         let message = EventMessage {
-            time: Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap(),
+            time: msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap()),
             kind: EventKind::HttpThreat,
             fields: bincode::serialize(&fields).expect("serializable"),
         };
@@ -4804,7 +4815,7 @@ mod tests {
         );
 
         let http_threat = HttpThreat::new(
-            Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap(),
+            msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap()),
             fields.into(),
         );
         let event = Event::HttpThreat(http_threat);
@@ -4857,7 +4868,7 @@ mod tests {
         };
 
         let message = EventMessage {
-            time: Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap(),
+            time: msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap()),
             kind: EventKind::NonBrowser,
             fields: bincode::serialize(&fields).expect("serializable"),
         };
@@ -4923,7 +4934,7 @@ mod tests {
         };
 
         let message = EventMessage {
-            time: Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap(),
+            time: msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap()),
             kind: EventKind::BlocklistHttp,
             fields: bincode::serialize(&fields).expect("serializable"),
         };
@@ -4982,7 +4993,7 @@ mod tests {
         };
 
         let message = EventMessage {
-            time: Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap(),
+            time: msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap()),
             kind: EventKind::LockyRansomware,
             fields: bincode::serialize(&fields).expect("serializable"),
         };
@@ -5030,7 +5041,7 @@ mod tests {
         };
 
         let message = EventMessage {
-            time: Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap(),
+            time: msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap()),
             kind: EventKind::PortScan,
             fields: bincode::serialize(&fields).expect("serializable"),
         };
@@ -5080,7 +5091,7 @@ mod tests {
         };
 
         let message = EventMessage {
-            time: Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap(),
+            time: msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap()),
             kind: EventKind::MultiHostPortScan,
             fields: bincode::serialize(&fields).expect("serializable"),
         };
@@ -5129,7 +5140,7 @@ mod tests {
         };
 
         let message = EventMessage {
-            time: Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap(),
+            time: msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap()),
             kind: EventKind::ExternalDdos,
             fields: bincode::serialize(&fields).expect("serializable"),
         };
@@ -5191,7 +5202,7 @@ mod tests {
         let fields = blocklist_bootp_fields();
 
         let message = EventMessage {
-            time: Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap(),
+            time: msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap()),
             kind: EventKind::BlocklistBootp,
             fields: bincode::serialize(&fields).expect("serializable"),
         };
@@ -5223,7 +5234,7 @@ mod tests {
 
         let fields = blocklist_bootp_fields();
         let message = EventMessage {
-            time: Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap(),
+            time: msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap()),
             kind: EventKind::BlocklistBootp,
             fields: bincode::serialize(&fields).expect("serializable"),
         };
@@ -5308,7 +5319,7 @@ mod tests {
         };
 
         let message = EventMessage {
-            time: Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap(),
+            time: msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap()),
             kind: EventKind::BlocklistConn,
             fields: bincode::serialize(&fields).expect("serializable"),
         };
@@ -5372,7 +5383,7 @@ mod tests {
         };
 
         let message = EventMessage {
-            time: Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap(),
+            time: msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap()),
             kind: EventKind::BlocklistDceRpc,
             fields: bincode::serialize(&fields).expect("serializable"),
         };
@@ -5483,7 +5494,7 @@ mod tests {
         let fields = blocklist_dhcp_fields();
 
         let message = EventMessage {
-            time: Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap(),
+            time: msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap()),
             kind: EventKind::BlocklistDhcp,
             fields: bincode::serialize(&fields).expect("serializable"),
         };
@@ -5515,7 +5526,7 @@ mod tests {
 
         let fields = blocklist_dhcp_fields();
         let message = EventMessage {
-            time: Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap(),
+            time: msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap()),
             kind: EventKind::BlocklistDhcp,
             fields: bincode::serialize(&fields).expect("serializable"),
         };
@@ -5608,7 +5619,7 @@ mod tests {
         };
 
         let message = EventMessage {
-            time: Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap(),
+            time: msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap()),
             kind: EventKind::DnsCovertChannel,
             fields: bincode::serialize(&fields).expect("serializable"),
         };
@@ -5675,7 +5686,7 @@ mod tests {
         };
 
         let message = EventMessage {
-            time: Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap(),
+            time: msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap()),
             kind: EventKind::CryptocurrencyMiningPool,
             fields: bincode::serialize(&fields).expect("serializable"),
         };
@@ -5736,7 +5747,7 @@ mod tests {
         };
 
         let message = EventMessage {
-            time: Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap(),
+            time: msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap()),
             kind: EventKind::BlocklistDns,
             fields: bincode::serialize(&fields).expect("serializable"),
         };
@@ -5784,7 +5795,7 @@ mod tests {
         };
 
         let message = EventMessage {
-            time: Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap(),
+            time: msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap()),
             kind: EventKind::FtpBruteForce,
             fields: bincode::serialize(&fields).expect("serializable"),
         };
@@ -5851,7 +5862,7 @@ mod tests {
         };
 
         let message = EventMessage {
-            time: Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap(),
+            time: msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap()),
             kind: EventKind::FtpPlainText,
             fields: bincode::serialize(&fields).expect("serializable"),
         };
@@ -5921,7 +5932,7 @@ mod tests {
         let fields = ftpeventfields();
 
         let message = EventMessage {
-            time: Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap(),
+            time: msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap()),
             kind: EventKind::BlocklistFtp,
             fields: bincode::serialize(&fields).expect("serializable"),
         };
@@ -5954,7 +5965,7 @@ mod tests {
 
         let fields = ftpeventfields();
         let message = EventMessage {
-            time: Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap(),
+            time: msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap()),
             kind: EventKind::BlocklistFtp,
             fields: bincode::serialize(&fields).expect("serializable"),
         };
@@ -6032,7 +6043,7 @@ mod tests {
         };
 
         let message = EventMessage {
-            time: Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap(),
+            time: msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap()),
             kind: EventKind::RepeatedHttpSessions,
             fields: bincode::serialize(&fields).expect("serializable"),
         };
@@ -6088,7 +6099,7 @@ mod tests {
         };
 
         let message = EventMessage {
-            time: Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap(),
+            time: msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap()),
             kind: EventKind::BlocklistKerberos,
             fields: bincode::serialize(&fields).expect("serializable"),
         };
@@ -6140,7 +6151,7 @@ mod tests {
         };
 
         let message = EventMessage {
-            time: Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap(),
+            time: msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap()),
             kind: EventKind::LdapBruteForce,
             fields: bincode::serialize(&fields).expect("serializable"),
         };
@@ -6196,7 +6207,7 @@ mod tests {
         };
 
         let message = EventMessage {
-            time: Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap(),
+            time: msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap()),
             kind: EventKind::LdapPlainText,
             fields: bincode::serialize(&fields).expect("serializable"),
         };
@@ -6256,7 +6267,7 @@ mod tests {
         let fields = ldapeventfields();
 
         let message = EventMessage {
-            time: Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap(),
+            time: msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap()),
             kind: EventKind::BlocklistLdap,
             fields: bincode::serialize(&fields).expect("serializable"),
         };
@@ -6289,7 +6300,7 @@ mod tests {
 
         let fields = ldapeventfields();
         let message = EventMessage {
-            time: Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap(),
+            time: msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap()),
             kind: EventKind::BlocklistLdap,
             fields: bincode::serialize(&fields).expect("serializable"),
         };
@@ -6387,7 +6398,7 @@ mod tests {
 
         let fields = blocklist_radius_fields();
         let message = EventMessage {
-            time: Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap(),
+            time: msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap()),
             kind: EventKind::BlocklistRadius,
             fields: bincode::serialize(&fields).expect("serializable"),
         };
@@ -6462,7 +6473,7 @@ mod tests {
         };
 
         let message = EventMessage {
-            time: Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap(),
+            time: msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap()),
             kind: EventKind::ExtraThreat,
             fields: bincode::serialize(&fields).expect("serializable"),
         };
@@ -6506,7 +6517,7 @@ mod tests {
         };
 
         let message = EventMessage {
-            time: Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap(),
+            time: msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap()),
             kind: EventKind::BlocklistMqtt,
             fields: bincode::serialize(&fields).expect("serializable"),
         };
@@ -6560,7 +6571,7 @@ mod tests {
         };
 
         let message = EventMessage {
-            time: Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap(),
+            time: msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap()),
             kind: EventKind::NetworkThreat,
             fields: bincode::serialize(&fields).expect("serializable"),
         };
@@ -6600,7 +6611,7 @@ mod tests {
         };
 
         let message = EventMessage {
-            time: Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap(),
+            time: msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap()),
             kind: EventKind::BlocklistNfs,
             fields: bincode::serialize(&fields).expect("serializable"),
         };
@@ -6654,7 +6665,7 @@ mod tests {
         };
 
         let message = EventMessage {
-            time: Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap(),
+            time: msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap()),
             kind: EventKind::BlocklistNtlm,
             fields: bincode::serialize(&fields).expect("serializable"),
         };
@@ -6684,7 +6695,7 @@ mod tests {
         let fields = blocklist_radius_fields();
 
         let message = EventMessage {
-            time: Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap(),
+            time: msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap()),
             kind: EventKind::BlocklistRadius,
             fields: bincode::serialize(&fields).expect("serializable"),
         };
@@ -6752,7 +6763,7 @@ mod tests {
 
         let fields = blocklist_malformed_dns_fields();
         let message = EventMessage {
-            time: Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap(),
+            time: msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap()),
             kind: EventKind::BlocklistMalformedDns,
             fields: bincode::serialize(&fields).expect("serializable"),
         };
@@ -6814,7 +6825,7 @@ mod tests {
         let fields = blocklist_malformed_dns_fields();
 
         let message = EventMessage {
-            time: Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap(),
+            time: msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap()),
             kind: EventKind::BlocklistMalformedDns,
             fields: bincode::serialize(&fields).expect("serializable"),
         };
@@ -6865,7 +6876,7 @@ mod tests {
         };
 
         let message = EventMessage {
-            time: Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap(),
+            time: msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap()),
             kind: EventKind::RdpBruteForce,
             fields: bincode::serialize(&fields).expect("serializable"),
         };
@@ -6915,7 +6926,7 @@ mod tests {
         };
 
         let message = EventMessage {
-            time: Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap(),
+            time: msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap()),
             kind: EventKind::BlocklistRdp,
             fields: bincode::serialize(&fields).expect("serializable"),
         };
@@ -6975,7 +6986,7 @@ mod tests {
         };
 
         let message = EventMessage {
-            time: Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap(),
+            time: msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap()),
             kind: EventKind::BlocklistSmb,
             fields: bincode::serialize(&fields).expect("serializable"),
         };
@@ -7031,7 +7042,7 @@ mod tests {
         };
 
         let message = EventMessage {
-            time: Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap(),
+            time: msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap()),
             kind: EventKind::BlocklistSmtp,
             fields: bincode::serialize(&fields).expect("serializable"),
         };
@@ -7093,7 +7104,7 @@ mod tests {
         };
 
         let message = EventMessage {
-            time: Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap(),
+            time: msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap()),
             kind: EventKind::BlocklistSsh,
             fields: bincode::serialize(&fields).expect("serializable"),
         };
@@ -7142,7 +7153,7 @@ mod tests {
         };
 
         let message = EventMessage {
-            time: Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap(),
+            time: msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap()),
             kind: EventKind::WindowsThreat,
             fields: bincode::serialize(&fields).expect("serializable"),
         };
@@ -7161,7 +7172,7 @@ mod tests {
         );
 
         let runtime = WindowsThreat::new(
-            Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap(),
+            msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap()),
             fields.into(),
         );
         let windows_threat = Event::WindowsThreat(runtime).to_string();
@@ -7221,7 +7232,7 @@ mod tests {
         };
 
         let message = EventMessage {
-            time: Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap(),
+            time: msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap()),
             kind: EventKind::BlocklistTls,
             fields: bincode::serialize(&fields).expect("serializable"),
         };
@@ -7294,7 +7305,7 @@ mod tests {
         let fields = httpeventfields();
 
         let message = EventMessage {
-            time: Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap(),
+            time: msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap()),
             kind: EventKind::TorConnection,
             fields: bincode::serialize(&fields).expect("serializable"),
         };
@@ -7327,7 +7338,7 @@ mod tests {
 
         let fields = httpeventfields();
         let message = EventMessage {
-            time: Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap(),
+            time: msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap()),
             kind: EventKind::TorConnection,
             fields: bincode::serialize(&fields).expect("serializable"),
         };
@@ -7434,7 +7445,7 @@ mod tests {
 
         let fields = blocklist_tls_fields();
         let message = EventMessage {
-            time: Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap(),
+            time: msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap()),
             kind: EventKind::SuspiciousTlsTraffic,
             fields: bincode::serialize(&fields).expect("serializable"),
         };
@@ -7484,7 +7495,7 @@ mod tests {
         let mut fields = blocklist_tls_fields();
         fields.category = None;
         let message = EventMessage {
-            time: Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap(),
+            time: msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap()),
             kind: EventKind::SuspiciousTlsTraffic,
             fields: bincode::serialize(&fields).expect("serializable"),
         };
@@ -7826,7 +7837,7 @@ mod tests {
         let recent_time = Utc.with_ymd_and_hms(2025, 6, 1, 0, 0, 0).unwrap();
 
         let old_msg = EventMessage {
-            time: old_time,
+            time: msg_time(old_time),
             kind: EventKind::DnsCovertChannel,
             fields: bincode::serialize(&DnsEventFields {
                 sensor: "s1".to_string(),
@@ -7860,7 +7871,7 @@ mod tests {
         };
 
         let recent_msg = EventMessage {
-            time: recent_time,
+            time: msg_time(recent_time),
             kind: EventKind::DnsCovertChannel,
             fields: old_msg.fields.clone(),
         };
@@ -7917,7 +7928,7 @@ mod tests {
         let before_time = Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap();
 
         let msg_at_cutoff = EventMessage {
-            time: exact_time,
+            time: msg_time(exact_time),
             kind: EventKind::DnsCovertChannel,
             fields: bincode::serialize(&DnsEventFields {
                 sensor: "s1".to_string(),
@@ -7951,7 +7962,7 @@ mod tests {
         };
 
         let msg_before = EventMessage {
-            time: before_time,
+            time: msg_time(before_time),
             kind: EventKind::DnsCovertChannel,
             fields: msg_at_cutoff.fields.clone(),
         };
@@ -8058,7 +8069,7 @@ mod tests {
             let time =
                 base_time + chrono::Duration::seconds(i64::try_from(i).expect("small value"));
             let msg = EventMessage {
-                time,
+                time: msg_time(time),
                 kind: EventKind::DnsCovertChannel,
                 fields: fields.clone(),
             };

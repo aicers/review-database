@@ -6,8 +6,10 @@ use std::{
 
 use attrievent::attribute::{RawEventAttrKind, WindowAttr};
 use chrono::{DateTime, Utc, serde::ts_nanoseconds};
+use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
+use super::timestamp::{self, ts_nanoseconds as jiff_ts_nanoseconds};
 use super::{EventCategory, LearningMethod, ThreatLevel, TriageScore, common::Match};
 use crate::event::common::{AttrValue, triage_scores_to_string};
 
@@ -58,8 +60,8 @@ pub struct WindowsThreatFields {
 
 #[derive(Deserialize, Serialize)]
 pub struct WindowsThreatFieldsStored {
-    #[serde(with = "ts_nanoseconds")]
-    pub time: DateTime<Utc>,
+    #[serde(with = "jiff_ts_nanoseconds")]
+    pub time: Timestamp,
     pub sensor: String,
     pub service: String,
     pub agent_name: String,
@@ -82,7 +84,8 @@ pub struct WindowsThreatFieldsStored {
 impl From<WindowsThreatFields> for WindowsThreatFieldsStored {
     fn from(value: WindowsThreatFields) -> Self {
         Self {
-            time: value.time,
+            time: timestamp::from_chrono(value.time)
+                .expect("producer timestamp must fit i64 nanosecond contract"),
             sensor: value.sensor,
             service: value.service,
             agent_name: value.agent_name,
@@ -155,9 +158,10 @@ pub struct WindowsThreat {
 }
 
 impl WindowsThreat {
-    pub(super) fn new(time: DateTime<Utc>, fields: WindowsThreatFieldsStored) -> Self {
+    pub(super) fn new(time: Timestamp, fields: WindowsThreatFieldsStored) -> Self {
         Self {
-            time,
+            time: timestamp::to_chrono(time)
+                .expect("stored timestamp must fit i64 nanosecond contract"),
             sensor: fields.sensor,
             service: fields.service,
             agent_name: fields.agent_name,

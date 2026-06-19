@@ -29,8 +29,15 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   `Event::count_originator_ip_address` and
   `Event::count_responder_ip_address` to match the `orig_`/`resp_`
   terminology used throughout session-oriented event APIs.
-- **BREAKING**: Bumped the database format to `0.46.0`, changed `Store::new` to
-  take an `Option<Arc<ip2location::DB>>` argument, and changed
+- **BREAKING**: `EventMessage.time` is now a `jiff::Timestamp`. Event stored
+  schemas that persist timestamps (`ExtraThreatFieldsStored`,
+  `HttpThreatFieldsStored`, `NetworkThreatFieldsStored`, and
+  `WindowsThreatFieldsStored`) also use `jiff::Timestamp` in memory. On-disk
+  event keys and stored timestamp fields remain signed 64-bit epoch
+  nanoseconds; a custom serde adapter maps Jiff values to those bytes and
+  rejects timestamps outside the `i64` nanosecond range.
+- **BREAKING**: Bumped the database format to `0.46.0`, changed
+  `Store::new` to take an `Option<Arc<ip2location::DB>>` argument, and changed
   `migrate_data_dir` to accept the same optional shared database handle. Event
   stored schemas and runtime event types that track endpoints now include
   country-code fields. Producer-facing event fields still do not require

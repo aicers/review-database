@@ -96,13 +96,19 @@ mod tests {
         sync::Arc,
     };
 
-    use chrono::{TimeZone, Utc};
+    use chrono::{DateTime, TimeZone, Utc};
+    use jiff::Timestamp;
 
+    use crate::event::timestamp;
     use crate::test::acquire_db_permit;
     use crate::{
         Store,
         event::{DnsEventFields, EventKind, EventMessage},
     };
+
+    fn msg_time(time: DateTime<Utc>) -> Timestamp {
+        timestamp::from_chrono(time).expect("test event message time must fit i64 nanoseconds")
+    }
 
     fn example_message() -> EventMessage {
         let fields = DnsEventFields {
@@ -138,7 +144,7 @@ mod tests {
             category: Some(crate::EventCategory::CommandAndControl),
         };
         EventMessage {
-            time: Utc::now(),
+            time: msg_time(Utc::now()),
             kind: EventKind::DnsCovertChannel,
             fields: bincode::serialize(&fields).expect("serializable"),
         }
