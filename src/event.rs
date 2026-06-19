@@ -3701,8 +3701,8 @@ mod tests {
             resp_port: 443,
             resp_addrs,
             proto: 6,
-            start_time: 1,
-            end_time: 2,
+            first_event_start_time: 1,
+            last_event_start_time: 2,
             confidence: 0.9,
             category: Some(EventCategory::Reconnaissance),
         };
