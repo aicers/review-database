@@ -1757,8 +1757,6 @@ mod tests {
     /// public `chrono::NaiveDateTime` API and the stored big-endian `i64`
     /// nanosecond key layout.
     mod timestamp_contract {
-        use std::collections::HashSet;
-
         use chrono::NaiveDate;
         use rocksdb::Direction;
         use structured::{ColumnStatistics, Description, Element, ElementCount, NLargestCount};
@@ -1971,31 +1969,21 @@ mod tests {
             let (_, all_rounds) = table
                 .load_rounds_by_cluster(model_id, cluster_id, &None, &None, true, 10)
                 .unwrap();
-            let all_rounds: HashSet<_> = all_rounds.into_iter().collect();
-            assert_eq!(all_rounds.len(), 3);
-            assert!(all_rounds.contains(&batch_a));
-            assert!(all_rounds.contains(&batch_b));
-            assert!(all_rounds.contains(&batch_c));
+            assert_eq!(all_rounds, vec![batch_a, batch_b, batch_c]);
 
-            // Seek keys passed to `prefix_iter` omit `model_id`. Forward
-            // pagination with `after` therefore matches no entries.
-            let after_err = table
+            // Forward pagination with `after` is an exclusive lower bound.
+            let (_, rounds_after_b) = table
                 .load_rounds_by_cluster(model_id, cluster_id, &Some(batch_b), &None, true, 10)
-                .unwrap_err();
-            assert_eq!(after_err.to_string(), "No model ID found");
+                .unwrap();
+            assert_eq!(rounds_after_b, vec![batch_c]);
 
-            // Reverse pagination with `before` still returns every round because
-            // the seek position does not exclude earlier timestamps.
+            // Reverse pagination with `before` is an exclusive upper bound.
             let (_, rounds_before_b) = table
                 .load_rounds_by_cluster(model_id, cluster_id, &None, &Some(batch_b), false, 10)
                 .unwrap();
-            let rounds_before_b: HashSet<_> = rounds_before_b.into_iter().collect();
-            assert_eq!(rounds_before_b.len(), 3);
-            assert!(rounds_before_b.contains(&batch_a));
-            assert!(rounds_before_b.contains(&batch_b));
-            assert!(rounds_before_b.contains(&batch_c));
+            assert_eq!(rounds_before_b, vec![batch_a]);
 
-            // A full-key seek including `model_id` does honor timestamp order.
+            // A full-key seek including `model_id` honors timestamp order.
             let mut full_seek_key = model_id.to_be_bytes().to_vec();
             full_seek_key.extend(cluster_id.to_be_bytes());
             full_seek_key.extend(from_naive_utc(batch_b).to_be_bytes());
