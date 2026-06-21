@@ -6,6 +6,7 @@ use argon2::{
     password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString, rand_core::OsRng},
 };
 use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 use ring::{
     digest, pbkdf2,
     rand::{self, SecureRandom},
@@ -37,15 +38,15 @@ pub struct Account {
     pub department: String,
     pub language: Option<String>,
     pub theme: Option<String>,
-    pub(crate) creation_time: DateTime<Utc>,
-    pub(crate) last_signin_time: Option<DateTime<Utc>>,
+    pub(crate) creation_time: Timestamp,
+    pub(crate) last_signin_time: Option<Timestamp>,
     pub allow_access_from: Option<Vec<IpAddr>>,
     pub max_parallel_sessions: Option<u8>,
     pub(crate) password_hash_algorithm: PasswordHashAlgorithm,
-    pub(crate) password_last_modified_at: DateTime<Utc>,
+    pub(crate) password_last_modified_at: Timestamp,
     pub customer_ids: Option<Vec<u32>>,
     pub failed_login_attempts: u8,
-    pub locked_out_until: Option<DateTime<Utc>>,
+    pub locked_out_until: Option<Timestamp>,
     pub is_suspended: bool,
 }
 
@@ -72,7 +73,7 @@ impl Account {
     ) -> Result<Self> {
         let password =
             SaltedPassword::new_with_hash_algorithm(password, &Self::DEFAULT_HASH_ALGORITHM)?;
-        let now = Utc::now();
+        let now = Timestamp::now();
         Ok(Self {
             username: username.to_string(),
             password,
@@ -104,7 +105,7 @@ impl Account {
         self.password =
             SaltedPassword::new_with_hash_algorithm(password, &Self::DEFAULT_HASH_ALGORITHM)?;
         self.password_hash_algorithm = Self::DEFAULT_HASH_ALGORITHM;
-        self.password_last_modified_at = Utc::now();
+        self.password_last_modified_at = Timestamp::now();
         Ok(())
     }
 
@@ -114,12 +115,12 @@ impl Account {
     }
 
     #[must_use]
-    pub fn creation_time(&self) -> DateTime<Utc> {
+    pub fn creation_time(&self) -> Timestamp {
         self.creation_time
     }
 
     pub fn update_last_signin_time(&mut self) {
-        self.last_signin_time = Some(Utc::now());
+        self.last_signin_time = Some(Timestamp::now());
     }
 
     /// Resets the last signin time to `None`.
@@ -132,13 +133,110 @@ impl Account {
     }
 
     #[must_use]
-    pub fn last_signin_time(&self) -> Option<DateTime<Utc>> {
+    pub fn last_signin_time(&self) -> Option<Timestamp> {
         self.last_signin_time
     }
 
     #[must_use]
-    pub fn password_last_modified_at(&self) -> DateTime<Utc> {
+    pub fn password_last_modified_at(&self) -> Timestamp {
         self.password_last_modified_at
+    }
+
+    pub(crate) fn from_stored_bytes(value: &[u8]) -> Result<Self> {
+        use bincode::Options;
+
+        let stored = bincode::DefaultOptions::new()
+            .reject_trailing_bytes()
+            .deserialize::<StoredAccount>(value)?;
+        stored.try_into()
+    }
+}
+
+/// On-disk representation of an account.
+///
+/// Its field order and types are part of the existing bincode contract. In
+/// particular, chrono remains here solely to keep old account values readable.
+#[derive(Clone, Deserialize, Serialize, PartialEq, Debug)]
+pub(crate) struct StoredAccount {
+    username: String,
+    password: SaltedPassword,
+    role: Role,
+    name: String,
+    department: String,
+    language: Option<String>,
+    theme: Option<String>,
+    creation_time: DateTime<Utc>,
+    last_signin_time: Option<DateTime<Utc>>,
+    allow_access_from: Option<Vec<IpAddr>>,
+    max_parallel_sessions: Option<u8>,
+    password_hash_algorithm: PasswordHashAlgorithm,
+    password_last_modified_at: DateTime<Utc>,
+    customer_ids: Option<Vec<u32>>,
+    failed_login_attempts: u8,
+    locked_out_until: Option<DateTime<Utc>>,
+    is_suspended: bool,
+}
+
+fn chrono_to_jiff(value: DateTime<Utc>) -> Result<Timestamp> {
+    Timestamp::new(
+        value.timestamp(),
+        value.timestamp_subsec_nanos().cast_signed(),
+    )
+    .map_err(Into::into)
+}
+
+fn jiff_to_chrono(value: Timestamp) -> DateTime<Utc> {
+    DateTime::from_timestamp(value.as_second(), value.subsec_nanosecond().cast_unsigned())
+        .expect("Jiff timestamps are within chrono's supported range")
+}
+
+impl TryFrom<StoredAccount> for Account {
+    type Error = anyhow::Error;
+
+    fn try_from(value: StoredAccount) -> Result<Self> {
+        Ok(Self {
+            username: value.username,
+            password: value.password,
+            role: value.role,
+            name: value.name,
+            department: value.department,
+            language: value.language,
+            theme: value.theme,
+            creation_time: chrono_to_jiff(value.creation_time)?,
+            last_signin_time: value.last_signin_time.map(chrono_to_jiff).transpose()?,
+            allow_access_from: value.allow_access_from,
+            max_parallel_sessions: value.max_parallel_sessions,
+            password_hash_algorithm: value.password_hash_algorithm,
+            password_last_modified_at: chrono_to_jiff(value.password_last_modified_at)?,
+            customer_ids: value.customer_ids,
+            failed_login_attempts: value.failed_login_attempts,
+            locked_out_until: value.locked_out_until.map(chrono_to_jiff).transpose()?,
+            is_suspended: value.is_suspended,
+        })
+    }
+}
+
+impl From<&Account> for StoredAccount {
+    fn from(value: &Account) -> Self {
+        Self {
+            username: value.username.clone(),
+            password: value.password.clone(),
+            role: value.role,
+            name: value.name.clone(),
+            department: value.department.clone(),
+            language: value.language.clone(),
+            theme: value.theme.clone(),
+            creation_time: jiff_to_chrono(value.creation_time),
+            last_signin_time: value.last_signin_time.map(jiff_to_chrono),
+            allow_access_from: value.allow_access_from.clone(),
+            max_parallel_sessions: value.max_parallel_sessions,
+            password_hash_algorithm: value.password_hash_algorithm.clone(),
+            password_last_modified_at: jiff_to_chrono(value.password_last_modified_at),
+            customer_ids: value.customer_ids.clone(),
+            failed_login_attempts: value.failed_login_attempts,
+            locked_out_until: value.locked_out_until.map(jiff_to_chrono),
+            is_suspended: value.is_suspended,
+        }
     }
 }
 
@@ -204,7 +302,7 @@ impl Value for Account {
 
     fn value(&self) -> Vec<u8> {
         use bincode::Options;
-        let Ok(value) = bincode::DefaultOptions::new().serialize(&self) else {
+        let Ok(value) = bincode::DefaultOptions::new().serialize(&StoredAccount::from(self)) else {
             unreachable!("serialization into memory should never fail")
         };
         value
@@ -336,8 +434,6 @@ impl SaltedPassword {
 mod tests {
     use std::net::IpAddr;
 
-    use chrono::DateTime;
-
     use super::*;
     use crate::tables::Value;
     use crate::types::FromKeyValue;
@@ -358,7 +454,7 @@ mod tests {
         const ITERATIONS: u32 = 210_000;
 
         let fixed_time = FIXTURE_TIMESTAMP
-            .parse::<DateTime<Utc>>()
+            .parse::<Timestamp>()
             .expect("valid RFC 3339 timestamp");
 
         let iterations = NonZeroU32::new(ITERATIONS).expect("non-zero iteration count");
@@ -401,7 +497,7 @@ mod tests {
     /// checked in from the fixture rather than generated in this test.
     #[test]
     fn account_table_value_bytes_match_fixture() {
-        let fixed_time: DateTime<Utc> = FIXTURE_TIMESTAMP.parse().expect("valid timestamp");
+        let fixed_time: Timestamp = FIXTURE_TIMESTAMP.parse().expect("valid timestamp");
 
         let decoded = Account::from_key_value(b"fixture-user", ACCOUNT_BYTES_FIXTURE)
             .expect("fixture bytes must deserialize via FromKeyValue");
@@ -497,12 +593,12 @@ mod tests {
             name: String::new(),
             language: None,
             theme: None,
-            creation_time: Utc::now(),
+            creation_time: Timestamp::now(),
             last_signin_time: None,
             allow_access_from: None,
             max_parallel_sessions: None,
             password_hash_algorithm: PasswordHashAlgorithm::Pbkdf2HmacSha512,
-            password_last_modified_at: Utc::now(),
+            password_last_modified_at: Timestamp::now(),
             customer_ids: Some(Vec::new()),
             failed_login_attempts: 0,
             locked_out_until: None,
