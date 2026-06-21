@@ -14,10 +14,6 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
-- Renamed internal `Match` trait methods from `src_addrs`/`src_port`/
-  `dst_addrs`/`dst_port` to `orig_addrs`/`orig_port`/`resp_addrs`/
-  `resp_port` to align session-oriented terminology with event field names.
-  Deprecated compatibility shims forward the old method names to the new ones.
 - **BREAKING**: Bumped the database format to `0.46.0-alpha.1`, changed
   `Store::new` to take an `Option<Arc<ip2location::DB>>` argument, and changed
   `migrate_data_dir` to accept the same optional shared database handle. Event
