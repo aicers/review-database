@@ -220,7 +220,7 @@ fn convert_for_storage_preserves_http_threat_i64_timestamp_bytes() {
     let time = modern_timestamp();
     let producer_bytes =
         bincode::serialize(&http_threat_fields(time)).expect("serializable producer fields");
-    let bytes = convert_for_storage(EventKind::HttpThreat, &producer_bytes)
+    let bytes = convert_for_storage(EventKind::HttpThreat, &producer_bytes, None)
         .expect("convertible to stored fields");
     let nanos = time.timestamp_nanos_opt().expect("in range");
     assert_eight_byte_i64_contract(bytes.get(..8).expect("timestamp prefix"), nanos);
@@ -267,7 +267,7 @@ fn extra_threat_production_bytes_match_full_stored_event_fixture() {
     let time = pre_1970_timestamp();
     let producer_bytes =
         bincode::serialize(&extra_threat_fields(time)).expect("serializable producer fields");
-    let bytes = convert_for_storage(EventKind::ExtraThreat, &producer_bytes)
+    let bytes = convert_for_storage(EventKind::ExtraThreat, &producer_bytes, None)
         .expect("convertible to stored fields");
     assert_eq!(bytes, FIXTURE);
     assert_eight_byte_i64_contract(
@@ -286,7 +286,7 @@ fn regenerate_extra_threat_pre_1970_stored_fixture() {
     let time = pre_1970_timestamp();
     let producer_bytes =
         bincode::serialize(&extra_threat_fields(time)).expect("serializable producer fields");
-    let bytes = convert_for_storage(EventKind::ExtraThreat, &producer_bytes)
+    let bytes = convert_for_storage(EventKind::ExtraThreat, &producer_bytes, None)
         .expect("convertible to stored fields");
     let fixture_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests/fixtures/event_extra_threat_pre_1970_stored.bin");
