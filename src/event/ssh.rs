@@ -304,19 +304,19 @@ impl BlocklistSsh {
 }
 
 impl Match for BlocklistSsh {
-    fn src_addrs(&self) -> &[IpAddr] {
+    fn orig_addrs(&self) -> &[IpAddr] {
         std::slice::from_ref(&self.orig_addr)
     }
 
-    fn src_port(&self) -> u16 {
+    fn orig_port(&self) -> u16 {
         self.orig_port
     }
 
-    fn dst_addrs(&self) -> &[IpAddr] {
+    fn resp_addrs(&self) -> &[IpAddr] {
         std::slice::from_ref(&self.resp_addr)
     }
 
-    fn dst_port(&self) -> u16 {
+    fn resp_port(&self) -> u16 {
         self.resp_port
     }
 

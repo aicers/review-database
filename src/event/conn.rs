@@ -172,19 +172,19 @@ impl PortScan {
 }
 
 impl Match for PortScan {
-    fn src_addrs(&self) -> &[IpAddr] {
+    fn orig_addrs(&self) -> &[IpAddr] {
         std::slice::from_ref(&self.orig_addr)
     }
 
-    fn src_port(&self) -> u16 {
+    fn orig_port(&self) -> u16 {
         0
     }
 
-    fn dst_addrs(&self) -> &[IpAddr] {
+    fn resp_addrs(&self) -> &[IpAddr] {
         std::slice::from_ref(&self.resp_addr)
     }
 
-    fn dst_port(&self) -> u16 {
+    fn resp_port(&self) -> u16 {
         0
     }
 
@@ -370,19 +370,19 @@ impl MultiHostPortScan {
 }
 
 impl Match for MultiHostPortScan {
-    fn src_addrs(&self) -> &[IpAddr] {
+    fn orig_addrs(&self) -> &[IpAddr] {
         std::slice::from_ref(&self.orig_addr)
     }
 
-    fn src_port(&self) -> u16 {
+    fn orig_port(&self) -> u16 {
         0
     }
 
-    fn dst_addrs(&self) -> &[IpAddr] {
+    fn resp_addrs(&self) -> &[IpAddr] {
         &self.resp_addrs
     }
 
-    fn dst_port(&self) -> u16 {
+    fn resp_port(&self) -> u16 {
         self.resp_port
     }
 
@@ -562,19 +562,19 @@ impl ExternalDdos {
 }
 
 impl Match for ExternalDdos {
-    fn src_addrs(&self) -> &[IpAddr] {
+    fn orig_addrs(&self) -> &[IpAddr] {
         &self.orig_addrs
     }
 
-    fn src_port(&self) -> u16 {
+    fn orig_port(&self) -> u16 {
         0
     }
 
-    fn dst_addrs(&self) -> &[IpAddr] {
+    fn resp_addrs(&self) -> &[IpAddr] {
         std::slice::from_ref(&self.resp_addr)
     }
 
-    fn dst_port(&self) -> u16 {
+    fn resp_port(&self) -> u16 {
         0
     }
 
@@ -821,19 +821,19 @@ impl BlocklistConn {
 }
 
 impl Match for BlocklistConn {
-    fn src_addrs(&self) -> &[IpAddr] {
+    fn orig_addrs(&self) -> &[IpAddr] {
         std::slice::from_ref(&self.orig_addr)
     }
 
-    fn src_port(&self) -> u16 {
+    fn orig_port(&self) -> u16 {
         self.orig_port
     }
 
-    fn dst_addrs(&self) -> &[IpAddr] {
+    fn resp_addrs(&self) -> &[IpAddr] {
         std::slice::from_ref(&self.resp_addr)
     }
 
-    fn dst_port(&self) -> u16 {
+    fn resp_port(&self) -> u16 {
         self.resp_port
     }
 

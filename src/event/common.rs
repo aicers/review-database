@@ -23,12 +23,40 @@ const CONFIDENCE_EPSILON: f32 = 1e-6;
 // TODO: Make new Match trait to support Windows Events
 
 pub(super) trait Match {
-    fn src_addrs(&self) -> &[IpAddr];
+    fn orig_addrs(&self) -> &[IpAddr];
     #[allow(dead_code)] // for future use
-    fn src_port(&self) -> u16;
-    fn dst_addrs(&self) -> &[IpAddr];
+    fn orig_port(&self) -> u16;
+    fn resp_addrs(&self) -> &[IpAddr];
     #[allow(dead_code)] // for future use
-    fn dst_port(&self) -> u16;
+    fn resp_port(&self) -> u16;
+
+    /// Renamed to [`Match::orig_addrs`].
+    #[deprecated(since = "0.46.0", note = "renamed to `orig_addrs`")]
+    #[allow(dead_code)] // retained for downstream callers during the rename transition
+    fn src_addrs(&self) -> &[IpAddr] {
+        self.orig_addrs()
+    }
+
+    /// Renamed to [`Match::orig_port`].
+    #[deprecated(since = "0.46.0", note = "renamed to `orig_port`")]
+    #[allow(dead_code)] // retained for downstream callers during the rename transition
+    fn src_port(&self) -> u16 {
+        self.orig_port()
+    }
+
+    /// Renamed to [`Match::resp_addrs`].
+    #[deprecated(since = "0.46.0", note = "renamed to `resp_addrs`")]
+    #[allow(dead_code)] // retained for downstream callers during the rename transition
+    fn dst_addrs(&self) -> &[IpAddr] {
+        self.resp_addrs()
+    }
+
+    /// Renamed to [`Match::resp_port`].
+    #[deprecated(since = "0.46.0", note = "renamed to `resp_port`")]
+    #[allow(dead_code)] // retained for downstream callers during the rename transition
+    fn dst_port(&self) -> u16 {
+        self.resp_port()
+    }
     #[allow(dead_code)] // for future use
     fn proto(&self) -> u8;
     fn category(&self) -> Option<EventCategory>;
@@ -101,20 +129,20 @@ pub(super) trait Match {
         locator: Option<&ip2location::DB>,
     ) -> Result<(bool, Option<Vec<TriageScore>>)> {
         // Customer matching uses the customer's registered network ranges to
-        // test event addresses (src_addrs/dst_addrs). It does NOT filter based
+        // test event addresses (orig_addrs/resp_addrs). It does NOT filter based
         // on a customer ID attached to the event. If you need per-event
         // customer attribution, that requires modifying the EventDb schema
         // (see issue #687) — do not attempt to change storage layout in this
         // function.
         if let Some(customers) = &filter.customers
             && customers.iter().all(|customer| {
-                self.src_addrs()
+                self.orig_addrs()
                     .iter()
-                    .all(|&src_addr| !customer.contains(src_addr))
+                    .all(|&orig_addr| !customer.contains(orig_addr))
                     && self
-                        .dst_addrs()
+                        .resp_addrs()
                         .iter()
-                        .all(|&dst_addr| !customer.contains(dst_addr))
+                        .all(|&resp_addr| !customer.contains(resp_addr))
             })
         {
             return Ok((false, None));
@@ -123,21 +151,21 @@ pub(super) trait Match {
         if let Some(endpoints) = &filter.endpoints
             && endpoints.iter().all(|endpoint| match endpoint.direction {
                 Some(TrafficDirection::From) => self
-                    .src_addrs()
+                    .orig_addrs()
                     .iter()
-                    .all(|&src_addr| !endpoint.network.contains(src_addr)),
+                    .all(|&orig_addr| !endpoint.network.contains(orig_addr)),
                 Some(TrafficDirection::To) => self
-                    .dst_addrs()
+                    .resp_addrs()
                     .iter()
-                    .all(|&dst_addr| !endpoint.network.contains(dst_addr)),
+                    .all(|&resp_addr| !endpoint.network.contains(resp_addr)),
                 None => {
-                    self.src_addrs()
+                    self.orig_addrs()
                         .iter()
-                        .all(|&src_addr| !endpoint.network.contains(src_addr))
+                        .all(|&orig_addr| !endpoint.network.contains(orig_addr))
                         && self
-                            .dst_addrs()
+                            .resp_addrs()
                             .iter()
-                            .all(|&dst_addr| !endpoint.network.contains(dst_addr))
+                            .all(|&resp_addr| !endpoint.network.contains(resp_addr))
                 }
             })
         {
@@ -145,29 +173,29 @@ pub(super) trait Match {
         }
 
         if let Some(addr) = filter.source
-            && self.src_addrs().iter().all(|&src_addr| src_addr != addr)
+            && self.orig_addrs().iter().all(|&orig_addr| orig_addr != addr)
         {
             return Ok((false, None));
         }
 
         if let Some(addr) = filter.destination
-            && self.dst_addrs().iter().all(|&dst_addr| dst_addr != addr)
+            && self.resp_addrs().iter().all(|&resp_addr| resp_addr != addr)
         {
             return Ok((false, None));
         }
 
         if let Some((kinds, internal)) = &filter.directions {
-            let internal_src = internal.iter().any(|net| {
-                self.src_addrs()
+            let internal_orig = internal.iter().any(|net| {
+                self.orig_addrs()
                     .iter()
-                    .any(|&src_addr| net.contains(src_addr))
+                    .any(|&orig_addr| net.contains(orig_addr))
             });
-            let internal_dst = internal.iter().any(|net| {
-                self.dst_addrs()
+            let internal_resp = internal.iter().any(|net| {
+                self.resp_addrs()
                     .iter()
-                    .any(|&dst_addr| net.contains(dst_addr))
+                    .any(|&resp_addr| net.contains(resp_addr))
             });
-            match (internal_src, internal_dst) {
+            match (internal_orig, internal_resp) {
                 (true, true) => {
                     if !kinds.contains(&FlowKind::Internal) {
                         return Ok((false, None));
@@ -190,13 +218,13 @@ pub(super) trait Match {
         if let Some(countries) = &filter.countries {
             if let Some(locator) = locator {
                 if countries.iter().all(|country| {
-                    self.src_addrs()
+                    self.orig_addrs()
                         .iter()
-                        .all(|&src_addr| !eq_ip_country(locator, src_addr, *country))
+                        .all(|&orig_addr| !eq_ip_country(locator, orig_addr, *country))
                         && self
-                            .dst_addrs()
+                            .resp_addrs()
                             .iter()
-                            .all(|&dst_addr| !eq_ip_country(locator, dst_addr, *country))
+                            .all(|&resp_addr| !eq_ip_country(locator, resp_addr, *country))
                 }) {
                     return Ok((false, None));
                 }
@@ -270,8 +298,8 @@ pub(super) trait Match {
     fn score_by_triage_exclusion(&self, triage_exclusion: &[TriageExclusion]) -> f64 {
         let matched = triage_exclusion.iter().any(|ti| {
             if let TriageExclusion::IpAddress(filter) = ti {
-                self.src_addrs().iter().any(|&addr| filter.contains(addr))
-                    || self.dst_addrs().iter().any(|&addr| filter.contains(addr))
+                self.orig_addrs().iter().any(|&addr| filter.contains(addr))
+                    || self.resp_addrs().iter().any(|&addr| filter.contains(addr))
             } else {
                 false
             }
@@ -1100,13 +1128,13 @@ mod tests {
 
         // Filtering success.
         let mut success_filter = event_filter();
-        let src_addr = IpAddr::V4(Ipv4Addr::LOCALHOST);
-        let dst_addr = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2));
-        success_filter.customers = Some(vec![create_customer(src_addr)]);
-        success_filter.endpoints = Some(vec![create_endpoint(src_addr)]);
-        success_filter.source = Some(src_addr);
-        success_filter.destination = Some(dst_addr);
-        success_filter.directions = Some(create_directions(FlowKind::Outbound, src_addr));
+        let orig_addr = IpAddr::V4(Ipv4Addr::LOCALHOST);
+        let resp_addr = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2));
+        success_filter.customers = Some(vec![create_customer(orig_addr)]);
+        success_filter.endpoints = Some(vec![create_endpoint(orig_addr)]);
+        success_filter.source = Some(orig_addr);
+        success_filter.destination = Some(resp_addr);
+        success_filter.directions = Some(create_directions(FlowKind::Outbound, orig_addr));
 
         assert!(
             single_address_events
@@ -1173,13 +1201,13 @@ mod tests {
 
         // Filtering success.
         let mut success_filter = event_filter();
-        let src_addr = IpAddr::V4(Ipv4Addr::LOCALHOST);
-        let dst_addr = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2));
-        success_filter.customers = Some(vec![create_customer(src_addr)]);
-        success_filter.endpoints = Some(vec![create_endpoint(src_addr)]);
-        success_filter.source = Some(src_addr);
-        success_filter.destination = Some(dst_addr);
-        success_filter.directions = Some(create_directions(FlowKind::Outbound, src_addr));
+        let orig_addr = IpAddr::V4(Ipv4Addr::LOCALHOST);
+        let resp_addr = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2));
+        success_filter.customers = Some(vec![create_customer(orig_addr)]);
+        success_filter.endpoints = Some(vec![create_endpoint(orig_addr)]);
+        success_filter.source = Some(orig_addr);
+        success_filter.destination = Some(resp_addr);
+        success_filter.directions = Some(create_directions(FlowKind::Outbound, orig_addr));
 
         assert!(
             multi_address_events
@@ -1636,10 +1664,10 @@ mod tests {
             Some(Ordering::Equal)
         );
 
-        // 3. Unusual Destination Pattern (Uses ConnAttr::DstAddr)
+        // 3. Unusual Destination Pattern (uses external ConnAttr::DstAddr)
         let unusual_dest_event =
             UnusualDestinationPattern::new(time, unusual_destination_pattern_fields());
-        // UnusualDestinationPattern maps ConnAttr::DstAddr to its destination_ips vector
+        // UnusualDestinationPattern maps ConnAttr::DstAddr to destination_ips
         let conn_attr = vec![PacketAttr {
             raw_event_kind: RawEventKind::Conn,
             attr_name: ConnAttr::DstAddr.to_string(),
