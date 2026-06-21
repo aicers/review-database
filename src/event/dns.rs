@@ -302,11 +302,11 @@ impl DnsCovertChannel {
 }
 
 impl Match for DnsCovertChannel {
-    fn src_addrs(&self) -> &[IpAddr] {
+    fn orig_addrs(&self) -> &[IpAddr] {
         std::slice::from_ref(&self.orig_addr)
     }
 
-    fn src_port(&self) -> u16 {
+    fn orig_port(&self) -> u16 {
         self.orig_port
     }
 
@@ -314,11 +314,11 @@ impl Match for DnsCovertChannel {
         std::slice::from_ref(&self.orig_country_code)
     }
 
-    fn dst_addrs(&self) -> &[IpAddr] {
+    fn resp_addrs(&self) -> &[IpAddr] {
         std::slice::from_ref(&self.resp_addr)
     }
 
-    fn dst_port(&self) -> u16 {
+    fn resp_port(&self) -> u16 {
         self.resp_port
     }
 
@@ -361,9 +361,9 @@ impl Match for DnsCovertChannel {
     fn score_by_triage_exclusion(&self, triage_exclusion: &[TriageExclusion]) -> f64 {
         let matched = triage_exclusion.iter().any(|ti| match ti {
             TriageExclusion::IpAddress(filter) => self
-                .src_addrs()
+                .orig_addrs()
                 .iter()
-                .chain(self.dst_addrs().iter())
+                .chain(self.resp_addrs().iter())
                 .any(|&ip| filter.contains(ip)),
             TriageExclusion::Domain(regex_set) => regex_set.is_match(&self.query),
             TriageExclusion::Hostname(hostnames) => {
@@ -495,11 +495,11 @@ impl LockyRansomware {
 }
 
 impl Match for LockyRansomware {
-    fn src_addrs(&self) -> &[IpAddr] {
+    fn orig_addrs(&self) -> &[IpAddr] {
         std::slice::from_ref(&self.orig_addr)
     }
 
-    fn src_port(&self) -> u16 {
+    fn orig_port(&self) -> u16 {
         self.orig_port
     }
 
@@ -507,11 +507,11 @@ impl Match for LockyRansomware {
         std::slice::from_ref(&self.orig_country_code)
     }
 
-    fn dst_addrs(&self) -> &[IpAddr] {
+    fn resp_addrs(&self) -> &[IpAddr] {
         std::slice::from_ref(&self.resp_addr)
     }
 
-    fn dst_port(&self) -> u16 {
+    fn resp_port(&self) -> u16 {
         self.resp_port
     }
 
@@ -554,9 +554,9 @@ impl Match for LockyRansomware {
     fn score_by_triage_exclusion(&self, triage_exclusion: &[TriageExclusion]) -> f64 {
         let matched = triage_exclusion.iter().any(|ti| match ti {
             TriageExclusion::IpAddress(filter) => self
-                .src_addrs()
+                .orig_addrs()
                 .iter()
-                .chain(self.dst_addrs().iter())
+                .chain(self.resp_addrs().iter())
                 .any(|&ip| filter.contains(ip)),
             TriageExclusion::Domain(regex_set) => regex_set.is_match(&self.query),
             TriageExclusion::Hostname(hostnames) => {
@@ -833,11 +833,11 @@ impl CryptocurrencyMiningPool {
 }
 
 impl Match for CryptocurrencyMiningPool {
-    fn src_addrs(&self) -> &[IpAddr] {
+    fn orig_addrs(&self) -> &[IpAddr] {
         std::slice::from_ref(&self.orig_addr)
     }
 
-    fn src_port(&self) -> u16 {
+    fn orig_port(&self) -> u16 {
         self.orig_port
     }
 
@@ -845,11 +845,11 @@ impl Match for CryptocurrencyMiningPool {
         std::slice::from_ref(&self.orig_country_code)
     }
 
-    fn dst_addrs(&self) -> &[IpAddr] {
+    fn resp_addrs(&self) -> &[IpAddr] {
         std::slice::from_ref(&self.resp_addr)
     }
 
-    fn dst_port(&self) -> u16 {
+    fn resp_port(&self) -> u16 {
         self.resp_port
     }
 
@@ -892,9 +892,9 @@ impl Match for CryptocurrencyMiningPool {
     fn score_by_triage_exclusion(&self, triage_exclusion: &[TriageExclusion]) -> f64 {
         let matched = triage_exclusion.iter().any(|ti| match ti {
             TriageExclusion::IpAddress(filter) => self
-                .src_addrs()
+                .orig_addrs()
                 .iter()
-                .chain(self.dst_addrs().iter())
+                .chain(self.resp_addrs().iter())
                 .any(|&ip| filter.contains(ip)),
             TriageExclusion::Domain(regex_set) => regex_set.is_match(&self.query),
             TriageExclusion::Hostname(hostnames) => {
@@ -1164,11 +1164,11 @@ impl BlocklistDns {
 }
 
 impl Match for BlocklistDns {
-    fn src_addrs(&self) -> &[IpAddr] {
+    fn orig_addrs(&self) -> &[IpAddr] {
         std::slice::from_ref(&self.orig_addr)
     }
 
-    fn src_port(&self) -> u16 {
+    fn orig_port(&self) -> u16 {
         self.orig_port
     }
 
@@ -1176,11 +1176,11 @@ impl Match for BlocklistDns {
         std::slice::from_ref(&self.orig_country_code)
     }
 
-    fn dst_addrs(&self) -> &[IpAddr] {
+    fn resp_addrs(&self) -> &[IpAddr] {
         std::slice::from_ref(&self.resp_addr)
     }
 
-    fn dst_port(&self) -> u16 {
+    fn resp_port(&self) -> u16 {
         self.resp_port
     }
 
@@ -1223,9 +1223,9 @@ impl Match for BlocklistDns {
     fn score_by_triage_exclusion(&self, triage_exclusion: &[TriageExclusion]) -> f64 {
         let matched = triage_exclusion.iter().any(|ti| match ti {
             TriageExclusion::IpAddress(filter) => self
-                .src_addrs()
+                .orig_addrs()
                 .iter()
-                .chain(self.dst_addrs().iter())
+                .chain(self.resp_addrs().iter())
                 .any(|&ip| filter.contains(ip)),
             TriageExclusion::Domain(regex_set) => regex_set.is_match(&self.query),
             TriageExclusion::Hostname(hostnames) => {

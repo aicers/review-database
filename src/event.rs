@@ -1442,17 +1442,17 @@ impl Event {
         let (orig_code, resp_code) = self.stored_country_code_pair();
 
         if addr_pair.1.is_some() {
-            let dst_country = crate::util::country_code_as_str(&resp_code);
+            let resp_country = crate::util::country_code_as_str(&resp_code);
             if addr_pair.0.is_some() {
-                let src_country = crate::util::country_code_as_str(&orig_code);
-                if src_country != dst_country {
-                    Self::increment_country_count(counter, src_country);
+                let orig_country = crate::util::country_code_as_str(&orig_code);
+                if orig_country != resp_country {
+                    Self::increment_country_count(counter, orig_country);
                 }
             }
-            Self::increment_country_count(counter, dst_country);
+            Self::increment_country_count(counter, resp_country);
         } else if addr_pair.0.is_some() {
-            let src_country = crate::util::country_code_as_str(&orig_code);
-            Self::increment_country_count(counter, src_country);
+            let orig_country = crate::util::country_code_as_str(&orig_code);
+            Self::increment_country_count(counter, orig_country);
         }
 
         Ok(())
@@ -1698,11 +1698,17 @@ impl Event {
     ) -> Result<()> {
         let addr_pair = self.address_pair(filter)?;
 
-        if let Some(src_addr) = addr_pair.0 {
-            counter.entry(src_addr).and_modify(|e| *e += 1).or_insert(1);
+        if let Some(orig_addr) = addr_pair.0 {
+            counter
+                .entry(orig_addr)
+                .and_modify(|e| *e += 1)
+                .or_insert(1);
         }
-        if let Some(dst_addr) = addr_pair.1 {
-            counter.entry(dst_addr).and_modify(|e| *e += 1).or_insert(1);
+        if let Some(resp_addr) = addr_pair.1 {
+            counter
+                .entry(resp_addr)
+                .and_modify(|e| *e += 1)
+                .or_insert(1);
         }
 
         Ok(())
@@ -1720,11 +1726,11 @@ impl Event {
     ) -> Result<()> {
         let addr_pair = self.address_pair(filter)?;
 
-        if let Some(src_addr) = addr_pair.0
-            && let Some(dst_addr) = addr_pair.1
+        if let Some(orig_addr) = addr_pair.0
+            && let Some(resp_addr) = addr_pair.1
         {
             counter
-                .entry((src_addr, dst_addr))
+                .entry((orig_addr, resp_addr))
                 .and_modify(|e| *e += 1)
                 .or_insert(1);
         }
@@ -1745,12 +1751,12 @@ impl Event {
         let addr_pair = self.address_pair(filter)?;
         let kind = self.kind(filter)?;
 
-        if let Some(src_addr) = addr_pair.0
-            && let Some(dst_addr) = addr_pair.1
+        if let Some(orig_addr) = addr_pair.0
+            && let Some(resp_addr) = addr_pair.1
             && let Some(kind) = kind
         {
             counter
-                .entry((src_addr, dst_addr, kind))
+                .entry((orig_addr, resp_addr, kind))
                 .and_modify(|e| *e += 1)
                 .or_insert(1);
         }
@@ -1770,8 +1776,11 @@ impl Event {
     ) -> Result<()> {
         let addr_pair = self.address_pair(filter)?;
 
-        if let Some(src_addr) = addr_pair.0 {
-            counter.entry(src_addr).and_modify(|e| *e += 1).or_insert(1);
+        if let Some(orig_addr) = addr_pair.0 {
+            counter
+                .entry(orig_addr)
+                .and_modify(|e| *e += 1)
+                .or_insert(1);
         }
 
         Ok(())
@@ -1789,8 +1798,11 @@ impl Event {
     ) -> Result<()> {
         let addr_pair = self.address_pair(filter)?;
 
-        if let Some(dst_addr) = addr_pair.1 {
-            counter.entry(dst_addr).and_modify(|e| *e += 1).or_insert(1);
+        if let Some(resp_addr) = addr_pair.1 {
+            counter
+                .entry(resp_addr)
+                .and_modify(|e| *e += 1)
+                .or_insert(1);
         }
 
         Ok(())
@@ -2064,13 +2076,13 @@ impl Event {
     ) -> Result<()> {
         let addr_pair = self.address_pair(filter)?;
 
-        if let Some(src_addr) = addr_pair.0
-            && let Some(id) = find_network(src_addr, networks)
+        if let Some(orig_addr) = addr_pair.0
+            && let Some(id) = find_network(orig_addr, networks)
         {
             counter.entry(id).and_modify(|e| *e += 1).or_insert(1);
         }
-        if let Some(dst_addr) = addr_pair.1
-            && let Some(id) = find_network(dst_addr, networks)
+        if let Some(resp_addr) = addr_pair.1
+            && let Some(id) = find_network(resp_addr, networks)
         {
             counter.entry(id).and_modify(|e| *e += 1).or_insert(1);
         }
@@ -2345,7 +2357,7 @@ pub enum LearningMethod {
 /// The `customers` field does **not** filter events by an explicit customer ID
 /// stored on each event. Instead, the current implementation resolves each
 /// customer's registered network ranges and matches an event if any of its
-/// source addresses (`src_addrs`) or destination addresses (`dst_addrs`) fall
+/// source addresses (`orig_addrs`) or responder addresses (`resp_addrs`) fall
 /// within those ranges.
 ///
 /// In other words, customer filtering performs network-range matching against
@@ -7435,19 +7447,19 @@ mod tests {
             fields.into(),
         );
         assert_eq!(
-            suspicious_tls_traffic.src_addrs(),
+            suspicious_tls_traffic.orig_addrs(),
             &[IpAddr::V4(Ipv4Addr::LOCALHOST)]
         );
         assert_eq!(
-            suspicious_tls_traffic.dst_addrs(),
+            suspicious_tls_traffic.resp_addrs(),
             &[IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2))]
         );
         assert_eq!(
             suspicious_tls_traffic.category(),
             Some(EventCategory::InitialAccess)
         );
-        assert_eq!(suspicious_tls_traffic.src_port(), 10000);
-        assert_eq!(suspicious_tls_traffic.dst_port(), 443);
+        assert_eq!(suspicious_tls_traffic.orig_port(), 10000);
+        assert_eq!(suspicious_tls_traffic.resp_port(), 443);
         assert_eq!(suspicious_tls_traffic.proto(), 6);
         let event = Event::SuspiciousTlsTraffic(suspicious_tls_traffic);
         let blocklist_tls = event.to_string();
@@ -7609,7 +7621,6 @@ mod tests {
 
         let mut counter = HashMap::new();
         event.count_country(&mut counter, &filter).unwrap();
-
         assert_eq!(counter.get("US"), Some(&1));
         assert!(!counter.contains_key("KR"));
         assert!(!counter.contains_key("JP"));
