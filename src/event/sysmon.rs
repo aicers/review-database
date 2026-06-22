@@ -211,6 +211,14 @@ impl fmt::Display for WindowsThreat {
 
 // TODO: Make new Match trait for Windows threat events
 impl Match for WindowsThreat {
+    fn orig_country_codes(&self) -> &[[u8; 2]] {
+        &[]
+    }
+
+    fn resp_country_codes(&self) -> &[[u8; 2]] {
+        &[]
+    }
+
     fn sensor(&self) -> &str {
         &self.sensor
     }

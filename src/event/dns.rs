@@ -302,7 +302,14 @@ impl DnsCovertChannel {
 }
 
 impl Match for DnsCovertChannel {
-    crate::event::common::impl_match_pair_country_codes!();
+    fn orig_country_codes(&self) -> &[[u8; 2]] {
+        std::slice::from_ref(&self.orig_country_code)
+    }
+
+    fn resp_country_codes(&self) -> &[[u8; 2]] {
+        std::slice::from_ref(&self.resp_country_code)
+    }
+
     fn src_addrs(&self) -> &[IpAddr] {
         std::slice::from_ref(&self.orig_addr)
     }
@@ -488,7 +495,14 @@ impl LockyRansomware {
 }
 
 impl Match for LockyRansomware {
-    crate::event::common::impl_match_pair_country_codes!();
+    fn orig_country_codes(&self) -> &[[u8; 2]] {
+        std::slice::from_ref(&self.orig_country_code)
+    }
+
+    fn resp_country_codes(&self) -> &[[u8; 2]] {
+        std::slice::from_ref(&self.resp_country_code)
+    }
+
     fn src_addrs(&self) -> &[IpAddr] {
         std::slice::from_ref(&self.orig_addr)
     }
@@ -819,7 +833,14 @@ impl CryptocurrencyMiningPool {
 }
 
 impl Match for CryptocurrencyMiningPool {
-    crate::event::common::impl_match_pair_country_codes!();
+    fn orig_country_codes(&self) -> &[[u8; 2]] {
+        std::slice::from_ref(&self.orig_country_code)
+    }
+
+    fn resp_country_codes(&self) -> &[[u8; 2]] {
+        std::slice::from_ref(&self.resp_country_code)
+    }
+
     fn src_addrs(&self) -> &[IpAddr] {
         std::slice::from_ref(&self.orig_addr)
     }
@@ -1143,7 +1164,14 @@ impl BlocklistDns {
 }
 
 impl Match for BlocklistDns {
-    crate::event::common::impl_match_pair_country_codes!();
+    fn orig_country_codes(&self) -> &[[u8; 2]] {
+        std::slice::from_ref(&self.orig_country_code)
+    }
+
+    fn resp_country_codes(&self) -> &[[u8; 2]] {
+        std::slice::from_ref(&self.resp_country_code)
+    }
+
     fn src_addrs(&self) -> &[IpAddr] {
         std::slice::from_ref(&self.orig_addr)
     }

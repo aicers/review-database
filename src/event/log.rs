@@ -145,6 +145,14 @@ impl fmt::Display for ExtraThreat {
 }
 
 impl Match for ExtraThreat {
+    fn orig_country_codes(&self) -> &[[u8; 2]] {
+        &[]
+    }
+
+    fn resp_country_codes(&self) -> &[[u8; 2]] {
+        &[]
+    }
+
     fn src_addrs(&self) -> &[IpAddr] {
         std::slice::from_ref(&IpAddr::V4(Ipv4Addr::UNSPECIFIED))
     }

@@ -55,14 +55,10 @@ pub(crate) fn lookup_country_code(locator: &ip2location::DB, addr: IpAddr) -> [u
 
 /// Returns whether a stored country code matches a filter value.
 ///
-/// Pending (`ZZ`) and invalid (`XX`) codes never match. Comparison is
-/// case-insensitive on ASCII letters.
+/// Pending (`ZZ`) and invalid (`XX`) codes never match.
 #[must_use]
 pub(crate) fn stored_country_code_matches(stored: [u8; 2], filter: [u8; 2]) -> bool {
-    if stored == COUNTRY_CODE_PENDING || stored == COUNTRY_CODE_INVALID {
-        return false;
-    }
-    stored[0].eq_ignore_ascii_case(&filter[0]) && stored[1].eq_ignore_ascii_case(&filter[1])
+    stored != COUNTRY_CODE_PENDING && stored != COUNTRY_CODE_INVALID && stored == filter
 }
 
 fn parse_country_code(code: &str) -> Option<[u8; 2]> {
@@ -113,9 +109,9 @@ mod tests {
     }
 
     #[test]
-    fn stored_country_code_matches_is_case_insensitive() {
-        assert!(stored_country_code_matches(*b"US", *b"us"));
-        assert!(stored_country_code_matches(*b"us", *b"US"));
+    fn stored_country_code_matches_is_case_sensitive() {
+        assert!(stored_country_code_matches(*b"US", *b"US"));
+        assert!(!stored_country_code_matches(*b"US", *b"us"));
     }
 
     #[test]

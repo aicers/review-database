@@ -15,64 +15,6 @@ use crate::{
     AttrCmpKind, Confidence, PacketAttr, Response, TriageExclusion, TriagePolicyInput, ValueKind,
 };
 
-/// Adds country-code accessors for events with single origin and response codes.
-macro_rules! impl_match_pair_country_codes {
-    () => {
-        fn orig_country_codes(&self) -> &[[u8; 2]] {
-            std::slice::from_ref(&self.orig_country_code)
-        }
-
-        fn resp_country_codes(&self) -> &[[u8; 2]] {
-            std::slice::from_ref(&self.resp_country_code)
-        }
-    };
-}
-pub(crate) use impl_match_pair_country_codes;
-
-/// Adds country-code accessors for events with one origin code and many
-/// response codes.
-macro_rules! impl_match_orig_resp_vec_country_codes {
-    () => {
-        fn orig_country_codes(&self) -> &[[u8; 2]] {
-            std::slice::from_ref(&self.orig_country_code)
-        }
-
-        fn resp_country_codes(&self) -> &[[u8; 2]] {
-            &self.resp_country_codes
-        }
-    };
-}
-pub(crate) use impl_match_orig_resp_vec_country_codes;
-
-/// Adds country-code accessors for events with many origin codes and one
-/// response code.
-macro_rules! impl_match_orig_vec_resp_country_codes {
-    () => {
-        fn orig_country_codes(&self) -> &[[u8; 2]] {
-            &self.orig_country_codes
-        }
-
-        fn resp_country_codes(&self) -> &[[u8; 2]] {
-            std::slice::from_ref(&self.resp_country_code)
-        }
-    };
-}
-pub(crate) use impl_match_orig_vec_resp_country_codes;
-
-/// Adds country-code accessors for events with many response codes only.
-macro_rules! impl_match_resp_vec_country_codes {
-    () => {
-        fn orig_country_codes(&self) -> &[[u8; 2]] {
-            &[]
-        }
-
-        fn resp_country_codes(&self) -> &[[u8; 2]] {
-            &self.resp_country_codes
-        }
-    };
-}
-pub(crate) use impl_match_resp_vec_country_codes;
-
 /// Epsilon value for inclusive confidence comparisons
 const CONFIDENCE_EPSILON: f32 = 1e-6;
 // TODO: Make new Match trait to support Windows Events
@@ -93,12 +35,8 @@ pub(super) trait Match {
     fn confidence(&self) -> Option<f32>;
     fn learning_method(&self) -> LearningMethod;
     fn find_attr_by_kind(&self, raw_event_attr: RawEventAttrKind) -> Option<AttrValue<'_>>;
-    fn orig_country_codes(&self) -> &[[u8; 2]] {
-        &[]
-    }
-    fn resp_country_codes(&self) -> &[[u8; 2]] {
-        &[]
-    }
+    fn orig_country_codes(&self) -> &[[u8; 2]];
+    fn resp_country_codes(&self) -> &[[u8; 2]];
     fn score_by_attr(&self, attr_triage: &[PacketAttr]) -> f64 {
         let total_score = attr_triage.iter().fold(0.0, |score_acc, item| {
             let Ok(kind) =
@@ -122,11 +60,7 @@ pub(super) trait Match {
 
     /// Returns whether the event matches the filter and the triage scores. The triage scores are
     /// only returned if the event matches the filter.
-    fn matches(
-        &self,
-        _locator: Option<&ip2location::DB>,
-        filter: &EventFilter,
-    ) -> Result<(bool, Option<Vec<TriageScore>>)> {
+    fn matches(&self, filter: &EventFilter) -> Result<(bool, Option<Vec<TriageScore>>)> {
         if !self.kind_matches(filter) {
             return Ok((false, None));
         }
@@ -909,7 +843,7 @@ mod tests {
         assert!(
             semi_supervised_events
                 .iter()
-                .all(|event| event.matches(None, &filter).unwrap().0)
+                .all(|event| event.matches(&filter).unwrap().0)
         );
 
         // Unsupervised engine-generated event filtering
@@ -917,7 +851,7 @@ mod tests {
         assert!(
             semi_supervised_events
                 .iter()
-                .all(|event| !event.matches(None, &filter).unwrap().0)
+                .all(|event| !event.matches(&filter).unwrap().0)
         );
 
         // All event filtering
@@ -928,7 +862,7 @@ mod tests {
         assert!(
             semi_supervised_events
                 .iter()
-                .all(|event| event.matches(None, &filter).unwrap().0)
+                .all(|event| event.matches(&filter).unwrap().0)
         );
     }
 
@@ -958,7 +892,7 @@ mod tests {
         assert!(
             unsupervised_events
                 .iter()
-                .all(|event| !event.matches(None, &filter).unwrap().0)
+                .all(|event| !event.matches(&filter).unwrap().0)
         );
 
         // Unsupervised engine-generated event filtering
@@ -966,7 +900,7 @@ mod tests {
         assert!(
             unsupervised_events
                 .iter()
-                .all(|event| event.matches(None, &filter).unwrap().0)
+                .all(|event| event.matches(&filter).unwrap().0)
         );
 
         // All event filtering
@@ -977,7 +911,7 @@ mod tests {
         assert!(
             unsupervised_events
                 .iter()
-                .all(|event| event.matches(None, &filter).unwrap().0)
+                .all(|event| event.matches(&filter).unwrap().0)
         );
     }
 
@@ -1155,7 +1089,7 @@ mod tests {
         assert!(
             single_address_events
                 .iter()
-                .all(|event| event.matches(None, &success_filter).unwrap().0)
+                .all(|event| event.matches(&success_filter).unwrap().0)
         );
 
         // Filtering fail.
@@ -1166,7 +1100,7 @@ mod tests {
         assert!(
             single_address_events
                 .iter()
-                .all(|event| !event.matches(None, &fail_filter).unwrap().0)
+                .all(|event| !event.matches(&fail_filter).unwrap().0)
         );
 
         let mut fail_filter = event_filter();
@@ -1174,7 +1108,7 @@ mod tests {
         assert!(
             single_address_events
                 .iter()
-                .all(|event| !event.matches(None, &fail_filter).unwrap().0)
+                .all(|event| !event.matches(&fail_filter).unwrap().0)
         );
 
         let mut fail_filter = event_filter();
@@ -1182,7 +1116,7 @@ mod tests {
         assert!(
             single_address_events
                 .iter()
-                .all(|event| !event.matches(None, &fail_filter).unwrap().0)
+                .all(|event| !event.matches(&fail_filter).unwrap().0)
         );
 
         let mut fail_filter = event_filter();
@@ -1190,7 +1124,7 @@ mod tests {
         assert!(
             single_address_events
                 .iter()
-                .all(|event| !event.matches(None, &fail_filter).unwrap().0)
+                .all(|event| !event.matches(&fail_filter).unwrap().0)
         );
 
         let mut fail_filter = event_filter();
@@ -1198,7 +1132,7 @@ mod tests {
         assert!(
             single_address_events
                 .iter()
-                .all(|event| !event.matches(None, &fail_filter).unwrap().0)
+                .all(|event| !event.matches(&fail_filter).unwrap().0)
         );
 
         let mut multi_address_events = Vec::new();
@@ -1228,7 +1162,7 @@ mod tests {
         assert!(
             multi_address_events
                 .iter()
-                .all(|event| event.matches(None, &success_filter).unwrap().0)
+                .all(|event| event.matches(&success_filter).unwrap().0)
         );
 
         // Filtering fail.
@@ -1239,7 +1173,7 @@ mod tests {
         assert!(
             multi_address_events
                 .iter()
-                .all(|event| !event.matches(None, &fail_filter).unwrap().0)
+                .all(|event| !event.matches(&fail_filter).unwrap().0)
         );
 
         let mut fail_filter = event_filter();
@@ -1247,7 +1181,7 @@ mod tests {
         assert!(
             multi_address_events
                 .iter()
-                .all(|event| !event.matches(None, &fail_filter).unwrap().0)
+                .all(|event| !event.matches(&fail_filter).unwrap().0)
         );
 
         let mut fail_filter = event_filter();
@@ -1255,7 +1189,7 @@ mod tests {
         assert!(
             multi_address_events
                 .iter()
-                .all(|event| !event.matches(None, &fail_filter).unwrap().0)
+                .all(|event| !event.matches(&fail_filter).unwrap().0)
         );
 
         let mut fail_filter = event_filter();
@@ -1263,7 +1197,7 @@ mod tests {
         assert!(
             multi_address_events
                 .iter()
-                .all(|event| !event.matches(None, &fail_filter).unwrap().0)
+                .all(|event| !event.matches(&fail_filter).unwrap().0)
         );
 
         let mut fail_filter = event_filter();
@@ -1271,7 +1205,7 @@ mod tests {
         assert!(
             multi_address_events
                 .iter()
-                .all(|event| !event.matches(None, &fail_filter).unwrap().0)
+                .all(|event| !event.matches(&fail_filter).unwrap().0)
         );
 
         let mut no_address_events = Vec::new();
@@ -1290,7 +1224,7 @@ mod tests {
         assert!(
             no_address_events
                 .iter()
-                .all(|event| !event.matches(None, &fail_filter).unwrap().0)
+                .all(|event| !event.matches(&fail_filter).unwrap().0)
         );
 
         let mut fail_filter = event_filter();
@@ -1298,7 +1232,7 @@ mod tests {
         assert!(
             no_address_events
                 .iter()
-                .all(|event| !event.matches(None, &fail_filter).unwrap().0)
+                .all(|event| !event.matches(&fail_filter).unwrap().0)
         );
 
         let mut fail_filter = event_filter();
@@ -1306,7 +1240,7 @@ mod tests {
         assert!(
             no_address_events
                 .iter()
-                .all(|event| !event.matches(None, &fail_filter).unwrap().0)
+                .all(|event| !event.matches(&fail_filter).unwrap().0)
         );
 
         let mut fail_filter = event_filter();
@@ -1314,7 +1248,7 @@ mod tests {
         assert!(
             no_address_events
                 .iter()
-                .all(|event| !event.matches(None, &fail_filter).unwrap().0)
+                .all(|event| !event.matches(&fail_filter).unwrap().0)
         );
 
         let mut fail_filter = event_filter();
@@ -1322,7 +1256,7 @@ mod tests {
         assert!(
             no_address_events
                 .iter()
-                .all(|event| !event.matches(None, &fail_filter).unwrap().0)
+                .all(|event| !event.matches(&fail_filter).unwrap().0)
         );
     }
 
@@ -3185,7 +3119,7 @@ mod tests {
             triage_policies: Some(vec![unreachable_policy]),
         };
 
-        let (matched, scores) = event.matches(None, &filter).unwrap();
+        let (matched, scores) = event.matches(&filter).unwrap();
         assert!(!matched);
         assert!(scores.is_none());
     }
@@ -3209,21 +3143,21 @@ mod tests {
     fn country_filter_matches_stored_orig_country_code() {
         let event = http_threat_event_with_country_codes(*b"US", *b"KR");
         let filter = country_filter(*b"US");
-        assert!(event.matches(None, &filter).unwrap().0);
+        assert!(event.matches(&filter).unwrap().0);
     }
 
     #[test]
     fn country_filter_matches_stored_resp_country_code() {
         let event = http_threat_event_with_country_codes(*b"US", *b"KR");
         let filter = country_filter(*b"KR");
-        assert!(event.matches(None, &filter).unwrap().0);
+        assert!(event.matches(&filter).unwrap().0);
     }
 
     #[test]
     fn country_filter_rejects_when_no_stored_code_matches() {
         let event = http_threat_event_with_country_codes(*b"US", *b"KR");
         let filter = country_filter(*b"JP");
-        assert!(!event.matches(None, &filter).unwrap().0);
+        assert!(!event.matches(&filter).unwrap().0);
     }
 
     #[test]
@@ -3233,14 +3167,24 @@ mod tests {
             crate::util::COUNTRY_CODE_PENDING,
         );
         let filter = country_filter(*b"US");
-        assert!(!event.matches(None, &filter).unwrap().0);
+        assert!(!event.matches(&filter).unwrap().0);
     }
 
     #[test]
-    fn country_filter_is_case_insensitive() {
-        let event = http_threat_event_with_country_codes(*b"US", *b"KR");
-        let filter = country_filter(*b"us");
-        assert!(event.matches(None, &filter).unwrap().0);
+    fn country_filter_rejects_events_without_stored_country_codes() {
+        let filter = country_filter(*b"US");
+        assert!(
+            !Event::ExtraThreat(extra_threat())
+                .matches(&filter)
+                .unwrap()
+                .0
+        );
+        assert!(
+            !Event::WindowsThreat(windows_threat())
+                .matches(&filter)
+                .unwrap()
+                .0
+        );
     }
 
     #[test]
@@ -3251,6 +3195,6 @@ mod tests {
         fields.resp_country_codes = vec![*b"JP", *b"DE"];
         let event = Event::MultiHostPortScan(MultiHostPortScan::new(time, &fields));
         let filter = country_filter(*b"DE");
-        assert!(event.matches(None, &filter).unwrap().0);
+        assert!(event.matches(&filter).unwrap().0);
     }
 }

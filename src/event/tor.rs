@@ -152,7 +152,14 @@ impl TorConnection {
 }
 
 impl Match for TorConnection {
-    crate::event::common::impl_match_pair_country_codes!();
+    fn orig_country_codes(&self) -> &[[u8; 2]] {
+        std::slice::from_ref(&self.orig_country_code)
+    }
+
+    fn resp_country_codes(&self) -> &[[u8; 2]] {
+        std::slice::from_ref(&self.resp_country_code)
+    }
+
     fn src_addrs(&self) -> &[IpAddr] {
         std::slice::from_ref(&self.orig_addr)
     }
@@ -307,7 +314,14 @@ impl TorConnectionConn {
 }
 
 impl Match for TorConnectionConn {
-    crate::event::common::impl_match_pair_country_codes!();
+    fn orig_country_codes(&self) -> &[[u8; 2]] {
+        std::slice::from_ref(&self.orig_country_code)
+    }
+
+    fn resp_country_codes(&self) -> &[[u8; 2]] {
+        std::slice::from_ref(&self.resp_country_code)
+    }
+
     fn src_addrs(&self) -> &[IpAddr] {
         std::slice::from_ref(&self.orig_addr)
     }
