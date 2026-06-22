@@ -26,12 +26,6 @@ use crate::{
 const IP_V4_MAX_PREFIX_LEN: u8 = 32;
 const IP_V6_MAX_PREFIX_LEN: u8 = 128;
 
-#[derive(Clone, Copy)]
-enum IpFamily {
-    V4,
-    V6,
-}
-
 #[derive(Clone, Deserialize, Serialize)]
 pub struct TriagePolicy {
     pub id: u32,
@@ -317,8 +311,8 @@ impl NetworkFilter {
         v4_networks.sort_unstable_by_key(|(net, _)| net.prefix_len());
         v6_networks.sort_unstable_by_key(|(net, _)| net.prefix_len());
 
-        let netmask_v4 = min_netmask_for_family(&v4_networks, IpFamily::V4)?;
-        let netmask_v6 = min_netmask_for_family(&v6_networks, IpFamily::V6)?;
+        let netmask_v4 = min_netmask_for_family(&v4_networks)?;
+        let netmask_v6 = min_netmask_for_family(&v6_networks)?;
 
         let mut compare_tree: HashMap<IpAddr, Vec<CompareIp>> = HashMap::new();
         if let Some(netmask) = netmask_v4 {
@@ -698,18 +692,15 @@ fn network_by_hosts_network_group(
     Ok(())
 }
 
-fn min_netmask_for_family(
-    networks: &[(IpNet, CompareIp)],
-    family: IpFamily,
-) -> Result<Option<IpAddr>> {
+fn min_netmask_for_family(networks: &[(IpNet, CompareIp)]) -> Result<Option<IpAddr>> {
     let Some((first, _)) = networks.first() else {
         return Ok(None);
     };
     let min_prefix_len = first.prefix_len();
-    let netmask = match family {
-        IpFamily::V4 => Ipv4Net::new(Ipv4Addr::UNSPECIFIED, min_prefix_len)
+    let netmask = match first {
+        IpNet::V4(_) => Ipv4Net::new(Ipv4Addr::UNSPECIFIED, min_prefix_len)
             .map(|net| IpNet::V4(net).netmask())?,
-        IpFamily::V6 => Ipv6Net::new(Ipv6Addr::UNSPECIFIED, min_prefix_len)
+        IpNet::V6(_) => Ipv6Net::new(Ipv6Addr::UNSPECIFIED, min_prefix_len)
             .map(|net| IpNet::V6(net).netmask())?,
     };
     Ok(Some(netmask))
