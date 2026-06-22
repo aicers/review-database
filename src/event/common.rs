@@ -439,6 +439,7 @@ pub enum AttrValue<'a> {
     VecUInt(Cow<'a, [u64]>),
     VecString(Cow<'a, [String]>),
     VecRaw(&'a [u8]),
+    VecRawList(Cow<'a, [&'a [u8]]>),
 }
 
 fn is_matching_list<T, F>(attr_val: &[T], packet_attr: &PacketAttr, compare_fn: F) -> bool
@@ -484,6 +485,9 @@ fn is_attr_matched(target_value: AttrValue, attr: &PacketAttr) -> bool {
             })
         }
         AttrValue::VecRaw(vec_raw_val) => matches_vec_raw_attr(vec_raw_val, attr),
+        AttrValue::VecRawList(list) => is_matching_list(list.as_ref(), attr, |val, packet_attr| {
+            matches_vec_raw_attr(val, packet_attr)
+        }),
     }
 }
 
@@ -1556,6 +1560,40 @@ mod tests {
         assert!(is_attr_matched(
             AttrValue::VecUInt(std::borrow::Cow::Owned(owned_ports)),
             &not_equal_attr
+        ));
+    }
+
+    #[test]
+    fn vec_raw_list_matching() {
+        let option_data: Vec<Vec<u8>> = vec![vec![1], vec![0x01, 0x02, 0x03]];
+        let slices: Vec<&[u8]> = option_data.iter().map(Vec::as_slice).collect();
+
+        let contain_attr = PacketAttr {
+            raw_event_kind: RawEventKind::Dhcp,
+            attr_name: DhcpAttr::OptionData.to_string(),
+            value_kind: ValueKind::Vector,
+            cmp_kind: AttrCmpKind::Contain,
+            first_value: vec![0x02, 0x03],
+            second_value: None,
+            weight: None,
+        };
+        assert!(is_attr_matched(
+            AttrValue::VecRawList(std::borrow::Cow::Borrowed(&slices)),
+            &contain_attr
+        ));
+
+        let not_contain_attr = PacketAttr {
+            raw_event_kind: RawEventKind::Dhcp,
+            attr_name: DhcpAttr::OptionData.to_string(),
+            value_kind: ValueKind::Vector,
+            cmp_kind: AttrCmpKind::NotContain,
+            first_value: vec![0xff],
+            second_value: None,
+            weight: None,
+        };
+        assert!(is_attr_matched(
+            AttrValue::VecRawList(std::borrow::Cow::Borrowed(&slices)),
+            &not_contain_attr
         ));
     }
 
