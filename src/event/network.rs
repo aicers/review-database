@@ -2,7 +2,6 @@
 use std::{fmt, net::IpAddr};
 
 use attrievent::attribute::{NetworkAttr, RawEventAttrKind};
-use chrono::{DateTime, Utc, serde::ts_nanoseconds};
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
@@ -37,8 +36,8 @@ macro_rules! find_network_attr_by_kind {
 
 #[derive(Serialize, Deserialize)]
 pub struct NetworkThreatFields {
-    #[serde(with = "ts_nanoseconds")]
-    pub time: DateTime<Utc>,
+    #[serde(with = "jiff_ts_nanoseconds")]
+    pub time: Timestamp,
     pub sensor: String,
     pub orig_addr: IpAddr,
     pub orig_port: u16,
@@ -46,8 +45,8 @@ pub struct NetworkThreatFields {
     pub resp_port: u16,
     pub proto: u8,
     pub service: String,
-    #[serde(with = "ts_nanoseconds")]
-    pub start_time: DateTime<Utc>,
+    #[serde(with = "jiff_ts_nanoseconds")]
+    pub start_time: Timestamp,
     pub duration: i64,
     pub orig_pkts: u64,
     pub resp_pkts: u64,
@@ -100,8 +99,7 @@ pub struct NetworkThreatFieldsStoredV0_46 {
 impl From<NetworkThreatFields> for NetworkThreatFieldsStored {
     fn from(value: NetworkThreatFields) -> Self {
         Self {
-            time: timestamp::from_chrono(value.time)
-                .expect("producer timestamp must fit i64 nanosecond contract"),
+            time: value.time,
             sensor: value.sensor,
             orig_addr: value.orig_addr,
             orig_port: value.orig_port,
@@ -111,8 +109,7 @@ impl From<NetworkThreatFields> for NetworkThreatFieldsStored {
             resp_country_code: crate::util::COUNTRY_CODE_PENDING,
             proto: value.proto,
             service: value.service,
-            start_time: timestamp::from_chrono(value.start_time)
-                .expect("producer timestamp must fit i64 nanosecond contract"),
+            start_time: value.start_time,
             duration: value.duration,
             orig_pkts: value.orig_pkts,
             resp_pkts: value.resp_pkts,
@@ -147,7 +144,7 @@ impl NetworkThreatFields {
             self.resp_port.to_string(),
             self.proto.to_string(),
             self.service,
-            self.start_time.to_rfc3339(),
+            timestamp::format_rfc3339(self.start_time).unwrap_or_default(),
             self.duration.to_string(),
             self.orig_pkts.to_string(),
             self.resp_pkts.to_string(),
@@ -165,7 +162,7 @@ impl NetworkThreatFields {
 }
 
 pub struct NetworkThreat {
-    pub time: DateTime<Utc>,
+    pub time: Timestamp,
     pub sensor: String,
     pub orig_addr: IpAddr,
     pub orig_port: u16,
@@ -175,7 +172,7 @@ pub struct NetworkThreat {
     pub resp_country_code: [u8; 2],
     pub proto: u8,
     pub service: String,
-    pub start_time: DateTime<Utc>,
+    pub start_time: Timestamp,
     pub duration: i64,
     pub orig_pkts: u64,
     pub resp_pkts: u64,
@@ -195,8 +192,7 @@ pub struct NetworkThreat {
 impl NetworkThreat {
     pub(super) fn new(time: Timestamp, fields: NetworkThreatFieldsStored) -> Self {
         Self {
-            time: timestamp::to_chrono(time)
-                .expect("stored timestamp must fit i64 nanosecond contract"),
+            time,
             sensor: fields.sensor,
             orig_addr: fields.orig_addr,
             orig_port: fields.orig_port,
@@ -206,8 +202,7 @@ impl NetworkThreat {
             resp_country_code: fields.resp_country_code,
             proto: fields.proto,
             service: fields.service,
-            start_time: timestamp::to_chrono(fields.start_time)
-                .expect("stored timestamp must fit i64 nanosecond contract"),
+            start_time: fields.start_time,
             duration: fields.duration,
             orig_pkts: fields.orig_pkts,
             resp_pkts: fields.resp_pkts,
@@ -245,7 +240,7 @@ impl fmt::Display for NetworkThreat {
             crate::util::country_code_as_str(&self.resp_country_code),
             self.proto.to_string(),
             self.service,
-            self.start_time.to_rfc3339(),
+            timestamp::format_rfc3339(self.start_time).unwrap_or_default(),
             self.duration.to_string(),
             self.orig_pkts.to_string(),
             self.resp_pkts.to_string(),

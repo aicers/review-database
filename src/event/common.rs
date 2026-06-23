@@ -2635,7 +2635,7 @@ pub(crate) mod tests {
 
     fn network_threat() -> NetworkThreat {
         NetworkThreat {
-            time: Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap(),
+            time: stored_time(Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap()),
             sensor: "sensor".to_string(),
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             orig_port: 10000,
@@ -2645,7 +2645,7 @@ pub(crate) mod tests {
             resp_country_code: crate::util::COUNTRY_CODE_PENDING,
             proto: 6,
             service: "http".to_string(),
-            start_time: Utc.with_ymd_and_hms(1970, 1, 1, 0, 0, 0).unwrap(),
+            start_time: stored_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 0, 0).unwrap()),
             duration: 100,
             orig_pkts: 10,
             resp_pkts: 20,
@@ -2665,7 +2665,7 @@ pub(crate) mod tests {
 
     fn extra_threat() -> ExtraThreat {
         ExtraThreat {
-            time: Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap(),
+            time: stored_time(Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap()),
             sensor: "sensor".to_string(),
             service: "service".to_string(),
             content: "content".to_string(),
@@ -2682,7 +2682,7 @@ pub(crate) mod tests {
 
     fn windows_threat() -> WindowsThreat {
         WindowsThreat {
-            time: Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap(),
+            time: stored_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap()),
             sensor: "sensor".to_string(),
             service: "notepad".to_string(),
             agent_name: "win64".to_string(),

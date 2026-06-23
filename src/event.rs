@@ -38,7 +38,7 @@ use std::{
 
 use aho_corasick::AhoCorasickBuilder;
 use anyhow::{Context, Result, bail};
-use chrono::{DateTime, TimeZone, Utc};
+use chrono::{TimeZone, Utc};
 use jiff::Timestamp;
 use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive, ToPrimitive};
@@ -263,7 +263,7 @@ impl fmt::Display for Event {
                 write!(
                     f,
                     "time={:?} event_kind={event_kind:?} category={category:?} {event}",
-                    event.time.to_rfc3339(),
+                    timestamp::format_rfc3339(event.time).unwrap_or_default(),
                 )
             }
             Event::RdpBruteForce(event) => {
@@ -510,21 +510,21 @@ impl fmt::Display for Event {
                 write!(
                     f,
                     "time={:?} event_kind={event_kind:?} category={category:?} {event}",
-                    event.time.to_rfc3339(),
+                    timestamp::format_rfc3339(event.time).unwrap_or_default(),
                 )
             }
             Event::NetworkThreat(event) => {
                 write!(
                     f,
                     "time={:?} event_kind={event_kind:?} category={category:?} {event}",
-                    event.time.to_rfc3339(),
+                    timestamp::format_rfc3339(event.time).unwrap_or_default(),
                 )
             }
             Event::ExtraThreat(event) => {
                 write!(
                     f,
                     "time={:?} event_kind={event_kind:?} category={category:?} {event}",
-                    event.time.to_rfc3339(),
+                    timestamp::format_rfc3339(event.time).unwrap_or_default(),
                 )
             }
             Event::LockyRansomware(event) => {
@@ -3243,19 +3243,20 @@ impl<'a> EventDb<'a> {
     /// # Errors
     ///
     /// Returns an error if a database operation fails.
-    pub fn remove_before(&self, before: DateTime<Utc>) -> Result<u64> {
+    pub fn remove_before(&self, before: Timestamp) -> Result<u64> {
         const BATCH_SIZE: usize = 1000;
 
-        let cutoff_nanos = before.timestamp_nanos_opt().unwrap_or_else(|| {
-            // `timestamp_nanos_opt()` returns `None` when the nanosecond value
-            // overflows `i64`. Distinguish far-future (overflow) from far-past
-            // (underflow) by inspecting the seconds component.
-            if before.timestamp() >= 0 {
-                i64::MAX // far-future cutoff → delete everything
-            } else {
-                i64::MIN // far-past cutoff → delete nothing
+        let cutoff_nanos = match timestamp::to_i64_nanos(before) {
+            Ok(nanos) => nanos,
+            Err(timestamp::TimestampError::OutOfI64Range(nanos)) => {
+                if nanos >= 0 {
+                    i64::MAX // far-future cutoff → delete everything
+                } else {
+                    i64::MIN // far-past cutoff → delete nothing
+                }
             }
-        });
+            Err(timestamp::TimestampError::Invalid(err)) => return Err(err.into()),
+        };
         let mut deleted: u64 = 0;
 
         loop {
@@ -4309,7 +4310,7 @@ mod tests {
 
     fn extra_threat_message() -> EventMessage {
         let fields = ExtraThreatFields {
-            time: Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap(),
+            time: msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap()),
             sensor: "collector1".to_string(),
             service: "service".to_string(),
             content: "content".to_string(),
@@ -4331,7 +4332,7 @@ mod tests {
 
     fn network_threat_message() -> EventMessage {
         let fields = NetworkThreatFields {
-            time: Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap(),
+            time: msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap()),
             sensor: "collector1".to_string(),
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             orig_port: 10000,
@@ -4339,7 +4340,7 @@ mod tests {
             resp_port: 80,
             proto: 6,
             service: "http".to_string(),
-            start_time: Utc.with_ymd_and_hms(1970, 1, 1, 0, 0, 0).unwrap(),
+            start_time: msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 0, 0).unwrap()),
             duration: 0,
             orig_pkts: 0,
             resp_pkts: 0,
@@ -4364,7 +4365,7 @@ mod tests {
 
     fn windows_threat_message() -> EventMessage {
         let fields = WindowsThreatFields {
-            time: Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap(),
+            time: msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap()),
             sensor: "collector1".to_string(),
             service: "notepad".to_string(),
             agent_name: "win64".to_string(),
@@ -4468,7 +4469,7 @@ mod tests {
         // produced from `*Fields` deserialize as `*FieldsStored`, and the
         // runtime constructor copies through unchanged.
         let extra_fields = ExtraThreatFields {
-            time: Utc.with_ymd_and_hms(1970, 1, 1, 0, 0, 0).unwrap(),
+            time: msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 0, 0).unwrap()),
             sensor: "s".to_string(),
             service: "svc".to_string(),
             content: "c".to_string(),
@@ -4490,7 +4491,7 @@ mod tests {
         assert!((runtime.confidence - 0.5).abs() < f32::EPSILON);
 
         let net_fields = NetworkThreatFields {
-            time: Utc.with_ymd_and_hms(1970, 1, 1, 0, 0, 0).unwrap(),
+            time: msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 0, 0).unwrap()),
             sensor: "s".to_string(),
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             orig_port: 1,
@@ -4498,7 +4499,7 @@ mod tests {
             resp_port: 2,
             proto: 6,
             service: "http".to_string(),
-            start_time: Utc.with_ymd_and_hms(1970, 1, 1, 0, 0, 0).unwrap(),
+            start_time: msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 0, 0).unwrap()),
             duration: 0,
             orig_pkts: 0,
             resp_pkts: 0,
@@ -4522,7 +4523,7 @@ mod tests {
         assert_eq!(net_runtime.service, "http");
 
         let win_fields = WindowsThreatFields {
-            time: Utc.with_ymd_and_hms(1970, 1, 1, 0, 0, 0).unwrap(),
+            time: msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 0, 0).unwrap()),
             sensor: "s".to_string(),
             service: "svc".to_string(),
             agent_name: "an".to_string(),
@@ -4753,7 +4754,7 @@ mod tests {
     #[test]
     fn syslog_for_httpthreat() {
         let fields = HttpThreatFields {
-            time: Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap(),
+            time: msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap()),
             sensor: "collector1".to_string(),
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             orig_port: 10000,
@@ -6458,7 +6459,7 @@ mod tests {
     #[test]
     fn syslog_for_extrathreat() {
         let fields = ExtraThreatFields {
-            time: Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap(),
+            time: msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap()),
             sensor: "collector1".to_string(),
             service: "service".to_string(),
             content: "content".to_string(),
@@ -6545,7 +6546,7 @@ mod tests {
     #[test]
     fn syslog_for_networkthreat() {
         let fields = NetworkThreatFields {
-            time: Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap(),
+            time: msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap()),
             sensor: "collector1".to_string(),
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             orig_port: 10000,
@@ -6553,7 +6554,7 @@ mod tests {
             resp_port: 80,
             proto: 6,
             service: "http".to_string(),
-            start_time: Utc.with_ymd_and_hms(1970, 1, 1, 0, 0, 0).unwrap(),
+            start_time: msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 0, 0).unwrap()),
             duration: 0,
             orig_pkts: 0,
             resp_pkts: 0,
@@ -7132,7 +7133,7 @@ mod tests {
     #[test]
     fn syslog_for_windowsthreat() {
         let fields = WindowsThreatFields {
-            time: Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap(),
+            time: msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap()),
             sensor: "collector1".to_string(),
             service: "notepad".to_string(),
             agent_name: "win64".to_string(),
@@ -7883,7 +7884,7 @@ mod tests {
         assert_eq!(db.iter_forward().count(), 2);
 
         // Remove events before 2024-01-01.
-        let cutoff = Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap();
+        let cutoff = msg_time(Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap());
         let deleted = db.remove_before(cutoff).unwrap();
         assert_eq!(deleted, 1);
 
@@ -7903,7 +7904,7 @@ mod tests {
         db.put(&msg).unwrap();
 
         // Cutoff in the past — nothing to delete.
-        let cutoff = Utc.with_ymd_and_hms(1970, 1, 1, 0, 0, 0).unwrap();
+        let cutoff = msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 0, 0).unwrap());
         let deleted = db.remove_before(cutoff).unwrap();
         assert_eq!(deleted, 0);
         assert_eq!(db.iter_forward().count(), 1);
@@ -7914,7 +7915,7 @@ mod tests {
         let (_permit, store) = setup_store();
         let db = store.events();
 
-        let cutoff = Utc::now();
+        let cutoff = msg_time(Utc::now());
         let deleted = db.remove_before(cutoff).unwrap();
         assert_eq!(deleted, 0);
     }
@@ -7973,7 +7974,7 @@ mod tests {
 
         // Cutoff equal to exact_time: event at exact_time is NOT deleted
         // (strictly before).
-        let deleted = db.remove_before(exact_time).unwrap();
+        let deleted = db.remove_before(msg_time(exact_time)).unwrap();
         assert_eq!(deleted, 1);
         assert_eq!(db.iter_forward().count(), 1);
     }
@@ -7990,11 +7991,10 @@ mod tests {
         db.put(&msg).unwrap();
 
         // A cutoff so far in the past that nanoseconds overflow (before 1677).
-        let far_past = DateTime::parse_from_rfc3339("1000-01-01T00:00:00Z")
-            .unwrap()
-            .with_timezone(&Utc);
+        let far_past =
+            Timestamp::from_nanosecond(i128::from(i64::MIN) - 1).expect("valid jiff timestamp");
         assert!(
-            far_past.timestamp_nanos_opt().is_none(),
+            timestamp::to_i64_nanos(far_past).is_err(),
             "cutoff should overflow nanosecond representation"
         );
         let deleted = db.remove_before(far_past).unwrap();
@@ -8014,11 +8014,10 @@ mod tests {
         db.put(&msg).unwrap();
 
         // A cutoff so far in the future that nanoseconds overflow (after 2262).
-        let far_future = DateTime::parse_from_rfc3339("3000-01-01T00:00:00Z")
-            .unwrap()
-            .with_timezone(&Utc);
+        let far_future =
+            Timestamp::from_nanosecond(i128::from(i64::MAX) + 1).expect("valid jiff timestamp");
         assert!(
-            far_future.timestamp_nanos_opt().is_none(),
+            timestamp::to_i64_nanos(far_future).is_err(),
             "cutoff should overflow nanosecond representation"
         );
         let deleted = db.remove_before(far_future).unwrap();
@@ -8079,7 +8078,7 @@ mod tests {
         assert_eq!(db.iter_forward().count(), total);
 
         // Cutoff well after all events.
-        let cutoff = Utc.with_ymd_and_hms(2025, 1, 1, 0, 0, 0).unwrap();
+        let cutoff = msg_time(Utc.with_ymd_and_hms(2025, 1, 1, 0, 0, 0).unwrap());
         let deleted = db.remove_before(cutoff).unwrap();
         assert_eq!(deleted, u64::try_from(total).unwrap());
         assert_eq!(db.iter_forward().count(), 0);

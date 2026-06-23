@@ -29,13 +29,20 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   `Event::count_originator_ip_address` and
   `Event::count_responder_ip_address` to match the `orig_`/`resp_`
   terminology used throughout session-oriented event APIs.
-- **BREAKING**: `EventMessage.time` is now a `jiff::Timestamp`. Event stored
-  schemas that persist timestamps (`ExtraThreatFieldsStored`,
+- **BREAKING**: Event timestamps now use `jiff::Timestamp` across the Event
+  API boundary. `EventMessage.time`, producer-facing threat event fields
+  (`ExtraThreatFields`, `HttpThreatFields`, `NetworkThreatFields`, and
+  `WindowsThreatFields`), returned threat event types (`ExtraThreat`,
+  `HttpThreat`, `NetworkThreat`, and `WindowsThreat`), and stored schemas
+  that persist timestamps (`ExtraThreatFieldsStored`,
   `HttpThreatFieldsStored`, `NetworkThreatFieldsStored`, and
-  `WindowsThreatFieldsStored`) also use `jiff::Timestamp` in memory. On-disk
+  `WindowsThreatFieldsStored`) all use `jiff::Timestamp` in memory.
+  `EventDb::remove_before` now accepts a `jiff::Timestamp` cutoff. On-disk
   event keys and stored timestamp fields remain signed 64-bit epoch
   nanoseconds; a custom serde adapter maps Jiff values to those bytes and
-  rejects timestamps outside the `i64` nanosecond range.
+  rejects timestamps outside the `i64` nanosecond range. Primitive `i64`
+  session start-time fields (for example `HttpThreatFields.start_time`) are
+  unchanged.
 - **BREAKING**: Bumped the database format to `0.46.0`, changed
   `Store::new` to take an `Option<Arc<ip2location::DB>>` argument, and changed
   `migrate_data_dir` to accept the same optional shared database handle. Event
