@@ -14,6 +14,7 @@ use chrono::{DateTime, Utc};
 use ipnet::{IpNet, Ipv4Net, Ipv6Net};
 use rocksdb::OptimisticTransactionDB;
 use serde::{Deserialize, Serialize};
+use tracing::warn;
 
 use super::UniqueKey;
 use crate::{
@@ -286,22 +287,11 @@ impl CompareIp {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct NetworkFilter {
-    netmask: IpAddr,
+    netmask_v4: Option<IpAddr>,
+    netmask_v6: Option<IpAddr>,
     tree: HashMap<IpAddr, Vec<CompareIp>>,
-}
-
-impl Default for NetworkFilter {
-    fn default() -> Self {
-        Self {
-            // This ipv4 is always parsable.
-            netmask: Ipv4Net::new(Ipv4Addr::UNSPECIFIED, 0)
-                .map(|net| IpNet::V4(net).netmask())
-                .expect("Failed to parse default ip address"),
-            tree: HashMap::new(),
-        }
-    }
 }
 
 impl NetworkFilter {
@@ -314,43 +304,40 @@ impl NetworkFilter {
         let mut networks = Vec::new();
         network_by_hosts_network_group(host_network_group, &mut networks)?;
 
-        networks.sort_by_key(|(net, _)| net.prefix_len());
-        let min_netmask = if let Some((first, _)) = networks.first() {
-            let min_prefix_len = first.prefix_len();
-            if first.addr().is_ipv4() {
-                Ipv4Net::new(Ipv4Addr::UNSPECIFIED, min_prefix_len)
-                    .map(|net| IpNet::V4(net).netmask())?
-            } else {
-                Ipv6Net::new(Ipv6Addr::UNSPECIFIED, min_prefix_len)
-                    .map(|net| IpNet::V6(net).netmask())?
-            }
-        } else {
-            Ipv4Net::new(Ipv4Addr::UNSPECIFIED, 0).map(|net| IpNet::V4(net).netmask())?
-        };
-
-        let networks: Vec<_> = networks
+        let (mut v4_networks, mut v6_networks): (Vec<_>, Vec<_>) = networks
             .into_iter()
-            .filter_map(|(net, compare_ip)| {
-                netmask_by_ipnet(&net, min_netmask).map(|netmask| (netmask, compare_ip))
-            })
-            .collect();
+            .partition(|(net, _)| net.addr().is_ipv4());
+
+        v4_networks.sort_unstable_by_key(|(net, _)| net.prefix_len());
+        v6_networks.sort_unstable_by_key(|(net, _)| net.prefix_len());
+
+        let netmask_v4 = min_netmask_for_family(&v4_networks)?;
+        let netmask_v6 = min_netmask_for_family(&v6_networks)?;
 
         let mut compare_tree: HashMap<IpAddr, Vec<CompareIp>> = HashMap::new();
-        for (netmask, compare_ip) in networks {
-            compare_tree
-                .entry(netmask)
-                .and_modify(|v| v.push(compare_ip.clone()))
-                .or_insert_with(|| vec![compare_ip]);
+        if let Some(netmask) = netmask_v4 {
+            insert_networks_into_tree(&mut compare_tree, v4_networks, netmask)?;
         }
+        if let Some(netmask) = netmask_v6 {
+            insert_networks_into_tree(&mut compare_tree, v6_networks, netmask)?;
+        }
+
         Ok(Self {
-            netmask: min_netmask,
+            netmask_v4,
+            netmask_v6,
             tree: compare_tree,
         })
     }
 
     #[must_use]
     pub fn contains(&self, ip: IpAddr) -> bool {
-        let Some(key) = netmask_by_ipaddr(ip, self.netmask) else {
+        let Some(netmask) = (match ip {
+            IpAddr::V4(_) => self.netmask_v4,
+            IpAddr::V6(_) => self.netmask_v6,
+        }) else {
+            return false;
+        };
+        let Some(key) = netmask_by_ipaddr(ip, netmask) else {
             return false;
         };
         let Some(networks) = self.tree.get(&key) else {
@@ -372,7 +359,13 @@ impl From<ExclusionReason> for TriageExclusion {
     fn from(reason: ExclusionReason) -> Self {
         match reason {
             ExclusionReason::IpAddress(mut group) => {
-                TriageExclusion::IpAddress(NetworkFilter::new(&mut group).unwrap_or_default())
+                TriageExclusion::IpAddress(match NetworkFilter::new(&mut group) {
+                    Ok(filter) => filter,
+                    Err(error) => {
+                        warn!("Failed to build IP triage exclusion filter: {error}");
+                        NetworkFilter::default()
+                    }
+                })
             }
             ExclusionReason::Domain(domains) => {
                 // Create regex patterns for domain matching
@@ -696,6 +689,34 @@ fn network_by_hosts_network_group(
         networks.push((super_net, CompareIp::Iprange(range.clone())));
     }
 
+    Ok(())
+}
+
+fn min_netmask_for_family(networks: &[(IpNet, CompareIp)]) -> Result<Option<IpAddr>> {
+    let Some((first, _)) = networks.first() else {
+        return Ok(None);
+    };
+    let min_prefix_len = first.prefix_len();
+    let netmask = match first {
+        IpNet::V4(_) => Ipv4Net::new(Ipv4Addr::UNSPECIFIED, min_prefix_len)
+            .map(|net| IpNet::V4(net).netmask())?,
+        IpNet::V6(_) => Ipv6Net::new(Ipv6Addr::UNSPECIFIED, min_prefix_len)
+            .map(|net| IpNet::V6(net).netmask())?,
+    };
+    Ok(Some(netmask))
+}
+
+fn insert_networks_into_tree(
+    tree: &mut HashMap<IpAddr, Vec<CompareIp>>,
+    networks: Vec<(IpNet, CompareIp)>,
+    netmask: IpAddr,
+) -> Result<()> {
+    for (net, compare_ip) in networks {
+        let masked = netmask_by_ipnet(&net, netmask).ok_or_else(|| {
+            anyhow!("IP family mismatch inserting network {net} with netmask {netmask}")
+        })?;
+        tree.entry(masked).or_default().push(compare_ip);
+    }
     Ok(())
 }
 
@@ -1030,5 +1051,88 @@ mod test {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("tests/fixtures/triage_policy_literal_bytes.bin");
         std::fs::write(path, &bytes).expect("write fixture");
+    }
+
+    // =========================================================================
+    // NetworkFilter: mixed IPv4/IPv6 exclusion tests
+    // =========================================================================
+
+    use std::net::IpAddr;
+
+    use ipnet::IpNet;
+
+    use crate::{HostNetworkGroup, NetworkFilter};
+
+    #[test]
+    fn network_filter_matches_both_families_when_ipv4_has_shorter_prefix() {
+        let networks: Vec<IpNet> = vec![
+            "10.0.0.0/8".parse().unwrap(),
+            "2001:db8::/32".parse().unwrap(),
+        ];
+        let mut group = HostNetworkGroup::new(Vec::new(), networks, Vec::new());
+        let filter = NetworkFilter::new(&mut group).unwrap();
+
+        assert!(filter.contains("10.1.2.3".parse::<IpAddr>().unwrap()));
+        assert!(filter.contains("2001:db8::1".parse::<IpAddr>().unwrap()));
+        assert!(!filter.contains("11.0.0.1".parse::<IpAddr>().unwrap()));
+        assert!(!filter.contains("2002:db8::1".parse::<IpAddr>().unwrap()));
+    }
+
+    #[test]
+    fn network_filter_matches_both_families_when_ipv6_has_shorter_prefix() {
+        let networks: Vec<IpNet> = vec![
+            "192.0.2.0/24".parse().unwrap(),
+            "2001::/16".parse().unwrap(),
+        ];
+        let mut group = HostNetworkGroup::new(Vec::new(), networks, Vec::new());
+        let filter = NetworkFilter::new(&mut group).unwrap();
+
+        assert!(filter.contains("2001:db8::1".parse::<IpAddr>().unwrap()));
+        assert!(filter.contains("192.0.2.10".parse::<IpAddr>().unwrap()));
+        assert!(!filter.contains("192.0.3.1".parse::<IpAddr>().unwrap()));
+        assert!(!filter.contains("2002::1".parse::<IpAddr>().unwrap()));
+    }
+
+    #[test]
+    fn network_filter_matches_mixed_family_hosts() {
+        let hosts: Vec<IpAddr> = vec!["10.0.0.1".parse().unwrap(), "2001:db8::1".parse().unwrap()];
+        let mut group = HostNetworkGroup::new(hosts, Vec::new(), Vec::new());
+        let filter = NetworkFilter::new(&mut group).unwrap();
+
+        assert!(filter.contains("10.0.0.1".parse::<IpAddr>().unwrap()));
+        assert!(filter.contains("2001:db8::1".parse::<IpAddr>().unwrap()));
+        assert!(!filter.contains("10.0.0.2".parse::<IpAddr>().unwrap()));
+        assert!(!filter.contains("2001:db8::2".parse::<IpAddr>().unwrap()));
+    }
+
+    #[test]
+    fn network_filter_matches_mixed_family_ranges() {
+        use std::ops::RangeInclusive;
+
+        let ip_ranges: Vec<RangeInclusive<IpAddr>> = vec![
+            RangeInclusive::new("192.0.2.1".parse().unwrap(), "192.0.2.10".parse().unwrap()),
+            RangeInclusive::new(
+                "2001:db8::1".parse().unwrap(),
+                "2001:db8::10".parse().unwrap(),
+            ),
+        ];
+        let mut group = HostNetworkGroup::new(Vec::new(), Vec::new(), ip_ranges);
+        let filter = NetworkFilter::new(&mut group).unwrap();
+
+        assert!(filter.contains("192.0.2.5".parse::<IpAddr>().unwrap()));
+        assert!(filter.contains("2001:db8::5".parse::<IpAddr>().unwrap()));
+        assert!(!filter.contains("192.0.2.11".parse::<IpAddr>().unwrap()));
+        assert!(!filter.contains("2001:db8::11".parse::<IpAddr>().unwrap()));
+    }
+
+    #[test]
+    fn network_filter_single_family_unchanged() {
+        let networks: Vec<IpNet> = vec!["10.0.0.0/8".parse().unwrap()];
+        let mut group = HostNetworkGroup::new(Vec::new(), networks, Vec::new());
+        let filter = NetworkFilter::new(&mut group).unwrap();
+
+        assert!(filter.contains("10.1.2.3".parse::<IpAddr>().unwrap()));
+        assert!(!filter.contains("11.0.0.1".parse::<IpAddr>().unwrap()));
+        assert!(!filter.contains("2001:db8::1".parse::<IpAddr>().unwrap()));
     }
 }

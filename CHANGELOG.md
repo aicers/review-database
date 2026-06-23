@@ -78,6 +78,9 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   paging when an `after` or `before` boundary is supplied. Also, a zero
   `limit` now returns an empty round list instead of reading and returning
   one round as before.
+- `NetworkFilter` no longer drops IPv4 or IPv6 exclusions when a
+  `HostNetworkGroup` contains entries from both families. Mixed-family IP
+  address exclusions now match addresses from each family independently.
 
 ## [0.45.0] - 2026-05-09
 

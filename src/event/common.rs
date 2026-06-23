@@ -3021,6 +3021,55 @@ mod tests {
     }
 
     #[test]
+    fn matches_exclusion_mixed_ipv4_ipv6_ip_address() {
+        use std::ops::RangeInclusive;
+
+        use ipnet::IpNet;
+
+        use crate::tables::ExclusionReason;
+
+        let networks: Vec<IpNet> = vec![
+            "10.0.0.0/8".parse().unwrap(),
+            "2001:db8::/32".parse().unwrap(),
+        ];
+        let exclusion = vec![crate::TriageExclusion::from(ExclusionReason::IpAddress(
+            HostNetworkGroup::new(Vec::new(), networks, Vec::new()),
+        ))];
+
+        let time = Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap();
+
+        let mut v4_fields = blocklist_http_fields();
+        v4_fields.orig_addr = "10.1.2.3".parse().unwrap();
+        v4_fields.resp_addr = "10.9.9.9".parse().unwrap();
+        let v4_event = Event::Blocklist(RecordType::Http(BlocklistHttp::new(time, v4_fields)));
+
+        let mut v6_fields = blocklist_http_fields();
+        v6_fields.orig_addr = "2001:db8::1".parse().unwrap();
+        v6_fields.resp_addr = "2001:db8::2".parse().unwrap();
+        let v6_event = Event::Blocklist(RecordType::Http(BlocklistHttp::new(time, v6_fields)));
+
+        assert!(v4_event.matches_exclusion(&exclusion));
+        assert!(v6_event.matches_exclusion(&exclusion));
+
+        let mut non_matching_fields = blocklist_http_fields();
+        non_matching_fields.orig_addr = "11.0.0.1".parse().unwrap();
+        let non_matching = Event::Blocklist(RecordType::Http(BlocklistHttp::new(
+            time,
+            non_matching_fields,
+        )));
+        assert!(!non_matching.matches_exclusion(&exclusion));
+
+        let ip_ranges = vec![RangeInclusive::new(
+            "192.0.2.1".parse().unwrap(),
+            "2001:db8::1".parse().unwrap(),
+        )];
+        let invalid_exclusion = vec![crate::TriageExclusion::from(ExclusionReason::IpAddress(
+            HostNetworkGroup::new(Vec::new(), Vec::new(), ip_ranges),
+        ))];
+        assert!(!v4_event.matches_exclusion(&invalid_exclusion));
+    }
+
+    #[test]
     fn score_against_policies_empty_slice_returns_empty() {
         let event = dns_covert_channel_event();
         assert!(event.score_against_policies(&[]).is_empty());
