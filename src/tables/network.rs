@@ -3,7 +3,7 @@
 use std::borrow::Cow;
 
 use anyhow::Result;
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 use rocksdb::{Direction, OptimisticTransactionDB};
 use serde::{Deserialize, Serialize};
 
@@ -20,7 +20,7 @@ pub struct Network {
     pub description: String,
     pub networks: HostNetworkGroup,
     tag_ids: Vec<u32>,
-    pub creation_time: DateTime<Utc>,
+    pub creation_time: Timestamp,
 }
 
 impl Network {
@@ -37,7 +37,7 @@ impl Network {
             description,
             networks,
             tag_ids: Self::clean_up(tag_ids),
-            creation_time: Utc::now(),
+            creation_time: Timestamp::now(),
         }
     }
 
@@ -122,7 +122,8 @@ struct Value {
     description: String,
     networks: HostNetworkGroup,
     tag_ids: Vec<u32>,
-    creation_time: DateTime<Utc>,
+    #[serde(with = "crate::stored_timestamp::required")]
+    creation_time: Timestamp,
 }
 
 /// Functions for the `network` indexed map.
@@ -262,8 +263,8 @@ mod test {
         sync::Arc,
     };
 
-    use chrono::{DateTime, Utc};
     use ipnet::IpNet;
+    use jiff::Timestamp;
     use rocksdb::Direction;
 
     use crate::test::{DbGuard, acquire_db_permit};
@@ -278,8 +279,7 @@ mod test {
     /// by `Indexable::value` for the private projected `Value` and by
     /// `FromKeyValue::from_key_value`.
     fn deterministic_fixture_network() -> Network {
-        let creation_time: DateTime<Utc> =
-            FIXTURE_TIMESTAMP.parse().expect("valid RFC 3339 timestamp");
+        let creation_time: Timestamp = FIXTURE_TIMESTAMP.parse().expect("valid RFC 3339 timestamp");
 
         Network {
             id: 42,
@@ -309,7 +309,9 @@ mod test {
     /// `tests/fixtures/network_projected_private_value.bin` was produced once by
     /// calling `Indexable::value` on `deterministic_fixture_network()`, which
     /// serializes the private `Value` struct (name excluded; stored in the key)
-    /// via `tables::serialize` (`bincode::DefaultOptions`).
+    /// via `tables::serialize` (`bincode::DefaultOptions`). The Jiff migration
+    /// keeps these bytes readable through chrono-compatible serde adapters in
+    /// `crate::stored_timestamp`.
     #[test]
     fn network_projected_private_value_backward_compatibility() {
         const FIXTURE_BYTES: &[u8] = include_bytes!(concat!(
