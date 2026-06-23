@@ -3,9 +3,11 @@
 use std::{fmt, net::IpAddr};
 
 use attrievent::attribute::{RawEventAttrKind, RdpAttr};
-use chrono::{DateTime, Utc};
+use chrono::DateTime;
+use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
+use super::timestamp::{self, ts_nanoseconds as jiff_ts_nanoseconds};
 use super::{
     EventCategory, LearningMethod, ThreatLevel, TriageScore,
     common::{Match, vector_to_string},
@@ -108,13 +110,16 @@ impl RdpBruteForceFields {
 #[derive(Serialize, Deserialize)]
 pub struct RdpBruteForce {
     pub sensor: String,
-    pub time: DateTime<Utc>,
+    #[serde(with = "jiff_ts_nanoseconds")]
+    pub time: Timestamp,
     pub orig_addr: IpAddr,
     pub orig_country_code: [u8; 2],
     pub resp_addrs: Vec<IpAddr>,
     pub resp_country_codes: Vec<[u8; 2]>,
-    pub first_event_start_time: DateTime<Utc>,
-    pub last_event_start_time: DateTime<Utc>,
+    #[serde(with = "jiff_ts_nanoseconds")]
+    pub first_event_start_time: Timestamp,
+    #[serde(with = "jiff_ts_nanoseconds")]
+    pub last_event_start_time: Timestamp,
     pub proto: u8,
     pub confidence: f32,
     pub category: Option<EventCategory>,
@@ -130,8 +135,8 @@ impl fmt::Display for RdpBruteForce {
             crate::util::country_code_as_str(&self.orig_country_code),
             vector_to_string(&self.resp_addrs),
             crate::util::country_codes_to_string(&self.resp_country_codes),
-            self.first_event_start_time.to_rfc3339(),
-            self.last_event_start_time.to_rfc3339(),
+            timestamp::format_rfc3339(self.first_event_start_time).unwrap_or_default(),
+            timestamp::format_rfc3339(self.last_event_start_time).unwrap_or_default(),
             self.proto.to_string(),
             triage_scores_to_string(self.triage_scores.as_ref())
         )
@@ -139,7 +144,7 @@ impl fmt::Display for RdpBruteForce {
 }
 
 impl RdpBruteForce {
-    pub(super) fn new(time: DateTime<Utc>, fields: &RdpBruteForceFieldsStored) -> Self {
+    pub(super) fn new(time: Timestamp, fields: &RdpBruteForceFieldsStored) -> Self {
         RdpBruteForce {
             sensor: fields.sensor.clone(),
             time,
@@ -147,8 +152,10 @@ impl RdpBruteForce {
             orig_country_code: fields.orig_country_code,
             resp_addrs: fields.resp_addrs.clone(),
             resp_country_codes: fields.resp_country_codes.clone(),
-            first_event_start_time: DateTime::from_timestamp_nanos(fields.first_event_start_time),
-            last_event_start_time: DateTime::from_timestamp_nanos(fields.last_event_start_time),
+            first_event_start_time: timestamp::from_i64_nanos(fields.first_event_start_time)
+                .expect(timestamp::I64_NANOS_JIFF_INVARIANT),
+            last_event_start_time: timestamp::from_i64_nanos(fields.last_event_start_time)
+                .expect(timestamp::I64_NANOS_JIFF_INVARIANT),
             proto: fields.proto,
             confidence: fields.confidence,
             category: fields.category,
@@ -329,7 +336,7 @@ impl BlocklistRdpFields {
 }
 
 pub struct BlocklistRdp {
-    pub time: DateTime<Utc>,
+    pub time: Timestamp,
     pub sensor: String,
     pub orig_addr: IpAddr,
     pub orig_port: u16,
@@ -338,7 +345,7 @@ pub struct BlocklistRdp {
     pub resp_port: u16,
     pub resp_country_code: [u8; 2],
     pub proto: u8,
-    pub start_time: DateTime<Utc>,
+    pub start_time: Timestamp,
     pub duration: i64,
     pub orig_pkts: u64,
     pub resp_pkts: u64,
@@ -362,7 +369,7 @@ impl fmt::Display for BlocklistRdp {
             self.resp_port.to_string(),
             crate::util::country_code_as_str(&self.resp_country_code),
             self.proto.to_string(),
-            self.start_time.to_rfc3339(),
+            timestamp::format_rfc3339(self.start_time).unwrap_or_default(),
             self.duration.to_string(),
             self.orig_pkts.to_string(),
             self.resp_pkts.to_string(),
@@ -375,7 +382,7 @@ impl fmt::Display for BlocklistRdp {
 }
 
 impl BlocklistRdp {
-    pub(super) fn new(time: DateTime<Utc>, fields: BlocklistRdpFieldsStored) -> Self {
+    pub(super) fn new(time: Timestamp, fields: BlocklistRdpFieldsStored) -> Self {
         Self {
             time,
             sensor: fields.sensor,
@@ -386,7 +393,8 @@ impl BlocklistRdp {
             resp_port: fields.resp_port,
             resp_country_code: fields.resp_country_code,
             proto: fields.proto,
-            start_time: DateTime::from_timestamp_nanos(fields.start_time),
+            start_time: timestamp::from_i64_nanos(fields.start_time)
+                .expect(timestamp::I64_NANOS_JIFF_INVARIANT),
             duration: fields.duration,
             orig_pkts: fields.orig_pkts,
             resp_pkts: fields.resp_pkts,

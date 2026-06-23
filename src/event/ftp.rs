@@ -2,9 +2,11 @@
 use std::{fmt, net::IpAddr};
 
 use attrievent::attribute::{FtpAttr, RawEventAttrKind};
-use chrono::{DateTime, Utc};
+use chrono::DateTime;
+use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
+use super::timestamp::{self, ts_nanoseconds as jiff_ts_nanoseconds};
 use super::{EventCategory, LearningMethod, ThreatLevel, TriageScore, common::Match};
 use crate::event::common::{AttrValue, triage_scores_to_string};
 
@@ -240,7 +242,8 @@ impl From<FtpBruteForceFields> for FtpBruteForceFieldsStored {
 #[derive(Serialize, Deserialize)]
 pub struct FtpBruteForce {
     pub sensor: String,
-    pub time: DateTime<Utc>,
+    #[serde(with = "jiff_ts_nanoseconds")]
+    pub time: Timestamp,
     pub orig_addr: IpAddr,
     pub orig_country_code: [u8; 2],
     pub resp_addr: IpAddr,
@@ -248,8 +251,10 @@ pub struct FtpBruteForce {
     pub resp_country_code: [u8; 2],
     pub proto: u8,
     pub user_list: Vec<String>,
-    pub first_event_start_time: DateTime<Utc>,
-    pub last_event_start_time: DateTime<Utc>,
+    #[serde(with = "jiff_ts_nanoseconds")]
+    pub first_event_start_time: Timestamp,
+    #[serde(with = "jiff_ts_nanoseconds")]
+    pub last_event_start_time: Timestamp,
     pub is_internal: bool,
     pub confidence: f32,
     pub category: Option<EventCategory>,
@@ -268,8 +273,8 @@ impl fmt::Display for FtpBruteForce {
             crate::util::country_code_as_str(&self.resp_country_code),
             self.proto.to_string(),
             self.user_list.join(","),
-            self.first_event_start_time.to_rfc3339(),
-            self.last_event_start_time.to_rfc3339(),
+            timestamp::format_rfc3339(self.first_event_start_time).unwrap_or_default(),
+            timestamp::format_rfc3339(self.last_event_start_time).unwrap_or_default(),
             self.is_internal.to_string(),
             triage_scores_to_string(self.triage_scores.as_ref()),
         )
@@ -277,7 +282,7 @@ impl fmt::Display for FtpBruteForce {
 }
 
 impl FtpBruteForce {
-    pub(super) fn new(time: DateTime<Utc>, fields: &FtpBruteForceFieldsStored) -> Self {
+    pub(super) fn new(time: Timestamp, fields: &FtpBruteForceFieldsStored) -> Self {
         FtpBruteForce {
             sensor: fields.sensor.clone(),
             time,
@@ -288,8 +293,10 @@ impl FtpBruteForce {
             resp_country_code: fields.resp_country_code,
             proto: fields.proto,
             user_list: fields.user_list.clone(),
-            first_event_start_time: DateTime::from_timestamp_nanos(fields.first_event_start_time),
-            last_event_start_time: DateTime::from_timestamp_nanos(fields.last_event_start_time),
+            first_event_start_time: timestamp::from_i64_nanos(fields.first_event_start_time)
+                .expect(timestamp::I64_NANOS_JIFF_INVARIANT),
+            last_event_start_time: timestamp::from_i64_nanos(fields.last_event_start_time)
+                .expect(timestamp::I64_NANOS_JIFF_INVARIANT),
             is_internal: fields.is_internal,
             confidence: fields.confidence,
             category: fields.category,
@@ -488,7 +495,8 @@ impl From<FtpEventFields> for FtpEventFieldsStored {
 
 #[derive(Deserialize, Serialize)]
 pub struct FtpPlainText {
-    pub time: DateTime<Utc>,
+    #[serde(with = "jiff_ts_nanoseconds")]
+    pub time: Timestamp,
     pub sensor: String,
     pub orig_addr: IpAddr,
     pub orig_port: u16,
@@ -497,7 +505,8 @@ pub struct FtpPlainText {
     pub resp_port: u16,
     pub resp_country_code: [u8; 2],
     pub proto: u8,
-    pub start_time: DateTime<Utc>,
+    #[serde(with = "jiff_ts_nanoseconds")]
+    pub start_time: Timestamp,
     pub duration: i64,
     pub orig_pkts: u64,
     pub resp_pkts: u64,
@@ -531,7 +540,7 @@ impl fmt::Display for FtpPlainText {
             self.resp_port.to_string(),
             crate::util::country_code_as_str(&self.resp_country_code),
             self.proto.to_string(),
-            self.start_time.to_rfc3339(),
+            timestamp::format_rfc3339(self.start_time).unwrap_or_default(),
             self.duration.to_string(),
             self.orig_pkts.to_string(),
             self.resp_pkts.to_string(),
@@ -546,11 +555,12 @@ impl fmt::Display for FtpPlainText {
 }
 
 impl FtpPlainText {
-    pub(super) fn new(time: DateTime<Utc>, fields: FtpEventFieldsStored) -> Self {
+    pub(super) fn new(time: Timestamp, fields: FtpEventFieldsStored) -> Self {
         Self {
             time,
             sensor: fields.sensor,
-            start_time: DateTime::from_timestamp_nanos(fields.start_time),
+            start_time: timestamp::from_i64_nanos(fields.start_time)
+                .expect(timestamp::I64_NANOS_JIFF_INVARIANT),
             orig_addr: fields.orig_addr,
             orig_port: fields.orig_port,
             orig_country_code: fields.orig_country_code,
@@ -640,7 +650,8 @@ impl Match for FtpPlainText {
 
 #[derive(Deserialize, Serialize)]
 pub struct BlocklistFtp {
-    pub time: DateTime<Utc>,
+    #[serde(with = "jiff_ts_nanoseconds")]
+    pub time: Timestamp,
     pub sensor: String,
     pub orig_addr: IpAddr,
     pub orig_port: u16,
@@ -649,7 +660,8 @@ pub struct BlocklistFtp {
     pub resp_port: u16,
     pub resp_country_code: [u8; 2],
     pub proto: u8,
-    pub start_time: DateTime<Utc>,
+    #[serde(with = "jiff_ts_nanoseconds")]
+    pub start_time: Timestamp,
     pub duration: i64,
     pub orig_pkts: u64,
     pub resp_pkts: u64,
@@ -683,7 +695,7 @@ impl fmt::Display for BlocklistFtp {
             self.resp_port.to_string(),
             crate::util::country_code_as_str(&self.resp_country_code),
             self.proto.to_string(),
-            self.start_time.to_rfc3339(),
+            timestamp::format_rfc3339(self.start_time).unwrap_or_default(),
             self.duration.to_string(),
             self.orig_pkts.to_string(),
             self.resp_pkts.to_string(),
@@ -698,11 +710,12 @@ impl fmt::Display for BlocklistFtp {
 }
 
 impl BlocklistFtp {
-    pub(super) fn new(time: DateTime<Utc>, fields: FtpEventFieldsStored) -> Self {
+    pub(super) fn new(time: Timestamp, fields: FtpEventFieldsStored) -> Self {
         Self {
             time,
             sensor: fields.sensor,
-            start_time: DateTime::from_timestamp_nanos(fields.start_time),
+            start_time: timestamp::from_i64_nanos(fields.start_time)
+                .expect(timestamp::I64_NANOS_JIFF_INVARIANT),
             orig_addr: fields.orig_addr,
             orig_port: fields.orig_port,
             orig_country_code: fields.orig_country_code,

@@ -1,9 +1,11 @@
 use std::{fmt, net::IpAddr};
 
 use attrievent::attribute::{RawEventAttrKind, TlsAttr};
-use chrono::{DateTime, Utc};
+use chrono::DateTime;
+use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
+use super::timestamp;
 use super::{EventCategory, LearningMethod, ThreatLevel, TriageScore, common::Match};
 use crate::TriageExclusion;
 use crate::event::common::{AttrValue, triage_scores_to_string, vector_to_string};
@@ -246,7 +248,7 @@ impl BlocklistTlsFields {
 
 #[allow(clippy::module_name_repetitions)]
 pub struct BlocklistTls {
-    pub time: DateTime<Utc>,
+    pub time: Timestamp,
     pub sensor: String,
     pub orig_addr: IpAddr,
     pub orig_port: u16,
@@ -255,7 +257,7 @@ pub struct BlocklistTls {
     pub resp_port: u16,
     pub resp_country_code: [u8; 2],
     pub proto: u8,
-    pub start_time: DateTime<Utc>,
+    pub start_time: Timestamp,
     pub duration: i64,
     pub orig_pkts: u64,
     pub resp_pkts: u64,
@@ -300,7 +302,7 @@ impl fmt::Display for BlocklistTls {
             self.resp_port.to_string(),
             crate::util::country_code_as_str(&self.resp_country_code),
             self.proto.to_string(),
-            self.start_time.to_rfc3339(),
+            timestamp::format_rfc3339(self.start_time).unwrap_or_default(),
             self.duration.to_string(),
             self.orig_pkts.to_string(),
             self.resp_pkts.to_string(),
@@ -334,7 +336,7 @@ impl fmt::Display for BlocklistTls {
 }
 
 impl BlocklistTls {
-    pub(super) fn new(time: DateTime<Utc>, fields: BlocklistTlsFieldsStored) -> Self {
+    pub(super) fn new(time: Timestamp, fields: BlocklistTlsFieldsStored) -> Self {
         Self {
             time,
             sensor: fields.sensor,
@@ -345,7 +347,8 @@ impl BlocklistTls {
             resp_port: fields.resp_port,
             resp_country_code: fields.resp_country_code,
             proto: fields.proto,
-            start_time: DateTime::from_timestamp_nanos(fields.start_time),
+            start_time: timestamp::from_i64_nanos(fields.start_time)
+                .expect(timestamp::I64_NANOS_JIFF_INVARIANT),
             duration: fields.duration,
             orig_pkts: fields.orig_pkts,
             resp_pkts: fields.resp_pkts,
@@ -459,7 +462,7 @@ impl Match for BlocklistTls {
 }
 
 pub struct SuspiciousTlsTraffic {
-    pub time: DateTime<Utc>,
+    pub time: Timestamp,
     pub sensor: String,
     pub orig_addr: IpAddr,
     pub orig_port: u16,
@@ -468,7 +471,7 @@ pub struct SuspiciousTlsTraffic {
     pub resp_port: u16,
     pub resp_country_code: [u8; 2],
     pub proto: u8,
-    pub start_time: DateTime<Utc>,
+    pub start_time: Timestamp,
     pub duration: i64,
     pub orig_pkts: u64,
     pub resp_pkts: u64,
@@ -513,7 +516,7 @@ impl fmt::Display for SuspiciousTlsTraffic {
             self.resp_port.to_string(),
             crate::util::country_code_as_str(&self.resp_country_code),
             self.proto.to_string(),
-            self.start_time.to_rfc3339(),
+            timestamp::format_rfc3339(self.start_time).unwrap_or_default(),
             self.duration.to_string(),
             self.orig_pkts.to_string(),
             self.resp_pkts.to_string(),
@@ -547,11 +550,12 @@ impl fmt::Display for SuspiciousTlsTraffic {
 }
 
 impl SuspiciousTlsTraffic {
-    pub(super) fn new(time: DateTime<Utc>, fields: BlocklistTlsFieldsStored) -> Self {
+    pub(super) fn new(time: Timestamp, fields: BlocklistTlsFieldsStored) -> Self {
         Self {
             time,
             sensor: fields.sensor,
-            start_time: DateTime::from_timestamp_nanos(fields.start_time),
+            start_time: timestamp::from_i64_nanos(fields.start_time)
+                .expect(timestamp::I64_NANOS_JIFF_INVARIANT),
             orig_addr: fields.orig_addr,
             orig_port: fields.orig_port,
             orig_country_code: fields.orig_country_code,
@@ -681,6 +685,7 @@ mod tests {
         BlocklistTls, BlocklistTlsFields, BlocklistTlsFieldsStored, Match, SuspiciousTlsTraffic,
     };
     use crate::event::EventCategory;
+    use crate::event::timestamp;
     use crate::tables::{ExclusionReason, TriageExclusion};
     use crate::types::HostNetworkGroup;
 
@@ -751,7 +756,8 @@ mod tests {
 
     #[test]
     fn blocklist_tls_exclusion_matches_ip_address() {
-        let time = Utc.with_ymd_and_hms(2023, 1, 1, 12, 0, 0).unwrap();
+        let time = timestamp::from_chrono(Utc.with_ymd_and_hms(2023, 1, 1, 12, 0, 0).unwrap())
+            .expect(timestamp::I64_NANOS_JIFF_INVARIANT);
         let event = BlocklistTls::new(time, tls_fields("internal-cert.example.com"));
 
         assert!(event.matched_any_exclusion(&[ip_exclusion("192.168.1.100")]));
@@ -761,7 +767,8 @@ mod tests {
 
     #[test]
     fn blocklist_tls_exclusion_matches_domain_via_server_name() {
-        let time = Utc.with_ymd_and_hms(2023, 1, 1, 12, 0, 0).unwrap();
+        let time = timestamp::from_chrono(Utc.with_ymd_and_hms(2023, 1, 1, 12, 0, 0).unwrap())
+            .expect(timestamp::I64_NANOS_JIFF_INVARIANT);
         let event = BlocklistTls::new(time, tls_fields("internal-cert.example.com"));
 
         // Subdomain match: "example.com" matches "internal-cert.example.com".
@@ -774,7 +781,8 @@ mod tests {
 
     #[test]
     fn blocklist_tls_exclusion_matches_hostname_exact() {
-        let time = Utc.with_ymd_and_hms(2023, 1, 1, 12, 0, 0).unwrap();
+        let time = timestamp::from_chrono(Utc.with_ymd_and_hms(2023, 1, 1, 12, 0, 0).unwrap())
+            .expect(timestamp::I64_NANOS_JIFF_INVARIANT);
         let event = BlocklistTls::new(time, tls_fields("internal-cert.example.com"));
 
         assert!(event.matched_any_exclusion(&[hostname_exclusion("internal-cert.example.com")]));
@@ -785,7 +793,8 @@ mod tests {
 
     #[test]
     fn blocklist_tls_exclusion_does_not_match_uri() {
-        let time = Utc.with_ymd_and_hms(2023, 1, 1, 12, 0, 0).unwrap();
+        let time = timestamp::from_chrono(Utc.with_ymd_and_hms(2023, 1, 1, 12, 0, 0).unwrap())
+            .expect(timestamp::I64_NANOS_JIFF_INVARIANT);
         let event = BlocklistTls::new(time, tls_fields("internal-cert.example.com"));
 
         assert!(!event.matched_any_exclusion(&[uri_exclusion("/anything")]));
@@ -794,7 +803,8 @@ mod tests {
 
     #[test]
     fn blocklist_tls_exclusion_does_not_match_empty() {
-        let time = Utc.with_ymd_and_hms(2023, 1, 1, 12, 0, 0).unwrap();
+        let time = timestamp::from_chrono(Utc.with_ymd_and_hms(2023, 1, 1, 12, 0, 0).unwrap())
+            .expect(timestamp::I64_NANOS_JIFF_INVARIANT);
         let event = BlocklistTls::new(time, tls_fields("internal-cert.example.com"));
 
         assert!(!event.matched_any_exclusion(&[]));
@@ -802,7 +812,8 @@ mod tests {
 
     #[test]
     fn suspicious_tls_traffic_exclusion_matches_ip_address() {
-        let time = Utc.with_ymd_and_hms(2023, 1, 1, 12, 0, 0).unwrap();
+        let time = timestamp::from_chrono(Utc.with_ymd_and_hms(2023, 1, 1, 12, 0, 0).unwrap())
+            .expect(timestamp::I64_NANOS_JIFF_INVARIANT);
         let event = SuspiciousTlsTraffic::new(time, tls_fields("internal-cert.example.com"));
 
         assert!(event.matched_any_exclusion(&[ip_exclusion("192.168.1.100")]));
@@ -812,7 +823,8 @@ mod tests {
 
     #[test]
     fn suspicious_tls_traffic_exclusion_matches_domain_via_server_name() {
-        let time = Utc.with_ymd_and_hms(2023, 1, 1, 12, 0, 0).unwrap();
+        let time = timestamp::from_chrono(Utc.with_ymd_and_hms(2023, 1, 1, 12, 0, 0).unwrap())
+            .expect(timestamp::I64_NANOS_JIFF_INVARIANT);
         let event = SuspiciousTlsTraffic::new(time, tls_fields("internal-cert.example.com"));
 
         // Subdomain match: "example.com" matches "internal-cert.example.com".
@@ -825,7 +837,8 @@ mod tests {
 
     #[test]
     fn suspicious_tls_traffic_exclusion_matches_hostname_exact() {
-        let time = Utc.with_ymd_and_hms(2023, 1, 1, 12, 0, 0).unwrap();
+        let time = timestamp::from_chrono(Utc.with_ymd_and_hms(2023, 1, 1, 12, 0, 0).unwrap())
+            .expect(timestamp::I64_NANOS_JIFF_INVARIANT);
         let event = SuspiciousTlsTraffic::new(time, tls_fields("internal-cert.example.com"));
 
         assert!(event.matched_any_exclusion(&[hostname_exclusion("internal-cert.example.com")]));
@@ -836,7 +849,8 @@ mod tests {
 
     #[test]
     fn suspicious_tls_traffic_exclusion_does_not_match_uri() {
-        let time = Utc.with_ymd_and_hms(2023, 1, 1, 12, 0, 0).unwrap();
+        let time = timestamp::from_chrono(Utc.with_ymd_and_hms(2023, 1, 1, 12, 0, 0).unwrap())
+            .expect(timestamp::I64_NANOS_JIFF_INVARIANT);
         let event = SuspiciousTlsTraffic::new(time, tls_fields("internal-cert.example.com"));
 
         assert!(!event.matched_any_exclusion(&[uri_exclusion("/anything")]));
@@ -845,7 +859,8 @@ mod tests {
 
     #[test]
     fn suspicious_tls_traffic_exclusion_does_not_match_empty() {
-        let time = Utc.with_ymd_and_hms(2023, 1, 1, 12, 0, 0).unwrap();
+        let time = timestamp::from_chrono(Utc.with_ymd_and_hms(2023, 1, 1, 12, 0, 0).unwrap())
+            .expect(timestamp::I64_NANOS_JIFF_INVARIANT);
         let event = SuspiciousTlsTraffic::new(time, tls_fields("internal-cert.example.com"));
 
         assert!(!event.matched_any_exclusion(&[]));
