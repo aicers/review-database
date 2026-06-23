@@ -1754,11 +1754,12 @@ impl From<FtpBruteForceFieldsStoredV0_42> for crate::event::FtpBruteForceFieldsS
     }
 }
 
-impl From<HttpThreatFieldsStoredV0_44> for crate::event::HttpThreatFieldsStoredV0_46 {
-    fn from(old: HttpThreatFieldsStoredV0_44) -> Self {
-        Self {
-            time: crate::event::timestamp::from_chrono(old.time)
-                .expect("migrated timestamp must fit i64 nanosecond contract"),
+impl TryFrom<HttpThreatFieldsStoredV0_44> for crate::event::HttpThreatFieldsStoredV0_46 {
+    type Error = crate::event::timestamp::TimestampError;
+
+    fn try_from(old: HttpThreatFieldsStoredV0_44) -> Result<Self, Self::Error> {
+        Ok(Self {
+            time: crate::event::timestamp::from_chrono(old.time)?,
             sensor: old.sensor,
             orig_addr: old.orig_addr,
             orig_port: old.orig_port,
@@ -1800,7 +1801,7 @@ impl From<HttpThreatFieldsStoredV0_44> for crate::event::HttpThreatFieldsStoredV
             attack_kind: old.attack_kind,
             confidence: old.confidence,
             category: old.category,
-        }
+        })
     }
 }
 
@@ -1842,11 +1843,12 @@ impl From<MultiHostPortScanFieldsStoredV0_42> for crate::event::MultiHostPortSca
     }
 }
 
-impl From<NetworkThreatFieldsStoredV0_45> for crate::event::NetworkThreatFieldsStoredV0_46 {
-    fn from(old: NetworkThreatFieldsStoredV0_45) -> Self {
-        Self {
-            time: crate::event::timestamp::from_chrono(old.time)
-                .expect("migrated timestamp must fit i64 nanosecond contract"),
+impl TryFrom<NetworkThreatFieldsStoredV0_45> for crate::event::NetworkThreatFieldsStoredV0_46 {
+    type Error = crate::event::timestamp::TimestampError;
+
+    fn try_from(old: NetworkThreatFieldsStoredV0_45) -> Result<Self, Self::Error> {
+        Ok(Self {
+            time: crate::event::timestamp::from_chrono(old.time)?,
             sensor: old.sensor,
             orig_addr: old.orig_addr,
             orig_port: old.orig_port,
@@ -1856,8 +1858,7 @@ impl From<NetworkThreatFieldsStoredV0_45> for crate::event::NetworkThreatFieldsS
             resp_country_code: crate::util::COUNTRY_CODE_PENDING,
             proto: old.proto,
             service: old.service,
-            start_time: crate::event::timestamp::from_chrono(old.start_time)
-                .expect("migrated timestamp must fit i64 nanosecond contract"),
+            start_time: crate::event::timestamp::from_chrono(old.start_time)?,
             duration: old.duration,
             orig_pkts: old.orig_pkts,
             resp_pkts: old.resp_pkts,
@@ -1872,7 +1873,7 @@ impl From<NetworkThreatFieldsStoredV0_45> for crate::event::NetworkThreatFieldsS
             confidence: old.confidence,
             category: old.category,
             triage_scores: old.triage_scores,
-        }
+        })
     }
 }
 
@@ -2000,11 +2001,13 @@ impl From<UnusualDestinationPatternFieldsStoredV0_45>
 fn convert_stored<Source, Target>(bytes: &[u8]) -> Result<Vec<u8>>
 where
     Source: for<'de> Deserialize<'de>,
-    Target: From<Source> + Serialize,
+    Target: TryFrom<Source, Error: std::error::Error + Send + Sync + 'static> + Serialize,
 {
     let source: Source = bincode::deserialize(bytes)
         .context("failed to deserialize event fields as the previous stored schema")?;
-    let target = Target::from(source);
+    let target = Target::try_from(source)
+        .map_err(|err| anyhow::anyhow!(err))
+        .context("failed to convert event fields to the current stored schema")?;
     bincode::serialize(&target).context("failed to serialize target stored schema")
 }
 

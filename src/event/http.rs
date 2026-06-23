@@ -439,8 +439,8 @@ impl Match for RepeatedHttpSessions {
 #[derive(Debug, Deserialize, Serialize)]
 #[allow(clippy::module_name_repetitions)]
 pub struct HttpThreatFields {
-    #[serde(with = "ts_nanoseconds")]
-    pub time: DateTime<Utc>,
+    #[serde(with = "jiff_ts_nanoseconds")]
+    pub time: Timestamp,
     pub sensor: String,
     pub orig_addr: IpAddr,
     pub orig_port: u16,
@@ -535,8 +535,7 @@ pub(crate) struct HttpThreatFieldsStoredV0_46 {
 impl From<HttpThreatFields> for HttpThreatFieldsStored {
     fn from(value: HttpThreatFields) -> Self {
         Self {
-            time: timestamp::from_chrono(value.time)
-                .expect("producer timestamp must fit i64 nanosecond contract"),
+            time: value.time,
             sensor: value.sensor,
             orig_addr: value.orig_addr,
             orig_port: value.orig_port,
@@ -652,8 +651,8 @@ pub(super) fn get_post_body(post_body: &[u8]) -> String {
 #[derive(Deserialize, Serialize)]
 #[allow(clippy::module_name_repetitions)]
 pub struct HttpThreat {
-    #[serde(with = "ts_nanoseconds")]
-    pub time: DateTime<Utc>,
+    #[serde(with = "jiff_ts_nanoseconds")]
+    pub time: Timestamp,
     pub sensor: String,
     pub orig_addr: IpAddr,
     pub orig_port: u16,
@@ -662,7 +661,7 @@ pub struct HttpThreat {
     pub resp_port: u16,
     pub resp_country_code: [u8; 2],
     pub proto: u8,
-    pub start_time: DateTime<Utc>,
+    pub start_time: Timestamp,
     pub duration: i64,
     pub orig_pkts: u64,
     pub resp_pkts: u64,
@@ -711,7 +710,7 @@ impl fmt::Display for HttpThreat {
             self.resp_port.to_string(),
             crate::util::country_code_as_str(&self.resp_country_code),
             self.proto.to_string(),
-            self.start_time.to_rfc3339(),
+            timestamp::format_rfc3339(self.start_time).unwrap_or_default(),
             self.duration.to_string(),
             self.orig_pkts.to_string(),
             self.resp_pkts.to_string(),
@@ -751,10 +750,10 @@ impl fmt::Display for HttpThreat {
 impl HttpThreat {
     pub(super) fn new(time: Timestamp, fields: HttpThreatFieldsStored) -> Self {
         Self {
-            time: timestamp::to_chrono(time)
-                .expect("stored timestamp must fit i64 nanosecond contract"),
+            time,
             sensor: fields.sensor,
-            start_time: DateTime::from_timestamp_nanos(fields.start_time),
+            start_time: timestamp::from_i64_nanos(fields.start_time)
+                .expect("stored start_time is valid i64 epoch nanoseconds"),
             orig_addr: fields.orig_addr,
             orig_port: fields.orig_port,
             orig_country_code: fields.orig_country_code,

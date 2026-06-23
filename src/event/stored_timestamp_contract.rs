@@ -20,19 +20,19 @@
 //! | Single `ts_nanoseconds` field | `TsNanosecondsField` round-trip and size checks | [`HttpThreatFieldsStored`](super::HttpThreatFieldsStored) (`time`) |
 //! | Multiple `ts_nanoseconds` fields | `DualTsNanosecondsFields` adjacent eight-byte values | [`NetworkThreatFieldsStored`](super::network::NetworkThreatFieldsStored) (`time`, `start_time`) |
 //! | Full stored-event bytes | Checked-in fixture + `convert_for_storage` | [`ExtraThreatFieldsStored`](super::log::ExtraThreatFieldsStored) (`time`) |
-//! | Production conversion | `convert_for_storage` byte prefix check | [`HttpThreatFieldsStored`](super::HttpThreatFieldsStored) (`time`) |
+//! | Production conversion | `convert_for_storage` byte prefix check | [`HttpThreatFieldsStored`](super::HttpThreatFieldsStored) (`time`), [`WindowsThreatFieldsStored`](super::sysmon::WindowsThreatFieldsStored) (`time`) |
 //!
 //! A switch to Jiff default serde or an `i128` nanosecond representation at
 //! this boundary would change serialized sizes or byte patterns and cause
 //! these tests to fail.
 
-use chrono::{DateTime, NaiveDate, Utc};
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
 use super::{
     EventKind, ExtraThreatFields, ExtraThreatFieldsStored, HttpThreatFields,
-    HttpThreatFieldsStored, convert_for_storage, timestamp,
+    HttpThreatFieldsStored, WindowsThreatFields, WindowsThreatFieldsStored, convert_for_storage,
+    timestamp,
 };
 
 /// Mirrors a single stored `ts_nanoseconds` field for isolated size checks.
@@ -65,22 +65,6 @@ fn modern_timestamp() -> Timestamp {
         .expect("valid timestamp")
 }
 
-fn chrono_pre_1970_timestamp() -> DateTime<Utc> {
-    let naive = NaiveDate::from_ymd_opt(1969, 12, 31)
-        .expect("valid date")
-        .and_hms_nano_opt(23, 59, 59, 123_456_789)
-        .expect("valid time");
-    DateTime::from_naive_utc_and_offset(naive, Utc)
-}
-
-fn chrono_modern_timestamp() -> DateTime<Utc> {
-    let naive = NaiveDate::from_ymd_opt(2024, 6, 15)
-        .expect("valid date")
-        .and_hms_nano_opt(12, 30, 45, 987_654_321)
-        .expect("valid time");
-    DateTime::from_naive_utc_and_offset(naive, Utc)
-}
-
 fn subsec_nanos_from_i64_contract(time: Timestamp) -> i64 {
     timestamp::to_i64_nanos(time)
         .expect("in range")
@@ -101,7 +85,7 @@ fn assert_eight_byte_i64_contract(bytes: &[u8], expected_nanos: i64) {
     assert_eq!(decoded_nanos, expected_nanos);
 }
 
-fn extra_threat_fields(time: DateTime<Utc>) -> ExtraThreatFields {
+fn extra_threat_fields(time: Timestamp) -> ExtraThreatFields {
     ExtraThreatFields {
         time,
         sensor: "sensor".to_string(),
@@ -118,7 +102,7 @@ fn extra_threat_fields(time: DateTime<Utc>) -> ExtraThreatFields {
     }
 }
 
-fn http_threat_fields(time: DateTime<Utc>) -> HttpThreatFields {
+fn http_threat_fields(time: Timestamp) -> HttpThreatFields {
     HttpThreatFields {
         time,
         sensor: String::new(),
@@ -160,6 +144,29 @@ fn http_threat_fields(time: DateTime<Utc>) -> HttpThreatFields {
         attack_kind: String::new(),
         confidence: 0.0,
         category: None,
+    }
+}
+
+fn windows_threat_fields(time: Timestamp) -> WindowsThreatFields {
+    WindowsThreatFields {
+        time,
+        sensor: "sensor".to_string(),
+        service: "service".to_string(),
+        agent_name: "agent".to_string(),
+        agent_id: "agent-id".to_string(),
+        process_guid: "{guid}".to_string(),
+        process_id: 1,
+        image: "image.exe".to_string(),
+        user: "user".to_string(),
+        content: "content".to_string(),
+        db_name: "db".to_string(),
+        rule_id: 1,
+        matched_to: "rule".to_string(),
+        cluster_id: None,
+        attack_kind: "kind".to_string(),
+        confidence: 1.0,
+        category: None,
+        triage_scores: None,
     }
 }
 
@@ -231,18 +238,32 @@ fn full_stored_event_fixture_decodes_to_current_jiff_type() {
 
 #[test]
 fn convert_for_storage_preserves_http_threat_i64_timestamp_bytes() {
-    let time = chrono_modern_timestamp();
+    let time = modern_timestamp();
     let producer_bytes =
         bincode::serialize(&http_threat_fields(time)).expect("serializable producer fields");
     let bytes = convert_for_storage(EventKind::HttpThreat, &producer_bytes)
         .expect("convertible to stored fields");
-    let expected = timestamp::from_chrono(time).expect("in range");
-    let nanos = timestamp::to_i64_nanos(expected).expect("in range");
+    let nanos = timestamp::to_i64_nanos(time).expect("in range");
     assert_eight_byte_i64_contract(bytes.get(..8).expect("timestamp prefix"), nanos);
 
     let decoded: HttpThreatFieldsStored =
         bincode::deserialize(&bytes).expect("round-trippable stored fields");
-    assert_eq!(decoded.time, expected);
+    assert_eq!(decoded.time, time);
+}
+
+#[test]
+fn convert_for_storage_preserves_windows_threat_i64_timestamp_bytes() {
+    let time = pre_1970_timestamp();
+    let producer_bytes =
+        bincode::serialize(&windows_threat_fields(time)).expect("serializable producer fields");
+    let bytes = convert_for_storage(EventKind::WindowsThreat, &producer_bytes)
+        .expect("convertible to stored fields");
+    let nanos = timestamp::to_i64_nanos(time).expect("in range");
+    assert_eight_byte_i64_contract(bytes.get(..8).expect("timestamp prefix"), nanos);
+
+    let decoded: WindowsThreatFieldsStored =
+        bincode::deserialize(&bytes).expect("round-trippable stored fields");
+    assert_eq!(decoded.time, time);
 }
 
 #[test]
@@ -282,7 +303,7 @@ fn dual_ts_nanoseconds_fields_use_eight_byte_i64_bincode() {
 fn extra_threat_production_bytes_match_full_stored_event_fixture() {
     const FIXTURE: &[u8] =
         include_bytes!("../../tests/fixtures/event_extra_threat_pre_1970_stored.bin");
-    let time = chrono_pre_1970_timestamp();
+    let time = pre_1970_timestamp();
     let producer_bytes =
         bincode::serialize(&extra_threat_fields(time)).expect("serializable producer fields");
     let bytes = convert_for_storage(EventKind::ExtraThreat, &producer_bytes)
@@ -301,7 +322,7 @@ fn extra_threat_production_bytes_match_full_stored_event_fixture() {
 #[test]
 #[ignore = "rewrites the checked-in binary fixture; run only when intentionally replacing this baseline fixture"]
 fn regenerate_extra_threat_pre_1970_stored_fixture() {
-    let time = chrono_pre_1970_timestamp();
+    let time = pre_1970_timestamp();
     let producer_bytes =
         bincode::serialize(&extra_threat_fields(time)).expect("serializable producer fields");
     let bytes = convert_for_storage(EventKind::ExtraThreat, &producer_bytes)
