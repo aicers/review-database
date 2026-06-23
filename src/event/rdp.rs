@@ -165,14 +165,6 @@ impl RdpBruteForce {
 }
 
 impl Match for RdpBruteForce {
-    fn orig_country_codes(&self) -> &[[u8; 2]] {
-        std::slice::from_ref(&self.orig_country_code)
-    }
-
-    fn resp_country_codes(&self) -> &[[u8; 2]] {
-        &self.resp_country_codes
-    }
-
     fn src_addrs(&self) -> &[IpAddr] {
         std::slice::from_ref(&self.orig_addr)
     }
@@ -181,12 +173,20 @@ impl Match for RdpBruteForce {
         0
     }
 
+    fn orig_country_codes(&self) -> &[[u8; 2]] {
+        std::slice::from_ref(&self.orig_country_code)
+    }
+
     fn dst_addrs(&self) -> &[IpAddr] {
         &self.resp_addrs
     }
 
     fn dst_port(&self) -> u16 {
         0
+    }
+
+    fn resp_country_codes(&self) -> &[[u8; 2]] {
+        &self.resp_country_codes
     }
 
     fn proto(&self) -> u8 {
@@ -408,14 +408,6 @@ impl BlocklistRdp {
 }
 
 impl Match for BlocklistRdp {
-    fn orig_country_codes(&self) -> &[[u8; 2]] {
-        std::slice::from_ref(&self.orig_country_code)
-    }
-
-    fn resp_country_codes(&self) -> &[[u8; 2]] {
-        std::slice::from_ref(&self.resp_country_code)
-    }
-
     fn src_addrs(&self) -> &[IpAddr] {
         std::slice::from_ref(&self.orig_addr)
     }
@@ -424,12 +416,20 @@ impl Match for BlocklistRdp {
         self.orig_port
     }
 
+    fn orig_country_codes(&self) -> &[[u8; 2]] {
+        std::slice::from_ref(&self.orig_country_code)
+    }
+
     fn dst_addrs(&self) -> &[IpAddr] {
         std::slice::from_ref(&self.resp_addr)
     }
 
     fn dst_port(&self) -> u16 {
         self.resp_port
+    }
+
+    fn resp_country_codes(&self) -> &[[u8; 2]] {
+        std::slice::from_ref(&self.resp_country_code)
     }
 
     fn proto(&self) -> u8 {

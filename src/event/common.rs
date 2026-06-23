@@ -23,9 +23,11 @@ pub(super) trait Match {
     fn src_addrs(&self) -> &[IpAddr];
     #[allow(dead_code)] // for future use
     fn src_port(&self) -> u16;
+    fn orig_country_codes(&self) -> &[[u8; 2]];
     fn dst_addrs(&self) -> &[IpAddr];
     #[allow(dead_code)] // for future use
     fn dst_port(&self) -> u16;
+    fn resp_country_codes(&self) -> &[[u8; 2]];
     #[allow(dead_code)] // for future use
     fn proto(&self) -> u8;
     fn category(&self) -> Option<EventCategory>;
@@ -35,8 +37,6 @@ pub(super) trait Match {
     fn confidence(&self) -> Option<f32>;
     fn learning_method(&self) -> LearningMethod;
     fn find_attr_by_kind(&self, raw_event_attr: RawEventAttrKind) -> Option<AttrValue<'_>>;
-    fn orig_country_codes(&self) -> &[[u8; 2]];
-    fn resp_country_codes(&self) -> &[[u8; 2]];
     fn score_by_attr(&self, attr_triage: &[PacketAttr]) -> f64 {
         let total_score = attr_triage.iter().fold(0.0, |score_acc, item| {
             let Ok(kind) =

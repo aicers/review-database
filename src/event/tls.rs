@@ -387,14 +387,6 @@ impl BlocklistTls {
 }
 
 impl Match for BlocklistTls {
-    fn orig_country_codes(&self) -> &[[u8; 2]] {
-        std::slice::from_ref(&self.orig_country_code)
-    }
-
-    fn resp_country_codes(&self) -> &[[u8; 2]] {
-        std::slice::from_ref(&self.resp_country_code)
-    }
-
     fn src_addrs(&self) -> &[IpAddr] {
         std::slice::from_ref(&self.orig_addr)
     }
@@ -403,12 +395,20 @@ impl Match for BlocklistTls {
         self.orig_port
     }
 
+    fn orig_country_codes(&self) -> &[[u8; 2]] {
+        std::slice::from_ref(&self.orig_country_code)
+    }
+
     fn dst_addrs(&self) -> &[IpAddr] {
         std::slice::from_ref(&self.resp_addr)
     }
 
     fn dst_port(&self) -> u16 {
         self.resp_port
+    }
+
+    fn resp_country_codes(&self) -> &[[u8; 2]] {
+        std::slice::from_ref(&self.resp_country_code)
     }
 
     fn proto(&self) -> u8 {
@@ -600,14 +600,6 @@ impl SuspiciousTlsTraffic {
 }
 
 impl Match for SuspiciousTlsTraffic {
-    fn orig_country_codes(&self) -> &[[u8; 2]] {
-        std::slice::from_ref(&self.orig_country_code)
-    }
-
-    fn resp_country_codes(&self) -> &[[u8; 2]] {
-        std::slice::from_ref(&self.resp_country_code)
-    }
-
     fn src_addrs(&self) -> &[IpAddr] {
         std::slice::from_ref(&self.orig_addr)
     }
@@ -616,12 +608,20 @@ impl Match for SuspiciousTlsTraffic {
         self.orig_port
     }
 
+    fn orig_country_codes(&self) -> &[[u8; 2]] {
+        std::slice::from_ref(&self.orig_country_code)
+    }
+
     fn dst_addrs(&self) -> &[IpAddr] {
         std::slice::from_ref(&self.resp_addr)
     }
 
     fn dst_port(&self) -> u16 {
         self.resp_port
+    }
+
+    fn resp_country_codes(&self) -> &[[u8; 2]] {
+        std::slice::from_ref(&self.resp_country_code)
     }
 
     fn proto(&self) -> u8 {

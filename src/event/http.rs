@@ -374,14 +374,6 @@ impl RepeatedHttpSessions {
 }
 
 impl Match for RepeatedHttpSessions {
-    fn orig_country_codes(&self) -> &[[u8; 2]] {
-        std::slice::from_ref(&self.orig_country_code)
-    }
-
-    fn resp_country_codes(&self) -> &[[u8; 2]] {
-        std::slice::from_ref(&self.resp_country_code)
-    }
-
     fn src_addrs(&self) -> &[IpAddr] {
         std::slice::from_ref(&self.orig_addr)
     }
@@ -390,12 +382,20 @@ impl Match for RepeatedHttpSessions {
         self.orig_port
     }
 
+    fn orig_country_codes(&self) -> &[[u8; 2]] {
+        std::slice::from_ref(&self.orig_country_code)
+    }
+
     fn dst_addrs(&self) -> &[IpAddr] {
         std::slice::from_ref(&self.resp_addr)
     }
 
     fn dst_port(&self) -> u16 {
         self.resp_port
+    }
+
+    fn resp_country_codes(&self) -> &[[u8; 2]] {
+        std::slice::from_ref(&self.resp_country_code)
     }
 
     fn proto(&self) -> u8 {
@@ -811,14 +811,6 @@ impl HttpThreat {
 }
 
 impl Match for HttpThreat {
-    fn orig_country_codes(&self) -> &[[u8; 2]] {
-        std::slice::from_ref(&self.orig_country_code)
-    }
-
-    fn resp_country_codes(&self) -> &[[u8; 2]] {
-        std::slice::from_ref(&self.resp_country_code)
-    }
-
     fn src_addrs(&self) -> &[IpAddr] {
         std::slice::from_ref(&self.orig_addr)
     }
@@ -827,12 +819,20 @@ impl Match for HttpThreat {
         self.orig_port
     }
 
+    fn orig_country_codes(&self) -> &[[u8; 2]] {
+        std::slice::from_ref(&self.orig_country_code)
+    }
+
     fn dst_addrs(&self) -> &[IpAddr] {
         std::slice::from_ref(&self.resp_addr)
     }
 
     fn dst_port(&self) -> u16 {
         self.resp_port
+    }
+
+    fn resp_country_codes(&self) -> &[[u8; 2]] {
+        std::slice::from_ref(&self.resp_country_code)
     }
 
     fn proto(&self) -> u8 {
@@ -1222,14 +1222,6 @@ impl DomainGenerationAlgorithm {
 }
 
 impl Match for DomainGenerationAlgorithm {
-    fn orig_country_codes(&self) -> &[[u8; 2]] {
-        std::slice::from_ref(&self.orig_country_code)
-    }
-
-    fn resp_country_codes(&self) -> &[[u8; 2]] {
-        std::slice::from_ref(&self.resp_country_code)
-    }
-
     fn src_addrs(&self) -> &[IpAddr] {
         std::slice::from_ref(&self.orig_addr)
     }
@@ -1238,12 +1230,20 @@ impl Match for DomainGenerationAlgorithm {
         self.orig_port
     }
 
+    fn orig_country_codes(&self) -> &[[u8; 2]] {
+        std::slice::from_ref(&self.orig_country_code)
+    }
+
     fn dst_addrs(&self) -> &[IpAddr] {
         std::slice::from_ref(&self.resp_addr)
     }
 
     fn dst_port(&self) -> u16 {
         self.resp_port
+    }
+
+    fn resp_country_codes(&self) -> &[[u8; 2]] {
+        std::slice::from_ref(&self.resp_country_code)
     }
 
     fn proto(&self) -> u8 {
@@ -1433,14 +1433,6 @@ impl NonBrowser {
 }
 
 impl Match for NonBrowser {
-    fn orig_country_codes(&self) -> &[[u8; 2]] {
-        std::slice::from_ref(&self.orig_country_code)
-    }
-
-    fn resp_country_codes(&self) -> &[[u8; 2]] {
-        std::slice::from_ref(&self.resp_country_code)
-    }
-
     fn src_addrs(&self) -> &[IpAddr] {
         std::slice::from_ref(&self.orig_addr)
     }
@@ -1449,12 +1441,20 @@ impl Match for NonBrowser {
         self.orig_port
     }
 
+    fn orig_country_codes(&self) -> &[[u8; 2]] {
+        std::slice::from_ref(&self.orig_country_code)
+    }
+
     fn dst_addrs(&self) -> &[IpAddr] {
         std::slice::from_ref(&self.resp_addr)
     }
 
     fn dst_port(&self) -> u16 {
         self.resp_port
+    }
+
+    fn resp_country_codes(&self) -> &[[u8; 2]] {
+        std::slice::from_ref(&self.resp_country_code)
     }
 
     fn proto(&self) -> u8 {
@@ -1648,14 +1648,6 @@ impl BlocklistHttp {
 }
 
 impl Match for BlocklistHttp {
-    fn orig_country_codes(&self) -> &[[u8; 2]] {
-        std::slice::from_ref(&self.orig_country_code)
-    }
-
-    fn resp_country_codes(&self) -> &[[u8; 2]] {
-        std::slice::from_ref(&self.resp_country_code)
-    }
-
     fn src_addrs(&self) -> &[IpAddr] {
         std::slice::from_ref(&self.orig_addr)
     }
@@ -1664,12 +1656,20 @@ impl Match for BlocklistHttp {
         self.orig_port
     }
 
+    fn orig_country_codes(&self) -> &[[u8; 2]] {
+        std::slice::from_ref(&self.orig_country_code)
+    }
+
     fn dst_addrs(&self) -> &[IpAddr] {
         std::slice::from_ref(&self.resp_addr)
     }
 
     fn dst_port(&self) -> u16 {
         self.resp_port
+    }
+
+    fn resp_country_codes(&self) -> &[[u8; 2]] {
+        std::slice::from_ref(&self.resp_country_code)
     }
 
     fn proto(&self) -> u8 {

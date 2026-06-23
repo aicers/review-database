@@ -158,14 +158,6 @@ impl UnusualDestinationPattern {
 }
 
 impl Match for UnusualDestinationPattern {
-    fn orig_country_codes(&self) -> &[[u8; 2]] {
-        &[]
-    }
-
-    fn resp_country_codes(&self) -> &[[u8; 2]] {
-        &self.resp_country_codes
-    }
-
     fn src_addrs(&self) -> &[IpAddr] {
         &[]
     }
@@ -174,12 +166,20 @@ impl Match for UnusualDestinationPattern {
         0
     }
 
+    fn orig_country_codes(&self) -> &[[u8; 2]] {
+        &[]
+    }
+
     fn dst_addrs(&self) -> &[IpAddr] {
         &self.destination_ips
     }
 
     fn dst_port(&self) -> u16 {
         0
+    }
+
+    fn resp_country_codes(&self) -> &[[u8; 2]] {
+        &self.resp_country_codes
     }
 
     fn proto(&self) -> u8 {
