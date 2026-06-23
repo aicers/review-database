@@ -1,9 +1,11 @@
 use std::{fmt, net::IpAddr};
 
 use attrievent::attribute::{ConnAttr, RawEventAttrKind};
-use chrono::{DateTime, Utc};
+use chrono::DateTime;
+use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
+use super::timestamp;
 use super::{EventCategory, LearningMethod, ThreatLevel, TriageScore, common::Match};
 use crate::event::common::{AttrValue, triage_scores_to_string};
 
@@ -92,10 +94,10 @@ fn format_ip_vec(ips: &[IpAddr]) -> String {
 }
 
 pub struct UnusualDestinationPattern {
-    pub time: DateTime<Utc>,
+    pub time: Timestamp,
     pub sensor: String,
-    pub sampling_window_start_time: DateTime<Utc>,
-    pub sampling_window_end_time: DateTime<Utc>,
+    pub sampling_window_start_time: Timestamp,
+    pub sampling_window_end_time: Timestamp,
     pub destination_ips: Vec<IpAddr>,
     pub resp_country_codes: Vec<[u8; 2]>,
     pub count: usize,
@@ -113,8 +115,8 @@ impl fmt::Display for UnusualDestinationPattern {
             f,
             "sensor={:?} sampling_window_start_time={:?} sampling_window_end_time={:?} destination_ips={:?} resp_country_codes={:?} count={:?} expected_mean={:?} std_deviation={:?} z_score={:?} triage_scores={:?}",
             self.sensor,
-            self.sampling_window_start_time.to_rfc3339(),
-            self.sampling_window_end_time.to_rfc3339(),
+            timestamp::format_rfc3339(self.sampling_window_start_time).unwrap_or_default(),
+            timestamp::format_rfc3339(self.sampling_window_end_time).unwrap_or_default(),
             format_ip_vec(&self.destination_ips),
             crate::util::country_codes_to_string(&self.resp_country_codes),
             self.count.to_string(),
@@ -127,16 +129,16 @@ impl fmt::Display for UnusualDestinationPattern {
 }
 
 impl UnusualDestinationPattern {
-    pub(super) fn new(time: DateTime<Utc>, fields: UnusualDestinationPatternFieldsStored) -> Self {
+    pub(super) fn new(time: Timestamp, fields: UnusualDestinationPatternFieldsStored) -> Self {
         Self {
             time,
             sensor: fields.sensor,
-            sampling_window_start_time: DateTime::from_timestamp_nanos(
+            sampling_window_start_time: timestamp::from_i64_nanos(
                 fields.sampling_window_start_time,
-            ),
-            sampling_window_end_time: DateTime::from_timestamp_nanos(
-                fields.sampling_window_end_time,
-            ),
+            )
+            .expect(timestamp::I64_NANOS_JIFF_INVARIANT),
+            sampling_window_end_time: timestamp::from_i64_nanos(fields.sampling_window_end_time)
+                .expect(timestamp::I64_NANOS_JIFF_INVARIANT),
             destination_ips: fields.destination_ips,
             resp_country_codes: fields.resp_country_codes.clone(),
             count: fields.count,
@@ -219,7 +221,7 @@ impl Match for UnusualDestinationPattern {
 mod tests {
     use std::net::Ipv4Addr;
 
-    use chrono::TimeZone;
+    use chrono::{TimeZone, Utc};
 
     use super::*;
 

@@ -1,9 +1,10 @@
 use std::{fmt, net::IpAddr};
 
 use attrievent::attribute::{ConnAttr, HttpAttr, RawEventAttrKind};
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
+use super::timestamp::{self, ts_nanoseconds as jiff_ts_nanoseconds};
 use super::{EventCategory, LearningMethod, ThreatLevel, TriageScore, common::Match};
 use crate::TriageExclusion;
 use crate::event::{
@@ -15,7 +16,8 @@ use crate::event::{
 #[allow(clippy::module_name_repetitions)]
 #[derive(Serialize, Deserialize)]
 pub struct TorConnection {
-    pub time: DateTime<Utc>,
+    #[serde(with = "jiff_ts_nanoseconds")]
+    pub time: Timestamp,
     pub sensor: String,
     pub orig_addr: IpAddr,
     pub orig_port: u16,
@@ -24,7 +26,8 @@ pub struct TorConnection {
     pub resp_port: u16,
     pub resp_country_code: [u8; 2],
     pub proto: u8,
-    pub start_time: DateTime<Utc>,
+    #[serde(with = "jiff_ts_nanoseconds")]
+    pub start_time: Timestamp,
     pub duration: i64,
     pub orig_pkts: u64,
     pub resp_pkts: u64,
@@ -68,7 +71,7 @@ impl fmt::Display for TorConnection {
             self.resp_port.to_string(),
             crate::util::country_code_as_str(&self.resp_country_code),
             self.proto.to_string(),
-            self.start_time.to_rfc3339(),
+            timestamp::format_rfc3339(self.start_time).unwrap_or_default(),
             self.duration.to_string(),
             self.orig_pkts.to_string(),
             self.resp_pkts.to_string(),
@@ -100,11 +103,12 @@ impl fmt::Display for TorConnection {
 }
 
 impl TorConnection {
-    pub(super) fn new(time: DateTime<Utc>, fields: &HttpEventFieldsStored) -> Self {
+    pub(super) fn new(time: Timestamp, fields: &HttpEventFieldsStored) -> Self {
         TorConnection {
             time,
             sensor: fields.sensor.clone(),
-            start_time: DateTime::from_timestamp_nanos(fields.start_time),
+            start_time: timestamp::from_i64_nanos(fields.start_time)
+                .expect(timestamp::I64_NANOS_JIFF_INVARIANT),
             duration: fields.duration,
             orig_pkts: fields.orig_pkts,
             resp_pkts: fields.resp_pkts,
@@ -218,7 +222,7 @@ impl Match for TorConnection {
 #[allow(clippy::module_name_repetitions)]
 pub struct TorConnectionConn {
     pub sensor: String,
-    pub time: DateTime<Utc>,
+    pub time: Timestamp,
     pub orig_addr: IpAddr,
     pub orig_port: u16,
     pub orig_country_code: [u8; 2],
@@ -226,7 +230,7 @@ pub struct TorConnectionConn {
     pub resp_port: u16,
     pub resp_country_code: [u8; 2],
     pub proto: u8,
-    pub start_time: DateTime<Utc>,
+    pub start_time: Timestamp,
     pub duration: i64,
     pub conn_state: String,
     pub service: String,
@@ -255,7 +259,7 @@ impl fmt::Display for TorConnectionConn {
             crate::util::country_code_as_str(&self.resp_country_code),
             self.proto.to_string(),
             self.conn_state,
-            self.start_time.to_rfc3339(),
+            timestamp::format_rfc3339(self.start_time).unwrap_or_default(),
             self.duration.to_string(),
             self.service,
             self.orig_bytes.to_string(),
@@ -270,11 +274,12 @@ impl fmt::Display for TorConnectionConn {
 }
 
 impl TorConnectionConn {
-    pub(super) fn new(time: DateTime<Utc>, fields: BlocklistConnFieldsStored) -> Self {
+    pub(super) fn new(time: Timestamp, fields: BlocklistConnFieldsStored) -> Self {
         Self {
             time,
             sensor: fields.sensor,
-            start_time: DateTime::from_timestamp_nanos(fields.start_time),
+            start_time: timestamp::from_i64_nanos(fields.start_time)
+                .expect(timestamp::I64_NANOS_JIFF_INVARIANT),
             orig_addr: fields.orig_addr,
             orig_port: fields.orig_port,
             orig_country_code: fields.orig_country_code,
@@ -363,6 +368,7 @@ mod tests {
     use chrono::{TimeZone, Utc};
 
     use super::{Match, TorConnectionConn};
+    use crate::event::timestamp;
     use crate::event::{
         EventCategory, LearningMethod, ThreatLevel, common::AttrValue,
         conn::BlocklistConnFieldsStored,
@@ -400,7 +406,8 @@ mod tests {
 
     #[test]
     fn tor_connection_conn_new() {
-        let time = Utc.with_ymd_and_hms(2023, 1, 1, 12, 0, 0).unwrap();
+        let time = timestamp::from_chrono(Utc.with_ymd_and_hms(2023, 1, 1, 12, 0, 0).unwrap())
+            .expect(timestamp::I64_NANOS_JIFF_INVARIANT);
         let fields = tor_connection_conn_fields();
 
         let event = TorConnectionConn::new(time, fields);
@@ -428,7 +435,8 @@ mod tests {
 
     #[test]
     fn tor_connection_conn_display() {
-        let time = Utc.with_ymd_and_hms(2023, 1, 1, 12, 0, 0).unwrap();
+        let time = timestamp::from_chrono(Utc.with_ymd_and_hms(2023, 1, 1, 12, 0, 0).unwrap())
+            .expect(timestamp::I64_NANOS_JIFF_INVARIANT);
         let event = TorConnectionConn::new(time, tor_connection_conn_fields());
 
         let display_output = format!("{event}");
@@ -441,7 +449,8 @@ mod tests {
 
     #[test]
     fn tor_connection_conn_match_trait() {
-        let time = Utc.with_ymd_and_hms(2023, 1, 1, 12, 0, 0).unwrap();
+        let time = timestamp::from_chrono(Utc.with_ymd_and_hms(2023, 1, 1, 12, 0, 0).unwrap())
+            .expect(timestamp::I64_NANOS_JIFF_INVARIANT);
         let event = TorConnectionConn::new(time, tor_connection_conn_fields());
 
         assert_eq!(
@@ -468,7 +477,8 @@ mod tests {
 
     #[test]
     fn tor_connection_conn_find_attr_by_kind() {
-        let time = Utc.with_ymd_and_hms(2023, 1, 1, 12, 0, 0).unwrap();
+        let time = timestamp::from_chrono(Utc.with_ymd_and_hms(2023, 1, 1, 12, 0, 0).unwrap())
+            .expect(timestamp::I64_NANOS_JIFF_INVARIANT);
         let event = TorConnectionConn::new(time, tor_connection_conn_fields());
 
         // Test finding source address attribute

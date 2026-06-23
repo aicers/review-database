@@ -695,7 +695,7 @@ mod tests {
 
     #[test]
     fn learning_method_match_on_semi_supervised_events() {
-        let time = Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap();
+        let time = stored_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap());
         let mut semi_supervised_events = Vec::new();
 
         let dns_event = Event::DnsCovertChannel(DnsCovertChannel::new(time, dns_event_fields()));
@@ -941,7 +941,7 @@ mod tests {
 
     #[test]
     fn filter_events_by_address() {
-        let time = Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap();
+        let time = stored_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap());
         let mut single_address_events = Vec::new();
 
         let dns_event = Event::DnsCovertChannel(DnsCovertChannel::new(time, dns_event_fields()));
@@ -1094,8 +1094,7 @@ mod tests {
         )));
         single_address_events.push(blocklist_tls_event);
 
-        let http_threat_event =
-            Event::HttpThreat(HttpThreat::new(stored_time(time), http_threat_fields()));
+        let http_threat_event = Event::HttpThreat(HttpThreat::new(time, http_threat_fields()));
         single_address_events.push(http_threat_event);
 
         let network_threat_event = Event::NetworkThreat(network_threat());
@@ -1287,7 +1286,7 @@ mod tests {
 
     #[test]
     fn compare_attribute() {
-        let time = Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap();
+        let time = stored_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap());
 
         // Compare `Addr`, `String`, `UInt`, `VecString` type
         let http_event = DomainGenerationAlgorithm::new(time, dga_fields());
@@ -1602,7 +1601,7 @@ mod tests {
 
     #[test]
     fn compare_attribute_new_protocols() {
-        let time = Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap();
+        let time = stored_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap());
 
         // 1. Radius
         let radius_event = BlocklistRadius::new(time, blocklist_radius_fields());
@@ -2899,16 +2898,16 @@ mod tests {
     /// only events with the same category.
     #[test]
     fn score_by_confidence_none_matches_only_none_category() {
-        let time = Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap();
+        let time = stored_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap());
 
         // Event with category = Some(Reconnaissance)
         let fields_with_cat = http_threat_fields(); // category: Some(Reconnaissance)
-        let event_with_cat = HttpThreat::new(stored_time(time), fields_with_cat);
+        let event_with_cat = HttpThreat::new(time, fields_with_cat);
 
         // Event with category = None
         let mut fields_no_cat = http_threat_fields();
         fields_no_cat.category = None;
-        let event_no_cat = HttpThreat::new(stored_time(time), fields_no_cat);
+        let event_no_cat = HttpThreat::new(time, fields_no_cat);
 
         // Confidence targeting None category, matching kind "http threat"
         let conf_none = vec![make_confidence(None, "http threat", 0.0, Some(5.0))];
@@ -2955,12 +2954,12 @@ mod tests {
     }
 
     fn dns_covert_channel_event() -> Event {
-        let time = Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap();
+        let time = stored_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap());
         Event::DnsCovertChannel(DnsCovertChannel::new(time, dns_event_fields()))
     }
 
     fn blocklist_http_event() -> Event {
-        let time = Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap();
+        let time = stored_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap());
         Event::Blocklist(RecordType::Http(BlocklistHttp::new(
             time,
             blocklist_http_fields(),
@@ -3043,7 +3042,7 @@ mod tests {
             HostNetworkGroup::new(Vec::new(), networks, Vec::new()),
         ))];
 
-        let time = Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap();
+        let time = stored_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap());
 
         let mut v4_fields = blocklist_http_fields();
         v4_fields.orig_addr = "10.1.2.3".parse().unwrap();

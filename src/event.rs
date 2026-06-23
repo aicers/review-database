@@ -38,7 +38,6 @@ use std::{
 
 use aho_corasick::AhoCorasickBuilder;
 use anyhow::{Context, Result, bail};
-use chrono::{TimeZone, Utc};
 use jiff::Timestamp;
 use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive, ToPrimitive};
@@ -254,7 +253,7 @@ impl fmt::Display for Event {
                 write!(
                     f,
                     "time={:?} event_kind={event_kind:?} category={category:?} {event}",
-                    event.time.to_rfc3339(),
+                    timestamp::format_rfc3339(event.time).unwrap_or_default(),
                 )
             }
             Event::HttpThreat(event) => {
@@ -268,98 +267,98 @@ impl fmt::Display for Event {
                 write!(
                     f,
                     "time={:?} event_kind={event_kind:?} category={category:?} {event}",
-                    event.time.to_rfc3339(),
+                    timestamp::format_rfc3339(event.time).unwrap_or_default(),
                 )
             }
             Event::RepeatedHttpSessions(event) => {
                 write!(
                     f,
                     "time={:?} event_kind={event_kind:?} category={category:?} {event}",
-                    event.time.to_rfc3339(),
+                    timestamp::format_rfc3339(event.time).unwrap_or_default(),
                 )
             }
             Event::TorConnection(event) => {
                 write!(
                     f,
                     "time={:?} event_kind={event_kind:?} category={category:?} {event}",
-                    event.time.to_rfc3339(),
+                    timestamp::format_rfc3339(event.time).unwrap_or_default(),
                 )
             }
             Event::TorConnectionConn(event) => {
                 write!(
                     f,
                     "time={:?} event_kind={event_kind:?} category={category:?} {event}",
-                    event.time.to_rfc3339(),
+                    timestamp::format_rfc3339(event.time).unwrap_or_default(),
                 )
             }
             Event::DomainGenerationAlgorithm(event) => {
                 write!(
                     f,
                     "time={:?} event_kind={event_kind:?} category={category:?} {event}",
-                    event.time.to_rfc3339(),
+                    timestamp::format_rfc3339(event.time).unwrap_or_default(),
                 )
             }
             Event::FtpBruteForce(event) => {
                 write!(
                     f,
                     "time={:?} event_kind={event_kind:?} category={category:?} {event}",
-                    event.time.to_rfc3339(),
+                    timestamp::format_rfc3339(event.time).unwrap_or_default(),
                 )
             }
             Event::FtpPlainText(event) => {
                 write!(
                     f,
                     "time={:?} event_kind={event_kind:?} category={category:?} {event}",
-                    event.time.to_rfc3339(),
+                    timestamp::format_rfc3339(event.time).unwrap_or_default(),
                 )
             }
             Event::PortScan(event) => {
                 write!(
                     f,
                     "time={:?} event_kind={event_kind:?} category={category:?} {event}",
-                    event.time.to_rfc3339(),
+                    timestamp::format_rfc3339(event.time).unwrap_or_default(),
                 )
             }
             Event::MultiHostPortScan(event) => {
                 write!(
                     f,
                     "time={:?} event_kind={event_kind:?} category={category:?} {event}",
-                    event.time.to_rfc3339(),
+                    timestamp::format_rfc3339(event.time).unwrap_or_default(),
                 )
             }
             Event::ExternalDdos(event) => {
                 write!(
                     f,
                     "time={:?} event_kind={event_kind:?} category={category:?} {event}",
-                    event.time.to_rfc3339(),
+                    timestamp::format_rfc3339(event.time).unwrap_or_default(),
                 )
             }
             Event::NonBrowser(event) => {
                 write!(
                     f,
                     "time={:?} event_kind={event_kind:?} category={category:?} {event}",
-                    event.time.to_rfc3339(),
+                    timestamp::format_rfc3339(event.time).unwrap_or_default(),
                 )
             }
             Event::LdapBruteForce(event) => {
                 write!(
                     f,
                     "time={:?} event_kind={event_kind:?} category={category:?} {event}",
-                    event.time.to_rfc3339(),
+                    timestamp::format_rfc3339(event.time).unwrap_or_default(),
                 )
             }
             Event::LdapPlainText(event) => {
                 write!(
                     f,
                     "time={:?} event_kind={event_kind:?} category={category:?} {event}",
-                    event.time.to_rfc3339(),
+                    timestamp::format_rfc3339(event.time).unwrap_or_default(),
                 )
             }
             Event::CryptocurrencyMiningPool(event) => {
                 write!(
                     f,
                     "time={:?} event_kind={event_kind:?} category={category:?} {event}",
-                    event.time.to_rfc3339(),
+                    timestamp::format_rfc3339(event.time).unwrap_or_default(),
                 )
             }
             Event::Blocklist(record_type) => match record_type {
@@ -367,140 +366,140 @@ impl fmt::Display for Event {
                     write!(
                         f,
                         "time={:?} event_kind={event_kind:?} category={category:?} {event}",
-                        event.time.to_rfc3339(),
+                        timestamp::format_rfc3339(event.time).unwrap_or_default(),
                     )
                 }
                 RecordType::Conn(event) => {
                     write!(
                         f,
                         "time={:?} event_kind={event_kind:?} category={category:?} {event}",
-                        event.time.to_rfc3339(),
+                        timestamp::format_rfc3339(event.time).unwrap_or_default(),
                     )
                 }
                 RecordType::DceRpc(event) => {
                     write!(
                         f,
                         "time={:?} event_kind={event_kind:?} category={category:?} {event}",
-                        event.time.to_rfc3339(),
+                        timestamp::format_rfc3339(event.time).unwrap_or_default(),
                     )
                 }
                 RecordType::Dhcp(event) => {
                     write!(
                         f,
                         "time={:?} event_kind={event_kind:?} category={category:?} {event}",
-                        event.time.to_rfc3339(),
+                        timestamp::format_rfc3339(event.time).unwrap_or_default(),
                     )
                 }
                 RecordType::Dns(event) => {
                     write!(
                         f,
                         "time={:?} event_kind={event_kind:?} category={category:?} {event}",
-                        event.time.to_rfc3339(),
+                        timestamp::format_rfc3339(event.time).unwrap_or_default(),
                     )
                 }
                 RecordType::Ftp(event) => {
                     write!(
                         f,
                         "time={:?} event_kind={event_kind:?} category={category:?} {event}",
-                        event.time.to_rfc3339(),
+                        timestamp::format_rfc3339(event.time).unwrap_or_default(),
                     )
                 }
                 RecordType::Http(event) => {
                     write!(
                         f,
                         "time={:?} event_kind={event_kind:?} category={category:?} {event}",
-                        event.time.to_rfc3339(),
+                        timestamp::format_rfc3339(event.time).unwrap_or_default(),
                     )
                 }
                 RecordType::Kerberos(event) => {
                     write!(
                         f,
                         "time={:?} event_kind={event_kind:?} category={category:?} {event}",
-                        event.time.to_rfc3339(),
+                        timestamp::format_rfc3339(event.time).unwrap_or_default(),
                     )
                 }
                 RecordType::Ldap(event) => {
                     write!(
                         f,
                         "time={:?} event_kind={event_kind:?} category={category:?} {event}",
-                        event.time.to_rfc3339(),
+                        timestamp::format_rfc3339(event.time).unwrap_or_default(),
                     )
                 }
                 RecordType::MalformedDns(event) => {
                     write!(
                         f,
                         "time={:?} event_kind={event_kind:?} category={category:?} {event}",
-                        event.time.to_rfc3339(),
+                        timestamp::format_rfc3339(event.time).unwrap_or_default(),
                     )
                 }
                 RecordType::Mqtt(event) => {
                     write!(
                         f,
                         "time={:?} event_kind={event_kind:?} category={category:?} {event}",
-                        event.time.to_rfc3339(),
+                        timestamp::format_rfc3339(event.time).unwrap_or_default(),
                     )
                 }
                 RecordType::Nfs(event) => {
                     write!(
                         f,
                         "time={:?} event_kind={event_kind:?} category={category:?} {event}",
-                        event.time.to_rfc3339(),
+                        timestamp::format_rfc3339(event.time).unwrap_or_default(),
                     )
                 }
                 RecordType::Ntlm(event) => {
                     write!(
                         f,
                         "time={:?} event_kind={event_kind:?} category={category:?} {event}",
-                        event.time.to_rfc3339(),
+                        timestamp::format_rfc3339(event.time).unwrap_or_default(),
                     )
                 }
                 RecordType::Radius(event) => {
                     write!(
                         f,
                         "time={:?} event_kind={event_kind:?} category={category:?} {event}",
-                        event.time.to_rfc3339(),
+                        timestamp::format_rfc3339(event.time).unwrap_or_default(),
                     )
                 }
                 RecordType::Rdp(event) => {
                     write!(
                         f,
                         "time={:?} event_kind={event_kind:?} category={category:?} {event}",
-                        event.time.to_rfc3339(),
+                        timestamp::format_rfc3339(event.time).unwrap_or_default(),
                     )
                 }
                 RecordType::Smb(event) => {
                     write!(
                         f,
                         "time={:?} event_kind={event_kind:?} category={category:?} {event}",
-                        event.time.to_rfc3339(),
+                        timestamp::format_rfc3339(event.time).unwrap_or_default(),
                     )
                 }
                 RecordType::Smtp(event) => {
                     write!(
                         f,
                         "time={:?} event_kind={event_kind:?} category={category:?} {event}",
-                        event.time.to_rfc3339(),
+                        timestamp::format_rfc3339(event.time).unwrap_or_default(),
                     )
                 }
                 RecordType::Ssh(event) => {
                     write!(
                         f,
                         "time={:?} event_kind={event_kind:?} category={category:?} {event}",
-                        event.time.to_rfc3339(),
+                        timestamp::format_rfc3339(event.time).unwrap_or_default(),
                     )
                 }
                 RecordType::Tls(event) => {
                     write!(
                         f,
                         "time={:?} event_kind={event_kind:?} category={category:?} {event}",
-                        event.time.to_rfc3339(),
+                        timestamp::format_rfc3339(event.time).unwrap_or_default(),
                     )
                 }
                 RecordType::UnusualDestinationPattern(event) => {
                     write!(
                         f,
                         "time={:?} event_kind={event_kind:?} category={category:?} {event}",
-                        event.time.to_rfc3339(),
+                        timestamp::format_rfc3339(event.time).unwrap_or_default(),
                     )
                 }
             },
@@ -529,14 +528,14 @@ impl fmt::Display for Event {
                 write!(
                     f,
                     "time={:?} event_kind={event_kind:?} category={category:?} {event}",
-                    event.time.to_rfc3339(),
+                    timestamp::format_rfc3339(event.time).unwrap_or_default(),
                 )
             }
             Event::SuspiciousTlsTraffic(event) => {
                 write!(
                     f,
                     "time={:?} event_kind={event_kind:?} category={category:?} {event}",
-                    event.time.to_rfc3339(),
+                    timestamp::format_rfc3339(event.time).unwrap_or_default(),
                 )
             }
         }
@@ -3054,7 +3053,8 @@ impl Iterator for EventIterator<'_> {
                 return Some(Err(InvalidEvent::Key(k)));
             };
             let key = i128::from_be_bytes(key);
-            let time = Utc.timestamp_nanos((key >> 64).try_into().expect("valid i64"));
+            let time = timestamp::from_i64_nanos((key >> 64).try_into().expect("valid i64"))
+                .expect(timestamp::I64_NANOS_JIFF_INVARIANT);
             let kind_num = (key & 0xffff_ffff_0000_0000) >> 32;
             if let Some(kind) = EventKind::from_i128(kind_num) {
                 break (key, kind, time, v);
@@ -4129,7 +4129,7 @@ mod tests {
         );
 
         let dga = DomainGenerationAlgorithm::new(
-            Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap(),
+            msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap()),
             fields.into(),
         );
         let event = Event::DomainGenerationAlgorithm(dga);
@@ -4356,7 +4356,7 @@ mod tests {
         );
 
         let non_browser = Event::NonBrowser(NonBrowser::new(
-            Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap(),
+            msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap()),
             &fields.into(),
         ))
         .to_string();
@@ -4422,7 +4422,7 @@ mod tests {
         );
 
         let blocklist_http = Event::Blocklist(RecordType::Http(BlocklistHttp::new(
-            Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap(),
+            msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap()),
             fields.into(),
         )))
         .to_string();
@@ -4481,7 +4481,7 @@ mod tests {
         );
 
         let locky_ransomware = Event::LockyRansomware(LockyRansomware::new(
-            Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap(),
+            msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap()),
             fields.into(),
         ))
         .to_string();
@@ -4529,7 +4529,7 @@ mod tests {
         );
 
         let port_scan = Event::PortScan(PortScan::new(
-            Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap(),
+            msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap()),
             &fields.into(),
         ))
         .to_string();
@@ -4579,7 +4579,7 @@ mod tests {
         );
 
         let multi_host_port_scan = Event::MultiHostPortScan(MultiHostPortScan::new(
-            Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap(),
+            msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap()),
             &fields.into(),
         ))
         .to_string();
@@ -4627,7 +4627,7 @@ mod tests {
         );
 
         let external_ddos = Event::ExternalDdos(ExternalDdos::new(
-            Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap(),
+            msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap()),
             &fields.into(),
         ))
         .to_string();
@@ -4689,7 +4689,7 @@ mod tests {
             r#"time="1970-01-01T01:01:01+00:00" event_kind="BlocklistBootp" category="InitialAccess" sensor="collector1" orig_addr="127.0.0.1" orig_port="68" resp_addr="127.0.0.2" resp_port="67" proto="17" start_time="1970-01-01T00:00:00+00:00" duration="0" orig_pkts="0" resp_pkts="0" orig_l2_bytes="0" resp_l2_bytes="0" op="1" htype="2" hops="1" xid="1" ciaddr="127.0.0.5" yiaddr="127.0.0.6" siaddr="127.0.0.7" giaddr="127.0.0.8" chaddr="01:02:03:04:05:06" sname="server_name" file="boot_file_name" confidence="1""#,
         );
         let blocklist_bootp = Event::Blocklist(RecordType::Bootp(BlocklistBootp::new(
-            Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap(),
+            msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap()),
             fields.into(),
         )))
         .to_string();
@@ -4809,7 +4809,7 @@ mod tests {
         );
 
         let blocklist_conn = Event::Blocklist(RecordType::Conn(BlocklistConn::new(
-            Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap(),
+            msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap()),
             fields.into(),
         )))
         .to_string();
@@ -4892,7 +4892,7 @@ mod tests {
         );
 
         let blocklist_dce_rpc = Event::Blocklist(RecordType::DceRpc(BlocklistDceRpc::new(
-            Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap(),
+            msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap()),
             fields.into(),
         )))
         .to_string();
@@ -4983,7 +4983,7 @@ mod tests {
         );
 
         let blocklist_dhcp = Event::Blocklist(RecordType::Dhcp(BlocklistDhcp::new(
-            Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap(),
+            msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap()),
             fields.into(),
         )))
         .to_string();
@@ -5115,7 +5115,7 @@ mod tests {
             score: 0.9,
         }];
         let mut dns_covert_channel = Event::DnsCovertChannel(DnsCovertChannel::new(
-            Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap(),
+            msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap()),
             fields.into(),
         ));
         dns_covert_channel.set_triage_scores(triage_scores);
@@ -5179,7 +5179,7 @@ mod tests {
 
         let cryptocurrency_mining_pool =
             Event::CryptocurrencyMiningPool(CryptocurrencyMiningPool::new(
-                Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap(),
+                msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap()),
                 fields.into(),
             ))
             .to_string();
@@ -5238,7 +5238,7 @@ mod tests {
             r#"time="1970-01-01T01:01:01+00:00" event_kind="BlocklistDns" category="InitialAccess" sensor="collector1" orig_addr="127.0.0.1" orig_port="10000" resp_addr="127.0.0.2" resp_port="53" proto="17" start_time="1970-01-01T00:00:00+00:00" duration="0" orig_pkts="0" resp_pkts="0" orig_l2_bytes="0" resp_l2_bytes="0" query="foo.com" answer="10.10.10.10,20.20.20.20" trans_id="123" rtt="1" qclass="0" qtype="0" rcode="0" aa_flag="false" tc_flag="false" rd_flag="false" ra_flag="true" ttl="120,120,120,120,120" confidence="1""#
         );
         let blocklist_dns = Event::Blocklist(RecordType::Dns(BlocklistDns::new(
-            Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap(),
+            msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap()),
             fields.into(),
         )))
         .to_string();
@@ -5287,7 +5287,7 @@ mod tests {
         );
 
         let ftp_brute_force = Event::FtpBruteForce(FtpBruteForce::new(
-            Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap(),
+            msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap()),
             &fields.into(),
         ))
         .to_string();
@@ -5354,7 +5354,7 @@ mod tests {
         );
 
         let ftp_plain_text = Event::FtpPlainText(FtpPlainText::new(
-            Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap(),
+            msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap()),
             fields.into(),
         ))
         .to_string();
@@ -5424,7 +5424,7 @@ mod tests {
         );
 
         let blocklist_ftp = Event::Blocklist(RecordType::Ftp(BlocklistFtp::new(
-            Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap(),
+            msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap()),
             fields.into(),
         )))
         .to_string();
@@ -5536,7 +5536,7 @@ mod tests {
             r#"time="1970-01-01T01:01:01+00:00" event_kind="RepeatedHttpSessions" category="Exfiltration" sensor="collector1" orig_addr="127.0.0.1" orig_port="10000" resp_addr="127.0.0.2" resp_port="443" proto="6" first_event_start_time="1970-01-01T01:01:01+00:00" last_event_start_time="1970-01-01T01:01:01+00:00" confidence="0.3""#
         );
         let repeated_http_sessions = Event::RepeatedHttpSessions(RepeatedHttpSessions::new(
-            Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap(),
+            msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap()),
             &fields.into(),
         ))
         .to_string();
@@ -5593,7 +5593,7 @@ mod tests {
         );
 
         let blocklist_kerberos = Event::Blocklist(RecordType::Kerberos(BlocklistKerberos::new(
-            Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap(),
+            msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap()),
             fields.into(),
         )))
         .to_string();
@@ -5645,7 +5645,7 @@ mod tests {
         );
 
         let ldap_brute_force = Event::LdapBruteForce(LdapBruteForce::new(
-            Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap(),
+            msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap()),
             &fields.into(),
         ))
         .to_string();
@@ -5701,7 +5701,7 @@ mod tests {
         );
 
         let ldap_plain_text = Event::LdapPlainText(LdapPlainText::new(
-            Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap(),
+            msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap()),
             fields.into(),
         ))
         .to_string();
@@ -5761,7 +5761,7 @@ mod tests {
         );
 
         let blocklist_ldap = Event::Blocklist(RecordType::Ldap(BlocklistLdap::new(
-            Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap(),
+            msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap()),
             fields.into(),
         )))
         .to_string();
@@ -6015,7 +6015,7 @@ mod tests {
         );
 
         let blocklist_mqtt = Event::Blocklist(RecordType::Mqtt(BlocklistMqtt::new(
-            Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap(),
+            msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap()),
             fields.into(),
         )))
         .to_string();
@@ -6109,7 +6109,7 @@ mod tests {
         );
 
         let blocklist_nfs = Event::Blocklist(RecordType::Nfs(BlocklistNfs::new(
-            Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap(),
+            msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap()),
             fields.into(),
         )))
         .to_string();
@@ -6163,7 +6163,7 @@ mod tests {
         );
 
         let blocklist_ntlm = Event::Blocklist(RecordType::Ntlm(BlocklistNtlm::new(
-            Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap(),
+            msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap()),
             fields.into(),
         )))
         .to_string();
@@ -6193,7 +6193,7 @@ mod tests {
         );
 
         let blocklist_radius = Event::Blocklist(RecordType::Radius(BlocklistRadius::new(
-            Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap(),
+            msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap()),
             fields.into(),
         )))
         .to_string();
@@ -6326,7 +6326,7 @@ mod tests {
 
         let blocklist_malformed_dns =
             Event::Blocklist(RecordType::MalformedDns(BlocklistMalformedDns::new(
-                Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap(),
+                msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap()),
                 fields.into(),
             )))
             .to_string();
@@ -6376,7 +6376,7 @@ mod tests {
         );
 
         let rdp_brute_force = Event::RdpBruteForce(RdpBruteForce::new(
-            Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap(),
+            msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap()),
             &fields.into(),
         ))
         .to_string();
@@ -6426,7 +6426,7 @@ mod tests {
         );
 
         let blocklist_rdp = Event::Blocklist(RecordType::Rdp(BlocklistRdp::new(
-            Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap(),
+            msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap()),
             fields.into(),
         )))
         .to_string();
@@ -6486,7 +6486,7 @@ mod tests {
         );
 
         let blocklist_smb = Event::Blocklist(RecordType::Smb(BlocklistSmb::new(
-            Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap(),
+            msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap()),
             fields.into(),
         )))
         .to_string();
@@ -6542,7 +6542,7 @@ mod tests {
         );
 
         let blocklist_smtp = Event::Blocklist(RecordType::Smtp(BlocklistSmtp::new(
-            Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap(),
+            msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap()),
             fields.into(),
         )))
         .to_string();
@@ -6604,7 +6604,7 @@ mod tests {
         );
 
         let blocklist_ssh = Event::Blocklist(RecordType::Ssh(BlocklistSsh::new(
-            Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap(),
+            msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap()),
             fields.into(),
         )))
         .to_string();
@@ -6732,7 +6732,7 @@ mod tests {
         );
 
         let blocklist_tls = Event::Blocklist(RecordType::Tls(BlocklistTls::new(
-            Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap(),
+            msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap()),
             fields.into(),
         )))
         .to_string();
@@ -6805,7 +6805,7 @@ mod tests {
         );
 
         let tor_connection = Event::TorConnection(TorConnection::new(
-            Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap(),
+            msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap()),
             &fields.into(),
         ))
         .to_string();
@@ -6947,7 +6947,7 @@ mod tests {
         );
 
         let suspicious_tls_traffic = SuspiciousTlsTraffic::new(
-            Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap(),
+            msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap()),
             fields.into(),
         );
         assert_eq!(

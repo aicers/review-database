@@ -9,6 +9,9 @@ use chrono::{DateTime, Utc};
 use jiff::Timestamp;
 use thiserror::Error;
 
+/// Invariant message for `expect` when converting stored `i64` nanoseconds to Jiff.
+pub const I64_NANOS_JIFF_INVARIANT: &str = "every i64 epoch-nanosecond value fits in Jiff's timestamp range; pinned by stored timestamp contract tests";
+
 /// Errors converting between Jiff timestamps and the i64 nanosecond contract.
 #[derive(Debug, Error)]
 pub enum TimestampError {

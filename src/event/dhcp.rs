@@ -1,9 +1,11 @@
 use std::{fmt, net::IpAddr};
 
 use attrievent::attribute::{DhcpAttr, RawEventAttrKind};
-use chrono::{DateTime, Utc};
+use chrono::DateTime;
+use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
+use super::timestamp;
 use super::{
     EventCategory, LearningMethod, ThreatLevel, TriageScore,
     common::{AttrValue, Match},
@@ -250,7 +252,7 @@ impl BlocklistDhcpFields {
 
 #[allow(clippy::module_name_repetitions)]
 pub struct BlocklistDhcp {
-    pub time: DateTime<Utc>,
+    pub time: Timestamp,
     pub sensor: String,
     pub orig_addr: IpAddr,
     pub orig_port: u16,
@@ -259,7 +261,7 @@ pub struct BlocklistDhcp {
     pub resp_port: u16,
     pub resp_country_code: [u8; 2],
     pub proto: u8,
-    pub start_time: DateTime<Utc>,
+    pub start_time: Timestamp,
     pub duration: i64,
     pub orig_pkts: u64,
     pub resp_pkts: u64,
@@ -301,7 +303,7 @@ impl fmt::Display for BlocklistDhcp {
             self.resp_port.to_string(),
             crate::util::country_code_as_str(&self.resp_country_code),
             self.proto.to_string(),
-            self.start_time.to_rfc3339(),
+            timestamp::format_rfc3339(self.start_time).unwrap_or_default(),
             self.duration.to_string(),
             self.orig_pkts.to_string(),
             self.resp_pkts.to_string(),
@@ -334,7 +336,7 @@ impl fmt::Display for BlocklistDhcp {
 }
 
 impl BlocklistDhcp {
-    pub(super) fn new(time: DateTime<Utc>, fields: BlocklistDhcpFieldsStored) -> Self {
+    pub(super) fn new(time: Timestamp, fields: BlocklistDhcpFieldsStored) -> Self {
         Self {
             time,
             sensor: fields.sensor,
@@ -345,7 +347,8 @@ impl BlocklistDhcp {
             resp_port: fields.resp_port,
             resp_country_code: fields.resp_country_code,
             proto: fields.proto,
-            start_time: DateTime::from_timestamp_nanos(fields.start_time),
+            start_time: timestamp::from_i64_nanos(fields.start_time)
+                .expect(timestamp::I64_NANOS_JIFF_INVARIANT),
             duration: fields.duration,
             orig_pkts: fields.orig_pkts,
             resp_pkts: fields.resp_pkts,
@@ -445,6 +448,7 @@ mod tests {
     use chrono::{TimeZone, Utc};
 
     use super::{BlocklistDhcp, BlocklistDhcpFieldsStored};
+    use crate::event::timestamp;
     use crate::{
         AttrCmpKind, PacketAttr, ValueKind,
         event::common::{AttrValue, Match},
@@ -496,7 +500,8 @@ mod tests {
 
     #[test]
     fn dhcp_option_code_attr_mapping() {
-        let time = Utc.with_ymd_and_hms(1970, 1, 1, 0, 0, 0).unwrap();
+        let time = timestamp::from_chrono(Utc.with_ymd_and_hms(1970, 1, 1, 0, 0, 0).unwrap())
+            .expect(timestamp::I64_NANOS_JIFF_INVARIANT);
         let event = BlocklistDhcp::new(time, dhcp_fields_with_options());
         let attr = RawEventAttrKind::Dhcp(DhcpAttr::OptionCode);
 
@@ -508,7 +513,8 @@ mod tests {
 
     #[test]
     fn dhcp_option_data_attr_mapping() {
-        let time = Utc.with_ymd_and_hms(1970, 1, 1, 0, 0, 0).unwrap();
+        let time = timestamp::from_chrono(Utc.with_ymd_and_hms(1970, 1, 1, 0, 0, 0).unwrap())
+            .expect(timestamp::I64_NANOS_JIFF_INVARIANT);
         let event = BlocklistDhcp::new(time, dhcp_fields_with_options());
         let attr = RawEventAttrKind::Dhcp(DhcpAttr::OptionData);
 
@@ -520,7 +526,8 @@ mod tests {
 
     #[test]
     fn dhcp_option_data_score_by_attr() {
-        let time = Utc.with_ymd_and_hms(1970, 1, 1, 0, 0, 0).unwrap();
+        let time = timestamp::from_chrono(Utc.with_ymd_and_hms(1970, 1, 1, 0, 0, 0).unwrap())
+            .expect(timestamp::I64_NANOS_JIFF_INVARIANT);
         let event = BlocklistDhcp::new(time, dhcp_fields_with_options());
 
         let match_attr = vec![PacketAttr {
