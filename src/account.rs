@@ -5,7 +5,6 @@ use argon2::{
     Argon2,
     password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString, rand_core::OsRng},
 };
-use chrono::{DateTime, Utc};
 use jiff::Timestamp;
 use ring::{
     digest, pbkdf2,
@@ -38,14 +37,18 @@ pub struct Account {
     pub department: String,
     pub language: Option<String>,
     pub theme: Option<String>,
+    #[serde(with = "stored_timestamp")]
     pub(crate) creation_time: Timestamp,
+    #[serde(with = "stored_timestamp_option")]
     pub(crate) last_signin_time: Option<Timestamp>,
     pub allow_access_from: Option<Vec<IpAddr>>,
     pub max_parallel_sessions: Option<u8>,
     pub(crate) password_hash_algorithm: PasswordHashAlgorithm,
+    #[serde(with = "stored_timestamp")]
     pub(crate) password_last_modified_at: Timestamp,
     pub customer_ids: Option<Vec<u32>>,
     pub failed_login_attempts: u8,
+    #[serde(with = "stored_timestamp_option")]
     pub locked_out_until: Option<Timestamp>,
     pub is_suspended: bool,
 }
@@ -145,98 +148,81 @@ impl Account {
     pub(crate) fn from_stored_bytes(value: &[u8]) -> Result<Self> {
         use bincode::Options;
 
-        let stored = bincode::DefaultOptions::new()
+        bincode::DefaultOptions::new()
             .reject_trailing_bytes()
-            .deserialize::<StoredAccount>(value)?;
-        stored.try_into()
+            .deserialize(value)
+            .map_err(Into::into)
     }
 }
 
-/// On-disk representation of an account.
-///
-/// Its field order and types are part of the existing bincode contract. In
-/// particular, chrono remains here solely to keep old account values readable.
-#[derive(Clone, Deserialize, Serialize, PartialEq, Debug)]
-pub(crate) struct StoredAccount {
-    username: String,
-    password: SaltedPassword,
-    role: Role,
-    name: String,
-    department: String,
-    language: Option<String>,
-    theme: Option<String>,
-    creation_time: DateTime<Utc>,
-    last_signin_time: Option<DateTime<Utc>>,
-    allow_access_from: Option<Vec<IpAddr>>,
-    max_parallel_sessions: Option<u8>,
-    password_hash_algorithm: PasswordHashAlgorithm,
-    password_last_modified_at: DateTime<Utc>,
-    customer_ids: Option<Vec<u32>>,
-    failed_login_attempts: u8,
-    locked_out_until: Option<DateTime<Utc>>,
-    is_suspended: bool,
-}
+/// Serde adapters that preserve the existing `chrono::DateTime<Utc>` bincode
+/// contract for account timestamp fields while exposing `jiff::Timestamp` in
+/// the public API.
+mod stored_timestamp {
+    use chrono::{DateTime, Utc};
+    use jiff::Timestamp;
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-fn chrono_to_jiff(value: DateTime<Utc>) -> Result<Timestamp> {
-    Timestamp::new(
-        value.timestamp(),
-        value.timestamp_subsec_nanos().cast_signed(),
-    )
-    .map_err(Into::into)
-}
+    pub fn serialize<S>(value: &Timestamp, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let datetime = DateTime::<Utc>::from_timestamp(
+            value.as_second(),
+            value.subsec_nanosecond().cast_unsigned(),
+        )
+        .expect("Jiff timestamps are within chrono's supported range");
+        datetime.serialize(serializer)
+    }
 
-fn jiff_to_chrono(value: Timestamp) -> DateTime<Utc> {
-    DateTime::from_timestamp(value.as_second(), value.subsec_nanosecond().cast_unsigned())
-        .expect("Jiff timestamps are within chrono's supported range")
-}
-
-impl TryFrom<StoredAccount> for Account {
-    type Error = anyhow::Error;
-
-    fn try_from(value: StoredAccount) -> Result<Self> {
-        Ok(Self {
-            username: value.username,
-            password: value.password,
-            role: value.role,
-            name: value.name,
-            department: value.department,
-            language: value.language,
-            theme: value.theme,
-            creation_time: chrono_to_jiff(value.creation_time)?,
-            last_signin_time: value.last_signin_time.map(chrono_to_jiff).transpose()?,
-            allow_access_from: value.allow_access_from,
-            max_parallel_sessions: value.max_parallel_sessions,
-            password_hash_algorithm: value.password_hash_algorithm,
-            password_last_modified_at: chrono_to_jiff(value.password_last_modified_at)?,
-            customer_ids: value.customer_ids,
-            failed_login_attempts: value.failed_login_attempts,
-            locked_out_until: value.locked_out_until.map(chrono_to_jiff).transpose()?,
-            is_suspended: value.is_suspended,
-        })
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Timestamp, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let datetime = DateTime::<Utc>::deserialize(deserializer)?;
+        Timestamp::new(
+            datetime.timestamp(),
+            datetime.timestamp_subsec_nanos().cast_signed(),
+        )
+        .map_err(serde::de::Error::custom)
     }
 }
 
-impl From<&Account> for StoredAccount {
-    fn from(value: &Account) -> Self {
-        Self {
-            username: value.username.clone(),
-            password: value.password.clone(),
-            role: value.role,
-            name: value.name.clone(),
-            department: value.department.clone(),
-            language: value.language.clone(),
-            theme: value.theme.clone(),
-            creation_time: jiff_to_chrono(value.creation_time),
-            last_signin_time: value.last_signin_time.map(jiff_to_chrono),
-            allow_access_from: value.allow_access_from.clone(),
-            max_parallel_sessions: value.max_parallel_sessions,
-            password_hash_algorithm: value.password_hash_algorithm.clone(),
-            password_last_modified_at: jiff_to_chrono(value.password_last_modified_at),
-            customer_ids: value.customer_ids.clone(),
-            failed_login_attempts: value.failed_login_attempts,
-            locked_out_until: value.locked_out_until.map(jiff_to_chrono),
-            is_suspended: value.is_suspended,
-        }
+mod stored_timestamp_option {
+    use chrono::{DateTime, Utc};
+    use jiff::Timestamp;
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    // Serde passes `&Option<T>` for `with`-module serializers on optional fields.
+    #[allow(clippy::ref_option)]
+    pub fn serialize<S>(value: &Option<Timestamp>, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let datetime = value.map(|timestamp| {
+            DateTime::<Utc>::from_timestamp(
+                timestamp.as_second(),
+                timestamp.subsec_nanosecond().cast_unsigned(),
+            )
+            .expect("Jiff timestamps are within chrono's supported range")
+        });
+        datetime.serialize(serializer)
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Option<Timestamp>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let datetime = Option::<DateTime<Utc>>::deserialize(deserializer)?;
+        datetime
+            .map(|value| {
+                Timestamp::new(
+                    value.timestamp(),
+                    value.timestamp_subsec_nanos().cast_signed(),
+                )
+                .map_err(serde::de::Error::custom)
+            })
+            .transpose()
     }
 }
 
@@ -302,7 +288,7 @@ impl Value for Account {
 
     fn value(&self) -> Vec<u8> {
         use bincode::Options;
-        let Ok(value) = bincode::DefaultOptions::new().serialize(&StoredAccount::from(self)) else {
+        let Ok(value) = bincode::DefaultOptions::new().serialize(self) else {
             unreachable!("serialization into memory should never fail")
         };
         value
@@ -491,10 +477,9 @@ mod tests {
 
     /// Verifies literal-byte compatibility for `Account` table values.
     ///
-    /// `tests/fixtures/account_bytes.bin` was produced once by calling
-    /// `bytes_fixture_account()` and serializing with `Account::value()`, which uses
-    /// `bincode::DefaultOptions` directly in `src/account.rs`. Expected bytes are
-    /// checked in from the fixture rather than generated in this test.
+    /// `tests/fixtures/account_bytes.bin` was produced from the pre-Jiff `Account`
+    /// layout. This test proves the Jiff-backed production type still reads those
+    /// bytes and writes the same byte shape via chrono-compatible serde adapters.
     #[test]
     fn account_table_value_bytes_match_fixture() {
         let fixed_time: Timestamp = FIXTURE_TIMESTAMP.parse().expect("valid timestamp");

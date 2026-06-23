@@ -363,12 +363,26 @@ mod tests {
     use crate::test::{DbGuard, acquire_db_permit};
     use crate::{Role, Store, tables::Direction, types::Account};
 
+    const ACCOUNT_BYTES_FIXTURE: &[u8] = include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/account_bytes.bin"
+    ));
+
     fn setup_store() -> (DbGuard<'static>, Arc<Store>) {
         let permit = acquire_db_permit();
         let db_dir = tempfile::tempdir().unwrap();
         let backup_dir = tempfile::tempdir().unwrap();
         let store = Arc::new(Store::new(db_dir.path(), backup_dir.path(), None).unwrap());
         (permit, store)
+    }
+
+    #[test]
+    fn from_key_value_reads_fixture_bytes() {
+        use crate::types::FromKeyValue;
+
+        let account = Account::from_key_value(b"fixture-user", ACCOUNT_BYTES_FIXTURE)
+            .expect("fixture bytes must deserialize via FromKeyValue");
+        assert_eq!(account.username, "fixture-user");
     }
 
     #[test]

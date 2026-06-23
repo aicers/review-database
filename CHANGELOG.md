@@ -17,8 +17,8 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 - **BREAKING**: Migrated `Account` timestamp fields from `chrono::DateTime<Utc>`
   to `jiff::Timestamp`. `creation_time`, `last_signin_time`,
   `password_last_modified_at`, and `locked_out_until` now use Jiff in the
-  public Rust API, while the on-disk account format remains readable through a
-  compatibility layer for existing stored values.
+  public Rust API. On-disk account values remain byte-compatible via serde
+  adapters that preserve the existing chrono bincode contract.
 - **BREAKING**: Bumped the database format to `0.46.0-alpha.1`, changed
   `Store::new` to take an `Option<Arc<ip2location::DB>>` argument, and changed
   `migrate_data_dir` to accept the same optional shared database handle. Event
