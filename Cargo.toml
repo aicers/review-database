@@ -15,7 +15,7 @@ data-encoding = "2"
 flate2 = "1.0"
 ip2location = "0.6.0"
 ipnet = { version = "2", features = ["serde"] }
-jiff = "0.2.15"
+jiff = { version = "0.2.15", features = ["serde"] }
 memchr = "2"
 num-derive = "0.4"
 num-traits = "0.2"

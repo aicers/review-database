@@ -1659,7 +1659,7 @@ mod tests {
             name: "customer".to_string(),
             description: "description".to_string(),
             networks: vec![create_customer_network(addr)],
-            creation_time: chrono::Utc::now(),
+            creation_time: jiff::Timestamp::now(),
         }
     }
 

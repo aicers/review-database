@@ -3,7 +3,7 @@
 use std::{borrow::Cow, collections::HashMap, fmt::Display};
 
 use anyhow::{Context, Result, bail};
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 use num_derive::{FromPrimitive, ToPrimitive};
 use rocksdb::{Direction, OptimisticTransactionDB};
 use serde::{Deserialize, Serialize};
@@ -75,7 +75,8 @@ pub struct Node {
     pub profile_draft: Option<Profile>,
     pub agents: Vec<Agent>,
     pub external_services: Vec<ExternalService>,
-    pub creation_time: DateTime<Utc>,
+    #[serde(with = "crate::stored_timestamp::required")]
+    pub creation_time: Timestamp,
 }
 
 #[derive(Debug)]
@@ -786,7 +787,8 @@ pub(crate) struct Inner {
     pub name_draft: Option<String>,
     pub profile: Option<Profile>,
     pub profile_draft: Option<Profile>,
-    pub creation_time: DateTime<Utc>,
+    #[serde(with = "crate::stored_timestamp::required")]
+    pub creation_time: Timestamp,
     pub agents: Vec<String>,
     pub external_services: Vec<String>,
 }
@@ -902,6 +904,8 @@ mod test {
     use crate::test::{DbGuard, acquire_db_permit};
     use crate::{AgentKind, ExternalServiceKind, Store};
 
+    const FIXTURE_TIMESTAMP: &str = "2000-02-29T12:34:56.123456789Z";
+
     type PortNumber = u16;
 
     #[allow(clippy::struct_excessive_bools)]
@@ -957,7 +961,7 @@ mod test {
         agents: Vec<Agent>,
         external_services: Vec<ExternalService>,
     ) -> Node {
-        let creation_time = Utc::now();
+        let creation_time = Timestamp::now();
         Node {
             id,
             name: name.to_string(),
@@ -1070,9 +1074,9 @@ mod test {
 
     /// Builds a deterministic public `Node` for the serde baseline test.
     fn deterministic_node() -> Node {
-        let creation_time = DateTime::parse_from_rfc3339("2000-02-29T12:34:56.123456789Z")
-            .expect("valid RFC3339 timestamp")
-            .with_timezone(&Utc);
+        let creation_time = FIXTURE_TIMESTAMP
+            .parse::<Timestamp>()
+            .expect("valid RFC3339 timestamp");
         Node {
             id: 42,
             name: "fixture-node".to_string(),
@@ -1131,9 +1135,9 @@ mod test {
 
     /// Builds a deterministic `Inner` for the literal-byte contract test.
     fn deterministic_node_inner() -> Inner {
-        let creation_time = DateTime::parse_from_rfc3339("2000-02-29T12:34:56.123456789Z")
-            .expect("valid RFC3339 timestamp")
-            .with_timezone(&Utc);
+        let creation_time = FIXTURE_TIMESTAMP
+            .parse::<Timestamp>()
+            .expect("valid RFC3339 timestamp");
         Inner {
             id: 42,
             name: "fixture-node".to_string(),
@@ -1159,6 +1163,8 @@ mod test {
     /// Expected bytes come from the committed literal fixture (not from the
     /// production serializer inside this test). `creation_time` is pinned to
     /// `2000-02-29T12:34:56.123456789Z` so the encoding stays deterministic.
+    /// The Jiff migration keeps these bytes readable through chrono-compatible
+    /// serde adapters in `crate::stored_timestamp`.
     #[test]
     fn node_inner_literal_bytes_contract() -> Result<()> {
         const FIXTURE_BYTES: &[u8] = include_bytes!("../../tests/fixtures/node_inner_literal.bin");
@@ -1179,6 +1185,8 @@ mod test {
     /// Expected JSON comes from the committed literal fixture (not from the
     /// production serializer inside this test). `creation_time` is pinned to
     /// `2000-02-29T12:34:56.123456789Z` so the encoding stays deterministic.
+    /// The Jiff migration keeps this payload readable through chrono-compatible
+    /// serde adapters in `crate::stored_timestamp`.
     #[test]
     fn node_public_serde_baseline() -> Result<()> {
         const FIXTURE_JSON: &str = include_str!("../../tests/fixtures/node_public_serde.json");

@@ -24,6 +24,10 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   `Event::count_*` query helpers no longer take an IP2Location locator
   argument. IP2Location is now used only when events are stored or during
   migration.
+- **BREAKING**: Migrated `Customer`, `Network`, and `Node` `creation_time`
+  fields from `chrono::DateTime<Utc>` to `jiff::Timestamp`. On-disk table
+  values and the public `Node` serde payload remain byte-compatible via serde
+  adapters that preserve the existing chrono string contract.
 - **BREAKING**: Bumped the database format to `0.46.0-alpha.1`, changed
   `Store::new` to take an `Option<Arc<ip2location::DB>>` argument, and changed
   `migrate_data_dir` to accept the same optional shared database handle. Event
