@@ -29,34 +29,6 @@ pub(super) trait Match {
     fn resp_addrs(&self) -> &[IpAddr];
     #[allow(dead_code)] // for future use
     fn resp_port(&self) -> u16;
-
-    /// Renamed to [`Match::orig_addrs`].
-    #[deprecated(since = "0.46.0", note = "renamed to `orig_addrs`")]
-    #[allow(dead_code)] // retained for downstream callers during the rename transition
-    fn src_addrs(&self) -> &[IpAddr] {
-        self.orig_addrs()
-    }
-
-    /// Renamed to [`Match::orig_port`].
-    #[deprecated(since = "0.46.0", note = "renamed to `orig_port`")]
-    #[allow(dead_code)] // retained for downstream callers during the rename transition
-    fn src_port(&self) -> u16 {
-        self.orig_port()
-    }
-
-    /// Renamed to [`Match::resp_addrs`].
-    #[deprecated(since = "0.46.0", note = "renamed to `resp_addrs`")]
-    #[allow(dead_code)] // retained for downstream callers during the rename transition
-    fn dst_addrs(&self) -> &[IpAddr] {
-        self.resp_addrs()
-    }
-
-    /// Renamed to [`Match::resp_port`].
-    #[deprecated(since = "0.46.0", note = "renamed to `resp_port`")]
-    #[allow(dead_code)] // retained for downstream callers during the rename transition
-    fn dst_port(&self) -> u16 {
-        self.resp_port()
-    }
     #[allow(dead_code)] // for future use
     fn proto(&self) -> u8;
     fn category(&self) -> Option<EventCategory>;
