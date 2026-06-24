@@ -1260,35 +1260,35 @@ impl Event {
     ) -> Result<()> {
         let addr_pair = self.address_pair(locator, filter)?;
 
-        let mut src_country = "ZZ".to_string();
-        let mut dst_country = "ZZ".to_string();
+        let mut orig_country = "ZZ".to_string();
+        let mut resp_country = "ZZ".to_string();
         if let Some(locator) = locator {
-            if let Some(src_addr) = addr_pair.0 {
-                src_country = crate::util::find_ip_country(locator, src_addr);
+            if let Some(orig_addr) = addr_pair.0 {
+                orig_country = crate::util::find_ip_country(locator, orig_addr);
             }
-            if let Some(dst_addr) = addr_pair.1 {
-                dst_country = crate::util::find_ip_country(locator, dst_addr);
+            if let Some(resp_addr) = addr_pair.1 {
+                resp_country = crate::util::find_ip_country(locator, resp_addr);
             }
         }
 
         // If origin and destination countries are different, count each one
-        if src_country != dst_country && addr_pair.0.is_some() && addr_pair.1.is_some() {
+        if orig_country != resp_country && addr_pair.0.is_some() && addr_pair.1.is_some() {
             counter
-                .entry(src_country.clone())
+                .entry(orig_country.clone())
                 .and_modify(|e| *e += 1)
                 .or_insert(1);
         }
         // If destination exists, count destination country (handles same country case)
         if addr_pair.1.is_some() {
             counter
-                .entry(dst_country)
+                .entry(resp_country)
                 .and_modify(|e| *e += 1)
                 .or_insert(1);
         }
         // If destination is None but origin exists, count origin country
         else if addr_pair.0.is_some() {
             counter
-                .entry(src_country)
+                .entry(orig_country)
                 .and_modify(|e| *e += 1)
                 .or_insert(1);
         }
@@ -1538,11 +1538,17 @@ impl Event {
     ) -> Result<()> {
         let addr_pair = self.address_pair(locator, filter)?;
 
-        if let Some(src_addr) = addr_pair.0 {
-            counter.entry(src_addr).and_modify(|e| *e += 1).or_insert(1);
+        if let Some(orig_addr) = addr_pair.0 {
+            counter
+                .entry(orig_addr)
+                .and_modify(|e| *e += 1)
+                .or_insert(1);
         }
-        if let Some(dst_addr) = addr_pair.1 {
-            counter.entry(dst_addr).and_modify(|e| *e += 1).or_insert(1);
+        if let Some(resp_addr) = addr_pair.1 {
+            counter
+                .entry(resp_addr)
+                .and_modify(|e| *e += 1)
+                .or_insert(1);
         }
 
         Ok(())
@@ -1561,11 +1567,11 @@ impl Event {
     ) -> Result<()> {
         let addr_pair = self.address_pair(locator, filter)?;
 
-        if let Some(src_addr) = addr_pair.0
-            && let Some(dst_addr) = addr_pair.1
+        if let Some(orig_addr) = addr_pair.0
+            && let Some(resp_addr) = addr_pair.1
         {
             counter
-                .entry((src_addr, dst_addr))
+                .entry((orig_addr, resp_addr))
                 .and_modify(|e| *e += 1)
                 .or_insert(1);
         }
@@ -1587,12 +1593,12 @@ impl Event {
         let addr_pair = self.address_pair(locator, filter)?;
         let kind = self.kind(locator, filter)?;
 
-        if let Some(src_addr) = addr_pair.0
-            && let Some(dst_addr) = addr_pair.1
+        if let Some(orig_addr) = addr_pair.0
+            && let Some(resp_addr) = addr_pair.1
             && let Some(kind) = kind
         {
             counter
-                .entry((src_addr, dst_addr, kind))
+                .entry((orig_addr, resp_addr, kind))
                 .and_modify(|e| *e += 1)
                 .or_insert(1);
         }
@@ -1613,8 +1619,11 @@ impl Event {
     ) -> Result<()> {
         let addr_pair = self.address_pair(locator, filter)?;
 
-        if let Some(src_addr) = addr_pair.0 {
-            counter.entry(src_addr).and_modify(|e| *e += 1).or_insert(1);
+        if let Some(orig_addr) = addr_pair.0 {
+            counter
+                .entry(orig_addr)
+                .and_modify(|e| *e += 1)
+                .or_insert(1);
         }
 
         Ok(())
@@ -1633,8 +1642,11 @@ impl Event {
     ) -> Result<()> {
         let addr_pair = self.address_pair(locator, filter)?;
 
-        if let Some(dst_addr) = addr_pair.1 {
-            counter.entry(dst_addr).and_modify(|e| *e += 1).or_insert(1);
+        if let Some(resp_addr) = addr_pair.1 {
+            counter
+                .entry(resp_addr)
+                .and_modify(|e| *e += 1)
+                .or_insert(1);
         }
 
         Ok(())
@@ -1911,13 +1923,13 @@ impl Event {
     ) -> Result<()> {
         let addr_pair = self.address_pair(locator, filter)?;
 
-        if let Some(src_addr) = addr_pair.0
-            && let Some(id) = find_network(src_addr, networks)
+        if let Some(orig_addr) = addr_pair.0
+            && let Some(id) = find_network(orig_addr, networks)
         {
             counter.entry(id).and_modify(|e| *e += 1).or_insert(1);
         }
-        if let Some(dst_addr) = addr_pair.1
-            && let Some(id) = find_network(dst_addr, networks)
+        if let Some(resp_addr) = addr_pair.1
+            && let Some(id) = find_network(resp_addr, networks)
         {
             counter.entry(id).and_modify(|e| *e += 1).or_insert(1);
         }
@@ -2192,7 +2204,7 @@ pub enum LearningMethod {
 /// The `customers` field does **not** filter events by an explicit customer ID
 /// stored on each event. Instead, the current implementation resolves each
 /// customer's registered network ranges and matches an event if any of its
-/// source addresses (`src_addrs`) or destination addresses (`dst_addrs`) fall
+/// source addresses (`orig_addrs`) or responder addresses (`resp_addrs`) fall
 /// within those ranges.
 ///
 /// In other words, customer filtering performs network-range matching against
@@ -6939,19 +6951,19 @@ mod tests {
             fields.into(),
         );
         assert_eq!(
-            suspicious_tls_traffic.src_addrs(),
+            suspicious_tls_traffic.orig_addrs(),
             &[IpAddr::V4(Ipv4Addr::LOCALHOST)]
         );
         assert_eq!(
-            suspicious_tls_traffic.dst_addrs(),
+            suspicious_tls_traffic.resp_addrs(),
             &[IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2))]
         );
         assert_eq!(
             suspicious_tls_traffic.category(),
             Some(EventCategory::InitialAccess)
         );
-        assert_eq!(suspicious_tls_traffic.src_port(), 10000);
-        assert_eq!(suspicious_tls_traffic.dst_port(), 443);
+        assert_eq!(suspicious_tls_traffic.orig_port(), 10000);
+        assert_eq!(suspicious_tls_traffic.resp_port(), 443);
         assert_eq!(suspicious_tls_traffic.proto(), 6);
         let event = Event::SuspiciousTlsTraffic(suspicious_tls_traffic);
         let blocklist_tls = event.to_string();
@@ -7086,19 +7098,19 @@ mod tests {
 
         // Mock the logic from count_country with None destination
         let mut counter = HashMap::new();
-        let src_country = "US".to_string();
+        let orig_country = "US".to_string();
         let addr_pair: (Option<IpAddr>, Option<IpAddr>) =
-            (Some(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1))), None); // src exists, dst is None
+            (Some(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1))), None); // orig exists, resp is None
 
         // If destination is None but origin exists, count origin country
         if addr_pair.0.is_some() {
             counter
-                .entry(src_country)
+                .entry(orig_country)
                 .and_modify(|e| *e += 1)
                 .or_insert(1);
         }
 
-        // Verify that the source country was counted
+        // Verify that the originator country was counted
         assert_eq!(counter.get("US"), Some(&1));
         assert_eq!(counter.len(), 1);
     }

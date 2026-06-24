@@ -374,19 +374,19 @@ impl RepeatedHttpSessions {
 }
 
 impl Match for RepeatedHttpSessions {
-    fn src_addrs(&self) -> &[IpAddr] {
+    fn orig_addrs(&self) -> &[IpAddr] {
         std::slice::from_ref(&self.orig_addr)
     }
 
-    fn src_port(&self) -> u16 {
+    fn orig_port(&self) -> u16 {
         self.orig_port
     }
 
-    fn dst_addrs(&self) -> &[IpAddr] {
+    fn resp_addrs(&self) -> &[IpAddr] {
         std::slice::from_ref(&self.resp_addr)
     }
 
-    fn dst_port(&self) -> u16 {
+    fn resp_port(&self) -> u16 {
         self.resp_port
     }
 
@@ -803,19 +803,19 @@ impl HttpThreat {
 }
 
 impl Match for HttpThreat {
-    fn src_addrs(&self) -> &[IpAddr] {
+    fn orig_addrs(&self) -> &[IpAddr] {
         std::slice::from_ref(&self.orig_addr)
     }
 
-    fn src_port(&self) -> u16 {
+    fn orig_port(&self) -> u16 {
         self.orig_port
     }
 
-    fn dst_addrs(&self) -> &[IpAddr] {
+    fn resp_addrs(&self) -> &[IpAddr] {
         std::slice::from_ref(&self.resp_addr)
     }
 
-    fn dst_port(&self) -> u16 {
+    fn resp_port(&self) -> u16 {
         self.resp_port
     }
 
@@ -880,9 +880,9 @@ impl Match for HttpThreat {
     fn score_by_triage_exclusion(&self, triage_exclusion: &[TriageExclusion]) -> f64 {
         let matched = triage_exclusion.iter().any(|ti| match ti {
             TriageExclusion::IpAddress(filter) => self
-                .src_addrs()
+                .orig_addrs()
                 .iter()
-                .chain(self.dst_addrs().iter())
+                .chain(self.resp_addrs().iter())
                 .any(|&ip| filter.contains(ip)),
             TriageExclusion::Domain(regex_set) => regex_set.is_match(&self.host),
             TriageExclusion::Hostname(hostnames) => hostnames.contains(&self.host),
@@ -1206,19 +1206,19 @@ impl DomainGenerationAlgorithm {
 }
 
 impl Match for DomainGenerationAlgorithm {
-    fn src_addrs(&self) -> &[IpAddr] {
+    fn orig_addrs(&self) -> &[IpAddr] {
         std::slice::from_ref(&self.orig_addr)
     }
 
-    fn src_port(&self) -> u16 {
+    fn orig_port(&self) -> u16 {
         self.orig_port
     }
 
-    fn dst_addrs(&self) -> &[IpAddr] {
+    fn resp_addrs(&self) -> &[IpAddr] {
         std::slice::from_ref(&self.resp_addr)
     }
 
-    fn dst_port(&self) -> u16 {
+    fn resp_port(&self) -> u16 {
         self.resp_port
     }
 
@@ -1257,9 +1257,9 @@ impl Match for DomainGenerationAlgorithm {
     fn score_by_triage_exclusion(&self, triage_exclusion: &[TriageExclusion]) -> f64 {
         let matched = triage_exclusion.iter().any(|ti| match ti {
             TriageExclusion::IpAddress(filter) => self
-                .src_addrs()
+                .orig_addrs()
                 .iter()
-                .chain(self.dst_addrs().iter())
+                .chain(self.resp_addrs().iter())
                 .any(|&ip| filter.contains(ip)),
             TriageExclusion::Domain(regex_set) => regex_set.is_match(&self.host),
             TriageExclusion::Hostname(hostnames) => hostnames.contains(&self.host),
@@ -1409,19 +1409,19 @@ impl NonBrowser {
 }
 
 impl Match for NonBrowser {
-    fn src_addrs(&self) -> &[IpAddr] {
+    fn orig_addrs(&self) -> &[IpAddr] {
         std::slice::from_ref(&self.orig_addr)
     }
 
-    fn src_port(&self) -> u16 {
+    fn orig_port(&self) -> u16 {
         self.orig_port
     }
 
-    fn dst_addrs(&self) -> &[IpAddr] {
+    fn resp_addrs(&self) -> &[IpAddr] {
         std::slice::from_ref(&self.resp_addr)
     }
 
-    fn dst_port(&self) -> u16 {
+    fn resp_port(&self) -> u16 {
         self.resp_port
     }
 
@@ -1460,9 +1460,9 @@ impl Match for NonBrowser {
     fn score_by_triage_exclusion(&self, triage_exclusion: &[TriageExclusion]) -> f64 {
         let matched = triage_exclusion.iter().any(|ti| match ti {
             TriageExclusion::IpAddress(filter) => self
-                .src_addrs()
+                .orig_addrs()
                 .iter()
-                .chain(self.dst_addrs().iter())
+                .chain(self.resp_addrs().iter())
                 .any(|&ip| filter.contains(ip)),
             TriageExclusion::Domain(regex_set) => regex_set.is_match(&self.host),
             TriageExclusion::Hostname(hostnames) => hostnames.contains(&self.host),
@@ -1616,19 +1616,19 @@ impl BlocklistHttp {
 }
 
 impl Match for BlocklistHttp {
-    fn src_addrs(&self) -> &[IpAddr] {
+    fn orig_addrs(&self) -> &[IpAddr] {
         std::slice::from_ref(&self.orig_addr)
     }
 
-    fn src_port(&self) -> u16 {
+    fn orig_port(&self) -> u16 {
         self.orig_port
     }
 
-    fn dst_addrs(&self) -> &[IpAddr] {
+    fn resp_addrs(&self) -> &[IpAddr] {
         std::slice::from_ref(&self.resp_addr)
     }
 
-    fn dst_port(&self) -> u16 {
+    fn resp_port(&self) -> u16 {
         self.resp_port
     }
 
@@ -1667,9 +1667,9 @@ impl Match for BlocklistHttp {
     fn score_by_triage_exclusion(&self, triage_exclusion: &[TriageExclusion]) -> f64 {
         let matched = triage_exclusion.iter().any(|ti| match ti {
             TriageExclusion::IpAddress(filter) => self
-                .src_addrs()
+                .orig_addrs()
                 .iter()
-                .chain(self.dst_addrs().iter())
+                .chain(self.resp_addrs().iter())
                 .any(|&ip| filter.contains(ip)),
             TriageExclusion::Domain(regex_set) => regex_set.is_match(&self.host),
             TriageExclusion::Hostname(hostnames) => hostnames.contains(&self.host),

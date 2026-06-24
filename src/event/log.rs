@@ -145,19 +145,19 @@ impl fmt::Display for ExtraThreat {
 }
 
 impl Match for ExtraThreat {
-    fn src_addrs(&self) -> &[IpAddr] {
+    fn orig_addrs(&self) -> &[IpAddr] {
         std::slice::from_ref(&IpAddr::V4(Ipv4Addr::UNSPECIFIED))
     }
 
-    fn src_port(&self) -> u16 {
+    fn orig_port(&self) -> u16 {
         0
     }
 
-    fn dst_addrs(&self) -> &[IpAddr] {
+    fn resp_addrs(&self) -> &[IpAddr] {
         std::slice::from_ref(&IpAddr::V4(Ipv4Addr::UNSPECIFIED))
     }
 
-    fn dst_port(&self) -> u16 {
+    fn resp_port(&self) -> u16 {
         0
     }
 

@@ -306,19 +306,19 @@ impl FtpBruteForce {
 }
 
 impl Match for FtpBruteForce {
-    fn src_addrs(&self) -> &[IpAddr] {
+    fn orig_addrs(&self) -> &[IpAddr] {
         std::slice::from_ref(&self.orig_addr)
     }
 
-    fn src_port(&self) -> u16 {
+    fn orig_port(&self) -> u16 {
         0
     }
 
-    fn dst_addrs(&self) -> &[IpAddr] {
+    fn resp_addrs(&self) -> &[IpAddr] {
         std::slice::from_ref(&self.resp_addr)
     }
 
-    fn dst_port(&self) -> u16 {
+    fn resp_port(&self) -> u16 {
         self.resp_port
     }
 
@@ -573,19 +573,19 @@ impl FtpPlainText {
 }
 
 impl Match for FtpPlainText {
-    fn src_addrs(&self) -> &[IpAddr] {
+    fn orig_addrs(&self) -> &[IpAddr] {
         std::slice::from_ref(&self.orig_addr)
     }
 
-    fn src_port(&self) -> u16 {
+    fn orig_port(&self) -> u16 {
         self.orig_port
     }
 
-    fn dst_addrs(&self) -> &[IpAddr] {
+    fn resp_addrs(&self) -> &[IpAddr] {
         std::slice::from_ref(&self.resp_addr)
     }
 
-    fn dst_port(&self) -> u16 {
+    fn resp_port(&self) -> u16 {
         self.resp_port
     }
 
@@ -717,19 +717,19 @@ impl BlocklistFtp {
 }
 
 impl Match for BlocklistFtp {
-    fn src_addrs(&self) -> &[IpAddr] {
+    fn orig_addrs(&self) -> &[IpAddr] {
         std::slice::from_ref(&self.orig_addr)
     }
 
-    fn src_port(&self) -> u16 {
+    fn orig_port(&self) -> u16 {
         self.orig_port
     }
 
-    fn dst_addrs(&self) -> &[IpAddr] {
+    fn resp_addrs(&self) -> &[IpAddr] {
         std::slice::from_ref(&self.resp_addr)
     }
 
-    fn dst_port(&self) -> u16 {
+    fn resp_port(&self) -> u16 {
         self.resp_port
     }
 
