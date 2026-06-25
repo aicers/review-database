@@ -11,6 +11,7 @@ mod geo;
 mod migration;
 mod model;
 mod scores;
+mod stored_timestamp;
 mod tables;
 mod tags;
 #[cfg(test)]

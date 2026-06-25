@@ -1958,14 +1958,14 @@ mod tests {
                 name: "Customer A".to_string(),
                 description: String::new(),
                 networks: Vec::new(),
-                creation_time: chrono::Utc::now(),
+                creation_time: jiff::Timestamp::now(),
             },
             Customer {
                 id: u32::MAX,
                 name: "Customer B".to_string(),
                 description: String::new(),
                 networks: Vec::new(),
-                creation_time: chrono::Utc::now(),
+                creation_time: jiff::Timestamp::now(),
             },
         ];
         let mut customer_index = KeyIndex::default();

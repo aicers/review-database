@@ -3,7 +3,7 @@
 use std::{borrow::Cow, net::IpAddr};
 
 use anyhow::Result;
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 use rocksdb::OptimisticTransactionDB;
 use serde::{Deserialize, Serialize};
 
@@ -19,7 +19,8 @@ pub struct Customer {
     pub name: String,
     pub description: String,
     pub networks: Vec<Network>,
-    pub creation_time: DateTime<Utc>,
+    #[serde(with = "crate::stored_timestamp::required")]
+    pub creation_time: Timestamp,
 }
 
 impl FromKeyValue for Customer {
@@ -164,8 +165,8 @@ mod test {
         sync::Arc,
     };
 
-    use chrono::{DateTime, Utc};
     use ipnet::IpNet;
+    use jiff::Timestamp;
 
     use crate::event::NetworkType;
     use crate::test::{DbGuard, acquire_db_permit};
@@ -181,7 +182,9 @@ mod test {
     /// record below.
     ///
     /// Captured once from `review-database` v0.45.0 (`3dd96ec`) via the
-    /// production `Indexable::value` path (bincode `DefaultOptions`).
+    /// production `Indexable::value` path (bincode `DefaultOptions`). The
+    /// Jiff migration keeps these bytes readable through chrono-compatible serde
+    /// adapters in `crate::stored_timestamp`.
     const CUSTOMER_STORED_VALUE_V0: &[u8] = &[
         0x07, 0x09, 0x61, 0x63, 0x6d, 0x65, 0x2d, 0x63, 0x6f, 0x72, 0x70, 0x1e, 0x44, 0x65, 0x74,
         0x65, 0x72, 0x6d, 0x69, 0x6e, 0x69, 0x73, 0x74, 0x69, 0x63, 0x20, 0x66, 0x69, 0x78, 0x74,
@@ -242,14 +245,14 @@ mod test {
             name: name.to_string(),
             description: "description".to_string(),
             networks: Vec::new(),
-            creation_time: chrono::Utc::now(),
+            creation_time: Timestamp::now(),
         }
     }
 
-    fn fixture_creation_time() -> DateTime<Utc> {
-        DateTime::parse_from_rfc3339(FIXTURE_CREATION_TIME)
+    fn fixture_creation_time() -> Timestamp {
+        FIXTURE_CREATION_TIME
+            .parse()
             .expect("valid RFC 3339 timestamp")
-            .with_timezone(&Utc)
     }
 
     /// Builds a deterministic `Customer` covering all stored value fields.
