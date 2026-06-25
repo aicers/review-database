@@ -14,6 +14,19 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **BREAKING**: Event timestamps now use `jiff::Timestamp` across the Event
+  API boundary. `EventMessage.time` and every returned `Event` payload type
+  (for example `DnsCovertChannel`, `PortScan`, blocklist events, and threat
+  events) now expose `jiff::Timestamp` for `time`, `start_time`, and related
+  window fields. Producer-facing threat event fields (`ExtraThreatFields`,
+  `HttpThreatFields`, `NetworkThreatFields`, and `WindowsThreatFields`) and
+  the stored schemas that persist timestamps (`*ThreatFieldsStored`) also use
+  `jiff::Timestamp` in memory. `EventDb::remove_before` now accepts a
+  `jiff::Timestamp` cutoff. On-disk event keys and stored timestamp fields
+  remain signed 64-bit epoch nanoseconds; a custom serde adapter maps Jiff
+  values to those bytes and rejects timestamps outside the `i64` nanosecond
+  range. Primitive `i64` session start-time fields on producer-facing `*Fields`
+  types (for example `HttpThreatFields.start_time`) are unchanged.
 - **BREAKING**: Bumped the database format to `0.46.0-alpha.1`, changed
   `Store::new` to take an `Option<Arc<ip2location::DB>>` argument, and changed
   `migrate_data_dir` to accept the same optional shared database handle. Event

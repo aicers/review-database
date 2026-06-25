@@ -645,10 +645,12 @@ mod tests {
         ConnAttr, DhcpAttr, DnsAttr, FtpAttr, HttpAttr, RadiusAttr, RawEventKind,
     };
     use bincode::Options;
-    use chrono::{TimeZone, Utc};
+    use chrono::{DateTime, TimeZone, Utc};
+    use jiff::Timestamp;
     use serde::Serialize;
 
     use super::{AttrValue, Match, is_attr_matched};
+    use crate::event::timestamp;
     use crate::{
         AttrCmpKind, Customer, CustomerNetwork, EventCategory, HostNetworkGroup, PacketAttr,
         ValueKind,
@@ -693,7 +695,7 @@ mod tests {
 
     #[test]
     fn learning_method_match_on_semi_supervised_events() {
-        let time = Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap();
+        let time = stored_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap());
         let mut semi_supervised_events = Vec::new();
 
         let dns_event = Event::DnsCovertChannel(DnsCovertChannel::new(time, dns_event_fields()));
@@ -893,7 +895,7 @@ mod tests {
         let mut unsupervised_events = Vec::new();
 
         let http_threat_event = Event::HttpThreat(HttpThreat::new(
-            Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap(),
+            stored_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap()),
             http_threat_fields(),
         ));
         unsupervised_events.push(http_threat_event);
@@ -939,7 +941,7 @@ mod tests {
 
     #[test]
     fn filter_events_by_address() {
-        let time = Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap();
+        let time = stored_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap());
         let mut single_address_events = Vec::new();
 
         let dns_event = Event::DnsCovertChannel(DnsCovertChannel::new(time, dns_event_fields()));
@@ -1284,7 +1286,7 @@ mod tests {
 
     #[test]
     fn compare_attribute() {
-        let time = Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap();
+        let time = stored_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap());
 
         // Compare `Addr`, `String`, `UInt`, `VecString` type
         let http_event = DomainGenerationAlgorithm::new(time, dga_fields());
@@ -1599,7 +1601,7 @@ mod tests {
 
     #[test]
     fn compare_attribute_new_protocols() {
-        let time = Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap();
+        let time = stored_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap());
 
         // 1. Radius
         let radius_event = BlocklistRadius::new(time, blocklist_radius_fields());
@@ -2653,7 +2655,7 @@ mod tests {
 
     fn network_threat() -> NetworkThreat {
         NetworkThreat {
-            time: Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap(),
+            time: stored_time(Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap()),
             sensor: "sensor".to_string(),
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             orig_port: 10000,
@@ -2663,7 +2665,7 @@ mod tests {
             resp_country_code: crate::util::COUNTRY_CODE_PENDING,
             proto: 6,
             service: "http".to_string(),
-            start_time: Utc.with_ymd_and_hms(1970, 1, 1, 0, 0, 0).unwrap(),
+            start_time: stored_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 0, 0).unwrap()),
             duration: 100,
             orig_pkts: 10,
             resp_pkts: 20,
@@ -2683,7 +2685,7 @@ mod tests {
 
     fn extra_threat() -> ExtraThreat {
         ExtraThreat {
-            time: Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap(),
+            time: stored_time(Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap()),
             sensor: "sensor".to_string(),
             service: "service".to_string(),
             content: "content".to_string(),
@@ -2700,7 +2702,7 @@ mod tests {
 
     fn windows_threat() -> WindowsThreat {
         WindowsThreat {
-            time: Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap(),
+            time: stored_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap()),
             sensor: "sensor".to_string(),
             service: "notepad".to_string(),
             agent_name: "win64".to_string(),
@@ -2721,9 +2723,13 @@ mod tests {
         }
     }
 
+    fn stored_time(time: DateTime<Utc>) -> Timestamp {
+        timestamp::from_chrono(time).expect("test stored timestamp must fit i64 nanoseconds")
+    }
+
     fn http_threat_fields() -> HttpThreatFieldsStored {
         HttpThreatFieldsStored {
-            time: Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap(),
+            time: stored_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap()),
             sensor: "sensor".to_string(),
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             orig_port: 10000,
@@ -2892,7 +2898,7 @@ mod tests {
     /// only events with the same category.
     #[test]
     fn score_by_confidence_none_matches_only_none_category() {
-        let time = Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap();
+        let time = stored_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap());
 
         // Event with category = Some(Reconnaissance)
         let fields_with_cat = http_threat_fields(); // category: Some(Reconnaissance)
@@ -2948,12 +2954,12 @@ mod tests {
     }
 
     fn dns_covert_channel_event() -> Event {
-        let time = Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap();
+        let time = stored_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap());
         Event::DnsCovertChannel(DnsCovertChannel::new(time, dns_event_fields()))
     }
 
     fn blocklist_http_event() -> Event {
-        let time = Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap();
+        let time = stored_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap());
         Event::Blocklist(RecordType::Http(BlocklistHttp::new(
             time,
             blocklist_http_fields(),
@@ -3036,7 +3042,7 @@ mod tests {
             HostNetworkGroup::new(Vec::new(), networks, Vec::new()),
         ))];
 
-        let time = Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap();
+        let time = stored_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap());
 
         let mut v4_fields = blocklist_http_fields();
         v4_fields.orig_addr = "10.1.2.3".parse().unwrap();

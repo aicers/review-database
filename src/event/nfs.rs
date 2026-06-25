@@ -1,9 +1,11 @@
 use std::{fmt, net::IpAddr};
 
 use attrievent::attribute::{NfsAttr, RawEventAttrKind};
-use chrono::{DateTime, Utc};
+use chrono::DateTime;
+use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
+use super::timestamp;
 use super::{EventCategory, LearningMethod, ThreatLevel, TriageScore, common::Match};
 use crate::event::common::{AttrValue, triage_scores_to_string};
 
@@ -136,7 +138,7 @@ impl BlocklistNfsFields {
 
 #[allow(clippy::module_name_repetitions)]
 pub struct BlocklistNfs {
-    pub time: DateTime<Utc>,
+    pub time: Timestamp,
     pub sensor: String,
     pub orig_addr: IpAddr,
     pub orig_port: u16,
@@ -145,7 +147,7 @@ pub struct BlocklistNfs {
     pub resp_port: u16,
     pub resp_country_code: [u8; 2],
     pub proto: u8,
-    pub start_time: DateTime<Utc>,
+    pub start_time: Timestamp,
     pub duration: i64,
     pub orig_pkts: u64,
     pub resp_pkts: u64,
@@ -170,7 +172,7 @@ impl fmt::Display for BlocklistNfs {
             self.resp_port.to_string(),
             crate::util::country_code_as_str(&self.resp_country_code),
             self.proto.to_string(),
-            self.start_time.to_rfc3339(),
+            timestamp::format_rfc3339(self.start_time).unwrap_or_default(),
             self.duration.to_string(),
             self.orig_pkts.to_string(),
             self.resp_pkts.to_string(),
@@ -184,7 +186,7 @@ impl fmt::Display for BlocklistNfs {
 }
 
 impl BlocklistNfs {
-    pub(super) fn new(time: DateTime<Utc>, fields: BlocklistNfsFieldsStored) -> Self {
+    pub(super) fn new(time: Timestamp, fields: BlocklistNfsFieldsStored) -> Self {
         Self {
             time,
             sensor: fields.sensor,
@@ -195,7 +197,8 @@ impl BlocklistNfs {
             resp_port: fields.resp_port,
             resp_country_code: fields.resp_country_code,
             proto: fields.proto,
-            start_time: DateTime::from_timestamp_nanos(fields.start_time),
+            start_time: timestamp::from_i64_nanos(fields.start_time)
+                .expect(timestamp::I64_NANOS_JIFF_INVARIANT),
             duration: fields.duration,
             orig_pkts: fields.orig_pkts,
             resp_pkts: fields.resp_pkts,

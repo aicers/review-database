@@ -2,9 +2,11 @@
 use std::{fmt, net::IpAddr};
 
 use attrievent::attribute::{LdapAttr, RawEventAttrKind};
-use chrono::{DateTime, Utc};
+use chrono::DateTime;
+use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
+use super::timestamp::{self, ts_nanoseconds as jiff_ts_nanoseconds};
 use super::{EventCategory, LearningMethod, ThreatLevel, TriageScore, common::Match};
 use crate::event::common::{AttrValue, triage_scores_to_string};
 
@@ -139,7 +141,8 @@ fn get_user_pw_list(user_pw_list: &[(String, String)]) -> String {
 #[derive(Serialize, Deserialize)]
 pub struct LdapBruteForce {
     pub sensor: String,
-    pub time: DateTime<Utc>,
+    #[serde(with = "jiff_ts_nanoseconds")]
+    pub time: Timestamp,
     pub orig_addr: IpAddr,
     pub orig_country_code: [u8; 2],
     pub resp_addr: IpAddr,
@@ -147,8 +150,10 @@ pub struct LdapBruteForce {
     pub resp_country_code: [u8; 2],
     pub proto: u8,
     pub user_pw_list: Vec<(String, String)>,
-    pub first_event_start_time: DateTime<Utc>,
-    pub last_event_start_time: DateTime<Utc>,
+    #[serde(with = "jiff_ts_nanoseconds")]
+    pub first_event_start_time: Timestamp,
+    #[serde(with = "jiff_ts_nanoseconds")]
+    pub last_event_start_time: Timestamp,
     pub confidence: f32,
     pub category: Option<EventCategory>,
     pub triage_scores: Option<Vec<TriageScore>>,
@@ -166,15 +171,15 @@ impl fmt::Display for LdapBruteForce {
             crate::util::country_code_as_str(&self.resp_country_code),
             self.proto.to_string(),
             get_user_pw_list(&self.user_pw_list),
-            self.first_event_start_time.to_rfc3339(),
-            self.last_event_start_time.to_rfc3339(),
+            timestamp::format_rfc3339(self.first_event_start_time).unwrap_or_default(),
+            timestamp::format_rfc3339(self.last_event_start_time).unwrap_or_default(),
             triage_scores_to_string(self.triage_scores.as_ref())
         )
     }
 }
 
 impl LdapBruteForce {
-    pub(super) fn new(time: DateTime<Utc>, fields: &LdapBruteForceFieldsStored) -> Self {
+    pub(super) fn new(time: Timestamp, fields: &LdapBruteForceFieldsStored) -> Self {
         LdapBruteForce {
             sensor: fields.sensor.clone(),
             time,
@@ -185,8 +190,10 @@ impl LdapBruteForce {
             resp_country_code: fields.resp_country_code,
             proto: fields.proto,
             user_pw_list: fields.user_pw_list.clone(),
-            first_event_start_time: DateTime::from_timestamp_nanos(fields.first_event_start_time),
-            last_event_start_time: DateTime::from_timestamp_nanos(fields.last_event_start_time),
+            first_event_start_time: timestamp::from_i64_nanos(fields.first_event_start_time)
+                .expect(timestamp::I64_NANOS_JIFF_INVARIANT),
+            last_event_start_time: timestamp::from_i64_nanos(fields.last_event_start_time)
+                .expect(timestamp::I64_NANOS_JIFF_INVARIANT),
             confidence: fields.confidence,
             category: fields.category,
             triage_scores: None,
@@ -382,7 +389,8 @@ impl LdapEventFields {
 
 #[derive(Deserialize, Serialize)]
 pub struct LdapPlainText {
-    pub time: DateTime<Utc>,
+    #[serde(with = "jiff_ts_nanoseconds")]
+    pub time: Timestamp,
     pub sensor: String,
     pub orig_addr: IpAddr,
     pub orig_port: u16,
@@ -391,7 +399,8 @@ pub struct LdapPlainText {
     pub resp_port: u16,
     pub resp_country_code: [u8; 2],
     pub proto: u8,
-    pub start_time: DateTime<Utc>,
+    #[serde(with = "jiff_ts_nanoseconds")]
+    pub start_time: Timestamp,
     pub duration: i64,
     pub orig_pkts: u64,
     pub resp_pkts: u64,
@@ -422,7 +431,7 @@ impl fmt::Display for LdapPlainText {
             self.resp_port.to_string(),
             crate::util::country_code_as_str(&self.resp_country_code),
             self.proto.to_string(),
-            self.start_time.to_rfc3339(),
+            timestamp::format_rfc3339(self.start_time).unwrap_or_default(),
             self.duration.to_string(),
             self.orig_pkts.to_string(),
             self.resp_pkts.to_string(),
@@ -441,11 +450,12 @@ impl fmt::Display for LdapPlainText {
 }
 
 impl LdapPlainText {
-    pub(super) fn new(time: DateTime<Utc>, fields: LdapEventFieldsStored) -> Self {
+    pub(super) fn new(time: Timestamp, fields: LdapEventFieldsStored) -> Self {
         Self {
             time,
             sensor: fields.sensor,
-            start_time: DateTime::from_timestamp_nanos(fields.start_time),
+            start_time: timestamp::from_i64_nanos(fields.start_time)
+                .expect(timestamp::I64_NANOS_JIFF_INVARIANT),
             orig_addr: fields.orig_addr,
             orig_port: fields.orig_port,
             orig_country_code: fields.orig_country_code,
@@ -531,7 +541,8 @@ impl Match for LdapPlainText {
 
 #[derive(Deserialize, Serialize)]
 pub struct BlocklistLdap {
-    pub time: DateTime<Utc>,
+    #[serde(with = "jiff_ts_nanoseconds")]
+    pub time: Timestamp,
     pub sensor: String,
     pub orig_addr: IpAddr,
     pub orig_port: u16,
@@ -540,7 +551,8 @@ pub struct BlocklistLdap {
     pub resp_port: u16,
     pub resp_country_code: [u8; 2],
     pub proto: u8,
-    pub start_time: DateTime<Utc>,
+    #[serde(with = "jiff_ts_nanoseconds")]
+    pub start_time: Timestamp,
     pub duration: i64,
     pub orig_pkts: u64,
     pub resp_pkts: u64,
@@ -571,7 +583,7 @@ impl fmt::Display for BlocklistLdap {
             self.resp_port.to_string(),
             crate::util::country_code_as_str(&self.resp_country_code),
             self.proto.to_string(),
-            self.start_time.to_rfc3339(),
+            timestamp::format_rfc3339(self.start_time).unwrap_or_default(),
             self.duration.to_string(),
             self.orig_pkts.to_string(),
             self.resp_pkts.to_string(),
@@ -590,11 +602,12 @@ impl fmt::Display for BlocklistLdap {
 }
 
 impl BlocklistLdap {
-    pub(super) fn new(time: DateTime<Utc>, fields: LdapEventFieldsStored) -> Self {
+    pub(super) fn new(time: Timestamp, fields: LdapEventFieldsStored) -> Self {
         Self {
             time,
             sensor: fields.sensor,
-            start_time: DateTime::from_timestamp_nanos(fields.start_time),
+            start_time: timestamp::from_i64_nanos(fields.start_time)
+                .expect(timestamp::I64_NANOS_JIFF_INVARIANT),
             orig_addr: fields.orig_addr,
             orig_port: fields.orig_port,
             orig_country_code: fields.orig_country_code,

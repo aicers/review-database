@@ -1289,6 +1289,8 @@ fn read_version_file(path: &Path) -> Result<Version> {
 mod tests {
     use std::{collections::HashMap, io::Write, net::IpAddr, path::Path};
 
+    use chrono::{DateTime, Utc};
+    use jiff::Timestamp;
     use semver::{Version, VersionReq};
 
     use super::{
@@ -1306,6 +1308,11 @@ mod tests {
     use crate::tables::NETWORK_TAGS;
     use crate::test::{DbGuard, acquire_db_permit};
     use crate::{Indexable, Store};
+
+    fn msg_time(time: DateTime<Utc>) -> Timestamp {
+        crate::event::timestamp::from_chrono(time)
+            .expect("test event message time must fit i64 nanoseconds")
+    }
 
     #[derive(Default)]
     struct FakeCountryLookup {
@@ -1371,6 +1378,112 @@ mod tests {
     }
 
     #[test]
+    fn stored_schema_migration_reports_invalid_http_threat_timestamp() {
+        use chrono::{NaiveDate, TimeZone};
+
+        use crate::event::{HttpThreatFieldsStoredV0_46, timestamp::TimestampError};
+        use crate::migration::migration_structures::HttpThreatFieldsStoredV0_44;
+
+        let out_of_range = NaiveDate::from_ymd_opt(2263, 1, 1)
+            .expect("valid date")
+            .and_hms_opt(0, 0, 0)
+            .expect("valid time");
+        let out_of_range = Utc.from_utc_datetime(&out_of_range);
+        let old = HttpThreatFieldsStoredV0_44 {
+            time: out_of_range,
+            sensor: String::new(),
+            orig_addr: "127.0.0.1".parse().expect("valid ip"),
+            orig_port: 0,
+            resp_addr: "127.0.0.2".parse().expect("valid ip"),
+            resp_port: 0,
+            proto: 6,
+            start_time: 0,
+            duration: 0,
+            orig_pkts: 0,
+            resp_pkts: 0,
+            orig_l2_bytes: 0,
+            resp_l2_bytes: 0,
+            method: String::new(),
+            host: String::new(),
+            uri: String::new(),
+            referer: String::new(),
+            version: String::new(),
+            user_agent: String::new(),
+            request_len: 0,
+            response_len: 0,
+            status_code: 0,
+            status_msg: String::new(),
+            username: String::new(),
+            password: String::new(),
+            cookie: String::new(),
+            content_encoding: String::new(),
+            content_type: String::new(),
+            cache_control: String::new(),
+            filenames: Vec::new(),
+            mime_types: Vec::new(),
+            body: Vec::new(),
+            state: String::new(),
+            db_name: String::new(),
+            rule_id: 0,
+            matched_to: String::new(),
+            cluster_id: None,
+            attack_kind: String::new(),
+            confidence: 0.0,
+            category: None,
+        };
+
+        assert!(matches!(
+            HttpThreatFieldsStoredV0_46::try_from(old),
+            Err(TimestampError::OutOfI64Range(_))
+        ));
+    }
+
+    #[test]
+    fn stored_schema_migration_reports_invalid_network_threat_timestamp() {
+        use chrono::{NaiveDate, TimeZone};
+
+        use crate::event::{NetworkThreatFieldsStoredV0_46, timestamp::TimestampError};
+        use crate::migration::migration_structures::NetworkThreatFieldsStoredV0_45;
+
+        let out_of_range = NaiveDate::from_ymd_opt(2263, 1, 1)
+            .expect("valid date")
+            .and_hms_opt(0, 0, 0)
+            .expect("valid time");
+        let out_of_range = Utc.from_utc_datetime(&out_of_range);
+        let in_range = Utc.with_ymd_and_hms(2020, 1, 1, 0, 0, 0).unwrap();
+        let old = NetworkThreatFieldsStoredV0_45 {
+            time: in_range,
+            sensor: String::new(),
+            orig_addr: "127.0.0.1".parse().expect("valid ip"),
+            orig_port: 0,
+            resp_addr: "127.0.0.2".parse().expect("valid ip"),
+            resp_port: 0,
+            proto: 6,
+            service: String::new(),
+            start_time: out_of_range,
+            duration: 0,
+            orig_pkts: 0,
+            resp_pkts: 0,
+            orig_l2_bytes: 0,
+            resp_l2_bytes: 0,
+            content: String::new(),
+            db_name: String::new(),
+            rule_id: 0,
+            matched_to: String::new(),
+            cluster_id: None,
+            attack_kind: String::new(),
+            confidence: 0.0,
+            category: None,
+            triage_scores: None,
+        };
+
+        assert!(matches!(
+            NetworkThreatFieldsStoredV0_46::try_from(old),
+            Err(TimestampError::OutOfI64Range(_))
+        ));
+    }
+
+    #[test]
     fn stored_schema_migration_preserves_endpoint_vectors() {
         let old = MultiHostPortScanFieldsStoredV0_42 {
             sensor: "collector1".to_string(),
@@ -1427,7 +1540,7 @@ mod tests {
         let events = store.events();
         let legacy = legacy_blocklist_conn();
         let message = EventMessage {
-            time: chrono::Utc::now(),
+            time: msg_time(chrono::Utc::now()),
             kind: EventKind::BlocklistConn,
             fields: bincode::serialize(&BlocklistConnFields {
                 sensor: legacy.sensor.clone(),
@@ -1485,7 +1598,7 @@ mod tests {
         let events = store.events();
         let legacy = legacy_blocklist_conn();
         let message = EventMessage {
-            time: chrono::Utc::now(),
+            time: msg_time(chrono::Utc::now()),
             kind: EventKind::BlocklistConn,
             fields: bincode::serialize(&BlocklistConnFields {
                 sensor: legacy.sensor.clone(),

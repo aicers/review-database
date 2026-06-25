@@ -2,9 +2,11 @@
 use std::{fmt, net::IpAddr};
 
 use attrievent::attribute::{DnsAttr, RawEventAttrKind};
-use chrono::{DateTime, Utc};
+use chrono::DateTime;
+use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
+use super::timestamp::{self, ts_nanoseconds as jiff_ts_nanoseconds};
 use super::{EventCategory, LearningMethod, ThreatLevel, TriageScore, common::Match};
 use crate::{
     TriageExclusion,
@@ -188,7 +190,8 @@ impl DnsEventFields {
 
 #[derive(Deserialize, Serialize)]
 pub struct DnsCovertChannel {
-    pub time: DateTime<Utc>,
+    #[serde(with = "jiff_ts_nanoseconds")]
+    pub time: Timestamp,
     pub sensor: String,
     pub orig_addr: IpAddr,
     pub orig_port: u16,
@@ -197,7 +200,8 @@ pub struct DnsCovertChannel {
     pub resp_port: u16,
     pub resp_country_code: [u8; 2],
     pub proto: u8,
-    pub start_time: DateTime<Utc>,
+    #[serde(with = "jiff_ts_nanoseconds")]
+    pub start_time: Timestamp,
     pub duration: i64,
     pub orig_pkts: u64,
     pub resp_pkts: u64,
@@ -233,7 +237,7 @@ impl fmt::Display for DnsCovertChannel {
             self.resp_port.to_string(),
             crate::util::country_code_as_str(&self.resp_country_code),
             self.proto.to_string(),
-            self.start_time.to_rfc3339(),
+            timestamp::format_rfc3339(self.start_time).unwrap_or_default(),
             self.duration.to_string(),
             self.orig_pkts.to_string(),
             self.resp_pkts.to_string(),
@@ -258,11 +262,12 @@ impl fmt::Display for DnsCovertChannel {
 }
 
 impl DnsCovertChannel {
-    pub(super) fn new(time: DateTime<Utc>, fields: DnsEventFieldsStored) -> Self {
+    pub(super) fn new(time: Timestamp, fields: DnsEventFieldsStored) -> Self {
         Self {
             time,
             sensor: fields.sensor,
-            start_time: DateTime::from_timestamp_nanos(fields.start_time),
+            start_time: timestamp::from_i64_nanos(fields.start_time)
+                .expect(timestamp::I64_NANOS_JIFF_INVARIANT),
             duration: fields.duration,
             orig_pkts: fields.orig_pkts,
             resp_pkts: fields.resp_pkts,
@@ -373,7 +378,7 @@ impl Match for DnsCovertChannel {
 
 // TODO: Locky ransomware event uses same sruct with DnsCovertChannel. It can be merged.
 pub struct LockyRansomware {
-    pub time: DateTime<Utc>,
+    pub time: Timestamp,
     pub sensor: String,
     pub orig_addr: IpAddr,
     pub orig_port: u16,
@@ -382,7 +387,7 @@ pub struct LockyRansomware {
     pub resp_port: u16,
     pub resp_country_code: [u8; 2],
     pub proto: u8,
-    pub start_time: DateTime<Utc>,
+    pub start_time: Timestamp,
     pub duration: i64,
     pub orig_pkts: u64,
     pub resp_pkts: u64,
@@ -418,7 +423,7 @@ impl fmt::Display for LockyRansomware {
             self.resp_port.to_string(),
             crate::util::country_code_as_str(&self.resp_country_code),
             self.proto.to_string(),
-            self.start_time.to_rfc3339(),
+            timestamp::format_rfc3339(self.start_time).unwrap_or_default(),
             self.duration.to_string(),
             self.orig_pkts.to_string(),
             self.resp_pkts.to_string(),
@@ -443,11 +448,12 @@ impl fmt::Display for LockyRansomware {
 }
 
 impl LockyRansomware {
-    pub(super) fn new(time: DateTime<Utc>, fields: DnsEventFieldsStored) -> Self {
+    pub(super) fn new(time: Timestamp, fields: DnsEventFieldsStored) -> Self {
         Self {
             time,
             sensor: fields.sensor,
-            start_time: DateTime::from_timestamp_nanos(fields.start_time),
+            start_time: timestamp::from_i64_nanos(fields.start_time)
+                .expect(timestamp::I64_NANOS_JIFF_INVARIANT),
             duration: fields.duration,
             orig_pkts: fields.orig_pkts,
             resp_pkts: fields.resp_pkts,
@@ -701,7 +707,8 @@ impl CryptocurrencyMiningPoolFields {
 
 #[derive(Serialize, Deserialize)]
 pub struct CryptocurrencyMiningPool {
-    pub time: DateTime<Utc>,
+    #[serde(with = "jiff_ts_nanoseconds")]
+    pub time: Timestamp,
     pub sensor: String,
     pub orig_addr: IpAddr,
     pub orig_port: u16,
@@ -710,7 +717,8 @@ pub struct CryptocurrencyMiningPool {
     pub resp_port: u16,
     pub resp_country_code: [u8; 2],
     pub proto: u8,
-    pub start_time: DateTime<Utc>,
+    #[serde(with = "jiff_ts_nanoseconds")]
+    pub start_time: Timestamp,
     pub duration: i64,
     pub orig_pkts: u64,
     pub resp_pkts: u64,
@@ -747,7 +755,7 @@ impl fmt::Display for CryptocurrencyMiningPool {
             self.resp_port.to_string(),
             crate::util::country_code_as_str(&self.resp_country_code),
             self.proto.to_string(),
-            self.start_time.to_rfc3339(),
+            timestamp::format_rfc3339(self.start_time).unwrap_or_default(),
             self.duration.to_string(),
             self.orig_pkts.to_string(),
             self.resp_pkts.to_string(),
@@ -772,11 +780,12 @@ impl fmt::Display for CryptocurrencyMiningPool {
 }
 
 impl CryptocurrencyMiningPool {
-    pub(super) fn new(time: DateTime<Utc>, fields: CryptocurrencyMiningPoolFieldsStored) -> Self {
+    pub(super) fn new(time: Timestamp, fields: CryptocurrencyMiningPoolFieldsStored) -> Self {
         Self {
             time,
             sensor: fields.sensor,
-            start_time: DateTime::from_timestamp_nanos(fields.start_time),
+            start_time: timestamp::from_i64_nanos(fields.start_time)
+                .expect(timestamp::I64_NANOS_JIFF_INVARIANT),
             duration: fields.duration,
             orig_pkts: fields.orig_pkts,
             resp_pkts: fields.resp_pkts,
@@ -1027,7 +1036,8 @@ impl BlocklistDnsFields {
 
 #[derive(Serialize, Deserialize)]
 pub struct BlocklistDns {
-    pub time: DateTime<Utc>,
+    #[serde(with = "jiff_ts_nanoseconds")]
+    pub time: Timestamp,
     pub sensor: String,
     pub orig_addr: IpAddr,
     pub orig_port: u16,
@@ -1036,7 +1046,8 @@ pub struct BlocklistDns {
     pub resp_port: u16,
     pub resp_country_code: [u8; 2],
     pub proto: u8,
-    pub start_time: DateTime<Utc>,
+    #[serde(with = "jiff_ts_nanoseconds")]
+    pub start_time: Timestamp,
     pub duration: i64,
     pub orig_pkts: u64,
     pub resp_pkts: u64,
@@ -1072,7 +1083,7 @@ impl fmt::Display for BlocklistDns {
             self.resp_port.to_string(),
             crate::util::country_code_as_str(&self.resp_country_code),
             self.proto.to_string(),
-            self.start_time.to_rfc3339(),
+            timestamp::format_rfc3339(self.start_time).unwrap_or_default(),
             self.duration.to_string(),
             self.orig_pkts.to_string(),
             self.resp_pkts.to_string(),
@@ -1096,11 +1107,12 @@ impl fmt::Display for BlocklistDns {
 }
 
 impl BlocklistDns {
-    pub(super) fn new(time: DateTime<Utc>, fields: BlocklistDnsFieldsStored) -> Self {
+    pub(super) fn new(time: Timestamp, fields: BlocklistDnsFieldsStored) -> Self {
         Self {
             time,
             sensor: fields.sensor,
-            start_time: DateTime::from_timestamp_nanos(fields.start_time),
+            start_time: timestamp::from_i64_nanos(fields.start_time)
+                .expect(timestamp::I64_NANOS_JIFF_INVARIANT),
             orig_addr: fields.orig_addr,
             orig_port: fields.orig_port,
             orig_country_code: fields.orig_country_code,

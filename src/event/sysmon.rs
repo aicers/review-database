@@ -5,9 +5,10 @@ use std::{
 };
 
 use attrievent::attribute::{RawEventAttrKind, WindowAttr};
-use chrono::{DateTime, Utc, serde::ts_nanoseconds};
+use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
+use super::timestamp::ts_nanoseconds as jiff_ts_nanoseconds;
 use super::{EventCategory, LearningMethod, ThreatLevel, TriageScore, common::Match};
 use crate::event::common::{AttrValue, triage_scores_to_string};
 
@@ -35,8 +36,8 @@ macro_rules! find_window_attr_by_kind {
 
 #[derive(Serialize, Deserialize)]
 pub struct WindowsThreatFields {
-    #[serde(with = "ts_nanoseconds")]
-    pub time: DateTime<Utc>,
+    #[serde(with = "jiff_ts_nanoseconds")]
+    pub time: Timestamp,
     pub sensor: String,
     pub service: String,
     pub agent_name: String,
@@ -58,8 +59,8 @@ pub struct WindowsThreatFields {
 
 #[derive(Deserialize, Serialize)]
 pub struct WindowsThreatFieldsStored {
-    #[serde(with = "ts_nanoseconds")]
-    pub time: DateTime<Utc>,
+    #[serde(with = "jiff_ts_nanoseconds")]
+    pub time: Timestamp,
     pub sensor: String,
     pub service: String,
     pub agent_name: String,
@@ -134,7 +135,7 @@ impl WindowsThreatFields {
 }
 
 pub struct WindowsThreat {
-    pub time: DateTime<Utc>,
+    pub time: Timestamp,
     pub sensor: String,
     pub service: String,
     pub agent_name: String,
@@ -155,7 +156,7 @@ pub struct WindowsThreat {
 }
 
 impl WindowsThreat {
-    pub(super) fn new(time: DateTime<Utc>, fields: WindowsThreatFieldsStored) -> Self {
+    pub(super) fn new(time: Timestamp, fields: WindowsThreatFieldsStored) -> Self {
         Self {
             time,
             sensor: fields.sensor,
