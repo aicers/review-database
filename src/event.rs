@@ -2564,123 +2564,264 @@ impl EventMessage {
     }
 }
 
+macro_rules! resolve_pair_country_codes {
+    ($fields:ident, $locator:ident) => {
+        $fields.orig_country_code = $locator.lookup_country_code($fields.orig_addr);
+        $fields.resp_country_code = $locator.lookup_country_code($fields.resp_addr);
+    };
+}
+
+macro_rules! resolve_resp_vec_country_codes {
+    ($fields:ident, $locator:ident) => {
+        $fields.orig_country_code = $locator.lookup_country_code($fields.orig_addr);
+        $fields.resp_country_codes = $fields
+            .resp_addrs
+            .iter()
+            .copied()
+            .map(|addr| $locator.lookup_country_code(addr))
+            .collect();
+    };
+}
+
+fn deserialize_for_storage<S, T>(bytes: &[u8]) -> Result<T>
+where
+    S: for<'de> Deserialize<'de>,
+    T: From<S>,
+{
+    let shared: S = bincode::deserialize(bytes)
+        .context("failed to deserialize event fields as the producer-facing schema")?;
+    Ok(shared.into())
+}
+
+fn serialize_stored_fields<T: Serialize>(stored: &T) -> Result<Vec<u8>> {
+    bincode::serialize(stored).context("failed to serialize event fields for storage")
+}
+
+macro_rules! convert_pair_for_storage {
+    ($bytes:expr, $prod:ty, $stored:ty, $locator:expr) => {{
+        let mut stored: $stored = deserialize_for_storage::<$prod, $stored>($bytes)?;
+        if let Some(locator) = $locator {
+            resolve_pair_country_codes!(stored, locator);
+        }
+        serialize_stored_fields(&stored)
+    }};
+}
+
+macro_rules! convert_resp_vec_for_storage {
+    ($bytes:expr, $prod:ty, $stored:ty, $locator:expr) => {{
+        let mut stored: $stored = deserialize_for_storage::<$prod, $stored>($bytes)?;
+        if let Some(locator) = $locator {
+            resolve_resp_vec_country_codes!(stored, locator);
+        }
+        serialize_stored_fields(&stored)
+    }};
+}
+
 /// Converts producer-facing `*Fields` bytes into the on-disk
 /// `*FieldsStored` representation for the given [`EventKind`].
-fn convert_for_storage(kind: EventKind, bytes: &[u8]) -> Result<Vec<u8>> {
-    fn reserialize<S, T>(bytes: &[u8]) -> Result<Vec<u8>>
-    where
-        S: for<'de> Deserialize<'de>,
-        T: Serialize + From<S>,
-    {
-        let shared: S = bincode::deserialize(bytes)
-            .context("failed to deserialize event fields as the producer-facing schema")?;
-        let stored: T = shared.into();
-        bincode::serialize(&stored).context("failed to serialize event fields for storage")
-    }
-
+///
+/// When `locator` is provided, endpoint country codes are resolved during
+/// conversion so the stored value is serialized only once.
+fn convert_for_storage(
+    kind: EventKind,
+    bytes: &[u8],
+    locator: Option<&dyn crate::geo::CountryLookup>,
+) -> Result<Vec<u8>> {
     match kind {
-        EventKind::BlocklistBootp => {
-            reserialize::<BlocklistBootpFields, BlocklistBootpFieldsStored>(bytes)
-        }
-        EventKind::BlocklistConn | EventKind::TorConnectionConn => {
-            reserialize::<BlocklistConnFields, BlocklistConnFieldsStored>(bytes)
-        }
-        EventKind::BlocklistDceRpc => {
-            reserialize::<BlocklistDceRpcFields, BlocklistDceRpcFieldsStored>(bytes)
-        }
-        EventKind::BlocklistDhcp => {
-            reserialize::<BlocklistDhcpFields, BlocklistDhcpFieldsStored>(bytes)
-        }
+        EventKind::BlocklistBootp => convert_pair_for_storage!(
+            bytes,
+            BlocklistBootpFields,
+            BlocklistBootpFieldsStored,
+            locator
+        ),
+        EventKind::BlocklistConn | EventKind::TorConnectionConn => convert_pair_for_storage!(
+            bytes,
+            BlocklistConnFields,
+            BlocklistConnFieldsStored,
+            locator
+        ),
+        EventKind::BlocklistDceRpc => convert_pair_for_storage!(
+            bytes,
+            BlocklistDceRpcFields,
+            BlocklistDceRpcFieldsStored,
+            locator
+        ),
+        EventKind::BlocklistDhcp => convert_pair_for_storage!(
+            bytes,
+            BlocklistDhcpFields,
+            BlocklistDhcpFieldsStored,
+            locator
+        ),
         EventKind::BlocklistDns => {
-            reserialize::<BlocklistDnsFields, BlocklistDnsFieldsStored>(bytes)
+            convert_pair_for_storage!(bytes, BlocklistDnsFields, BlocklistDnsFieldsStored, locator)
         }
         EventKind::BlocklistFtp | EventKind::FtpPlainText => {
-            reserialize::<FtpEventFields, FtpEventFieldsStored>(bytes)
+            convert_pair_for_storage!(bytes, FtpEventFields, FtpEventFieldsStored, locator)
         }
-        EventKind::BlocklistHttp => {
-            reserialize::<BlocklistHttpFields, BlocklistHttpFieldsStored>(bytes)
-        }
-        EventKind::BlocklistKerberos => {
-            reserialize::<BlocklistKerberosFields, BlocklistKerberosFieldsStored>(bytes)
-        }
+        EventKind::BlocklistHttp => convert_pair_for_storage!(
+            bytes,
+            BlocklistHttpFields,
+            BlocklistHttpFieldsStored,
+            locator
+        ),
+        EventKind::BlocklistKerberos => convert_pair_for_storage!(
+            bytes,
+            BlocklistKerberosFields,
+            BlocklistKerberosFieldsStored,
+            locator
+        ),
         EventKind::BlocklistLdap | EventKind::LdapPlainText => {
-            reserialize::<LdapEventFields, LdapEventFieldsStored>(bytes)
+            convert_pair_for_storage!(bytes, LdapEventFields, LdapEventFieldsStored, locator)
         }
-        EventKind::BlocklistMalformedDns => {
-            reserialize::<BlocklistMalformedDnsFields, BlocklistMalformedDnsFieldsStored>(bytes)
-        }
+        EventKind::BlocklistMalformedDns => convert_pair_for_storage!(
+            bytes,
+            BlocklistMalformedDnsFields,
+            BlocklistMalformedDnsFieldsStored,
+            locator
+        ),
         EventKind::BlocklistMqtt => {
-            reserialize::<BlocklistMqttFields, BlocklistMqttFieldsStored>(bytes)
+            convert_pair_for_storage!(
+                bytes,
+                BlocklistMqttFields,
+                BlocklistMqttFieldsStored,
+                locator
+            )
         }
         EventKind::BlocklistNfs => {
-            reserialize::<BlocklistNfsFields, BlocklistNfsFieldsStored>(bytes)
+            convert_pair_for_storage!(bytes, BlocklistNfsFields, BlocklistNfsFieldsStored, locator)
         }
-        EventKind::BlocklistNtlm => {
-            reserialize::<BlocklistNtlmFields, BlocklistNtlmFieldsStored>(bytes)
-        }
-        EventKind::BlocklistRadius => {
-            reserialize::<BlocklistRadiusFields, BlocklistRadiusFieldsStored>(bytes)
-        }
+        EventKind::BlocklistNtlm => convert_pair_for_storage!(
+            bytes,
+            BlocklistNtlmFields,
+            BlocklistNtlmFieldsStored,
+            locator
+        ),
+        EventKind::BlocklistRadius => convert_pair_for_storage!(
+            bytes,
+            BlocklistRadiusFields,
+            BlocklistRadiusFieldsStored,
+            locator
+        ),
         EventKind::BlocklistRdp => {
-            reserialize::<BlocklistRdpFields, BlocklistRdpFieldsStored>(bytes)
+            convert_pair_for_storage!(bytes, BlocklistRdpFields, BlocklistRdpFieldsStored, locator)
         }
         EventKind::BlocklistSmb => {
-            reserialize::<BlocklistSmbFields, BlocklistSmbFieldsStored>(bytes)
+            convert_pair_for_storage!(bytes, BlocklistSmbFields, BlocklistSmbFieldsStored, locator)
         }
         EventKind::BlocklistSmtp => {
-            reserialize::<BlocklistSmtpFields, BlocklistSmtpFieldsStored>(bytes)
+            convert_pair_for_storage!(
+                bytes,
+                BlocklistSmtpFields,
+                BlocklistSmtpFieldsStored,
+                locator
+            )
         }
         EventKind::BlocklistSsh => {
-            reserialize::<BlocklistSshFields, BlocklistSshFieldsStored>(bytes)
+            convert_pair_for_storage!(bytes, BlocklistSshFields, BlocklistSshFieldsStored, locator)
         }
         EventKind::BlocklistTls | EventKind::SuspiciousTlsTraffic => {
-            reserialize::<BlocklistTlsFields, BlocklistTlsFieldsStored>(bytes)
+            convert_pair_for_storage!(bytes, BlocklistTlsFields, BlocklistTlsFieldsStored, locator)
         }
-        EventKind::CryptocurrencyMiningPool => reserialize::<
+        EventKind::CryptocurrencyMiningPool => convert_pair_for_storage!(
+            bytes,
             CryptocurrencyMiningPoolFields,
             CryptocurrencyMiningPoolFieldsStored,
-        >(bytes),
+            locator
+        ),
         EventKind::DnsCovertChannel | EventKind::LockyRansomware => {
-            reserialize::<DnsEventFields, DnsEventFieldsStored>(bytes)
+            convert_pair_for_storage!(bytes, DnsEventFields, DnsEventFieldsStored, locator)
         }
-        EventKind::DomainGenerationAlgorithm => reserialize::<DgaFields, DgaFieldsStored>(bytes),
+        EventKind::DomainGenerationAlgorithm => {
+            convert_pair_for_storage!(bytes, DgaFields, DgaFieldsStored, locator)
+        }
         EventKind::ExternalDdos => {
-            reserialize::<ExternalDdosFields, ExternalDdosFieldsStored>(bytes)
+            let mut stored: ExternalDdosFieldsStored =
+                deserialize_for_storage::<ExternalDdosFields, _>(bytes)?;
+            if let Some(locator) = locator {
+                stored.orig_country_codes = stored
+                    .orig_addrs
+                    .iter()
+                    .copied()
+                    .map(|addr| locator.lookup_country_code(addr))
+                    .collect();
+                stored.resp_country_code = locator.lookup_country_code(stored.resp_addr);
+            }
+            serialize_stored_fields(&stored)
         }
-        EventKind::FtpBruteForce => {
-            reserialize::<FtpBruteForceFields, FtpBruteForceFieldsStored>(bytes)
+        EventKind::FtpBruteForce => convert_pair_for_storage!(
+            bytes,
+            FtpBruteForceFields,
+            FtpBruteForceFieldsStored,
+            locator
+        ),
+        EventKind::HttpThreat => {
+            convert_pair_for_storage!(bytes, HttpThreatFields, HttpThreatFieldsStored, locator)
         }
-        EventKind::HttpThreat => reserialize::<HttpThreatFields, HttpThreatFieldsStored>(bytes),
-        EventKind::LdapBruteForce => {
-            reserialize::<LdapBruteForceFields, LdapBruteForceFieldsStored>(bytes)
-        }
-        EventKind::MultiHostPortScan => {
-            reserialize::<MultiHostPortScanFields, MultiHostPortScanFieldsStored>(bytes)
-        }
+        EventKind::LdapBruteForce => convert_pair_for_storage!(
+            bytes,
+            LdapBruteForceFields,
+            LdapBruteForceFieldsStored,
+            locator
+        ),
+        EventKind::MultiHostPortScan => convert_resp_vec_for_storage!(
+            bytes,
+            MultiHostPortScanFields,
+            MultiHostPortScanFieldsStored,
+            locator
+        ),
         EventKind::NonBrowser | EventKind::TorConnection => {
-            reserialize::<HttpEventFields, HttpEventFieldsStored>(bytes)
+            convert_pair_for_storage!(bytes, HttpEventFields, HttpEventFieldsStored, locator)
         }
-        EventKind::PortScan => reserialize::<PortScanFields, PortScanFieldsStored>(bytes),
-        EventKind::RdpBruteForce => {
-            reserialize::<RdpBruteForceFields, RdpBruteForceFieldsStored>(bytes)
+        EventKind::PortScan => {
+            convert_pair_for_storage!(bytes, PortScanFields, PortScanFieldsStored, locator)
         }
-        EventKind::RepeatedHttpSessions => {
-            reserialize::<RepeatedHttpSessionsFields, RepeatedHttpSessionsFieldsStored>(bytes)
+        EventKind::RdpBruteForce => convert_resp_vec_for_storage!(
+            bytes,
+            RdpBruteForceFields,
+            RdpBruteForceFieldsStored,
+            locator
+        ),
+        EventKind::RepeatedHttpSessions => convert_pair_for_storage!(
+            bytes,
+            RepeatedHttpSessionsFields,
+            RepeatedHttpSessionsFieldsStored,
+            locator
+        ),
+        EventKind::UnusualDestinationPattern => {
+            let mut stored: UnusualDestinationPatternFieldsStored =
+                deserialize_for_storage::<UnusualDestinationPatternFields, _>(bytes)?;
+            if let Some(locator) = locator {
+                stored.resp_country_codes = stored
+                    .destination_ips
+                    .iter()
+                    .copied()
+                    .map(|addr| locator.lookup_country_code(addr))
+                    .collect();
+            }
+            serialize_stored_fields(&stored)
         }
-        EventKind::UnusualDestinationPattern => reserialize::<
-            UnusualDestinationPatternFields,
-            UnusualDestinationPatternFieldsStored,
-        >(bytes),
-        EventKind::ExtraThreat => reserialize::<ExtraThreatFields, ExtraThreatFieldsStored>(bytes),
-        EventKind::NetworkThreat => {
-            reserialize::<NetworkThreatFields, NetworkThreatFieldsStored>(bytes)
-        }
-        EventKind::WindowsThreat => {
-            reserialize::<WindowsThreatFields, WindowsThreatFieldsStored>(bytes)
-        }
+        EventKind::ExtraThreat => serialize_stored_fields(&deserialize_for_storage::<
+            ExtraThreatFields,
+            ExtraThreatFieldsStored,
+        >(bytes)?),
+        EventKind::NetworkThreat => convert_pair_for_storage!(
+            bytes,
+            NetworkThreatFields,
+            NetworkThreatFieldsStored,
+            locator
+        ),
+        EventKind::WindowsThreat => serialize_stored_fields(&deserialize_for_storage::<
+            WindowsThreatFields,
+            WindowsThreatFieldsStored,
+        >(bytes)?),
     }
 }
 
+/// Resolves endpoint country codes on already-serialized stored event fields.
+///
+/// Retained for migration paths where records are already in the on-disk
+/// `*FieldsStored` representation. Ingestion resolves country codes inside
+/// [`convert_for_storage`] instead.
 pub(crate) fn resolve_stored_country_codes(
     kind: EventKind,
     bytes: &[u8],
@@ -2701,21 +2842,17 @@ pub(crate) fn resolve_stored_country_codes(
         return Ok(bytes.to_vec());
     };
 
-    let lookup = |addr| locator.lookup_country_code(addr);
-
     macro_rules! pair {
         ($ty:ty) => {
             reserialize::<$ty, _>(bytes, |fields| {
-                fields.orig_country_code = lookup(fields.orig_addr);
-                fields.resp_country_code = lookup(fields.resp_addr);
+                resolve_pair_country_codes!(fields, locator);
             })
         };
     }
     macro_rules! resp_vec {
         ($ty:ty) => {
             reserialize::<$ty, _>(bytes, |fields| {
-                fields.orig_country_code = lookup(fields.orig_addr);
-                fields.resp_country_codes = fields.resp_addrs.iter().copied().map(lookup).collect();
+                resolve_resp_vec_country_codes!(fields, locator);
             })
         };
     }
@@ -2752,8 +2889,13 @@ pub(crate) fn resolve_stored_country_codes(
         }
         EventKind::DomainGenerationAlgorithm => pair!(DgaFieldsStored),
         EventKind::ExternalDdos => reserialize::<ExternalDdosFieldsStored, _>(bytes, |fields| {
-            fields.orig_country_codes = fields.orig_addrs.iter().copied().map(lookup).collect();
-            fields.resp_country_code = lookup(fields.resp_addr);
+            fields.orig_country_codes = fields
+                .orig_addrs
+                .iter()
+                .copied()
+                .map(|addr| locator.lookup_country_code(addr))
+                .collect();
+            fields.resp_country_code = locator.lookup_country_code(fields.resp_addr);
         }),
         EventKind::FtpBruteForce => pair!(FtpBruteForceFieldsStored),
         EventKind::HttpThreat => pair!(HttpThreatFieldsStored),
@@ -2766,8 +2908,12 @@ pub(crate) fn resolve_stored_country_codes(
         EventKind::RepeatedHttpSessions => pair!(RepeatedHttpSessionsFieldsStored),
         EventKind::UnusualDestinationPattern => {
             reserialize::<UnusualDestinationPatternFieldsStored, _>(bytes, |fields| {
-                fields.resp_country_codes =
-                    fields.destination_ips.iter().copied().map(lookup).collect();
+                fields.resp_country_codes = fields
+                    .destination_ips
+                    .iter()
+                    .copied()
+                    .map(|addr| locator.lookup_country_code(addr))
+                    .collect();
             })
         }
         EventKind::ExtraThreat | EventKind::WindowsThreat => Ok(bytes.to_vec()),
@@ -2834,12 +2980,8 @@ impl<'a> EventDb<'a> {
     /// producer-facing schema or if a database operation fails.
     pub fn put(&self, event: &EventMessage) -> Result<i128> {
         use anyhow::anyhow;
-        let stored_fields = convert_for_storage(event.kind, &event.fields)?;
-        let stored_fields = resolve_stored_country_codes(
-            event.kind,
-            &stored_fields,
-            self.country_lookup.as_deref(),
-        )?;
+        let stored_fields =
+            convert_for_storage(event.kind, &event.fields, self.country_lookup.as_deref())?;
         let mut key = (i128::from(event.time.timestamp_nanos_opt().unwrap_or(i64::MAX)) << 64)
             | (event
                 .kind
@@ -3741,13 +3883,109 @@ mod tests {
         assert_eq!(stored.resp_country_code, crate::util::COUNTRY_CODE_INVALID);
     }
 
+    fn legacy_storage_bytes(
+        kind: EventKind,
+        producer_bytes: &[u8],
+        locator: Option<&dyn crate::geo::CountryLookup>,
+    ) -> Vec<u8> {
+        use super::{convert_for_storage, resolve_stored_country_codes};
+
+        let converted = convert_for_storage(kind, producer_bytes, None).unwrap();
+        resolve_stored_country_codes(kind, &converted, locator).unwrap()
+    }
+
+    fn assert_storage_bytes_equivalent(
+        kind: EventKind,
+        producer_bytes: &[u8],
+        locator: Option<&FakeCountryLookup>,
+    ) {
+        use super::convert_for_storage;
+
+        let locator_ref = locator.map(|lookup| lookup as &dyn crate::geo::CountryLookup);
+        let expected = legacy_storage_bytes(kind, producer_bytes, locator_ref);
+        let actual = convert_for_storage(kind, producer_bytes, locator_ref).unwrap();
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn convert_for_storage_matches_legacy_two_step_without_locator() {
+        let msg = example_message(
+            EventKind::DnsCovertChannel,
+            EventCategory::CommandAndControl,
+        );
+        assert_storage_bytes_equivalent(EventKind::DnsCovertChannel, &msg.fields, None);
+    }
+
+    #[test]
+    fn convert_for_storage_matches_legacy_two_step_with_locator() {
+        let orig_addr = IpAddr::V4(Ipv4Addr::LOCALHOST);
+        let resp_addr = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2));
+        let lookup = FakeCountryLookup {
+            codes: HashMap::from([(orig_addr, *b"US"), (resp_addr, *b"KR")]),
+            failures: HashSet::new(),
+        };
+        let msg = example_message(
+            EventKind::DnsCovertChannel,
+            EventCategory::CommandAndControl,
+        );
+        assert_storage_bytes_equivalent(EventKind::DnsCovertChannel, &msg.fields, Some(&lookup));
+    }
+
+    #[test]
+    fn convert_for_storage_matches_legacy_two_step_with_lookup_failures() {
+        let orig_addr = IpAddr::V4(Ipv4Addr::LOCALHOST);
+        let lookup = FakeCountryLookup {
+            codes: HashMap::new(),
+            failures: HashSet::from([orig_addr]),
+        };
+        let msg = example_message(
+            EventKind::DnsCovertChannel,
+            EventCategory::CommandAndControl,
+        );
+        assert_storage_bytes_equivalent(EventKind::DnsCovertChannel, &msg.fields, Some(&lookup));
+    }
+
+    #[test]
+    fn convert_for_storage_matches_legacy_two_step_for_vector_country_codes() {
+        let orig_addr = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
+        let first_resp_addr = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2));
+        let second_resp_addr = IpAddr::V6(std::net::Ipv6Addr::LOCALHOST);
+        let lookup = FakeCountryLookup {
+            codes: HashMap::from([
+                (orig_addr, *b"US"),
+                (first_resp_addr, *b"JP"),
+                (second_resp_addr, *b"DE"),
+            ]),
+            failures: HashSet::new(),
+        };
+        let fields = MultiHostPortScanFields {
+            sensor: "collector1".to_string(),
+            orig_addr,
+            resp_port: 443,
+            resp_addrs: vec![first_resp_addr, second_resp_addr],
+            proto: 6,
+            first_event_start_time: 1,
+            last_event_start_time: 2,
+            confidence: 0.9,
+            category: Some(EventCategory::Reconnaissance),
+        };
+        let producer_bytes = bincode::serialize(&fields).unwrap();
+        let locator_ref = Some(&lookup as &dyn crate::geo::CountryLookup);
+        let expected =
+            legacy_storage_bytes(EventKind::MultiHostPortScan, &producer_bytes, locator_ref);
+        let actual =
+            super::convert_for_storage(EventKind::MultiHostPortScan, &producer_bytes, locator_ref)
+                .unwrap();
+        assert_eq!(actual, expected);
+    }
+
     #[test]
     fn event_boundary_rejects_invalid_producer_bytes() {
         use super::convert_for_storage;
 
         // Garbage bytes for a kind that owns a shared/stored split must fail
         // at ingestion, not silently reach the store.
-        let err = convert_for_storage(EventKind::DnsCovertChannel, &[0x01, 0x02]);
+        let err = convert_for_storage(EventKind::DnsCovertChannel, &[0x01, 0x02], None);
         assert!(err.is_err());
     }
 
@@ -3857,7 +4095,7 @@ mod tests {
     fn extra_threat_boundary_rejects_invalid_producer_bytes() {
         use super::convert_for_storage;
 
-        let err = convert_for_storage(EventKind::ExtraThreat, &[0x01, 0x02]);
+        let err = convert_for_storage(EventKind::ExtraThreat, &[0x01, 0x02], None);
         assert!(err.is_err());
     }
 
@@ -3880,7 +4118,7 @@ mod tests {
     fn network_threat_boundary_rejects_invalid_producer_bytes() {
         use super::convert_for_storage;
 
-        let err = convert_for_storage(EventKind::NetworkThreat, &[0x01, 0x02]);
+        let err = convert_for_storage(EventKind::NetworkThreat, &[0x01, 0x02], None);
         assert!(err.is_err());
     }
 
@@ -3904,7 +4142,7 @@ mod tests {
     fn windows_threat_boundary_rejects_invalid_producer_bytes() {
         use super::convert_for_storage;
 
-        let err = convert_for_storage(EventKind::WindowsThreat, &[0x01, 0x02]);
+        let err = convert_for_storage(EventKind::WindowsThreat, &[0x01, 0x02], None);
         assert!(err.is_err());
     }
 
