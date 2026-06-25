@@ -3,18 +3,18 @@
 use std::net::IpAddr;
 
 use anyhow::{Context, bail};
-use bincode::Options;
-use chrono::Utc;
+use jiff::{SignedDuration, Timestamp};
 use rocksdb::OptimisticTransactionDB;
 
 use crate::{
     EXCLUSIVE, Map, Role, Table,
+    tables::Value,
     types::{Account, FromKeyValue},
 };
 
 impl FromKeyValue for Account {
     fn from_key_value(_key: &[u8], value: &[u8]) -> anyhow::Result<Self> {
-        super::deserialize(value)
+        Account::from_stored_bytes(value)
     }
 }
 
@@ -54,7 +54,7 @@ impl<'d> Table<'d, Account> {
         let Some(value) = self.map.get(username.as_bytes())? else {
             return Ok(None);
         };
-        Ok(Some(super::deserialize(value.as_ref())?))
+        Ok(Some(Account::from_stored_bytes(value.as_ref())?))
     }
 
     /// Updates an entry in account map.
@@ -87,7 +87,7 @@ impl<'d> Table<'d, Account> {
                 .get_for_update_cf(self.map.cf, username, EXCLUSIVE)
                 .context("cannot read old entry")?
             {
-                let mut account = super::deserialize::<Account>(old_value.as_ref())?;
+                let mut account = Account::from_stored_bytes(old_value.as_ref())?;
 
                 if let Some(password) = &new_password {
                     account.update_password(password)?;
@@ -142,7 +142,7 @@ impl<'d> Table<'d, Account> {
                     account.customer_ids.clone_from(new);
                 }
 
-                let value = bincode::DefaultOptions::new().serialize(&account)?;
+                let value = account.value();
                 txn.put_cf(self.map.cf, username, value)
                     .context("failed to write new entry")?;
             } else {
@@ -177,19 +177,17 @@ impl<'d> Table<'d, Account> {
                 .get_for_update_cf(self.map.cf, username.as_bytes(), EXCLUSIVE)
                 .context("cannot read old entry")?
             {
-                let options = bincode::DefaultOptions::new();
-                let Ok(mut account) = options.deserialize::<Account>(old_value.as_ref()) else {
-                    return Err(anyhow::anyhow!("Failed to deserialize account data"));
-                };
+                let mut account = Account::from_stored_bytes(old_value.as_ref())?;
 
                 account.failed_login_attempts = account.failed_login_attempts.saturating_add(1);
 
                 if account.failed_login_attempts >= LOCKOUT_THRESHOLD {
-                    account.locked_out_until =
-                        Some(Utc::now() + chrono::Duration::minutes(LOCKOUT_DURATION_MINUTES));
+                    account.locked_out_until = Some(
+                        Timestamp::now() + SignedDuration::from_mins(LOCKOUT_DURATION_MINUTES),
+                    );
                 }
 
-                let value = bincode::DefaultOptions::new().serialize(&account)?;
+                let value = account.value();
                 txn.put_cf(self.map.cf, username.as_bytes(), value)
                     .context("failed to write updated entry")?;
             } else {
@@ -221,15 +219,12 @@ impl<'d> Table<'d, Account> {
                 .get_for_update_cf(self.map.cf, username.as_bytes(), EXCLUSIVE)
                 .context("cannot read old entry")?
             {
-                let options = bincode::DefaultOptions::new();
-                let Ok(mut account) = options.deserialize::<Account>(old_value.as_ref()) else {
-                    return Err(anyhow::anyhow!("Failed to deserialize account data"));
-                };
+                let mut account = Account::from_stored_bytes(old_value.as_ref())?;
 
                 account.failed_login_attempts = 0;
                 account.locked_out_until = None;
 
-                let value = bincode::DefaultOptions::new().serialize(&account)?;
+                let value = account.value();
                 txn.put_cf(self.map.cf, username.as_bytes(), value)
                     .context("failed to write updated entry")?;
             } else {
@@ -260,7 +255,7 @@ impl<'d> Table<'d, Account> {
         };
 
         if let Some(locked_until) = account.locked_out_until {
-            if Utc::now() >= locked_until {
+            if Timestamp::now() >= locked_until {
                 self.clear_failed_logins(username)?;
                 Ok(false)
             } else {
@@ -283,14 +278,11 @@ impl<'d> Table<'d, Account> {
                 .get_for_update_cf(self.map.cf, username.as_bytes(), EXCLUSIVE)
                 .context("cannot read old entry")?
             {
-                let options = bincode::DefaultOptions::new();
-                let Ok(mut account) = options.deserialize::<Account>(old_value.as_ref()) else {
-                    return Err(anyhow::anyhow!("Failed to deserialize account data"));
-                };
+                let mut account = Account::from_stored_bytes(old_value.as_ref())?;
 
                 account.is_suspended = true;
 
-                let value = bincode::DefaultOptions::new().serialize(&account)?;
+                let value = account.value();
                 txn.put_cf(self.map.cf, username.as_bytes(), value)
                     .context("failed to write updated entry")?;
             } else {
@@ -321,14 +313,11 @@ impl<'d> Table<'d, Account> {
                 .get_for_update_cf(self.map.cf, username.as_bytes(), EXCLUSIVE)
                 .context("cannot read old entry")?
             {
-                let options = bincode::DefaultOptions::new();
-                let Ok(mut account) = options.deserialize::<Account>(old_value.as_ref()) else {
-                    return Err(anyhow::anyhow!("Failed to deserialize account data"));
-                };
+                let mut account = Account::from_stored_bytes(old_value.as_ref())?;
 
                 account.is_suspended = false;
 
-                let value = bincode::DefaultOptions::new().serialize(&account)?;
+                let value = account.value();
                 txn.put_cf(self.map.cf, username.as_bytes(), value)
                     .context("failed to write updated entry")?;
             } else {
@@ -374,12 +363,26 @@ mod tests {
     use crate::test::{DbGuard, acquire_db_permit};
     use crate::{Role, Store, tables::Direction, types::Account};
 
+    const ACCOUNT_BYTES_FIXTURE: &[u8] = include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/account_bytes.bin"
+    ));
+
     fn setup_store() -> (DbGuard<'static>, Arc<Store>) {
         let permit = acquire_db_permit();
         let db_dir = tempfile::tempdir().unwrap();
         let backup_dir = tempfile::tempdir().unwrap();
         let store = Arc::new(Store::new(db_dir.path(), backup_dir.path(), None).unwrap());
         (permit, store)
+    }
+
+    #[test]
+    fn from_key_value_reads_fixture_bytes() {
+        use crate::types::FromKeyValue;
+
+        let account = Account::from_key_value(b"fixture-user", ACCOUNT_BYTES_FIXTURE)
+            .expect("fixture bytes must deserialize via FromKeyValue");
+        assert_eq!(account.username, "fixture-user");
     }
 
     #[test]
@@ -699,7 +702,8 @@ mod tests {
         .unwrap();
 
         account.failed_login_attempts = 5;
-        account.locked_out_until = Some(chrono::Utc::now() + chrono::Duration::milliseconds(100));
+        account.locked_out_until =
+            Some(jiff::Timestamp::now() + jiff::SignedDuration::from_millis(100));
         table.put(&account).unwrap();
 
         assert!(table.is_account_locked("user1").unwrap());

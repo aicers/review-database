@@ -5,7 +5,7 @@ use argon2::{
     Argon2,
     password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString, rand_core::OsRng},
 };
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 use ring::{
     digest, pbkdf2,
     rand::{self, SecureRandom},
@@ -37,15 +37,19 @@ pub struct Account {
     pub department: String,
     pub language: Option<String>,
     pub theme: Option<String>,
-    pub(crate) creation_time: DateTime<Utc>,
-    pub(crate) last_signin_time: Option<DateTime<Utc>>,
+    #[serde(with = "stored_timestamp")]
+    pub(crate) creation_time: Timestamp,
+    #[serde(with = "stored_timestamp_option")]
+    pub(crate) last_signin_time: Option<Timestamp>,
     pub allow_access_from: Option<Vec<IpAddr>>,
     pub max_parallel_sessions: Option<u8>,
     pub(crate) password_hash_algorithm: PasswordHashAlgorithm,
-    pub(crate) password_last_modified_at: DateTime<Utc>,
+    #[serde(with = "stored_timestamp")]
+    pub(crate) password_last_modified_at: Timestamp,
     pub customer_ids: Option<Vec<u32>>,
     pub failed_login_attempts: u8,
-    pub locked_out_until: Option<DateTime<Utc>>,
+    #[serde(with = "stored_timestamp_option")]
+    pub locked_out_until: Option<Timestamp>,
     pub is_suspended: bool,
 }
 
@@ -72,7 +76,7 @@ impl Account {
     ) -> Result<Self> {
         let password =
             SaltedPassword::new_with_hash_algorithm(password, &Self::DEFAULT_HASH_ALGORITHM)?;
-        let now = Utc::now();
+        let now = Timestamp::now();
         Ok(Self {
             username: username.to_string(),
             password,
@@ -104,7 +108,7 @@ impl Account {
         self.password =
             SaltedPassword::new_with_hash_algorithm(password, &Self::DEFAULT_HASH_ALGORITHM)?;
         self.password_hash_algorithm = Self::DEFAULT_HASH_ALGORITHM;
-        self.password_last_modified_at = Utc::now();
+        self.password_last_modified_at = Timestamp::now();
         Ok(())
     }
 
@@ -114,12 +118,12 @@ impl Account {
     }
 
     #[must_use]
-    pub fn creation_time(&self) -> DateTime<Utc> {
+    pub fn creation_time(&self) -> Timestamp {
         self.creation_time
     }
 
     pub fn update_last_signin_time(&mut self) {
-        self.last_signin_time = Some(Utc::now());
+        self.last_signin_time = Some(Timestamp::now());
     }
 
     /// Resets the last signin time to `None`.
@@ -132,13 +136,93 @@ impl Account {
     }
 
     #[must_use]
-    pub fn last_signin_time(&self) -> Option<DateTime<Utc>> {
+    pub fn last_signin_time(&self) -> Option<Timestamp> {
         self.last_signin_time
     }
 
     #[must_use]
-    pub fn password_last_modified_at(&self) -> DateTime<Utc> {
+    pub fn password_last_modified_at(&self) -> Timestamp {
         self.password_last_modified_at
+    }
+
+    pub(crate) fn from_stored_bytes(value: &[u8]) -> Result<Self> {
+        use bincode::Options;
+
+        bincode::DefaultOptions::new()
+            .reject_trailing_bytes()
+            .deserialize(value)
+            .map_err(Into::into)
+    }
+}
+
+/// Serde adapters that preserve the existing `chrono::DateTime<Utc>` bincode
+/// contract for account timestamp fields while exposing `jiff::Timestamp` in
+/// the public API.
+mod stored_timestamp {
+    use chrono::{DateTime, Utc};
+    use jiff::Timestamp;
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    pub fn serialize<S>(value: &Timestamp, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let datetime = DateTime::<Utc>::from_timestamp(
+            value.as_second(),
+            value.subsec_nanosecond().cast_unsigned(),
+        )
+        .expect("Jiff timestamps are within chrono's supported range");
+        datetime.serialize(serializer)
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Timestamp, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let datetime = DateTime::<Utc>::deserialize(deserializer)?;
+        Timestamp::new(
+            datetime.timestamp(),
+            datetime.timestamp_subsec_nanos().cast_signed(),
+        )
+        .map_err(serde::de::Error::custom)
+    }
+}
+
+mod stored_timestamp_option {
+    use chrono::{DateTime, Utc};
+    use jiff::Timestamp;
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    // Serde passes `&Option<T>` for `with`-module serializers on optional fields.
+    #[allow(clippy::ref_option)]
+    pub fn serialize<S>(value: &Option<Timestamp>, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let datetime = value.map(|timestamp| {
+            DateTime::<Utc>::from_timestamp(
+                timestamp.as_second(),
+                timestamp.subsec_nanosecond().cast_unsigned(),
+            )
+            .expect("Jiff timestamps are within chrono's supported range")
+        });
+        datetime.serialize(serializer)
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Option<Timestamp>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let datetime = Option::<DateTime<Utc>>::deserialize(deserializer)?;
+        datetime
+            .map(|value| {
+                Timestamp::new(
+                    value.timestamp(),
+                    value.timestamp_subsec_nanos().cast_signed(),
+                )
+                .map_err(serde::de::Error::custom)
+            })
+            .transpose()
     }
 }
 
@@ -204,7 +288,7 @@ impl Value for Account {
 
     fn value(&self) -> Vec<u8> {
         use bincode::Options;
-        let Ok(value) = bincode::DefaultOptions::new().serialize(&self) else {
+        let Ok(value) = bincode::DefaultOptions::new().serialize(self) else {
             unreachable!("serialization into memory should never fail")
         };
         value
@@ -336,8 +420,6 @@ impl SaltedPassword {
 mod tests {
     use std::net::IpAddr;
 
-    use chrono::DateTime;
-
     use super::*;
     use crate::tables::Value;
     use crate::types::FromKeyValue;
@@ -358,7 +440,7 @@ mod tests {
         const ITERATIONS: u32 = 210_000;
 
         let fixed_time = FIXTURE_TIMESTAMP
-            .parse::<DateTime<Utc>>()
+            .parse::<Timestamp>()
             .expect("valid RFC 3339 timestamp");
 
         let iterations = NonZeroU32::new(ITERATIONS).expect("non-zero iteration count");
@@ -395,13 +477,12 @@ mod tests {
 
     /// Verifies literal-byte compatibility for `Account` table values.
     ///
-    /// `tests/fixtures/account_bytes.bin` was produced once by calling
-    /// `bytes_fixture_account()` and serializing with `Account::value()`, which uses
-    /// `bincode::DefaultOptions` directly in `src/account.rs`. Expected bytes are
-    /// checked in from the fixture rather than generated in this test.
+    /// `tests/fixtures/account_bytes.bin` was produced from the pre-Jiff `Account`
+    /// layout. This test proves the Jiff-backed production type still reads those
+    /// bytes and writes the same byte shape via chrono-compatible serde adapters.
     #[test]
     fn account_table_value_bytes_match_fixture() {
-        let fixed_time: DateTime<Utc> = FIXTURE_TIMESTAMP.parse().expect("valid timestamp");
+        let fixed_time: Timestamp = FIXTURE_TIMESTAMP.parse().expect("valid timestamp");
 
         let decoded = Account::from_key_value(b"fixture-user", ACCOUNT_BYTES_FIXTURE)
             .expect("fixture bytes must deserialize via FromKeyValue");
@@ -497,12 +578,12 @@ mod tests {
             name: String::new(),
             language: None,
             theme: None,
-            creation_time: Utc::now(),
+            creation_time: Timestamp::now(),
             last_signin_time: None,
             allow_access_from: None,
             max_parallel_sessions: None,
             password_hash_algorithm: PasswordHashAlgorithm::Pbkdf2HmacSha512,
-            password_last_modified_at: Utc::now(),
+            password_last_modified_at: Timestamp::now(),
             customer_ids: Some(Vec::new()),
             failed_login_attempts: 0,
             locked_out_until: None,
