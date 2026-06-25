@@ -1752,4 +1752,332 @@ mod tests {
         let store = Arc::new(Store::new(db_dir.path(), backup_dir.path(), None).unwrap());
         (permit, store)
     }
+
+    /// Baseline tests for the `column_stats` timestamp contract between the
+    /// public `chrono::NaiveDateTime` API and the stored big-endian `i64`
+    /// nanosecond key layout.
+    mod timestamp_contract {
+        use chrono::NaiveDate;
+        use rocksdb::Direction;
+        use structured::{ColumnStatistics, Description, Element, ElementCount, NLargestCount};
+
+        use super::*;
+        use crate::Table;
+
+        const BATCH_TS_KEY_OFFSET: usize = size_of::<u32>() + size_of::<u32>();
+
+        fn default_column_statistics() -> ColumnStatistics {
+            ColumnStatistics {
+                description: Description::default(),
+                n_largest_count: NLargestCount::default(),
+            }
+        }
+
+        fn timestamp_bytes_in_key(key: &[u8]) -> &[u8] {
+            &key[BATCH_TS_KEY_OFFSET..BATCH_TS_KEY_OFFSET + size_of::<i64>()]
+        }
+
+        fn ordered_unique_batch_ts(
+            table: &Table<'_, ColumnStats>,
+            model_id: u32,
+            cluster_id: u32,
+            direction: Direction,
+            from: Option<&[u8]>,
+        ) -> Vec<i64> {
+            let mut prefix = model_id.to_be_bytes().to_vec();
+            prefix.extend(cluster_id.to_be_bytes());
+
+            let mut ordered = Vec::new();
+            for result in table.prefix_iter(direction, from, &prefix) {
+                let stats = result.expect("prefix iteration succeeds");
+                if ordered.last() != Some(&stats.batch_ts) {
+                    ordered.push(stats.batch_ts);
+                }
+            }
+            ordered
+        }
+
+        #[test]
+        fn test_key_bytes_for_timestamp() {
+            let epoch = NaiveDate::from_ymd_opt(1970, 1, 1)
+                .unwrap()
+                .and_hms_opt(0, 0, 0)
+                .unwrap();
+            let leap_second = NaiveDate::from_ymd_opt(2000, 2, 29)
+                .unwrap()
+                .and_hms_nano_opt(12, 34, 56, 123_456_789)
+                .unwrap();
+            let pre_epoch = NaiveDate::from_ymd_opt(1969, 12, 31)
+                .unwrap()
+                .and_hms_nano_opt(23, 59, 59, 999_999_999)
+                .unwrap();
+
+            let cases = [
+                (epoch, 0_i64),
+                (leap_second, from_naive_utc(leap_second)),
+                (pre_epoch, -1_i64),
+            ];
+
+            for (timestamp, expected_nanos) in cases {
+                assert_eq!(from_naive_utc(timestamp), expected_nanos);
+                assert_eq!(from_timestamp(expected_nanos).unwrap(), timestamp);
+
+                let key = Key {
+                    model_id: 7,
+                    cluster_id: 11,
+                    batch_ts: expected_nanos,
+                    column_index: 3,
+                };
+                let bytes = key.to_bytes();
+                assert_eq!(
+                    timestamp_bytes_in_key(&bytes),
+                    expected_nanos.to_be_bytes(),
+                    "batch_ts must be big-endian i64 nanoseconds at offset {BATCH_TS_KEY_OFFSET}"
+                );
+
+                let parsed = Key::from_be_bytes(&bytes);
+                assert_eq!(parsed.batch_ts, expected_nanos);
+            }
+        }
+
+        #[test]
+        fn test_key_bytes_for_timestamp_in_database() {
+            let (_permit, store) = super::setup_store();
+            let table = store.column_stats_map();
+
+            let model_id = 42;
+            let cluster_id = 99;
+            let timestamp = NaiveDate::from_ymd_opt(2000, 2, 29)
+                .unwrap()
+                .and_hms_nano_opt(12, 34, 56, 123_456_789)
+                .unwrap();
+            let expected_nanos = from_naive_utc(timestamp);
+
+            table
+                .insert_column_statistics(
+                    vec![(cluster_id, vec![default_column_statistics()])],
+                    model_id,
+                    timestamp,
+                )
+                .unwrap();
+
+            let stored = table
+                .get(expected_nanos, model_id, cluster_id)
+                .next()
+                .unwrap()
+                .unwrap();
+            assert_eq!(stored.batch_ts, expected_nanos);
+            assert_eq!(
+                timestamp_bytes_in_key(&stored.unique_key()),
+                expected_nanos.to_be_bytes()
+            );
+        }
+
+        #[test]
+        fn test_seek_ordering_by_timestamp() {
+            let (_permit, store) = super::setup_store();
+            let table = store.column_stats_map();
+
+            let model_id = 5;
+            let cluster_id = 17;
+            let pre_epoch = NaiveDate::from_ymd_opt(1969, 12, 31)
+                .unwrap()
+                .and_hms_nano_opt(23, 59, 59, 999_999_999)
+                .unwrap();
+            let epoch = NaiveDate::from_ymd_opt(1970, 1, 1)
+                .unwrap()
+                .and_hms_opt(0, 0, 0)
+                .unwrap();
+            let leap_second = NaiveDate::from_ymd_opt(2000, 2, 29)
+                .unwrap()
+                .and_hms_nano_opt(12, 34, 56, 123_456_789)
+                .unwrap();
+
+            // Insert out of chronological order to prove ordering comes from key bytes.
+            for timestamp in [leap_second, pre_epoch, epoch] {
+                table
+                    .insert_column_statistics(
+                        vec![(cluster_id, vec![default_column_statistics()])],
+                        model_id,
+                        timestamp,
+                    )
+                    .unwrap();
+            }
+
+            let epoch_nanos = from_naive_utc(epoch);
+            let leap_nanos = from_naive_utc(leap_second);
+            let pre_epoch_nanos = from_naive_utc(pre_epoch);
+
+            // RocksDB orders keys by unsigned byte comparison. Big-endian `i64`
+            // nanoseconds therefore sort non-negative timestamps before negative
+            // ones, which differs from numeric `i64` ordering when pre-1970
+            // timestamps are present.
+            let forward =
+                ordered_unique_batch_ts(&table, model_id, cluster_id, Direction::Forward, None);
+            assert_eq!(forward, vec![epoch_nanos, leap_nanos, pre_epoch_nanos]);
+            let mut numeric_order = [epoch_nanos, leap_nanos, pre_epoch_nanos];
+            numeric_order.sort_unstable();
+            assert_ne!(
+                forward, numeric_order,
+                "forward iteration must follow key-byte order, not numeric i64 order"
+            );
+
+            let reverse =
+                ordered_unique_batch_ts(&table, model_id, cluster_id, Direction::Reverse, None);
+            assert_eq!(reverse, vec![pre_epoch_nanos, leap_nanos, epoch_nanos]);
+        }
+
+        #[test]
+        fn test_load_rounds_by_cluster_seek_post_epoch() {
+            let (_permit, store) = super::setup_store();
+            let table = store.column_stats_map();
+
+            let model_id = 6;
+            let cluster_id = 21;
+            let batch_a = NaiveDate::from_ymd_opt(2020, 1, 1)
+                .unwrap()
+                .and_hms_opt(0, 0, 0)
+                .unwrap();
+            let batch_b = NaiveDate::from_ymd_opt(2021, 6, 15)
+                .unwrap()
+                .and_hms_nano_opt(12, 0, 0, 500)
+                .unwrap();
+            let batch_c = NaiveDate::from_ymd_opt(2022, 12, 31)
+                .unwrap()
+                .and_hms_nano_opt(23, 59, 59, 999_999_999)
+                .unwrap();
+
+            for timestamp in [batch_c, batch_a, batch_b] {
+                table
+                    .insert_column_statistics(
+                        vec![(cluster_id, vec![default_column_statistics()])],
+                        model_id,
+                        timestamp,
+                    )
+                    .unwrap();
+            }
+
+            let forward =
+                ordered_unique_batch_ts(&table, model_id, cluster_id, Direction::Forward, None);
+            let expected = vec![
+                from_naive_utc(batch_a),
+                from_naive_utc(batch_b),
+                from_naive_utc(batch_c),
+            ];
+            assert_eq!(forward, expected);
+
+            let (_, all_rounds) = table
+                .load_rounds_by_cluster(model_id, cluster_id, &None, &None, true, 10)
+                .unwrap();
+            assert_eq!(all_rounds, vec![batch_a, batch_b, batch_c]);
+
+            // Forward pagination with `after` is an exclusive lower bound.
+            let (_, rounds_after_b) = table
+                .load_rounds_by_cluster(model_id, cluster_id, &Some(batch_b), &None, true, 10)
+                .unwrap();
+            assert_eq!(rounds_after_b, vec![batch_c]);
+
+            // Reverse pagination with `before` is an exclusive upper bound.
+            let (_, rounds_before_b) = table
+                .load_rounds_by_cluster(model_id, cluster_id, &None, &Some(batch_b), false, 10)
+                .unwrap();
+            assert_eq!(rounds_before_b, vec![batch_a]);
+
+            // A full-key seek including `model_id` honors timestamp order.
+            let mut full_seek_key = model_id.to_be_bytes().to_vec();
+            full_seek_key.extend(cluster_id.to_be_bytes());
+            full_seek_key.extend(from_naive_utc(batch_b).to_be_bytes());
+            let forward_from_b = ordered_unique_batch_ts(
+                &table,
+                model_id,
+                cluster_id,
+                Direction::Forward,
+                Some(&full_seek_key),
+            );
+            assert_eq!(
+                forward_from_b,
+                vec![from_naive_utc(batch_b), from_naive_utc(batch_c)]
+            );
+        }
+
+        #[test]
+        fn test_batch_ts_roundtrip() {
+            let (_permit, store) = super::setup_store();
+            let table = store.column_stats_map();
+
+            let model_id = 3;
+            let cluster_id = 8;
+            let timestamp = NaiveDate::from_ymd_opt(2000, 2, 29)
+                .unwrap()
+                .and_hms_nano_opt(12, 34, 56, 123_456_789)
+                .unwrap();
+
+            table
+                .insert_column_statistics(
+                    vec![(cluster_id, vec![default_column_statistics()])],
+                    model_id,
+                    timestamp,
+                )
+                .unwrap();
+
+            let stats = table
+                .get_column_statistics(model_id, cluster_id, vec![timestamp])
+                .unwrap();
+            assert_eq!(stats.len(), 1);
+            assert_eq!(stats[0].batch_ts, timestamp);
+            assert_eq!(from_naive_utc(stats[0].batch_ts), from_naive_utc(timestamp));
+
+            let all_stats = table
+                .get_column_statistics(model_id, cluster_id, vec![])
+                .unwrap();
+            assert_eq!(all_stats.len(), 1);
+            assert_eq!(all_stats[0].batch_ts, timestamp);
+        }
+
+        #[test]
+        fn test_structured_element_datetime() {
+            let (_permit, store) = super::setup_store();
+            let table = store.column_stats_map();
+
+            let model_id = 12;
+            let cluster_id = 4;
+            let batch_ts = NaiveDate::from_ymd_opt(2024, 6, 15)
+                .unwrap()
+                .and_hms_nano_opt(10, 30, 45, 123_000_000)
+                .unwrap();
+            let jiff_dt = jiff::civil::DateTime::new(2024, 6, 15, 10, 30, 45, 123_000_000).unwrap();
+            let element = Element::DateTime(jiff_dt);
+
+            let statistics = ColumnStatistics {
+                description: Description::default(),
+                n_largest_count: NLargestCount::new(
+                    1,
+                    vec![ElementCount {
+                        value: element.clone(),
+                        count: 1,
+                    }],
+                    Some(element.clone()),
+                ),
+            };
+
+            table
+                .insert_column_statistics(vec![(cluster_id, vec![statistics])], model_id, batch_ts)
+                .unwrap();
+
+            let stats = table
+                .get_column_statistics(model_id, cluster_id, vec![batch_ts])
+                .unwrap();
+            assert_eq!(stats.len(), 1);
+            match stats[0].column_stats.n_largest_count.mode().as_ref() {
+                Some(Element::DateTime(dt)) => assert_eq!(*dt, jiff_dt),
+                other => panic!("expected DateTime mode, got {other:?}"),
+            }
+            let top_n = stats[0].column_stats.n_largest_count.top_n();
+            assert_eq!(top_n.len(), 1);
+            match &top_n[0].value {
+                Element::DateTime(dt) => assert_eq!(*dt, jiff_dt),
+                other => panic!("expected DateTime value, got {other:?}"),
+            }
+        }
+    }
 }
