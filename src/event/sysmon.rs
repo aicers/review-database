@@ -211,10 +211,6 @@ impl fmt::Display for WindowsThreat {
 
 // TODO: Make new Match trait for Windows threat events
 impl Match for WindowsThreat {
-    fn sensor(&self) -> &str {
-        &self.sensor
-    }
-
     fn src_addrs(&self) -> &[IpAddr] {
         std::slice::from_ref(&IpAddr::V4(Ipv4Addr::UNSPECIFIED))
     }
@@ -223,12 +219,20 @@ impl Match for WindowsThreat {
         0
     }
 
+    fn orig_country_codes(&self) -> &[[u8; 2]] {
+        &[]
+    }
+
     fn dst_addrs(&self) -> &[IpAddr] {
         std::slice::from_ref(&IpAddr::V4(Ipv4Addr::UNSPECIFIED))
     }
 
     fn dst_port(&self) -> u16 {
         0
+    }
+
+    fn resp_country_codes(&self) -> &[[u8; 2]] {
+        &[]
     }
 
     fn proto(&self) -> u8 {
@@ -245,6 +249,10 @@ impl Match for WindowsThreat {
 
     fn kind(&self) -> &'static str {
         "windows threat"
+    }
+
+    fn sensor(&self) -> &str {
+        &self.sensor
     }
 
     fn confidence(&self) -> Option<f32> {

@@ -153,12 +153,20 @@ impl Match for ExtraThreat {
         0
     }
 
+    fn orig_country_codes(&self) -> &[[u8; 2]] {
+        &[]
+    }
+
     fn dst_addrs(&self) -> &[IpAddr] {
         std::slice::from_ref(&IpAddr::V4(Ipv4Addr::UNSPECIFIED))
     }
 
     fn dst_port(&self) -> u16 {
         0
+    }
+
+    fn resp_country_codes(&self) -> &[[u8; 2]] {
+        &[]
     }
 
     fn proto(&self) -> u8 {

@@ -570,59 +570,55 @@ impl Event {
     ///
     /// # Errors
     ///
-    /// Returns an error if the filter contains a country filter but the ip2location database is
-    /// not available.
-    pub fn matches(
-        &self,
-        locator: Option<&ip2location::DB>,
-        filter: &EventFilter,
-    ) -> Result<(bool, Option<Vec<TriageScore>>)> {
+    /// Returns an error if triage-policy scoring fails while evaluating a
+    /// matching event.
+    pub fn matches(&self, filter: &EventFilter) -> Result<(bool, Option<Vec<TriageScore>>)> {
         match self {
-            Event::DnsCovertChannel(event) => event.matches(locator, filter),
-            Event::HttpThreat(event) => event.matches(locator, filter),
-            Event::RdpBruteForce(event) => event.matches(locator, filter),
-            Event::RepeatedHttpSessions(event) => event.matches(locator, filter),
-            Event::TorConnection(event) => event.matches(locator, filter),
-            Event::TorConnectionConn(event) => event.matches(locator, filter),
-            Event::DomainGenerationAlgorithm(event) => event.matches(locator, filter),
-            Event::FtpBruteForce(event) => event.matches(locator, filter),
-            Event::FtpPlainText(event) => event.matches(locator, filter),
-            Event::PortScan(event) => event.matches(locator, filter),
-            Event::MultiHostPortScan(event) => event.matches(locator, filter),
-            Event::ExternalDdos(event) => event.matches(locator, filter),
-            Event::NonBrowser(event) => event.matches(locator, filter),
-            Event::LdapBruteForce(event) => event.matches(locator, filter),
-            Event::LdapPlainText(event) => event.matches(locator, filter),
-            Event::CryptocurrencyMiningPool(event) => event.matches(locator, filter),
+            Event::DnsCovertChannel(event) => event.matches(filter),
+            Event::HttpThreat(event) => event.matches(filter),
+            Event::RdpBruteForce(event) => event.matches(filter),
+            Event::RepeatedHttpSessions(event) => event.matches(filter),
+            Event::TorConnection(event) => event.matches(filter),
+            Event::TorConnectionConn(event) => event.matches(filter),
+            Event::DomainGenerationAlgorithm(event) => event.matches(filter),
+            Event::FtpBruteForce(event) => event.matches(filter),
+            Event::FtpPlainText(event) => event.matches(filter),
+            Event::PortScan(event) => event.matches(filter),
+            Event::MultiHostPortScan(event) => event.matches(filter),
+            Event::ExternalDdos(event) => event.matches(filter),
+            Event::NonBrowser(event) => event.matches(filter),
+            Event::LdapBruteForce(event) => event.matches(filter),
+            Event::LdapPlainText(event) => event.matches(filter),
+            Event::CryptocurrencyMiningPool(event) => event.matches(filter),
             Event::Blocklist(record_type) => match record_type {
-                RecordType::Bootp(bootp_event) => bootp_event.matches(locator, filter),
-                RecordType::Conn(conn_event) => conn_event.matches(locator, filter),
-                RecordType::DceRpc(dcerpc_event) => dcerpc_event.matches(locator, filter),
-                RecordType::Dhcp(dhcp_event) => dhcp_event.matches(locator, filter),
-                RecordType::Dns(dns_event) => dns_event.matches(locator, filter),
-                RecordType::Ftp(ftp_event) => ftp_event.matches(locator, filter),
-                RecordType::Http(http_event) => http_event.matches(locator, filter),
-                RecordType::Kerberos(kerberos_event) => kerberos_event.matches(locator, filter),
-                RecordType::Ldap(ldap_event) => ldap_event.matches(locator, filter),
+                RecordType::Bootp(bootp_event) => bootp_event.matches(filter),
+                RecordType::Conn(conn_event) => conn_event.matches(filter),
+                RecordType::DceRpc(dcerpc_event) => dcerpc_event.matches(filter),
+                RecordType::Dhcp(dhcp_event) => dhcp_event.matches(filter),
+                RecordType::Dns(dns_event) => dns_event.matches(filter),
+                RecordType::Ftp(ftp_event) => ftp_event.matches(filter),
+                RecordType::Http(http_event) => http_event.matches(filter),
+                RecordType::Kerberos(kerberos_event) => kerberos_event.matches(filter),
+                RecordType::Ldap(ldap_event) => ldap_event.matches(filter),
                 RecordType::MalformedDns(malformed_dns_event) => {
-                    malformed_dns_event.matches(locator, filter)
+                    malformed_dns_event.matches(filter)
                 }
-                RecordType::Mqtt(mqtt_event) => mqtt_event.matches(locator, filter),
-                RecordType::Nfs(nfs_event) => nfs_event.matches(locator, filter),
-                RecordType::Ntlm(ntlm_event) => ntlm_event.matches(locator, filter),
-                RecordType::Radius(radius_event) => radius_event.matches(locator, filter),
-                RecordType::Rdp(rdp_event) => rdp_event.matches(locator, filter),
-                RecordType::Smb(smb_event) => smb_event.matches(locator, filter),
-                RecordType::Smtp(smtp_event) => smtp_event.matches(locator, filter),
-                RecordType::Ssh(ssh_event) => ssh_event.matches(locator, filter),
-                RecordType::Tls(tls_event) => tls_event.matches(locator, filter),
-                RecordType::UnusualDestinationPattern(event) => event.matches(locator, filter),
+                RecordType::Mqtt(mqtt_event) => mqtt_event.matches(filter),
+                RecordType::Nfs(nfs_event) => nfs_event.matches(filter),
+                RecordType::Ntlm(ntlm_event) => ntlm_event.matches(filter),
+                RecordType::Radius(radius_event) => radius_event.matches(filter),
+                RecordType::Rdp(rdp_event) => rdp_event.matches(filter),
+                RecordType::Smb(smb_event) => smb_event.matches(filter),
+                RecordType::Smtp(smtp_event) => smtp_event.matches(filter),
+                RecordType::Ssh(ssh_event) => ssh_event.matches(filter),
+                RecordType::Tls(tls_event) => tls_event.matches(filter),
+                RecordType::UnusualDestinationPattern(event) => event.matches(filter),
             },
-            Event::WindowsThreat(event) => event.matches(locator, filter),
-            Event::NetworkThreat(event) => event.matches(locator, filter),
-            Event::ExtraThreat(event) => event.matches(locator, filter),
-            Event::LockyRansomware(event) => event.matches(locator, filter),
-            Event::SuspiciousTlsTraffic(event) => event.matches(locator, filter),
+            Event::WindowsThreat(event) => event.matches(filter),
+            Event::NetworkThreat(event) => event.matches(filter),
+            Event::ExtraThreat(event) => event.matches(filter),
+            Event::LockyRansomware(event) => event.matches(filter),
+            Event::SuspiciousTlsTraffic(event) => event.matches(filter),
         }
     }
 
@@ -747,131 +743,127 @@ impl Event {
         }
     }
 
-    fn address_pair(
-        &self,
-        locator: Option<&ip2location::DB>,
-        filter: &EventFilter,
-    ) -> Result<(Option<IpAddr>, Option<IpAddr>)> {
+    fn address_pair(&self, filter: &EventFilter) -> Result<(Option<IpAddr>, Option<IpAddr>)> {
         let mut addr_pair = (None, None);
         match self {
             Event::DnsCovertChannel(event) => {
-                if event.matches(locator, filter)?.0 {
+                if event.matches(filter)?.0 {
                     addr_pair = (Some(event.orig_addr), Some(event.resp_addr));
                 }
             }
             Event::HttpThreat(event) => {
-                if event.matches(locator, filter)?.0 {
+                if event.matches(filter)?.0 {
                     addr_pair = (Some(event.orig_addr), Some(event.resp_addr));
                 }
             }
             Event::RdpBruteForce(event) => {
-                if event.matches(locator, filter)?.0 {
+                if event.matches(filter)?.0 {
                     addr_pair = (Some(event.orig_addr), None);
                 }
             }
             Event::RepeatedHttpSessions(event) => {
-                if event.matches(locator, filter)?.0 {
+                if event.matches(filter)?.0 {
                     addr_pair = (Some(event.orig_addr), Some(event.resp_addr));
                 }
             }
             Event::TorConnection(event) => {
-                if event.matches(locator, filter)?.0 {
+                if event.matches(filter)?.0 {
                     addr_pair = (Some(event.orig_addr), Some(event.resp_addr));
                 }
             }
             Event::TorConnectionConn(event) => {
-                if event.matches(locator, filter)?.0 {
+                if event.matches(filter)?.0 {
                     addr_pair = (Some(event.orig_addr), Some(event.resp_addr));
                 }
             }
             Event::DomainGenerationAlgorithm(event) => {
-                if event.matches(locator, filter)?.0 {
+                if event.matches(filter)?.0 {
                     addr_pair = (Some(event.orig_addr), Some(event.resp_addr));
                 }
             }
             Event::FtpBruteForce(event) => {
-                if event.matches(locator, filter)?.0 {
+                if event.matches(filter)?.0 {
                     addr_pair = (Some(event.orig_addr), Some(event.resp_addr));
                 }
             }
             Event::FtpPlainText(event) => {
-                if event.matches(locator, filter)?.0 {
+                if event.matches(filter)?.0 {
                     addr_pair = (Some(event.orig_addr), Some(event.resp_addr));
                 }
             }
             Event::PortScan(event) => {
-                if event.matches(locator, filter)?.0 {
+                if event.matches(filter)?.0 {
                     addr_pair = (Some(event.orig_addr), Some(event.resp_addr));
                 }
             }
             Event::MultiHostPortScan(event) => {
-                if event.matches(locator, filter)?.0 {
+                if event.matches(filter)?.0 {
                     addr_pair = (Some(event.orig_addr), None);
                 }
             }
             Event::ExternalDdos(event) => {
-                if event.matches(locator, filter)?.0 {
+                if event.matches(filter)?.0 {
                     addr_pair = (None, Some(event.resp_addr));
                 }
             }
             Event::NonBrowser(event) => {
-                if event.matches(locator, filter)?.0 {
+                if event.matches(filter)?.0 {
                     addr_pair = (Some(event.orig_addr), Some(event.resp_addr));
                 }
             }
             Event::LdapBruteForce(event) => {
-                if event.matches(locator, filter)?.0 {
+                if event.matches(filter)?.0 {
                     addr_pair = (Some(event.orig_addr), Some(event.resp_addr));
                 }
             }
             Event::LdapPlainText(event) => {
-                if event.matches(locator, filter)?.0 {
+                if event.matches(filter)?.0 {
                     addr_pair = (Some(event.orig_addr), Some(event.resp_addr));
                 }
             }
             Event::CryptocurrencyMiningPool(event) => {
-                if event.matches(locator, filter)?.0 {
+                if event.matches(filter)?.0 {
                     addr_pair = (Some(event.orig_addr), Some(event.resp_addr));
                 }
             }
             Event::Blocklist(record_type) => match record_type {
                 RecordType::Bootp(bootp_event) => {
-                    if bootp_event.matches(locator, filter)?.0 {
+                    if bootp_event.matches(filter)?.0 {
                         addr_pair = (Some(bootp_event.orig_addr), Some(bootp_event.resp_addr));
                     }
                 }
                 RecordType::Conn(conn_event) => {
-                    if conn_event.matches(locator, filter)?.0 {
+                    if conn_event.matches(filter)?.0 {
                         addr_pair = (Some(conn_event.orig_addr), Some(conn_event.resp_addr));
                     }
                 }
                 RecordType::DceRpc(dcerpc_event) => {
-                    if dcerpc_event.matches(locator, filter)?.0 {
+                    if dcerpc_event.matches(filter)?.0 {
                         addr_pair = (Some(dcerpc_event.orig_addr), Some(dcerpc_event.resp_addr));
                     }
                 }
                 RecordType::Dhcp(dhcp_event) => {
-                    if dhcp_event.matches(locator, filter)?.0 {
+                    if dhcp_event.matches(filter)?.0 {
                         addr_pair = (Some(dhcp_event.orig_addr), Some(dhcp_event.resp_addr));
                     }
                 }
                 RecordType::Dns(dns_event) => {
-                    if dns_event.matches(locator, filter)?.0 {
+                    if dns_event.matches(filter)?.0 {
                         addr_pair = (Some(dns_event.orig_addr), Some(dns_event.resp_addr));
                     }
                 }
                 RecordType::Ftp(ftp_event) => {
-                    if ftp_event.matches(locator, filter)?.0 {
+                    if ftp_event.matches(filter)?.0 {
                         addr_pair = (Some(ftp_event.orig_addr), Some(ftp_event.resp_addr));
                     }
                 }
                 RecordType::Http(http_event) => {
-                    if http_event.matches(locator, filter)?.0 {
+                    if http_event.matches(filter)?.0 {
                         addr_pair = (Some(http_event.orig_addr), Some(http_event.resp_addr));
                     }
                 }
                 RecordType::Kerberos(kerberos_event) => {
-                    if kerberos_event.matches(locator, filter)?.0 {
+                    if kerberos_event.matches(filter)?.0 {
                         addr_pair = (
                             Some(kerberos_event.orig_addr),
                             Some(kerberos_event.resp_addr),
@@ -879,12 +871,12 @@ impl Event {
                     }
                 }
                 RecordType::Ldap(ldap_event) => {
-                    if ldap_event.matches(locator, filter)?.0 {
+                    if ldap_event.matches(filter)?.0 {
                         addr_pair = (Some(ldap_event.orig_addr), Some(ldap_event.resp_addr));
                     }
                 }
                 RecordType::MalformedDns(malformed_dns_event) => {
-                    if malformed_dns_event.matches(locator, filter)?.0 {
+                    if malformed_dns_event.matches(filter)?.0 {
                         addr_pair = (
                             Some(malformed_dns_event.orig_addr),
                             Some(malformed_dns_event.resp_addr),
@@ -892,52 +884,52 @@ impl Event {
                     }
                 }
                 RecordType::Mqtt(mqtt_event) => {
-                    if mqtt_event.matches(locator, filter)?.0 {
+                    if mqtt_event.matches(filter)?.0 {
                         addr_pair = (Some(mqtt_event.orig_addr), Some(mqtt_event.resp_addr));
                     }
                 }
                 RecordType::Nfs(nfs_event) => {
-                    if nfs_event.matches(locator, filter)?.0 {
+                    if nfs_event.matches(filter)?.0 {
                         addr_pair = (Some(nfs_event.orig_addr), Some(nfs_event.resp_addr));
                     }
                 }
                 RecordType::Ntlm(ntlm_event) => {
-                    if ntlm_event.matches(locator, filter)?.0 {
+                    if ntlm_event.matches(filter)?.0 {
                         addr_pair = (Some(ntlm_event.orig_addr), Some(ntlm_event.resp_addr));
                     }
                 }
                 RecordType::Radius(radius_event) => {
-                    if radius_event.matches(locator, filter)?.0 {
+                    if radius_event.matches(filter)?.0 {
                         addr_pair = (Some(radius_event.orig_addr), Some(radius_event.resp_addr));
                     }
                 }
                 RecordType::Rdp(rdp_event) => {
-                    if rdp_event.matches(locator, filter)?.0 {
+                    if rdp_event.matches(filter)?.0 {
                         addr_pair = (Some(rdp_event.orig_addr), Some(rdp_event.resp_addr));
                     }
                 }
                 RecordType::Smb(smb_event) => {
-                    if smb_event.matches(locator, filter)?.0 {
+                    if smb_event.matches(filter)?.0 {
                         addr_pair = (Some(smb_event.orig_addr), Some(smb_event.resp_addr));
                     }
                 }
                 RecordType::Smtp(smtp_event) => {
-                    if smtp_event.matches(locator, filter)?.0 {
+                    if smtp_event.matches(filter)?.0 {
                         addr_pair = (Some(smtp_event.orig_addr), Some(smtp_event.resp_addr));
                     }
                 }
                 RecordType::Ssh(ssh_event) => {
-                    if ssh_event.matches(locator, filter)?.0 {
+                    if ssh_event.matches(filter)?.0 {
                         addr_pair = (Some(ssh_event.orig_addr), Some(ssh_event.resp_addr));
                     }
                 }
                 RecordType::Tls(tls_event) => {
-                    if tls_event.matches(locator, filter)?.0 {
+                    if tls_event.matches(filter)?.0 {
                         addr_pair = (Some(tls_event.orig_addr), Some(tls_event.resp_addr));
                     }
                 }
                 RecordType::UnusualDestinationPattern(event) => {
-                    if event.matches(locator, filter)?.0 {
+                    if event.matches(filter)?.0 {
                         // UnusualDestinationPattern has multiple destination IPs but no source
                         // Use first destination IP if available
                         addr_pair = (None, event.destination_ips.first().copied());
@@ -946,18 +938,18 @@ impl Event {
             },
             Event::WindowsThreat(_event) => {}
             Event::NetworkThreat(event) => {
-                if event.matches(locator, filter)?.0 {
+                if event.matches(filter)?.0 {
                     addr_pair = (Some(event.orig_addr), Some(event.resp_addr));
                 }
             }
             Event::ExtraThreat(_event) => {}
             Event::LockyRansomware(event) => {
-                if event.matches(locator, filter)?.0 {
+                if event.matches(filter)?.0 {
                     addr_pair = (Some(event.orig_addr), Some(event.resp_addr));
                 }
             }
             Event::SuspiciousTlsTraffic(event) => {
-                if event.matches(locator, filter)?.0 {
+                if event.matches(filter)?.0 {
                     addr_pair = (Some(event.orig_addr), Some(event.resp_addr));
                 }
             }
@@ -965,217 +957,213 @@ impl Event {
         Ok(addr_pair)
     }
 
-    fn kind(
-        &self,
-        locator: Option<&ip2location::DB>,
-        filter: &EventFilter,
-    ) -> Result<Option<&'static str>> {
+    fn kind(&self, filter: &EventFilter) -> Result<Option<&'static str>> {
         let mut kind = None;
         match self {
             Event::DnsCovertChannel(event) => {
-                if event.matches(locator, filter)?.0 {
+                if event.matches(filter)?.0 {
                     kind = Some(DNS_COVERT_CHANNEL);
                 }
             }
             Event::HttpThreat(event) => {
-                if event.matches(locator, filter)?.0 {
+                if event.matches(filter)?.0 {
                     kind = Some(HTTP_THREAT);
                 }
             }
             Event::RdpBruteForce(event) => {
-                if event.matches(locator, filter)?.0 {
+                if event.matches(filter)?.0 {
                     kind = Some(RDP_BRUTE_FORCE);
                 }
             }
             Event::RepeatedHttpSessions(event) => {
-                if event.matches(locator, filter)?.0 {
+                if event.matches(filter)?.0 {
                     kind = Some(REPEATED_HTTP_SESSIONS);
                 }
             }
             Event::TorConnection(event) => {
-                if event.matches(locator, filter)?.0 {
+                if event.matches(filter)?.0 {
                     kind = Some(TOR_CONNECTION);
                 }
             }
             Event::TorConnectionConn(event) => {
-                if event.matches(locator, filter)?.0 {
+                if event.matches(filter)?.0 {
                     kind = Some(TOR_CONNECTION_CONN);
                 }
             }
             Event::DomainGenerationAlgorithm(event) => {
-                if event.matches(locator, filter)?.0 {
+                if event.matches(filter)?.0 {
                     kind = Some(DOMAIN_GENERATION_ALGORITHM);
                 }
             }
             Event::FtpBruteForce(event) => {
-                if event.matches(locator, filter)?.0 {
+                if event.matches(filter)?.0 {
                     kind = Some(FTP_BRUTE_FORCE);
                 }
             }
             Event::FtpPlainText(event) => {
-                if event.matches(locator, filter)?.0 {
+                if event.matches(filter)?.0 {
                     kind = Some(FTP_PLAIN_TEXT);
                 }
             }
             Event::PortScan(event) => {
-                if event.matches(locator, filter)?.0 {
+                if event.matches(filter)?.0 {
                     kind = Some(PORT_SCAN);
                 }
             }
             Event::MultiHostPortScan(event) => {
-                if event.matches(locator, filter)?.0 {
+                if event.matches(filter)?.0 {
                     kind = Some(MULTI_HOST_PORT_SCAN);
                 }
             }
             Event::ExternalDdos(event) => {
-                if event.matches(locator, filter)?.0 {
+                if event.matches(filter)?.0 {
                     kind = Some(EXTERNAL_DDOS);
                 }
             }
             Event::NonBrowser(event) => {
-                if event.matches(locator, filter)?.0 {
+                if event.matches(filter)?.0 {
                     kind = Some(NON_BROWSER);
                 }
             }
             Event::LdapBruteForce(event) => {
-                if event.matches(locator, filter)?.0 {
+                if event.matches(filter)?.0 {
                     kind = Some(LDAP_BRUTE_FORCE);
                 }
             }
             Event::LdapPlainText(event) => {
-                if event.matches(locator, filter)?.0 {
+                if event.matches(filter)?.0 {
                     kind = Some(LDAP_PLAIN_TEXT);
                 }
             }
             Event::CryptocurrencyMiningPool(event) => {
-                if event.matches(locator, filter)?.0 {
+                if event.matches(filter)?.0 {
                     kind = Some(CRYPTOCURRENCY_MINING_POOL);
                 }
             }
             Event::Blocklist(record_type) => match record_type {
                 RecordType::Bootp(bootp_event) => {
-                    if bootp_event.matches(locator, filter)?.0 {
+                    if bootp_event.matches(filter)?.0 {
                         kind = Some(BLOCKLIST);
                     }
                 }
                 RecordType::Conn(conn_event) => {
-                    if conn_event.matches(locator, filter)?.0 {
+                    if conn_event.matches(filter)?.0 {
                         kind = Some(BLOCKLIST);
                     }
                 }
                 RecordType::DceRpc(dcerpc_event) => {
-                    if dcerpc_event.matches(locator, filter)?.0 {
+                    if dcerpc_event.matches(filter)?.0 {
                         kind = Some(BLOCKLIST);
                     }
                 }
                 RecordType::Dhcp(dhcp_event) => {
-                    if dhcp_event.matches(locator, filter)?.0 {
+                    if dhcp_event.matches(filter)?.0 {
                         kind = Some(BLOCKLIST);
                     }
                 }
                 RecordType::Dns(dns_event) => {
-                    if dns_event.matches(locator, filter)?.0 {
+                    if dns_event.matches(filter)?.0 {
                         kind = Some(BLOCKLIST);
                     }
                 }
                 RecordType::Ftp(ftp_event) => {
-                    if ftp_event.matches(locator, filter)?.0 {
+                    if ftp_event.matches(filter)?.0 {
                         kind = Some(BLOCKLIST);
                     }
                 }
                 RecordType::Http(http_event) => {
-                    if http_event.matches(locator, filter)?.0 {
+                    if http_event.matches(filter)?.0 {
                         kind = Some(BLOCKLIST);
                     }
                 }
                 RecordType::Kerberos(kerberos_event) => {
-                    if kerberos_event.matches(locator, filter)?.0 {
+                    if kerberos_event.matches(filter)?.0 {
                         kind = Some(BLOCKLIST);
                     }
                 }
                 RecordType::Ldap(ldap_event) => {
-                    if ldap_event.matches(locator, filter)?.0 {
+                    if ldap_event.matches(filter)?.0 {
                         kind = Some(BLOCKLIST);
                     }
                 }
                 RecordType::MalformedDns(malformed_dns_event) => {
-                    if malformed_dns_event.matches(locator, filter)?.0 {
+                    if malformed_dns_event.matches(filter)?.0 {
                         kind = Some(BLOCKLIST);
                     }
                 }
                 RecordType::Mqtt(mqtt_event) => {
-                    if mqtt_event.matches(locator, filter)?.0 {
+                    if mqtt_event.matches(filter)?.0 {
                         kind = Some(BLOCKLIST);
                     }
                 }
                 RecordType::Nfs(nfs_event) => {
-                    if nfs_event.matches(locator, filter)?.0 {
+                    if nfs_event.matches(filter)?.0 {
                         kind = Some(BLOCKLIST);
                     }
                 }
                 RecordType::Ntlm(ntlm_event) => {
-                    if ntlm_event.matches(locator, filter)?.0 {
+                    if ntlm_event.matches(filter)?.0 {
                         kind = Some(BLOCKLIST);
                     }
                 }
                 RecordType::Radius(radius_event) => {
-                    if radius_event.matches(locator, filter)?.0 {
+                    if radius_event.matches(filter)?.0 {
                         kind = Some(BLOCKLIST);
                     }
                 }
                 RecordType::Rdp(rdp_event) => {
-                    if rdp_event.matches(locator, filter)?.0 {
+                    if rdp_event.matches(filter)?.0 {
                         kind = Some(BLOCKLIST);
                     }
                 }
                 RecordType::Smb(smb_event) => {
-                    if smb_event.matches(locator, filter)?.0 {
+                    if smb_event.matches(filter)?.0 {
                         kind = Some(BLOCKLIST);
                     }
                 }
                 RecordType::Smtp(smtp_event) => {
-                    if smtp_event.matches(locator, filter)?.0 {
+                    if smtp_event.matches(filter)?.0 {
                         kind = Some(BLOCKLIST);
                     }
                 }
                 RecordType::Ssh(ssh_event) => {
-                    if ssh_event.matches(locator, filter)?.0 {
+                    if ssh_event.matches(filter)?.0 {
                         kind = Some(BLOCKLIST);
                     }
                 }
                 RecordType::Tls(tls_event) => {
-                    if tls_event.matches(locator, filter)?.0 {
+                    if tls_event.matches(filter)?.0 {
                         kind = Some(BLOCKLIST);
                     }
                 }
                 RecordType::UnusualDestinationPattern(event) => {
-                    if event.matches(locator, filter)?.0 {
+                    if event.matches(filter)?.0 {
                         kind = Some(UNUSUAL_DESTINATION_PATTERN);
                     }
                 }
             },
             Event::WindowsThreat(event) => {
-                if event.matches(locator, filter)?.0 {
+                if event.matches(filter)?.0 {
                     kind = Some(WINDOWS_THREAT_EVENT);
                 }
             }
             Event::NetworkThreat(event) => {
-                if event.matches(locator, filter)?.0 {
+                if event.matches(filter)?.0 {
                     kind = Some(NETWORK_THREAT_EVENT);
                 }
             }
             Event::ExtraThreat(event) => {
-                if event.matches(locator, filter)?.0 {
+                if event.matches(filter)?.0 {
                     kind = Some(MISC_LOG_THREAT);
                 }
             }
             Event::LockyRansomware(event) => {
-                if event.matches(locator, filter)?.0 {
+                if event.matches(filter)?.0 {
                     kind = Some(LOCKY_RANSOMWARE);
                 }
             }
             Event::SuspiciousTlsTraffic(event) => {
-                if event.matches(locator, filter)?.0 {
+                if event.matches(filter)?.0 {
                     kind = Some(SUSPICIOUS_TLS_TRAFFIC);
                 }
             }
@@ -1247,6 +1235,199 @@ impl Event {
     // TODO: Need to implement country counting for `WindowsThreat`.
     // 1. for Network Connection: count country via ip
     // 2. for other Sysmon events: count the country by KR because the event does not have ip address.
+    fn representative_stored_country_code(codes: &[[u8; 2]]) -> [u8; 2] {
+        codes
+            .first()
+            .copied()
+            .unwrap_or(crate::util::COUNTRY_CODE_PENDING)
+    }
+
+    /// Returns representative stored country codes for country aggregation.
+    ///
+    /// `address_pair` determines which endpoints contribute to the aggregation.
+    fn stored_country_code_pair(&self) -> ([u8; 2], [u8; 2]) {
+        match self {
+            Event::DnsCovertChannel(event) => (
+                Self::representative_stored_country_code(event.orig_country_codes()),
+                Self::representative_stored_country_code(event.resp_country_codes()),
+            ),
+            Event::HttpThreat(event) => (
+                Self::representative_stored_country_code(event.orig_country_codes()),
+                Self::representative_stored_country_code(event.resp_country_codes()),
+            ),
+            Event::RdpBruteForce(event) => (
+                Self::representative_stored_country_code(event.orig_country_codes()),
+                Self::representative_stored_country_code(event.resp_country_codes()),
+            ),
+            Event::RepeatedHttpSessions(event) => (
+                Self::representative_stored_country_code(event.orig_country_codes()),
+                Self::representative_stored_country_code(event.resp_country_codes()),
+            ),
+            Event::TorConnection(event) => (
+                Self::representative_stored_country_code(event.orig_country_codes()),
+                Self::representative_stored_country_code(event.resp_country_codes()),
+            ),
+            Event::TorConnectionConn(event) => (
+                Self::representative_stored_country_code(event.orig_country_codes()),
+                Self::representative_stored_country_code(event.resp_country_codes()),
+            ),
+            Event::DomainGenerationAlgorithm(event) => (
+                Self::representative_stored_country_code(event.orig_country_codes()),
+                Self::representative_stored_country_code(event.resp_country_codes()),
+            ),
+            Event::FtpBruteForce(event) => (
+                Self::representative_stored_country_code(event.orig_country_codes()),
+                Self::representative_stored_country_code(event.resp_country_codes()),
+            ),
+            Event::FtpPlainText(event) => (
+                Self::representative_stored_country_code(event.orig_country_codes()),
+                Self::representative_stored_country_code(event.resp_country_codes()),
+            ),
+            Event::PortScan(event) => (
+                Self::representative_stored_country_code(event.orig_country_codes()),
+                Self::representative_stored_country_code(event.resp_country_codes()),
+            ),
+            Event::MultiHostPortScan(event) => (
+                Self::representative_stored_country_code(event.orig_country_codes()),
+                Self::representative_stored_country_code(event.resp_country_codes()),
+            ),
+            Event::ExternalDdos(event) => (
+                Self::representative_stored_country_code(event.orig_country_codes()),
+                Self::representative_stored_country_code(event.resp_country_codes()),
+            ),
+            Event::NonBrowser(event) => (
+                Self::representative_stored_country_code(event.orig_country_codes()),
+                Self::representative_stored_country_code(event.resp_country_codes()),
+            ),
+            Event::LdapBruteForce(event) => (
+                Self::representative_stored_country_code(event.orig_country_codes()),
+                Self::representative_stored_country_code(event.resp_country_codes()),
+            ),
+            Event::LdapPlainText(event) => (
+                Self::representative_stored_country_code(event.orig_country_codes()),
+                Self::representative_stored_country_code(event.resp_country_codes()),
+            ),
+            Event::CryptocurrencyMiningPool(event) => (
+                Self::representative_stored_country_code(event.orig_country_codes()),
+                Self::representative_stored_country_code(event.resp_country_codes()),
+            ),
+            Event::Blocklist(record_type) => match record_type {
+                RecordType::Bootp(bootp_event) => (
+                    Self::representative_stored_country_code(bootp_event.orig_country_codes()),
+                    Self::representative_stored_country_code(bootp_event.resp_country_codes()),
+                ),
+                RecordType::Conn(conn_event) => (
+                    Self::representative_stored_country_code(conn_event.orig_country_codes()),
+                    Self::representative_stored_country_code(conn_event.resp_country_codes()),
+                ),
+                RecordType::DceRpc(dcerpc_event) => (
+                    Self::representative_stored_country_code(dcerpc_event.orig_country_codes()),
+                    Self::representative_stored_country_code(dcerpc_event.resp_country_codes()),
+                ),
+                RecordType::Dhcp(dhcp_event) => (
+                    Self::representative_stored_country_code(dhcp_event.orig_country_codes()),
+                    Self::representative_stored_country_code(dhcp_event.resp_country_codes()),
+                ),
+                RecordType::Dns(dns_event) => (
+                    Self::representative_stored_country_code(dns_event.orig_country_codes()),
+                    Self::representative_stored_country_code(dns_event.resp_country_codes()),
+                ),
+                RecordType::Ftp(ftp_event) => (
+                    Self::representative_stored_country_code(ftp_event.orig_country_codes()),
+                    Self::representative_stored_country_code(ftp_event.resp_country_codes()),
+                ),
+                RecordType::Http(http_event) => (
+                    Self::representative_stored_country_code(http_event.orig_country_codes()),
+                    Self::representative_stored_country_code(http_event.resp_country_codes()),
+                ),
+                RecordType::Kerberos(kerberos_event) => (
+                    Self::representative_stored_country_code(kerberos_event.orig_country_codes()),
+                    Self::representative_stored_country_code(kerberos_event.resp_country_codes()),
+                ),
+                RecordType::Ldap(ldap_event) => (
+                    Self::representative_stored_country_code(ldap_event.orig_country_codes()),
+                    Self::representative_stored_country_code(ldap_event.resp_country_codes()),
+                ),
+                RecordType::MalformedDns(malformed_dns_event) => (
+                    Self::representative_stored_country_code(
+                        malformed_dns_event.orig_country_codes(),
+                    ),
+                    Self::representative_stored_country_code(
+                        malformed_dns_event.resp_country_codes(),
+                    ),
+                ),
+                RecordType::Mqtt(mqtt_event) => (
+                    Self::representative_stored_country_code(mqtt_event.orig_country_codes()),
+                    Self::representative_stored_country_code(mqtt_event.resp_country_codes()),
+                ),
+                RecordType::Nfs(nfs_event) => (
+                    Self::representative_stored_country_code(nfs_event.orig_country_codes()),
+                    Self::representative_stored_country_code(nfs_event.resp_country_codes()),
+                ),
+                RecordType::Ntlm(ntlm_event) => (
+                    Self::representative_stored_country_code(ntlm_event.orig_country_codes()),
+                    Self::representative_stored_country_code(ntlm_event.resp_country_codes()),
+                ),
+                RecordType::Radius(radius_event) => (
+                    Self::representative_stored_country_code(radius_event.orig_country_codes()),
+                    Self::representative_stored_country_code(radius_event.resp_country_codes()),
+                ),
+                RecordType::Rdp(rdp_event) => (
+                    Self::representative_stored_country_code(rdp_event.orig_country_codes()),
+                    Self::representative_stored_country_code(rdp_event.resp_country_codes()),
+                ),
+                RecordType::Smb(smb_event) => (
+                    Self::representative_stored_country_code(smb_event.orig_country_codes()),
+                    Self::representative_stored_country_code(smb_event.resp_country_codes()),
+                ),
+                RecordType::Smtp(smtp_event) => (
+                    Self::representative_stored_country_code(smtp_event.orig_country_codes()),
+                    Self::representative_stored_country_code(smtp_event.resp_country_codes()),
+                ),
+                RecordType::Ssh(ssh_event) => (
+                    Self::representative_stored_country_code(ssh_event.orig_country_codes()),
+                    Self::representative_stored_country_code(ssh_event.resp_country_codes()),
+                ),
+                RecordType::Tls(tls_event) => (
+                    Self::representative_stored_country_code(tls_event.orig_country_codes()),
+                    Self::representative_stored_country_code(tls_event.resp_country_codes()),
+                ),
+                RecordType::UnusualDestinationPattern(event) => (
+                    Self::representative_stored_country_code(event.orig_country_codes()),
+                    Self::representative_stored_country_code(event.resp_country_codes()),
+                ),
+            },
+            Event::WindowsThreat(event) => (
+                Self::representative_stored_country_code(event.orig_country_codes()),
+                Self::representative_stored_country_code(event.resp_country_codes()),
+            ),
+            Event::NetworkThreat(event) => (
+                Self::representative_stored_country_code(event.orig_country_codes()),
+                Self::representative_stored_country_code(event.resp_country_codes()),
+            ),
+            Event::ExtraThreat(event) => (
+                Self::representative_stored_country_code(event.orig_country_codes()),
+                Self::representative_stored_country_code(event.resp_country_codes()),
+            ),
+            Event::LockyRansomware(event) => (
+                Self::representative_stored_country_code(event.orig_country_codes()),
+                Self::representative_stored_country_code(event.resp_country_codes()),
+            ),
+            Event::SuspiciousTlsTraffic(event) => (
+                Self::representative_stored_country_code(event.orig_country_codes()),
+                Self::representative_stored_country_code(event.resp_country_codes()),
+            ),
+        }
+    }
+
+    fn increment_country_count(counter: &mut HashMap<String, usize>, country: &str) {
+        if let Some(count) = counter.get_mut(country) {
+            *count += 1;
+        } else {
+            counter.insert(country.to_string(), 1);
+        }
+    }
+
     /// Counts the number of events per country.
     ///
     /// # Errors
@@ -1255,42 +1436,23 @@ impl Event {
     pub fn count_country(
         &self,
         counter: &mut HashMap<String, usize>,
-        locator: Option<&ip2location::DB>,
         filter: &EventFilter,
     ) -> Result<()> {
-        let addr_pair = self.address_pair(locator, filter)?;
+        let addr_pair = self.address_pair(filter)?;
+        let (orig_code, resp_code) = self.stored_country_code_pair();
 
-        let mut src_country = "ZZ".to_string();
-        let mut dst_country = "ZZ".to_string();
-        if let Some(locator) = locator {
-            if let Some(src_addr) = addr_pair.0 {
-                src_country = crate::util::find_ip_country(locator, src_addr);
-            }
-            if let Some(dst_addr) = addr_pair.1 {
-                dst_country = crate::util::find_ip_country(locator, dst_addr);
-            }
-        }
-
-        // If origin and destination countries are different, count each one
-        if src_country != dst_country && addr_pair.0.is_some() && addr_pair.1.is_some() {
-            counter
-                .entry(src_country.clone())
-                .and_modify(|e| *e += 1)
-                .or_insert(1);
-        }
-        // If destination exists, count destination country (handles same country case)
         if addr_pair.1.is_some() {
-            counter
-                .entry(dst_country)
-                .and_modify(|e| *e += 1)
-                .or_insert(1);
-        }
-        // If destination is None but origin exists, count origin country
-        else if addr_pair.0.is_some() {
-            counter
-                .entry(src_country)
-                .and_modify(|e| *e += 1)
-                .or_insert(1);
+            let dst_country = crate::util::country_code_as_str(&resp_code);
+            if addr_pair.0.is_some() {
+                let src_country = crate::util::country_code_as_str(&orig_code);
+                if src_country != dst_country {
+                    Self::increment_country_count(counter, src_country);
+                }
+            }
+            Self::increment_country_count(counter, dst_country);
+        } else if addr_pair.0.is_some() {
+            let src_country = crate::util::country_code_as_str(&orig_code);
+            Self::increment_country_count(counter, src_country);
         }
 
         Ok(())
@@ -1304,215 +1466,214 @@ impl Event {
     pub fn count_category(
         &self,
         counter: &mut HashMap<EventCategory, usize>,
-        locator: Option<&ip2location::DB>,
         filter: &EventFilter,
     ) -> Result<()> {
         let mut category = None;
         match self {
             Event::DnsCovertChannel(event) => {
-                if event.matches(locator, filter)?.0 {
+                if event.matches(filter)?.0 {
                     category = event.category();
                 }
             }
             Event::HttpThreat(event) => {
-                if event.matches(locator, filter)?.0 {
+                if event.matches(filter)?.0 {
                     category = event.category();
                 }
             }
             Event::RdpBruteForce(event) => {
-                if event.matches(locator, filter)?.0 {
+                if event.matches(filter)?.0 {
                     category = event.category();
                 }
             }
             Event::RepeatedHttpSessions(event) => {
-                if event.matches(locator, filter)?.0 {
+                if event.matches(filter)?.0 {
                     category = event.category();
                 }
             }
             Event::TorConnection(event) => {
-                if event.matches(locator, filter)?.0 {
+                if event.matches(filter)?.0 {
                     category = event.category();
                 }
             }
             Event::TorConnectionConn(event) => {
-                if event.matches(locator, filter)?.0 {
+                if event.matches(filter)?.0 {
                     category = event.category();
                 }
             }
             Event::DomainGenerationAlgorithm(event) => {
-                if event.matches(locator, filter)?.0 {
+                if event.matches(filter)?.0 {
                     category = event.category();
                 }
             }
             Event::FtpBruteForce(event) => {
-                if event.matches(locator, filter)?.0 {
+                if event.matches(filter)?.0 {
                     category = event.category();
                 }
             }
             Event::FtpPlainText(event) => {
-                if event.matches(locator, filter)?.0 {
+                if event.matches(filter)?.0 {
                     category = event.category();
                 }
             }
             Event::PortScan(event) => {
-                if event.matches(locator, filter)?.0 {
+                if event.matches(filter)?.0 {
                     category = event.category();
                 }
             }
             Event::MultiHostPortScan(event) => {
-                if event.matches(locator, filter)?.0 {
+                if event.matches(filter)?.0 {
                     category = event.category();
                 }
             }
             Event::ExternalDdos(event) => {
-                if event.matches(locator, filter)?.0 {
+                if event.matches(filter)?.0 {
                     category = event.category();
                 }
             }
             Event::NonBrowser(event) => {
-                if event.matches(locator, filter)?.0 {
+                if event.matches(filter)?.0 {
                     category = event.category();
                 }
             }
             Event::LdapBruteForce(event) => {
-                if event.matches(locator, filter)?.0 {
+                if event.matches(filter)?.0 {
                     category = event.category();
                 }
             }
             Event::LdapPlainText(event) => {
-                if event.matches(locator, filter)?.0 {
+                if event.matches(filter)?.0 {
                     category = event.category();
                 }
             }
             Event::CryptocurrencyMiningPool(event) => {
-                if event.matches(locator, filter)?.0 {
+                if event.matches(filter)?.0 {
                     category = event.category();
                 }
             }
             Event::Blocklist(record_type) => match record_type {
                 RecordType::Bootp(bootp_event) => {
-                    if bootp_event.matches(locator, filter)?.0 {
+                    if bootp_event.matches(filter)?.0 {
                         category = bootp_event.category();
                     }
                 }
                 RecordType::Conn(conn_event) => {
-                    if conn_event.matches(locator, filter)?.0 {
+                    if conn_event.matches(filter)?.0 {
                         category = conn_event.category();
                     }
                 }
                 RecordType::DceRpc(dcerpc_event) => {
-                    if dcerpc_event.matches(locator, filter)?.0 {
+                    if dcerpc_event.matches(filter)?.0 {
                         category = dcerpc_event.category();
                     }
                 }
                 RecordType::Dhcp(dhcp_event) => {
-                    if dhcp_event.matches(locator, filter)?.0 {
+                    if dhcp_event.matches(filter)?.0 {
                         category = dhcp_event.category();
                     }
                 }
                 RecordType::Dns(dns_event) => {
-                    if dns_event.matches(locator, filter)?.0 {
+                    if dns_event.matches(filter)?.0 {
                         category = dns_event.category();
                     }
                 }
                 RecordType::Ftp(ftp_event) => {
-                    if ftp_event.matches(locator, filter)?.0 {
+                    if ftp_event.matches(filter)?.0 {
                         category = ftp_event.category();
                     }
                 }
                 RecordType::Http(http_event) => {
-                    if http_event.matches(locator, filter)?.0 {
+                    if http_event.matches(filter)?.0 {
                         category = http_event.category();
                     }
                 }
                 RecordType::Kerberos(kerberos_event) => {
-                    if kerberos_event.matches(locator, filter)?.0 {
+                    if kerberos_event.matches(filter)?.0 {
                         category = kerberos_event.category();
                     }
                 }
                 RecordType::Ldap(ldap_event) => {
-                    if ldap_event.matches(locator, filter)?.0 {
+                    if ldap_event.matches(filter)?.0 {
                         category = ldap_event.category();
                     }
                 }
                 RecordType::MalformedDns(malformed_dns_event) => {
-                    if malformed_dns_event.matches(locator, filter)?.0 {
+                    if malformed_dns_event.matches(filter)?.0 {
                         category = malformed_dns_event.category();
                     }
                 }
                 RecordType::Mqtt(mqtt_event) => {
-                    if mqtt_event.matches(locator, filter)?.0 {
+                    if mqtt_event.matches(filter)?.0 {
                         category = mqtt_event.category();
                     }
                 }
                 RecordType::Nfs(nfs_event) => {
-                    if nfs_event.matches(locator, filter)?.0 {
+                    if nfs_event.matches(filter)?.0 {
                         category = nfs_event.category();
                     }
                 }
                 RecordType::Ntlm(ntlm_event) => {
-                    if ntlm_event.matches(locator, filter)?.0 {
+                    if ntlm_event.matches(filter)?.0 {
                         category = ntlm_event.category();
                     }
                 }
                 RecordType::Radius(radius_event) => {
-                    if radius_event.matches(locator, filter)?.0 {
+                    if radius_event.matches(filter)?.0 {
                         category = radius_event.category();
                     }
                 }
                 RecordType::Rdp(rdp_event) => {
-                    if rdp_event.matches(locator, filter)?.0 {
+                    if rdp_event.matches(filter)?.0 {
                         category = rdp_event.category();
                     }
                 }
                 RecordType::Smb(smb_event) => {
-                    if smb_event.matches(locator, filter)?.0 {
+                    if smb_event.matches(filter)?.0 {
                         category = smb_event.category();
                     }
                 }
                 RecordType::Smtp(smtp_event) => {
-                    if smtp_event.matches(locator, filter)?.0 {
+                    if smtp_event.matches(filter)?.0 {
                         category = smtp_event.category();
                     }
                 }
                 RecordType::Ssh(ssh_event) => {
-                    if ssh_event.matches(locator, filter)?.0 {
+                    if ssh_event.matches(filter)?.0 {
                         category = ssh_event.category();
                     }
                 }
                 RecordType::Tls(tls_event) => {
-                    if tls_event.matches(locator, filter)?.0 {
+                    if tls_event.matches(filter)?.0 {
                         category = tls_event.category();
                     }
                 }
                 RecordType::UnusualDestinationPattern(event) => {
-                    if event.matches(locator, filter)?.0 {
+                    if event.matches(filter)?.0 {
                         category = event.category();
                     }
                 }
             },
             Event::WindowsThreat(event) => {
-                if event.matches(locator, filter)?.0 {
+                if event.matches(filter)?.0 {
                     category = event.category();
                 }
             }
             Event::NetworkThreat(event) => {
-                if event.matches(locator, filter)?.0 {
+                if event.matches(filter)?.0 {
                     category = event.category();
                 }
             }
             Event::ExtraThreat(event) => {
-                if event.matches(locator, filter)?.0 {
+                if event.matches(filter)?.0 {
                     category = event.category();
                 }
             }
             Event::LockyRansomware(event) => {
-                if event.matches(locator, filter)?.0 {
+                if event.matches(filter)?.0 {
                     category = event.category();
                 }
             }
             Event::SuspiciousTlsTraffic(event) => {
-                if event.matches(locator, filter)?.0 {
+                if event.matches(filter)?.0 {
                     category = event.category();
                 }
             }
@@ -1533,10 +1694,9 @@ impl Event {
     pub fn count_ip_address(
         &self,
         counter: &mut HashMap<IpAddr, usize>,
-        locator: Option<&ip2location::DB>,
         filter: &EventFilter,
     ) -> Result<()> {
-        let addr_pair = self.address_pair(locator, filter)?;
+        let addr_pair = self.address_pair(filter)?;
 
         if let Some(src_addr) = addr_pair.0 {
             counter.entry(src_addr).and_modify(|e| *e += 1).or_insert(1);
@@ -1556,10 +1716,9 @@ impl Event {
     pub fn count_ip_address_pair(
         &self,
         counter: &mut HashMap<(IpAddr, IpAddr), usize>,
-        locator: Option<&ip2location::DB>,
         filter: &EventFilter,
     ) -> Result<()> {
-        let addr_pair = self.address_pair(locator, filter)?;
+        let addr_pair = self.address_pair(filter)?;
 
         if let Some(src_addr) = addr_pair.0
             && let Some(dst_addr) = addr_pair.1
@@ -1581,11 +1740,10 @@ impl Event {
     pub fn count_ip_address_pair_and_kind(
         &self,
         counter: &mut HashMap<(IpAddr, IpAddr, &'static str), usize>,
-        locator: Option<&ip2location::DB>,
         filter: &EventFilter,
     ) -> Result<()> {
-        let addr_pair = self.address_pair(locator, filter)?;
-        let kind = self.kind(locator, filter)?;
+        let addr_pair = self.address_pair(filter)?;
+        let kind = self.kind(filter)?;
 
         if let Some(src_addr) = addr_pair.0
             && let Some(dst_addr) = addr_pair.1
@@ -1608,10 +1766,9 @@ impl Event {
     pub fn count_src_ip_address(
         &self,
         counter: &mut HashMap<IpAddr, usize>,
-        locator: Option<&ip2location::DB>,
         filter: &EventFilter,
     ) -> Result<()> {
-        let addr_pair = self.address_pair(locator, filter)?;
+        let addr_pair = self.address_pair(filter)?;
 
         if let Some(src_addr) = addr_pair.0 {
             counter.entry(src_addr).and_modify(|e| *e += 1).or_insert(1);
@@ -1628,10 +1785,9 @@ impl Event {
     pub fn count_dst_ip_address(
         &self,
         counter: &mut HashMap<IpAddr, usize>,
-        locator: Option<&ip2location::DB>,
         filter: &EventFilter,
     ) -> Result<()> {
-        let addr_pair = self.address_pair(locator, filter)?;
+        let addr_pair = self.address_pair(filter)?;
 
         if let Some(dst_addr) = addr_pair.1 {
             counter.entry(dst_addr).and_modify(|e| *e += 1).or_insert(1);
@@ -1648,17 +1804,16 @@ impl Event {
     pub fn count_kind(
         &self,
         counter: &mut HashMap<String, usize>,
-        locator: Option<&ip2location::DB>,
         filter: &EventFilter,
     ) -> Result<()> {
         let kind = if let Event::HttpThreat(event) = self {
-            if event.matches(locator, filter)?.0 {
+            if event.matches(filter)?.0 {
                 Some(event.attack_kind.clone())
             } else {
                 None
             }
         } else {
-            self.kind(locator, filter)?.map(ToString::to_string)
+            self.kind(filter)?.map(ToString::to_string)
         };
 
         if let Some(kind) = kind {
@@ -1676,215 +1831,214 @@ impl Event {
     pub fn count_level(
         &self,
         counter: &mut HashMap<ThreatLevel, usize>,
-        locator: Option<&ip2location::DB>,
         filter: &EventFilter,
     ) -> Result<()> {
         let mut level = None;
         match self {
             Event::DnsCovertChannel(event) => {
-                if event.matches(locator, filter)?.0 {
+                if event.matches(filter)?.0 {
                     level = Some(event.level());
                 }
             }
             Event::HttpThreat(event) => {
-                if event.matches(locator, filter)?.0 {
+                if event.matches(filter)?.0 {
                     level = Some(event.level());
                 }
             }
             Event::RdpBruteForce(event) => {
-                if event.matches(locator, filter)?.0 {
+                if event.matches(filter)?.0 {
                     level = Some(event.level());
                 }
             }
             Event::RepeatedHttpSessions(event) => {
-                if event.matches(locator, filter)?.0 {
+                if event.matches(filter)?.0 {
                     level = Some(event.level());
                 }
             }
             Event::TorConnection(event) => {
-                if event.matches(locator, filter)?.0 {
+                if event.matches(filter)?.0 {
                     level = Some(event.level());
                 }
             }
             Event::TorConnectionConn(event) => {
-                if event.matches(locator, filter)?.0 {
+                if event.matches(filter)?.0 {
                     level = Some(event.level());
                 }
             }
             Event::DomainGenerationAlgorithm(event) => {
-                if event.matches(locator, filter)?.0 {
+                if event.matches(filter)?.0 {
                     level = Some(event.level());
                 }
             }
             Event::FtpBruteForce(event) => {
-                if event.matches(locator, filter)?.0 {
+                if event.matches(filter)?.0 {
                     level = Some(event.level());
                 }
             }
             Event::FtpPlainText(event) => {
-                if event.matches(locator, filter)?.0 {
+                if event.matches(filter)?.0 {
                     level = Some(event.level());
                 }
             }
             Event::PortScan(event) => {
-                if event.matches(locator, filter)?.0 {
+                if event.matches(filter)?.0 {
                     level = Some(event.level());
                 }
             }
             Event::MultiHostPortScan(event) => {
-                if event.matches(locator, filter)?.0 {
+                if event.matches(filter)?.0 {
                     level = Some(event.level());
                 }
             }
             Event::ExternalDdos(event) => {
-                if event.matches(locator, filter)?.0 {
+                if event.matches(filter)?.0 {
                     level = Some(event.level());
                 }
             }
             Event::NonBrowser(event) => {
-                if event.matches(locator, filter)?.0 {
+                if event.matches(filter)?.0 {
                     level = Some(event.level());
                 }
             }
             Event::LdapBruteForce(event) => {
-                if event.matches(locator, filter)?.0 {
+                if event.matches(filter)?.0 {
                     level = Some(event.level());
                 }
             }
             Event::LdapPlainText(event) => {
-                if event.matches(locator, filter)?.0 {
+                if event.matches(filter)?.0 {
                     level = Some(event.level());
                 }
             }
             Event::CryptocurrencyMiningPool(event) => {
-                if event.matches(locator, filter)?.0 {
+                if event.matches(filter)?.0 {
                     level = Some(event.level());
                 }
             }
             Event::Blocklist(record_type) => match record_type {
                 RecordType::Bootp(bootp_event) => {
-                    if bootp_event.matches(locator, filter)?.0 {
+                    if bootp_event.matches(filter)?.0 {
                         level = Some(bootp_event.level());
                     }
                 }
                 RecordType::Conn(conn_event) => {
-                    if conn_event.matches(locator, filter)?.0 {
+                    if conn_event.matches(filter)?.0 {
                         level = Some(conn_event.level());
                     }
                 }
                 RecordType::DceRpc(dcerpc_event) => {
-                    if dcerpc_event.matches(locator, filter)?.0 {
+                    if dcerpc_event.matches(filter)?.0 {
                         level = Some(dcerpc_event.level());
                     }
                 }
                 RecordType::Dhcp(dhcp_event) => {
-                    if dhcp_event.matches(locator, filter)?.0 {
+                    if dhcp_event.matches(filter)?.0 {
                         level = Some(dhcp_event.level());
                     }
                 }
                 RecordType::Dns(dns_event) => {
-                    if dns_event.matches(locator, filter)?.0 {
+                    if dns_event.matches(filter)?.0 {
                         level = Some(dns_event.level());
                     }
                 }
                 RecordType::Ftp(ftp_event) => {
-                    if ftp_event.matches(locator, filter)?.0 {
+                    if ftp_event.matches(filter)?.0 {
                         level = Some(ftp_event.level());
                     }
                 }
                 RecordType::Http(http_event) => {
-                    if http_event.matches(locator, filter)?.0 {
+                    if http_event.matches(filter)?.0 {
                         level = Some(http_event.level());
                     }
                 }
                 RecordType::Kerberos(kerberos_event) => {
-                    if kerberos_event.matches(locator, filter)?.0 {
+                    if kerberos_event.matches(filter)?.0 {
                         level = Some(kerberos_event.level());
                     }
                 }
                 RecordType::Ldap(ldap_event) => {
-                    if ldap_event.matches(locator, filter)?.0 {
+                    if ldap_event.matches(filter)?.0 {
                         level = Some(ldap_event.level());
                     }
                 }
                 RecordType::MalformedDns(malformed_dns_event) => {
-                    if malformed_dns_event.matches(locator, filter)?.0 {
+                    if malformed_dns_event.matches(filter)?.0 {
                         level = Some(malformed_dns_event.level());
                     }
                 }
                 RecordType::Mqtt(mqtt_event) => {
-                    if mqtt_event.matches(locator, filter)?.0 {
+                    if mqtt_event.matches(filter)?.0 {
                         level = Some(mqtt_event.level());
                     }
                 }
                 RecordType::Nfs(nfs_event) => {
-                    if nfs_event.matches(locator, filter)?.0 {
+                    if nfs_event.matches(filter)?.0 {
                         level = Some(nfs_event.level());
                     }
                 }
                 RecordType::Ntlm(ntlm_event) => {
-                    if ntlm_event.matches(locator, filter)?.0 {
+                    if ntlm_event.matches(filter)?.0 {
                         level = Some(ntlm_event.level());
                     }
                 }
                 RecordType::Radius(radius_event) => {
-                    if radius_event.matches(locator, filter)?.0 {
+                    if radius_event.matches(filter)?.0 {
                         level = Some(radius_event.level());
                     }
                 }
                 RecordType::Rdp(rdp_event) => {
-                    if rdp_event.matches(locator, filter)?.0 {
+                    if rdp_event.matches(filter)?.0 {
                         level = Some(rdp_event.level());
                     }
                 }
                 RecordType::Smb(smb_event) => {
-                    if smb_event.matches(locator, filter)?.0 {
+                    if smb_event.matches(filter)?.0 {
                         level = Some(smb_event.level());
                     }
                 }
                 RecordType::Smtp(smtp_event) => {
-                    if smtp_event.matches(locator, filter)?.0 {
+                    if smtp_event.matches(filter)?.0 {
                         level = Some(smtp_event.level());
                     }
                 }
                 RecordType::Ssh(ssh_event) => {
-                    if ssh_event.matches(locator, filter)?.0 {
+                    if ssh_event.matches(filter)?.0 {
                         level = Some(ssh_event.level());
                     }
                 }
                 RecordType::Tls(tls_event) => {
-                    if tls_event.matches(locator, filter)?.0 {
+                    if tls_event.matches(filter)?.0 {
                         level = Some(tls_event.level());
                     }
                 }
                 RecordType::UnusualDestinationPattern(event) => {
-                    if event.matches(locator, filter)?.0 {
+                    if event.matches(filter)?.0 {
                         level = Some(event.level());
                     }
                 }
             },
             Event::WindowsThreat(event) => {
-                if event.matches(locator, filter)?.0 {
+                if event.matches(filter)?.0 {
                     level = Some(event.level());
                 }
             }
             Event::NetworkThreat(event) => {
-                if event.matches(locator, filter)?.0 {
+                if event.matches(filter)?.0 {
                     level = Some(event.level());
                 }
             }
             Event::ExtraThreat(event) => {
-                if event.matches(locator, filter)?.0 {
+                if event.matches(filter)?.0 {
                     level = Some(event.level());
                 }
             }
             Event::LockyRansomware(event) => {
-                if event.matches(locator, filter)?.0 {
+                if event.matches(filter)?.0 {
                     level = Some(event.level());
                 }
             }
             Event::SuspiciousTlsTraffic(event) => {
-                if event.matches(locator, filter)?.0 {
+                if event.matches(filter)?.0 {
                     level = Some(event.level());
                 }
             }
@@ -1906,10 +2060,9 @@ impl Event {
         &self,
         counter: &mut HashMap<u32, usize>,
         networks: &[Network],
-        locator: Option<&ip2location::DB>,
         filter: &EventFilter,
     ) -> Result<()> {
-        let addr_pair = self.address_pair(locator, filter)?;
+        let addr_pair = self.address_pair(filter)?;
 
         if let Some(src_addr) = addr_pair.0
             && let Some(id) = find_network(src_addr, networks)
@@ -3501,11 +3654,6 @@ pub enum TrafficDirection {
     To,
 }
 
-fn eq_ip_country(locator: &ip2location::DB, addr: IpAddr, country: [u8; 2]) -> bool {
-    let country_code = crate::util::find_ip_country(locator, addr);
-    country_code.as_bytes() == country
-}
-
 #[cfg(test)]
 mod stored_timestamp_contract;
 
@@ -3677,6 +3825,48 @@ mod tests {
         let stored: super::DnsEventFieldsStored = bincode::deserialize(&bytes).unwrap();
         assert_eq!(stored.orig_country_code, *b"US");
         assert_eq!(stored.resp_country_code, *b"KR");
+    }
+
+    #[test]
+    fn country_filter_search_uses_stored_codes_without_ip2location() {
+        fn country_only_filter(country: [u8; 2]) -> EventFilter {
+            EventFilter {
+                customers: None,
+                endpoints: None,
+                directions: None,
+                source: None,
+                destination: None,
+                countries: Some(vec![country]),
+                categories: None,
+                levels: None,
+                kinds: None,
+                learning_methods: None,
+                sensors: None,
+                confidence_min: None,
+                confidence_max: None,
+                triage_policies: None,
+            }
+        }
+
+        let orig_addr = IpAddr::V4(Ipv4Addr::LOCALHOST);
+        let resp_addr = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2));
+        let lookup = FakeCountryLookup {
+            codes: HashMap::from([(orig_addr, *b"US"), (resp_addr, *b"KR")]),
+            failures: HashSet::new(),
+        };
+        let (_permit, store) = setup_store_with_lookup(lookup);
+        let db = store.events();
+        db.put(&example_message(
+            EventKind::DnsCovertChannel,
+            EventCategory::CommandAndControl,
+        ))
+        .unwrap();
+
+        let event = db.iter_forward().next().unwrap().unwrap().1;
+
+        assert!(event.matches(&country_only_filter(*b"US")).unwrap().0);
+        assert!(event.matches(&country_only_filter(*b"KR")).unwrap().0);
+        assert!(!event.matches(&country_only_filter(*b"JP")).unwrap().0);
     }
 
     #[test]
@@ -4035,23 +4225,21 @@ mod tests {
             confidence_max: None,
             triage_policies: None,
         };
-        assert_eq!(event.kind(None, &filter).unwrap(), Some(LOCKY_RANSOMWARE));
+        assert_eq!(event.kind(&filter).unwrap(), Some(LOCKY_RANSOMWARE));
         let mut counter = HashMap::new();
-        event.count_level(&mut counter, None, &filter).unwrap();
+        event.count_level(&mut counter, &filter).unwrap();
         assert_eq!(counter.len(), 1);
 
         let mut counter = HashMap::new();
-        event.count_kind(&mut counter, None, &filter).unwrap();
+        event.count_kind(&mut counter, &filter).unwrap();
         assert_eq!(counter.get(LOCKY_RANSOMWARE), Some(&1));
 
         let mut counter = HashMap::new();
-        event.count_category(&mut counter, None, &filter).unwrap();
+        event.count_category(&mut counter, &filter).unwrap();
         assert_eq!(counter.get(&EventCategory::Impact), Some(&1));
 
         let mut counter = HashMap::new();
-        event
-            .count_ip_address_pair(&mut counter, None, &filter)
-            .unwrap();
+        event.count_ip_address_pair(&mut counter, &filter).unwrap();
         assert_eq!(
             counter.get(&(
                 IpAddr::V4(Ipv4Addr::LOCALHOST),
@@ -4723,29 +4911,27 @@ mod tests {
             triage_policies: None,
         };
         assert_eq!(
-            event.address_pair(None, &filter).unwrap(),
+            event.address_pair(&filter).unwrap(),
             (
                 Some(IpAddr::V4(Ipv4Addr::LOCALHOST)),
                 Some(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)))
             )
         );
-        assert_eq!(event.kind(None, &filter).unwrap(), Some(BLOCKLIST));
+        assert_eq!(event.kind(&filter).unwrap(), Some(BLOCKLIST));
         let mut counter = HashMap::new();
-        event.count_level(&mut counter, None, &filter).unwrap();
+        event.count_level(&mut counter, &filter).unwrap();
         assert_eq!(counter.len(), 1);
 
         let mut counter = HashMap::new();
-        event.count_kind(&mut counter, None, &filter).unwrap();
+        event.count_kind(&mut counter, &filter).unwrap();
         assert_eq!(counter.get(BLOCKLIST), Some(&1));
 
         let mut counter = HashMap::new();
-        event.count_category(&mut counter, None, &filter).unwrap();
+        event.count_category(&mut counter, &filter).unwrap();
         assert_eq!(counter.get(&EventCategory::InitialAccess), Some(&1));
 
         let mut counter = HashMap::new();
-        event
-            .count_ip_address_pair(&mut counter, None, &filter)
-            .unwrap();
+        event.count_ip_address_pair(&mut counter, &filter).unwrap();
         assert_eq!(
             counter.get(&(
                 IpAddr::V4(Ipv4Addr::LOCALHOST),
@@ -5017,29 +5203,27 @@ mod tests {
             triage_policies: None,
         };
         assert_eq!(
-            event.address_pair(None, &filter).unwrap(),
+            event.address_pair(&filter).unwrap(),
             (
                 Some(IpAddr::V4(Ipv4Addr::LOCALHOST)),
                 Some(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)))
             )
         );
-        assert_eq!(event.kind(None, &filter).unwrap(), Some(BLOCKLIST));
+        assert_eq!(event.kind(&filter).unwrap(), Some(BLOCKLIST));
         let mut counter = HashMap::new();
-        event.count_level(&mut counter, None, &filter).unwrap();
+        event.count_level(&mut counter, &filter).unwrap();
         assert_eq!(counter.len(), 1);
 
         let mut counter = HashMap::new();
-        event.count_kind(&mut counter, None, &filter).unwrap();
+        event.count_kind(&mut counter, &filter).unwrap();
         assert_eq!(counter.get(BLOCKLIST), Some(&1));
 
         let mut counter = HashMap::new();
-        event.count_category(&mut counter, None, &filter).unwrap();
+        event.count_category(&mut counter, &filter).unwrap();
         assert_eq!(counter.get(&EventCategory::InitialAccess), Some(&1));
 
         let mut counter = HashMap::new();
-        event
-            .count_ip_address_pair(&mut counter, None, &filter)
-            .unwrap();
+        event.count_ip_address_pair(&mut counter, &filter).unwrap();
         assert_eq!(
             counter.get(&(
                 IpAddr::V4(Ipv4Addr::LOCALHOST),
@@ -5458,29 +5642,27 @@ mod tests {
             triage_policies: None,
         };
         assert_eq!(
-            event.address_pair(None, &filter).unwrap(),
+            event.address_pair(&filter).unwrap(),
             (
                 Some(IpAddr::V4(Ipv4Addr::LOCALHOST)),
                 Some(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)))
             )
         );
-        assert_eq!(event.kind(None, &filter).unwrap(), Some(BLOCKLIST));
+        assert_eq!(event.kind(&filter).unwrap(), Some(BLOCKLIST));
         let mut counter = HashMap::new();
-        event.count_level(&mut counter, None, &filter).unwrap();
+        event.count_level(&mut counter, &filter).unwrap();
         assert_eq!(counter.len(), 1);
 
         let mut counter = HashMap::new();
-        event.count_kind(&mut counter, None, &filter).unwrap();
+        event.count_kind(&mut counter, &filter).unwrap();
         assert_eq!(counter.get(BLOCKLIST), Some(&1));
 
         let mut counter = HashMap::new();
-        event.count_category(&mut counter, None, &filter).unwrap();
+        event.count_category(&mut counter, &filter).unwrap();
         assert_eq!(counter.get(&EventCategory::InitialAccess), Some(&1));
 
         let mut counter = HashMap::new();
-        event
-            .count_ip_address_pair(&mut counter, None, &filter)
-            .unwrap();
+        event.count_ip_address_pair(&mut counter, &filter).unwrap();
         assert_eq!(
             counter.get(&(
                 IpAddr::V4(Ipv4Addr::LOCALHOST),
@@ -5795,29 +5977,27 @@ mod tests {
             triage_policies: None,
         };
         assert_eq!(
-            event.address_pair(None, &filter).unwrap(),
+            event.address_pair(&filter).unwrap(),
             (
                 Some(IpAddr::V4(Ipv4Addr::LOCALHOST)),
                 Some(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)))
             )
         );
-        assert_eq!(event.kind(None, &filter).unwrap(), Some(BLOCKLIST));
+        assert_eq!(event.kind(&filter).unwrap(), Some(BLOCKLIST));
         let mut counter = HashMap::new();
-        event.count_level(&mut counter, None, &filter).unwrap();
+        event.count_level(&mut counter, &filter).unwrap();
         assert_eq!(counter.len(), 1);
 
         let mut counter = HashMap::new();
-        event.count_kind(&mut counter, None, &filter).unwrap();
+        event.count_kind(&mut counter, &filter).unwrap();
         assert_eq!(counter.get(BLOCKLIST), Some(&1));
 
         let mut counter = HashMap::new();
-        event.count_category(&mut counter, None, &filter).unwrap();
+        event.count_category(&mut counter, &filter).unwrap();
         assert_eq!(counter.get(&EventCategory::InitialAccess), Some(&1));
 
         let mut counter = HashMap::new();
-        event
-            .count_ip_address_pair(&mut counter, None, &filter)
-            .unwrap();
+        event.count_ip_address_pair(&mut counter, &filter).unwrap();
         assert_eq!(
             counter.get(&(
                 IpAddr::V4(Ipv4Addr::LOCALHOST),
@@ -5895,29 +6075,27 @@ mod tests {
             triage_policies: None,
         };
         assert_eq!(
-            event.address_pair(None, &filter).unwrap(),
+            event.address_pair(&filter).unwrap(),
             (
                 Some(IpAddr::V4(Ipv4Addr::LOCALHOST)),
                 Some(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)))
             )
         );
-        assert_eq!(event.kind(None, &filter).unwrap(), Some(BLOCKLIST));
+        assert_eq!(event.kind(&filter).unwrap(), Some(BLOCKLIST));
         let mut counter = HashMap::new();
-        event.count_level(&mut counter, None, &filter).unwrap();
+        event.count_level(&mut counter, &filter).unwrap();
         assert_eq!(counter.len(), 1);
 
         let mut counter = HashMap::new();
-        event.count_kind(&mut counter, None, &filter).unwrap();
+        event.count_kind(&mut counter, &filter).unwrap();
         assert_eq!(counter.get(BLOCKLIST), Some(&1));
 
         let mut counter = HashMap::new();
-        event.count_category(&mut counter, None, &filter).unwrap();
+        event.count_category(&mut counter, &filter).unwrap();
         assert_eq!(counter.get(&EventCategory::InitialAccess), Some(&1));
 
         let mut counter = HashMap::new();
-        event
-            .count_ip_address_pair(&mut counter, None, &filter)
-            .unwrap();
+        event.count_ip_address_pair(&mut counter, &filter).unwrap();
         assert_eq!(
             counter.get(&(
                 IpAddr::V4(Ipv4Addr::LOCALHOST),
@@ -6262,29 +6440,27 @@ mod tests {
             triage_policies: None,
         };
         assert_eq!(
-            event.address_pair(None, &filter).unwrap(),
+            event.address_pair(&filter).unwrap(),
             (
                 Some(IpAddr::V4(Ipv4Addr::LOCALHOST)),
                 Some(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)))
             )
         );
-        assert_eq!(event.kind(None, &filter).unwrap(), Some(BLOCKLIST));
+        assert_eq!(event.kind(&filter).unwrap(), Some(BLOCKLIST));
         let mut counter = HashMap::new();
-        event.count_level(&mut counter, None, &filter).unwrap();
+        event.count_level(&mut counter, &filter).unwrap();
         assert_eq!(counter.len(), 1);
 
         let mut counter = HashMap::new();
-        event.count_kind(&mut counter, None, &filter).unwrap();
+        event.count_kind(&mut counter, &filter).unwrap();
         assert_eq!(counter.get(BLOCKLIST), Some(&1));
 
         let mut counter = HashMap::new();
-        event.count_category(&mut counter, None, &filter).unwrap();
+        event.count_category(&mut counter, &filter).unwrap();
         assert_eq!(counter.get(&EventCategory::InitialAccess), Some(&1));
 
         let mut counter = HashMap::new();
-        event
-            .count_ip_address_pair(&mut counter, None, &filter)
-            .unwrap();
+        event.count_ip_address_pair(&mut counter, &filter).unwrap();
         assert_eq!(
             counter.get(&(
                 IpAddr::V4(Ipv4Addr::LOCALHOST),
@@ -6839,29 +7015,27 @@ mod tests {
             triage_policies: None,
         };
         assert_eq!(
-            event.address_pair(None, &filter).unwrap(),
+            event.address_pair(&filter).unwrap(),
             (
                 Some(IpAddr::V4(Ipv4Addr::LOCALHOST)),
                 Some(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)))
             )
         );
-        assert_eq!(event.kind(None, &filter).unwrap(), Some(TOR_CONNECTION));
+        assert_eq!(event.kind(&filter).unwrap(), Some(TOR_CONNECTION));
         let mut counter = HashMap::new();
-        event.count_level(&mut counter, None, &filter).unwrap();
+        event.count_level(&mut counter, &filter).unwrap();
         assert_eq!(counter.len(), 1);
 
         let mut counter = HashMap::new();
-        event.count_kind(&mut counter, None, &filter).unwrap();
+        event.count_kind(&mut counter, &filter).unwrap();
         assert_eq!(counter.get(TOR_CONNECTION), Some(&1));
 
         let mut counter = HashMap::new();
-        event.count_category(&mut counter, None, &filter).unwrap();
+        event.count_category(&mut counter, &filter).unwrap();
         assert_eq!(counter.get(&EventCategory::CommandAndControl), Some(&1));
 
         let mut counter = HashMap::new();
-        event
-            .count_ip_address_pair(&mut counter, None, &filter)
-            .unwrap();
+        event.count_ip_address_pair(&mut counter, &filter).unwrap();
         assert_eq!(
             counter.get(&(
                 IpAddr::V4(Ipv4Addr::LOCALHOST),
@@ -6998,32 +7172,27 @@ mod tests {
             triage_policies: None,
         };
         assert_eq!(
-            event.address_pair(None, &filter).unwrap(),
+            event.address_pair(&filter).unwrap(),
             (
                 Some(IpAddr::V4(Ipv4Addr::LOCALHOST)),
                 Some(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)))
             )
         );
-        assert_eq!(
-            event.kind(None, &filter).unwrap(),
-            Some(SUSPICIOUS_TLS_TRAFFIC)
-        );
+        assert_eq!(event.kind(&filter).unwrap(), Some(SUSPICIOUS_TLS_TRAFFIC));
         let mut counter = HashMap::new();
-        event.count_level(&mut counter, None, &filter).unwrap();
+        event.count_level(&mut counter, &filter).unwrap();
         assert_eq!(counter.len(), 1);
 
         let mut counter = HashMap::new();
-        event.count_kind(&mut counter, None, &filter).unwrap();
+        event.count_kind(&mut counter, &filter).unwrap();
         assert_eq!(counter.get(SUSPICIOUS_TLS_TRAFFIC), Some(&1));
 
         let mut counter = HashMap::new();
-        event.count_category(&mut counter, None, &filter).unwrap();
+        event.count_category(&mut counter, &filter).unwrap();
         assert_eq!(counter.len(), 0);
 
         let mut counter = HashMap::new();
-        event
-            .count_ip_address_pair(&mut counter, None, &filter)
-            .unwrap();
+        event.count_ip_address_pair(&mut counter, &filter).unwrap();
         assert_eq!(
             counter.get(&(
                 IpAddr::V4(Ipv4Addr::LOCALHOST),
@@ -7080,26 +7249,48 @@ mod tests {
     }
 
     #[test]
-    fn count_country_destination_none() {
-        // Test for Rule 3: When destination is None but origin exists, count origin country
-        use std::collections::HashMap;
+    fn count_country_rdp_brute_force_counts_origin_only() {
+        let time = Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap();
+        let event = Event::RdpBruteForce(RdpBruteForce {
+            sensor: String::new(),
+            time,
+            orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
+            orig_country_code: *b"US",
+            resp_addrs: vec![
+                IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
+                IpAddr::V4(Ipv4Addr::new(127, 0, 0, 3)),
+            ],
+            resp_country_codes: vec![*b"KR", *b"JP"],
+            first_event_start_time: time,
+            last_event_start_time: time,
+            proto: 6,
+            confidence: 0.3,
+            category: Some(EventCategory::Discovery),
+            triage_scores: None,
+        });
+        let filter = EventFilter {
+            customers: None,
+            endpoints: None,
+            directions: None,
+            source: None,
+            destination: None,
+            countries: None,
+            categories: None,
+            levels: None,
+            kinds: None,
+            learning_methods: None,
+            sensors: None,
+            confidence_min: None,
+            confidence_max: None,
+            triage_policies: None,
+        };
 
-        // Mock the logic from count_country with None destination
         let mut counter = HashMap::new();
-        let src_country = "US".to_string();
-        let addr_pair: (Option<IpAddr>, Option<IpAddr>) =
-            (Some(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1))), None); // src exists, dst is None
+        event.count_country(&mut counter, &filter).unwrap();
 
-        // If destination is None but origin exists, count origin country
-        if addr_pair.0.is_some() {
-            counter
-                .entry(src_country)
-                .and_modify(|e| *e += 1)
-                .or_insert(1);
-        }
-
-        // Verify that the source country was counted
         assert_eq!(counter.get("US"), Some(&1));
+        assert!(!counter.contains_key("KR"));
+        assert!(!counter.contains_key("JP"));
         assert_eq!(counter.len(), 1);
     }
 
