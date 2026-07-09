@@ -180,12 +180,20 @@ impl Match for PortScan {
         0
     }
 
+    fn orig_country_codes(&self) -> &[[u8; 2]] {
+        std::slice::from_ref(&self.orig_country_code)
+    }
+
     fn dst_addrs(&self) -> &[IpAddr] {
         std::slice::from_ref(&self.resp_addr)
     }
 
     fn dst_port(&self) -> u16 {
         0
+    }
+
+    fn resp_country_codes(&self) -> &[[u8; 2]] {
+        std::slice::from_ref(&self.resp_country_code)
     }
 
     fn proto(&self) -> u8 {
@@ -207,6 +215,7 @@ impl Match for PortScan {
     fn sensor(&self) -> &str {
         self.sensor.as_str()
     }
+
     fn confidence(&self) -> Option<f32> {
         Some(self.confidence)
     }
@@ -378,12 +387,20 @@ impl Match for MultiHostPortScan {
         0
     }
 
+    fn orig_country_codes(&self) -> &[[u8; 2]] {
+        std::slice::from_ref(&self.orig_country_code)
+    }
+
     fn dst_addrs(&self) -> &[IpAddr] {
         &self.resp_addrs
     }
 
     fn dst_port(&self) -> u16 {
         self.resp_port
+    }
+
+    fn resp_country_codes(&self) -> &[[u8; 2]] {
+        &self.resp_country_codes
     }
 
     fn proto(&self) -> u8 {
@@ -570,12 +587,20 @@ impl Match for ExternalDdos {
         0
     }
 
+    fn orig_country_codes(&self) -> &[[u8; 2]] {
+        &self.orig_country_codes
+    }
+
     fn dst_addrs(&self) -> &[IpAddr] {
         std::slice::from_ref(&self.resp_addr)
     }
 
     fn dst_port(&self) -> u16 {
         0
+    }
+
+    fn resp_country_codes(&self) -> &[[u8; 2]] {
+        std::slice::from_ref(&self.resp_country_code)
     }
 
     fn proto(&self) -> u8 {
@@ -829,12 +854,20 @@ impl Match for BlocklistConn {
         self.orig_port
     }
 
+    fn orig_country_codes(&self) -> &[[u8; 2]] {
+        std::slice::from_ref(&self.orig_country_code)
+    }
+
     fn dst_addrs(&self) -> &[IpAddr] {
         std::slice::from_ref(&self.resp_addr)
     }
 
     fn dst_port(&self) -> u16 {
         self.resp_port
+    }
+
+    fn resp_country_codes(&self) -> &[[u8; 2]] {
+        std::slice::from_ref(&self.resp_country_code)
     }
 
     fn proto(&self) -> u8 {

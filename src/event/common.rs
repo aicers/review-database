@@ -10,10 +10,7 @@ use bincode::Options;
 use num_traits::ToPrimitive;
 use serde::{Deserialize, Serialize};
 
-use super::{
-    EventCategory, EventFilter, FlowKind, LearningMethod, ThreatLevel, TrafficDirection,
-    eq_ip_country,
-};
+use super::{EventCategory, EventFilter, FlowKind, LearningMethod, ThreatLevel, TrafficDirection};
 use crate::{
     AttrCmpKind, Confidence, PacketAttr, Response, TriageExclusion, TriagePolicyInput, ValueKind,
 };
@@ -26,9 +23,11 @@ pub(super) trait Match {
     fn src_addrs(&self) -> &[IpAddr];
     #[allow(dead_code)] // for future use
     fn src_port(&self) -> u16;
+    fn orig_country_codes(&self) -> &[[u8; 2]];
     fn dst_addrs(&self) -> &[IpAddr];
     #[allow(dead_code)] // for future use
     fn dst_port(&self) -> u16;
+    fn resp_country_codes(&self) -> &[[u8; 2]];
     #[allow(dead_code)] // for future use
     fn proto(&self) -> u8;
     fn category(&self) -> Option<EventCategory>;
@@ -61,20 +60,11 @@ pub(super) trait Match {
 
     /// Returns whether the event matches the filter and the triage scores. The triage scores are
     /// only returned if the event matches the filter.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the filter contains a country filter but the ip2location database is
-    /// not available.
-    fn matches(
-        &self,
-        locator: Option<&ip2location::DB>,
-        filter: &EventFilter,
-    ) -> Result<(bool, Option<Vec<TriageScore>>)> {
+    fn matches(&self, filter: &EventFilter) -> Result<(bool, Option<Vec<TriageScore>>)> {
         if !self.kind_matches(filter) {
             return Ok((false, None));
         }
-        self.other_matches(filter, locator)
+        self.other_matches(filter)
     }
 
     fn kind_matches(&self, filter: &EventFilter) -> bool {
@@ -89,17 +79,8 @@ pub(super) trait Match {
 
     /// Returns whether the event matches the filter (excluding `kinds`) and the triage scores. The
     /// triage scores are only returned if the event matches the filter.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the filter contains a country filter but the ip2location database is
-    /// not available.
     #[allow(clippy::too_many_lines)]
-    fn other_matches(
-        &self,
-        filter: &EventFilter,
-        locator: Option<&ip2location::DB>,
-    ) -> Result<(bool, Option<Vec<TriageScore>>)> {
+    fn other_matches(&self, filter: &EventFilter) -> Result<(bool, Option<Vec<TriageScore>>)> {
         // Customer matching uses the customer's registered network ranges to
         // test event addresses (src_addrs/dst_addrs). It does NOT filter based
         // on a customer ID attached to the event. If you need per-event
@@ -188,19 +169,16 @@ pub(super) trait Match {
         }
 
         if let Some(countries) = &filter.countries {
-            if let Some(locator) = locator {
-                if countries.iter().all(|country| {
-                    self.src_addrs()
+            let orig_codes = self.orig_country_codes();
+            let resp_codes = self.resp_country_codes();
+            if countries.iter().all(|country| {
+                orig_codes
+                    .iter()
+                    .all(|&code| !crate::util::stored_country_code_matches(code, *country))
+                    && resp_codes
                         .iter()
-                        .all(|&src_addr| !eq_ip_country(locator, src_addr, *country))
-                        && self
-                            .dst_addrs()
-                            .iter()
-                            .all(|&dst_addr| !eq_ip_country(locator, dst_addr, *country))
-                }) {
-                    return Ok((false, None));
-                }
-            } else {
+                        .all(|&code| !crate::util::stored_country_code_matches(code, *country))
+            }) {
                 return Ok((false, None));
             }
         }
@@ -865,7 +843,7 @@ mod tests {
         assert!(
             semi_supervised_events
                 .iter()
-                .all(|event| event.matches(None, &filter).unwrap().0)
+                .all(|event| event.matches(&filter).unwrap().0)
         );
 
         // Unsupervised engine-generated event filtering
@@ -873,7 +851,7 @@ mod tests {
         assert!(
             semi_supervised_events
                 .iter()
-                .all(|event| !event.matches(None, &filter).unwrap().0)
+                .all(|event| !event.matches(&filter).unwrap().0)
         );
 
         // All event filtering
@@ -884,7 +862,7 @@ mod tests {
         assert!(
             semi_supervised_events
                 .iter()
-                .all(|event| event.matches(None, &filter).unwrap().0)
+                .all(|event| event.matches(&filter).unwrap().0)
         );
     }
 
@@ -914,7 +892,7 @@ mod tests {
         assert!(
             unsupervised_events
                 .iter()
-                .all(|event| !event.matches(None, &filter).unwrap().0)
+                .all(|event| !event.matches(&filter).unwrap().0)
         );
 
         // Unsupervised engine-generated event filtering
@@ -922,7 +900,7 @@ mod tests {
         assert!(
             unsupervised_events
                 .iter()
-                .all(|event| event.matches(None, &filter).unwrap().0)
+                .all(|event| event.matches(&filter).unwrap().0)
         );
 
         // All event filtering
@@ -933,7 +911,7 @@ mod tests {
         assert!(
             unsupervised_events
                 .iter()
-                .all(|event| event.matches(None, &filter).unwrap().0)
+                .all(|event| event.matches(&filter).unwrap().0)
         );
     }
 
@@ -1111,7 +1089,7 @@ mod tests {
         assert!(
             single_address_events
                 .iter()
-                .all(|event| event.matches(None, &success_filter).unwrap().0)
+                .all(|event| event.matches(&success_filter).unwrap().0)
         );
 
         // Filtering fail.
@@ -1122,7 +1100,7 @@ mod tests {
         assert!(
             single_address_events
                 .iter()
-                .all(|event| !event.matches(None, &fail_filter).unwrap().0)
+                .all(|event| !event.matches(&fail_filter).unwrap().0)
         );
 
         let mut fail_filter = event_filter();
@@ -1130,7 +1108,7 @@ mod tests {
         assert!(
             single_address_events
                 .iter()
-                .all(|event| !event.matches(None, &fail_filter).unwrap().0)
+                .all(|event| !event.matches(&fail_filter).unwrap().0)
         );
 
         let mut fail_filter = event_filter();
@@ -1138,7 +1116,7 @@ mod tests {
         assert!(
             single_address_events
                 .iter()
-                .all(|event| !event.matches(None, &fail_filter).unwrap().0)
+                .all(|event| !event.matches(&fail_filter).unwrap().0)
         );
 
         let mut fail_filter = event_filter();
@@ -1146,7 +1124,7 @@ mod tests {
         assert!(
             single_address_events
                 .iter()
-                .all(|event| !event.matches(None, &fail_filter).unwrap().0)
+                .all(|event| !event.matches(&fail_filter).unwrap().0)
         );
 
         let mut fail_filter = event_filter();
@@ -1154,7 +1132,7 @@ mod tests {
         assert!(
             single_address_events
                 .iter()
-                .all(|event| !event.matches(None, &fail_filter).unwrap().0)
+                .all(|event| !event.matches(&fail_filter).unwrap().0)
         );
 
         let mut multi_address_events = Vec::new();
@@ -1184,7 +1162,7 @@ mod tests {
         assert!(
             multi_address_events
                 .iter()
-                .all(|event| event.matches(None, &success_filter).unwrap().0)
+                .all(|event| event.matches(&success_filter).unwrap().0)
         );
 
         // Filtering fail.
@@ -1195,7 +1173,7 @@ mod tests {
         assert!(
             multi_address_events
                 .iter()
-                .all(|event| !event.matches(None, &fail_filter).unwrap().0)
+                .all(|event| !event.matches(&fail_filter).unwrap().0)
         );
 
         let mut fail_filter = event_filter();
@@ -1203,7 +1181,7 @@ mod tests {
         assert!(
             multi_address_events
                 .iter()
-                .all(|event| !event.matches(None, &fail_filter).unwrap().0)
+                .all(|event| !event.matches(&fail_filter).unwrap().0)
         );
 
         let mut fail_filter = event_filter();
@@ -1211,7 +1189,7 @@ mod tests {
         assert!(
             multi_address_events
                 .iter()
-                .all(|event| !event.matches(None, &fail_filter).unwrap().0)
+                .all(|event| !event.matches(&fail_filter).unwrap().0)
         );
 
         let mut fail_filter = event_filter();
@@ -1219,7 +1197,7 @@ mod tests {
         assert!(
             multi_address_events
                 .iter()
-                .all(|event| !event.matches(None, &fail_filter).unwrap().0)
+                .all(|event| !event.matches(&fail_filter).unwrap().0)
         );
 
         let mut fail_filter = event_filter();
@@ -1227,7 +1205,7 @@ mod tests {
         assert!(
             multi_address_events
                 .iter()
-                .all(|event| !event.matches(None, &fail_filter).unwrap().0)
+                .all(|event| !event.matches(&fail_filter).unwrap().0)
         );
 
         let mut no_address_events = Vec::new();
@@ -1246,7 +1224,7 @@ mod tests {
         assert!(
             no_address_events
                 .iter()
-                .all(|event| !event.matches(None, &fail_filter).unwrap().0)
+                .all(|event| !event.matches(&fail_filter).unwrap().0)
         );
 
         let mut fail_filter = event_filter();
@@ -1254,7 +1232,7 @@ mod tests {
         assert!(
             no_address_events
                 .iter()
-                .all(|event| !event.matches(None, &fail_filter).unwrap().0)
+                .all(|event| !event.matches(&fail_filter).unwrap().0)
         );
 
         let mut fail_filter = event_filter();
@@ -1262,7 +1240,7 @@ mod tests {
         assert!(
             no_address_events
                 .iter()
-                .all(|event| !event.matches(None, &fail_filter).unwrap().0)
+                .all(|event| !event.matches(&fail_filter).unwrap().0)
         );
 
         let mut fail_filter = event_filter();
@@ -1270,7 +1248,7 @@ mod tests {
         assert!(
             no_address_events
                 .iter()
-                .all(|event| !event.matches(None, &fail_filter).unwrap().0)
+                .all(|event| !event.matches(&fail_filter).unwrap().0)
         );
 
         let mut fail_filter = event_filter();
@@ -1278,7 +1256,7 @@ mod tests {
         assert!(
             no_address_events
                 .iter()
-                .all(|event| !event.matches(None, &fail_filter).unwrap().0)
+                .all(|event| !event.matches(&fail_filter).unwrap().0)
         );
     }
 
@@ -3141,8 +3119,82 @@ mod tests {
             triage_policies: Some(vec![unreachable_policy]),
         };
 
-        let (matched, scores) = event.matches(None, &filter).unwrap();
+        let (matched, scores) = event.matches(&filter).unwrap();
         assert!(!matched);
         assert!(scores.is_none());
+    }
+
+    fn http_threat_event_with_country_codes(orig: [u8; 2], resp: [u8; 2]) -> Event {
+        let time = Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap();
+        let mut fields = http_threat_fields();
+        fields.orig_country_code = orig;
+        fields.resp_country_code = resp;
+        Event::HttpThreat(HttpThreat::new(time, fields))
+    }
+
+    fn country_filter(orig: [u8; 2]) -> EventFilter {
+        EventFilter {
+            countries: Some(vec![orig]),
+            ..event_filter()
+        }
+    }
+
+    #[test]
+    fn country_filter_matches_stored_orig_country_code() {
+        let event = http_threat_event_with_country_codes(*b"US", *b"KR");
+        let filter = country_filter(*b"US");
+        assert!(event.matches(&filter).unwrap().0);
+    }
+
+    #[test]
+    fn country_filter_matches_stored_resp_country_code() {
+        let event = http_threat_event_with_country_codes(*b"US", *b"KR");
+        let filter = country_filter(*b"KR");
+        assert!(event.matches(&filter).unwrap().0);
+    }
+
+    #[test]
+    fn country_filter_rejects_when_no_stored_code_matches() {
+        let event = http_threat_event_with_country_codes(*b"US", *b"KR");
+        let filter = country_filter(*b"JP");
+        assert!(!event.matches(&filter).unwrap().0);
+    }
+
+    #[test]
+    fn country_filter_rejects_pending_stored_codes() {
+        let event = http_threat_event_with_country_codes(
+            crate::util::COUNTRY_CODE_PENDING,
+            crate::util::COUNTRY_CODE_PENDING,
+        );
+        let filter = country_filter(*b"US");
+        assert!(!event.matches(&filter).unwrap().0);
+    }
+
+    #[test]
+    fn country_filter_rejects_events_without_stored_country_codes() {
+        let filter = country_filter(*b"US");
+        assert!(
+            !Event::ExtraThreat(extra_threat())
+                .matches(&filter)
+                .unwrap()
+                .0
+        );
+        assert!(
+            !Event::WindowsThreat(windows_threat())
+                .matches(&filter)
+                .unwrap()
+                .0
+        );
+    }
+
+    #[test]
+    fn country_filter_matches_any_vector_response_code() {
+        let time = Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap();
+        let mut fields = multi_host_port_scan_fields();
+        fields.orig_country_code = *b"US";
+        fields.resp_country_codes = vec![*b"JP", *b"DE"];
+        let event = Event::MultiHostPortScan(MultiHostPortScan::new(time, &fields));
+        let filter = country_filter(*b"DE");
+        assert!(event.matches(&filter).unwrap().0);
     }
 }

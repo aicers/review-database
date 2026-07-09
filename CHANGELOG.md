@@ -14,6 +14,16 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- Event country filtering and `Event::count_country` aggregation now read
+  stored origin and response country codes on event records instead of
+  performing IP2Location lookups at query time. `EventFilter::countries`
+  matches when either stored endpoint code equals a requested code; pending
+  (`ZZ`) and invalid (`XX`) codes never match. Country-based search and
+  aggregation no longer require an IP2Location database at query time.
+- **BREAKING**: `Event::matches`, `Event::count_country`, and the other
+  `Event::count_*` query helpers no longer take an IP2Location locator
+  argument. IP2Location is now used only when events are stored or during
+  migration.
 - **BREAKING**: Bumped the database format to `0.46.0-alpha.1`, changed
   `Store::new` to take an `Option<Arc<ip2location::DB>>` argument, and changed
   `migrate_data_dir` to accept the same optional shared database handle. Event
