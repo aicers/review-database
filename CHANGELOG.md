@@ -24,6 +24,13 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   `Event::count_*` query helpers no longer take an IP2Location locator
   argument. IP2Location is now used only when events are stored or during
   migration.
+- **BREAKING**: Renamed the public event counting helpers
+  `Event::count_src_ip_address` and `Event::count_dst_ip_address` to
+  `Event::count_originator_ip_address` and
+  `Event::count_responder_ip_address` to match the `orig_`/`resp_`
+  terminology used throughout session-oriented event APIs.
+- Removed deprecated `src_`/`dst_` compatibility shims from the internal
+  `Match` trait after the `orig_`/`resp_` terminology migration completed.
 - **BREAKING**: Bumped the database format to `0.46.0-alpha.1`, changed
   `Store::new` to take an `Option<Arc<ip2location::DB>>` argument, and changed
   `migrate_data_dir` to accept the same optional shared database handle. Event

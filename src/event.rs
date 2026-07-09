@@ -930,8 +930,8 @@ impl Event {
                 }
                 RecordType::UnusualDestinationPattern(event) => {
                     if event.matches(filter)?.0 {
-                        // UnusualDestinationPattern has multiple destination IPs but no source
-                        // Use first destination IP if available
+                        // UnusualDestinationPattern has multiple responder IPs but no originator.
+                        // Use the first responder IP if available.
                         addr_pair = (None, event.destination_ips.first().copied());
                     }
                 }
@@ -1764,12 +1764,12 @@ impl Event {
         Ok(())
     }
 
-    /// Counts the number of events per source IP address.
+    /// Counts the number of events per originator IP address.
     ///
     /// # Errors
     ///
     /// Returns an error if matching the event against the filter fails.
-    pub fn count_src_ip_address(
+    pub fn count_originator_ip_address(
         &self,
         counter: &mut HashMap<IpAddr, usize>,
         filter: &EventFilter,
@@ -1786,12 +1786,12 @@ impl Event {
         Ok(())
     }
 
-    /// Counts the number of events per destination IP address.
+    /// Counts the number of events per responder IP address.
     ///
     /// # Errors
     ///
     /// Returns an error if matching the event against the filter fails.
-    pub fn count_dst_ip_address(
+    pub fn count_responder_ip_address(
         &self,
         counter: &mut HashMap<IpAddr, usize>,
         filter: &EventFilter,
@@ -2357,7 +2357,7 @@ pub enum LearningMethod {
 /// The `customers` field does **not** filter events by an explicit customer ID
 /// stored on each event. Instead, the current implementation resolves each
 /// customer's registered network ranges and matches an event if any of its
-/// source addresses (`orig_addrs`) or responder addresses (`resp_addrs`) fall
+/// originator addresses (`orig_addrs`) or responder addresses (`resp_addrs`) fall
 /// within those ranges.
 ///
 /// In other words, customer filtering performs network-range matching against
