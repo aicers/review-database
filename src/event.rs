@@ -3832,7 +3832,7 @@ mod tests {
             MultiHostPortScanFields, NetworkThreat, NetworkThreatFields, NonBrowser, PortScan,
             PortScanFields, RdpBruteForce, RdpBruteForceFields, RecordType, RepeatedHttpSessions,
             RepeatedHttpSessionsFields, SuspiciousTlsTraffic, TorConnection, TriageScore,
-            WindowsThreat, WindowsThreatFields,
+            UnusualDestinationPatternFields, WindowsThreat, WindowsThreatFields,
         },
         types::EventCategory,
     };
@@ -4167,6 +4167,90 @@ mod tests {
             super::convert_for_storage(EventKind::MultiHostPortScan, &producer_bytes, locator_ref)
                 .unwrap();
         assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn convert_for_storage_matches_legacy_two_step_for_external_ddos_country_codes() {
+        let first_orig_addr = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
+        let second_orig_addr = IpAddr::V6(std::net::Ipv6Addr::LOCALHOST);
+        let resp_addr = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2));
+        let lookup = FakeCountryLookup {
+            codes: HashMap::from([
+                (first_orig_addr, *b"US"),
+                (second_orig_addr, *b"DE"),
+                (resp_addr, *b"KR"),
+            ]),
+            failures: HashSet::new(),
+        };
+        let fields = ExternalDdosFields {
+            sensor: "collector1".to_string(),
+            orig_addrs: vec![first_orig_addr, second_orig_addr],
+            resp_addr,
+            proto: 6,
+            first_event_start_time: 1,
+            last_event_start_time: 2,
+            confidence: 0.9,
+            category: Some(EventCategory::Impact),
+        };
+        let producer_bytes = bincode::serialize(&fields).unwrap();
+        let locator_ref = Some(&lookup as &dyn crate::geo::CountryLookup);
+        let expected = legacy_storage_bytes(EventKind::ExternalDdos, &producer_bytes, locator_ref);
+        let actual =
+            super::convert_for_storage(EventKind::ExternalDdos, &producer_bytes, locator_ref)
+                .unwrap();
+        assert_eq!(actual, expected);
+
+        let stored: super::ExternalDdosFieldsStored = bincode::deserialize(&actual).unwrap();
+        assert_eq!(stored.orig_country_codes, vec![*b"US", *b"DE"]);
+        assert_eq!(stored.orig_country_codes.len(), stored.orig_addrs.len());
+        assert_eq!(stored.resp_country_code, *b"KR");
+    }
+
+    #[test]
+    fn convert_for_storage_matches_legacy_two_step_for_unusual_destination_pattern_country_codes() {
+        let first_destination_ip = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
+        let second_destination_ip = IpAddr::V6(std::net::Ipv6Addr::LOCALHOST);
+        let lookup = FakeCountryLookup {
+            codes: HashMap::from([
+                (first_destination_ip, *b"US"),
+                (second_destination_ip, *b"DE"),
+            ]),
+            failures: HashSet::new(),
+        };
+        let fields = UnusualDestinationPatternFields {
+            sensor: "collector1".to_string(),
+            sampling_window_start_time: 1,
+            sampling_window_end_time: 2,
+            destination_ips: vec![first_destination_ip, second_destination_ip],
+            count: 2,
+            expected_mean: 1.0,
+            std_deviation: 0.5,
+            z_score: 2.0,
+            confidence: 0.9,
+            category: Some(EventCategory::Reconnaissance),
+        };
+        let producer_bytes = bincode::serialize(&fields).unwrap();
+        let locator_ref = Some(&lookup as &dyn crate::geo::CountryLookup);
+        let expected = legacy_storage_bytes(
+            EventKind::UnusualDestinationPattern,
+            &producer_bytes,
+            locator_ref,
+        );
+        let actual = super::convert_for_storage(
+            EventKind::UnusualDestinationPattern,
+            &producer_bytes,
+            locator_ref,
+        )
+        .unwrap();
+        assert_eq!(actual, expected);
+
+        let stored: super::UnusualDestinationPatternFieldsStored =
+            bincode::deserialize(&actual).unwrap();
+        assert_eq!(stored.resp_country_codes, vec![*b"US", *b"DE"]);
+        assert_eq!(
+            stored.resp_country_codes.len(),
+            stored.destination_ips.len()
+        );
     }
 
     #[test]
