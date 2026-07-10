@@ -117,7 +117,7 @@ mod tests {
     #[test]
     fn country_codes_to_string_formats_multiple_codes() {
         assert_eq!(
-            country_codes_to_string(&[COUNTRY_CODE_PENDING, [b'U', b'S']]),
+            country_codes_to_string(&[COUNTRY_CODE_PENDING, *b"US"]),
             "ZZ,US"
         );
     }

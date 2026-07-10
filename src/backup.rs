@@ -225,6 +225,6 @@ mod tests {
         // The timestamp should be in 2025, not 1970
         let expected_timestamp = DateTime::from_timestamp(timestamp_seconds, 0).unwrap();
         assert_eq!(backup_info.timestamp, expected_timestamp);
-        assert!(backup_info.timestamp.year() == 2025);
+        assert_eq!(backup_info.timestamp.year(), 2025);
     }
 }

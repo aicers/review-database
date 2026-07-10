@@ -207,7 +207,7 @@ mod test {
 
         let b = create_block_network(1, "b", "TestDescription");
         let b_id = table.put(b).unwrap();
-        assert!(b_id != inserted_id);
+        assert_ne!(b_id, inserted_id);
 
         assert_eq!(2, table.iter(Direction::Forward, None).count());
     }
@@ -224,7 +224,7 @@ mod test {
         let a2 = create_block_network(2, "shared_name", "Customer2");
         let id2 = table.put(a2.clone()).unwrap();
 
-        assert!(id1 != id2);
+        assert_ne!(id1, id2);
 
         let retrieved1 = table.get_by_id(id1).unwrap().unwrap();
         assert_eq!(retrieved1.customer_id, 1);
