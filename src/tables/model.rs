@@ -315,7 +315,7 @@ mod tests {
         let model = make_model("alpha", 1);
 
         let id = table.add_model(model.clone()).unwrap();
-        assert!(id == 0);
+        assert_eq!(id, 0);
 
         let loaded = table.load_model(id).unwrap();
         assert_eq!(loaded.name, "alpha");
