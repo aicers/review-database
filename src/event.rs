@@ -185,7 +185,7 @@ pub enum Event {
     /// Brute force attacks against RDP, attempting to guess passwords.
     RdpBruteForce(RdpBruteForce),
 
-    /// Multiple HTTP sessions with the same source and destination that occur within a short time.
+    /// Multiple HTTP sessions with the same originator and responder that occur within a short time.
     /// This is a sign of a possible unauthorized communication channel.
     RepeatedHttpSessions(RepeatedHttpSessions),
 
@@ -205,7 +205,7 @@ pub enum Event {
     FtpPlainText(FtpPlainText),
 
     /// Large number of connection attempts are made to multiple ports
-    /// on the same destination from the same source.
+    /// on the same responder from the same originator.
     PortScan(PortScan),
 
     /// Specific host inside attempts to connect to a specific port on multiple host inside.
