@@ -72,10 +72,6 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   families with the rest of the public event model: their producer-facing
   schemas are now `*Fields` types, and their `Event` variants expose
   runtime domain types.
-- Optimized `EventDb::put` ingestion by resolving country codes during
-  producer-to-stored conversion, eliminating an extra bincode
-  serialize/deserialize round-trip when an IP2Location database is
-  configured. Stored bytes and `ZZ`/`XX` fallback behavior are unchanged.
 
 ### Fixed
 
