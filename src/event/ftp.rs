@@ -2,7 +2,6 @@
 use std::{fmt, net::IpAddr};
 
 use attrievent::attribute::{FtpAttr, RawEventAttrKind};
-use chrono::DateTime;
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
@@ -161,8 +160,10 @@ macro_rules! find_ftp_attr_by_kind {
 impl FtpBruteForceFields {
     #[must_use]
     pub fn syslog_rfc5424(&self) -> String {
-        let first_event_start_time_dt = DateTime::from_timestamp_nanos(self.first_event_start_time);
-        let last_event_start_time_dt = DateTime::from_timestamp_nanos(self.last_event_start_time);
+        let first_event_start_time =
+            timestamp::format_i64_nanos_rfc3339(self.first_event_start_time).unwrap_or_default();
+        let last_event_start_time =
+            timestamp::format_i64_nanos_rfc3339(self.last_event_start_time).unwrap_or_default();
         format!(
             "category={:?} sensor={:?} orig_addr={:?} resp_addr={:?} resp_port={:?} proto={:?} user_list={:?} first_event_start_time={:?} last_event_start_time={:?} is_internal={:?} confidence={:?}",
             self.category.as_ref().map_or_else(
@@ -175,8 +176,8 @@ impl FtpBruteForceFields {
             self.resp_port.to_string(),
             self.proto.to_string(),
             self.user_list.join(","),
-            first_event_start_time_dt.to_rfc3339(),
-            last_event_start_time_dt.to_rfc3339(),
+            first_event_start_time,
+            last_event_start_time,
             self.is_internal.to_string(),
             self.confidence.to_string()
         )
@@ -386,7 +387,7 @@ impl Match for FtpBruteForce {
 impl FtpEventFields {
     #[must_use]
     pub fn syslog_rfc5424(&self) -> String {
-        let start_time_dt = DateTime::from_timestamp_nanos(self.start_time);
+        let start_time = timestamp::format_i64_nanos_rfc3339(self.start_time).unwrap_or_default();
         let commands_str = self
             .commands
             .iter()
@@ -406,7 +407,7 @@ impl FtpEventFields {
             self.resp_addr.to_string(),
             self.resp_port.to_string(),
             self.proto.to_string(),
-            start_time_dt.to_rfc3339(),
+            start_time,
             self.duration.to_string(),
             self.orig_pkts.to_string(),
             self.resp_pkts.to_string(),

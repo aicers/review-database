@@ -2,7 +2,6 @@
 use std::{fmt, net::IpAddr};
 
 use attrievent::attribute::{LdapAttr, RawEventAttrKind};
-use chrono::DateTime;
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
@@ -105,8 +104,10 @@ impl From<LdapBruteForceFields> for LdapBruteForceFieldsStored {
 impl LdapBruteForceFields {
     #[must_use]
     pub fn syslog_rfc5424(&self) -> String {
-        let first_event_start_time_dt = DateTime::from_timestamp_nanos(self.first_event_start_time);
-        let last_event_start_time_dt = DateTime::from_timestamp_nanos(self.last_event_start_time);
+        let first_event_start_time =
+            timestamp::format_i64_nanos_rfc3339(self.first_event_start_time).unwrap_or_default();
+        let last_event_start_time =
+            timestamp::format_i64_nanos_rfc3339(self.last_event_start_time).unwrap_or_default();
         format!(
             "category={:?} sensor={:?} orig_addr={:?} resp_addr={:?} resp_port={:?} proto={:?} user_pw_list={:?} first_event_start_time={:?} last_event_start_time={:?} confidence={:?}",
             self.category.as_ref().map_or_else(
@@ -119,8 +120,8 @@ impl LdapBruteForceFields {
             self.resp_port.to_string(),
             self.proto.to_string(),
             get_user_pw_list(&self.user_pw_list),
-            first_event_start_time_dt.to_rfc3339(),
-            last_event_start_time_dt.to_rfc3339(),
+            first_event_start_time,
+            last_event_start_time,
             self.confidence.to_string()
         )
     }
@@ -364,7 +365,7 @@ impl From<LdapEventFields> for LdapEventFieldsStored {
 impl LdapEventFields {
     #[must_use]
     pub fn syslog_rfc5424(&self) -> String {
-        let start_time_dt = DateTime::from_timestamp_nanos(self.start_time);
+        let start_time = timestamp::format_i64_nanos_rfc3339(self.start_time).unwrap_or_default();
         format!(
             "category={:?} sensor={:?} orig_addr={:?} orig_port={:?} resp_addr={:?} resp_port={:?} proto={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} message_id={:?} version={:?} opcode={:?} result={:?} diagnostic_message={:?} object={:?} argument={:?} confidence={:?}",
             self.category.as_ref().map_or_else(
@@ -377,7 +378,7 @@ impl LdapEventFields {
             self.resp_addr.to_string(),
             self.resp_port.to_string(),
             self.proto.to_string(),
-            start_time_dt.to_rfc3339(),
+            start_time,
             self.duration.to_string(),
             self.orig_pkts.to_string(),
             self.resp_pkts.to_string(),

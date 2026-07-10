@@ -6,7 +6,7 @@
 //! values without introducing Jiff's default `i128` nanosecond encoding.
 
 use chrono::{DateTime, Utc};
-use jiff::Timestamp;
+use jiff::{Timestamp, tz::Offset};
 use thiserror::Error;
 
 /// Invariant message for `expect` when converting stored `i64` nanoseconds to Jiff.
@@ -93,23 +93,23 @@ pub fn from_chrono(time: DateTime<Utc>) -> Result<Timestamp, TimestampError> {
     from_i64_nanos(nanos)
 }
 
-/// Converts a timestamp to a chrono UTC datetime when it fits the i64 contract.
-///
-/// # Errors
-///
-/// Returns an error when the timestamp is outside the `i64` nanosecond range
-/// or chrono cannot represent the value.
-pub fn to_chrono(time: Timestamp) -> Result<DateTime<Utc>, TimestampError> {
-    Ok(DateTime::from_timestamp_nanos(to_i64_nanos(time)?))
-}
-
 /// Formats a timestamp as an RFC 3339 string in UTC.
 ///
 /// # Errors
 ///
 /// Returns an error when the timestamp is outside the `i64` nanosecond range.
 pub fn format_rfc3339(time: Timestamp) -> Result<String, TimestampError> {
-    Ok(to_chrono(time)?.to_rfc3339())
+    to_i64_nanos(time)?;
+    Ok(time.display_with_offset(Offset::UTC).to_string())
+}
+
+/// Formats signed 64-bit epoch nanoseconds as an RFC 3339 string in UTC.
+///
+/// # Errors
+///
+/// Returns an error when Jiff rejects the nanosecond value.
+pub fn format_i64_nanos_rfc3339(nanos: i64) -> Result<String, TimestampError> {
+    format_rfc3339(from_i64_nanos(nanos)?)
 }
 
 #[cfg(test)]
@@ -118,8 +118,8 @@ mod tests {
     use jiff::Timestamp;
 
     use super::{
-        TimestampError, event_key_nanos, format_rfc3339, from_chrono, from_i64_nanos, to_i64_nanos,
-        ts_nanoseconds,
+        TimestampError, event_key_nanos, format_i64_nanos_rfc3339, format_rfc3339, from_chrono,
+        from_i64_nanos, to_i64_nanos, ts_nanoseconds,
     };
 
     fn modern_timestamp() -> Timestamp {
@@ -221,6 +221,15 @@ mod tests {
         assert_eq!(
             format_rfc3339(time).expect("format"),
             chrono_time.to_rfc3339()
+        );
+    }
+
+    #[test]
+    fn i64_nanos_format_uses_jiff_timestamp() {
+        let nanos = 1_592_224_245_987_654_321;
+        assert_eq!(
+            format_i64_nanos_rfc3339(nanos).expect("format"),
+            "2020-06-15T12:30:45.987654321+00:00"
         );
     }
 

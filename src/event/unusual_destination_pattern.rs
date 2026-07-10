@@ -1,7 +1,6 @@
 use std::{fmt, net::IpAddr};
 
 use attrievent::attribute::{ConnAttr, RawEventAttrKind};
-use chrono::DateTime;
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
@@ -62,10 +61,11 @@ impl From<UnusualDestinationPatternFields> for UnusualDestinationPatternFieldsSt
 impl UnusualDestinationPatternFields {
     #[must_use]
     pub fn syslog_rfc5424(&self) -> String {
-        let sampling_window_start_time_dt =
-            DateTime::from_timestamp_nanos(self.sampling_window_start_time);
-        let sampling_window_end_time_dt =
-            DateTime::from_timestamp_nanos(self.sampling_window_end_time);
+        let sampling_window_start_time =
+            timestamp::format_i64_nanos_rfc3339(self.sampling_window_start_time)
+                .unwrap_or_default();
+        let sampling_window_end_time =
+            timestamp::format_i64_nanos_rfc3339(self.sampling_window_end_time).unwrap_or_default();
         format!(
             "category={:?} sensor={:?} sampling_window_start_time={:?} sampling_window_end_time={:?} destination_ips={:?} count={:?} expected_mean={:?} std_deviation={:?} z_score={:?} confidence={:?}",
             self.category.as_ref().map_or_else(
@@ -73,8 +73,8 @@ impl UnusualDestinationPatternFields {
                 std::string::ToString::to_string
             ),
             self.sensor,
-            sampling_window_start_time_dt.to_rfc3339(),
-            sampling_window_end_time_dt.to_rfc3339(),
+            sampling_window_start_time,
+            sampling_window_end_time,
             format_ip_vec(&self.destination_ips),
             self.count.to_string(),
             self.expected_mean.to_string(),

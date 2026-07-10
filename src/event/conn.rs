@@ -1,7 +1,6 @@
 use std::{fmt, net::IpAddr};
 
 use attrievent::attribute::{ConnAttr, RawEventAttrKind};
-use chrono::DateTime;
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
@@ -90,8 +89,10 @@ impl From<PortScanFields> for PortScanFieldsStored {
 impl PortScanFields {
     #[must_use]
     pub fn syslog_rfc5424(&self) -> String {
-        let first_event_start_time_dt = DateTime::from_timestamp_nanos(self.first_event_start_time);
-        let last_event_start_time_dt = DateTime::from_timestamp_nanos(self.last_event_start_time);
+        let first_event_start_time =
+            timestamp::format_i64_nanos_rfc3339(self.first_event_start_time).unwrap_or_default();
+        let last_event_start_time =
+            timestamp::format_i64_nanos_rfc3339(self.last_event_start_time).unwrap_or_default();
         format!(
             "category={:?} sensor={:?} orig_addr={:?} resp_addr={:?} resp_ports={:?} first_event_start_time={:?} last_event_start_time={:?} proto={:?} confidence={:?}",
             self.category.as_ref().map_or_else(
@@ -102,8 +103,8 @@ impl PortScanFields {
             self.orig_addr.to_string(),
             self.resp_addr.to_string(),
             vector_to_string(&self.resp_ports),
-            first_event_start_time_dt.to_rfc3339(),
-            last_event_start_time_dt.to_rfc3339(),
+            first_event_start_time,
+            last_event_start_time,
             self.proto.to_string(),
             self.confidence.to_string()
         )
@@ -302,8 +303,10 @@ impl From<MultiHostPortScanFields> for MultiHostPortScanFieldsStored {
 impl MultiHostPortScanFields {
     #[must_use]
     pub fn syslog_rfc5424(&self) -> String {
-        let first_event_start_time_dt = DateTime::from_timestamp_nanos(self.first_event_start_time);
-        let last_event_start_time_dt = DateTime::from_timestamp_nanos(self.last_event_start_time);
+        let first_event_start_time =
+            timestamp::format_i64_nanos_rfc3339(self.first_event_start_time).unwrap_or_default();
+        let last_event_start_time =
+            timestamp::format_i64_nanos_rfc3339(self.last_event_start_time).unwrap_or_default();
         format!(
             "category={:?} sensor={:?} orig_addr={:?} resp_addrs={:?} resp_port={:?} proto={:?} first_event_start_time={:?} last_event_start_time={:?} confidence={:?}",
             self.category.as_ref().map_or_else(
@@ -315,8 +318,8 @@ impl MultiHostPortScanFields {
             vector_to_string(&self.resp_addrs),
             self.resp_port.to_string(),
             self.proto.to_string(),
-            first_event_start_time_dt.to_rfc3339(),
-            last_event_start_time_dt.to_rfc3339(),
+            first_event_start_time,
+            last_event_start_time,
             self.confidence.to_string()
         )
     }
@@ -511,8 +514,10 @@ impl From<ExternalDdosFields> for ExternalDdosFieldsStored {
 impl ExternalDdosFields {
     #[must_use]
     pub fn syslog_rfc5424(&self) -> String {
-        let first_event_start_time_dt = DateTime::from_timestamp_nanos(self.first_event_start_time);
-        let last_event_start_time_dt = DateTime::from_timestamp_nanos(self.last_event_start_time);
+        let first_event_start_time =
+            timestamp::format_i64_nanos_rfc3339(self.first_event_start_time).unwrap_or_default();
+        let last_event_start_time =
+            timestamp::format_i64_nanos_rfc3339(self.last_event_start_time).unwrap_or_default();
         format!(
             "category={:?} sensor={:?} orig_addrs={:?} resp_addr={:?} proto={:?} first_event_start_time={:?} last_event_start_time={:?} confidence={:?}",
             self.category.as_ref().map_or_else(
@@ -523,8 +528,8 @@ impl ExternalDdosFields {
             vector_to_string(&self.orig_addrs),
             self.resp_addr.to_string(),
             self.proto.to_string(),
-            first_event_start_time_dt.to_rfc3339(),
-            last_event_start_time_dt.to_rfc3339(),
+            first_event_start_time,
+            last_event_start_time,
             self.confidence.to_string()
         )
     }
@@ -743,7 +748,7 @@ impl From<BlocklistConnFields> for BlocklistConnFieldsStored {
 impl BlocklistConnFields {
     #[must_use]
     pub fn syslog_rfc5424(&self) -> String {
-        let start_time_dt = DateTime::from_timestamp_nanos(self.start_time);
+        let start_time = timestamp::format_i64_nanos_rfc3339(self.start_time).unwrap_or_default();
 
         format!(
             "category={:?} sensor={:?} orig_addr={:?} orig_port={:?} resp_addr={:?} resp_port={:?} proto={:?} conn_state={:?} start_time={:?} duration={:?} service={:?} orig_bytes={:?} resp_bytes={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} confidence={:?}",
@@ -758,7 +763,7 @@ impl BlocklistConnFields {
             self.resp_port.to_string(),
             self.proto.to_string(),
             self.conn_state,
-            start_time_dt.to_rfc3339(),
+            start_time,
             self.duration.to_string(),
             self.service,
             self.orig_bytes.to_string(),

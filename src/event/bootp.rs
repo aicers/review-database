@@ -1,7 +1,6 @@
 use std::{fmt, net::IpAddr};
 
 use attrievent::attribute::{BootpAttr, RawEventAttrKind};
-use chrono::DateTime;
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
@@ -45,7 +44,7 @@ macro_rules! find_bootp_attr_by_kind {
 impl BlocklistBootpFields {
     #[must_use]
     pub fn syslog_rfc5424(&self) -> String {
-        let start_time_dt = DateTime::from_timestamp_nanos(self.start_time);
+        let start_time = timestamp::format_i64_nanos_rfc3339(self.start_time).unwrap_or_default();
         format!(
             "category={:?} sensor={:?} orig_addr={:?} orig_port={:?} resp_addr={:?} resp_port={:?} proto={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} op={:?} htype={:?} hops={:?} xid={:?} ciaddr={:?} yiaddr={:?} siaddr={:?} giaddr={:?} chaddr={:?} sname={:?} file={:?} confidence={:?}",
             self.category.as_ref().map_or_else(
@@ -58,7 +57,7 @@ impl BlocklistBootpFields {
             self.resp_addr.to_string(),
             self.resp_port.to_string(),
             self.proto.to_string(),
-            start_time_dt.to_rfc3339(),
+            start_time,
             self.duration.to_string(),
             self.orig_pkts.to_string(),
             self.resp_pkts.to_string(),

@@ -1,7 +1,6 @@
 use std::{fmt, net::IpAddr};
 
 use attrievent::attribute::{DceRpcAttr, RawEventAttrKind};
-use chrono::DateTime;
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
@@ -264,7 +263,7 @@ impl From<BlocklistDceRpcFields> for BlocklistDceRpcFieldsStored {
 impl BlocklistDceRpcFields {
     #[must_use]
     pub fn syslog_rfc5424(&self) -> String {
-        let start_time_dt = DateTime::from_timestamp_nanos(self.start_time);
+        let start_time = timestamp::format_i64_nanos_rfc3339(self.start_time).unwrap_or_default();
         let context_str = self
             .context
             .iter()
@@ -303,7 +302,7 @@ impl BlocklistDceRpcFields {
             self.resp_addr.to_string(),
             self.resp_port.to_string(),
             self.proto.to_string(),
-            start_time_dt.to_rfc3339(),
+            start_time,
             self.duration.to_string(),
             self.orig_pkts.to_string(),
             self.resp_pkts.to_string(),

@@ -3491,7 +3491,7 @@ pub(crate) mod tests {
 
     #[test]
     fn country_filter_matches_any_vector_response_code() {
-        let time = Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap();
+        let time = stored_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap());
         let mut fields = multi_host_port_scan_fields();
         fields.orig_country_code = *b"US";
         fields.resp_country_codes = vec![*b"JP", *b"DE"];

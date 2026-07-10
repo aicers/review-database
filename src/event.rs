@@ -4807,7 +4807,7 @@ mod tests {
         let message = message.syslog_rfc5424();
         assert!(message.is_ok());
         let (_, _, syslog_message) = message.unwrap();
-        let start_time = chrono::DateTime::<Utc>::from_timestamp_nanos(0).to_rfc3339();
+        let start_time = timestamp::format_i64_nanos_rfc3339(0).expect("valid timestamp");
         assert_eq!(
             syslog_message,
             format!(
@@ -7601,7 +7601,7 @@ mod tests {
 
     #[test]
     fn count_country_rdp_brute_force_counts_origin_only() {
-        let time = Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap();
+        let time = msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap());
         let event = Event::RdpBruteForce(RdpBruteForce {
             sensor: String::new(),
             time,
