@@ -125,13 +125,13 @@ pub(super) trait Match {
             return Ok((false, None));
         }
 
-        if let Some(addr) = filter.source
+        if let Some(addr) = filter.originator
             && self.orig_addrs().iter().all(|&orig_addr| orig_addr != addr)
         {
             return Ok((false, None));
         }
 
-        if let Some(addr) = filter.destination
+        if let Some(addr) = filter.responder
             && self.resp_addrs().iter().all(|&resp_addr| resp_addr != addr)
         {
             return Ok((false, None));
@@ -1082,8 +1082,8 @@ mod tests {
         let resp_addr = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2));
         success_filter.customers = Some(vec![create_customer(orig_addr)]);
         success_filter.endpoints = Some(vec![create_endpoint(orig_addr)]);
-        success_filter.source = Some(orig_addr);
-        success_filter.destination = Some(resp_addr);
+        success_filter.originator = Some(orig_addr);
+        success_filter.responder = Some(resp_addr);
         success_filter.directions = Some(create_directions(FlowKind::Outbound, orig_addr));
 
         assert!(
@@ -1112,7 +1112,7 @@ mod tests {
         );
 
         let mut fail_filter = event_filter();
-        fail_filter.source = Some(fail_addr);
+        fail_filter.originator = Some(fail_addr);
         assert!(
             single_address_events
                 .iter()
@@ -1120,7 +1120,7 @@ mod tests {
         );
 
         let mut fail_filter = event_filter();
-        fail_filter.destination = Some(fail_addr);
+        fail_filter.responder = Some(fail_addr);
         assert!(
             single_address_events
                 .iter()
@@ -1155,8 +1155,8 @@ mod tests {
         let resp_addr = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2));
         success_filter.customers = Some(vec![create_customer(orig_addr)]);
         success_filter.endpoints = Some(vec![create_endpoint(orig_addr)]);
-        success_filter.source = Some(orig_addr);
-        success_filter.destination = Some(resp_addr);
+        success_filter.originator = Some(orig_addr);
+        success_filter.responder = Some(resp_addr);
         success_filter.directions = Some(create_directions(FlowKind::Outbound, orig_addr));
 
         assert!(
@@ -1185,7 +1185,7 @@ mod tests {
         );
 
         let mut fail_filter = event_filter();
-        fail_filter.source = Some(fail_addr);
+        fail_filter.originator = Some(fail_addr);
         assert!(
             multi_address_events
                 .iter()
@@ -1193,7 +1193,7 @@ mod tests {
         );
 
         let mut fail_filter = event_filter();
-        fail_filter.destination = Some(fail_addr);
+        fail_filter.responder = Some(fail_addr);
         assert!(
             multi_address_events
                 .iter()
@@ -1236,7 +1236,7 @@ mod tests {
         );
 
         let mut fail_filter = event_filter();
-        fail_filter.source = Some(fail_addr);
+        fail_filter.originator = Some(fail_addr);
         assert!(
             no_address_events
                 .iter()
@@ -1244,7 +1244,7 @@ mod tests {
         );
 
         let mut fail_filter = event_filter();
-        fail_filter.destination = Some(fail_addr);
+        fail_filter.responder = Some(fail_addr);
         assert!(
             no_address_events
                 .iter()
@@ -1681,8 +1681,8 @@ mod tests {
             customers: None,
             endpoints: None,
             directions: None,
-            source: None,
-            destination: None,
+            originator: None,
+            responder: None,
             countries: None,
             categories: None,
             levels: None,
@@ -3106,8 +3106,8 @@ mod tests {
             customers: None,
             endpoints: None,
             directions: None,
-            source: None,
-            destination: None,
+            originator: None,
+            responder: None,
             countries: None,
             categories: None,
             levels: None,
