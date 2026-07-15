@@ -211,11 +211,11 @@ impl fmt::Display for WindowsThreat {
 
 // TODO: Make new Match trait for Windows threat events
 impl Match for WindowsThreat {
-    fn src_addrs(&self) -> &[IpAddr] {
+    fn orig_addrs(&self) -> &[IpAddr] {
         std::slice::from_ref(&IpAddr::V4(Ipv4Addr::UNSPECIFIED))
     }
 
-    fn src_port(&self) -> u16 {
+    fn orig_port(&self) -> u16 {
         0
     }
 
@@ -223,11 +223,11 @@ impl Match for WindowsThreat {
         &[]
     }
 
-    fn dst_addrs(&self) -> &[IpAddr] {
+    fn resp_addrs(&self) -> &[IpAddr] {
         std::slice::from_ref(&IpAddr::V4(Ipv4Addr::UNSPECIFIED))
     }
 
-    fn dst_port(&self) -> u16 {
+    fn resp_port(&self) -> u16 {
         0
     }
 

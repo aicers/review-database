@@ -158,11 +158,11 @@ impl UnusualDestinationPattern {
 }
 
 impl Match for UnusualDestinationPattern {
-    fn src_addrs(&self) -> &[IpAddr] {
+    fn orig_addrs(&self) -> &[IpAddr] {
         &[]
     }
 
-    fn src_port(&self) -> u16 {
+    fn orig_port(&self) -> u16 {
         0
     }
 
@@ -170,11 +170,11 @@ impl Match for UnusualDestinationPattern {
         &[]
     }
 
-    fn dst_addrs(&self) -> &[IpAddr] {
+    fn resp_addrs(&self) -> &[IpAddr] {
         &self.destination_ips
     }
 
-    fn dst_port(&self) -> u16 {
+    fn resp_port(&self) -> u16 {
         0
     }
 

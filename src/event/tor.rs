@@ -152,11 +152,11 @@ impl TorConnection {
 }
 
 impl Match for TorConnection {
-    fn src_addrs(&self) -> &[IpAddr] {
+    fn orig_addrs(&self) -> &[IpAddr] {
         std::slice::from_ref(&self.orig_addr)
     }
 
-    fn src_port(&self) -> u16 {
+    fn orig_port(&self) -> u16 {
         self.orig_port
     }
 
@@ -164,11 +164,11 @@ impl Match for TorConnection {
         std::slice::from_ref(&self.orig_country_code)
     }
 
-    fn dst_addrs(&self) -> &[IpAddr] {
+    fn resp_addrs(&self) -> &[IpAddr] {
         std::slice::from_ref(&self.resp_addr)
     }
 
-    fn dst_port(&self) -> u16 {
+    fn resp_port(&self) -> u16 {
         self.resp_port
     }
 
@@ -211,9 +211,9 @@ impl Match for TorConnection {
     fn score_by_triage_exclusion(&self, triage_exclusion: &[TriageExclusion]) -> f64 {
         let matched = triage_exclusion.iter().any(|ti| match ti {
             TriageExclusion::IpAddress(filter) => self
-                .src_addrs()
+                .orig_addrs()
                 .iter()
-                .chain(self.dst_addrs().iter())
+                .chain(self.resp_addrs().iter())
                 .any(|&ip| filter.contains(ip)),
             TriageExclusion::Domain(regex_set) => regex_set.is_match(&self.host),
             TriageExclusion::Hostname(hostnames) => hostnames.contains(&self.host),
@@ -314,11 +314,11 @@ impl TorConnectionConn {
 }
 
 impl Match for TorConnectionConn {
-    fn src_addrs(&self) -> &[IpAddr] {
+    fn orig_addrs(&self) -> &[IpAddr] {
         std::slice::from_ref(&self.orig_addr)
     }
 
-    fn src_port(&self) -> u16 {
+    fn orig_port(&self) -> u16 {
         self.orig_port
     }
 
@@ -326,11 +326,11 @@ impl Match for TorConnectionConn {
         std::slice::from_ref(&self.orig_country_code)
     }
 
-    fn dst_addrs(&self) -> &[IpAddr] {
+    fn resp_addrs(&self) -> &[IpAddr] {
         std::slice::from_ref(&self.resp_addr)
     }
 
-    fn dst_port(&self) -> u16 {
+    fn resp_port(&self) -> u16 {
         self.resp_port
     }
 
@@ -461,15 +461,15 @@ mod tests {
         let event = TorConnectionConn::new(time, tor_connection_conn_fields());
 
         assert_eq!(
-            event.src_addrs(),
+            event.orig_addrs(),
             &["192.168.1.100".parse::<IpAddr>().unwrap()]
         );
-        assert_eq!(event.src_port(), 12345);
+        assert_eq!(event.orig_port(), 12345);
         assert_eq!(
-            event.dst_addrs(),
+            event.resp_addrs(),
             &["198.51.100.1".parse::<IpAddr>().unwrap()]
         );
-        assert_eq!(event.dst_port(), 443);
+        assert_eq!(event.resp_port(), 443);
         assert_eq!(event.proto(), 6);
         assert_eq!(event.category(), Some(EventCategory::CommandAndControl));
         assert_eq!(event.level(), ThreatLevel::Medium);
@@ -487,7 +487,7 @@ mod tests {
         let time = Utc.with_ymd_and_hms(2023, 1, 1, 12, 0, 0).unwrap();
         let event = TorConnectionConn::new(time, tor_connection_conn_fields());
 
-        // Test finding source address attribute
+        // Test finding originator address attribute (ConnAttr::SrcAddr from attrievent)
         let orig_addr_attr = RawEventAttrKind::Conn(ConnAttr::SrcAddr);
         if let Some(AttrValue::Addr(addr)) = event.find_attr_by_kind(orig_addr_attr) {
             assert_eq!(addr, "192.168.1.100".parse::<IpAddr>().unwrap());
@@ -495,7 +495,7 @@ mod tests {
             panic!("Expected SrcAddr attribute");
         }
 
-        // Test finding destination port attribute
+        // Test finding responder port attribute (ConnAttr::DstPort from attrievent)
         let resp_port_attr = RawEventAttrKind::Conn(ConnAttr::DstPort);
         if let Some(AttrValue::UInt(port)) = event.find_attr_by_kind(resp_port_attr) {
             assert_eq!(port, 443);
