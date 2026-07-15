@@ -256,7 +256,7 @@ fn convert_for_storage_preserves_windows_threat_i64_timestamp_bytes() {
     let time = pre_1970_timestamp();
     let producer_bytes =
         bincode::serialize(&windows_threat_fields(time)).expect("serializable producer fields");
-    let bytes = convert_for_storage(EventKind::WindowsThreat, &producer_bytes)
+    let bytes = convert_for_storage(EventKind::WindowsThreat, &producer_bytes, None)
         .expect("convertible to stored fields");
     let nanos = timestamp::to_i64_nanos(time).expect("in range");
     assert_eight_byte_i64_contract(bytes.get(..8).expect("timestamp prefix"), nanos);
