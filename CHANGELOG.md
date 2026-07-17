@@ -5,7 +5,7 @@ file is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), and
 this project adheres to [Semantic
 Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.46.0] - 2026-07-23
 
 ### Added
 
@@ -29,17 +29,17 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   `Event::count_originator_ip_address` and
   `Event::count_responder_ip_address` to match the `orig_`/`resp_`
   terminology used throughout session-oriented event APIs.
-- **BREAKING**: Bumped the database format to `0.46.0-alpha.1`, changed
-  `Store::new` to take an `Option<Arc<ip2location::DB>>` argument, and changed
+- **BREAKING**: Bumped the database format to `0.46.0`, changed `Store::new` to
+  take an `Option<Arc<ip2location::DB>>` argument, and changed
   `migrate_data_dir` to accept the same optional shared database handle. Event
   stored schemas and runtime event types that track endpoints now include
   country-code fields. Producer-facing event fields still do not require
   country-code input; new writes resolve country codes when `Store::new`
   receives `Some(Arc<ip2location::DB>)` and store `ZZ` placeholders when no
-  database is provided. The `0.45.x` to `0.46.0-alpha.1` migration rewrites
-  existing endpoint event records into the new stored schema, resolves country
-  codes when an IP2Location database is provided, preserves `ZZ` when no lookup
-  is performed, and uses `XX` when lookup fails or returns an invalid code. Event
+  database is provided. The `0.45.x` to `0.46.0` migration rewrites existing
+  endpoint event records into the new stored schema, resolves country codes when
+  an IP2Location database is provided, preserves `ZZ` when no lookup is
+  performed, and uses `XX` when lookup fails or returns an invalid code. Event
   `Display` output now includes country-code fields rendered as two-letter
   strings.
 - **BREAKING**: Renamed multi-raw detection event time fields to clarify
@@ -1533,7 +1533,7 @@ AsRef<[u8]>`). This change accommodates scenarios where the information stored
 - Modified `FtpBruteForce` by adding an `is_internal` field which is a boolean
   indicating whether it is internal or not.
 
-[Unreleased]: https://github.com/aicers/review-database/compare/0.45.0...main
+[0.46.0]: https://github.com/aicers/review-database/compare/0.45.0...0.46.0
 [0.45.0]: https://github.com/aicers/review-database/compare/0.44.1...0.45.0
 [0.44.1]: https://github.com/aicers/review-database/compare/0.44.0...0.44.1
 [0.44.0]: https://github.com/aicers/review-database/compare/0.43.0...0.44.0

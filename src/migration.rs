@@ -108,7 +108,7 @@ use crate::{
 /// // release that involves database format change) to 3.5.0, including
 /// // all alpha changes finalized in 3.5.0.
 /// ```
-const COMPATIBLE_VERSION_REQ: &str = ">=0.46.0-alpha.1,<0.46.0-alpha.2";
+const COMPATIBLE_VERSION_REQ: &str = ">=0.46.0,<0.47.0";
 
 /// Number of event records applied in each atomic migration write.
 const EVENT_MIGRATION_BATCH_SIZE: usize = 100;
@@ -191,8 +191,8 @@ pub fn migrate_data_dir<P: AsRef<Path>>(
             |data_dir, _backup_dir, _locator| migrate_0_44_to_0_45(data_dir),
         ),
         (
-            VersionReq::parse(">=0.45.0,<0.46.0-alpha.1")?,
-            Version::parse("0.46.0-alpha.1")?,
+            VersionReq::parse(">=0.45.0,<0.46.0")?,
+            Version::parse("0.46.0")?,
             |data_dir, _backup_dir, locator| migrate_0_45_to_0_46(data_dir, locator),
         ),
     ];
