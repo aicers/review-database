@@ -2137,6 +2137,9 @@ pub(crate) fn migrate_event_stored_schema_to_v0_46(
             UnusualDestinationPatternFieldsStoredV0_45,
             crate::event::UnusualDestinationPatternFieldsStoredV0_46,
         >(bytes),
-        EventKind::ExtraThreat | EventKind::WindowsThreat => Ok(bytes.to_vec()),
+        EventKind::ExtraThreat | EventKind::WindowsThreat => {
+            crate::event::validate_current_stored_schema(kind, bytes)?;
+            Ok(bytes.to_vec())
+        }
     }
 }
