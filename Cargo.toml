@@ -34,6 +34,7 @@ strum_macros = "0.27"
 thiserror = "2"
 toml = "0.8.13"
 tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"], optional = true }
 
 [dev-dependencies]
 tempfile = "3"
@@ -45,7 +46,7 @@ path = "src/migrate.rs"
 
 [features]
 default = []
-migrate = ["config"]
+migrate = ["config", "tracing-subscriber"]
 
 [lints.clippy]
 pedantic = "warn"

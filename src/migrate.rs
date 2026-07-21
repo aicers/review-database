@@ -4,9 +4,13 @@ use anyhow::{Context, Result};
 use config::File;
 use review_database::migrate_data_dir;
 use serde::Deserialize;
+use tracing_subscriber::EnvFilter;
 
 #[cfg(feature = "migrate")]
 fn main() -> Result<()> {
+    let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+    tracing_subscriber::fmt().with_env_filter(env_filter).init();
+
     let config = Config::load_config(parse().as_deref())?;
 
     println!("Starting migration process...");
