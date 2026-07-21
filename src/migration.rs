@@ -16,13 +16,13 @@ use tracing::{info, warn};
 
 use crate::{
     AllowNetwork, BlockNetwork, Customer,
-    event::{EventKind, resolve_stored_country_codes, validate_current_stored_schema},
+    event::{EventKind, resolve_stored_country_codes},
     geo::{CountryLookup, Ip2LocationResolver},
     migration::migration_structures::{
         AllowNetworkV0_42, BlockNetworkV0_42, BlocklistDceRpcFieldsStoredV0_42,
         BlocklistDceRpcFieldsStoredV0_44, BlocklistDhcpFieldsStoredV0_42,
         BlocklistDhcpFieldsStoredV0_44, HttpThreatFieldsStoredV0_43, HttpThreatFieldsStoredV0_44,
-        migrate_event_stored_schema_to_v0_46,
+        migrate_event_stored_schema_to_v0_46, validate_event_stored_schema_v0_46,
     },
     tables::NETWORK_TAGS,
 };
@@ -111,7 +111,7 @@ use crate::{
 const COMPATIBLE_VERSION_REQ: &str = ">=0.46.0-alpha.1,<0.46.0-alpha.2";
 
 /// Number of event records applied in each atomic migration write.
-const EVENT_MIGRATION_BATCH_SIZE: usize = 1000;
+const EVENT_MIGRATION_BATCH_SIZE: usize = 100;
 
 /// Migrates the data directory to the up-to-date format if necessary.
 ///
@@ -193,7 +193,7 @@ pub fn migrate_data_dir<P: AsRef<Path>>(
         (
             VersionReq::parse(">=0.45.0,<0.46.0-alpha.1")?,
             Version::parse("0.46.0-alpha.1")?,
-            migrate_0_45_to_0_46,
+            |data_dir, _backup_dir, locator| migrate_0_45_to_0_46(data_dir, locator),
         ),
     ];
 
@@ -213,11 +213,7 @@ pub fn migrate_data_dir<P: AsRef<Path>>(
     Err(anyhow!("migration from {version} is not supported"))
 }
 
-fn migrate_0_45_to_0_46(
-    data_dir: &Path,
-    _backup_dir: &Path,
-    locator: Option<&dyn CountryLookup>,
-) -> Result<()> {
+fn migrate_0_45_to_0_46(data_dir: &Path, locator: Option<&dyn CountryLookup>) -> Result<()> {
     migrate_event_country_codes(data_dir, locator).map(|_| ())
 }
 
@@ -241,7 +237,7 @@ pub(crate) fn migrate_event_country_codes(
             .context("failed to open database for event country-code migration")?;
 
     let mut stats = EventMigrationStats::default();
-    let mut pending = Vec::with_capacity(EVENT_MIGRATION_BATCH_SIZE);
+    let mut batch = rocksdb::WriteBatchWithTransaction::<true>::default();
 
     for entry in db.iterator(rocksdb::IteratorMode::Start) {
         let (key, value) = entry.context("failed to read event entry")?;
@@ -254,31 +250,33 @@ pub(crate) fn migrate_event_country_codes(
             continue;
         };
 
-        match migrate_event_stored_schema_to_v0_46(kind, &value) {
-            Ok(v0_46) => {
+        match validate_event_stored_schema_v0_46(kind, &value) {
+            Ok(()) => {
+                stats.already_current += 1;
+            }
+            Err(current_error) => {
+                let v0_46 = migrate_event_stored_schema_to_v0_46(kind, &value).map_err(
+                    |previous_error| {
+                        anyhow!(
+                            "event record with key {key_i128} matches neither the previous nor the current stored schema: previous schema error: {previous_error:#}; current schema error: {current_error:#}"
+                        )
+                    },
+                )?;
                 let resolved = resolve_stored_country_codes(kind, &v0_46, locator)?;
                 if resolved.as_slice() != value.as_ref() {
-                    pending.push((key.to_vec(), resolved));
+                    batch.put(&key, resolved);
                 }
                 stats.converted += 1;
-            }
-            Err(previous_error) => {
-                validate_current_stored_schema(kind, &value).map_err(|current_error| {
-                    anyhow!(
-                        "event record with key {key_i128} matches neither the previous nor the current stored schema: previous schema error: {previous_error:#}; current schema error: {current_error:#}"
-                    )
-                })?;
-                stats.already_current += 1;
             }
         }
         stats.processed += 1;
 
-        if pending.len() >= EVENT_MIGRATION_BATCH_SIZE {
-            write_event_migration_batch(&db, &mut pending)?;
+        if batch.len() >= EVENT_MIGRATION_BATCH_SIZE {
+            write_event_migration_batch(&db, &mut batch)?;
         }
     }
 
-    write_event_migration_batch(&db, &mut pending)?;
+    write_event_migration_batch(&db, &mut batch)?;
     info!(
         "Event country-code migration complete: processed_count={}, converted_count={}, already_current_count={}",
         stats.processed, stats.converted, stats.already_current
@@ -288,17 +286,14 @@ pub(crate) fn migrate_event_country_codes(
 
 fn write_event_migration_batch(
     db: &rocksdb::OptimisticTransactionDB<rocksdb::SingleThreaded>,
-    pending: &mut Vec<(Vec<u8>, Vec<u8>)>,
+    batch: &mut rocksdb::WriteBatchWithTransaction<true>,
 ) -> Result<()> {
-    if pending.is_empty() {
+    if batch.is_empty() {
         return Ok(());
     }
 
-    let mut batch = rocksdb::WriteBatchWithTransaction::<true>::default();
-    for (key, value) in pending.drain(..) {
-        batch.put(key, value);
-    }
-    db.write(batch)
+    let pending = std::mem::take(batch);
+    db.write(pending)
         .context("failed to commit event country-code migration batch")
 }
 
@@ -1340,6 +1335,7 @@ fn read_version_file(path: &Path) -> Result<Version> {
 mod tests {
     use std::{collections::HashMap, io::Write, net::IpAddr, path::Path};
 
+    use num_traits::ToPrimitive;
     use semver::{Version, VersionReq};
 
     use super::{
@@ -1544,6 +1540,42 @@ mod tests {
         assert_eq!(rerun_stats.processed, 1);
         assert_eq!(rerun_stats.converted, 0);
         assert_eq!(rerun_stats.already_current, 1);
+    }
+
+    #[test]
+    fn event_country_code_migration_recognizes_every_event_kind_on_rerun() {
+        let _permit = acquire_db_permit();
+        let data_dir = tempfile::tempdir().unwrap();
+        let backup_dir = tempfile::tempdir().unwrap();
+        let store = Store::new(data_dir.path(), backup_dir.path(), None).unwrap();
+        drop(store);
+
+        let db_path = data_dir.path().join("states.db");
+        let mut opts = rocksdb::Options::default();
+        opts.create_if_missing(false);
+        opts.create_missing_column_families(false);
+        let db: rocksdb::OptimisticTransactionDB<rocksdb::SingleThreaded> =
+            rocksdb::OptimisticTransactionDB::open_cf(&opts, db_path, crate::tables::MAP_NAMES)
+                .unwrap();
+        let samples = crate::event::stored_event_samples();
+        let mut batch = rocksdb::WriteBatchWithTransaction::<true>::default();
+        for (index, (kind, value)) in samples.iter().enumerate() {
+            let key =
+                (1_i128 << 64) | (kind.to_i128().unwrap() << 32) | i128::try_from(index).unwrap();
+            batch.put(key.to_be_bytes(), value);
+        }
+        db.write(batch).unwrap();
+        drop(db);
+
+        let initial_stats = migrate_event_country_codes(data_dir.path(), None).unwrap();
+        assert_eq!(initial_stats.processed, samples.len());
+        assert_eq!(initial_stats.converted, 0);
+        assert_eq!(initial_stats.already_current, samples.len());
+
+        let rerun_stats = migrate_event_country_codes(data_dir.path(), None).unwrap();
+        assert_eq!(rerun_stats.processed, samples.len());
+        assert_eq!(rerun_stats.converted, 0);
+        assert_eq!(rerun_stats.already_current, samples.len());
     }
 
     #[test]

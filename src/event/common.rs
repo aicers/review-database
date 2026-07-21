@@ -613,7 +613,7 @@ fn matches_byte_attr(cmp_kind: AttrCmpKind, target_val: &[u8], compare_val: &[u8
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use std::{
         cmp::Ordering,
         net::{IpAddr, Ipv4Addr},
@@ -643,15 +643,16 @@ mod tests {
             BlocklistTlsFieldsStored, CryptocurrencyMiningPool,
             CryptocurrencyMiningPoolFieldsStored, DgaFieldsStored, DnsCovertChannel,
             DnsEventFieldsStored, DomainGenerationAlgorithm, Event, EventFilter, ExternalDdos,
-            ExternalDdosFieldsStored, ExtraThreat, FlowKind, FtpBruteForce,
-            FtpBruteForceFieldsStored, FtpEventFieldsStored, FtpPlainText, HttpEventFieldsStored,
-            HttpThreat, HttpThreatFieldsStored, LdapBruteForce, LdapBruteForceFieldsStored,
-            LdapEventFieldsStored, LdapPlainText, LearningMethod, LockyRansomware,
-            MultiHostPortScan, MultiHostPortScanFieldsStored, NetworkThreat, NetworkType,
-            NonBrowser, PortScan, PortScanFieldsStored, RdpBruteForce, RdpBruteForceFieldsStored,
-            RecordType, RepeatedHttpSessions, RepeatedHttpSessionsFieldsStored,
-            SuspiciousTlsTraffic, TorConnection, UnusualDestinationPattern,
-            UnusualDestinationPatternFieldsStored, WindowsThreat,
+            ExternalDdosFieldsStored, ExtraThreat, ExtraThreatFieldsStored, FlowKind,
+            FtpBruteForce, FtpBruteForceFieldsStored, FtpEventFieldsStored, FtpPlainText,
+            HttpEventFieldsStored, HttpThreat, HttpThreatFieldsStored, LdapBruteForce,
+            LdapBruteForceFieldsStored, LdapEventFieldsStored, LdapPlainText, LearningMethod,
+            LockyRansomware, MultiHostPortScan, MultiHostPortScanFieldsStored, NetworkThreat,
+            NetworkThreatFieldsStored, NetworkType, NonBrowser, PortScan, PortScanFieldsStored,
+            RdpBruteForce, RdpBruteForceFieldsStored, RecordType, RepeatedHttpSessions,
+            RepeatedHttpSessionsFieldsStored, SuspiciousTlsTraffic, TorConnection,
+            UnusualDestinationPattern, UnusualDestinationPatternFieldsStored, WindowsThreat,
+            WindowsThreatFieldsStored,
         },
         types::Endpoint,
     };
@@ -2699,6 +2700,79 @@ mod tests {
         }
     }
 
+    fn extra_threat_fields() -> ExtraThreatFieldsStored {
+        let event = extra_threat();
+        ExtraThreatFieldsStored {
+            time: event.time,
+            sensor: event.sensor,
+            service: event.service,
+            content: event.content,
+            db_name: event.db_name,
+            rule_id: event.rule_id,
+            matched_to: event.matched_to,
+            cluster_id: event.cluster_id,
+            attack_kind: event.attack_kind,
+            confidence: event.confidence,
+            category: event.category,
+            triage_scores: event.triage_scores,
+        }
+    }
+
+    fn network_threat_fields() -> NetworkThreatFieldsStored {
+        let event = network_threat();
+        NetworkThreatFieldsStored {
+            time: event.time,
+            sensor: event.sensor,
+            orig_addr: event.orig_addr,
+            orig_port: event.orig_port,
+            orig_country_code: event.orig_country_code,
+            resp_addr: event.resp_addr,
+            resp_port: event.resp_port,
+            resp_country_code: event.resp_country_code,
+            proto: event.proto,
+            service: event.service,
+            start_time: event.start_time,
+            duration: event.duration,
+            orig_pkts: event.orig_pkts,
+            resp_pkts: event.resp_pkts,
+            orig_l2_bytes: event.orig_l2_bytes,
+            resp_l2_bytes: event.resp_l2_bytes,
+            content: event.content,
+            db_name: event.db_name,
+            rule_id: event.rule_id,
+            matched_to: event.matched_to,
+            cluster_id: event.cluster_id,
+            attack_kind: event.attack_kind,
+            confidence: event.confidence,
+            category: event.category,
+            triage_scores: event.triage_scores,
+        }
+    }
+
+    fn windows_threat_fields() -> WindowsThreatFieldsStored {
+        let event = windows_threat();
+        WindowsThreatFieldsStored {
+            time: event.time,
+            sensor: event.sensor,
+            service: event.service,
+            agent_name: event.agent_name,
+            agent_id: event.agent_id,
+            process_guid: event.process_guid,
+            process_id: event.process_id,
+            image: event.image,
+            user: event.user,
+            content: event.content,
+            db_name: event.db_name,
+            rule_id: event.rule_id,
+            matched_to: event.matched_to,
+            cluster_id: event.cluster_id,
+            attack_kind: event.attack_kind,
+            confidence: event.confidence,
+            category: event.category,
+            triage_scores: event.triage_scores,
+        }
+    }
+
     fn http_threat_fields() -> HttpThreatFieldsStored {
         HttpThreatFieldsStored {
             time: Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap(),
@@ -2847,6 +2921,72 @@ mod tests {
             confidence: 1.0,
             category: Some(EventCategory::InitialAccess),
         }
+    }
+
+    pub(crate) fn stored_event_samples() -> Vec<(crate::event::EventKind, Vec<u8>)> {
+        use crate::event::EventKind;
+
+        macro_rules! sample {
+            ($kind:expr, $fields:expr) => {
+                ($kind, bincode::serialize(&$fields).unwrap())
+            };
+        }
+
+        vec![
+            sample!(EventKind::DnsCovertChannel, dns_event_fields()),
+            sample!(EventKind::HttpThreat, http_threat_fields()),
+            sample!(EventKind::RdpBruteForce, rdp_brute_force_fields()),
+            sample!(
+                EventKind::RepeatedHttpSessions,
+                repeated_http_sessions_fiedls()
+            ),
+            sample!(EventKind::ExtraThreat, extra_threat_fields()),
+            sample!(EventKind::TorConnection, http_event_fields()),
+            sample!(EventKind::DomainGenerationAlgorithm, dga_fields()),
+            sample!(EventKind::FtpBruteForce, ftp_brute_force_fields()),
+            sample!(EventKind::FtpPlainText, ftp_event_fields()),
+            sample!(EventKind::PortScan, port_scan_fields()),
+            sample!(EventKind::MultiHostPortScan, multi_host_port_scan_fields()),
+            sample!(EventKind::NonBrowser, http_event_fields()),
+            sample!(EventKind::LdapBruteForce, ldap_brute_force_fields()),
+            sample!(EventKind::LdapPlainText, ldap_event_fields()),
+            sample!(EventKind::ExternalDdos, external_ddos_fields()),
+            sample!(
+                EventKind::CryptocurrencyMiningPool,
+                crypto_miining_pool_fields()
+            ),
+            sample!(EventKind::BlocklistConn, blocklist_conn_fields()),
+            sample!(EventKind::BlocklistDns, blocklist_dns_fields()),
+            sample!(EventKind::BlocklistDceRpc, blocklist_dcerpc_fields()),
+            sample!(EventKind::BlocklistFtp, ftp_event_fields()),
+            sample!(EventKind::BlocklistHttp, dga_fields()),
+            sample!(EventKind::BlocklistKerberos, blocklist_kerberos_fields()),
+            sample!(EventKind::BlocklistLdap, ldap_event_fields()),
+            sample!(EventKind::BlocklistMqtt, blocklist_mqtt_fields()),
+            sample!(EventKind::BlocklistNfs, blocklist_nfs_fields()),
+            sample!(EventKind::BlocklistNtlm, blocklist_ntlm_fields()),
+            sample!(EventKind::BlocklistRdp, blocklist_rdp_fields()),
+            sample!(EventKind::BlocklistSmb, blocklist_smb_fields()),
+            sample!(EventKind::BlocklistSmtp, blocklist_smtp_fields()),
+            sample!(EventKind::BlocklistSsh, blocklist_ssh_fields()),
+            sample!(EventKind::BlocklistTls, blocklist_tls_fields()),
+            sample!(EventKind::WindowsThreat, windows_threat_fields()),
+            sample!(EventKind::NetworkThreat, network_threat_fields()),
+            sample!(EventKind::LockyRansomware, dns_event_fields()),
+            sample!(EventKind::SuspiciousTlsTraffic, blocklist_tls_fields()),
+            sample!(EventKind::BlocklistBootp, blocklist_bootp_fields()),
+            sample!(EventKind::BlocklistDhcp, blocklist_dhcp_fields()),
+            sample!(EventKind::TorConnectionConn, blocklist_conn_fields()),
+            sample!(EventKind::BlocklistRadius, blocklist_radius_fields()),
+            sample!(
+                EventKind::BlocklistMalformedDns,
+                blocklist_malformed_dns_fields()
+            ),
+            sample!(
+                EventKind::UnusualDestinationPattern,
+                unusual_destination_pattern_fields()
+            ),
+        ]
     }
 
     use crate::Confidence;

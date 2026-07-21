@@ -47,6 +47,8 @@ use rocksdb::IteratorMode;
 use serde::{Deserialize, Serialize};
 use tracing::warn;
 
+#[cfg(test)]
+pub(crate) use self::common::tests::stored_event_samples;
 pub(crate) use self::conn::{BlocklistConnFieldsStored, MultiHostPortScanFieldsStored};
 use self::{
     bootp::BlocklistBootpFieldsStored,
@@ -3082,73 +3084,6 @@ pub(crate) fn resolve_stored_country_codes(
             })
         }
         EventKind::ExtraThreat | EventKind::WindowsThreat => Ok(bytes.to_vec()),
-    }
-}
-
-/// Validates that bytes use the current stored schema for an event kind.
-pub(crate) fn validate_current_stored_schema(kind: EventKind, bytes: &[u8]) -> Result<()> {
-    fn validate<T>(bytes: &[u8]) -> Result<()>
-    where
-        T: for<'de> Deserialize<'de>,
-    {
-        bincode::deserialize::<T>(bytes)
-            .map(|_| ())
-            .context("failed to deserialize event fields as the current stored schema")
-    }
-
-    match kind {
-        EventKind::BlocklistBootp => validate::<BlocklistBootpFieldsStored>(bytes),
-        EventKind::BlocklistConn | EventKind::TorConnectionConn => {
-            validate::<BlocklistConnFieldsStored>(bytes)
-        }
-        EventKind::BlocklistDceRpc => validate::<BlocklistDceRpcFieldsStored>(bytes),
-        EventKind::BlocklistDhcp => validate::<BlocklistDhcpFieldsStored>(bytes),
-        EventKind::BlocklistDns => validate::<BlocklistDnsFieldsStored>(bytes),
-        EventKind::BlocklistFtp | EventKind::FtpPlainText => {
-            validate::<FtpEventFieldsStored>(bytes)
-        }
-        EventKind::BlocklistHttp | EventKind::DomainGenerationAlgorithm => {
-            validate::<DgaFieldsStored>(bytes)
-        }
-        EventKind::BlocklistKerberos => validate::<BlocklistKerberosFieldsStored>(bytes),
-        EventKind::BlocklistLdap | EventKind::LdapPlainText => {
-            validate::<LdapEventFieldsStored>(bytes)
-        }
-        EventKind::BlocklistMalformedDns => validate::<BlocklistMalformedDnsFieldsStored>(bytes),
-        EventKind::BlocklistMqtt => validate::<BlocklistMqttFieldsStored>(bytes),
-        EventKind::BlocklistNfs => validate::<BlocklistNfsFieldsStored>(bytes),
-        EventKind::BlocklistNtlm => validate::<BlocklistNtlmFieldsStored>(bytes),
-        EventKind::BlocklistRadius => validate::<BlocklistRadiusFieldsStored>(bytes),
-        EventKind::BlocklistRdp => validate::<BlocklistRdpFieldsStored>(bytes),
-        EventKind::BlocklistSmb => validate::<BlocklistSmbFieldsStored>(bytes),
-        EventKind::BlocklistSmtp => validate::<BlocklistSmtpFieldsStored>(bytes),
-        EventKind::BlocklistSsh => validate::<BlocklistSshFieldsStored>(bytes),
-        EventKind::BlocklistTls | EventKind::SuspiciousTlsTraffic => {
-            validate::<BlocklistTlsFieldsStored>(bytes)
-        }
-        EventKind::CryptocurrencyMiningPool => {
-            validate::<CryptocurrencyMiningPoolFieldsStored>(bytes)
-        }
-        EventKind::DnsCovertChannel | EventKind::LockyRansomware => {
-            validate::<DnsEventFieldsStored>(bytes)
-        }
-        EventKind::ExternalDdos => validate::<ExternalDdosFieldsStored>(bytes),
-        EventKind::ExtraThreat => validate::<ExtraThreatFieldsStored>(bytes),
-        EventKind::FtpBruteForce => validate::<FtpBruteForceFieldsStored>(bytes),
-        EventKind::HttpThreat => validate::<HttpThreatFieldsStored>(bytes),
-        EventKind::LdapBruteForce => validate::<LdapBruteForceFieldsStored>(bytes),
-        EventKind::MultiHostPortScan => validate::<MultiHostPortScanFieldsStored>(bytes),
-        EventKind::NetworkThreat => validate::<NetworkThreatFieldsStored>(bytes),
-        EventKind::NonBrowser | EventKind::TorConnection => {
-            validate::<HttpEventFieldsStored>(bytes)
-        }
-        EventKind::PortScan => validate::<PortScanFieldsStored>(bytes),
-        EventKind::RdpBruteForce => validate::<RdpBruteForceFieldsStored>(bytes),
-        EventKind::RepeatedHttpSessions => validate::<RepeatedHttpSessionsFieldsStored>(bytes),
-        EventKind::UnusualDestinationPattern => {
-            validate::<UnusualDestinationPatternFieldsStored>(bytes)
-        }
-        EventKind::WindowsThreat => validate::<WindowsThreatFieldsStored>(bytes),
     }
 }
 
