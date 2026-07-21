@@ -80,6 +80,8 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- Fixed `review-migrate` producing no migration logs by initializing a
+  `tracing` subscriber with an `RUST_LOG`-configurable environment filter.
 - Domain and Hostname triage exclusions now apply to TLS events. Previously
   these exclusion kinds were silently ignored for TLS records, so a Domain or
   Hostname rule (e.g. `internal-cert.example.com`) had no effect on matching
