@@ -48,7 +48,7 @@ use serde::{Deserialize, Serialize};
 use tracing::warn;
 
 #[cfg(test)]
-pub(crate) use self::common::tests::stored_event_samples;
+pub(crate) use self::common::tests::stored_event_samples_v0_46;
 pub(crate) use self::conn::{BlocklistConnFieldsStored, MultiHostPortScanFieldsStored};
 use self::{
     bootp::BlocklistBootpFieldsStored,

@@ -1557,7 +1557,7 @@ mod tests {
         let db: rocksdb::OptimisticTransactionDB<rocksdb::SingleThreaded> =
             rocksdb::OptimisticTransactionDB::open_cf(&opts, db_path, crate::tables::MAP_NAMES)
                 .unwrap();
-        let samples = crate::event::stored_event_samples();
+        let samples = crate::event::stored_event_samples_v0_46();
         let mut batch = rocksdb::WriteBatchWithTransaction::<true>::default();
         for (index, (kind, value)) in samples.iter().enumerate() {
             let key =
