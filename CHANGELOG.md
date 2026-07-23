@@ -82,9 +82,6 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 - Fixed `review-migrate` producing no migration logs by initializing a
   `tracing` subscriber with an `RUST_LOG`-configurable environment filter.
-- The `0.45.x` to `0.46.0-alpha.1` event migration can now be resumed by
-  re-running it after an interruption. Already-converted records are recognized
-  and skipped, while converted records are committed in batches.
 - Domain and Hostname triage exclusions now apply to TLS events. Previously
   these exclusion kinds were silently ignored for TLS records, so a Domain or
   Hostname rule (e.g. `internal-cert.example.com`) had no effect on matching
