@@ -2140,3 +2140,85 @@ pub(crate) fn migrate_event_stored_schema_to_v0_46(
         EventKind::ExtraThreat | EventKind::WindowsThreat => Ok(bytes.to_vec()),
     }
 }
+
+/// Validates that bytes use the output schema of the 0.46 event migration.
+pub(super) fn validate_event_stored_schema_v0_46(kind: EventKind, bytes: &[u8]) -> Result<()> {
+    fn validate<T>(bytes: &[u8]) -> Result<()>
+    where
+        T: for<'de> Deserialize<'de>,
+    {
+        bincode::deserialize::<T>(bytes)
+            .map(|_| ())
+            .context("failed to deserialize event fields as the 0.46 stored schema")
+    }
+
+    match kind {
+        EventKind::BlocklistBootp => {
+            validate::<crate::event::BlocklistBootpFieldsStoredV0_46>(bytes)
+        }
+        EventKind::BlocklistConn | EventKind::TorConnectionConn => {
+            validate::<crate::event::BlocklistConnFieldsStoredV0_46>(bytes)
+        }
+        EventKind::BlocklistDceRpc => {
+            validate::<crate::event::BlocklistDceRpcFieldsStoredV0_46>(bytes)
+        }
+        EventKind::BlocklistDhcp => validate::<crate::event::BlocklistDhcpFieldsStoredV0_46>(bytes),
+        EventKind::BlocklistDns => validate::<crate::event::BlocklistDnsFieldsStoredV0_46>(bytes),
+        EventKind::BlocklistFtp | EventKind::FtpPlainText => {
+            validate::<crate::event::FtpEventFieldsStoredV0_46>(bytes)
+        }
+        EventKind::BlocklistHttp | EventKind::DomainGenerationAlgorithm => {
+            validate::<crate::event::DgaFieldsStoredV0_46>(bytes)
+        }
+        EventKind::BlocklistKerberos => {
+            validate::<crate::event::BlocklistKerberosFieldsStoredV0_46>(bytes)
+        }
+        EventKind::BlocklistLdap | EventKind::LdapPlainText => {
+            validate::<crate::event::LdapEventFieldsStoredV0_46>(bytes)
+        }
+        EventKind::BlocklistMalformedDns => {
+            validate::<crate::event::BlocklistMalformedDnsFieldsStoredV0_46>(bytes)
+        }
+        EventKind::BlocklistMqtt => validate::<crate::event::BlocklistMqttFieldsStoredV0_46>(bytes),
+        EventKind::BlocklistNfs => validate::<crate::event::BlocklistNfsFieldsStoredV0_46>(bytes),
+        EventKind::BlocklistNtlm => validate::<crate::event::BlocklistNtlmFieldsStoredV0_46>(bytes),
+        EventKind::BlocklistRadius => {
+            validate::<crate::event::BlocklistRadiusFieldsStoredV0_46>(bytes)
+        }
+        EventKind::BlocklistRdp => validate::<crate::event::BlocklistRdpFieldsStoredV0_46>(bytes),
+        EventKind::BlocklistSmb => validate::<crate::event::BlocklistSmbFieldsStoredV0_46>(bytes),
+        EventKind::BlocklistSmtp => validate::<crate::event::BlocklistSmtpFieldsStoredV0_46>(bytes),
+        EventKind::BlocklistSsh => validate::<crate::event::BlocklistSshFieldsStoredV0_46>(bytes),
+        EventKind::BlocklistTls | EventKind::SuspiciousTlsTraffic => {
+            validate::<crate::event::BlocklistTlsFieldsStoredV0_46>(bytes)
+        }
+        EventKind::CryptocurrencyMiningPool => {
+            validate::<crate::event::CryptocurrencyMiningPoolFieldsStoredV0_46>(bytes)
+        }
+        EventKind::DnsCovertChannel | EventKind::LockyRansomware => {
+            validate::<crate::event::DnsEventFieldsStoredV0_46>(bytes)
+        }
+        EventKind::ExternalDdos => validate::<crate::event::ExternalDdosFieldsStoredV0_46>(bytes),
+        EventKind::ExtraThreat | EventKind::WindowsThreat => Ok(()),
+        EventKind::FtpBruteForce => validate::<crate::event::FtpBruteForceFieldsStoredV0_46>(bytes),
+        EventKind::HttpThreat => validate::<crate::event::HttpThreatFieldsStoredV0_46>(bytes),
+        EventKind::LdapBruteForce => {
+            validate::<crate::event::LdapBruteForceFieldsStoredV0_46>(bytes)
+        }
+        EventKind::MultiHostPortScan => {
+            validate::<crate::event::MultiHostPortScanFieldsStoredV0_46>(bytes)
+        }
+        EventKind::NetworkThreat => validate::<crate::event::NetworkThreatFieldsStoredV0_46>(bytes),
+        EventKind::NonBrowser | EventKind::TorConnection => {
+            validate::<crate::event::HttpEventFieldsStoredV0_46>(bytes)
+        }
+        EventKind::PortScan => validate::<crate::event::PortScanFieldsStoredV0_46>(bytes),
+        EventKind::RdpBruteForce => validate::<crate::event::RdpBruteForceFieldsStoredV0_46>(bytes),
+        EventKind::RepeatedHttpSessions => {
+            validate::<crate::event::RepeatedHttpSessionsFieldsStoredV0_46>(bytes)
+        }
+        EventKind::UnusualDestinationPattern => {
+            validate::<crate::event::UnusualDestinationPatternFieldsStoredV0_46>(bytes)
+        }
+    }
+}

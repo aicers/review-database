@@ -47,6 +47,8 @@ use rocksdb::IteratorMode;
 use serde::{Deserialize, Serialize};
 use tracing::warn;
 
+#[cfg(test)]
+pub(crate) use self::common::tests::stored_event_samples_v0_46;
 pub(crate) use self::conn::{BlocklistConnFieldsStored, MultiHostPortScanFieldsStored};
 use self::{
     bootp::BlocklistBootpFieldsStored,
@@ -3127,6 +3129,7 @@ impl<'a> EventDb<'a> {
         EventIterator { inner: iter }
     }
 
+    #[cfg(test)]
     #[must_use]
     pub(crate) fn raw_iter(&self) -> RawEventIterator<'_> {
         let iter = self.inner.iterator(IteratorMode::Start);
@@ -3327,6 +3330,7 @@ pub struct EventIterator<'i> {
 }
 
 #[allow(clippy::module_name_repetitions)]
+#[cfg(test)]
 pub(crate) struct RawEventIterator<'i> {
     inner: rocksdb::DBIteratorWithThreadMode<
         'i,
@@ -3334,6 +3338,7 @@ pub(crate) struct RawEventIterator<'i> {
     >,
 }
 
+#[cfg(test)]
 impl Iterator for RawEventIterator<'_> {
     type Item = Result<(Vec<u8>, Vec<u8>)>;
 

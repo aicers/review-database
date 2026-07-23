@@ -22,7 +22,7 @@ use crate::{
         AllowNetworkV0_42, BlockNetworkV0_42, BlocklistDceRpcFieldsStoredV0_42,
         BlocklistDceRpcFieldsStoredV0_44, BlocklistDhcpFieldsStoredV0_42,
         BlocklistDhcpFieldsStoredV0_44, HttpThreatFieldsStoredV0_43, HttpThreatFieldsStoredV0_44,
-        migrate_event_stored_schema_to_v0_46,
+        migrate_event_stored_schema_to_v0_46, validate_event_stored_schema_v0_46,
     },
     tables::NETWORK_TAGS,
 };
@@ -110,6 +110,9 @@ use crate::{
 /// ```
 const COMPATIBLE_VERSION_REQ: &str = ">=0.46.0-alpha.1,<0.46.0-alpha.2";
 
+/// Number of event records applied in each atomic migration write.
+const EVENT_MIGRATION_BATCH_SIZE: usize = 100;
+
 /// Migrates the data directory to the up-to-date format if necessary.
 ///
 /// Migration is supported between released versions only. The prelease versions (alpha, beta,
@@ -190,7 +193,7 @@ pub fn migrate_data_dir<P: AsRef<Path>>(
         (
             VersionReq::parse(">=0.45.0,<0.46.0-alpha.1")?,
             Version::parse("0.46.0-alpha.1")?,
-            migrate_0_45_to_0_46,
+            |data_dir, _backup_dir, locator| migrate_0_45_to_0_46(data_dir, locator),
         ),
     ];
 
@@ -210,45 +213,88 @@ pub fn migrate_data_dir<P: AsRef<Path>>(
     Err(anyhow!("migration from {version} is not supported"))
 }
 
-fn migrate_0_45_to_0_46(
-    data_dir: &Path,
-    backup_dir: &Path,
-    locator: Option<&dyn CountryLookup>,
-) -> Result<()> {
-    let store = crate::Store::new(data_dir, backup_dir, None)
-        .context("Failed to open Store for event migration")?;
-    migrate_event_country_codes(&store, locator)
+fn migrate_0_45_to_0_46(data_dir: &Path, locator: Option<&dyn CountryLookup>) -> Result<()> {
+    migrate_event_country_codes(data_dir, locator).map(|_| ())
+}
+
+#[derive(Debug, Default, Eq, PartialEq)]
+pub(crate) struct EventMigrationStats {
+    processed: usize,
+    converted: usize,
+    already_current: usize,
 }
 
 pub(crate) fn migrate_event_country_codes(
-    store: &crate::Store,
+    data_dir: &Path,
     locator: Option<&dyn CountryLookup>,
-) -> Result<()> {
-    let events = store.events();
-    let mut migrated = 0usize;
+) -> Result<EventMigrationStats> {
+    let db_path = data_dir.join("states.db");
+    let mut opts = rocksdb::Options::default();
+    opts.create_if_missing(false);
+    opts.create_missing_column_families(false);
+    let db: rocksdb::OptimisticTransactionDB<rocksdb::SingleThreaded> =
+        rocksdb::OptimisticTransactionDB::open_cf(&opts, db_path, crate::tables::MAP_NAMES)
+            .context("failed to open database for event country-code migration")?;
 
-    for entry in events.raw_iter() {
-        let (key, value) = entry?;
+    let mut stats = EventMigrationStats::default();
+    let mut batch = rocksdb::WriteBatchWithTransaction::<true>::default();
+
+    for entry in db.iterator(rocksdb::IteratorMode::Start) {
+        let (key, value) = entry.context("failed to read event entry")?;
         if key.len() != 16 {
             continue;
         }
-        let key_i128 = i128::from_be_bytes(key.as_slice().try_into().expect("checked length"));
+        let key_i128 = i128::from_be_bytes(key.as_ref().try_into().expect("checked length"));
         let kind_num = (key_i128 & 0xffff_ffff_0000_0000) >> 32;
         let Some(kind) = EventKind::from_i128(kind_num) else {
             continue;
         };
 
-        let v0_46 = migrate_event_stored_schema_to_v0_46(kind, &value)?;
-        let resolved = resolve_stored_country_codes(kind, &v0_46, locator)?;
+        match validate_event_stored_schema_v0_46(kind, &value) {
+            Ok(()) => {
+                stats.already_current += 1;
+            }
+            Err(current_error) => {
+                let v0_46 = migrate_event_stored_schema_to_v0_46(kind, &value).map_err(
+                    |previous_error| {
+                        anyhow!(
+                            "event record with key {key_i128} matches neither the previous nor the current stored schema: previous schema error: {previous_error:#}; current schema error: {current_error:#}"
+                        )
+                    },
+                )?;
+                let resolved = resolve_stored_country_codes(kind, &v0_46, locator)?;
+                if resolved.as_slice() != value.as_ref() {
+                    batch.put(&key, resolved);
+                }
+                stats.converted += 1;
+            }
+        }
+        stats.processed += 1;
 
-        if resolved != value {
-            events.update((&key, &value), (&key, &resolved))?;
-            migrated += 1;
+        if batch.len() >= EVENT_MIGRATION_BATCH_SIZE {
+            write_event_migration_batch(&db, &mut batch)?;
         }
     }
 
-    info!("Migrated {migrated} event records to country-code stored schema");
-    Ok(())
+    write_event_migration_batch(&db, &mut batch)?;
+    info!(
+        "Event country-code migration complete: processed_count={}, converted_count={}, already_current_count={}",
+        stats.processed, stats.converted, stats.already_current
+    );
+    Ok(stats)
+}
+
+fn write_event_migration_batch(
+    db: &rocksdb::OptimisticTransactionDB<rocksdb::SingleThreaded>,
+    batch: &mut rocksdb::WriteBatchWithTransaction<true>,
+) -> Result<()> {
+    if batch.is_empty() {
+        return Ok(());
+    }
+
+    let pending = std::mem::take(batch);
+    db.write(pending)
+        .context("failed to commit event country-code migration batch")
 }
 
 /// Column family names for version 0.42 (includes the deprecated "account policy" column family)
@@ -1289,6 +1335,7 @@ fn read_version_file(path: &Path) -> Result<Version> {
 mod tests {
     use std::{collections::HashMap, io::Write, net::IpAddr, path::Path};
 
+    use num_traits::ToPrimitive;
     use semver::{Version, VersionReq};
 
     use super::{
@@ -1348,6 +1395,34 @@ mod tests {
             resp_l2_bytes: 84,
             confidence: 0.9,
             category: None,
+        }
+    }
+
+    fn blocklist_conn_message(legacy: &BlocklistConnFieldsStoredV0_42) -> EventMessage {
+        EventMessage {
+            time: chrono::Utc::now(),
+            kind: EventKind::BlocklistConn,
+            fields: bincode::serialize(&BlocklistConnFields {
+                sensor: legacy.sensor.clone(),
+                orig_addr: legacy.orig_addr,
+                orig_port: legacy.orig_port,
+                resp_addr: legacy.resp_addr,
+                resp_port: legacy.resp_port,
+                proto: legacy.proto,
+                conn_state: legacy.conn_state.clone(),
+                start_time: legacy.start_time,
+                duration: legacy.duration,
+                service: legacy.service.clone(),
+                orig_bytes: legacy.orig_bytes,
+                resp_bytes: legacy.resp_bytes,
+                orig_pkts: legacy.orig_pkts,
+                resp_pkts: legacy.resp_pkts,
+                orig_l2_bytes: legacy.orig_l2_bytes,
+                resp_l2_bytes: legacy.resp_l2_bytes,
+                confidence: legacy.confidence,
+                category: legacy.category,
+            })
+            .unwrap(),
         }
     }
 
@@ -1426,31 +1501,7 @@ mod tests {
         let store = Store::new(data_dir.path(), backup_dir.path(), None).unwrap();
         let events = store.events();
         let legacy = legacy_blocklist_conn();
-        let message = EventMessage {
-            time: chrono::Utc::now(),
-            kind: EventKind::BlocklistConn,
-            fields: bincode::serialize(&BlocklistConnFields {
-                sensor: legacy.sensor.clone(),
-                orig_addr: legacy.orig_addr,
-                orig_port: legacy.orig_port,
-                resp_addr: legacy.resp_addr,
-                resp_port: legacy.resp_port,
-                proto: legacy.proto,
-                conn_state: legacy.conn_state.clone(),
-                start_time: legacy.start_time,
-                duration: legacy.duration,
-                service: legacy.service.clone(),
-                orig_bytes: legacy.orig_bytes,
-                resp_bytes: legacy.resp_bytes,
-                orig_pkts: legacy.orig_pkts,
-                resp_pkts: legacy.resp_pkts,
-                orig_l2_bytes: legacy.orig_l2_bytes,
-                resp_l2_bytes: legacy.resp_l2_bytes,
-                confidence: legacy.confidence,
-                category: legacy.category,
-            })
-            .unwrap(),
-        };
+        let message = blocklist_conn_message(&legacy);
         events.put(&message).unwrap();
         let (key, current_value) = events.raw_iter().next().unwrap().unwrap();
         let legacy_value = bincode::serialize(&legacy).unwrap();
@@ -1458,8 +1509,16 @@ mod tests {
             .update((&key, &current_value), (&key, &legacy_value))
             .unwrap();
 
-        migrate_event_country_codes(&store, None).unwrap();
+        drop(events);
+        drop(store);
 
+        let stats = migrate_event_country_codes(data_dir.path(), None).unwrap();
+        assert_eq!(stats.processed, 1);
+        assert_eq!(stats.converted, 1);
+        assert_eq!(stats.already_current, 0);
+
+        let store = Store::new(data_dir.path(), backup_dir.path(), None).unwrap();
+        let events = store.events();
         let (migrated_key, migrated_value) = events.raw_iter().next().unwrap().unwrap();
         let migrated: BlocklistConnFieldsStored = bincode::deserialize(&migrated_value).unwrap();
         assert_eq!(migrated_key, key);
@@ -1474,6 +1533,49 @@ mod tests {
             migrated.resp_country_code,
             crate::util::COUNTRY_CODE_PENDING
         );
+
+        drop(events);
+        drop(store);
+        let rerun_stats = migrate_event_country_codes(data_dir.path(), None).unwrap();
+        assert_eq!(rerun_stats.processed, 1);
+        assert_eq!(rerun_stats.converted, 0);
+        assert_eq!(rerun_stats.already_current, 1);
+    }
+
+    #[test]
+    fn event_country_code_migration_recognizes_every_event_kind_on_rerun() {
+        let _permit = acquire_db_permit();
+        let data_dir = tempfile::tempdir().unwrap();
+        let backup_dir = tempfile::tempdir().unwrap();
+        let store = Store::new(data_dir.path(), backup_dir.path(), None).unwrap();
+        drop(store);
+
+        let db_path = data_dir.path().join("states.db");
+        let mut opts = rocksdb::Options::default();
+        opts.create_if_missing(false);
+        opts.create_missing_column_families(false);
+        let db: rocksdb::OptimisticTransactionDB<rocksdb::SingleThreaded> =
+            rocksdb::OptimisticTransactionDB::open_cf(&opts, db_path, crate::tables::MAP_NAMES)
+                .unwrap();
+        let samples = crate::event::stored_event_samples_v0_46();
+        let mut batch = rocksdb::WriteBatchWithTransaction::<true>::default();
+        for (index, (kind, value)) in samples.iter().enumerate() {
+            let key =
+                (1_i128 << 64) | (kind.to_i128().unwrap() << 32) | i128::try_from(index).unwrap();
+            batch.put(key.to_be_bytes(), value);
+        }
+        db.write(batch).unwrap();
+        drop(db);
+
+        let initial_stats = migrate_event_country_codes(data_dir.path(), None).unwrap();
+        assert_eq!(initial_stats.processed, samples.len());
+        assert_eq!(initial_stats.converted, 0);
+        assert_eq!(initial_stats.already_current, samples.len());
+
+        let rerun_stats = migrate_event_country_codes(data_dir.path(), None).unwrap();
+        assert_eq!(rerun_stats.processed, samples.len());
+        assert_eq!(rerun_stats.converted, 0);
+        assert_eq!(rerun_stats.already_current, samples.len());
     }
 
     #[test]
@@ -1484,31 +1586,7 @@ mod tests {
         let store = Store::new(data_dir.path(), backup_dir.path(), None).unwrap();
         let events = store.events();
         let legacy = legacy_blocklist_conn();
-        let message = EventMessage {
-            time: chrono::Utc::now(),
-            kind: EventKind::BlocklistConn,
-            fields: bincode::serialize(&BlocklistConnFields {
-                sensor: legacy.sensor.clone(),
-                orig_addr: legacy.orig_addr,
-                orig_port: legacy.orig_port,
-                resp_addr: legacy.resp_addr,
-                resp_port: legacy.resp_port,
-                proto: legacy.proto,
-                conn_state: legacy.conn_state.clone(),
-                start_time: legacy.start_time,
-                duration: legacy.duration,
-                service: legacy.service.clone(),
-                orig_bytes: legacy.orig_bytes,
-                resp_bytes: legacy.resp_bytes,
-                orig_pkts: legacy.orig_pkts,
-                resp_pkts: legacy.resp_pkts,
-                orig_l2_bytes: legacy.orig_l2_bytes,
-                resp_l2_bytes: legacy.resp_l2_bytes,
-                confidence: legacy.confidence,
-                category: legacy.category,
-            })
-            .unwrap(),
-        };
+        let message = blocklist_conn_message(&legacy);
         events.put(&message).unwrap();
         let (key, current_value) = events.raw_iter().next().unwrap().unwrap();
         let legacy_value = bincode::serialize(&legacy).unwrap();
@@ -1519,8 +1597,15 @@ mod tests {
         let lookup = FakeCountryLookup {
             codes: HashMap::from([(legacy.orig_addr, *b"US"), (legacy.resp_addr, *b"KR")]),
         };
-        migrate_event_country_codes(&store, Some(&lookup)).unwrap();
+        drop(events);
+        drop(store);
 
+        let stats = migrate_event_country_codes(data_dir.path(), Some(&lookup)).unwrap();
+        assert_eq!(stats.converted, 1);
+        assert_eq!(stats.already_current, 0);
+
+        let store = Store::new(data_dir.path(), backup_dir.path(), None).unwrap();
+        let events = store.events();
         let (migrated_key, migrated_value) = events.raw_iter().next().unwrap().unwrap();
         let migrated: BlocklistConnFieldsStored = bincode::deserialize(&migrated_value).unwrap();
         assert_eq!(migrated_key, key);
@@ -1529,6 +1614,75 @@ mod tests {
         assert_eq!(migrated.orig_country_code, *b"US");
         assert_eq!(migrated.resp_addr, legacy.resp_addr);
         assert_eq!(migrated.resp_country_code, *b"KR");
+    }
+
+    #[test]
+    fn event_country_code_migration_resumes_mixed_schema_database() {
+        let _permit = acquire_db_permit();
+        let data_dir = tempfile::tempdir().unwrap();
+        let backup_dir = tempfile::tempdir().unwrap();
+        let store = Store::new(data_dir.path(), backup_dir.path(), None).unwrap();
+        let events = store.events();
+        let legacy = legacy_blocklist_conn();
+        let message = blocklist_conn_message(&legacy);
+        events.put(&message).unwrap();
+        events.put(&message).unwrap();
+
+        let (key, current_value) = events.raw_iter().next().unwrap().unwrap();
+        let legacy_value = bincode::serialize(&legacy).unwrap();
+        events
+            .update((&key, &current_value), (&key, &legacy_value))
+            .unwrap();
+        drop(events);
+        drop(store);
+
+        let stats = migrate_event_country_codes(data_dir.path(), None).unwrap();
+        assert_eq!(stats.processed, 2);
+        assert_eq!(stats.converted, 1);
+        assert_eq!(stats.already_current, 1);
+
+        let store = Store::new(data_dir.path(), backup_dir.path(), None).unwrap();
+        assert_eq!(
+            store
+                .events()
+                .iter_forward()
+                .collect::<std::result::Result<Vec<_>, _>>()
+                .unwrap()
+                .len(),
+            2
+        );
+    }
+
+    #[test]
+    fn event_country_code_migration_rejects_corrupt_record_and_preserves_version() {
+        let _permit = acquire_db_permit();
+        let data_dir = tempfile::tempdir().unwrap();
+        let backup_dir = tempfile::tempdir().unwrap();
+        let store = Store::new(data_dir.path(), backup_dir.path(), None).unwrap();
+        let events = store.events();
+        let message = blocklist_conn_message(&legacy_blocklist_conn());
+        events.put(&message).unwrap();
+        let (key, current_value) = events.raw_iter().next().unwrap().unwrap();
+        events.update((&key, &current_value), (&key, &[])).unwrap();
+        drop(events);
+        drop(store);
+
+        write_version(data_dir.path(), "0.45.0");
+        write_version(backup_dir.path(), "0.45.0");
+        let error = migrate_data_dir(data_dir.path(), backup_dir.path(), None).unwrap_err();
+
+        assert!(
+            format!("{error:#}")
+                .contains("matches neither the previous nor the current stored schema")
+        );
+        assert_eq!(
+            read_version_file(&data_dir.path().join("VERSION")).unwrap(),
+            Version::parse("0.45.0").unwrap()
+        );
+        assert_eq!(
+            read_version_file(&backup_dir.path().join("VERSION")).unwrap(),
+            Version::parse("0.45.0").unwrap()
+        );
     }
 
     // =========================================================================
