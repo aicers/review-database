@@ -2709,7 +2709,7 @@ pub(crate) mod tests {
     fn extra_threat_fields() -> ExtraThreatFieldsStored {
         let event = extra_threat();
         ExtraThreatFieldsStored {
-            time: stored_time(event.time),
+            time: event.time,
             sensor: event.sensor,
             service: event.service,
             content: event.content,
@@ -2727,7 +2727,7 @@ pub(crate) mod tests {
     fn network_threat_fields() -> NetworkThreatFieldsStored {
         let event = network_threat();
         NetworkThreatFieldsStored {
-            time: stored_time(event.time),
+            time: event.time,
             sensor: event.sensor,
             orig_addr: event.orig_addr,
             orig_port: event.orig_port,
@@ -2737,7 +2737,7 @@ pub(crate) mod tests {
             resp_country_code: event.resp_country_code,
             proto: event.proto,
             service: event.service,
-            start_time: stored_time(event.start_time),
+            start_time: event.start_time,
             duration: event.duration,
             orig_pkts: event.orig_pkts,
             resp_pkts: event.resp_pkts,
@@ -2758,7 +2758,7 @@ pub(crate) mod tests {
     fn windows_threat_fields() -> WindowsThreatFieldsStored {
         let event = windows_threat();
         WindowsThreatFieldsStored {
-            time: stored_time(event.time),
+            time: event.time,
             sensor: event.sensor,
             service: event.service,
             agent_name: event.agent_name,
