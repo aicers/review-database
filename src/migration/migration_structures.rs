@@ -1997,11 +1997,13 @@ impl From<UnusualDestinationPatternFieldsStoredV0_45>
 fn convert_stored<Source, Target>(bytes: &[u8]) -> Result<Vec<u8>>
 where
     Source: for<'de> Deserialize<'de>,
-    Target: From<Source> + Serialize,
+    Target: TryFrom<Source, Error: std::error::Error + Send + Sync + 'static> + Serialize,
 {
     let source: Source = bincode::deserialize(bytes)
         .context("failed to deserialize event fields as the previous stored schema")?;
-    let target = Target::from(source);
+    let target = Target::try_from(source)
+        .map_err(|err| anyhow::anyhow!(err))
+        .context("failed to convert event fields to the current stored schema")?;
     bincode::serialize(&target).context("failed to serialize target stored schema")
 }
 
@@ -2220,5 +2222,47 @@ pub(super) fn validate_event_stored_schema_v0_46(kind: EventKind, bytes: &[u8]) 
         EventKind::UnusualDestinationPattern => {
             validate::<crate::event::UnusualDestinationPatternFieldsStoredV0_46>(bytes)
         }
+    }
+}
+
+/// Converts released 0.46 timestamp-bearing event fields to the 0.47 schema.
+///
+/// The two schemas intentionally share the same `i64` nanosecond wire format.
+/// Deserializing through both types makes that compatibility boundary explicit
+/// and rejects records that cannot be represented by the current Jiff schema.
+pub(super) fn migrate_event_stored_schema_to_v0_47(
+    kind: EventKind,
+    bytes: &[u8],
+) -> Result<Vec<u8>> {
+    fn validate_and_reserialize<Old, New>(bytes: &[u8]) -> Result<Vec<u8>>
+    where
+        Old: for<'de> Deserialize<'de>,
+        New: for<'de> Deserialize<'de> + Serialize,
+    {
+        bincode::deserialize::<Old>(bytes)
+            .context("failed to deserialize event fields as the released 0.46 stored schema")?;
+        let current: New = bincode::deserialize(bytes)
+            .context("failed to deserialize event fields as the 0.47 stored schema")?;
+        bincode::serialize(&current).context("failed to serialize event fields as the 0.47 schema")
+    }
+
+    match kind {
+        EventKind::ExtraThreat => validate_and_reserialize::<
+            crate::event::ExtraThreatFieldsStoredV0_46,
+            crate::event::ExtraThreatFieldsStoredV0_47,
+        >(bytes),
+        EventKind::HttpThreat => validate_and_reserialize::<
+            crate::event::HttpThreatFieldsStoredV0_46,
+            crate::event::HttpThreatFieldsStoredV0_47,
+        >(bytes),
+        EventKind::NetworkThreat => validate_and_reserialize::<
+            crate::event::NetworkThreatFieldsStoredV0_46,
+            crate::event::NetworkThreatFieldsStoredV0_47,
+        >(bytes),
+        EventKind::WindowsThreat => validate_and_reserialize::<
+            crate::event::WindowsThreatFieldsStoredV0_46,
+            crate::event::WindowsThreatFieldsStoredV0_47,
+        >(bytes),
+        _ => Ok(bytes.to_vec()),
     }
 }

@@ -5,6 +5,27 @@ file is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), and
 this project adheres to [Semantic
 Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.47.0-alpha.1] - 2026-07-24
+
+### Changed
+
+- **BREAKING**: Event timestamps now use `jiff::Timestamp` across the Event
+  API boundary. `EventMessage.time` and every returned `Event` payload type
+  (for example `DnsCovertChannel`, `PortScan`, blocklist events, and threat
+  events) now expose `jiff::Timestamp` for `time`, `start_time`, and related
+  window fields. Producer-facing threat event fields (`ExtraThreatFields`,
+  `HttpThreatFields`, `NetworkThreatFields`, and `WindowsThreatFields`) and
+  the stored schemas that persist timestamps (`*ThreatFieldsStored`) also use
+  `jiff::Timestamp` in memory. `EventDb::remove_before` now accepts a
+  `jiff::Timestamp` cutoff. On-disk event keys and stored timestamp fields
+  remain signed 64-bit epoch nanoseconds; a custom serde adapter maps Jiff
+  values to those bytes and rejects timestamps outside the `i64` nanosecond
+  range. Primitive `i64` session start-time fields on producer-facing `*Fields`
+  types (for example `HttpThreatFields.start_time`) are unchanged. The
+  database format is bumped from `0.46.0` to `0.47.0-alpha.1`; the migration
+  validates and preserves the released 0.46 timestamp bytes while moving
+  current stored schemas to Jiff.
+
 ## [0.46.0] - 2026-07-23
 
 ### Added
@@ -29,8 +50,8 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   `Event::count_originator_ip_address` and
   `Event::count_responder_ip_address` to match the `orig_`/`resp_`
   terminology used throughout session-oriented event APIs.
-- **BREAKING**: Bumped the database format to `0.46.0`, changed `Store::new` to
-  take an `Option<Arc<ip2location::DB>>` argument, and changed
+- **BREAKING**: Bumped the database format to `0.46.0`, changed
+  `Store::new` to take an `Option<Arc<ip2location::DB>>` argument, and changed
   `migrate_data_dir` to accept the same optional shared database handle. Event
   stored schemas and runtime event types that track endpoints now include
   country-code fields. Producer-facing event fields still do not require
@@ -1533,6 +1554,7 @@ AsRef<[u8]>`). This change accommodates scenarios where the information stored
 - Modified `FtpBruteForce` by adding an `is_internal` field which is a boolean
   indicating whether it is internal or not.
 
+[0.47.0-alpha.1]: https://github.com/aicers/review-database/compare/0.46.0...0.47.0-alpha.1
 [0.46.0]: https://github.com/aicers/review-database/compare/0.45.0...0.46.0
 [0.45.0]: https://github.com/aicers/review-database/compare/0.44.1...0.45.0
 [0.44.1]: https://github.com/aicers/review-database/compare/0.44.0...0.44.1

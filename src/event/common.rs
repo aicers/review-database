@@ -623,10 +623,12 @@ pub(crate) mod tests {
         ConnAttr, DhcpAttr, DnsAttr, FtpAttr, HttpAttr, RadiusAttr, RawEventKind,
     };
     use bincode::Options;
-    use chrono::{TimeZone, Utc};
+    use chrono::{DateTime, TimeZone, Utc};
+    use jiff::Timestamp;
     use serde::Serialize;
 
     use super::{AttrValue, Match, is_attr_matched};
+    use crate::event::timestamp;
     use crate::{
         AttrCmpKind, Customer, CustomerNetwork, EventCategory, HostNetworkGroup, PacketAttr,
         ValueKind,
@@ -672,7 +674,7 @@ pub(crate) mod tests {
 
     #[test]
     fn learning_method_match_on_semi_supervised_events() {
-        let time = Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap();
+        let time = stored_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap());
         let mut semi_supervised_events = Vec::new();
 
         let dns_event = Event::DnsCovertChannel(DnsCovertChannel::new(time, dns_event_fields()));
@@ -872,7 +874,7 @@ pub(crate) mod tests {
         let mut unsupervised_events = Vec::new();
 
         let http_threat_event = Event::HttpThreat(HttpThreat::new(
-            Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap(),
+            stored_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap()),
             http_threat_fields(),
         ));
         unsupervised_events.push(http_threat_event);
@@ -918,7 +920,7 @@ pub(crate) mod tests {
 
     #[test]
     fn filter_events_by_address() {
-        let time = Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap();
+        let time = stored_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap());
         let mut single_address_events = Vec::new();
 
         let dns_event = Event::DnsCovertChannel(DnsCovertChannel::new(time, dns_event_fields()));
@@ -1263,7 +1265,7 @@ pub(crate) mod tests {
 
     #[test]
     fn compare_attribute() {
-        let time = Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap();
+        let time = stored_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap());
 
         // Compare `Addr`, `String`, `UInt`, `VecString` type
         let http_event = DomainGenerationAlgorithm::new(time, dga_fields());
@@ -1578,7 +1580,7 @@ pub(crate) mod tests {
 
     #[test]
     fn compare_attribute_new_protocols() {
-        let time = Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap();
+        let time = stored_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap());
 
         // 1. Radius
         let radius_event = BlocklistRadius::new(time, blocklist_radius_fields());
@@ -2632,7 +2634,7 @@ pub(crate) mod tests {
 
     fn network_threat() -> NetworkThreat {
         NetworkThreat {
-            time: Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap(),
+            time: stored_time(Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap()),
             sensor: "sensor".to_string(),
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             orig_port: 10000,
@@ -2642,7 +2644,7 @@ pub(crate) mod tests {
             resp_country_code: crate::util::COUNTRY_CODE_PENDING,
             proto: 6,
             service: "http".to_string(),
-            start_time: Utc.with_ymd_and_hms(1970, 1, 1, 0, 0, 0).unwrap(),
+            start_time: stored_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 0, 0).unwrap()),
             duration: 100,
             orig_pkts: 10,
             resp_pkts: 20,
@@ -2662,7 +2664,7 @@ pub(crate) mod tests {
 
     fn extra_threat() -> ExtraThreat {
         ExtraThreat {
-            time: Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap(),
+            time: stored_time(Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap()),
             sensor: "sensor".to_string(),
             service: "service".to_string(),
             content: "content".to_string(),
@@ -2679,7 +2681,7 @@ pub(crate) mod tests {
 
     fn windows_threat() -> WindowsThreat {
         WindowsThreat {
-            time: Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap(),
+            time: stored_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap()),
             sensor: "sensor".to_string(),
             service: "notepad".to_string(),
             agent_name: "win64".to_string(),
@@ -2698,6 +2700,10 @@ pub(crate) mod tests {
             triage_scores: None,
             category: Some(EventCategory::Impact),
         }
+    }
+
+    fn stored_time(time: DateTime<Utc>) -> Timestamp {
+        timestamp::from_chrono(time).expect("test stored timestamp must fit i64 nanoseconds")
     }
 
     fn extra_threat_fields() -> ExtraThreatFieldsStored {
@@ -2775,7 +2781,7 @@ pub(crate) mod tests {
 
     fn http_threat_fields() -> HttpThreatFieldsStored {
         HttpThreatFieldsStored {
-            time: Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap(),
+            time: stored_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap()),
             sensor: "sensor".to_string(),
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             orig_port: 10000,
@@ -2926,6 +2932,15 @@ pub(crate) mod tests {
     pub(crate) fn stored_event_samples_v0_46() -> Vec<(crate::event::EventKind, Vec<u8>)> {
         use crate::event::EventKind;
 
+        fn as_v0_46<Current, V0_46>(current: &Current) -> V0_46
+        where
+            Current: serde::Serialize,
+            V0_46: serde::de::DeserializeOwned,
+        {
+            let bytes = bincode::serialize(current).expect("current stored fields serialize");
+            bincode::deserialize(&bytes).expect("i64 timestamp bytes match the 0.46 schema")
+        }
+
         macro_rules! sample {
             ($kind:expr, $fields_type:ty, $fields:expr) => {{
                 let fields: $fields_type = $fields;
@@ -2945,7 +2960,7 @@ pub(crate) mod tests {
             sample!(
                 EventKind::HttpThreat,
                 crate::event::HttpThreatFieldsStoredV0_46,
-                http_threat_fields()
+                as_v0_46(&http_threat_fields())
             ),
             sample!(
                 EventKind::RdpBruteForce,
@@ -2959,8 +2974,8 @@ pub(crate) mod tests {
             ),
             sample!(
                 EventKind::ExtraThreat,
-                ExtraThreatFieldsStored,
-                extra_threat_fields()
+                crate::event::ExtraThreatFieldsStoredV0_46,
+                as_v0_46(&extra_threat_fields())
             ),
             sample!(
                 EventKind::TorConnection,
@@ -3094,13 +3109,13 @@ pub(crate) mod tests {
             ),
             sample!(
                 EventKind::WindowsThreat,
-                WindowsThreatFieldsStored,
-                windows_threat_fields()
+                crate::event::WindowsThreatFieldsStoredV0_46,
+                as_v0_46(&windows_threat_fields())
             ),
             sample!(
                 EventKind::NetworkThreat,
                 crate::event::NetworkThreatFieldsStoredV0_46,
-                network_threat_fields()
+                as_v0_46(&network_threat_fields())
             ),
             sample!(
                 EventKind::LockyRansomware,
@@ -3166,7 +3181,7 @@ pub(crate) mod tests {
     /// only events with the same category.
     #[test]
     fn score_by_confidence_none_matches_only_none_category() {
-        let time = Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap();
+        let time = stored_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap());
 
         // Event with category = Some(Reconnaissance)
         let fields_with_cat = http_threat_fields(); // category: Some(Reconnaissance)
@@ -3222,12 +3237,12 @@ pub(crate) mod tests {
     }
 
     fn dns_covert_channel_event() -> Event {
-        let time = Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap();
+        let time = stored_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap());
         Event::DnsCovertChannel(DnsCovertChannel::new(time, dns_event_fields()))
     }
 
     fn blocklist_http_event() -> Event {
-        let time = Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap();
+        let time = stored_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap());
         Event::Blocklist(RecordType::Http(BlocklistHttp::new(
             time,
             blocklist_http_fields(),
@@ -3310,7 +3325,7 @@ pub(crate) mod tests {
             HostNetworkGroup::new(Vec::new(), networks, Vec::new()),
         ))];
 
-        let time = Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap();
+        let time = stored_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap());
 
         let mut v4_fields = blocklist_http_fields();
         v4_fields.orig_addr = "10.1.2.3".parse().unwrap();
@@ -3421,7 +3436,7 @@ pub(crate) mod tests {
     }
 
     fn http_threat_event_with_country_codes(orig: [u8; 2], resp: [u8; 2]) -> Event {
-        let time = Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap();
+        let time = stored_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap());
         let mut fields = http_threat_fields();
         fields.orig_country_code = orig;
         fields.resp_country_code = resp;
@@ -3485,7 +3500,7 @@ pub(crate) mod tests {
 
     #[test]
     fn country_filter_matches_any_vector_response_code() {
-        let time = Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap();
+        let time = stored_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap());
         let mut fields = multi_host_port_scan_fields();
         fields.orig_country_code = *b"US";
         fields.resp_country_codes = vec![*b"JP", *b"DE"];

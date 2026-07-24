@@ -22,7 +22,8 @@ use crate::{
         AllowNetworkV0_42, BlockNetworkV0_42, BlocklistDceRpcFieldsStoredV0_42,
         BlocklistDceRpcFieldsStoredV0_44, BlocklistDhcpFieldsStoredV0_42,
         BlocklistDhcpFieldsStoredV0_44, HttpThreatFieldsStoredV0_43, HttpThreatFieldsStoredV0_44,
-        migrate_event_stored_schema_to_v0_46, validate_event_stored_schema_v0_46,
+        migrate_event_stored_schema_to_v0_46, migrate_event_stored_schema_to_v0_47,
+        validate_event_stored_schema_v0_46,
     },
     tables::NETWORK_TAGS,
 };
@@ -108,7 +109,7 @@ use crate::{
 /// // release that involves database format change) to 3.5.0, including
 /// // all alpha changes finalized in 3.5.0.
 /// ```
-const COMPATIBLE_VERSION_REQ: &str = ">=0.46.0,<0.47.0";
+const COMPATIBLE_VERSION_REQ: &str = ">=0.47.0-alpha.1,<0.47.0-alpha.2";
 
 /// Number of event records applied in each atomic migration write.
 const EVENT_MIGRATION_BATCH_SIZE: usize = 100;
@@ -195,6 +196,11 @@ pub fn migrate_data_dir<P: AsRef<Path>>(
             Version::parse("0.46.0")?,
             |data_dir, _backup_dir, locator| migrate_0_45_to_0_46(data_dir, locator),
         ),
+        (
+            VersionReq::parse(">=0.46.0,<0.47.0-alpha.1")?,
+            Version::parse("0.47.0-alpha.1")?,
+            |data_dir, _backup_dir, _locator| migrate_0_46_to_0_47(data_dir),
+        ),
     ];
 
     while let Some((_req, to, m)) = migration
@@ -215,6 +221,49 @@ pub fn migrate_data_dir<P: AsRef<Path>>(
 
 fn migrate_0_45_to_0_46(data_dir: &Path, locator: Option<&dyn CountryLookup>) -> Result<()> {
     migrate_event_country_codes(data_dir, locator).map(|_| ())
+}
+
+fn migrate_0_46_to_0_47(data_dir: &Path) -> Result<()> {
+    let db_path = data_dir.join("states.db");
+    let mut opts = rocksdb::Options::default();
+    opts.create_if_missing(false);
+    opts.create_missing_column_families(false);
+    let db: rocksdb::OptimisticTransactionDB<rocksdb::SingleThreaded> =
+        rocksdb::OptimisticTransactionDB::open_cf(&opts, db_path, crate::tables::MAP_NAMES)
+            .context("failed to open database for event timestamp migration")?;
+
+    let mut batch = rocksdb::WriteBatchWithTransaction::<true>::default();
+    for entry in db.iterator(rocksdb::IteratorMode::Start) {
+        let (key, value) = entry.context("failed to read event entry")?;
+        if key.len() != 16 {
+            continue;
+        }
+        let key_i128 = i128::from_be_bytes(key.as_ref().try_into().expect("checked length"));
+        let kind_num = (key_i128 & 0xffff_ffff_0000_0000) >> 32;
+        let Some(kind) = EventKind::from_i128(kind_num) else {
+            continue;
+        };
+        if !matches!(
+            kind,
+            EventKind::ExtraThreat
+                | EventKind::HttpThreat
+                | EventKind::NetworkThreat
+                | EventKind::WindowsThreat
+        ) {
+            continue;
+        }
+
+        let migrated = migrate_event_stored_schema_to_v0_47(kind, &value)
+            .with_context(|| format!("failed to migrate 0.46 event record with key {key_i128}"))?;
+        if migrated.as_slice() != value.as_ref() {
+            batch.put(&key, migrated);
+        }
+        if batch.len() >= EVENT_MIGRATION_BATCH_SIZE {
+            write_event_migration_batch(&db, &mut batch)?;
+        }
+    }
+
+    write_event_migration_batch(&db, &mut batch)
 }
 
 #[derive(Debug, Default, Eq, PartialEq)]
@@ -1335,6 +1384,8 @@ fn read_version_file(path: &Path) -> Result<Version> {
 mod tests {
     use std::{collections::HashMap, io::Write, net::IpAddr, path::Path};
 
+    use chrono::{DateTime, TimeZone, Utc};
+    use jiff::Timestamp;
     use num_traits::ToPrimitive;
     use semver::{Version, VersionReq};
 
@@ -1343,8 +1394,9 @@ mod tests {
         migrate_event_stored_schema_to_v0_46, read_version_file,
     };
     use crate::event::{
-        BlocklistConnFields, BlocklistConnFieldsStored, EventKind, EventMessage,
-        MultiHostPortScanFieldsStored, resolve_stored_country_codes,
+        BlocklistConnFields, BlocklistConnFieldsStored, EventKind, EventMessage, ExtraThreatFields,
+        ExtraThreatFieldsStoredV0_46, ExtraThreatFieldsStoredV0_47, MultiHostPortScanFieldsStored,
+        resolve_stored_country_codes,
     };
     use crate::geo::CountryLookup;
     use crate::migration::migration_structures::{
@@ -1353,6 +1405,11 @@ mod tests {
     use crate::tables::NETWORK_TAGS;
     use crate::test::{DbGuard, acquire_db_permit};
     use crate::{Indexable, Store};
+
+    fn msg_time(time: DateTime<Utc>) -> Timestamp {
+        crate::event::timestamp::from_chrono(time)
+            .expect("test event message time must fit i64 nanoseconds")
+    }
 
     #[derive(Default)]
     struct FakeCountryLookup {
@@ -1400,7 +1457,7 @@ mod tests {
 
     fn blocklist_conn_message(legacy: &BlocklistConnFieldsStoredV0_42) -> EventMessage {
         EventMessage {
-            time: chrono::Utc::now(),
+            time: msg_time(chrono::Utc::now()),
             kind: EventKind::BlocklistConn,
             fields: bincode::serialize(&BlocklistConnFields {
                 sensor: legacy.sensor.clone(),
@@ -1688,6 +1745,81 @@ mod tests {
     // =========================================================================
     // Tests for migrate_data_dir
     // =========================================================================
+
+    #[test]
+    fn migration_from_v0_46_preserves_released_timestamp_schema() {
+        let _permit = acquire_db_permit();
+        let data_dir = tempfile::tempdir().unwrap();
+        let backup_dir = tempfile::tempdir().unwrap();
+        let old_time = Utc.with_ymd_and_hms(2024, 6, 15, 12, 30, 45).unwrap();
+        let expected_time = msg_time(old_time);
+
+        let store = Store::new(data_dir.path(), backup_dir.path(), None).unwrap();
+        let events = store.events();
+        events
+            .put(&EventMessage {
+                time: expected_time,
+                kind: EventKind::ExtraThreat,
+                fields: bincode::serialize(&ExtraThreatFields {
+                    time: expected_time,
+                    sensor: "sensor".to_string(),
+                    service: "service".to_string(),
+                    content: "content".to_string(),
+                    db_name: "database".to_string(),
+                    rule_id: 7,
+                    matched_to: "rule".to_string(),
+                    cluster_id: Some(3),
+                    attack_kind: "attack".to_string(),
+                    confidence: 0.75,
+                    category: None,
+                    triage_scores: None,
+                })
+                .unwrap(),
+            })
+            .unwrap();
+        let (key, current_value) = events.raw_iter().next().unwrap().unwrap();
+        let released = ExtraThreatFieldsStoredV0_46 {
+            time: old_time,
+            sensor: "sensor".to_string(),
+            service: "service".to_string(),
+            content: "content".to_string(),
+            db_name: "database".to_string(),
+            rule_id: 7,
+            matched_to: "rule".to_string(),
+            cluster_id: Some(3),
+            attack_kind: "attack".to_string(),
+            confidence: 0.75,
+            category: None,
+            triage_scores: None,
+        };
+        let released_bytes = bincode::serialize(&released).unwrap();
+        events
+            .update((&key, &current_value), (&key, &released_bytes))
+            .unwrap();
+        drop(events);
+        drop(store);
+
+        write_version(data_dir.path(), "0.46.0");
+        write_version(backup_dir.path(), "0.46.0");
+        migrate_data_dir(data_dir.path(), backup_dir.path(), None).unwrap();
+
+        assert_eq!(
+            read_version_file(&data_dir.path().join("VERSION")).unwrap(),
+            Version::parse("0.47.0-alpha.1").unwrap()
+        );
+        assert_eq!(
+            read_version_file(&backup_dir.path().join("VERSION")).unwrap(),
+            Version::parse("0.47.0-alpha.1").unwrap()
+        );
+
+        let store = Store::new(data_dir.path(), backup_dir.path(), None).unwrap();
+        let (_, migrated_bytes) = store.events().raw_iter().next().unwrap().unwrap();
+        let migrated: ExtraThreatFieldsStoredV0_47 = bincode::deserialize(&migrated_bytes).unwrap();
+        assert_eq!(migrated.time, expected_time);
+        assert_eq!(migrated.sensor, "sensor");
+        assert_eq!(migrated.rule_id, 7);
+        assert_eq!(migrated_bytes.as_ref(), released_bytes);
+    }
 
     /// Test that migration is skipped when the version is already compatible.
     #[test]

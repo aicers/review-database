@@ -2,9 +2,11 @@
 use std::{fmt, net::IpAddr};
 
 use attrievent::attribute::{NetworkAttr, RawEventAttrKind};
-use chrono::{DateTime, Utc, serde::ts_nanoseconds};
+use chrono::{DateTime, Utc, serde::ts_nanoseconds as chrono_ts_nanoseconds};
+use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
+use super::timestamp::{self, ts_nanoseconds as jiff_ts_nanoseconds};
 use super::{EventCategory, LearningMethod, ThreatLevel, TriageScore, common::Match};
 use crate::event::common::{AttrValue, triage_scores_to_string};
 
@@ -35,8 +37,8 @@ macro_rules! find_network_attr_by_kind {
 
 #[derive(Serialize, Deserialize)]
 pub struct NetworkThreatFields {
-    #[serde(with = "ts_nanoseconds")]
-    pub time: DateTime<Utc>,
+    #[serde(with = "jiff_ts_nanoseconds")]
+    pub time: Timestamp,
     pub sensor: String,
     pub orig_addr: IpAddr,
     pub orig_port: u16,
@@ -44,7 +46,40 @@ pub struct NetworkThreatFields {
     pub resp_port: u16,
     pub proto: u8,
     pub service: String,
-    #[serde(with = "ts_nanoseconds")]
+    #[serde(with = "jiff_ts_nanoseconds")]
+    pub start_time: Timestamp,
+    pub duration: i64,
+    pub orig_pkts: u64,
+    pub resp_pkts: u64,
+    pub orig_l2_bytes: u64,
+    pub resp_l2_bytes: u64,
+    pub content: String,
+    pub db_name: String,
+    pub rule_id: u32,
+    pub matched_to: String,
+    pub cluster_id: Option<u32>,
+    pub attack_kind: String,
+    pub confidence: f32,
+    pub category: Option<EventCategory>,
+    pub triage_scores: Option<Vec<TriageScore>>,
+}
+
+pub type NetworkThreatFieldsStored = NetworkThreatFieldsStoredV0_47;
+
+#[derive(Deserialize, Serialize)]
+pub struct NetworkThreatFieldsStoredV0_46 {
+    #[serde(with = "chrono_ts_nanoseconds")]
+    pub time: DateTime<Utc>,
+    pub sensor: String,
+    pub orig_addr: IpAddr,
+    pub orig_port: u16,
+    pub orig_country_code: [u8; 2],
+    pub resp_addr: IpAddr,
+    pub resp_port: u16,
+    pub resp_country_code: [u8; 2],
+    pub proto: u8,
+    pub service: String,
+    #[serde(with = "chrono_ts_nanoseconds")]
     pub start_time: DateTime<Utc>,
     pub duration: i64,
     pub orig_pkts: u64,
@@ -62,12 +97,10 @@ pub struct NetworkThreatFields {
     pub triage_scores: Option<Vec<TriageScore>>,
 }
 
-pub type NetworkThreatFieldsStored = NetworkThreatFieldsStoredV0_46;
-
 #[derive(Deserialize, Serialize)]
-pub struct NetworkThreatFieldsStoredV0_46 {
-    #[serde(with = "ts_nanoseconds")]
-    pub time: DateTime<Utc>,
+pub struct NetworkThreatFieldsStoredV0_47 {
+    #[serde(with = "jiff_ts_nanoseconds")]
+    pub time: Timestamp,
     pub sensor: String,
     pub orig_addr: IpAddr,
     pub orig_port: u16,
@@ -77,8 +110,8 @@ pub struct NetworkThreatFieldsStoredV0_46 {
     pub resp_country_code: [u8; 2],
     pub proto: u8,
     pub service: String,
-    #[serde(with = "ts_nanoseconds")]
-    pub start_time: DateTime<Utc>,
+    #[serde(with = "jiff_ts_nanoseconds")]
+    pub start_time: Timestamp,
     pub duration: i64,
     pub orig_pkts: u64,
     pub resp_pkts: u64,
@@ -143,7 +176,7 @@ impl NetworkThreatFields {
             self.resp_port.to_string(),
             self.proto.to_string(),
             self.service,
-            self.start_time.to_rfc3339(),
+            timestamp::format_rfc3339(self.start_time).unwrap_or_default(),
             self.duration.to_string(),
             self.orig_pkts.to_string(),
             self.resp_pkts.to_string(),
@@ -161,7 +194,7 @@ impl NetworkThreatFields {
 }
 
 pub struct NetworkThreat {
-    pub time: DateTime<Utc>,
+    pub time: Timestamp,
     pub sensor: String,
     pub orig_addr: IpAddr,
     pub orig_port: u16,
@@ -171,7 +204,7 @@ pub struct NetworkThreat {
     pub resp_country_code: [u8; 2],
     pub proto: u8,
     pub service: String,
-    pub start_time: DateTime<Utc>,
+    pub start_time: Timestamp,
     pub duration: i64,
     pub orig_pkts: u64,
     pub resp_pkts: u64,
@@ -189,7 +222,7 @@ pub struct NetworkThreat {
 }
 
 impl NetworkThreat {
-    pub(super) fn new(time: DateTime<Utc>, fields: NetworkThreatFieldsStored) -> Self {
+    pub(super) fn new(time: Timestamp, fields: NetworkThreatFieldsStored) -> Self {
         Self {
             time,
             sensor: fields.sensor,
@@ -239,7 +272,7 @@ impl fmt::Display for NetworkThreat {
             crate::util::country_code_as_str(&self.resp_country_code),
             self.proto.to_string(),
             self.service,
-            self.start_time.to_rfc3339(),
+            timestamp::format_rfc3339(self.start_time).unwrap_or_default(),
             self.duration.to_string(),
             self.orig_pkts.to_string(),
             self.resp_pkts.to_string(),
