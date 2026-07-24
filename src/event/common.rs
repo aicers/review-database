@@ -2932,6 +2932,15 @@ pub(crate) mod tests {
     pub(crate) fn stored_event_samples_v0_46() -> Vec<(crate::event::EventKind, Vec<u8>)> {
         use crate::event::EventKind;
 
+        fn as_v0_46<Current, V0_46>(current: &Current) -> V0_46
+        where
+            Current: serde::Serialize,
+            V0_46: serde::de::DeserializeOwned,
+        {
+            let bytes = bincode::serialize(current).expect("current stored fields serialize");
+            bincode::deserialize(&bytes).expect("i64 timestamp bytes match the 0.46 schema")
+        }
+
         macro_rules! sample {
             ($kind:expr, $fields_type:ty, $fields:expr) => {{
                 let fields: $fields_type = $fields;
@@ -2951,7 +2960,7 @@ pub(crate) mod tests {
             sample!(
                 EventKind::HttpThreat,
                 crate::event::HttpThreatFieldsStoredV0_46,
-                http_threat_fields()
+                as_v0_46(&http_threat_fields())
             ),
             sample!(
                 EventKind::RdpBruteForce,
@@ -2965,8 +2974,8 @@ pub(crate) mod tests {
             ),
             sample!(
                 EventKind::ExtraThreat,
-                ExtraThreatFieldsStored,
-                extra_threat_fields()
+                crate::event::ExtraThreatFieldsStoredV0_46,
+                as_v0_46(&extra_threat_fields())
             ),
             sample!(
                 EventKind::TorConnection,
@@ -3100,13 +3109,13 @@ pub(crate) mod tests {
             ),
             sample!(
                 EventKind::WindowsThreat,
-                WindowsThreatFieldsStored,
-                windows_threat_fields()
+                crate::event::WindowsThreatFieldsStoredV0_46,
+                as_v0_46(&windows_threat_fields())
             ),
             sample!(
                 EventKind::NetworkThreat,
                 crate::event::NetworkThreatFieldsStoredV0_46,
-                network_threat_fields()
+                as_v0_46(&network_threat_fields())
             ),
             sample!(
                 EventKind::LockyRansomware,

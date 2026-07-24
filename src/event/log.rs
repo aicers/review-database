@@ -5,6 +5,7 @@ use std::{
 };
 
 use attrievent::attribute::{LogAttr, RawEventAttrKind};
+use chrono::{DateTime, Utc, serde::ts_nanoseconds as chrono_ts_nanoseconds};
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
@@ -29,8 +30,27 @@ pub struct ExtraThreatFields {
     pub triage_scores: Option<Vec<TriageScore>>,
 }
 
+pub type ExtraThreatFieldsStored = ExtraThreatFieldsStoredV0_47;
+
 #[derive(Deserialize, Serialize)]
-pub struct ExtraThreatFieldsStored {
+pub(crate) struct ExtraThreatFieldsStoredV0_46 {
+    #[serde(with = "chrono_ts_nanoseconds")]
+    pub time: DateTime<Utc>,
+    pub sensor: String,
+    pub service: String,
+    pub content: String,
+    pub db_name: String,
+    pub rule_id: u32,
+    pub matched_to: String,
+    pub cluster_id: Option<u32>,
+    pub attack_kind: String,
+    pub confidence: f32,
+    pub category: Option<EventCategory>,
+    pub triage_scores: Option<Vec<TriageScore>>,
+}
+
+#[derive(Deserialize, Serialize)]
+pub struct ExtraThreatFieldsStoredV0_47 {
     #[serde(with = "jiff_ts_nanoseconds")]
     pub time: Timestamp,
     pub sensor: String,

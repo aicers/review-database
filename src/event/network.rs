@@ -2,6 +2,7 @@
 use std::{fmt, net::IpAddr};
 
 use attrievent::attribute::{NetworkAttr, RawEventAttrKind};
+use chrono::{DateTime, Utc, serde::ts_nanoseconds as chrono_ts_nanoseconds};
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
@@ -63,10 +64,41 @@ pub struct NetworkThreatFields {
     pub triage_scores: Option<Vec<TriageScore>>,
 }
 
-pub type NetworkThreatFieldsStored = NetworkThreatFieldsStoredV0_46;
+pub type NetworkThreatFieldsStored = NetworkThreatFieldsStoredV0_47;
 
 #[derive(Deserialize, Serialize)]
 pub struct NetworkThreatFieldsStoredV0_46 {
+    #[serde(with = "chrono_ts_nanoseconds")]
+    pub time: DateTime<Utc>,
+    pub sensor: String,
+    pub orig_addr: IpAddr,
+    pub orig_port: u16,
+    pub orig_country_code: [u8; 2],
+    pub resp_addr: IpAddr,
+    pub resp_port: u16,
+    pub resp_country_code: [u8; 2],
+    pub proto: u8,
+    pub service: String,
+    #[serde(with = "chrono_ts_nanoseconds")]
+    pub start_time: DateTime<Utc>,
+    pub duration: i64,
+    pub orig_pkts: u64,
+    pub resp_pkts: u64,
+    pub orig_l2_bytes: u64,
+    pub resp_l2_bytes: u64,
+    pub content: String,
+    pub db_name: String,
+    pub rule_id: u32,
+    pub matched_to: String,
+    pub cluster_id: Option<u32>,
+    pub attack_kind: String,
+    pub confidence: f32,
+    pub category: Option<EventCategory>,
+    pub triage_scores: Option<Vec<TriageScore>>,
+}
+
+#[derive(Deserialize, Serialize)]
+pub struct NetworkThreatFieldsStoredV0_47 {
     #[serde(with = "jiff_ts_nanoseconds")]
     pub time: Timestamp,
     pub sensor: String,

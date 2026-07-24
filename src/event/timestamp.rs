@@ -5,6 +5,7 @@
 //! the [`ts_nanoseconds`] serde adapter maps to and from those eight-byte
 //! values without introducing Jiff's default `i128` nanosecond encoding.
 
+#[cfg(test)]
 use chrono::{DateTime, Utc};
 use jiff::{Timestamp, tz::Offset};
 use thiserror::Error;
@@ -86,6 +87,7 @@ pub fn event_key_nanos(time: Timestamp) -> i64 {
 ///
 /// Returns [`TimestampError::OutOfI64Range`] when chrono cannot represent
 /// the value as `i64` nanoseconds.
+#[cfg(test)]
 pub fn from_chrono(time: DateTime<Utc>) -> Result<Timestamp, TimestampError> {
     let nanos = time
         .timestamp_nanos_opt()

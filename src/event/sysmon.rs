@@ -5,6 +5,7 @@ use std::{
 };
 
 use attrievent::attribute::{RawEventAttrKind, WindowAttr};
+use chrono::{DateTime, Utc, serde::ts_nanoseconds as chrono_ts_nanoseconds};
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
@@ -57,8 +58,33 @@ pub struct WindowsThreatFields {
     pub triage_scores: Option<Vec<TriageScore>>,
 }
 
+pub type WindowsThreatFieldsStored = WindowsThreatFieldsStoredV0_47;
+
 #[derive(Deserialize, Serialize)]
-pub struct WindowsThreatFieldsStored {
+pub(crate) struct WindowsThreatFieldsStoredV0_46 {
+    #[serde(with = "chrono_ts_nanoseconds")]
+    pub time: DateTime<Utc>,
+    pub sensor: String,
+    pub service: String,
+    pub agent_name: String,
+    pub agent_id: String,
+    pub process_guid: String,
+    pub process_id: u32,
+    pub image: String,
+    pub user: String,
+    pub content: String,
+    pub db_name: String,
+    pub rule_id: u32,
+    pub matched_to: String,
+    pub cluster_id: Option<u32>,
+    pub attack_kind: String,
+    pub confidence: f32,
+    pub category: Option<EventCategory>,
+    pub triage_scores: Option<Vec<TriageScore>>,
+}
+
+#[derive(Deserialize, Serialize)]
+pub struct WindowsThreatFieldsStoredV0_47 {
     #[serde(with = "jiff_ts_nanoseconds")]
     pub time: Timestamp,
     pub sensor: String,

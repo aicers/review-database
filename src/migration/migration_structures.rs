@@ -1754,12 +1754,10 @@ impl From<FtpBruteForceFieldsStoredV0_42> for crate::event::FtpBruteForceFieldsS
     }
 }
 
-impl TryFrom<HttpThreatFieldsStoredV0_44> for crate::event::HttpThreatFieldsStoredV0_46 {
-    type Error = crate::event::timestamp::TimestampError;
-
-    fn try_from(old: HttpThreatFieldsStoredV0_44) -> Result<Self, Self::Error> {
-        Ok(Self {
-            time: crate::event::timestamp::from_chrono(old.time)?,
+impl From<HttpThreatFieldsStoredV0_44> for crate::event::HttpThreatFieldsStoredV0_46 {
+    fn from(old: HttpThreatFieldsStoredV0_44) -> Self {
+        Self {
+            time: old.time,
             sensor: old.sensor,
             orig_addr: old.orig_addr,
             orig_port: old.orig_port,
@@ -1801,7 +1799,7 @@ impl TryFrom<HttpThreatFieldsStoredV0_44> for crate::event::HttpThreatFieldsStor
             attack_kind: old.attack_kind,
             confidence: old.confidence,
             category: old.category,
-        })
+        }
     }
 }
 
@@ -1843,12 +1841,10 @@ impl From<MultiHostPortScanFieldsStoredV0_42> for crate::event::MultiHostPortSca
     }
 }
 
-impl TryFrom<NetworkThreatFieldsStoredV0_45> for crate::event::NetworkThreatFieldsStoredV0_46 {
-    type Error = crate::event::timestamp::TimestampError;
-
-    fn try_from(old: NetworkThreatFieldsStoredV0_45) -> Result<Self, Self::Error> {
-        Ok(Self {
-            time: crate::event::timestamp::from_chrono(old.time)?,
+impl From<NetworkThreatFieldsStoredV0_45> for crate::event::NetworkThreatFieldsStoredV0_46 {
+    fn from(old: NetworkThreatFieldsStoredV0_45) -> Self {
+        Self {
+            time: old.time,
             sensor: old.sensor,
             orig_addr: old.orig_addr,
             orig_port: old.orig_port,
@@ -1858,7 +1854,7 @@ impl TryFrom<NetworkThreatFieldsStoredV0_45> for crate::event::NetworkThreatFiel
             resp_country_code: crate::util::COUNTRY_CODE_PENDING,
             proto: old.proto,
             service: old.service,
-            start_time: crate::event::timestamp::from_chrono(old.start_time)?,
+            start_time: old.start_time,
             duration: old.duration,
             orig_pkts: old.orig_pkts,
             resp_pkts: old.resp_pkts,
@@ -1873,7 +1869,7 @@ impl TryFrom<NetworkThreatFieldsStoredV0_45> for crate::event::NetworkThreatFiel
             confidence: old.confidence,
             category: old.category,
             triage_scores: old.triage_scores,
-        })
+        }
     }
 }
 
@@ -2226,5 +2222,47 @@ pub(super) fn validate_event_stored_schema_v0_46(kind: EventKind, bytes: &[u8]) 
         EventKind::UnusualDestinationPattern => {
             validate::<crate::event::UnusualDestinationPatternFieldsStoredV0_46>(bytes)
         }
+    }
+}
+
+/// Converts released 0.46 timestamp-bearing event fields to the 0.47 schema.
+///
+/// The two schemas intentionally share the same `i64` nanosecond wire format.
+/// Deserializing through both types makes that compatibility boundary explicit
+/// and rejects records that cannot be represented by the current Jiff schema.
+pub(super) fn migrate_event_stored_schema_to_v0_47(
+    kind: EventKind,
+    bytes: &[u8],
+) -> Result<Vec<u8>> {
+    fn validate_and_reserialize<Old, New>(bytes: &[u8]) -> Result<Vec<u8>>
+    where
+        Old: for<'de> Deserialize<'de>,
+        New: for<'de> Deserialize<'de> + Serialize,
+    {
+        bincode::deserialize::<Old>(bytes)
+            .context("failed to deserialize event fields as the released 0.46 stored schema")?;
+        let current: New = bincode::deserialize(bytes)
+            .context("failed to deserialize event fields as the 0.47 stored schema")?;
+        bincode::serialize(&current).context("failed to serialize event fields as the 0.47 schema")
+    }
+
+    match kind {
+        EventKind::ExtraThreat => validate_and_reserialize::<
+            crate::event::ExtraThreatFieldsStoredV0_46,
+            crate::event::ExtraThreatFieldsStoredV0_47,
+        >(bytes),
+        EventKind::HttpThreat => validate_and_reserialize::<
+            crate::event::HttpThreatFieldsStoredV0_46,
+            crate::event::HttpThreatFieldsStoredV0_47,
+        >(bytes),
+        EventKind::NetworkThreat => validate_and_reserialize::<
+            crate::event::NetworkThreatFieldsStoredV0_46,
+            crate::event::NetworkThreatFieldsStoredV0_47,
+        >(bytes),
+        EventKind::WindowsThreat => validate_and_reserialize::<
+            crate::event::WindowsThreatFieldsStoredV0_46,
+            crate::event::WindowsThreatFieldsStoredV0_47,
+        >(bytes),
+        _ => Ok(bytes.to_vec()),
     }
 }
