@@ -7,6 +7,11 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- Added `EventDb::remove_by_sensors` to delete events whose sensor exactly
+  matches one of the specified service FQDNs, with batched database writes.
+
 ### Changed
 
 - **BREAKING**: Event timestamps now use `jiff::Timestamp` instead of chrono's

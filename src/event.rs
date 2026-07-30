@@ -30,7 +30,7 @@ mod unusual_destination_pattern;
 mod key_baseline;
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     convert::TryInto,
     fmt::{self},
     net::IpAddr,
@@ -179,6 +179,7 @@ const MISC_LOG_THREAT: &str = "Log Threat";
 const LOCKY_RANSOMWARE: &str = "Locky Ransomware";
 const SUSPICIOUS_TLS_TRAFFIC: &str = "Suspicious TLS Traffic";
 const UNUSUAL_DESTINATION_PATTERN: &str = "Unusual Destination Pattern";
+const EVENT_DELETION_BATCH_SIZE: usize = 1000;
 
 pub enum Event {
     /// DNS requests and responses that convey unusual host names.
@@ -570,6 +571,54 @@ pub enum RecordType {
 }
 
 impl Event {
+    fn sensor(&self) -> &str {
+        match self {
+            Event::DnsCovertChannel(event) => &event.sensor,
+            Event::HttpThreat(event) => &event.sensor,
+            Event::RdpBruteForce(event) => &event.sensor,
+            Event::RepeatedHttpSessions(event) => &event.sensor,
+            Event::TorConnection(event) => &event.sensor,
+            Event::TorConnectionConn(event) => &event.sensor,
+            Event::DomainGenerationAlgorithm(event) => &event.sensor,
+            Event::FtpBruteForce(event) => &event.sensor,
+            Event::FtpPlainText(event) => &event.sensor,
+            Event::PortScan(event) => &event.sensor,
+            Event::MultiHostPortScan(event) => &event.sensor,
+            Event::ExternalDdos(event) => &event.sensor,
+            Event::NonBrowser(event) => &event.sensor,
+            Event::LdapBruteForce(event) => &event.sensor,
+            Event::LdapPlainText(event) => &event.sensor,
+            Event::CryptocurrencyMiningPool(event) => &event.sensor,
+            Event::Blocklist(record_type) => match record_type {
+                RecordType::Bootp(event) => &event.sensor,
+                RecordType::Conn(event) => &event.sensor,
+                RecordType::DceRpc(event) => &event.sensor,
+                RecordType::Dhcp(event) => &event.sensor,
+                RecordType::Dns(event) => &event.sensor,
+                RecordType::Ftp(event) => &event.sensor,
+                RecordType::Http(event) => &event.sensor,
+                RecordType::Kerberos(event) => &event.sensor,
+                RecordType::Ldap(event) => &event.sensor,
+                RecordType::MalformedDns(event) => &event.sensor,
+                RecordType::Mqtt(event) => &event.sensor,
+                RecordType::Nfs(event) => &event.sensor,
+                RecordType::Ntlm(event) => &event.sensor,
+                RecordType::Radius(event) => &event.sensor,
+                RecordType::Rdp(event) => &event.sensor,
+                RecordType::Smb(event) => &event.sensor,
+                RecordType::Smtp(event) => &event.sensor,
+                RecordType::Ssh(event) => &event.sensor,
+                RecordType::Tls(event) => &event.sensor,
+                RecordType::UnusualDestinationPattern(event) => &event.sensor,
+            },
+            Event::WindowsThreat(event) => &event.sensor,
+            Event::NetworkThreat(event) => &event.sensor,
+            Event::ExtraThreat(event) => &event.sensor,
+            Event::LockyRansomware(event) => &event.sensor,
+            Event::SuspiciousTlsTraffic(event) => &event.sensor,
+        }
+    }
+
     /// Returns whether the event matches the given filter. If the event matches, returns the
     /// triage score for the event.
     ///
@@ -3245,8 +3294,6 @@ impl<'a> EventDb<'a> {
     ///
     /// Returns an error if a database operation fails.
     pub fn remove_before(&self, before: Timestamp) -> Result<u64> {
-        const BATCH_SIZE: usize = 1000;
-
         let cutoff_nanos = match timestamp::to_i64_nanos(before) {
             Ok(nanos) => nanos,
             Err(timestamp::TimestampError::OutOfI64Range(nanos)) => {
@@ -3281,7 +3328,7 @@ impl<'a> EventDb<'a> {
                 batch.delete(&k);
                 batch_count += 1;
 
-                if batch_count >= BATCH_SIZE {
+                if batch_count >= EVENT_DELETION_BATCH_SIZE {
                     break;
                 }
             }
@@ -3297,6 +3344,61 @@ impl<'a> EventDb<'a> {
         }
 
         Ok(deleted)
+    }
+
+    /// Removes all events whose sensor exactly matches one of `sensors`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if an event cannot be read or decoded, or if a
+    /// database operation fails.
+    pub fn remove_by_sensors(&self, sensors: &[String]) -> Result<()> {
+        if sensors.is_empty() {
+            return Ok(());
+        }
+
+        let sensors: HashSet<&str> = sensors.iter().map(String::as_str).collect();
+        let iter = self.inner.iterator(IteratorMode::Start);
+        let mut batch = rocksdb::WriteBatchWithTransaction::<true>::default();
+        let mut batch_count = 0;
+
+        for item in iter {
+            let (key, value) = item.context("cannot read from event database")?;
+            let key_bytes: [u8; 16] = key
+                .as_ref()
+                .try_into()
+                .map_err(|_| anyhow::anyhow!("event key must be 16 bytes, got {}", key.len()))?;
+            let key_number = i128::from_be_bytes(key_bytes);
+            let timestamp =
+                i64::try_from(key_number >> 64).context("event timestamp must fit in 64 bits")?;
+            let time = timestamp::from_i64_nanos(timestamp)?;
+            let kind_number = (key_number & 0xffff_ffff_0000_0000) >> 32;
+            let kind = EventKind::from_i128(kind_number)
+                .ok_or_else(|| anyhow::anyhow!("unknown event kind: {kind_number}"))?;
+            let event = decode_event(key_number, kind, time, value)
+                .map_err(|error| anyhow::anyhow!("invalid event value: {error:?}"))?
+                .1;
+
+            if sensors.contains(event.sensor()) {
+                batch.delete(&key);
+                batch_count += 1;
+            }
+
+            if batch_count >= EVENT_DELETION_BATCH_SIZE {
+                self.inner
+                    .write(std::mem::take(&mut batch))
+                    .context("failed to delete events by sensor")?;
+                batch_count = 0;
+            }
+        }
+
+        if batch_count > 0 {
+            self.inner
+                .write(batch)
+                .context("failed to delete events by sensor")?;
+        }
+
+        Ok(())
     }
 
     /// Inserts a raw key-value pair into the event database.
@@ -3375,407 +3477,370 @@ impl Iterator for EventIterator<'_> {
             }
             warn!("Unknown event kind: {kind_num}; skipped");
         };
-        match kind {
-            EventKind::BlocklistBootp => {
-                let Ok(fields) = bincode::deserialize::<BlocklistBootpFieldsStored>(v.as_ref())
-                else {
-                    return Some(Err(InvalidEvent::Value(v)));
-                };
-                Some(Ok((
-                    key,
-                    Event::Blocklist(RecordType::Bootp(BlocklistBootp::new(time, fields))),
-                )))
-            }
-            EventKind::BlocklistConn => {
-                let Ok(fields) = bincode::deserialize::<BlocklistConnFieldsStored>(v.as_ref())
-                else {
-                    return Some(Err(InvalidEvent::Value(v)));
-                };
-                Some(Ok((
-                    key,
-                    Event::Blocklist(RecordType::Conn(BlocklistConn::new(time, fields))),
-                )))
-            }
-            EventKind::BlocklistDceRpc => {
-                let Ok(fields) = bincode::deserialize::<BlocklistDceRpcFieldsStored>(v.as_ref())
-                else {
-                    return Some(Err(InvalidEvent::Value(v)));
-                };
-                Some(Ok((
-                    key,
-                    Event::Blocklist(RecordType::DceRpc(BlocklistDceRpc::new(time, fields))),
-                )))
-            }
-            EventKind::BlocklistDhcp => {
-                let Ok(fields) = bincode::deserialize::<BlocklistDhcpFieldsStored>(v.as_ref())
-                else {
-                    return Some(Err(InvalidEvent::Value(v)));
-                };
-                Some(Ok((
-                    key,
-                    Event::Blocklist(RecordType::Dhcp(BlocklistDhcp::new(time, fields))),
-                )))
-            }
-            EventKind::BlocklistDns => {
-                let Ok(fields) = bincode::deserialize::<BlocklistDnsFieldsStored>(v.as_ref())
-                else {
-                    return Some(Err(InvalidEvent::Value(v)));
-                };
-                Some(Ok((
-                    key,
-                    Event::Blocklist(RecordType::Dns(BlocklistDns::new(time, fields))),
-                )))
-            }
-            EventKind::BlocklistFtp => {
-                let Ok(fields) = bincode::deserialize::<FtpEventFieldsStored>(v.as_ref()) else {
-                    return Some(Err(InvalidEvent::Value(v)));
-                };
-                Some(Ok((
-                    key,
-                    Event::Blocklist(RecordType::Ftp(BlocklistFtp::new(time, fields))),
-                )))
-            }
-            EventKind::BlocklistHttp => {
-                let Ok(fields) = bincode::deserialize::<BlocklistHttpFieldsStored>(v.as_ref())
-                else {
-                    return Some(Err(InvalidEvent::Value(v)));
-                };
-                Some(Ok((
-                    key,
-                    Event::Blocklist(RecordType::Http(BlocklistHttp::new(time, fields))),
-                )))
-            }
-            EventKind::BlocklistKerberos => {
-                let Ok(fields) = bincode::deserialize::<BlocklistKerberosFieldsStored>(v.as_ref())
-                else {
-                    return Some(Err(InvalidEvent::Value(v)));
-                };
-                Some(Ok((
-                    key,
-                    Event::Blocklist(RecordType::Kerberos(BlocklistKerberos::new(time, fields))),
-                )))
-            }
-            EventKind::BlocklistLdap => {
-                let Ok(fields) = bincode::deserialize::<LdapEventFieldsStored>(v.as_ref()) else {
-                    return Some(Err(InvalidEvent::Value(v)));
-                };
-                Some(Ok((
-                    key,
-                    Event::Blocklist(RecordType::Ldap(BlocklistLdap::new(time, fields))),
-                )))
-            }
-            EventKind::BlocklistMalformedDns => {
-                let Ok(fields) =
-                    bincode::deserialize::<BlocklistMalformedDnsFieldsStored>(v.as_ref())
-                else {
-                    return Some(Err(InvalidEvent::Value(v)));
-                };
-                Some(Ok((
-                    key,
-                    Event::Blocklist(RecordType::MalformedDns(BlocklistMalformedDns::new(
-                        time, fields,
-                    ))),
-                )))
-            }
-            EventKind::BlocklistMqtt => {
-                let Ok(fields) = bincode::deserialize::<BlocklistMqttFieldsStored>(v.as_ref())
-                else {
-                    return Some(Err(InvalidEvent::Value(v)));
-                };
-                Some(Ok((
-                    key,
-                    Event::Blocklist(RecordType::Mqtt(BlocklistMqtt::new(time, fields))),
-                )))
-            }
-            EventKind::BlocklistNfs => {
-                let Ok(fields) = bincode::deserialize::<BlocklistNfsFieldsStored>(v.as_ref())
-                else {
-                    return Some(Err(InvalidEvent::Value(v)));
-                };
-                Some(Ok((
-                    key,
-                    Event::Blocklist(RecordType::Nfs(BlocklistNfs::new(time, fields))),
-                )))
-            }
-            EventKind::BlocklistNtlm => {
-                let Ok(fields) = bincode::deserialize::<BlocklistNtlmFieldsStored>(v.as_ref())
-                else {
-                    return Some(Err(InvalidEvent::Value(v)));
-                };
-                Some(Ok((
-                    key,
-                    Event::Blocklist(RecordType::Ntlm(BlocklistNtlm::new(time, fields))),
-                )))
-            }
-            EventKind::BlocklistRadius => {
-                let Ok(fields) = bincode::deserialize::<BlocklistRadiusFieldsStored>(v.as_ref())
-                else {
-                    return Some(Err(InvalidEvent::Value(v)));
-                };
-                Some(Ok((
-                    key,
-                    Event::Blocklist(RecordType::Radius(BlocklistRadius::new(time, fields))),
-                )))
-            }
-            EventKind::BlocklistRdp => {
-                let Ok(fields) = bincode::deserialize::<BlocklistRdpFieldsStored>(v.as_ref())
-                else {
-                    return Some(Err(InvalidEvent::Value(v)));
-                };
-                Some(Ok((
-                    key,
-                    Event::Blocklist(RecordType::Rdp(BlocklistRdp::new(time, fields))),
-                )))
-            }
-            EventKind::BlocklistSmb => {
-                let Ok(fields) = bincode::deserialize::<BlocklistSmbFieldsStored>(v.as_ref())
-                else {
-                    return Some(Err(InvalidEvent::Value(v)));
-                };
-                Some(Ok((
-                    key,
-                    Event::Blocklist(RecordType::Smb(BlocklistSmb::new(time, fields))),
-                )))
-            }
-            EventKind::BlocklistSmtp => {
-                let Ok(fields) = bincode::deserialize::<BlocklistSmtpFieldsStored>(v.as_ref())
-                else {
-                    return Some(Err(InvalidEvent::Value(v)));
-                };
-                Some(Ok((
-                    key,
-                    Event::Blocklist(RecordType::Smtp(BlocklistSmtp::new(time, fields))),
-                )))
-            }
-            EventKind::BlocklistSsh => {
-                let Ok(fields) = bincode::deserialize::<BlocklistSshFieldsStored>(v.as_ref())
-                else {
-                    return Some(Err(InvalidEvent::Value(v)));
-                };
-                Some(Ok((
-                    key,
-                    Event::Blocklist(RecordType::Ssh(BlocklistSsh::new(time, fields))),
-                )))
-            }
-            EventKind::BlocklistTls => {
-                let Ok(fields) = bincode::deserialize::<BlocklistTlsFieldsStored>(v.as_ref())
-                else {
-                    return Some(Err(InvalidEvent::Value(v)));
-                };
-                Some(Ok((
-                    key,
-                    Event::Blocklist(RecordType::Tls(BlocklistTls::new(time, fields))),
-                )))
-            }
-            EventKind::CryptocurrencyMiningPool => {
-                let Ok(fields) =
-                    bincode::deserialize::<CryptocurrencyMiningPoolFieldsStored>(v.as_ref())
-                else {
-                    return Some(Err(InvalidEvent::Value(v)));
-                };
-                Some(Ok((
-                    key,
-                    Event::CryptocurrencyMiningPool(CryptocurrencyMiningPool::new(time, fields)),
-                )))
-            }
-            EventKind::DnsCovertChannel => {
-                let Ok(fields) = bincode::deserialize::<DnsEventFieldsStored>(v.as_ref()) else {
-                    return Some(Err(InvalidEvent::Value(v)));
-                };
-                Some(Ok((
-                    key,
-                    Event::DnsCovertChannel(DnsCovertChannel::new(time, fields)),
-                )))
-            }
-            EventKind::DomainGenerationAlgorithm => {
-                let Ok(fields) = bincode::deserialize::<DgaFieldsStored>(v.as_ref()) else {
-                    return Some(Err(InvalidEvent::Value(v)));
-                };
-                Some(Ok((
-                    key,
-                    Event::DomainGenerationAlgorithm(DomainGenerationAlgorithm::new(time, fields)),
-                )))
-            }
-            EventKind::ExternalDdos => {
-                let Ok(fields) = bincode::deserialize::<ExternalDdosFieldsStored>(v.as_ref())
-                else {
-                    return Some(Err(InvalidEvent::Value(v)));
-                };
-                Some(Ok((
-                    key,
-                    Event::ExternalDdos(ExternalDdos::new(time, &fields)),
-                )))
-            }
-            EventKind::ExtraThreat => {
-                let Ok(fields) = bincode::deserialize::<ExtraThreatFieldsStored>(v.as_ref()) else {
-                    return Some(Err(InvalidEvent::Value(v)));
-                };
-                Some(Ok((
-                    key,
-                    Event::ExtraThreat(ExtraThreat::new(fields.time, fields)),
-                )))
-            }
-            EventKind::FtpBruteForce => {
-                let Ok(fields) = bincode::deserialize::<FtpBruteForceFieldsStored>(v.as_ref())
-                else {
-                    return Some(Err(InvalidEvent::Value(v)));
-                };
-                Some(Ok((
-                    key,
-                    Event::FtpBruteForce(FtpBruteForce::new(time, &fields)),
-                )))
-            }
-            EventKind::FtpPlainText => {
-                let Ok(fields) = bincode::deserialize::<FtpEventFieldsStored>(v.as_ref()) else {
-                    return Some(Err(InvalidEvent::Value(v)));
-                };
-                Some(Ok((
-                    key,
-                    Event::FtpPlainText(FtpPlainText::new(time, fields)),
-                )))
-            }
-            EventKind::HttpThreat => {
-                let Ok(fields) = bincode::deserialize::<HttpThreatFieldsStored>(v.as_ref()) else {
-                    return Some(Err(InvalidEvent::Value(v)));
-                };
-                Some(Ok((
-                    key,
-                    Event::HttpThreat(HttpThreat::new(fields.time, fields)),
-                )))
-            }
-            EventKind::LdapBruteForce => {
-                let Ok(fields) = bincode::deserialize::<LdapBruteForceFieldsStored>(v.as_ref())
-                else {
-                    return Some(Err(InvalidEvent::Value(v)));
-                };
-                Some(Ok((
-                    key,
-                    Event::LdapBruteForce(LdapBruteForce::new(time, &fields)),
-                )))
-            }
-            EventKind::LdapPlainText => {
-                let Ok(fields) = bincode::deserialize::<LdapEventFieldsStored>(v.as_ref()) else {
-                    return Some(Err(InvalidEvent::Value(v)));
-                };
-                Some(Ok((
-                    key,
-                    Event::LdapPlainText(LdapPlainText::new(time, fields)),
-                )))
-            }
-            EventKind::LockyRansomware => {
-                let Ok(fields) = bincode::deserialize::<DnsEventFieldsStored>(v.as_ref()) else {
-                    return Some(Err(InvalidEvent::Value(v)));
-                };
-                Some(Ok((
-                    key,
-                    Event::LockyRansomware(LockyRansomware::new(time, fields)),
-                )))
-            }
-            EventKind::MultiHostPortScan => {
-                let Ok(fields) = bincode::deserialize::<MultiHostPortScanFieldsStored>(v.as_ref())
-                else {
-                    return Some(Err(InvalidEvent::Value(v)));
-                };
-                Some(Ok((
-                    key,
-                    Event::MultiHostPortScan(MultiHostPortScan::new(time, &fields)),
-                )))
-            }
-            EventKind::NetworkThreat => {
-                let Ok(fields) = bincode::deserialize::<NetworkThreatFieldsStored>(v.as_ref())
-                else {
-                    return Some(Err(InvalidEvent::Value(v)));
-                };
-                Some(Ok((
-                    key,
-                    Event::NetworkThreat(NetworkThreat::new(fields.time, fields)),
-                )))
-            }
-            EventKind::NonBrowser => {
-                let Ok(fields) = bincode::deserialize::<HttpEventFieldsStored>(v.as_ref()) else {
-                    return Some(Err(InvalidEvent::Value(v)));
-                };
-                Some(Ok((key, Event::NonBrowser(NonBrowser::new(time, &fields)))))
-            }
-            EventKind::PortScan => {
-                let Ok(fields) = bincode::deserialize::<PortScanFieldsStored>(v.as_ref()) else {
-                    return Some(Err(InvalidEvent::Value(v)));
-                };
-                Some(Ok((key, Event::PortScan(PortScan::new(time, &fields)))))
-            }
-            EventKind::RdpBruteForce => {
-                let Ok(fields) = bincode::deserialize::<RdpBruteForceFieldsStored>(v.as_ref())
-                else {
-                    return Some(Err(InvalidEvent::Value(v)));
-                };
-                Some(Ok((
-                    key,
-                    Event::RdpBruteForce(RdpBruteForce::new(time, &fields)),
-                )))
-            }
-            EventKind::RepeatedHttpSessions => {
-                let Ok(fields) =
-                    bincode::deserialize::<RepeatedHttpSessionsFieldsStored>(v.as_ref())
-                else {
-                    return Some(Err(InvalidEvent::Value(v)));
-                };
-                Some(Ok((
-                    key,
-                    Event::RepeatedHttpSessions(RepeatedHttpSessions::new(time, &fields)),
-                )))
-            }
-            EventKind::SuspiciousTlsTraffic => {
-                let Ok(fields) = bincode::deserialize::<BlocklistTlsFieldsStored>(v.as_ref())
-                else {
-                    return Some(Err(InvalidEvent::Value(v)));
-                };
-                Some(Ok((
-                    key,
-                    Event::SuspiciousTlsTraffic(SuspiciousTlsTraffic::new(time, fields)),
-                )))
-            }
-            EventKind::UnusualDestinationPattern => {
-                let Ok(fields) =
-                    bincode::deserialize::<UnusualDestinationPatternFieldsStored>(v.as_ref())
-                else {
-                    return Some(Err(InvalidEvent::Value(v)));
-                };
-                Some(Ok((
-                    key,
-                    Event::Blocklist(RecordType::UnusualDestinationPattern(
-                        UnusualDestinationPattern::new(time, fields),
-                    )),
-                )))
-            }
-            EventKind::TorConnection => {
-                let Ok(fields) = bincode::deserialize::<HttpEventFieldsStored>(v.as_ref()) else {
-                    return Some(Err(InvalidEvent::Value(v)));
-                };
-                Some(Ok((
-                    key,
-                    Event::TorConnection(TorConnection::new(time, &fields)),
-                )))
-            }
-            EventKind::TorConnectionConn => {
-                let Ok(fields) = bincode::deserialize::<BlocklistConnFieldsStored>(v.as_ref())
-                else {
-                    return Some(Err(InvalidEvent::Value(v)));
-                };
-                Some(Ok((
-                    key,
-                    Event::TorConnectionConn(TorConnectionConn::new(time, fields)),
-                )))
-            }
-            EventKind::WindowsThreat => {
-                let Ok(fields) = bincode::deserialize::<WindowsThreatFieldsStored>(v.as_ref())
-                else {
-                    return Some(Err(InvalidEvent::Value(v)));
-                };
-                Some(Ok((
-                    key,
-                    Event::WindowsThreat(WindowsThreat::new(fields.time, fields)),
-                )))
-            }
+        Some(decode_event(key, kind, time, v))
+    }
+}
+
+fn decode_event(
+    key: i128,
+    kind: EventKind,
+    time: Timestamp,
+    v: Box<[u8]>,
+) -> std::result::Result<(i128, Event), InvalidEvent> {
+    match kind {
+        EventKind::BlocklistBootp => {
+            let Ok(fields) = bincode::deserialize::<BlocklistBootpFieldsStored>(v.as_ref()) else {
+                return Err(InvalidEvent::Value(v));
+            };
+            Ok((
+                key,
+                Event::Blocklist(RecordType::Bootp(BlocklistBootp::new(time, fields))),
+            ))
+        }
+        EventKind::BlocklistConn => {
+            let Ok(fields) = bincode::deserialize::<BlocklistConnFieldsStored>(v.as_ref()) else {
+                return Err(InvalidEvent::Value(v));
+            };
+            Ok((
+                key,
+                Event::Blocklist(RecordType::Conn(BlocklistConn::new(time, fields))),
+            ))
+        }
+        EventKind::BlocklistDceRpc => {
+            let Ok(fields) = bincode::deserialize::<BlocklistDceRpcFieldsStored>(v.as_ref()) else {
+                return Err(InvalidEvent::Value(v));
+            };
+            Ok((
+                key,
+                Event::Blocklist(RecordType::DceRpc(BlocklistDceRpc::new(time, fields))),
+            ))
+        }
+        EventKind::BlocklistDhcp => {
+            let Ok(fields) = bincode::deserialize::<BlocklistDhcpFieldsStored>(v.as_ref()) else {
+                return Err(InvalidEvent::Value(v));
+            };
+            Ok((
+                key,
+                Event::Blocklist(RecordType::Dhcp(BlocklistDhcp::new(time, fields))),
+            ))
+        }
+        EventKind::BlocklistDns => {
+            let Ok(fields) = bincode::deserialize::<BlocklistDnsFieldsStored>(v.as_ref()) else {
+                return Err(InvalidEvent::Value(v));
+            };
+            Ok((
+                key,
+                Event::Blocklist(RecordType::Dns(BlocklistDns::new(time, fields))),
+            ))
+        }
+        EventKind::BlocklistFtp => {
+            let Ok(fields) = bincode::deserialize::<FtpEventFieldsStored>(v.as_ref()) else {
+                return Err(InvalidEvent::Value(v));
+            };
+            Ok((
+                key,
+                Event::Blocklist(RecordType::Ftp(BlocklistFtp::new(time, fields))),
+            ))
+        }
+        EventKind::BlocklistHttp => {
+            let Ok(fields) = bincode::deserialize::<BlocklistHttpFieldsStored>(v.as_ref()) else {
+                return Err(InvalidEvent::Value(v));
+            };
+            Ok((
+                key,
+                Event::Blocklist(RecordType::Http(BlocklistHttp::new(time, fields))),
+            ))
+        }
+        EventKind::BlocklistKerberos => {
+            let Ok(fields) = bincode::deserialize::<BlocklistKerberosFieldsStored>(v.as_ref())
+            else {
+                return Err(InvalidEvent::Value(v));
+            };
+            Ok((
+                key,
+                Event::Blocklist(RecordType::Kerberos(BlocklistKerberos::new(time, fields))),
+            ))
+        }
+        EventKind::BlocklistLdap => {
+            let Ok(fields) = bincode::deserialize::<LdapEventFieldsStored>(v.as_ref()) else {
+                return Err(InvalidEvent::Value(v));
+            };
+            Ok((
+                key,
+                Event::Blocklist(RecordType::Ldap(BlocklistLdap::new(time, fields))),
+            ))
+        }
+        EventKind::BlocklistMalformedDns => {
+            let Ok(fields) = bincode::deserialize::<BlocklistMalformedDnsFieldsStored>(v.as_ref())
+            else {
+                return Err(InvalidEvent::Value(v));
+            };
+            Ok((
+                key,
+                Event::Blocklist(RecordType::MalformedDns(BlocklistMalformedDns::new(
+                    time, fields,
+                ))),
+            ))
+        }
+        EventKind::BlocklistMqtt => {
+            let Ok(fields) = bincode::deserialize::<BlocklistMqttFieldsStored>(v.as_ref()) else {
+                return Err(InvalidEvent::Value(v));
+            };
+            Ok((
+                key,
+                Event::Blocklist(RecordType::Mqtt(BlocklistMqtt::new(time, fields))),
+            ))
+        }
+        EventKind::BlocklistNfs => {
+            let Ok(fields) = bincode::deserialize::<BlocklistNfsFieldsStored>(v.as_ref()) else {
+                return Err(InvalidEvent::Value(v));
+            };
+            Ok((
+                key,
+                Event::Blocklist(RecordType::Nfs(BlocklistNfs::new(time, fields))),
+            ))
+        }
+        EventKind::BlocklistNtlm => {
+            let Ok(fields) = bincode::deserialize::<BlocklistNtlmFieldsStored>(v.as_ref()) else {
+                return Err(InvalidEvent::Value(v));
+            };
+            Ok((
+                key,
+                Event::Blocklist(RecordType::Ntlm(BlocklistNtlm::new(time, fields))),
+            ))
+        }
+        EventKind::BlocklistRadius => {
+            let Ok(fields) = bincode::deserialize::<BlocklistRadiusFieldsStored>(v.as_ref()) else {
+                return Err(InvalidEvent::Value(v));
+            };
+            Ok((
+                key,
+                Event::Blocklist(RecordType::Radius(BlocklistRadius::new(time, fields))),
+            ))
+        }
+        EventKind::BlocklistRdp => {
+            let Ok(fields) = bincode::deserialize::<BlocklistRdpFieldsStored>(v.as_ref()) else {
+                return Err(InvalidEvent::Value(v));
+            };
+            Ok((
+                key,
+                Event::Blocklist(RecordType::Rdp(BlocklistRdp::new(time, fields))),
+            ))
+        }
+        EventKind::BlocklistSmb => {
+            let Ok(fields) = bincode::deserialize::<BlocklistSmbFieldsStored>(v.as_ref()) else {
+                return Err(InvalidEvent::Value(v));
+            };
+            Ok((
+                key,
+                Event::Blocklist(RecordType::Smb(BlocklistSmb::new(time, fields))),
+            ))
+        }
+        EventKind::BlocklistSmtp => {
+            let Ok(fields) = bincode::deserialize::<BlocklistSmtpFieldsStored>(v.as_ref()) else {
+                return Err(InvalidEvent::Value(v));
+            };
+            Ok((
+                key,
+                Event::Blocklist(RecordType::Smtp(BlocklistSmtp::new(time, fields))),
+            ))
+        }
+        EventKind::BlocklistSsh => {
+            let Ok(fields) = bincode::deserialize::<BlocklistSshFieldsStored>(v.as_ref()) else {
+                return Err(InvalidEvent::Value(v));
+            };
+            Ok((
+                key,
+                Event::Blocklist(RecordType::Ssh(BlocklistSsh::new(time, fields))),
+            ))
+        }
+        EventKind::BlocklistTls => {
+            let Ok(fields) = bincode::deserialize::<BlocklistTlsFieldsStored>(v.as_ref()) else {
+                return Err(InvalidEvent::Value(v));
+            };
+            Ok((
+                key,
+                Event::Blocklist(RecordType::Tls(BlocklistTls::new(time, fields))),
+            ))
+        }
+        EventKind::CryptocurrencyMiningPool => {
+            let Ok(fields) =
+                bincode::deserialize::<CryptocurrencyMiningPoolFieldsStored>(v.as_ref())
+            else {
+                return Err(InvalidEvent::Value(v));
+            };
+            Ok((
+                key,
+                Event::CryptocurrencyMiningPool(CryptocurrencyMiningPool::new(time, fields)),
+            ))
+        }
+        EventKind::DnsCovertChannel => {
+            let Ok(fields) = bincode::deserialize::<DnsEventFieldsStored>(v.as_ref()) else {
+                return Err(InvalidEvent::Value(v));
+            };
+            Ok((
+                key,
+                Event::DnsCovertChannel(DnsCovertChannel::new(time, fields)),
+            ))
+        }
+        EventKind::DomainGenerationAlgorithm => {
+            let Ok(fields) = bincode::deserialize::<DgaFieldsStored>(v.as_ref()) else {
+                return Err(InvalidEvent::Value(v));
+            };
+            Ok((
+                key,
+                Event::DomainGenerationAlgorithm(DomainGenerationAlgorithm::new(time, fields)),
+            ))
+        }
+        EventKind::ExternalDdos => {
+            let Ok(fields) = bincode::deserialize::<ExternalDdosFieldsStored>(v.as_ref()) else {
+                return Err(InvalidEvent::Value(v));
+            };
+            Ok((key, Event::ExternalDdos(ExternalDdos::new(time, &fields))))
+        }
+        EventKind::ExtraThreat => {
+            let Ok(fields) = bincode::deserialize::<ExtraThreatFieldsStored>(v.as_ref()) else {
+                return Err(InvalidEvent::Value(v));
+            };
+            Ok((
+                key,
+                Event::ExtraThreat(ExtraThreat::new(fields.time, fields)),
+            ))
+        }
+        EventKind::FtpBruteForce => {
+            let Ok(fields) = bincode::deserialize::<FtpBruteForceFieldsStored>(v.as_ref()) else {
+                return Err(InvalidEvent::Value(v));
+            };
+            Ok((key, Event::FtpBruteForce(FtpBruteForce::new(time, &fields))))
+        }
+        EventKind::FtpPlainText => {
+            let Ok(fields) = bincode::deserialize::<FtpEventFieldsStored>(v.as_ref()) else {
+                return Err(InvalidEvent::Value(v));
+            };
+            Ok((key, Event::FtpPlainText(FtpPlainText::new(time, fields))))
+        }
+        EventKind::HttpThreat => {
+            let Ok(fields) = bincode::deserialize::<HttpThreatFieldsStored>(v.as_ref()) else {
+                return Err(InvalidEvent::Value(v));
+            };
+            Ok((key, Event::HttpThreat(HttpThreat::new(fields.time, fields))))
+        }
+        EventKind::LdapBruteForce => {
+            let Ok(fields) = bincode::deserialize::<LdapBruteForceFieldsStored>(v.as_ref()) else {
+                return Err(InvalidEvent::Value(v));
+            };
+            Ok((
+                key,
+                Event::LdapBruteForce(LdapBruteForce::new(time, &fields)),
+            ))
+        }
+        EventKind::LdapPlainText => {
+            let Ok(fields) = bincode::deserialize::<LdapEventFieldsStored>(v.as_ref()) else {
+                return Err(InvalidEvent::Value(v));
+            };
+            Ok((key, Event::LdapPlainText(LdapPlainText::new(time, fields))))
+        }
+        EventKind::LockyRansomware => {
+            let Ok(fields) = bincode::deserialize::<DnsEventFieldsStored>(v.as_ref()) else {
+                return Err(InvalidEvent::Value(v));
+            };
+            Ok((
+                key,
+                Event::LockyRansomware(LockyRansomware::new(time, fields)),
+            ))
+        }
+        EventKind::MultiHostPortScan => {
+            let Ok(fields) = bincode::deserialize::<MultiHostPortScanFieldsStored>(v.as_ref())
+            else {
+                return Err(InvalidEvent::Value(v));
+            };
+            Ok((
+                key,
+                Event::MultiHostPortScan(MultiHostPortScan::new(time, &fields)),
+            ))
+        }
+        EventKind::NetworkThreat => {
+            let Ok(fields) = bincode::deserialize::<NetworkThreatFieldsStored>(v.as_ref()) else {
+                return Err(InvalidEvent::Value(v));
+            };
+            Ok((
+                key,
+                Event::NetworkThreat(NetworkThreat::new(fields.time, fields)),
+            ))
+        }
+        EventKind::NonBrowser => {
+            let Ok(fields) = bincode::deserialize::<HttpEventFieldsStored>(v.as_ref()) else {
+                return Err(InvalidEvent::Value(v));
+            };
+            Ok((key, Event::NonBrowser(NonBrowser::new(time, &fields))))
+        }
+        EventKind::PortScan => {
+            let Ok(fields) = bincode::deserialize::<PortScanFieldsStored>(v.as_ref()) else {
+                return Err(InvalidEvent::Value(v));
+            };
+            Ok((key, Event::PortScan(PortScan::new(time, &fields))))
+        }
+        EventKind::RdpBruteForce => {
+            let Ok(fields) = bincode::deserialize::<RdpBruteForceFieldsStored>(v.as_ref()) else {
+                return Err(InvalidEvent::Value(v));
+            };
+            Ok((key, Event::RdpBruteForce(RdpBruteForce::new(time, &fields))))
+        }
+        EventKind::RepeatedHttpSessions => {
+            let Ok(fields) = bincode::deserialize::<RepeatedHttpSessionsFieldsStored>(v.as_ref())
+            else {
+                return Err(InvalidEvent::Value(v));
+            };
+            Ok((
+                key,
+                Event::RepeatedHttpSessions(RepeatedHttpSessions::new(time, &fields)),
+            ))
+        }
+        EventKind::SuspiciousTlsTraffic => {
+            let Ok(fields) = bincode::deserialize::<BlocklistTlsFieldsStored>(v.as_ref()) else {
+                return Err(InvalidEvent::Value(v));
+            };
+            Ok((
+                key,
+                Event::SuspiciousTlsTraffic(SuspiciousTlsTraffic::new(time, fields)),
+            ))
+        }
+        EventKind::UnusualDestinationPattern => {
+            let Ok(fields) =
+                bincode::deserialize::<UnusualDestinationPatternFieldsStored>(v.as_ref())
+            else {
+                return Err(InvalidEvent::Value(v));
+            };
+            Ok((
+                key,
+                Event::Blocklist(RecordType::UnusualDestinationPattern(
+                    UnusualDestinationPattern::new(time, fields),
+                )),
+            ))
+        }
+        EventKind::TorConnection => {
+            let Ok(fields) = bincode::deserialize::<HttpEventFieldsStored>(v.as_ref()) else {
+                return Err(InvalidEvent::Value(v));
+            };
+            Ok((key, Event::TorConnection(TorConnection::new(time, &fields))))
+        }
+        EventKind::TorConnectionConn => {
+            let Ok(fields) = bincode::deserialize::<BlocklistConnFieldsStored>(v.as_ref()) else {
+                return Err(InvalidEvent::Value(v));
+            };
+            Ok((
+                key,
+                Event::TorConnectionConn(TorConnectionConn::new(time, fields)),
+            ))
+        }
+        EventKind::WindowsThreat => {
+            let Ok(fields) = bincode::deserialize::<WindowsThreatFieldsStored>(v.as_ref()) else {
+                return Err(InvalidEvent::Value(v));
+            };
+            Ok((
+                key,
+                Event::WindowsThreat(WindowsThreat::new(fields.time, fields)),
+            ))
         }
     }
 }
@@ -3944,6 +4009,19 @@ mod tests {
             kind,
             fields: bincode::serialize(&fields).expect("serializable"),
         }
+    }
+
+    fn dns_message(sensor: &str, time: DateTime<Utc>) -> EventMessage {
+        let mut message = example_message(
+            EventKind::DnsCovertChannel,
+            EventCategory::CommandAndControl,
+        );
+        let mut fields: DnsEventFields =
+            bincode::deserialize(&message.fields).expect("example fields should be valid");
+        fields.sensor = sensor.to_string();
+        message.time = msg_time(time);
+        message.fields = bincode::serialize(&fields).expect("DNS fields should be serializable");
+        message
     }
 
     #[test]
@@ -8096,5 +8174,97 @@ mod tests {
         let deleted = db.remove_before(cutoff).unwrap();
         assert_eq!(deleted, u64::try_from(total).unwrap());
         assert_eq!(db.iter_forward().count(), 0);
+    }
+
+    #[test]
+    fn remove_by_sensors_deletes_matching_event_variants() {
+        let (_permit, store) = setup_store();
+        let db = store.events();
+        let base_time = Utc.with_ymd_and_hms(2025, 1, 1, 0, 0, 0).unwrap();
+
+        db.put(&dns_message("target.example", base_time)).unwrap();
+        db.put(&dns_message(
+            "other-target.example",
+            base_time + chrono::Duration::seconds(1),
+        ))
+        .unwrap();
+        db.put(&dns_message(
+            "keep.example",
+            base_time + chrono::Duration::seconds(2),
+        ))
+        .unwrap();
+
+        let mut blocklist_fields = blocklist_bootp_fields();
+        blocklist_fields.sensor = "target.example".to_string();
+        db.put(&EventMessage {
+            time: msg_time(base_time + chrono::Duration::seconds(3)),
+            kind: EventKind::BlocklistBootp,
+            fields: bincode::serialize(&blocklist_fields).unwrap(),
+        })
+        .unwrap();
+
+        db.remove_by_sensors(&[
+            "target.example".to_string(),
+            "target.example".to_string(),
+            "other-target.example".to_string(),
+        ])
+        .unwrap();
+
+        let remaining: Vec<_> = db
+            .iter_forward()
+            .map(|entry| entry.unwrap().1.sensor().to_string())
+            .collect();
+        assert_eq!(remaining, ["keep.example"]);
+
+        db.remove_by_sensors(&["target.example".to_string()])
+            .unwrap();
+        assert_eq!(db.iter_forward().count(), 1);
+
+        db.remove_by_sensors(&[]).unwrap();
+        assert_eq!(db.iter_forward().count(), 1);
+    }
+
+    #[test]
+    fn remove_by_sensors_writes_all_batches() {
+        let (_permit, store) = setup_store();
+        let db = store.events();
+        let base_time = Utc.with_ymd_and_hms(2025, 1, 1, 0, 0, 0).unwrap();
+        let total = 1_001;
+
+        for offset in 0..total {
+            db.put(&dns_message(
+                "target.example",
+                base_time + chrono::Duration::seconds(offset),
+            ))
+            .unwrap();
+        }
+        db.put(&dns_message(
+            "keep.example",
+            base_time + chrono::Duration::seconds(total),
+        ))
+        .unwrap();
+
+        db.remove_by_sensors(&["target.example".to_string()])
+            .unwrap();
+
+        let remaining = db.iter_forward().next().unwrap().unwrap().1;
+        assert_eq!(remaining.sensor(), "keep.example");
+        assert_eq!(db.iter_forward().count(), 1);
+    }
+
+    #[test]
+    fn remove_by_sensors_rejects_invalid_keys_and_values() {
+        let (_permit, store) = setup_store();
+        let db = store.events();
+        let sensors = ["target.example".to_string()];
+
+        db.put_raw(&[0xAB; 8], b"invalid");
+        assert!(db.remove_by_sensors(&sensors).is_err());
+
+        let (_permit, store) = setup_store();
+        let db = store.events();
+        let key = i128::from(1_000_000_000) << 64;
+        db.put_raw(&key.to_be_bytes(), b"invalid");
+        assert!(db.remove_by_sensors(&sensors).is_err());
     }
 }
