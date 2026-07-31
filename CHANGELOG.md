@@ -5,6 +5,24 @@ file is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), and
 this project adheres to [Semantic
 Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- **BREAKING**: Event timestamps now use `jiff::Timestamp` instead of chrono's
+  `DateTime<Utc>`. Existing databases need no migration, because timestamps are
+  still stored as `i64` epoch nanoseconds.
+  - Returned `Event` values now expose `jiff::Timestamp`: the `time` field on
+    every event, and `start_time` on the threat events (`ExtraThreat`,
+    `HttpThreat`, `NetworkThreat`, `WindowsThreat`).
+  - `EventMessage::time` and the `time` field on the `*Fields` structs that
+    callers construct are now `jiff::Timestamp`.
+  - `EventDb::remove_before` now takes a `jiff::Timestamp`.
+  - `NetworkThreatFields::start_time`, which callers set, changes from
+    `DateTime<Utc>` to `i64` epoch nanoseconds, aligning it with the `i64`
+    `start_time` every other event already uses; it was the only `start_time`
+    field still typed as a timestamp.
+
 ## [0.46.0] - 2026-07-23
 
 ### Added
@@ -1533,6 +1551,7 @@ AsRef<[u8]>`). This change accommodates scenarios where the information stored
 - Modified `FtpBruteForce` by adding an `is_internal` field which is a boolean
   indicating whether it is internal or not.
 
+[Unreleased]: https://github.com/aicers/review-database/compare/0.46.0...main
 [0.46.0]: https://github.com/aicers/review-database/compare/0.45.0...0.46.0
 [0.45.0]: https://github.com/aicers/review-database/compare/0.44.1...0.45.0
 [0.44.1]: https://github.com/aicers/review-database/compare/0.44.0...0.44.1

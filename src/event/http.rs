@@ -2,9 +2,10 @@ use std::{fmt, net::IpAddr};
 
 use aho_corasick::AhoCorasickBuilder;
 use attrievent::attribute::{HttpAttr, RawEventAttrKind};
-use chrono::{DateTime, Utc, serde::ts_nanoseconds};
+use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
+use super::timestamp::{self, ts_nanoseconds as jiff_ts_nanoseconds};
 use super::{EventCategory, EventFilter, LearningMethod, ThreatLevel, TriageScore, common::Match};
 use crate::{
     TriageExclusion,
@@ -186,7 +187,7 @@ impl From<HttpEventFields> for HttpEventFieldsStored {
 impl HttpEventFields {
     #[must_use]
     pub fn syslog_rfc5424(&self) -> String {
-        let start_time_dt = DateTime::from_timestamp_nanos(self.start_time);
+        let start_time = timestamp::format_i64_nanos_rfc3339(self.start_time).unwrap_or_default();
         format!(
             "category={:?} sensor={:?} orig_addr={:?} orig_port={:?} resp_addr={:?} resp_port={:?} proto={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} method={:?} host={:?} uri={:?} referer={:?} version={:?} user_agent={:?} request_len={:?} response_len={:?} status_code={:?} status_msg={:?} username={:?} password={:?} cookie={:?} content_encoding={:?} content_type={:?} cache_control={:?} filenames={:?} mime_types={:?} body={:?} state={:?} confidence={:?}",
             self.category.as_ref().map_or_else(
@@ -199,7 +200,7 @@ impl HttpEventFields {
             self.resp_addr.to_string(),
             self.resp_port.to_string(),
             self.proto.to_string(),
-            start_time_dt.to_rfc3339(),
+            start_time,
             self.duration.to_string(),
             self.orig_pkts.to_string(),
             self.resp_pkts.to_string(),
@@ -286,8 +287,10 @@ impl From<RepeatedHttpSessionsFields> for RepeatedHttpSessionsFieldsStored {
 impl RepeatedHttpSessionsFields {
     #[must_use]
     pub fn syslog_rfc5424(&self) -> String {
-        let first_event_start_time_dt = DateTime::from_timestamp_nanos(self.first_event_start_time);
-        let last_event_start_time_dt = DateTime::from_timestamp_nanos(self.last_event_start_time);
+        let first_event_start_time =
+            timestamp::format_i64_nanos_rfc3339(self.first_event_start_time).unwrap_or_default();
+        let last_event_start_time =
+            timestamp::format_i64_nanos_rfc3339(self.last_event_start_time).unwrap_or_default();
         format!(
             "category={:?} sensor={:?} orig_addr={:?} orig_port={:?} resp_addr={:?} resp_port={:?} proto={:?} first_event_start_time={:?} last_event_start_time={:?} confidence={:?}",
             self.category.as_ref().map_or_else(
@@ -300,8 +303,8 @@ impl RepeatedHttpSessionsFields {
             self.resp_addr.to_string(),
             self.resp_port.to_string(),
             self.proto.to_string(),
-            first_event_start_time_dt.to_rfc3339(),
-            last_event_start_time_dt.to_rfc3339(),
+            first_event_start_time,
+            last_event_start_time,
             self.confidence.to_string()
         )
     }
@@ -309,7 +312,8 @@ impl RepeatedHttpSessionsFields {
 
 #[derive(Serialize, Deserialize)]
 pub struct RepeatedHttpSessions {
-    pub time: DateTime<Utc>,
+    #[serde(with = "jiff_ts_nanoseconds")]
+    pub time: Timestamp,
     pub sensor: String,
     pub orig_addr: IpAddr,
     pub orig_port: u16,
@@ -318,8 +322,10 @@ pub struct RepeatedHttpSessions {
     pub resp_port: u16,
     pub resp_country_code: [u8; 2],
     pub proto: u8,
-    pub first_event_start_time: DateTime<Utc>,
-    pub last_event_start_time: DateTime<Utc>,
+    #[serde(with = "jiff_ts_nanoseconds")]
+    pub first_event_start_time: Timestamp,
+    #[serde(with = "jiff_ts_nanoseconds")]
+    pub last_event_start_time: Timestamp,
     pub confidence: f32,
     pub category: Option<EventCategory>,
     pub triage_scores: Option<Vec<TriageScore>>,
@@ -338,15 +344,15 @@ impl fmt::Display for RepeatedHttpSessions {
             self.resp_port.to_string(),
             crate::util::country_code_as_str(&self.resp_country_code),
             self.proto.to_string(),
-            self.first_event_start_time.to_rfc3339(),
-            self.last_event_start_time.to_rfc3339(),
+            timestamp::format_rfc3339(self.first_event_start_time).unwrap_or_default(),
+            timestamp::format_rfc3339(self.last_event_start_time).unwrap_or_default(),
             triage_scores_to_string(self.triage_scores.as_ref())
         )
     }
 }
 
 impl RepeatedHttpSessions {
-    pub(super) fn new(time: DateTime<Utc>, fields: &RepeatedHttpSessionsFieldsStored) -> Self {
+    pub(super) fn new(time: Timestamp, fields: &RepeatedHttpSessionsFieldsStored) -> Self {
         RepeatedHttpSessions {
             time,
             sensor: fields.sensor.clone(),
@@ -357,8 +363,10 @@ impl RepeatedHttpSessions {
             resp_port: fields.resp_port,
             resp_country_code: fields.resp_country_code,
             proto: fields.proto,
-            first_event_start_time: DateTime::from_timestamp_nanos(fields.first_event_start_time),
-            last_event_start_time: DateTime::from_timestamp_nanos(fields.last_event_start_time),
+            first_event_start_time: timestamp::from_i64_nanos(fields.first_event_start_time)
+                .expect(timestamp::I64_NANOS_JIFF_INVARIANT),
+            last_event_start_time: timestamp::from_i64_nanos(fields.last_event_start_time)
+                .expect(timestamp::I64_NANOS_JIFF_INVARIANT),
             confidence: fields.confidence,
             category: fields.category,
             triage_scores: None,
@@ -445,8 +453,8 @@ impl Match for RepeatedHttpSessions {
 #[derive(Debug, Deserialize, Serialize)]
 #[allow(clippy::module_name_repetitions)]
 pub struct HttpThreatFields {
-    #[serde(with = "ts_nanoseconds")]
-    pub time: DateTime<Utc>,
+    #[serde(with = "jiff_ts_nanoseconds")]
+    pub time: Timestamp,
     pub sensor: String,
     pub orig_addr: IpAddr,
     pub orig_port: u16,
@@ -493,8 +501,8 @@ pub(crate) type HttpThreatFieldsStored = HttpThreatFieldsStoredV0_46;
 
 #[derive(::serde::Deserialize, ::serde::Serialize)]
 pub(crate) struct HttpThreatFieldsStoredV0_46 {
-    #[serde(with = "ts_nanoseconds")]
-    pub time: DateTime<Utc>,
+    #[serde(with = "jiff_ts_nanoseconds")]
+    pub time: Timestamp,
     pub sensor: String,
     pub orig_addr: IpAddr,
     pub orig_port: u16,
@@ -590,7 +598,7 @@ impl From<HttpThreatFields> for HttpThreatFieldsStored {
 impl HttpThreatFields {
     #[must_use]
     pub fn syslog_rfc5424(&self) -> String {
-        let start_time_dt = DateTime::from_timestamp_nanos(self.start_time);
+        let start_time = timestamp::format_i64_nanos_rfc3339(self.start_time).unwrap_or_default();
         format!(
             "category={:?} sensor={:?} orig_addr={:?} orig_port={:?} resp_addr={:?} resp_port={:?} proto={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} method={:?} host={:?} uri={:?} referer={:?} version={:?} user_agent={:?} request_len={:?} response_len={:?} status_code={:?} status_msg={:?} username={:?} password={:?} cookie={:?} content_encoding={:?} content_type={:?} cache_control={:?} filenames={:?} mime_types={:?} body={:?} state={:?} db_name={:?} rule_id={:?} matched_to={:?} cluster_id={:?} attack_kind={:?} confidence={:?}",
             self.category.as_ref().map_or_else(
@@ -603,7 +611,7 @@ impl HttpThreatFields {
             self.resp_addr.to_string(),
             self.resp_port.to_string(),
             self.proto.to_string(),
-            start_time_dt.to_rfc3339(),
+            start_time,
             self.duration.to_string(),
             self.orig_pkts.to_string(),
             self.resp_pkts.to_string(),
@@ -657,8 +665,8 @@ pub(super) fn get_post_body(post_body: &[u8]) -> String {
 #[derive(Deserialize, Serialize)]
 #[allow(clippy::module_name_repetitions)]
 pub struct HttpThreat {
-    #[serde(with = "ts_nanoseconds")]
-    pub time: DateTime<Utc>,
+    #[serde(with = "jiff_ts_nanoseconds")]
+    pub time: Timestamp,
     pub sensor: String,
     pub orig_addr: IpAddr,
     pub orig_port: u16,
@@ -667,7 +675,8 @@ pub struct HttpThreat {
     pub resp_port: u16,
     pub resp_country_code: [u8; 2],
     pub proto: u8,
-    pub start_time: DateTime<Utc>,
+    #[serde(with = "jiff_ts_nanoseconds")]
+    pub start_time: Timestamp,
     pub duration: i64,
     pub orig_pkts: u64,
     pub resp_pkts: u64,
@@ -716,7 +725,7 @@ impl fmt::Display for HttpThreat {
             self.resp_port.to_string(),
             crate::util::country_code_as_str(&self.resp_country_code),
             self.proto.to_string(),
-            self.start_time.to_rfc3339(),
+            timestamp::format_rfc3339(self.start_time).unwrap_or_default(),
             self.duration.to_string(),
             self.orig_pkts.to_string(),
             self.resp_pkts.to_string(),
@@ -754,11 +763,12 @@ impl fmt::Display for HttpThreat {
 }
 
 impl HttpThreat {
-    pub(super) fn new(time: DateTime<Utc>, fields: HttpThreatFieldsStored) -> Self {
+    pub(super) fn new(time: Timestamp, fields: HttpThreatFieldsStored) -> Self {
         Self {
             time,
             sensor: fields.sensor,
-            start_time: DateTime::from_timestamp_nanos(fields.start_time),
+            start_time: timestamp::from_i64_nanos(fields.start_time)
+                .expect(timestamp::I64_NANOS_JIFF_INVARIANT),
             orig_addr: fields.orig_addr,
             orig_port: fields.orig_port,
             orig_country_code: fields.orig_country_code,
@@ -1037,7 +1047,7 @@ pub(crate) type BlocklistHttpFieldsStored = DgaFieldsStored;
 impl DgaFields {
     #[must_use]
     pub fn syslog_rfc5424(&self) -> String {
-        let start_time_dt = DateTime::from_timestamp_nanos(self.start_time);
+        let start_time = timestamp::format_i64_nanos_rfc3339(self.start_time).unwrap_or_default();
         format!(
             "category={:?} sensor={:?} orig_addr={:?} orig_port={:?} resp_addr={:?} resp_port={:?} proto={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} method={:?} host={:?} uri={:?} referer={:?} version={:?} user_agent={:?} request_len={:?} response_len={:?} status_code={:?} status_msg={:?} username={:?} password={:?} cookie={:?} content_encoding={:?} content_type={:?} cache_control={:?} filenames={:?} mime_types={:?} body={:?} state={:?} confidence={:?}",
             self.category.as_ref().map_or_else(
@@ -1050,7 +1060,7 @@ impl DgaFields {
             self.resp_addr.to_string(),
             self.resp_port.to_string(),
             self.proto.to_string(),
-            start_time_dt.to_rfc3339(),
+            start_time,
             self.duration.to_string(),
             self.orig_pkts.to_string(),
             self.resp_pkts.to_string(),
@@ -1083,8 +1093,8 @@ impl DgaFields {
 
 #[derive(Deserialize, Serialize)]
 pub struct DomainGenerationAlgorithm {
-    #[serde(with = "ts_nanoseconds")]
-    pub time: DateTime<Utc>,
+    #[serde(with = "jiff_ts_nanoseconds")]
+    pub time: Timestamp,
     pub sensor: String,
     pub orig_addr: IpAddr,
     pub orig_port: u16,
@@ -1093,7 +1103,8 @@ pub struct DomainGenerationAlgorithm {
     pub resp_port: u16,
     pub resp_country_code: [u8; 2],
     pub proto: u8,
-    pub start_time: DateTime<Utc>,
+    #[serde(with = "jiff_ts_nanoseconds")]
+    pub start_time: Timestamp,
     pub duration: i64,
     pub orig_pkts: u64,
     pub resp_pkts: u64,
@@ -1137,7 +1148,7 @@ impl fmt::Display for DomainGenerationAlgorithm {
             self.resp_port.to_string(),
             crate::util::country_code_as_str(&self.resp_country_code),
             self.proto.to_string(),
-            self.start_time.to_rfc3339(),
+            timestamp::format_rfc3339(self.start_time).unwrap_or_default(),
             self.duration.to_string(),
             self.orig_pkts.to_string(),
             self.resp_pkts.to_string(),
@@ -1170,11 +1181,12 @@ impl fmt::Display for DomainGenerationAlgorithm {
 }
 
 impl DomainGenerationAlgorithm {
-    pub(super) fn new(time: DateTime<Utc>, fields: DgaFieldsStored) -> Self {
+    pub(super) fn new(time: Timestamp, fields: DgaFieldsStored) -> Self {
         Self {
             time,
             sensor: fields.sensor,
-            start_time: DateTime::from_timestamp_nanos(fields.start_time),
+            start_time: timestamp::from_i64_nanos(fields.start_time)
+                .expect(timestamp::I64_NANOS_JIFF_INVARIANT),
             orig_addr: fields.orig_addr,
             orig_port: fields.orig_port,
             orig_country_code: fields.orig_country_code,
@@ -1296,7 +1308,8 @@ impl Match for DomainGenerationAlgorithm {
 #[allow(clippy::module_name_repetitions)]
 #[derive(Serialize, Deserialize)]
 pub struct NonBrowser {
-    pub time: DateTime<Utc>,
+    #[serde(with = "jiff_ts_nanoseconds")]
+    pub time: Timestamp,
     pub sensor: String,
     pub orig_addr: IpAddr,
     pub orig_port: u16,
@@ -1305,7 +1318,8 @@ pub struct NonBrowser {
     pub resp_port: u16,
     pub resp_country_code: [u8; 2],
     pub proto: u8,
-    pub start_time: DateTime<Utc>,
+    #[serde(with = "jiff_ts_nanoseconds")]
+    pub start_time: Timestamp,
     pub duration: i64,
     pub orig_pkts: u64,
     pub resp_pkts: u64,
@@ -1349,7 +1363,7 @@ impl fmt::Display for NonBrowser {
             self.resp_port.to_string(),
             crate::util::country_code_as_str(&self.resp_country_code),
             self.proto.to_string(),
-            self.start_time.to_rfc3339(),
+            timestamp::format_rfc3339(self.start_time).unwrap_or_default(),
             self.duration.to_string(),
             self.orig_pkts.to_string(),
             self.resp_pkts.to_string(),
@@ -1381,11 +1395,12 @@ impl fmt::Display for NonBrowser {
 }
 
 impl NonBrowser {
-    pub(super) fn new(time: DateTime<Utc>, fields: &HttpEventFieldsStored) -> Self {
+    pub(super) fn new(time: Timestamp, fields: &HttpEventFieldsStored) -> Self {
         NonBrowser {
             time,
             sensor: fields.sensor.clone(),
-            start_time: DateTime::from_timestamp_nanos(fields.start_time),
+            start_time: timestamp::from_i64_nanos(fields.start_time)
+                .expect(timestamp::I64_NANOS_JIFF_INVARIANT),
             duration: fields.duration,
             orig_pkts: fields.orig_pkts,
             resp_pkts: fields.resp_pkts,
@@ -1511,7 +1526,8 @@ pub type BlocklistHttpFields = DgaFields;
 #[allow(clippy::module_name_repetitions)]
 #[derive(Deserialize, Serialize)]
 pub struct BlocklistHttp {
-    pub time: DateTime<Utc>,
+    #[serde(with = "jiff_ts_nanoseconds")]
+    pub time: Timestamp,
     pub sensor: String,
     pub orig_addr: IpAddr,
     pub orig_port: u16,
@@ -1520,7 +1536,8 @@ pub struct BlocklistHttp {
     pub resp_port: u16,
     pub resp_country_code: [u8; 2],
     pub proto: u8,
-    pub start_time: DateTime<Utc>,
+    #[serde(with = "jiff_ts_nanoseconds")]
+    pub start_time: Timestamp,
     pub duration: i64,
     pub orig_pkts: u64,
     pub resp_pkts: u64,
@@ -1564,7 +1581,7 @@ impl fmt::Display for BlocklistHttp {
             self.resp_port.to_string(),
             crate::util::country_code_as_str(&self.resp_country_code),
             self.proto.to_string(),
-            self.start_time.to_rfc3339(),
+            timestamp::format_rfc3339(self.start_time).unwrap_or_default(),
             self.duration.to_string(),
             self.orig_pkts.to_string(),
             self.resp_pkts.to_string(),
@@ -1596,11 +1613,12 @@ impl fmt::Display for BlocklistHttp {
 }
 
 impl BlocklistHttp {
-    pub(super) fn new(time: DateTime<Utc>, fields: BlocklistHttpFieldsStored) -> Self {
+    pub(super) fn new(time: Timestamp, fields: BlocklistHttpFieldsStored) -> Self {
         Self {
             time,
             sensor: fields.sensor,
-            start_time: DateTime::from_timestamp_nanos(fields.start_time),
+            start_time: timestamp::from_i64_nanos(fields.start_time)
+                .expect(timestamp::I64_NANOS_JIFF_INVARIANT),
             orig_addr: fields.orig_addr,
             orig_port: fields.orig_port,
             orig_country_code: fields.orig_country_code,

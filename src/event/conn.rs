@@ -1,9 +1,10 @@
 use std::{fmt, net::IpAddr};
 
 use attrievent::attribute::{ConnAttr, RawEventAttrKind};
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
+use super::timestamp::{self, ts_nanoseconds as jiff_ts_nanoseconds};
 use super::{EventCategory, LearningMethod, ThreatLevel, TriageScore, common::Match};
 use crate::event::common::{AttrValue, triage_scores_to_string, vector_to_string};
 
@@ -88,8 +89,10 @@ impl From<PortScanFields> for PortScanFieldsStored {
 impl PortScanFields {
     #[must_use]
     pub fn syslog_rfc5424(&self) -> String {
-        let first_event_start_time_dt = DateTime::from_timestamp_nanos(self.first_event_start_time);
-        let last_event_start_time_dt = DateTime::from_timestamp_nanos(self.last_event_start_time);
+        let first_event_start_time =
+            timestamp::format_i64_nanos_rfc3339(self.first_event_start_time).unwrap_or_default();
+        let last_event_start_time =
+            timestamp::format_i64_nanos_rfc3339(self.last_event_start_time).unwrap_or_default();
         format!(
             "category={:?} sensor={:?} orig_addr={:?} resp_addr={:?} resp_ports={:?} first_event_start_time={:?} last_event_start_time={:?} proto={:?} confidence={:?}",
             self.category.as_ref().map_or_else(
@@ -100,8 +103,8 @@ impl PortScanFields {
             self.orig_addr.to_string(),
             self.resp_addr.to_string(),
             vector_to_string(&self.resp_ports),
-            first_event_start_time_dt.to_rfc3339(),
-            last_event_start_time_dt.to_rfc3339(),
+            first_event_start_time,
+            last_event_start_time,
             self.proto.to_string(),
             self.confidence.to_string()
         )
@@ -112,14 +115,17 @@ impl PortScanFields {
 #[derive(Serialize, Deserialize)]
 pub struct PortScan {
     pub sensor: String,
-    pub time: DateTime<Utc>,
+    #[serde(with = "jiff_ts_nanoseconds")]
+    pub time: Timestamp,
     pub orig_addr: IpAddr,
     pub orig_country_code: [u8; 2],
     pub resp_addr: IpAddr,
     pub resp_ports: Vec<u16>,
     pub resp_country_code: [u8; 2],
-    pub first_event_start_time: DateTime<Utc>,
-    pub last_event_start_time: DateTime<Utc>,
+    #[serde(with = "jiff_ts_nanoseconds")]
+    pub first_event_start_time: Timestamp,
+    #[serde(with = "jiff_ts_nanoseconds")]
+    pub last_event_start_time: Timestamp,
     pub proto: u8,
     pub confidence: f32,
     pub category: Option<EventCategory>,
@@ -136,8 +142,8 @@ impl fmt::Display for PortScan {
             self.resp_addr.to_string(),
             crate::util::country_code_as_str(&self.resp_country_code),
             vector_to_string(&self.resp_ports),
-            self.first_event_start_time.to_rfc3339(),
-            self.last_event_start_time.to_rfc3339(),
+            timestamp::format_rfc3339(self.first_event_start_time).unwrap_or_default(),
+            timestamp::format_rfc3339(self.last_event_start_time).unwrap_or_default(),
             self.proto.to_string(),
             triage_scores_to_string(self.triage_scores.as_ref())
         )
@@ -145,7 +151,7 @@ impl fmt::Display for PortScan {
 }
 
 impl PortScan {
-    pub(super) fn new(time: DateTime<Utc>, fields: &PortScanFieldsStored) -> Self {
+    pub(super) fn new(time: Timestamp, fields: &PortScanFieldsStored) -> Self {
         PortScan {
             sensor: fields.sensor.clone(),
             time,
@@ -155,8 +161,10 @@ impl PortScan {
             resp_ports: fields.resp_ports.clone(),
             resp_country_code: fields.resp_country_code,
             proto: fields.proto,
-            first_event_start_time: DateTime::from_timestamp_nanos(fields.first_event_start_time),
-            last_event_start_time: DateTime::from_timestamp_nanos(fields.last_event_start_time),
+            first_event_start_time: timestamp::from_i64_nanos(fields.first_event_start_time)
+                .expect(timestamp::I64_NANOS_JIFF_INVARIANT),
+            last_event_start_time: timestamp::from_i64_nanos(fields.last_event_start_time)
+                .expect(timestamp::I64_NANOS_JIFF_INVARIANT),
             confidence: fields.confidence,
             category: fields.category,
             triage_scores: None,
@@ -295,8 +303,10 @@ impl From<MultiHostPortScanFields> for MultiHostPortScanFieldsStored {
 impl MultiHostPortScanFields {
     #[must_use]
     pub fn syslog_rfc5424(&self) -> String {
-        let first_event_start_time_dt = DateTime::from_timestamp_nanos(self.first_event_start_time);
-        let last_event_start_time_dt = DateTime::from_timestamp_nanos(self.last_event_start_time);
+        let first_event_start_time =
+            timestamp::format_i64_nanos_rfc3339(self.first_event_start_time).unwrap_or_default();
+        let last_event_start_time =
+            timestamp::format_i64_nanos_rfc3339(self.last_event_start_time).unwrap_or_default();
         format!(
             "category={:?} sensor={:?} orig_addr={:?} resp_addrs={:?} resp_port={:?} proto={:?} first_event_start_time={:?} last_event_start_time={:?} confidence={:?}",
             self.category.as_ref().map_or_else(
@@ -308,8 +318,8 @@ impl MultiHostPortScanFields {
             vector_to_string(&self.resp_addrs),
             self.resp_port.to_string(),
             self.proto.to_string(),
-            first_event_start_time_dt.to_rfc3339(),
-            last_event_start_time_dt.to_rfc3339(),
+            first_event_start_time,
+            last_event_start_time,
             self.confidence.to_string()
         )
     }
@@ -319,15 +329,18 @@ impl MultiHostPortScanFields {
 #[derive(Serialize, Deserialize)]
 pub struct MultiHostPortScan {
     pub sensor: String,
-    pub time: DateTime<Utc>,
+    #[serde(with = "jiff_ts_nanoseconds")]
+    pub time: Timestamp,
     pub orig_addr: IpAddr,
     pub orig_country_code: [u8; 2],
     pub resp_addrs: Vec<IpAddr>,
     pub resp_port: u16,
     pub resp_country_codes: Vec<[u8; 2]>,
     pub proto: u8,
-    pub first_event_start_time: DateTime<Utc>,
-    pub last_event_start_time: DateTime<Utc>,
+    #[serde(with = "jiff_ts_nanoseconds")]
+    pub first_event_start_time: Timestamp,
+    #[serde(with = "jiff_ts_nanoseconds")]
+    pub last_event_start_time: Timestamp,
     pub confidence: f32,
     pub category: Option<EventCategory>,
     pub triage_scores: Option<Vec<TriageScore>>,
@@ -344,15 +357,15 @@ impl fmt::Display for MultiHostPortScan {
             self.resp_port.to_string(),
             crate::util::country_codes_to_string(&self.resp_country_codes),
             self.proto.to_string(),
-            self.first_event_start_time.to_rfc3339(),
-            self.last_event_start_time.to_rfc3339(),
+            timestamp::format_rfc3339(self.first_event_start_time).unwrap_or_default(),
+            timestamp::format_rfc3339(self.last_event_start_time).unwrap_or_default(),
             triage_scores_to_string(self.triage_scores.as_ref())
         )
     }
 }
 
 impl MultiHostPortScan {
-    pub(super) fn new(time: DateTime<Utc>, fields: &MultiHostPortScanFieldsStored) -> Self {
+    pub(super) fn new(time: Timestamp, fields: &MultiHostPortScanFieldsStored) -> Self {
         MultiHostPortScan {
             sensor: fields.sensor.clone(),
             time,
@@ -362,8 +375,10 @@ impl MultiHostPortScan {
             resp_port: fields.resp_port,
             resp_country_codes: fields.resp_country_codes.clone(),
             proto: fields.proto,
-            first_event_start_time: DateTime::from_timestamp_nanos(fields.first_event_start_time),
-            last_event_start_time: DateTime::from_timestamp_nanos(fields.last_event_start_time),
+            first_event_start_time: timestamp::from_i64_nanos(fields.first_event_start_time)
+                .expect(timestamp::I64_NANOS_JIFF_INVARIANT),
+            last_event_start_time: timestamp::from_i64_nanos(fields.last_event_start_time)
+                .expect(timestamp::I64_NANOS_JIFF_INVARIANT),
             confidence: fields.confidence,
             category: fields.category,
             triage_scores: None,
@@ -499,8 +514,10 @@ impl From<ExternalDdosFields> for ExternalDdosFieldsStored {
 impl ExternalDdosFields {
     #[must_use]
     pub fn syslog_rfc5424(&self) -> String {
-        let first_event_start_time_dt = DateTime::from_timestamp_nanos(self.first_event_start_time);
-        let last_event_start_time_dt = DateTime::from_timestamp_nanos(self.last_event_start_time);
+        let first_event_start_time =
+            timestamp::format_i64_nanos_rfc3339(self.first_event_start_time).unwrap_or_default();
+        let last_event_start_time =
+            timestamp::format_i64_nanos_rfc3339(self.last_event_start_time).unwrap_or_default();
         format!(
             "category={:?} sensor={:?} orig_addrs={:?} resp_addr={:?} proto={:?} first_event_start_time={:?} last_event_start_time={:?} confidence={:?}",
             self.category.as_ref().map_or_else(
@@ -511,8 +528,8 @@ impl ExternalDdosFields {
             vector_to_string(&self.orig_addrs),
             self.resp_addr.to_string(),
             self.proto.to_string(),
-            first_event_start_time_dt.to_rfc3339(),
-            last_event_start_time_dt.to_rfc3339(),
+            first_event_start_time,
+            last_event_start_time,
             self.confidence.to_string()
         )
     }
@@ -522,14 +539,17 @@ impl ExternalDdosFields {
 #[derive(Serialize, Deserialize)]
 pub struct ExternalDdos {
     pub sensor: String,
-    pub time: DateTime<Utc>,
+    #[serde(with = "jiff_ts_nanoseconds")]
+    pub time: Timestamp,
     pub orig_addrs: Vec<IpAddr>,
     pub orig_country_codes: Vec<[u8; 2]>,
     pub resp_addr: IpAddr,
     pub resp_country_code: [u8; 2],
     pub proto: u8,
-    pub first_event_start_time: DateTime<Utc>,
-    pub last_event_start_time: DateTime<Utc>,
+    #[serde(with = "jiff_ts_nanoseconds")]
+    pub first_event_start_time: Timestamp,
+    #[serde(with = "jiff_ts_nanoseconds")]
+    pub last_event_start_time: Timestamp,
     pub confidence: f32,
     pub category: Option<EventCategory>,
     pub triage_scores: Option<Vec<TriageScore>>,
@@ -545,15 +565,15 @@ impl fmt::Display for ExternalDdos {
             self.resp_addr.to_string(),
             crate::util::country_code_as_str(&self.resp_country_code),
             self.proto.to_string(),
-            self.first_event_start_time.to_rfc3339(),
-            self.last_event_start_time.to_rfc3339(),
+            timestamp::format_rfc3339(self.first_event_start_time).unwrap_or_default(),
+            timestamp::format_rfc3339(self.last_event_start_time).unwrap_or_default(),
             triage_scores_to_string(self.triage_scores.as_ref())
         )
     }
 }
 
 impl ExternalDdos {
-    pub(super) fn new(time: DateTime<Utc>, fields: &ExternalDdosFieldsStored) -> Self {
+    pub(super) fn new(time: Timestamp, fields: &ExternalDdosFieldsStored) -> Self {
         ExternalDdos {
             sensor: fields.sensor.clone(),
             time,
@@ -562,8 +582,10 @@ impl ExternalDdos {
             resp_addr: fields.resp_addr,
             resp_country_code: fields.resp_country_code,
             proto: fields.proto,
-            first_event_start_time: DateTime::from_timestamp_nanos(fields.first_event_start_time),
-            last_event_start_time: DateTime::from_timestamp_nanos(fields.last_event_start_time),
+            first_event_start_time: timestamp::from_i64_nanos(fields.first_event_start_time)
+                .expect(timestamp::I64_NANOS_JIFF_INVARIANT),
+            last_event_start_time: timestamp::from_i64_nanos(fields.last_event_start_time)
+                .expect(timestamp::I64_NANOS_JIFF_INVARIANT),
             confidence: fields.confidence,
             category: fields.category,
             triage_scores: None,
@@ -726,7 +748,7 @@ impl From<BlocklistConnFields> for BlocklistConnFieldsStored {
 impl BlocklistConnFields {
     #[must_use]
     pub fn syslog_rfc5424(&self) -> String {
-        let start_time_dt = DateTime::from_timestamp_nanos(self.start_time);
+        let start_time = timestamp::format_i64_nanos_rfc3339(self.start_time).unwrap_or_default();
 
         format!(
             "category={:?} sensor={:?} orig_addr={:?} orig_port={:?} resp_addr={:?} resp_port={:?} proto={:?} conn_state={:?} start_time={:?} duration={:?} service={:?} orig_bytes={:?} resp_bytes={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} confidence={:?}",
@@ -741,7 +763,7 @@ impl BlocklistConnFields {
             self.resp_port.to_string(),
             self.proto.to_string(),
             self.conn_state,
-            start_time_dt.to_rfc3339(),
+            start_time,
             self.duration.to_string(),
             self.service,
             self.orig_bytes.to_string(),
@@ -758,7 +780,7 @@ impl BlocklistConnFields {
 #[allow(clippy::module_name_repetitions)]
 pub struct BlocklistConn {
     pub sensor: String,
-    pub time: DateTime<Utc>,
+    pub time: Timestamp,
     pub orig_addr: IpAddr,
     pub orig_port: u16,
     pub orig_country_code: [u8; 2],
@@ -767,7 +789,7 @@ pub struct BlocklistConn {
     pub resp_country_code: [u8; 2],
     pub proto: u8,
     pub conn_state: String,
-    pub start_time: DateTime<Utc>,
+    pub start_time: Timestamp,
     pub duration: i64,
     pub service: String,
     pub orig_bytes: u64,
@@ -795,7 +817,7 @@ impl fmt::Display for BlocklistConn {
             crate::util::country_code_as_str(&self.resp_country_code),
             self.proto.to_string(),
             self.conn_state,
-            self.start_time.to_rfc3339(),
+            timestamp::format_rfc3339(self.start_time).unwrap_or_default(),
             self.duration.to_string(),
             self.service,
             self.orig_bytes.to_string(),
@@ -810,7 +832,7 @@ impl fmt::Display for BlocklistConn {
 }
 
 impl BlocklistConn {
-    pub(super) fn new(time: DateTime<Utc>, fields: BlocklistConnFieldsStored) -> Self {
+    pub(super) fn new(time: Timestamp, fields: BlocklistConnFieldsStored) -> Self {
         Self {
             time,
             sensor: fields.sensor,
@@ -822,7 +844,8 @@ impl BlocklistConn {
             resp_country_code: fields.resp_country_code,
             proto: fields.proto,
             conn_state: fields.conn_state,
-            start_time: DateTime::from_timestamp_nanos(fields.start_time),
+            start_time: timestamp::from_i64_nanos(fields.start_time)
+                .expect(timestamp::I64_NANOS_JIFF_INVARIANT),
             duration: fields.duration,
             service: fields.service,
             orig_bytes: fields.orig_bytes,
