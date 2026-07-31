@@ -1400,7 +1400,8 @@ mod tests {
 
     fn blocklist_conn_message(legacy: &BlocklistConnFieldsStoredV0_42) -> EventMessage {
         EventMessage {
-            time: chrono::Utc::now(),
+            time: crate::event::timestamp::from_chrono(chrono::Utc::now())
+                .expect("current time fits i64 nanoseconds"),
             kind: EventKind::BlocklistConn,
             fields: bincode::serialize(&BlocklistConnFields {
                 sensor: legacy.sensor.clone(),

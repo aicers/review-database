@@ -1,9 +1,10 @@
 use std::{fmt, net::IpAddr};
 
 use attrievent::attribute::{DceRpcAttr, RawEventAttrKind};
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
+use super::timestamp;
 use super::{EventCategory, LearningMethod, ThreatLevel, TriageScore, common::Match};
 use crate::event::common::{AttrValue, triage_scores_to_string};
 
@@ -262,7 +263,7 @@ impl From<BlocklistDceRpcFields> for BlocklistDceRpcFieldsStored {
 impl BlocklistDceRpcFields {
     #[must_use]
     pub fn syslog_rfc5424(&self) -> String {
-        let start_time_dt = DateTime::from_timestamp_nanos(self.start_time);
+        let start_time = timestamp::format_i64_nanos_rfc3339(self.start_time).unwrap_or_default();
         let context_str = self
             .context
             .iter()
@@ -301,7 +302,7 @@ impl BlocklistDceRpcFields {
             self.resp_addr.to_string(),
             self.resp_port.to_string(),
             self.proto.to_string(),
-            start_time_dt.to_rfc3339(),
+            start_time,
             self.duration.to_string(),
             self.orig_pkts.to_string(),
             self.resp_pkts.to_string(),
@@ -315,7 +316,7 @@ impl BlocklistDceRpcFields {
 }
 
 pub struct BlocklistDceRpc {
-    pub time: DateTime<Utc>,
+    pub time: Timestamp,
     pub sensor: String,
     pub orig_addr: IpAddr,
     pub orig_port: u16,
@@ -324,7 +325,7 @@ pub struct BlocklistDceRpc {
     pub resp_port: u16,
     pub resp_country_code: [u8; 2],
     pub proto: u8,
-    pub start_time: DateTime<Utc>,
+    pub start_time: Timestamp,
     pub duration: i64,
     pub orig_pkts: u64,
     pub resp_pkts: u64,
@@ -376,7 +377,7 @@ impl fmt::Display for BlocklistDceRpc {
             self.resp_port.to_string(),
             crate::util::country_code_as_str(&self.resp_country_code),
             self.proto.to_string(),
-            self.start_time.to_rfc3339(),
+            timestamp::format_rfc3339(self.start_time).unwrap_or_default(),
             self.duration.to_string(),
             self.orig_pkts.to_string(),
             self.resp_pkts.to_string(),
@@ -390,7 +391,7 @@ impl fmt::Display for BlocklistDceRpc {
 }
 
 impl BlocklistDceRpc {
-    pub(super) fn new(time: DateTime<Utc>, fields: BlocklistDceRpcFieldsStored) -> Self {
+    pub(super) fn new(time: Timestamp, fields: BlocklistDceRpcFieldsStored) -> Self {
         Self {
             time,
             sensor: fields.sensor,
@@ -401,7 +402,8 @@ impl BlocklistDceRpc {
             resp_port: fields.resp_port,
             resp_country_code: fields.resp_country_code,
             proto: fields.proto,
-            start_time: DateTime::from_timestamp_nanos(fields.start_time),
+            start_time: timestamp::from_i64_nanos(fields.start_time)
+                .expect(timestamp::I64_NANOS_JIFF_INVARIANT),
             duration: fields.duration,
             orig_pkts: fields.orig_pkts,
             resp_pkts: fields.resp_pkts,
@@ -497,6 +499,7 @@ mod tests {
         BlocklistDceRpc, BlocklistDceRpcFieldsStored, DceRpcContext, collect_request_part,
         format_dce_uuid,
     };
+    use crate::event::timestamp;
     use crate::{
         AttrCmpKind, PacketAttr, ValueKind,
         event::common::{AttrValue, Match},
@@ -575,7 +578,8 @@ mod tests {
 
     #[test]
     fn dcerpc_context_attr_mappings() {
-        let time = Utc.with_ymd_and_hms(1970, 1, 1, 0, 0, 0).unwrap();
+        let time = timestamp::from_chrono(Utc.with_ymd_and_hms(1970, 1, 1, 0, 0, 0).unwrap())
+            .expect(timestamp::I64_NANOS_JIFF_INVARIANT);
         let event = BlocklistDceRpc::new(time, dcerpc_fields_with_context());
 
         let Some(AttrValue::VecUInt(ids)) =
@@ -605,7 +609,8 @@ mod tests {
 
     #[test]
     fn dcerpc_empty_context_returns_none_for_vector_attrs() {
-        let time = Utc.with_ymd_and_hms(1970, 1, 1, 0, 0, 0).unwrap();
+        let time = timestamp::from_chrono(Utc.with_ymd_and_hms(1970, 1, 1, 0, 0, 0).unwrap())
+            .expect(timestamp::I64_NANOS_JIFF_INVARIANT);
         let mut fields = dcerpc_fields_with_context();
         fields.context.clear();
         let event = BlocklistDceRpc::new(time, fields);
@@ -626,7 +631,8 @@ mod tests {
 
     #[test]
     fn dcerpc_score_by_attr() {
-        let time = Utc.with_ymd_and_hms(1970, 1, 1, 0, 0, 0).unwrap();
+        let time = timestamp::from_chrono(Utc.with_ymd_and_hms(1970, 1, 1, 0, 0, 0).unwrap())
+            .expect(timestamp::I64_NANOS_JIFF_INVARIANT);
         let event = BlocklistDceRpc::new(time, dcerpc_fields_with_context());
 
         let packet_attrs = vec![

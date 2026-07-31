@@ -5,16 +5,17 @@ use std::{
 };
 
 use attrievent::attribute::{LogAttr, RawEventAttrKind};
-use chrono::{DateTime, Utc, serde::ts_nanoseconds};
+use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
+use super::timestamp::ts_nanoseconds as jiff_ts_nanoseconds;
 use super::{EventCategory, LearningMethod, ThreatLevel, TriageScore, common::Match};
 use crate::event::common::{AttrValue, triage_scores_to_string};
 
 #[derive(Serialize, Deserialize)]
 pub struct ExtraThreatFields {
-    #[serde(with = "ts_nanoseconds")]
-    pub time: DateTime<Utc>,
+    #[serde(with = "jiff_ts_nanoseconds")]
+    pub time: Timestamp,
     pub sensor: String,
     pub service: String,
     pub content: String,
@@ -28,10 +29,12 @@ pub struct ExtraThreatFields {
     pub triage_scores: Option<Vec<TriageScore>>,
 }
 
+pub type ExtraThreatFieldsStored = ExtraThreatFieldsStoredV0_46;
+
 #[derive(Deserialize, Serialize)]
-pub struct ExtraThreatFieldsStored {
-    #[serde(with = "ts_nanoseconds")]
-    pub time: DateTime<Utc>,
+pub struct ExtraThreatFieldsStoredV0_46 {
+    #[serde(with = "jiff_ts_nanoseconds")]
+    pub time: Timestamp,
     pub sensor: String,
     pub service: String,
     pub content: String,
@@ -87,7 +90,7 @@ impl ExtraThreatFields {
 }
 
 pub struct ExtraThreat {
-    pub time: DateTime<Utc>,
+    pub time: Timestamp,
     pub sensor: String,
     pub service: String,
     pub content: String,
@@ -102,7 +105,7 @@ pub struct ExtraThreat {
 }
 
 impl ExtraThreat {
-    pub(super) fn new(time: DateTime<Utc>, fields: ExtraThreatFieldsStored) -> Self {
+    pub(super) fn new(time: Timestamp, fields: ExtraThreatFieldsStored) -> Self {
         Self {
             time,
             sensor: fields.sensor,

@@ -1,9 +1,10 @@
 use std::{fmt, net::IpAddr};
 
 use attrievent::attribute::{RawEventAttrKind, SmtpAttr};
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
+use super::timestamp;
 use super::{EventCategory, LearningMethod, ThreatLevel, TriageScore, common::Match};
 use crate::event::common::{AttrValue, triage_scores_to_string};
 
@@ -124,7 +125,7 @@ impl From<BlocklistSmtpFields> for BlocklistSmtpFieldsStored {
 impl BlocklistSmtpFields {
     #[must_use]
     pub fn syslog_rfc5424(&self) -> String {
-        let start_time_dt = DateTime::from_timestamp_nanos(self.start_time);
+        let start_time = timestamp::format_i64_nanos_rfc3339(self.start_time).unwrap_or_default();
         format!(
             "category={:?} sensor={:?} orig_addr={:?} orig_port={:?} resp_addr={:?} resp_port={:?} proto={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} mailfrom={:?} date={:?} from={:?} to={:?} subject={:?} agent={:?} state={:?} confidence={:?}",
             self.category.as_ref().map_or_else(
@@ -137,7 +138,7 @@ impl BlocklistSmtpFields {
             self.resp_addr.to_string(),
             self.resp_port.to_string(),
             self.proto.to_string(),
-            start_time_dt.to_rfc3339(),
+            start_time,
             self.duration.to_string(),
             self.orig_pkts.to_string(),
             self.resp_pkts.to_string(),
@@ -157,7 +158,7 @@ impl BlocklistSmtpFields {
 
 #[allow(clippy::module_name_repetitions)]
 pub struct BlocklistSmtp {
-    pub time: DateTime<Utc>,
+    pub time: Timestamp,
     pub sensor: String,
     pub orig_addr: IpAddr,
     pub orig_port: u16,
@@ -166,7 +167,7 @@ pub struct BlocklistSmtp {
     pub resp_port: u16,
     pub resp_country_code: [u8; 2],
     pub proto: u8,
-    pub start_time: DateTime<Utc>,
+    pub start_time: Timestamp,
     pub duration: i64,
     pub orig_pkts: u64,
     pub resp_pkts: u64,
@@ -196,7 +197,7 @@ impl fmt::Display for BlocklistSmtp {
             self.resp_port.to_string(),
             crate::util::country_code_as_str(&self.resp_country_code),
             self.proto.to_string(),
-            self.start_time.to_rfc3339(),
+            timestamp::format_rfc3339(self.start_time).unwrap_or_default(),
             self.duration.to_string(),
             self.orig_pkts.to_string(),
             self.resp_pkts.to_string(),
@@ -215,7 +216,7 @@ impl fmt::Display for BlocklistSmtp {
 }
 
 impl BlocklistSmtp {
-    pub(super) fn new(time: DateTime<Utc>, fields: BlocklistSmtpFieldsStored) -> Self {
+    pub(super) fn new(time: Timestamp, fields: BlocklistSmtpFieldsStored) -> Self {
         Self {
             time,
             sensor: fields.sensor,
@@ -226,7 +227,8 @@ impl BlocklistSmtp {
             resp_port: fields.resp_port,
             resp_country_code: fields.resp_country_code,
             proto: fields.proto,
-            start_time: DateTime::from_timestamp_nanos(fields.start_time),
+            start_time: timestamp::from_i64_nanos(fields.start_time)
+                .expect(timestamp::I64_NANOS_JIFF_INVARIANT),
             duration: fields.duration,
             orig_pkts: fields.orig_pkts,
             resp_pkts: fields.resp_pkts,

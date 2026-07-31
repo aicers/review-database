@@ -1754,10 +1754,12 @@ impl From<FtpBruteForceFieldsStoredV0_42> for crate::event::FtpBruteForceFieldsS
     }
 }
 
-impl From<HttpThreatFieldsStoredV0_44> for crate::event::HttpThreatFieldsStoredV0_46 {
-    fn from(old: HttpThreatFieldsStoredV0_44) -> Self {
-        Self {
-            time: old.time,
+impl TryFrom<HttpThreatFieldsStoredV0_44> for crate::event::HttpThreatFieldsStoredV0_46 {
+    type Error = anyhow::Error;
+
+    fn try_from(old: HttpThreatFieldsStoredV0_44) -> Result<Self> {
+        Ok(Self {
+            time: chrono_to_jiff_timestamp(old.time)?,
             sensor: old.sensor,
             orig_addr: old.orig_addr,
             orig_port: old.orig_port,
@@ -1799,7 +1801,7 @@ impl From<HttpThreatFieldsStoredV0_44> for crate::event::HttpThreatFieldsStoredV
             attack_kind: old.attack_kind,
             confidence: old.confidence,
             category: old.category,
-        }
+        })
     }
 }
 
@@ -1841,10 +1843,12 @@ impl From<MultiHostPortScanFieldsStoredV0_42> for crate::event::MultiHostPortSca
     }
 }
 
-impl From<NetworkThreatFieldsStoredV0_45> for crate::event::NetworkThreatFieldsStoredV0_46 {
-    fn from(old: NetworkThreatFieldsStoredV0_45) -> Self {
-        Self {
-            time: old.time,
+impl TryFrom<NetworkThreatFieldsStoredV0_45> for crate::event::NetworkThreatFieldsStoredV0_46 {
+    type Error = anyhow::Error;
+
+    fn try_from(old: NetworkThreatFieldsStoredV0_45) -> Result<Self> {
+        Ok(Self {
+            time: chrono_to_jiff_timestamp(old.time)?,
             sensor: old.sensor,
             orig_addr: old.orig_addr,
             orig_port: old.orig_port,
@@ -1854,7 +1858,7 @@ impl From<NetworkThreatFieldsStoredV0_45> for crate::event::NetworkThreatFieldsS
             resp_country_code: crate::util::COUNTRY_CODE_PENDING,
             proto: old.proto,
             service: old.service,
-            start_time: old.start_time,
+            start_time: chrono_to_i64_nanos(old.start_time)?,
             duration: old.duration,
             orig_pkts: old.orig_pkts,
             resp_pkts: old.resp_pkts,
@@ -1869,7 +1873,7 @@ impl From<NetworkThreatFieldsStoredV0_45> for crate::event::NetworkThreatFieldsS
             confidence: old.confidence,
             category: old.category,
             triage_scores: old.triage_scores,
-        }
+        })
     }
 }
 
@@ -1994,14 +1998,27 @@ impl From<UnusualDestinationPatternFieldsStoredV0_45>
     }
 }
 
+fn chrono_to_i64_nanos(time: DateTime<Utc>) -> Result<i64> {
+    time.timestamp_nanos_opt()
+        .ok_or_else(|| anyhow::anyhow!("timestamp is outside the i64 nanosecond range"))
+}
+
+fn chrono_to_jiff_timestamp(time: DateTime<Utc>) -> Result<jiff::Timestamp> {
+    crate::event::timestamp::from_i64_nanos(chrono_to_i64_nanos(time)?)
+        .context("failed to convert i64 nanoseconds to Jiff timestamp")
+}
+
 fn convert_stored<Source, Target>(bytes: &[u8]) -> Result<Vec<u8>>
 where
     Source: for<'de> Deserialize<'de>,
-    Target: From<Source> + Serialize,
+    Target: TryFrom<Source> + Serialize,
+    Target::Error: std::fmt::Display + Send + Sync + 'static,
 {
     let source: Source = bincode::deserialize(bytes)
         .context("failed to deserialize event fields as the previous stored schema")?;
-    let target = Target::from(source);
+    let target = Target::try_from(source)
+        .map_err(|err| anyhow::anyhow!("{err}"))
+        .context("failed to convert event fields to the current stored schema")?;
     bincode::serialize(&target).context("failed to serialize target stored schema")
 }
 
@@ -2199,7 +2216,7 @@ pub(super) fn validate_event_stored_schema_v0_46(kind: EventKind, bytes: &[u8]) 
             validate::<crate::event::DnsEventFieldsStoredV0_46>(bytes)
         }
         EventKind::ExternalDdos => validate::<crate::event::ExternalDdosFieldsStoredV0_46>(bytes),
-        EventKind::ExtraThreat | EventKind::WindowsThreat => Ok(()),
+        EventKind::ExtraThreat => validate::<crate::event::ExtraThreatFieldsStoredV0_46>(bytes),
         EventKind::FtpBruteForce => validate::<crate::event::FtpBruteForceFieldsStoredV0_46>(bytes),
         EventKind::HttpThreat => validate::<crate::event::HttpThreatFieldsStoredV0_46>(bytes),
         EventKind::LdapBruteForce => {
@@ -2220,5 +2237,6 @@ pub(super) fn validate_event_stored_schema_v0_46(kind: EventKind, bytes: &[u8]) 
         EventKind::UnusualDestinationPattern => {
             validate::<crate::event::UnusualDestinationPatternFieldsStoredV0_46>(bytes)
         }
+        EventKind::WindowsThreat => validate::<crate::event::WindowsThreatFieldsStoredV0_46>(bytes),
     }
 }
