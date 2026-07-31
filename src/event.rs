@@ -155,6 +155,8 @@ use super::{
     types::{Endpoint, HostNetworkGroup},
 };
 
+const EVENT_DELETION_BATCH_SIZE: usize = 1000;
+
 // event kind
 const DNS_COVERT_CHANNEL: &str = "DNS Covert Channel";
 const HTTP_THREAT: &str = "HTTP Threat";
@@ -179,7 +181,6 @@ const MISC_LOG_THREAT: &str = "Log Threat";
 const LOCKY_RANSOMWARE: &str = "Locky Ransomware";
 const SUSPICIOUS_TLS_TRAFFIC: &str = "Suspicious TLS Traffic";
 const UNUSUAL_DESTINATION_PATTERN: &str = "Unusual Destination Pattern";
-const EVENT_DELETION_BATCH_SIZE: usize = 1000;
 
 pub enum Event {
     /// DNS requests and responses that convey unusual host names.
@@ -8222,6 +8223,29 @@ mod tests {
 
         db.remove_by_sensors(&[]).unwrap();
         assert_eq!(db.iter_forward().count(), 1);
+    }
+
+    #[test]
+    fn remove_by_sensors_requires_exact_sensor_match() {
+        let (_permit, store) = setup_store();
+        let db = store.events();
+        let base_time = Utc.with_ymd_and_hms(2025, 1, 1, 0, 0, 0).unwrap();
+
+        db.put(&dns_message("target.example", base_time)).unwrap();
+        db.put(&dns_message(
+            "target.example.extra",
+            base_time + chrono::Duration::seconds(1),
+        ))
+        .unwrap();
+
+        db.remove_by_sensors(&["target.example".to_string()])
+            .unwrap();
+
+        let remaining: Vec<_> = db
+            .iter_forward()
+            .map(|entry| entry.unwrap().1.sensor().to_string())
+            .collect();
+        assert_eq!(remaining, ["target.example.extra"]);
     }
 
     #[test]
