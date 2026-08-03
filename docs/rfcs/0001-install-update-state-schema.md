@@ -207,10 +207,19 @@ The manager (review) and the API (review-web) consume these types:
     same retry/resume path. (The `(component, host)` registry key and other
     genuinely-composite keys still follow §4c length-prefixed encoding; the
     `operation_attempt` uniqueness key is not one of them.)
-  - `host: String`, `target: String` (host-agnostic package-id),
-    `instance_service_name: String` (`<component>-<host>`, RFC-A §4).
-    For an **`Onboard`** attempt these are the pending host and its
-    `roxyd-<host>` identity; **`target`, `package_digest`, and the
+  - `host: String`, `target: String` (host-agnostic package-id), and
+    **`instance: String`** — the instance number this operation concerns
+    (RFC-A §4), empty for a component whose class has no instance
+    dimension. **It records the number, NOT a composed name.** The owed
+    `Deregister` this row may carry is driven with
+    `(service_name, host, instance)` and the **registrar** derives the
+    composed identity from those (RFC-C §5, RFC-F §5.1/§5.5), so a name
+    composed here would be a second, un-verified derivation of something
+    review does not own. Together with `target` and `host` the triple is
+    exactly what a re-drive needs.
+    For an **`Onboard`** attempt `host` is the pending host and `instance`
+    is empty (a host's roxyd is single-instance);
+    **`target`, `package_digest`, and the
     resolved-build fields (`resolved_version`, `resolved_commit`) are all the
     empty string** — an onboarding has no package yet (RFC-D2 §4d). (Use one
     consistent "absent" encoding: the empty string for **every** package-scoped
@@ -257,7 +266,7 @@ The manager (review) and the API (review-web) consume these types:
     convention above; both use the same encoding as each other.)
 - **Why these fields (do not trim):** `target` is host-agnostic but modules /
   roxyd / core components apply **per host**, so without `host` +
-  `instance_service_name` + resolved `(version, commit)` + `idempotency_key`,
+  `instance` + resolved `(version, commit)` + `idempotency_key`,
   two concurrent applies of the same package to different hosts — or two
   commits of one version — are indistinguishable on resume.
 - Written **before** an apply begins. **The apply outcome and the owed
@@ -286,15 +295,21 @@ The manager (review) and the API (review-web) consume these types:
 - **[DECISION] Secondary indexes — four orchestration guards need a durable
   "is there a live operation for X?" lookup.** The uniqueness key is
   `idempotency_key` alone (above), which deliberately gives no way to ask that
-  question. But RFC-D3 §5a's single-flight per `(host, target)`, and RFC-D2
+  question. But RFC-D3 §5a's single-flight per `(host, target, instance)`,
+  and RFC-D2
   §4d's per-hostname onboard idempotency, `Register`/`Deregister` mutual
   exclusion, and "re-onboard blocked while a teardown is owed" **all** need it
   — and need it to survive a REView restart, so it cannot live in process
   memory (a double-click followed by a restart would otherwise re-drive two
-  live attempts for one `(host, target)`). So this table carries:
-  - an index on **`(host, target)` restricted to non-terminal rows**,
-    enforcing **at most one live attempt per pair**;
-  - an index on **`instance_service_name`** for rows with a non-empty
+  live attempts for one operation). So this table carries:
+  - an index on **`(host, target, instance)` restricted to non-terminal
+    rows**, enforcing **at most one live attempt per triple**. **The
+    instance is part of the key**: a host may run several instances of one
+    module (RFC-A §4), so an index on `(host, target)` alone would enforce
+    "one live attempt per module per host" and thereby block **adding** a
+    second instance while the first one's install is still running — a
+    legitimate concurrent operation, not a double-click (RFC-D2 §4b);
+  - an index on **`(target, host, instance)`** for rows with a non-empty
     `cleanup_state` (the owed-teardown lookup);
   - an index on **`expires_at`** for `Onboard` rows (the expiry sweep,
     RFC-D2 §4d).
@@ -460,7 +475,7 @@ The manager (review) and the API (review-web) consume these types:
 - `operation_attempt` enforces **one record per `idempotency_key`**: a second
   write with the same key **upserts the same row, never a duplicate** (unique
   key / index, §4d) — a test drives the same key twice and asserts a single
-  row. Records carry `host`, `instance_service_name`, `resolved_version`
+  row. Records carry `host`, `instance`, `resolved_version`
   **and** `resolved_commit`, `idempotency_key`, and `cleanup_state`; two
   concurrent same-package applies to different hosts, and two commits of one
   version, are distinguishable.
