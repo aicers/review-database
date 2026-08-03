@@ -99,8 +99,9 @@ stored, for display.
 The manager (review) and the API (review-web) consume these types:
 
 - **Lifecycle** = the install/run state of a package on a host, **actual**
-  and **distinct from `Status`** (config-reload). Values: `NotInstalled`,
-  `Installing`, `Running`, `Stopped`, `Failed`, `Removing`. `UpdateAvailable`
+  and **distinct from `Status`** (config-reload). Values (with `Unknown` as
+  the unrecognized-value fallback, §4a): `NotInstalled`,
+  `Installing`, `Running`, `Stopped`, `Failed`, `Removing`, `Unknown`. `UpdateAvailable`
   is **not** stored — review computes it per build (installed
   `(version, commit)` ≠ the store's `latest_build`).
 - **Build identity is `(version, commit)`**, never `version` alone: the same
@@ -145,10 +146,29 @@ The manager (review) and the API (review-web) consume these types:
 
 ### 4a. New value type: `Lifecycle`
 
-- Add a `Lifecycle` enum (a `#[repr(u8)]`, `FromPrimitive`, defaulting to
-  `NotInstalled`), in a new `src/tables/lifecycle.rs` (or beside `Status` in
+- Add a `Lifecycle` enum (a `#[repr(u8)]`, `FromPrimitive`), in a new
+  `src/tables/lifecycle.rs` (or beside `Status` in
   `node.rs`): `NotInstalled=0`, `Installing=1`, `Running=2`, `Stopped=3`,
   `Failed=4`, `Removing=5`, `Unknown=u8::MAX`.
+- **[DECISION] The `FromPrimitive` default is `Unknown`, NOT `NotInstalled`.**
+  A default of `NotInstalled` inverts the sentinel's purpose: a value this
+  build does not recognize — a row written by a newer build, or a byte read
+  back after a partial rollback — would be presented as *nothing is
+  installed* on a host that is in fact `Failed` or `Running`, and the UI
+  would offer an install where a remediation is due. `Unknown` is the value
+  that says "this build cannot interpret what is stored," which is exactly
+  the truth in that case. (`Status`'s own default is `Enabled`
+  (`node.rs`), which is a **config-reload** state where "no adverse reload
+  recorded" is a sound default; the two are not analogous.)
+- **[DECISION] This encoding is INDEPENDENT of review-protocol's wire
+  `Lifecycle` (RFC-C §4), and neither side may read the other's number.**
+  The variant sets match, the numbers do not: with the plain serde derive
+  this repo uses, bincode persists the **variant index**, so
+  `Lifecycle::Unknown` reaches disk as **6** rather than `u8::MAX` — exactly
+  as `Status::Unknown` persists as **3** today, not `255`. The `u8::MAX`
+  discriminant is the `FromPrimitive` house style, not the stored value. The
+  wire type pins its own encoding to the discriminant with an unknown-value
+  fallback (RFC-C §4); the manager maps between them.
 - It is **orthogonal to `Status`** (a service can be `Running` yet
   `ReloadFailed`); do **not** fold the two.
 
