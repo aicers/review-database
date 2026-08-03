@@ -243,7 +243,7 @@ pub(crate) fn migrate_event_country_codes(
     let db_path = data_dir.join("states.db");
     let mut opts = rocksdb::Options::default();
     opts.create_if_missing(false);
-    opts.create_missing_column_families(false);
+    opts.create_missing_column_families(true);
     let db: rocksdb::OptimisticTransactionDB<rocksdb::SingleThreaded> =
         rocksdb::OptimisticTransactionDB::open_cf(&opts, db_path, crate::tables::MAP_NAMES)
             .context("failed to open database for event country-code migration")?;
@@ -408,7 +408,7 @@ fn migrate_triage_policy_confidence(dir: &Path) -> Result<()> {
     let db_path = dir.join("states.db");
     let mut opts = rocksdb::Options::default();
     opts.create_if_missing(false);
-    opts.create_missing_column_families(false);
+    opts.create_missing_column_families(true);
 
     let db: rocksdb::OptimisticTransactionDB<rocksdb::SingleThreaded> =
         rocksdb::OptimisticTransactionDB::open_cf(&opts, &db_path, crate::tables::MAP_NAMES)
@@ -688,7 +688,7 @@ fn migrate_network_tags_to_customer_scoped(dir: &Path) -> Result<()> {
 
     let mut opts = rocksdb::Options::default();
     opts.create_if_missing(false);
-    opts.create_missing_column_families(false);
+    opts.create_missing_column_families(true);
 
     let db: rocksdb::OptimisticTransactionDB<rocksdb::SingleThreaded> =
         rocksdb::OptimisticTransactionDB::open_cf(&opts, &db_path, crate::tables::MAP_NAMES)
@@ -800,7 +800,7 @@ fn migrate_network_cf(data_dir: &Path) -> Result<()> {
 
     let mut opts = rocksdb::Options::default();
     opts.create_if_missing(false);
-    opts.create_missing_column_families(false);
+    opts.create_missing_column_families(true);
 
     migrate_network_cf_inner(&db_path, &opts, &MAP_NAMES)?;
 
@@ -1052,7 +1052,7 @@ fn migrate_event_fields(dir: &Path) -> Result<()> {
 
     let mut opts = rocksdb::Options::default();
     opts.create_if_missing(false);
-    opts.create_missing_column_families(false);
+    opts.create_missing_column_families(true);
 
     let db: rocksdb::OptimisticTransactionDB<rocksdb::SingleThreaded> =
         rocksdb::OptimisticTransactionDB::open_cf(&opts, &db_path, crate::tables::MAP_NAMES)
@@ -2025,6 +2025,73 @@ mod tests {
             assert_eq!(data_version, current_pkg_version);
             assert_eq!(backup_version, current_pkg_version);
         }
+    }
+
+    fn assert_migration_creates_customer_deletion_jobs_cf(version: &str) {
+        let current_version = Version::parse(env!("CARGO_PKG_VERSION")).unwrap();
+        let legacy_map_names: Vec<_> = crate::tables::MAP_NAMES
+            .iter()
+            .copied()
+            .filter(|name| *name != crate::tables::CUSTOMER_DELETION_JOBS)
+            .collect();
+
+        let data_dir = tempfile::tempdir().unwrap();
+        let backup_dir = tempfile::tempdir().unwrap();
+        let db_path = data_dir.path().join("states.db");
+
+        let mut create_opts = rocksdb::Options::default();
+        create_opts.create_if_missing(true);
+        create_opts.create_missing_column_families(true);
+        let db: rocksdb::OptimisticTransactionDB =
+            rocksdb::OptimisticTransactionDB::open_cf(&create_opts, &db_path, &legacy_map_names)
+                .unwrap();
+        assert!(
+            db.cf_handle(crate::tables::CUSTOMER_DELETION_JOBS)
+                .is_none()
+        );
+        drop(db);
+
+        write_version(data_dir.path(), version);
+        write_version(backup_dir.path(), version);
+        migrate_data_dir(data_dir.path(), backup_dir.path(), None).unwrap();
+
+        let mut open_opts = rocksdb::Options::default();
+        open_opts.create_if_missing(false);
+        open_opts.create_missing_column_families(false);
+        let db: rocksdb::OptimisticTransactionDB = rocksdb::OptimisticTransactionDB::open_cf(
+            &open_opts,
+            &db_path,
+            crate::tables::MAP_NAMES,
+        )
+        .unwrap();
+        assert!(
+            db.cf_handle(crate::tables::CUSTOMER_DELETION_JOBS)
+                .is_some()
+        );
+
+        assert_eq!(
+            read_version_file(&data_dir.path().join("VERSION")).unwrap(),
+            current_version
+        );
+        assert_eq!(
+            read_version_file(&backup_dir.path().join("VERSION")).unwrap(),
+            current_version
+        );
+    }
+
+    #[test]
+    fn migration_from_v0_43_schema_creates_customer_deletion_jobs_cf() {
+        assert_migration_creates_customer_deletion_jobs_cf("0.43.0");
+    }
+
+    #[test]
+    fn migration_from_v0_44_schema_creates_customer_deletion_jobs_cf() {
+        assert_migration_creates_customer_deletion_jobs_cf("0.44.0");
+    }
+
+    #[test]
+    fn migration_from_v0_45_schema_creates_customer_deletion_jobs_cf() {
+        assert_migration_creates_customer_deletion_jobs_cf("0.45.0");
     }
 
     /// Test that the `0.42`-specific migration loop runs and updates `VERSION` files.
