@@ -288,7 +288,10 @@ The manager (review) and the API (review-web) consume these types:
   self-update recovery, where reading the operation record is the **only** way
   the UI learns whether a REView / aice-web-next update succeeded (the response
   channel was torn down by the swap, RFC-C §4). So: keep the **most recent
-  terminal attempt per `(host, target)`** — plus every attempt that is still
+  terminal attempt per `(host, target, instance)`** — the same triple the
+  single-flight key uses (below), so a module running several instances keeps
+  one record each rather than collapsing to one per `(host, target)` and
+  masking a sibling's outcome — plus every attempt that is still
   non-terminal or still owes `cleanup_state` — and prune older terminal
   attempts beyond a bounded age/count. Without the prune, every install,
   update, remove, and onboard accumulates forever.
