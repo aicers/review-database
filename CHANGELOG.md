@@ -14,8 +14,6 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
-- Normalized the `ip2location` and `jiff` dependency version requirements to
-  accept compatible patch releases within their current minor versions.
 - **BREAKING**: Event timestamps now use `jiff::Timestamp` instead of chrono's
   `DateTime<Utc>`. Existing databases need no migration, because timestamps are
   still stored as `i64` epoch nanoseconds.
