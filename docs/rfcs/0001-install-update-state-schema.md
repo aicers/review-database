@@ -150,7 +150,13 @@ The manager (review) and the API (review-web) consume these types:
   `src/tables/lifecycle.rs` (or beside `Status` in
   `node.rs`): `NotInstalled=0`, `Installing=1`, `Running=2`, `Stopped=3`,
   `Failed=4`, `Removing=5`, `Unknown=u8::MAX`.
-- **[DECISION] The `FromPrimitive` default is `Unknown`, NOT `NotInstalled`.**
+- **[DECISION] An unrecognized stored value maps to `Unknown`, NOT to
+  `NotInstalled` — and the fallback lives at the CALL SITE.** num-derive's
+  `FromPrimitive` yields `from_u8(..) -> Option<Self>`, so "the derive's
+  default" is not a thing this crate can express (unlike `num_enum`, which the
+  wire crate uses, RFC-C §4). The rule is therefore stated where it is
+  enforceable: **every conversion from a stored integer resolves `None` to
+  `Unknown`**, and no call site may write `unwrap_or(NotInstalled)`.
   A default of `NotInstalled` inverts the sentinel's purpose: a value this
   build does not recognize — a row written by a newer build, or a byte read
   back after a partial rollback — would be presented as *nothing is
@@ -158,8 +164,9 @@ The manager (review) and the API (review-web) consume these types:
   would offer an install where a remediation is due. `Unknown` is the value
   that says "this build cannot interpret what is stored," which is exactly
   the truth in that case. (`Status`'s own default is `Enabled`
-  (`node.rs`), which is a **config-reload** state where "no adverse reload
-  recorded" is a sound default; the two are not analogous.)
+  (`node.rs`) — but note that is a `#[default]` **serde/Default** attribute on
+  a config-reload state where "no adverse reload recorded" is sound, not a
+  `FromPrimitive` fallback; the two are not analogous.)
 - **[DECISION] This encoding is INDEPENDENT of review-protocol's wire
   `Lifecycle` (RFC-C §4), and neither side may read the other's number.**
   The variant sets match, the numbers do not: with the plain serde derive
@@ -585,6 +592,17 @@ The manager (review) and the API (review-web) consume these types:
   components are single-instance (RFC-A §4), so its `(component, host)` key
   stays as is.
 - `Lifecycle` and `Status` are distinct types; no code path conflates them.
+- **An unrecognized stored `Lifecycle` decodes to `Unknown`.** A test writes a
+  discriminant this build does not know and asserts the read yields `Unknown`,
+  never `NotInstalled` — the latter would report "nothing installed" for a host
+  that is actually `Failed` or `Running` and invite an install where a
+  remediation is due (§4a). A second test asserts no call site resolves the
+  `Option` to `NotInstalled`.
+- **The stored encoding is this crate's own.** A test pins what is persisted
+  for each variant and records that it is the **variant index** under this
+  crate's bincode configuration — `Unknown` is not stored as `255` — so nobody
+  reads a number written by review-protocol's wire type as meaning the same
+  thing (RFC-C §4).
 - Core-component registry rows are keyed by `(component, host)`; **multiple
   `roxyd` rows** (one per host) coexist; **bootroot** rows carry
   `installer_managed = true`. The `(component, host)` key is a
