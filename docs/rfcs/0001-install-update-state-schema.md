@@ -123,6 +123,23 @@ The manager (review) and the API (review-web) consume these types:
   self-update reconnect, when the UI has no other source. It must uniquely
   identify a host-scoped operation for crash-safe resume, and hold the
   compensation still owed (e.g. a pending deregister).
+- **[DECISION] `operation_attempt` is NOT aice-web-next's `apply_attempts`,
+  and neither replaces the other.** aice-web-next already ships an
+  attempt ledger of its own — an `apply_attempts` table in its auth
+  database, with `attempt_id`, `draft_fingerprint`, `planned_dispatches`,
+  `expires_at`, an `executing_lock` and a `pending / executing / succeeded /
+  failed_retryable / failed_terminal / stale / expired` status, plus a
+  stale-lock sweep. It tracks **one operator's config-Apply run through the
+  UI**: which drafts that click intended to dispatch, and whether the
+  browser-side run is still holding the lock. `operation_attempt` tracks
+  **the package operation REView is executing on a host**, survives a REView
+  restart, and carries the compensation owed to bootroot. They sit on
+  different sides of the API, key on different things, and have different
+  lifetimes; the UI ledger cannot answer "is there an owed `Deregister`" and
+  this one cannot answer "did that click finish dispatching". Implementations
+  must not collapse them or drive one from the other — but the naming
+  overlap is a live trap, so a reader of either should be pointed at this
+  paragraph.
 
 ## 4. Changes
 
@@ -227,7 +244,11 @@ The manager (review) and the API (review-web) consume these types:
   - `host: String`, `target: String` (host-agnostic package-id), and
     **`instance: String`** — the instance number this operation concerns
     (RFC-A §4), empty for a component whose class has no instance
-    dimension. **It records the number, NOT a composed name.** The owed
+    dimension. **It records the number, NOT a composed name.** It is the
+    plain decimal rendering of the `u32` the wire carries (RFC-C §4/§5) —
+    **no zero padding** (the three-digit form is a SAN rendering, RFC-A §4)
+    — so anything comparing instances must do so **numerically**, not
+    lexicographically, or `"10"` would sort before `"2"`. The owed
     `Deregister` this row may carry is driven with
     `(service_name, host, instance)` and the **registrar** derives the
     composed identity from those (RFC-C §5, RFC-F §5.1/§5.5), so a name
@@ -398,11 +419,18 @@ The manager (review) and the API (review-web) consume these types:
     present. This is **inherently rerun-safe** — a re-open never fails on "CF
     already exists" and creates nothing once both exist — and mirrors the
     existing CF-adding migration `migration.rs:627`. It matches this repo's
-    idempotent-rerun convention (below) with the least machinery.
+    idempotent-rerun convention (below) with the least machinery. (`:627` is
+    `migrate_customer_specific_networks`, which opens with
+    `create_missing_column_families(true)` while reformatting existing CFs
+    rather than adding one — it is the precedent for the **open mode**, not
+    for CF creation.)
   - **or a versioned CF list** — a **`MAP_NAMES_V0_46`** constant (`MAP_NAMES`
     without the two new names) opened under
-    `create_missing_column_families(false)` (mirrors the frozen `MAP_NAMES_V0_42`,
-    `migration.rs:301`/`:342`/`:448`), then explicit `db.create_cf` for the two
+    `create_missing_column_families(false)` (mirrors the versioned list
+    `MAP_NAMES_V0_42`, `migration.rs:301`/`:342`/`:448` — the repo pins the
+    names as literals there but documents no rationale, so treat it as
+    precedent for the shape, not as a stated rule), then explicit
+    `db.create_cf` for the two
     new CFs (`migration.rs:504`). **This variant is NOT rerun-safe as written**:
     after the crash above the DB already holds `core_component`/`operation_attempt`,
     so an old-only-list open fails (RocksDB requires every existing CF to be
