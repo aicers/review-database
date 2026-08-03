@@ -36,6 +36,7 @@ mod private {
     impl Sealed for tables::Cluster {}
     impl Sealed for tables::CsvColumnExtra {}
     impl Sealed for tables::Customer {}
+    impl Sealed for tables::CustomerDataDeletionJob {}
     impl Sealed for tables::DataSource {}
     impl Sealed for tables::Filter {}
     impl Sealed for tables::Host {}

@@ -11,6 +11,8 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 - Added `EventDb::remove_by_sensors` to delete events whose sensor exactly
   matches one of the specified service FQDNs, with batched database writes.
+- Added persistent customer data deletion jobs and APIs for atomically adding
+  and updating results reported by REview, Sensor, and SemiSupervised services.
 
 ### Changed
 
