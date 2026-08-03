@@ -383,7 +383,7 @@ mod tests {
                 customer_id,
                 &service_result(
                     CustomerDataDeletionService::Sensor,
-                    Some("sensor.example."),
+                    Some("sensor-2.example"),
                     CustomerDataDeletionStatus::InProgress,
                     3,
                 ),
