@@ -194,9 +194,15 @@ The manager (review) and the API (review-web) consume these types:
     except Giganto**: the four agent modules bind no service address at all
     (they dial out on an ephemeral port), so in practice this is populated on
     `ExternalService` and stays empty on `Agent`. It is recorded rather than
-    derived because roxyd **chooses** Giganto's addresses on a first install —
-    its first bind precedes its first configuration, and only the host can
-    see what is free (RFC-B §4). Two readers need it: the direct-to-Giganto
+    derived because **only the host knows where the instance actually ended
+    up**. In v1 roxyd **chooses nothing** — it renders the package-declared
+    defaults and probes no port (RFC-B §4, RFC-A §4) — but its **first bind
+    still precedes its first configuration**, because Giganto's config
+    arrives direct from REView as a post-install step (RFC-D2 §4b): what the
+    instance is reachable on is what the host bound, not what the draft
+    names. When a later release adds the port chooser that a second instance
+    requires (RFC-B §4), the same field carries the chosen value with no
+    schema change. Two readers need it: the direct-to-Giganto
     config push, which otherwise has no destination (RFC-D2 §4b), and the UI
     form, which would otherwise keep offering the package default to an
     instance that is not on it (RFC-E §4).
@@ -623,7 +629,8 @@ The manager (review) and the API (review-web) consume these types:
   pre-bump `MAP_NAMES` and asserts no new CF is created.
 - A data dir written at `0.46.0` migrates cleanly to the new format: every
   existing agent/external-service gains the defaults
-  (`None`/`None`/`NotInstalled`); no config/draft data is lost; migration is
+  (`None` / `None` / `NotInstalled` / empty `bound_addrs`); no config/draft
+  data is lost; migration is
   resumable/robust in the house style. The migration **opens a `0.46.0` dir
   that lacks the `core_component`/`operation_attempt` CFs without failing** and
   creates them (`create_missing_column_families(true)` for this migration —
