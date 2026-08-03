@@ -36,7 +36,9 @@ adds, additively:
    bootroot — host-fixed infrastructure, not agents);
 4. an **`operation_attempt`** ledger (durable in-flight package operations,
    for crash-safe resume);
-5. the **migration** (data-dir migration + `COMPATIBLE_VERSION_REQ` bump)
+5. an **`instance_reservation`** table (which instance numbers are taken on
+   a host, including ones whose install has not finished);
+6. the **migration** (data-dir migration + `COMPATIBLE_VERSION_REQ` bump)
    and the **`Node::update` diff** extension to persist the new fields.
 
 There is **no `desired_version`** — install/update is an immediate imperative
@@ -155,7 +157,9 @@ The manager (review) and the API (review-web) consume these types:
 ### 4b. `Agent` + `ExternalService`: install/update fields
 
 - Add to **both** `Agent` (`agent.rs:38`) and `ExternalService`
-  (`external_service.rs:36`), beside `config`/`draft`:
+  (`external_service.rs:36`), beside `draft` (and `config`, which only
+  `Agent` has — `ExternalService` stores a draft alone, §2, because
+  Giganto's applied configuration lives in Giganto):
   - `installed_version: Option<String>`
   - `installed_commit: Option<String>`
   - `lifecycle: Lifecycle`
@@ -283,12 +287,18 @@ The manager (review) and the API (review-web) consume these types:
     on uninstall, or an owed teardown of a never-checked-in onboarding
     identity, RFC-D2 §4d)
   - `started_at: DateTime<Utc>`, `retry_policy`, `outcome: Option<...>`
-  - `expires_at: Option<DateTime<Utc>>` — the **durable absolute deadline** for
-    an **`Onboard`** attempt, set from the join-token wrap TTL at mint, so the
-    expiry/teardown clock **survives a REView restart** (the single-use token
-    itself is not persisted, RFC-C §5); `None` for `Install`/`Update`/`Remove`,
-    which terminate on the apply `retry_policy` budget, not a TTL
-  (RFC-D2 §4b/§4d).
+  - `expires_at: DateTime<Utc>` — the **durable absolute deadline**, set for
+    **every** action, not only `Onboard`. For an `Onboard` it is the
+    join-token wrap TTL at mint, so the expiry/teardown clock **survives a
+    REView restart** (the single-use token itself is not persisted,
+    RFC-C §5). For `Install`/`Update`/`Remove` it is a **generous** absolute
+    deadline — large enough that a slow link carrying a core-component image
+    is normal — and it exists because the apply `retry_policy` budget is
+    advanced **only on a roxyd check-in** (RFC-D2 §4b): a host that never
+    returns would otherwise leave its attempt non-terminal forever, holding
+    an instance number, the `(host, target, instance)` single-flight slot, a
+    minted bootroot identity and an in-flight card (§4g). The same sweep
+    finalizes any expired attempt (RFC-D2 §4d).
   - `backup_id: Option<u32>`, `pre_update_version: Option<String>` — set
     **only** for a core-component update of **REView** (§4f, RFC-D2 §4e):
     the id returned by the pre-update `backup::create` and the format version
@@ -502,11 +512,85 @@ The manager (review) and the API (review-web) consume these types:
 - Follow the existing style-guide cases in the `migration.rs` doc comment for
   choosing the version range.
 
+### 4g. `instance_reservation` (new table)
+
+- New table (`src/tables/instance_reservation.rs`), keyed by
+  **`(component, host, instance)`**:
+  - `component: String` (canonical package-id, RFC-A §4), `host: String`,
+    `instance: u32`
+  - `idempotency_key: String` — the `operation_attempt` that owns this
+    reservation, so a reader can always find out *why* a number is taken
+  - `created_at: DateTime<Utc>` and `expires_at: DateTime<Utc>` — the
+    reservation is not eternal; see the sweep below
+- **[DECISION] The reservation — not a service row — is what makes an
+  instance number taken.** REView allocates the lowest free number for a
+  `(component, host)` by reading, in one serialized section, that node's
+  **`Agent` rows**, its **`ExternalService` rows**, **and this table**, then
+  writing the reservation before the section is released (RFC-D2 §4d).
+  Both service tables must be read because the five multi-instance modules
+  are **split across them**: `piglet`/`hog`/`reconverge`/`crusher` are
+  `Agent`s while **`giganto` is an `ExternalService`** (`DataStore`, §2). A
+  scan of `Agent` alone would return "1 is free" for every Giganto install
+  on a host already running one, and the mint that follows would land on the
+  live instance's identity and paths.
+- **[DECISION] The reservation is separate from the service row so that an
+  in-flight install owns a number WITHOUT looking installed.** The
+  alternative — writing the `Agent`/`ExternalService` row at allocation
+  time with `lifecycle = Installing` — makes a not-yet-existing service
+  visible to every reader of those tables: the config plane iterates a
+  node's agents, the certificate lookup expects `key` to match a real
+  peer, and RFC-E §4 derives the **Install** affordance from row presence,
+  so the affordance would disappear the moment allocation ran. Keeping the
+  reservation in its own table leaves those readers untouched: **the service
+  row is created when the install reaches terminal success** (RFC-D2 §4b),
+  which is also when `installed_version`/`installed_commit`/`lifecycle`
+  first have real values. RFC-E's in-flight card comes from the
+  `operation_attempt` (RFC-D3 §5b), not from a placeholder row.
+- **[DECISION] A reservation is deleted at exactly three points**, and
+  nothing else frees a number: (1) the install reaches terminal success and
+  the service row is created — the row takes over as the record that the
+  number is in use; (2) the operation's owed compensation is fully
+  discharged (the identity is gone, RFC-D2 §4d); (3) `expires_at` passes and
+  the sweep finalizes the owning attempt (below). Deleting a service row
+  through `removeService` therefore frees the number directly, with no
+  reservation involved.
+- **Index:** `(component, host)` for the allocation scan — it must return
+  *all* live reservations for the pair, so it is a range scan, not a
+  uniqueness constraint.
+- **[DECISION] `Install` / `Update` / `Remove` attempts get an
+  `expires_at` too, and the same sweep finalizes them.** §4d gives
+  `expires_at` only to `Onboard`, on the reasoning that the others
+  terminate on the apply `retry_policy` budget — but that budget is only
+  ever advanced **on a roxyd check-in** (RFC-D2 §4b), so a host that never
+  returns leaves its attempt non-terminal **forever**. With the reservation
+  above, that leak is no longer one ledger row: it holds the instance
+  number, the single-flight slot for `(host, target, instance)`, a minted
+  bootroot identity, and an in-flight card in the UI. So every attempt
+  carries an absolute deadline — generous, since a slow link on a large core
+  image is normal — and the sweep that already scans expired `Onboard` rows
+  finalizes any expired attempt: mark it `Failed`, discharge the owed
+  compensation, drop the reservation.
+
 ## 5. Acceptance criteria
 
 - Adding, reading, and updating an `Agent`/`ExternalService` round-trips
   `installed_version`, `installed_commit`, and `lifecycle`; `lifecycle` is
   independent of `Status` (both readable from one status read).
+- **Instance numbers are taken by a reservation, and the scan covers BOTH
+  service tables.** A test allocates for a `(component, host)` whose only
+  existing instance is an **`ExternalService`** row (`giganto`) and asserts
+  the allocator returns **2, not 1** — a scan of `Agent` rows alone would
+  return 1 and the install would land on the live instance (§4g). A second
+  test allocates twice without either install completing and asserts the two
+  reservations force **distinct** numbers with no service row written; a
+  third asserts the number is freed when — and only when — the reservation is
+  deleted at one of its three defined points, and that a **terminal success**
+  hands over from the reservation to the created service row.
+- **Every attempt expires.** A test writes an `Install` attempt whose
+  `expires_at` has passed with no check-in ever arriving, runs the sweep, and
+  asserts the attempt is finalized `Failed`, the owed compensation is
+  discharged, and the reservation is dropped — so a host that never returns
+  leaks neither the number, the single-flight slot, nor the identity (§4g).
 - **Several instances of one component coexist on one node.** A test writes
   two `Agent` rows under the same `node_id` and the same `kind`, keyed
   `001.piglet` and `002.piglet` (RFC-A §4), and asserts both round-trip
@@ -582,18 +666,22 @@ Dependency order within this repo:
    full field set (including `backup_id` / `pre_update_version` for the REView
    core-update rollback), the **`idempotency_key`-unique** key (one row per
    key), tests. **Does NOT add its CF to `MAP_NAMES`** (that is issue 5).
+4a. **`instance_reservation` table** (§4g) — the table struct, CRUD, the
+   `(component, host, instance)` key, the `(component, host)` **range-scan**
+   index the allocator needs, `expires_at`, tests. **Does NOT add its CF to
+   `MAP_NAMES`** (that is issue 5). Depends on 1.
 5. **Migration + format bump + CF registration** (§4f) — `migrate_0_46_to_0_47`,
    bump `COMPATIBLE_VERSION_REQ`, old-shape structs, migration test fixture,
-   **AND register the two new CFs in `MAP_NAMES`** in this same slice (so no
+   **AND register the three new CFs in `MAP_NAMES`** in this same slice (so no
    `0.46.0` dir gets a new CF without the bump — §4f). Must specify **how the
    migration opens a `0.46.0` dir that lacks the new CFs** —
    `create_missing_column_families(true)` for this migration (recommended,
    inherently rerun-safe) or `MAP_NAMES_V0_46` + `list_cf` + `create_cf` (§4f) —
    since the migration opens default to `create_missing_column_families(false)`.
    Must be **rerun-safe after a mid-migration crash** (new CFs already exist,
-   version still `0.46.0`): the open creates nothing when both CFs exist and the
+   version still `0.46.0`): the open creates nothing when the CFs exist and the
    walk skips already-new records (`already_current` house pattern). Test both a
-   clean `0.46.0` dir **and** the crash-resume fixture. Depends on 1–4.
+   clean `0.46.0` dir **and** the crash-resume fixture. Depends on 1–4a.
 
 6. **Public format-version writer for rollback** (§4f) — one public entry point
    that writes a caller-supplied version string into **both**
