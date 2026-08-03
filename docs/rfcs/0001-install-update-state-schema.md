@@ -4,10 +4,11 @@
 (v0.46.0; DB format `COMPATIBLE_VERSION_REQ = ">=0.46.0,<0.47.0"`).
 Re-verify before relying.
 
-**Status:** `aicers/review-database` is an aicers repo (in-repo issue flow,
-AgentCoop-decomposable; not draft-only, no external gate — the whole D set
-now lives under `aicers`: `review-database` (this doc, D1), `review` (D2),
-and `review-web` (D3)). This is the review-database slice of the RFC-D scope —
+**Status:** Accepted; implementation is decomposed from §6.
+`aicers/review-database` is an aicers repo (in-repo issue flow,
+AgentCoop-decomposable, no external gate). The D set is `review-database`
+(this doc, D1), `review` (D2),
+and `review-web` (D3). This is the review-database slice of the RFC-D scope —
 made implementation-grade (the one coupled RFC across review-web + review +
 review-database); it is referred to as **D1** across the RFC set. Its filing
 home is `aicers/review-database` (`docs/rfcs/`, its first RFC). This document
