@@ -63,6 +63,19 @@ stored, for display.
 - **`Status`** (`src/tables/node.rs:35`): `Disabled=0`, `Enabled=1`,
   `ReloadFailed=2`, `Unknown=u8::MAX` — a **config-reload** state. Keep it
   as-is; the new lifecycle is a **separate** field.
+- **`Agent.key` already carries the instance, so multi-instance needs no
+  new field.** review resolves an agent from its certificate as
+  `agent_id = <instance>.<service>` and `host_id = <host>.<domain>`
+  (`review/src/tls/certificate.rs`), then finds the node by `host_id` and
+  the agent **within that node** by `a.key == agent_id`
+  (`review/src/agent/requests.rs`); review-web composes the same pair
+  (`gen_agent_lookup_key`, `graphql/node/crud.rs`). So `key` is
+  `<instance>.<service>` and is unique **per node**, exactly matching the
+  hierarchical identity (RFC-A §4) where an instance number is scoped by
+  `{service_name}.{hostname}`. Two `piglet` instances on one node are two
+  rows, `001.piglet` and `002.piglet`, under the same `node_id` and the
+  same `kind` — **no schema change, no new key**. What this does invalidate
+  is any assumption that a node holds at most one row per `AgentKind`.
 - **`Agent`** (`src/tables/agent.rs:38`): `node_id`, `key`, `kind: AgentKind`,
   `status: AgentStatus`, `config: Option<AgentConfig>`,
   `draft: Option<AgentConfig>`. `AgentKind` (`agent.rs:30`): `Unsupervised=1`,
@@ -428,6 +441,15 @@ The manager (review) and the API (review-web) consume these types:
 - Adding, reading, and updating an `Agent`/`ExternalService` round-trips
   `installed_version`, `installed_commit`, and `lifecycle`; `lifecycle` is
   independent of `Status` (both readable from one status read).
+- **Several instances of one component coexist on one node.** A test writes
+  two `Agent` rows under the same `node_id` and the same `kind`, keyed
+  `001.piglet` and `002.piglet` (RFC-A §4), and asserts both round-trip
+  with independent `config`, `draft`, `installed_version`,
+  `installed_commit` and `lifecycle`, that reads return both, and that
+  deleting one leaves the other intact. No code path may assume one row per
+  `(node_id, kind)`. The **core-component registry** is unaffected: core
+  components are single-instance (RFC-A §4), so its `(component, host)` key
+  stays as is.
 - `Lifecycle` and `Status` are distinct types; no code path conflates them.
 - Core-component registry rows are keyed by `(component, host)`; **multiple
   `roxyd` rows** (one per host) coexist; **bootroot** rows carry
