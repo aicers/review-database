@@ -142,7 +142,24 @@ The manager (review) and the API (review-web) consume these types:
   - `installed_version: Option<String>`
   - `installed_commit: Option<String>`
   - `lifecycle: Lifecycle`
-- These are **actual** state (what roxyd reports). No `desired_*`.
+  - `bound_addrs: Vec<(String, String)>` — the addresses this instance
+    **actually bound**, as `(config-key, host:port)` pairs reported by roxyd
+    (RFC-C §4 `PackageState.bound_addrs`, RFC-B §9). **Empty for everything
+    except Giganto**: the four agent modules bind no service address at all
+    (they dial out on an ephemeral port), so in practice this is populated on
+    `ExternalService` and stays empty on `Agent`. It is recorded rather than
+    derived because roxyd **chooses** Giganto's addresses on a first install —
+    its first bind precedes its first configuration, and only the host can
+    see what is free (RFC-B §4). Two readers need it: the direct-to-Giganto
+    config push, which otherwise has no destination (RFC-D2 §4b), and the UI
+    form, which would otherwise keep offering the package default to an
+    instance that is not on it (RFC-E §4).
+- These are **actual** state (what roxyd reports). No `desired_*`. In
+  particular `bound_addrs` is **observed, not intent**: it records where the
+  instance *is*, while `draft`/`config` carry what the operator *wants*, and
+  the two are deliberately not merged — after the first install the operator
+  owns the ports through the config plane, and a later edit moves `config`
+  without REView rewriting what roxyd reported.
 - Update the `FromKeyValue` / `ValueTrait` impls and the embedded
   (de)serialization so the new fields round-trip. `Agent::update`
   (`agent.rs:169`) and `ExternalService::update` (`external_service.rs:155`)
@@ -344,7 +361,10 @@ The manager (review) and the API (review-web) consume these types:
   the migration iterates every record in the `AGENTS` CF and every record in
   the `EXTERNAL_SERVICES` CF, **preserving each key** and **rewriting each
   value** with `installed_version = None`, `installed_commit = None`,
-  `lifecycle = NotInstalled`. Add old-shape structs **`AgentV0_46`** and
+  `lifecycle = NotInstalled`, `bound_addrs = []` (an existing deployment's
+  Giganto is already bound and configured; the empty vector simply means
+  "nothing reported yet", and the next status report fills it). Add
+  old-shape structs **`AgentV0_46`** and
   **`ExternalServiceV0_46`** to `migration_structures.rs` to deserialize the
   pre-migration value, then write the new shape. (`Node` itself gains no new
   field, so **no `NodeV0_46`** is needed.)
