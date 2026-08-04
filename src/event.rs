@@ -30,7 +30,7 @@ mod unusual_destination_pattern;
 mod key_baseline;
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     convert::TryInto,
     fmt::{self},
     net::IpAddr,
@@ -154,6 +154,8 @@ use super::{
     Customer, EventCategory, Network, TriageExclusion, TriagePolicyInput,
     types::{Endpoint, HostNetworkGroup},
 };
+
+const EVENT_DELETION_BATCH_SIZE: usize = 1000;
 
 // event kind
 const DNS_COVERT_CHANNEL: &str = "DNS Covert Channel";
@@ -3090,6 +3092,69 @@ pub(crate) fn resolve_stored_country_codes(
     }
 }
 
+fn event_sensor_matches(kind: EventKind, value: &[u8], sensors: &HashSet<&str>) -> Result<bool> {
+    macro_rules! matches_sensor {
+        ($fields:ty) => {{
+            let fields = bincode::deserialize::<$fields>(value).context("invalid event value")?;
+            sensors.contains(fields.sensor.as_str())
+        }};
+    }
+
+    Ok(match kind {
+        EventKind::BlocklistBootp => matches_sensor!(BlocklistBootpFieldsStored),
+        EventKind::BlocklistConn | EventKind::TorConnectionConn => {
+            matches_sensor!(BlocklistConnFieldsStored)
+        }
+        EventKind::BlocklistDceRpc => matches_sensor!(BlocklistDceRpcFieldsStored),
+        EventKind::BlocklistDhcp => matches_sensor!(BlocklistDhcpFieldsStored),
+        EventKind::BlocklistDns => matches_sensor!(BlocklistDnsFieldsStored),
+        EventKind::BlocklistFtp | EventKind::FtpPlainText => {
+            matches_sensor!(FtpEventFieldsStored)
+        }
+        EventKind::BlocklistHttp => matches_sensor!(BlocklistHttpFieldsStored),
+        EventKind::BlocklistKerberos => matches_sensor!(BlocklistKerberosFieldsStored),
+        EventKind::BlocklistLdap | EventKind::LdapPlainText => {
+            matches_sensor!(LdapEventFieldsStored)
+        }
+        EventKind::BlocklistMalformedDns => matches_sensor!(BlocklistMalformedDnsFieldsStored),
+        EventKind::BlocklistMqtt => matches_sensor!(BlocklistMqttFieldsStored),
+        EventKind::BlocklistNfs => matches_sensor!(BlocklistNfsFieldsStored),
+        EventKind::BlocklistNtlm => matches_sensor!(BlocklistNtlmFieldsStored),
+        EventKind::BlocklistRadius => matches_sensor!(BlocklistRadiusFieldsStored),
+        EventKind::BlocklistRdp => matches_sensor!(BlocklistRdpFieldsStored),
+        EventKind::BlocklistSmb => matches_sensor!(BlocklistSmbFieldsStored),
+        EventKind::BlocklistSmtp => matches_sensor!(BlocklistSmtpFieldsStored),
+        EventKind::BlocklistSsh => matches_sensor!(BlocklistSshFieldsStored),
+        EventKind::BlocklistTls | EventKind::SuspiciousTlsTraffic => {
+            matches_sensor!(BlocklistTlsFieldsStored)
+        }
+        EventKind::CryptocurrencyMiningPool => {
+            matches_sensor!(CryptocurrencyMiningPoolFieldsStored)
+        }
+        EventKind::DnsCovertChannel | EventKind::LockyRansomware => {
+            matches_sensor!(DnsEventFieldsStored)
+        }
+        EventKind::DomainGenerationAlgorithm => matches_sensor!(DgaFieldsStored),
+        EventKind::ExternalDdos => matches_sensor!(ExternalDdosFieldsStored),
+        EventKind::ExtraThreat => matches_sensor!(ExtraThreatFieldsStored),
+        EventKind::FtpBruteForce => matches_sensor!(FtpBruteForceFieldsStored),
+        EventKind::HttpThreat => matches_sensor!(HttpThreatFieldsStored),
+        EventKind::LdapBruteForce => matches_sensor!(LdapBruteForceFieldsStored),
+        EventKind::MultiHostPortScan => matches_sensor!(MultiHostPortScanFieldsStored),
+        EventKind::NetworkThreat => matches_sensor!(NetworkThreatFieldsStored),
+        EventKind::NonBrowser | EventKind::TorConnection => {
+            matches_sensor!(HttpEventFieldsStored)
+        }
+        EventKind::PortScan => matches_sensor!(PortScanFieldsStored),
+        EventKind::RdpBruteForce => matches_sensor!(RdpBruteForceFieldsStored),
+        EventKind::RepeatedHttpSessions => matches_sensor!(RepeatedHttpSessionsFieldsStored),
+        EventKind::UnusualDestinationPattern => {
+            matches_sensor!(UnusualDestinationPatternFieldsStored)
+        }
+        EventKind::WindowsThreat => matches_sensor!(WindowsThreatFieldsStored),
+    })
+}
+
 #[allow(clippy::module_name_repetitions)]
 pub struct EventDb<'a> {
     inner: &'a rocksdb::OptimisticTransactionDB,
@@ -3245,8 +3310,6 @@ impl<'a> EventDb<'a> {
     ///
     /// Returns an error if a database operation fails.
     pub fn remove_before(&self, before: Timestamp) -> Result<u64> {
-        const BATCH_SIZE: usize = 1000;
-
         let cutoff_nanos = match timestamp::to_i64_nanos(before) {
             Ok(nanos) => nanos,
             Err(timestamp::TimestampError::OutOfI64Range(nanos)) => {
@@ -3281,7 +3344,7 @@ impl<'a> EventDb<'a> {
                 batch.delete(&k);
                 batch_count += 1;
 
-                if batch_count >= BATCH_SIZE {
+                if batch_count >= EVENT_DELETION_BATCH_SIZE {
                     break;
                 }
             }
@@ -3297,6 +3360,55 @@ impl<'a> EventDb<'a> {
         }
 
         Ok(deleted)
+    }
+
+    /// Removes all events whose sensor exactly matches one of `sensors`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if an event cannot be read or decoded, or if a
+    /// database operation fails.
+    pub fn remove_by_sensors(&self, sensors: &[String]) -> Result<()> {
+        if sensors.is_empty() {
+            return Ok(());
+        }
+
+        let sensors: HashSet<&str> = sensors.iter().map(String::as_str).collect();
+        let iter = self.inner.iterator(IteratorMode::Start);
+        let mut batch = rocksdb::WriteBatchWithTransaction::<true>::default();
+        let mut batch_count = 0;
+
+        for item in iter {
+            let (key, value) = item.context("cannot read from event database")?;
+            let key_bytes: [u8; 16] = key
+                .as_ref()
+                .try_into()
+                .map_err(|_| anyhow::anyhow!("event key must be 16 bytes, got {}", key.len()))?;
+            let key_number = i128::from_be_bytes(key_bytes);
+            let kind_number = (key_number & 0xffff_ffff_0000_0000) >> 32;
+            let kind = EventKind::from_i128(kind_number)
+                .ok_or_else(|| anyhow::anyhow!("unknown event kind: {kind_number}"))?;
+
+            if event_sensor_matches(kind, &value, &sensors)? {
+                batch.delete(&key);
+                batch_count += 1;
+            }
+
+            if batch_count >= EVENT_DELETION_BATCH_SIZE {
+                self.inner
+                    .write(std::mem::take(&mut batch))
+                    .context("failed to delete events by sensor")?;
+                batch_count = 0;
+            }
+        }
+
+        if batch_count > 0 {
+            self.inner
+                .write(batch)
+                .context("failed to delete events by sensor")?;
+        }
+
+        Ok(())
     }
 
     /// Inserts a raw key-value pair into the event database.
@@ -3944,6 +4056,26 @@ mod tests {
             kind,
             fields: bincode::serialize(&fields).expect("serializable"),
         }
+    }
+
+    fn dns_message(sensor: &str, time: DateTime<Utc>) -> EventMessage {
+        let mut message = example_message(
+            EventKind::DnsCovertChannel,
+            EventCategory::CommandAndControl,
+        );
+        let mut fields: DnsEventFields =
+            bincode::deserialize(&message.fields).expect("example fields should be valid");
+        fields.sensor = sensor.to_string();
+        message.time = msg_time(time);
+        message.fields = bincode::serialize(&fields).expect("DNS fields should be serializable");
+        message
+    }
+
+    fn dns_event_sensor(event: Event) -> String {
+        let Event::DnsCovertChannel(event) = event else {
+            panic!("expected a DNS covert channel event");
+        };
+        event.sensor
     }
 
     #[test]
@@ -8096,5 +8228,120 @@ mod tests {
         let deleted = db.remove_before(cutoff).unwrap();
         assert_eq!(deleted, u64::try_from(total).unwrap());
         assert_eq!(db.iter_forward().count(), 0);
+    }
+
+    #[test]
+    fn remove_by_sensors_deletes_matching_event_variants() {
+        let (_permit, store) = setup_store();
+        let db = store.events();
+        let base_time = Utc.with_ymd_and_hms(2025, 1, 1, 0, 0, 0).unwrap();
+
+        db.put(&dns_message("target.example", base_time)).unwrap();
+        db.put(&dns_message(
+            "other-target.example",
+            base_time + chrono::Duration::seconds(1),
+        ))
+        .unwrap();
+        db.put(&dns_message(
+            "keep.example",
+            base_time + chrono::Duration::seconds(2),
+        ))
+        .unwrap();
+
+        let mut blocklist_fields = blocklist_bootp_fields();
+        blocklist_fields.sensor = "target.example".to_string();
+        db.put(&EventMessage {
+            time: msg_time(base_time + chrono::Duration::seconds(3)),
+            kind: EventKind::BlocklistBootp,
+            fields: bincode::serialize(&blocklist_fields).unwrap(),
+        })
+        .unwrap();
+
+        db.remove_by_sensors(&[
+            "target.example".to_string(),
+            "target.example".to_string(),
+            "other-target.example".to_string(),
+        ])
+        .unwrap();
+
+        let remaining: Vec<_> = db
+            .iter_forward()
+            .map(|entry| dns_event_sensor(entry.unwrap().1))
+            .collect();
+        assert_eq!(remaining, ["keep.example"]);
+
+        db.remove_by_sensors(&["target.example".to_string()])
+            .unwrap();
+        assert_eq!(db.iter_forward().count(), 1);
+
+        db.remove_by_sensors(&[]).unwrap();
+        assert_eq!(db.iter_forward().count(), 1);
+    }
+
+    #[test]
+    fn remove_by_sensors_requires_exact_sensor_match() {
+        let (_permit, store) = setup_store();
+        let db = store.events();
+        let base_time = Utc.with_ymd_and_hms(2025, 1, 1, 0, 0, 0).unwrap();
+
+        db.put(&dns_message("target.example", base_time)).unwrap();
+        db.put(&dns_message(
+            "target.example.extra",
+            base_time + chrono::Duration::seconds(1),
+        ))
+        .unwrap();
+
+        db.remove_by_sensors(&["target.example".to_string()])
+            .unwrap();
+
+        let remaining: Vec<_> = db
+            .iter_forward()
+            .map(|entry| dns_event_sensor(entry.unwrap().1))
+            .collect();
+        assert_eq!(remaining, ["target.example.extra"]);
+    }
+
+    #[test]
+    fn remove_by_sensors_writes_all_batches() {
+        let (_permit, store) = setup_store();
+        let db = store.events();
+        let base_time = Utc.with_ymd_and_hms(2025, 1, 1, 0, 0, 0).unwrap();
+        let total = 1_001;
+
+        for offset in 0..total {
+            db.put(&dns_message(
+                "target.example",
+                base_time + chrono::Duration::seconds(offset),
+            ))
+            .unwrap();
+        }
+        db.put(&dns_message(
+            "keep.example",
+            base_time + chrono::Duration::seconds(total),
+        ))
+        .unwrap();
+
+        db.remove_by_sensors(&["target.example".to_string()])
+            .unwrap();
+
+        let remaining = db.iter_forward().next().unwrap().unwrap().1;
+        assert_eq!(dns_event_sensor(remaining), "keep.example");
+        assert_eq!(db.iter_forward().count(), 1);
+    }
+
+    #[test]
+    fn remove_by_sensors_rejects_invalid_keys_and_values() {
+        let (_permit, store) = setup_store();
+        let db = store.events();
+        let sensors = ["target.example".to_string()];
+
+        db.put_raw(&[0xAB; 8], b"invalid");
+        assert!(db.remove_by_sensors(&sensors).is_err());
+
+        let (_permit, store) = setup_store();
+        let db = store.events();
+        let key = i128::from(1_000_000_000) << 64;
+        db.put_raw(&key.to_be_bytes(), b"invalid");
+        assert!(db.remove_by_sensors(&sensors).is_err());
     }
 }
