@@ -32,7 +32,7 @@ structured = "0.16"
 strum = "0.27"
 strum_macros = "0.27"
 thiserror = "2"
-toml = "0.8.13"
+toml = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"], optional = true }
 
