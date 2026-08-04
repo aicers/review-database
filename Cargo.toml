@@ -13,9 +13,9 @@ chrono = { version = "0.4.42", default-features = false, features = ["serde"] }
 config = { version = "0.15", optional = true }
 data-encoding = "2"
 flate2 = "1.0"
-ip2location = "0.6.0"
+ip2location = "0.6"
 ipnet = { version = "2", features = ["serde"] }
-jiff = "0.2.15"
+jiff = "0.2"
 memchr = "2"
 num-derive = "0.4"
 num-traits = "0.2"
@@ -32,7 +32,7 @@ structured = "0.16"
 strum = "0.27"
 strum_macros = "0.27"
 thiserror = "2"
-toml = "0.8.13"
+toml = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"], optional = true }
 
