@@ -87,7 +87,7 @@ impl ValueTrait for CustomerDataDeletionJob {
 
     fn value(&self) -> Self::AsBytes<'_> {
         super::serialize(&self.service_results)
-            .expect("customer deletion service results must be serializable")
+            .expect("derived service-result fields serialize infallibly into an in-memory Vec")
     }
 }
 

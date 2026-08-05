@@ -623,7 +623,6 @@ impl Store {
     }
 
     #[must_use]
-    #[allow(clippy::missing_panics_doc)]
     pub fn customer_data_deletion_map(&self) -> Table<'_, CustomerDataDeletionJob> {
         self.states.customer_data_deletion_jobs()
     }
