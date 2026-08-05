@@ -28,6 +28,11 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   `0.46.x` creates the customer data deletion jobs column family explicitly;
   migrations from older supported formats preserve their legacy column-family
   sets while applying intermediate migrations before creating the new family.
+- **BREAKING**: Bumped the database format to `0.47.0-alpha.1`. The migration
+  from `0.46.x` creates the customer data deletion jobs column family
+  explicitly; migrations from older supported formats preserve their legacy
+  column-family sets while applying intermediate migrations before creating the
+  new family.
 - **BREAKING**: Event timestamps now use `jiff::Timestamp` instead of chrono's
   `DateTime<Utc>`. Existing databases need no migration, because timestamps are
   still stored as `i64` epoch nanoseconds.
