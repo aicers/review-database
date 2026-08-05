@@ -108,7 +108,7 @@ use crate::{
 /// // release that involves database format change) to 3.5.0, including
 /// // all alpha changes finalized in 3.5.0.
 /// ```
-const COMPATIBLE_VERSION_REQ: &str = ">=0.47.0,<0.48.0";
+const COMPATIBLE_VERSION_REQ: &str = ">=0.47.0-alpha.1,<0.47.0-alpha.2";
 
 /// Number of event records applied in each atomic migration write.
 const EVENT_MIGRATION_BATCH_SIZE: usize = 100;
@@ -196,8 +196,8 @@ pub fn migrate_data_dir<P: AsRef<Path>>(
             |data_dir, _backup_dir, locator| migrate_0_45_to_0_46(data_dir, locator),
         ),
         (
-            VersionReq::parse(">=0.46.0,<0.47.0")?,
-            Version::parse("0.47.0")?,
+            VersionReq::parse(">=0.46.0,<0.47.0-alpha.1")?,
+            Version::parse("0.47.0-alpha.1")?,
             |data_dir, _backup_dir, _locator| migrate_0_46_to_0_47(data_dir),
         ),
     ];
@@ -230,7 +230,7 @@ fn migrate_0_46_to_0_47(data_dir: &Path) -> Result<()> {
 
     let existing =
         rocksdb::OptimisticTransactionDB::<rocksdb::SingleThreaded>::list_cf(&opts, &db_path)
-            .context("failed to list column families for the 0.47 migration")?;
+            .context("failed to list column families for the 0.47.0-alpha.1 migration")?;
     let already_created = existing
         .iter()
         .any(|name| name == crate::tables::CUSTOMER_DELETION_JOBS);
@@ -242,7 +242,7 @@ fn migrate_0_46_to_0_47(data_dir: &Path) -> Result<()> {
 
     let mut db: rocksdb::OptimisticTransactionDB<rocksdb::SingleThreaded> =
         rocksdb::OptimisticTransactionDB::open_cf(&opts, &db_path, column_families)
-            .context("failed to open database for the 0.47 migration")?;
+            .context("failed to open database for the 0.47.0-alpha.1 migration")?;
     if !already_created {
         db.create_cf(
             crate::tables::CUSTOMER_DELETION_JOBS,
@@ -414,6 +414,14 @@ const MAP_NAMES_V0_43_TO_V0_46: [&str; 36] = [
     "trusted user agents",
 ];
 
+/// Selects the column families that physically exist during a migration.
+///
+/// `VERSION` is updated only after the complete migration chain succeeds. If a
+/// process stops after the 0.47.0-alpha.1 migration creates its column family
+/// but before that update, a retry starts from the older recorded version while
+/// the new column family already exists. Intermediate migrations must therefore
+/// open either column-family set so that the retry can reach the idempotent
+/// 0.47.0-alpha.1 migration and finish updating `VERSION`.
 fn map_names_for_existing_format(
     opts: &rocksdb::Options,
     db_path: &Path,
@@ -2091,6 +2099,40 @@ mod tests {
     #[test]
     fn migration_from_v0_46_schema_creates_customer_deletion_jobs_cf() {
         assert_migration_creates_customer_deletion_jobs_cf("0.46.0");
+    }
+
+    #[test]
+    fn migration_retries_after_customer_deletion_jobs_cf_creation() {
+        let current_version = Version::parse(env!("CARGO_PKG_VERSION")).unwrap();
+        let data_dir = tempfile::tempdir().unwrap();
+        let backup_dir = tempfile::tempdir().unwrap();
+        let db_path = data_dir.path().join("states.db");
+
+        let mut opts = rocksdb::Options::default();
+        opts.create_if_missing(true);
+        opts.create_missing_column_families(true);
+        let db: rocksdb::OptimisticTransactionDB = rocksdb::OptimisticTransactionDB::open_cf(
+            &opts,
+            &db_path,
+            super::MAP_NAMES_V0_43_TO_V0_46,
+        )
+        .unwrap();
+        drop(db);
+
+        super::migrate_0_46_to_0_47(data_dir.path()).unwrap();
+        write_version(data_dir.path(), "0.45.0");
+        write_version(backup_dir.path(), "0.45.0");
+
+        migrate_data_dir(data_dir.path(), backup_dir.path(), None).unwrap();
+
+        assert_eq!(
+            read_version_file(&data_dir.path().join("VERSION")).unwrap(),
+            current_version
+        );
+        assert_eq!(
+            read_version_file(&backup_dir.path().join("VERSION")).unwrap(),
+            current_version
+        );
     }
 
     /// Test that the `0.42`-specific migration loop runs and updates `VERSION` files.
