@@ -108,7 +108,7 @@ use crate::{
 /// // release that involves database format change) to 3.5.0, including
 /// // all alpha changes finalized in 3.5.0.
 /// ```
-const COMPATIBLE_VERSION_REQ: &str = ">=0.46.0,<0.47.0";
+const COMPATIBLE_VERSION_REQ: &str = ">=0.47.0,<0.48.0";
 
 /// Number of event records applied in each atomic migration write.
 const EVENT_MIGRATION_BATCH_SIZE: usize = 100;
@@ -207,6 +207,11 @@ pub fn migrate_data_dir<P: AsRef<Path>>(
             Version::parse("0.46.0")?,
             |data_dir, _backup_dir, locator| migrate_0_45_to_0_46(data_dir, locator),
         ),
+        (
+            VersionReq::parse(">=0.46.0,<0.47.0")?,
+            Version::parse("0.47.0")?,
+            |data_dir, _backup_dir, _locator| migrate_0_46_to_0_47(data_dir),
+        ),
     ];
 
     while let Some((_req, to, m)) = migration
@@ -229,6 +234,37 @@ fn migrate_0_45_to_0_46(data_dir: &Path, locator: Option<&dyn CountryLookup>) ->
     migrate_event_country_codes(data_dir, locator).map(|_| ())
 }
 
+fn migrate_0_46_to_0_47(data_dir: &Path) -> Result<()> {
+    let db_path = data_dir.join("states.db");
+    let mut opts = rocksdb::Options::default();
+    opts.create_if_missing(false);
+    opts.create_missing_column_families(false);
+
+    let existing =
+        rocksdb::OptimisticTransactionDB::<rocksdb::SingleThreaded>::list_cf(&opts, &db_path)
+            .context("failed to list column families for the 0.47 migration")?;
+    let already_created = existing
+        .iter()
+        .any(|name| name == crate::tables::CUSTOMER_DELETION_JOBS);
+    let column_families: &[&str] = if already_created {
+        &crate::tables::MAP_NAMES
+    } else {
+        &MAP_NAMES_V0_43_TO_V0_46
+    };
+
+    let mut db: rocksdb::OptimisticTransactionDB<rocksdb::SingleThreaded> =
+        rocksdb::OptimisticTransactionDB::open_cf(&opts, &db_path, column_families)
+            .context("failed to open database for the 0.47 migration")?;
+    if !already_created {
+        db.create_cf(
+            crate::tables::CUSTOMER_DELETION_JOBS,
+            &rocksdb::Options::default(),
+        )
+        .context("failed to create customer deletion jobs column family")?;
+    }
+    Ok(())
+}
+
 #[derive(Debug, Default, Eq, PartialEq)]
 pub(crate) struct EventMigrationStats {
     processed: usize,
@@ -243,9 +279,10 @@ pub(crate) fn migrate_event_country_codes(
     let db_path = data_dir.join("states.db");
     let mut opts = rocksdb::Options::default();
     opts.create_if_missing(false);
-    opts.create_missing_column_families(true);
+    opts.create_missing_column_families(false);
+    let column_families = map_names_for_existing_format(&opts, &db_path)?;
     let db: rocksdb::OptimisticTransactionDB<rocksdb::SingleThreaded> =
-        rocksdb::OptimisticTransactionDB::open_cf(&opts, db_path, crate::tables::MAP_NAMES)
+        rocksdb::OptimisticTransactionDB::open_cf(&opts, db_path, column_families)
             .context("failed to open database for event country-code migration")?;
 
     let mut stats = EventMigrationStats::default();
@@ -349,6 +386,63 @@ const MAP_NAMES_V0_42: [&str; 36] = [
     "trusted user agents",
 ];
 
+/// Lists column family names shared by database formats 0.43 through 0.46.
+const MAP_NAMES_V0_43_TO_V0_46: [&str; 36] = [
+    "access_tokens",
+    "accounts",
+    "agents",
+    "allow networks",
+    "batch_info",
+    "block networks",
+    "category",
+    "cluster",
+    "column stats",
+    "configs",
+    "csv column extras",
+    "customers",
+    "data sources",
+    "filters",
+    "hosts",
+    "models",
+    "model indicators",
+    "meta",
+    "networks",
+    "nodes",
+    "outliers",
+    "qualifiers",
+    "external services",
+    "sampling policy",
+    "scores",
+    "statuses",
+    "templates",
+    "label database",
+    "time series",
+    "Tor exit nodes",
+    "traffic filter rules",
+    "triage exclusion reason",
+    "triage policy",
+    "triage response",
+    "trusted DNS servers",
+    "trusted user agents",
+];
+
+fn map_names_for_existing_format(
+    opts: &rocksdb::Options,
+    db_path: &Path,
+) -> Result<&'static [&'static str]> {
+    let existing =
+        rocksdb::OptimisticTransactionDB::<rocksdb::SingleThreaded>::list_cf(opts, db_path)
+            .context("failed to list column families for migration")?;
+    if existing
+        .iter()
+        .any(|name| name == crate::tables::CUSTOMER_DELETION_JOBS)
+    {
+        Ok(&crate::tables::MAP_NAMES)
+    } else {
+        Ok(&MAP_NAMES_V0_43_TO_V0_46)
+    }
+}
+
 /// Returns column family names from 0.42 without "account policy".
 fn map_names_v0_42_without_account_policy() -> Vec<&'static str> {
     MAP_NAMES_V0_42
@@ -408,10 +502,11 @@ fn migrate_triage_policy_confidence(dir: &Path) -> Result<()> {
     let db_path = dir.join("states.db");
     let mut opts = rocksdb::Options::default();
     opts.create_if_missing(false);
-    opts.create_missing_column_families(true);
+    opts.create_missing_column_families(false);
+    let column_families = map_names_for_existing_format(&opts, &db_path)?;
 
     let db: rocksdb::OptimisticTransactionDB<rocksdb::SingleThreaded> =
-        rocksdb::OptimisticTransactionDB::open_cf(&opts, &db_path, crate::tables::MAP_NAMES)
+        rocksdb::OptimisticTransactionDB::open_cf(&opts, &db_path, column_families)
             .context("Failed to open database for triage policy migration")?;
 
     let cf = db
@@ -515,6 +610,8 @@ fn migrate_rename_tidb_to_label_db(db_path: &Path) -> Result<()> {
     let cf_opts = rocksdb::Options::default();
     db.create_cf("label database", &cf_opts)
         .context("Failed to create 'label database' column family")?;
+    db.create_cf("triage exclusion reason", &cf_opts)
+        .context("Failed to create 'triage exclusion reason' column family")?;
 
     let new_cf = db
         .cf_handle("label database")
@@ -636,10 +733,11 @@ fn migrate_customer_specific_networks(db_path: &Path) -> Result<()> {
 
     let mut opts = rocksdb::Options::default();
     opts.create_if_missing(false);
-    opts.create_missing_column_families(true);
+    opts.create_missing_column_families(false);
+    let column_families = map_names_for_existing_format(&opts, db_path)?;
 
     let db: rocksdb::OptimisticTransactionDB<rocksdb::SingleThreaded> =
-        rocksdb::OptimisticTransactionDB::open_cf(&opts, db_path, crate::tables::MAP_NAMES)
+        rocksdb::OptimisticTransactionDB::open_cf(&opts, db_path, column_families)
             .context("Failed to open database")?;
 
     // Fetches all customer IDs once.
@@ -688,10 +786,11 @@ fn migrate_network_tags_to_customer_scoped(dir: &Path) -> Result<()> {
 
     let mut opts = rocksdb::Options::default();
     opts.create_if_missing(false);
-    opts.create_missing_column_families(true);
+    opts.create_missing_column_families(false);
+    let column_families = map_names_for_existing_format(&opts, &db_path)?;
 
     let db: rocksdb::OptimisticTransactionDB<rocksdb::SingleThreaded> =
-        rocksdb::OptimisticTransactionDB::open_cf(&opts, &db_path, crate::tables::MAP_NAMES)
+        rocksdb::OptimisticTransactionDB::open_cf(&opts, &db_path, column_families)
             .context("Failed to open database for network tag migration")?;
 
     // Find the smallest customer ID from the customer_map
@@ -792,17 +891,16 @@ fn migrate_network_tags_to_customer_scoped(dir: &Path) -> Result<()> {
 /// 3. Clears the network column family
 /// 4. Re-inserts networks with new format: key = name only, value contains id (no `customer_ids`)
 fn migrate_network_cf(data_dir: &Path) -> Result<()> {
-    use crate::tables::MAP_NAMES;
-
     let db_path = data_dir.join("states.db");
 
     info!("Migrating Network table to enforce global name uniqueness");
 
     let mut opts = rocksdb::Options::default();
     opts.create_if_missing(false);
-    opts.create_missing_column_families(true);
+    opts.create_missing_column_families(false);
+    let column_families = map_names_for_existing_format(&opts, &db_path)?;
 
-    migrate_network_cf_inner(&db_path, &opts, &MAP_NAMES)?;
+    migrate_network_cf_inner(&db_path, &opts, column_families)?;
 
     info!("Successfully migrated Network table");
     Ok(())
@@ -1052,10 +1150,11 @@ fn migrate_event_fields(dir: &Path) -> Result<()> {
 
     let mut opts = rocksdb::Options::default();
     opts.create_if_missing(false);
-    opts.create_missing_column_families(true);
+    opts.create_missing_column_families(false);
+    let column_families = map_names_for_existing_format(&opts, &db_path)?;
 
     let db: rocksdb::OptimisticTransactionDB<rocksdb::SingleThreaded> =
-        rocksdb::OptimisticTransactionDB::open_cf(&opts, &db_path, crate::tables::MAP_NAMES)
+        rocksdb::OptimisticTransactionDB::open_cf(&opts, &db_path, column_families)
             .context("Failed to open database for event migration")?;
 
     let mut http_threat_migrated = 0usize;
@@ -2029,11 +2128,6 @@ mod tests {
 
     fn assert_migration_creates_customer_deletion_jobs_cf(version: &str) {
         let current_version = Version::parse(env!("CARGO_PKG_VERSION")).unwrap();
-        let legacy_map_names: Vec<_> = crate::tables::MAP_NAMES
-            .iter()
-            .copied()
-            .filter(|name| *name != crate::tables::CUSTOMER_DELETION_JOBS)
-            .collect();
 
         let data_dir = tempfile::tempdir().unwrap();
         let backup_dir = tempfile::tempdir().unwrap();
@@ -2042,9 +2136,12 @@ mod tests {
         let mut create_opts = rocksdb::Options::default();
         create_opts.create_if_missing(true);
         create_opts.create_missing_column_families(true);
-        let db: rocksdb::OptimisticTransactionDB =
-            rocksdb::OptimisticTransactionDB::open_cf(&create_opts, &db_path, &legacy_map_names)
-                .unwrap();
+        let db: rocksdb::OptimisticTransactionDB = rocksdb::OptimisticTransactionDB::open_cf(
+            &create_opts,
+            &db_path,
+            super::MAP_NAMES_V0_43_TO_V0_46,
+        )
+        .unwrap();
         assert!(
             db.cf_handle(crate::tables::CUSTOMER_DELETION_JOBS)
                 .is_none()
@@ -2067,6 +2164,17 @@ mod tests {
         assert!(
             db.cf_handle(crate::tables::CUSTOMER_DELETION_JOBS)
                 .is_some()
+        );
+        drop(db);
+
+        assert!(
+            rocksdb::OptimisticTransactionDB::<rocksdb::SingleThreaded>::open_cf(
+                &open_opts,
+                &db_path,
+                super::MAP_NAMES_V0_43_TO_V0_46,
+            )
+            .is_err(),
+            "the 0.46 column-family list must not open the migrated format"
         );
 
         assert_eq!(
@@ -2092,6 +2200,11 @@ mod tests {
     #[test]
     fn migration_from_v0_45_schema_creates_customer_deletion_jobs_cf() {
         assert_migration_creates_customer_deletion_jobs_cf("0.45.0");
+    }
+
+    #[test]
+    fn migration_from_v0_46_schema_creates_customer_deletion_jobs_cf() {
+        assert_migration_creates_customer_deletion_jobs_cf("0.46.0");
     }
 
     /// Test that the `0.42`-specific migration loop runs and updates `VERSION` files.

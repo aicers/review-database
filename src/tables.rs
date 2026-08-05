@@ -332,9 +332,12 @@ impl StateDb {
 
     #[must_use]
     pub(crate) fn customer_data_deletion_jobs(&self) -> Table<'_, CustomerDataDeletionJob> {
-        let inner = self.inner.as_ref().expect("database must be open");
+        let inner = self
+            .inner
+            .as_ref()
+            .expect("table access requires a successfully opened StateDb");
         Table::<CustomerDataDeletionJob>::open(inner)
-            .expect("{CUSTOMER_DELETION_JOBS} table must be present")
+            .expect("StateDb::open initializes the customer deletion jobs column family")
     }
 
     #[must_use]

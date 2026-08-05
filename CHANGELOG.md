@@ -11,8 +11,10 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 - Added `EventDb::remove_by_sensors` to delete events whose sensor exactly
   matches one of the specified service FQDNs, with batched database writes.
-- Added persistent customer data deletion jobs and APIs for atomically adding
-  and updating results reported by REview, Sensor, and SemiSupervised services.
+- Added persistent customer data deletion jobs through
+  `Store::customer_data_deletion_map`, with public job, service, result, and
+  status types and atomic APIs for adding and updating results reported by
+  REview, Sensor, and SemiSupervised services.
 
 ### Changed
 
@@ -22,6 +24,10 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   Under the common `umask 022`, for example, a stored classifier that used to be
   `0o644` is now `0o600`, so anything reading these files as another account
   stops working.
+- **BREAKING**: Bumped the database format to `0.47.0`. The migration from
+  `0.46.x` creates the customer data deletion jobs column family explicitly;
+  migrations from older supported formats preserve their legacy column-family
+  sets while applying intermediate migrations before creating the new family.
 - **BREAKING**: Event timestamps now use `jiff::Timestamp` instead of chrono's
   `DateTime<Utc>`. Existing databases need no migration, because timestamps are
   still stored as `i64` epoch nanoseconds.
