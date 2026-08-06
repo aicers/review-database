@@ -24,7 +24,7 @@ use crate::{
         BlocklistDhcpFieldsStoredV0_44, HttpThreatFieldsStoredV0_43, HttpThreatFieldsStoredV0_44,
         migrate_event_stored_schema_to_v0_46, validate_event_stored_schema_v0_46,
     },
-    tables::NETWORK_TAGS,
+    tables::{NETWORK_TAGS, TRIAGE_EXCLUSION_REASON},
 };
 
 /// The range of versions that use the current database format.
@@ -460,6 +460,15 @@ fn map_names_v0_42_without_account_policy() -> Vec<&'static str> {
         .collect()
 }
 
+/// Returns column family names from 0.43 without "triage exclusion reason".
+fn map_names_v0_43_without_triage_exclusion_reason() -> Vec<&'static str> {
+    MAP_NAMES_V0_43_TO_V0_46
+        .iter()
+        .copied()
+        .filter(|name| *name != TRIAGE_EXCLUSION_REASON)
+        .collect()
+}
+
 fn migrate_0_42_to_0_43(data_dir: &Path) -> Result<()> {
     let db_path = data_dir.join("states.db");
 
@@ -469,7 +478,10 @@ fn migrate_0_42_to_0_43(data_dir: &Path) -> Result<()> {
     // Step 2: Rename "TI database" to "label database"
     migrate_rename_tidb_to_label_db(&db_path)?;
 
-    // Step 3: Migrate AllowNetwork and BlockNetwork to customer-specific format
+    // Step 3: Create the "triage exclusion reason" column family
+    migrate_create_triage_exclusion_reason_cf(&db_path)?;
+
+    // Step 4: Migrate AllowNetwork and BlockNetwork to customer-specific format
     migrate_customer_specific_networks(&db_path)?;
 
     Ok(())
@@ -618,8 +630,6 @@ fn migrate_rename_tidb_to_label_db(db_path: &Path) -> Result<()> {
     let cf_opts = rocksdb::Options::default();
     db.create_cf("label database", &cf_opts)
         .context("Failed to create 'label database' column family")?;
-    db.create_cf("triage exclusion reason", &cf_opts)
-        .context("Failed to create 'triage exclusion reason' column family")?;
 
     let new_cf = db
         .cf_handle("label database")
@@ -638,6 +648,22 @@ fn migrate_rename_tidb_to_label_db(db_path: &Path) -> Result<()> {
     drop(db);
 
     info!("Successfully renamed 'TI database' to 'label database'");
+    Ok(())
+}
+
+/// Creates the "triage exclusion reason" column family in the main database.
+fn migrate_create_triage_exclusion_reason_cf(db_path: &Path) -> Result<()> {
+    let mut opts = rocksdb::Options::default();
+    opts.create_if_missing(false);
+    opts.create_missing_column_families(false);
+
+    let cf_names = map_names_v0_43_without_triage_exclusion_reason();
+    let mut db: rocksdb::OptimisticTransactionDB<rocksdb::SingleThreaded> =
+        rocksdb::OptimisticTransactionDB::open_cf(&opts, db_path, &cf_names)
+            .context("Failed to open database for triage exclusion reason creation")?;
+
+    db.create_cf(TRIAGE_EXCLUSION_REASON, &rocksdb::Options::default())
+        .context("Failed to create 'triage exclusion reason' column family")?;
     Ok(())
 }
 
@@ -2370,7 +2396,7 @@ mod tests {
     }
 
     #[test]
-    fn migrate_0_42_to_0_43_drops_account_policy_and_renames_tidb() {
+    fn migrate_0_42_to_0_43_updates_column_families() {
         // Create test directories
         let db_dir = tempfile::tempdir().unwrap();
         let db_path = db_dir.path().join("states.db");
@@ -2395,16 +2421,29 @@ mod tests {
         super::migrate_drop_account_policy(&db_path).unwrap();
         super::migrate_rename_tidb_to_label_db(&db_path).unwrap();
 
-        // Verify the column family has been dropped and renamed by opening with new list
-        let db: rocksdb::OptimisticTransactionDB =
-            rocksdb::OptimisticTransactionDB::open_cf(&opts, &db_path, crate::tables::MAP_NAMES)
-                .unwrap();
+        let mut strict_opts = rocksdb::Options::default();
+        strict_opts.create_if_missing(false);
+        strict_opts.create_missing_column_families(false);
+
+        // Verify the rename produces the intermediate schema without the new column family.
+        let db: rocksdb::OptimisticTransactionDB = rocksdb::OptimisticTransactionDB::open_cf(
+            &strict_opts,
+            &db_path,
+            super::map_names_v0_43_without_triage_exclusion_reason(),
+        )
+        .unwrap();
 
         // Verify "account policy" is dropped
         assert!(db.cf_handle("account policy").is_none());
 
         // Verify "TI database" is dropped
         assert!(db.cf_handle("TI database").is_none());
+
+        // Verify "triage exclusion reason" has not been created by the rename.
+        assert!(
+            db.cf_handle(crate::tables::TRIAGE_EXCLUSION_REASON)
+                .is_none()
+        );
 
         // Verify "label database" exists and contains the migrated data
         let label_cf = db.cf_handle("label database").unwrap();
@@ -2415,6 +2454,21 @@ mod tests {
         assert_eq!(
             db.get_cf(label_cf, b"test_key_2").unwrap().as_deref(),
             Some(b"test_value_2".as_slice())
+        );
+        drop(db);
+
+        // Verify the dedicated migration creates the new column family.
+        super::migrate_create_triage_exclusion_reason_cf(&db_path).unwrap();
+
+        let db: rocksdb::OptimisticTransactionDB = rocksdb::OptimisticTransactionDB::open_cf(
+            &strict_opts,
+            &db_path,
+            super::MAP_NAMES_V0_43_TO_V0_46,
+        )
+        .unwrap();
+        assert!(
+            db.cf_handle(crate::tables::TRIAGE_EXCLUSION_REASON)
+                .is_some()
         );
         drop(db);
     }
