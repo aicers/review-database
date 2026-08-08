@@ -335,6 +335,7 @@ fn write_event_migration_batch(
 }
 
 /// Column family names for version 0.42 (includes the deprecated "account policy" column family)
+#[cfg(test)]
 const MAP_NAMES_V0_42: [&str; 36] = [
     "access_tokens",
     "accounts",
@@ -439,16 +440,15 @@ fn map_names_for_existing_format(
     }
 }
 
-/// Returns column family names from 0.42 without "account policy".
-fn map_names_v0_42_without_account_policy() -> Vec<&'static str> {
-    MAP_NAMES_V0_42
-        .iter()
-        .copied()
-        .filter(|name| *name != "account policy")
-        .collect()
+/// Returns the non-default column families that physically exist.
+fn existing_map_names(opts: &rocksdb::Options, db_path: &Path) -> Result<Vec<String>> {
+    rocksdb::OptimisticTransactionDB::<rocksdb::SingleThreaded>::list_cf(opts, db_path)
+        .context("failed to list column families for migration")
+        .map(|names| names.into_iter().filter(|name| name != "default").collect())
 }
 
 /// Returns column family names from 0.43 without "triage exclusion reason".
+#[cfg(test)]
 fn map_names_v0_43_without_triage_exclusion_reason() -> Vec<&'static str> {
     MAP_NAMES_V0_43_TO_V0_46
         .iter()
@@ -559,14 +559,17 @@ fn migrate_drop_account_policy(db_path: &Path) -> Result<()> {
     opts.create_if_missing(false);
     opts.create_missing_column_families(false);
 
-    // Try to open with MAP_NAMES_V0_42 (which includes "account policy")
-    if let Ok(db) = rocksdb::OptimisticTransactionDB::open_cf(&opts, db_path, MAP_NAMES_V0_42) {
-        info!("Dropping 'account policy' column family");
-        db.drop_cf("account policy")
-            .context("Failed to drop 'account policy' column family")?;
-        drop(db);
+    let existing = existing_map_names(&opts, db_path)?;
+    if !existing.iter().any(|name| name == "account policy") {
+        return Ok(());
     }
-    // If the database doesn't have "account policy", it's already been dropped
+
+    let mut db: rocksdb::OptimisticTransactionDB<rocksdb::SingleThreaded> =
+        rocksdb::OptimisticTransactionDB::open_cf(&opts, db_path, &existing)
+            .context("Failed to open database for account policy removal")?;
+    info!("Dropping 'account policy' column family");
+    db.drop_cf("account policy")
+        .context("Failed to drop 'account policy' column family")?;
 
     Ok(())
 }
@@ -577,63 +580,60 @@ fn migrate_rename_tidb_to_label_db(db_path: &Path) -> Result<()> {
     opts.create_if_missing(false);
     opts.create_missing_column_families(false);
 
-    // Process main database (without "account policy" which was already dropped)
-    let cf_names = map_names_v0_42_without_account_policy();
+    let existing = existing_map_names(&opts, db_path)?;
+    let ti_database_exists = existing.iter().any(|name| name == "TI database");
+    if !ti_database_exists {
+        return Ok(());
+    }
+    let label_database_exists = existing.iter().any(|name| name == "label database");
 
-    // First, read all data from "TI database" into memory
-    let data = {
-        let db: rocksdb::OptimisticTransactionDB<rocksdb::SingleThreaded> =
-            rocksdb::OptimisticTransactionDB::open_cf(&opts, db_path, &cf_names)
-                .context("Failed to open database for TI database read")?;
-
-        // Check if "TI database" column family exists
-        let Some(old_cf) = db.cf_handle("TI database") else {
-            // Column family already renamed or doesn't exist
-            return Ok(());
-        };
-
-        info!("Reading data from 'TI database' column family");
-
-        // Collect all key-value pairs
-        let iter = db.iterator_cf(old_cf, rocksdb::IteratorMode::Start);
-        let data: Vec<(Vec<u8>, Vec<u8>)> = iter
-            .map(|item| {
-                let (key, value) = item.expect("Failed to iterate 'TI database'");
-                (key.to_vec(), value.to_vec())
-            })
-            .collect();
-
-        data
-    };
-    // db is dropped here
-
-    // Now reopen, create new CF, write data, and drop old CF
     let mut db: rocksdb::OptimisticTransactionDB<rocksdb::SingleThreaded> =
-        rocksdb::OptimisticTransactionDB::open_cf(&opts, db_path, &cf_names)
-            .context("Failed to reopen database for TI database rename")?;
+        rocksdb::OptimisticTransactionDB::open_cf(&opts, db_path, &existing)
+            .context("Failed to open database for TI database rename")?;
+
+    let data = {
+        let old_cf = db
+            .cf_handle("TI database")
+            .context("Failed to get 'TI database' column family handle")?;
+        db.iterator_cf(old_cf, rocksdb::IteratorMode::Start)
+            .map(|item| {
+                let (key, value) = item.context("Failed to iterate 'TI database'")?;
+                Ok((key.to_vec(), value.to_vec()))
+            })
+            .collect::<Result<Vec<_>>>()?
+    };
 
     info!("Renaming 'TI database' column family to 'label database'");
 
-    // Create the new "label database" column family
-    let cf_opts = rocksdb::Options::default();
-    db.create_cf("label database", &cf_opts)
-        .context("Failed to create 'label database' column family")?;
+    if !label_database_exists {
+        db.create_cf("label database", &rocksdb::Options::default())
+            .context("Failed to create 'label database' column family")?;
+    }
 
     let new_cf = db
         .cf_handle("label database")
         .context("Failed to get 'label database' column family handle")?;
 
-    // Write all data to "label database"
     for (key, value) in &data {
-        db.put_cf(new_cf, key, value)
-            .context("Failed to copy data to 'label database'")?;
+        match db
+            .get_cf(new_cf, key)
+            .context("Failed to read existing data from 'label database'")?
+        {
+            Some(existing) if existing.as_slice() != value.as_slice() => {
+                return Err(anyhow!(
+                    "conflicting values for key in 'TI database' and 'label database'"
+                ));
+            }
+            Some(_) => {}
+            None => db
+                .put_cf(new_cf, key, value)
+                .context("Failed to copy data to 'label database'")?,
+        }
     }
 
     // Drop the old "TI database" column family
     db.drop_cf("TI database")
         .context("Failed to drop 'TI database' column family")?;
-
-    drop(db);
 
     info!("Successfully renamed 'TI database' to 'label database'");
     Ok(())
@@ -645,9 +645,13 @@ fn migrate_create_triage_exclusion_reason_cf(db_path: &Path) -> Result<()> {
     opts.create_if_missing(false);
     opts.create_missing_column_families(false);
 
-    let cf_names = map_names_v0_43_without_triage_exclusion_reason();
+    let existing = existing_map_names(&opts, db_path)?;
+    if existing.iter().any(|name| name == TRIAGE_EXCLUSION_REASON) {
+        return Ok(());
+    }
+
     let mut db: rocksdb::OptimisticTransactionDB<rocksdb::SingleThreaded> =
-        rocksdb::OptimisticTransactionDB::open_cf(&opts, db_path, &cf_names)
+        rocksdb::OptimisticTransactionDB::open_cf(&opts, db_path, &existing)
             .context("Failed to open database for triage exclusion reason creation")?;
 
     db.create_cf(TRIAGE_EXCLUSION_REASON, &rocksdb::Options::default())
@@ -693,7 +697,7 @@ fn migrate_list<T, K>(
     cf_name: &str,
 ) -> Result<()>
 where
-    T: CustomerSpecificNetwork<K> + std::fmt::Debug,
+    T: CustomerSpecificNetwork<K> + crate::types::FromKeyValue + std::fmt::Debug,
     K: serde::de::DeserializeOwned + Clone,
 {
     use crate::collections::KeyIndex;
@@ -716,6 +720,22 @@ where
     if entries_to_migrate.is_empty() {
         info!("No entries to migrate in '{cf_name}', skipping.");
         return Ok(());
+    }
+
+    let current_entry_count = entries_to_migrate
+        .iter()
+        .filter(|(key, value)| {
+            <T as crate::types::FromKeyValue>::from_key_value(key, value).is_ok()
+        })
+        .count();
+    if current_entry_count == entries_to_migrate.len() {
+        info!("Entries in '{cf_name}' are already customer-specific, skipping.");
+        return Ok(());
+    }
+    if current_entry_count != 0 {
+        return Err(anyhow!(
+            "'{cf_name}' contains a mix of old and customer-specific entries"
+        ));
     }
 
     let mut new_index = KeyIndex::default();
@@ -2205,6 +2225,294 @@ mod tests {
         assert_eq!(
             backup_version, current_pkg_version,
             "Backup VERSION should be updated to current package version"
+        );
+    }
+
+    fn create_v0_42_database(db_path: &Path) {
+        let mut opts = rocksdb::Options::default();
+        opts.create_if_missing(true);
+        opts.create_missing_column_families(true);
+        let db: rocksdb::OptimisticTransactionDB =
+            rocksdb::OptimisticTransactionDB::open_cf(&opts, db_path, super::MAP_NAMES_V0_42)
+                .unwrap();
+        drop(db);
+    }
+
+    fn retry_migration_from_v0_42(data_dir: &Path, backup_dir: &Path) {
+        write_version(data_dir, "0.42.0");
+        write_version(backup_dir, "0.42.0");
+        migrate_data_dir(data_dir, backup_dir, None).unwrap();
+
+        let current_version = Version::parse(env!("CARGO_PKG_VERSION")).unwrap();
+        assert_eq!(
+            read_version_file(&data_dir.join("VERSION")).unwrap(),
+            current_version
+        );
+        assert_eq!(
+            read_version_file(&backup_dir.join("VERSION")).unwrap(),
+            current_version
+        );
+    }
+
+    fn assert_current_cf_value(db_path: &Path, cf_name: &str, key: &[u8], value: &[u8]) {
+        let mut opts = rocksdb::Options::default();
+        opts.create_if_missing(false);
+        opts.create_missing_column_families(false);
+        let db: rocksdb::OptimisticTransactionDB =
+            rocksdb::OptimisticTransactionDB::open_cf(&opts, db_path, crate::tables::MAP_NAMES)
+                .unwrap();
+        let cf = db.cf_handle(cf_name).unwrap();
+        assert_eq!(db.get_cf(cf, key).unwrap().as_deref(), Some(value));
+    }
+
+    #[test]
+    fn migration_retries_after_account_policy_was_dropped() {
+        let data_dir = tempfile::tempdir().unwrap();
+        let backup_dir = tempfile::tempdir().unwrap();
+        let db_path = data_dir.path().join("states.db");
+        create_v0_42_database(&db_path);
+
+        let mut opts = rocksdb::Options::default();
+        opts.create_if_missing(false);
+        opts.create_missing_column_families(false);
+        let db: rocksdb::OptimisticTransactionDB =
+            rocksdb::OptimisticTransactionDB::open_cf(&opts, &db_path, super::MAP_NAMES_V0_42)
+                .unwrap();
+        db.put_cf(db.cf_handle("TI database").unwrap(), b"ti-key", b"ti-value")
+            .unwrap();
+        drop(db);
+        super::migrate_drop_account_policy(&db_path).unwrap();
+
+        retry_migration_from_v0_42(data_dir.path(), backup_dir.path());
+        assert_current_cf_value(&db_path, "label database", b"ti-key", b"ti-value");
+    }
+
+    #[test]
+    fn migration_retries_while_ti_and_label_databases_both_exist() {
+        let data_dir = tempfile::tempdir().unwrap();
+        let backup_dir = tempfile::tempdir().unwrap();
+        let db_path = data_dir.path().join("states.db");
+        create_v0_42_database(&db_path);
+        super::migrate_drop_account_policy(&db_path).unwrap();
+
+        let mut opts = rocksdb::Options::default();
+        opts.create_if_missing(false);
+        opts.create_missing_column_families(false);
+        let existing = super::existing_map_names(&opts, &db_path).unwrap();
+        let mut db: rocksdb::OptimisticTransactionDB =
+            rocksdb::OptimisticTransactionDB::open_cf(&opts, &db_path, &existing).unwrap();
+        let ti_cf = db.cf_handle("TI database").unwrap();
+        db.put_cf(ti_cf, b"copied-key", b"copied-value").unwrap();
+        db.put_cf(ti_cf, b"ti-only-key", b"ti-only-value").unwrap();
+        db.create_cf("label database", &rocksdb::Options::default())
+            .unwrap();
+        let label_cf = db.cf_handle("label database").unwrap();
+        db.put_cf(label_cf, b"copied-key", b"copied-value").unwrap();
+        db.put_cf(label_cf, b"label-only-key", b"label-only-value")
+            .unwrap();
+        drop(db);
+
+        retry_migration_from_v0_42(data_dir.path(), backup_dir.path());
+        assert_current_cf_value(&db_path, "label database", b"copied-key", b"copied-value");
+        assert_current_cf_value(&db_path, "label database", b"ti-only-key", b"ti-only-value");
+        assert_current_cf_value(
+            &db_path,
+            "label database",
+            b"label-only-key",
+            b"label-only-value",
+        );
+    }
+
+    #[test]
+    fn migration_retries_after_ti_database_was_renamed() {
+        let data_dir = tempfile::tempdir().unwrap();
+        let backup_dir = tempfile::tempdir().unwrap();
+        let db_path = data_dir.path().join("states.db");
+        create_v0_42_database(&db_path);
+
+        let mut opts = rocksdb::Options::default();
+        opts.create_if_missing(false);
+        opts.create_missing_column_families(false);
+        let db: rocksdb::OptimisticTransactionDB =
+            rocksdb::OptimisticTransactionDB::open_cf(&opts, &db_path, super::MAP_NAMES_V0_42)
+                .unwrap();
+        db.put_cf(
+            db.cf_handle("TI database").unwrap(),
+            b"label-key",
+            b"label-value",
+        )
+        .unwrap();
+        drop(db);
+        super::migrate_drop_account_policy(&db_path).unwrap();
+        super::migrate_rename_tidb_to_label_db(&db_path).unwrap();
+
+        retry_migration_from_v0_42(data_dir.path(), backup_dir.path());
+        assert_current_cf_value(&db_path, "label database", b"label-key", b"label-value");
+    }
+
+    #[test]
+    fn migration_retries_after_triage_exclusion_reason_was_created() {
+        let data_dir = tempfile::tempdir().unwrap();
+        let backup_dir = tempfile::tempdir().unwrap();
+        let db_path = data_dir.path().join("states.db");
+        create_v0_42_database(&db_path);
+        super::migrate_drop_account_policy(&db_path).unwrap();
+        super::migrate_rename_tidb_to_label_db(&db_path).unwrap();
+        super::migrate_create_triage_exclusion_reason_cf(&db_path).unwrap();
+
+        let mut opts = rocksdb::Options::default();
+        opts.create_if_missing(false);
+        opts.create_missing_column_families(false);
+        let db: rocksdb::OptimisticTransactionDB = rocksdb::OptimisticTransactionDB::open_cf(
+            &opts,
+            &db_path,
+            super::MAP_NAMES_V0_43_TO_V0_46,
+        )
+        .unwrap();
+        db.put_cf(
+            db.cf_handle(crate::tables::TRIAGE_EXCLUSION_REASON)
+                .unwrap(),
+            b"reason-key",
+            b"reason-value",
+        )
+        .unwrap();
+        drop(db);
+
+        retry_migration_from_v0_42(data_dir.path(), backup_dir.path());
+        assert_current_cf_value(
+            &db_path,
+            crate::tables::TRIAGE_EXCLUSION_REASON,
+            b"reason-key",
+            b"reason-value",
+        );
+    }
+
+    #[test]
+    fn migration_retries_after_customer_specific_networks_were_migrated() {
+        use bincode::Options;
+
+        use crate::collections::KeyIndex;
+        use crate::migration::migration_structures::{AllowNetworkV0_42, BlockNetworkV0_42};
+        use crate::{Customer, HostNetworkGroup};
+
+        let data_dir = tempfile::tempdir().unwrap();
+        let backup_dir = tempfile::tempdir().unwrap();
+        let db_path = data_dir.path().join("states.db");
+        create_v0_42_database(&db_path);
+
+        let mut opts = rocksdb::Options::default();
+        opts.create_if_missing(false);
+        opts.create_missing_column_families(false);
+        let db: rocksdb::OptimisticTransactionDB =
+            rocksdb::OptimisticTransactionDB::open_cf(&opts, &db_path, super::MAP_NAMES_V0_42)
+                .unwrap();
+        let txn = db.transaction();
+
+        let mut customer = Customer {
+            id: u32::MAX,
+            name: "Customer".to_string(),
+            description: String::new(),
+            networks: Vec::new(),
+            creation_time: chrono::Utc::now(),
+        };
+        let mut customer_index = KeyIndex::default();
+        let customer_id = customer_index.insert(customer.key().as_ref()).unwrap();
+        customer.set_index(customer_id);
+        let customers_cf = db.cf_handle("customers").unwrap();
+        txn.put_cf(customers_cf, customer.indexed_key(), customer.value())
+            .unwrap();
+        txn.put_cf(
+            customers_cf,
+            [],
+            bincode::DefaultOptions::new()
+                .serialize(&customer_index)
+                .unwrap(),
+        )
+        .unwrap();
+
+        let old_allow = AllowNetworkV0_42 {
+            id: u32::MAX,
+            name: "Old Allow".to_string(),
+            networks: HostNetworkGroup::default(),
+            description: "allow description".to_string(),
+        };
+        txn.put_cf(
+            db.cf_handle("allow networks").unwrap(),
+            old_allow.name.as_bytes(),
+            bincode::DefaultOptions::new()
+                .serialize(&old_allow)
+                .unwrap(),
+        )
+        .unwrap();
+
+        let old_block = BlockNetworkV0_42 {
+            id: u32::MAX,
+            name: "Old Block".to_string(),
+            networks: HostNetworkGroup::default(),
+            description: "block description".to_string(),
+        };
+        txn.put_cf(
+            db.cf_handle("block networks").unwrap(),
+            old_block.name.as_bytes(),
+            bincode::DefaultOptions::new()
+                .serialize(&old_block)
+                .unwrap(),
+        )
+        .unwrap();
+        txn.commit().unwrap();
+        drop(db);
+
+        super::migrate_0_42_to_0_43(data_dir.path()).unwrap();
+        retry_migration_from_v0_42(data_dir.path(), backup_dir.path());
+
+        let mut allow_key = customer_id.to_be_bytes().to_vec();
+        allow_key.extend_from_slice(b"Old Allow");
+        let mut block_key = customer_id.to_be_bytes().to_vec();
+        block_key.extend_from_slice(b"Old Block");
+        let mut opts = rocksdb::Options::default();
+        opts.create_if_missing(false);
+        opts.create_missing_column_families(false);
+        let db: rocksdb::OptimisticTransactionDB =
+            rocksdb::OptimisticTransactionDB::open_cf(&opts, &db_path, crate::tables::MAP_NAMES)
+                .unwrap();
+        assert!(
+            db.get_cf(db.cf_handle("allow networks").unwrap(), allow_key)
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            db.get_cf(db.cf_handle("block networks").unwrap(), block_key)
+                .unwrap()
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn migration_retries_from_current_cf_set_with_v0_42_version() {
+        let data_dir = tempfile::tempdir().unwrap();
+        let backup_dir = tempfile::tempdir().unwrap();
+        let db_path = data_dir.path().join("states.db");
+
+        let mut opts = rocksdb::Options::default();
+        opts.create_if_missing(true);
+        opts.create_missing_column_families(true);
+        let db: rocksdb::OptimisticTransactionDB =
+            rocksdb::OptimisticTransactionDB::open_cf(&opts, &db_path, crate::tables::MAP_NAMES)
+                .unwrap();
+        db.put_cf(
+            db.cf_handle(crate::tables::CUSTOMER_DELETION_JOBS).unwrap(),
+            b"job-key",
+            b"job-value",
+        )
+        .unwrap();
+        drop(db);
+
+        retry_migration_from_v0_42(data_dir.path(), backup_dir.path());
+        assert_current_cf_value(
+            &db_path,
+            crate::tables::CUSTOMER_DELETION_JOBS,
+            b"job-key",
+            b"job-value",
         );
     }
 
