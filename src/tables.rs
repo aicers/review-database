@@ -11,6 +11,7 @@ mod column_stats;
 mod config;
 mod csv_column_extra;
 mod customer;
+mod customer_data_deletion_job;
 mod data_source;
 mod external_service;
 mod filter;
@@ -55,6 +56,10 @@ pub use self::config::{
 };
 pub use self::csv_column_extra::CsvColumnExtra;
 pub use self::customer::{Customer, Network as CustomerNetwork, Update as CustomerUpdate};
+pub use self::customer_data_deletion_job::{
+    CustomerDataDeletionJob, CustomerDataDeletionService, CustomerDataDeletionServiceResult,
+    CustomerDataDeletionStatus,
+};
 pub use self::data_source::{DataSource, DataType, Update as DataSourceUpdate};
 pub use self::external_service::{ExternalService, ExternalServiceKind};
 pub use self::filter::{Filter, PeriodForSearch, Value as FilterValue};
@@ -115,6 +120,7 @@ pub(super) const COLUMN_STATS: &str = "column stats";
 pub(super) const CONFIGS: &str = "configs";
 pub(super) const CSV_COLUMN_EXTRAS: &str = "csv column extras";
 pub(crate) const CUSTOMERS: &str = "customers";
+pub(super) const CUSTOMER_DELETION_JOBS: &str = "customer deletion jobs";
 pub(super) const DATA_SOURCES: &str = "data sources";
 pub(super) const FILTERS: &str = "filters";
 pub(super) const HOSTS: &str = "hosts";
@@ -140,7 +146,7 @@ pub(super) const TRIAGE_RESPONSE: &str = "triage response";
 pub(super) const TRUSTED_DNS_SERVERS: &str = "trusted DNS servers";
 pub(super) const TRUSTED_USER_AGENTS: &str = "trusted user agents";
 
-pub(crate) const MAP_NAMES: [&str; 36] = [
+pub(crate) const MAP_NAMES: [&str; 37] = [
     ACCESS_TOKENS,
     ACCOUNTS,
     AGENTS,
@@ -153,6 +159,7 @@ pub(crate) const MAP_NAMES: [&str; 36] = [
     CONFIGS,
     CSV_COLUMN_EXTRAS,
     CUSTOMERS,
+    CUSTOMER_DELETION_JOBS,
     DATA_SOURCES,
     FILTERS,
     HOSTS,
@@ -321,6 +328,16 @@ impl StateDb {
     pub(crate) fn customers(&self) -> IndexedTable<'_, Customer> {
         let inner = self.inner.as_ref().expect("database must be open");
         IndexedTable::<Customer>::open(inner).expect("{CUSTOMERS} table must be present")
+    }
+
+    #[must_use]
+    pub(crate) fn customer_data_deletion_jobs(&self) -> Table<'_, CustomerDataDeletionJob> {
+        let inner = self
+            .inner
+            .as_ref()
+            .expect("table access requires a successfully opened StateDb");
+        Table::<CustomerDataDeletionJob>::open(inner)
+            .expect("StateDb::open initializes the customer deletion jobs column family")
     }
 
     #[must_use]
