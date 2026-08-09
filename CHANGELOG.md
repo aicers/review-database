@@ -14,6 +14,12 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- Classifier files are now created requesting owner-only permissions (`0o600`)
+  instead of the previous `0o666` reduced by the umask. The umask still applies,
+  so the resulting mode is not fixed, but no group or other bit is ever granted.
+  Under the common `umask 022`, for example, a stored classifier that used to be
+  `0o644` is now `0o600`, so anything reading these files as another account
+  stops working.
 - **BREAKING**: Event timestamps now use `jiff::Timestamp` instead of chrono's
   `DateTime<Utc>`. Existing databases need no migration, because timestamps are
   still stored as `i64` epoch nanoseconds.

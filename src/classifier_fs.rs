@@ -1,5 +1,7 @@
 use std::{
-    fs,
+    fs::{self, OpenOptions},
+    io::Write,
+    os::unix::fs::OpenOptionsExt,
     path::{Path, PathBuf},
 };
 
@@ -81,9 +83,32 @@ impl ClassifierFileManager {
         let timestamp = chrono::Utc::now().timestamp_millis();
         let temp_path = file_path.with_extension(timestamp.to_string());
 
-        // Write to temporary file first
-        fs::write(&temp_path, data)
+        // Write to temporary file first. The mode is requested here because
+        // `rename` installs this inode at the destination, so the finished file
+        // ends up with whatever mode the temporary was created with. `0o600`
+        // records that the destination holds model data this service writes and
+        // reads back under a single account, so nothing else has a reason to
+        // open it; a umask may narrow it further. `create_new` is required for
+        // the mode to take effect, since it is applied only when `open` creates
+        // the file: reopening an existing temporary would keep its old mode.
+        let mut temp_file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&temp_path)
             .map_err(|err| ClassifierFsError::FileWrite(err, temp_path.clone()))?;
+        temp_file
+            .write_all(data)
+            .map_err(|err| ClassifierFsError::FileWrite(err, temp_path.clone()))?;
+
+        // Flush before the rename. `upsert_model` has already committed the
+        // model row to RocksDB, and `load_model_by_name` reads this file back
+        // for that row, so a rename reaching disk ahead of the data would leave
+        // the model pointing at an empty or truncated classifier.
+        temp_file
+            .sync_all()
+            .map_err(|err| ClassifierFsError::FileWrite(err, temp_path.clone()))?;
+        drop(temp_file);
 
         // Rename to final location
         if let Err(rename_err) = fs::rename(&temp_path, &file_path) {
@@ -210,7 +235,7 @@ pub enum ClassifierFsError {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::{os::unix::fs::PermissionsExt, sync::Arc};
 
     use tempfile::TempDir;
 
@@ -271,6 +296,65 @@ mod tests {
 
         let loaded_data = manager.load_classifier(model_id, name).unwrap();
         assert_eq!(loaded_data, test_data);
+    }
+
+    #[test]
+    fn test_store_grants_no_group_or_other_access() {
+        let temp_dir = TempDir::new().unwrap();
+        let manager = ClassifierFileManager::new(temp_dir.path()).unwrap();
+
+        let model_id = 457;
+        let name = "permission_test";
+
+        manager
+            .store_classifier(model_id, name, b"test classifier data")
+            .unwrap();
+
+        let path = manager.create_classifier_path(model_id, name).unwrap();
+        let mode = fs::metadata(&path).unwrap().permissions().mode();
+
+        // Only the absence of group and other bits is asserted: a umask can
+        // clear bits but never add them, so this holds whatever the umask is,
+        // while the exact mode does not.
+        assert_eq!(mode & 0o077, 0, "unexpected mode {mode:o} for {path:?}");
+    }
+
+    #[test]
+    fn test_store_replaces_a_group_readable_file() {
+        let temp_dir = TempDir::new().unwrap();
+        let manager = ClassifierFileManager::new(temp_dir.path()).unwrap();
+
+        let model_id = 458;
+        let name = "replacement_test";
+
+        // Stand in for a classifier left by an earlier release, which wrote
+        // through `fs::write` and so ended up group- and other-readable.
+        let path = manager.create_classifier_path(model_id, name).unwrap();
+        let parent = path.parent().unwrap();
+        fs::create_dir_all(parent).unwrap();
+        fs::write(&path, b"stale data").unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+
+        manager
+            .store_classifier(model_id, name, b"fresh data")
+            .unwrap();
+
+        // The rename installs the temporary's inode, so the destination takes
+        // the temporary's mode rather than keeping the one it had.
+        let mode = fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o077, 0, "unexpected mode {mode:o} for {path:?}");
+        assert_eq!(
+            manager.load_classifier(model_id, name).unwrap(),
+            b"fresh data"
+        );
+
+        // The rename consumed the temporary, so the classifier is the only
+        // file left in the model directory.
+        let leftovers: Vec<_> = fs::read_dir(parent)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .collect();
+        assert_eq!(leftovers, vec![path]);
     }
 
     #[test]
