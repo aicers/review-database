@@ -17,9 +17,12 @@ pub struct CustomerDataDeletionJob {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CustomerDataDeletionServiceResult {
     pub service: CustomerDataDeletionService,
-    pub host_fqdn: Option<String>,
+    pub host_fqdns: Vec<String>,
     pub status: CustomerDataDeletionStatus,
+    /// Stores the request time in nanoseconds since the Unix epoch (UTC).
     pub requested_at: i64,
+    /// Stores the completion time in nanoseconds since the Unix epoch (UTC), or `None` if the
+    /// deletion has not completed.
     pub completed_at: Option<i64>,
     pub error: Option<String>,
 }
@@ -40,16 +43,20 @@ pub enum CustomerDataDeletionStatus {
 
 impl CustomerDataDeletionServiceResult {
     fn validate(&self) -> Result<()> {
+        if self.host_fqdns.iter().any(String::is_empty) {
+            bail!("host FQDNs must not contain an empty value");
+        }
+
         match self.service {
             CustomerDataDeletionService::Review => {
-                if self.host_fqdn.is_some() {
-                    bail!("REview service result must not have a host FQDN");
+                if self.host_fqdns.is_empty() {
+                    bail!("Review service result requires at least one host FQDN");
                 }
             }
             CustomerDataDeletionService::Sensor | CustomerDataDeletionService::SemiSupervised => {
-                if self.host_fqdn.as_deref().is_none_or(str::is_empty) {
+                if self.host_fqdns.len() != 1 {
                     bail!(
-                        "Sensor and SemiSupervised service results require a non-empty host FQDN"
+                        "Sensor and SemiSupervised service results require exactly one host FQDN"
                     );
                 }
             }
@@ -62,13 +69,8 @@ impl CustomerDataDeletionServiceResult {
             CustomerDataDeletionService::Review => {
                 existing.service == CustomerDataDeletionService::Review
             }
-            CustomerDataDeletionService::Sensor => {
-                existing.service == CustomerDataDeletionService::Sensor
-                    && existing.host_fqdn == self.host_fqdn
-            }
-            CustomerDataDeletionService::SemiSupervised => {
-                existing.service == CustomerDataDeletionService::SemiSupervised
-                    && existing.host_fqdn == self.host_fqdn
+            CustomerDataDeletionService::Sensor | CustomerDataDeletionService::SemiSupervised => {
+                existing.service == self.service && existing.host_fqdns == self.host_fqdns
             }
         }
     }
@@ -249,13 +251,16 @@ mod tests {
 
     fn service_result(
         service: CustomerDataDeletionService,
-        host_fqdn: Option<&str>,
+        host_fqdns: &[&str],
         status: CustomerDataDeletionStatus,
         requested_at: i64,
     ) -> CustomerDataDeletionServiceResult {
         CustomerDataDeletionServiceResult {
             service,
-            host_fqdn: host_fqdn.map(str::to_owned),
+            host_fqdns: host_fqdns
+                .iter()
+                .map(|host_fqdn| (*host_fqdn).to_owned())
+                .collect(),
             status,
             requested_at,
             completed_at: None,
@@ -269,7 +274,7 @@ mod tests {
         let table = store.customer_data_deletion_map();
         let review = service_result(
             CustomerDataDeletionService::Review,
-            None,
+            &["review.example", "review-2.example"],
             CustomerDataDeletionStatus::InProgress,
             10,
         );
@@ -293,7 +298,7 @@ mod tests {
                 review,
                 service_result(
                     CustomerDataDeletionService::Sensor,
-                    Some("sensor.example"),
+                    &["sensor.example"],
                     CustomerDataDeletionStatus::Succeeded,
                     20,
                 ),
@@ -321,7 +326,73 @@ mod tests {
     }
 
     #[test]
-    fn identifies_services_and_validates_host_fqdns() {
+    fn validates_host_fqdns_for_each_service() {
+        for host_fqdns in [
+            &["review.example"][..],
+            &["review.example", "review-2.example"][..],
+        ] {
+            assert!(
+                service_result(
+                    CustomerDataDeletionService::Review,
+                    host_fqdns,
+                    CustomerDataDeletionStatus::InProgress,
+                    1,
+                )
+                .validate()
+                .is_ok()
+            );
+        }
+
+        for host_fqdns in [&[][..], &[""][..], &["review.example", ""][..]] {
+            assert!(
+                service_result(
+                    CustomerDataDeletionService::Review,
+                    host_fqdns,
+                    CustomerDataDeletionStatus::InProgress,
+                    1,
+                )
+                .validate()
+                .is_err()
+            );
+        }
+
+        for service in [
+            CustomerDataDeletionService::Sensor,
+            CustomerDataDeletionService::SemiSupervised,
+        ] {
+            assert!(
+                service_result(
+                    service,
+                    &["sensor.example"],
+                    CustomerDataDeletionStatus::InProgress,
+                    1,
+                )
+                .validate()
+                .is_ok()
+            );
+
+            for host_fqdns in [
+                &[][..],
+                &[""][..],
+                &["sensor.example", "sensor-2.example"][..],
+                &["sensor.example", ""][..],
+            ] {
+                assert!(
+                    service_result(
+                        service,
+                        host_fqdns,
+                        CustomerDataDeletionStatus::InProgress,
+                        1,
+                    )
+                    .validate()
+                    .is_err()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn identifies_service_results_by_service_and_host_fqdns() {
         let (_permit, _db_dir, _backup_dir, store) = setup_store();
         let table = store.customer_data_deletion_map();
         let customer_id = 1;
@@ -334,19 +405,18 @@ mod tests {
 
         let review = service_result(
             CustomerDataDeletionService::Review,
-            None,
+            &["review.example", "review-2.example"],
             CustomerDataDeletionStatus::InProgress,
             1,
         );
         table.add_service(customer_id, &review).unwrap();
-        assert!(table.add_service(customer_id, &review).is_err());
         assert!(
             table
                 .add_service(
                     customer_id,
                     &service_result(
                         CustomerDataDeletionService::Review,
-                        Some("review.example"),
+                        &["another-review.example"],
                         CustomerDataDeletionStatus::InProgress,
                         1,
                     ),
@@ -354,25 +424,9 @@ mod tests {
                 .is_err()
         );
 
-        for host_fqdn in [None, Some("")] {
-            assert!(
-                table
-                    .add_service(
-                        customer_id,
-                        &service_result(
-                            CustomerDataDeletionService::Sensor,
-                            host_fqdn,
-                            CustomerDataDeletionStatus::InProgress,
-                            2,
-                        ),
-                    )
-                    .is_err()
-            );
-        }
-
         let sensor = service_result(
             CustomerDataDeletionService::Sensor,
-            Some("sensor.example"),
+            &["sensor.example"],
             CustomerDataDeletionStatus::InProgress,
             2,
         );
@@ -383,7 +437,7 @@ mod tests {
                 customer_id,
                 &service_result(
                     CustomerDataDeletionService::Sensor,
-                    Some("sensor-2.example"),
+                    &["sensor-2.example"],
                     CustomerDataDeletionStatus::InProgress,
                     3,
                 ),
@@ -394,7 +448,7 @@ mod tests {
                 customer_id,
                 &service_result(
                     CustomerDataDeletionService::SemiSupervised,
-                    Some("sensor.example"),
+                    &["sensor.example"],
                     CustomerDataDeletionStatus::InProgress,
                     4,
                 ),
@@ -407,7 +461,7 @@ mod tests {
                     customer_id,
                     &service_result(
                         CustomerDataDeletionService::SemiSupervised,
-                        Some("missing.example"),
+                        &["missing.example"],
                         CustomerDataDeletionStatus::Failed,
                         5,
                     ),
@@ -428,19 +482,19 @@ mod tests {
         let customer_id = 2;
         let review = service_result(
             CustomerDataDeletionService::Review,
-            None,
+            &["review.example", "review-2.example"],
             CustomerDataDeletionStatus::Succeeded,
             1,
         );
         let sensor = service_result(
             CustomerDataDeletionService::Sensor,
-            Some("sensor.example"),
+            &["sensor.example"],
             CustomerDataDeletionStatus::InProgress,
             2,
         );
         let semi_supervised = service_result(
             CustomerDataDeletionService::SemiSupervised,
-            Some("semi.example"),
+            &["semi.example"],
             CustomerDataDeletionStatus::InProgress,
             3,
         );
@@ -453,7 +507,7 @@ mod tests {
 
         let update = CustomerDataDeletionServiceResult {
             service: CustomerDataDeletionService::Sensor,
-            host_fqdn: Some("sensor.example".to_owned()),
+            host_fqdns: vec!["sensor.example".to_owned()],
             status: CustomerDataDeletionStatus::Failed,
             requested_at: 20,
             completed_at: Some(30),
@@ -501,7 +555,7 @@ mod tests {
                         customer_id,
                         &service_result(
                             service,
-                            Some(&host_fqdn),
+                            &[&host_fqdn],
                             CustomerDataDeletionStatus::InProgress,
                             index,
                         ),
@@ -542,13 +596,13 @@ mod tests {
                 service_results: vec![
                     service_result(
                         CustomerDataDeletionService::Sensor,
-                        Some("sensor.example"),
+                        &["sensor.example"],
                         CustomerDataDeletionStatus::InProgress,
                         0,
                     ),
                     service_result(
                         CustomerDataDeletionService::SemiSupervised,
-                        Some("semi.example"),
+                        &["semi.example"],
                         CustomerDataDeletionStatus::InProgress,
                         0,
                     ),
@@ -573,7 +627,7 @@ mod tests {
                             customer_id,
                             &service_result(
                                 service,
-                                Some(host_fqdn),
+                                &[host_fqdn],
                                 CustomerDataDeletionStatus::Succeeded,
                                 index,
                             ),
@@ -610,7 +664,7 @@ mod tests {
             customer_id: 5,
             service_results: vec![service_result(
                 CustomerDataDeletionService::Review,
-                None,
+                &["review.example", "review-2.example"],
                 CustomerDataDeletionStatus::Succeeded,
                 10,
             )],

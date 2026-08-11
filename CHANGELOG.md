@@ -14,7 +14,9 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 - Added persistent customer data deletion jobs through
   `Store::customer_data_deletion_map`, with public job, service, result, and
   status types and atomic APIs for adding and updating results reported by
-  REview, Sensor, and SemiSupervised services.
+  REview, Sensor, and SemiSupervised services. REview results retain every
+  target host FQDN for reliable deletion retries, while Sensor and
+  SemiSupervised results retain exactly one host FQDN.
 
 ### Changed
 
@@ -24,10 +26,6 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   Under the common `umask 022`, for example, a stored classifier that used to be
   `0o644` is now `0o600`, so anything reading these files as another account
   stops working.
-- **BREAKING**: Bumped the database format to `0.47.0`. The migration from
-  `0.46.x` creates the customer data deletion jobs column family explicitly;
-  migrations from older supported formats preserve their legacy column-family
-  sets while applying intermediate migrations before creating the new family.
 - **BREAKING**: Bumped the database format to `0.47.0-alpha.1`. The migration
   from `0.46.x` creates the customer data deletion jobs column family
   explicitly; migrations from older supported formats preserve their legacy
