@@ -19,7 +19,8 @@ pub struct CustomerDataDeletionServiceResult {
     pub service: CustomerDataDeletionService,
     pub host_fqdns: Vec<String>,
     pub status: CustomerDataDeletionStatus,
-    /// Stores the request time in nanoseconds since the Unix epoch (UTC).
+    /// Records when the most recent deletion attempt was requested, in nanoseconds since the Unix
+    /// epoch (UTC). A retry replaces the previous value.
     pub requested_at: i64,
     /// Stores the completion time in nanoseconds since the Unix epoch (UTC), or `None` if the
     /// deletion has not completed.
