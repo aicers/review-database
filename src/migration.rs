@@ -2,7 +2,7 @@
 #![allow(clippy::too_many_lines)]
 mod migration_structures;
 use std::{
-    fs::{File, create_dir_all},
+    fs::{File, create_dir_all, remove_file, rename},
     io::{Read, Write},
     path::{Path, PathBuf},
     sync::Arc,
@@ -112,6 +112,18 @@ const COMPATIBLE_VERSION_REQ: &str = ">=0.46.0,<0.47.0";
 
 /// Number of event records applied in each atomic migration write.
 const EVENT_MIGRATION_BATCH_SIZE: usize = 100;
+
+/// The name of the file recording the database format version.
+const VERSION_FILE_NAME: &str = "VERSION";
+
+/// The name of the temporary file that [`create_version_file`] renames over
+/// [`VERSION_FILE_NAME`].
+///
+/// The name is fixed rather than unique because `migrate_data_dir` runs once
+/// at startup with exclusive access to the data directory, so there is no
+/// concurrent writer to collide with. In exchange, an interrupted write can
+/// leave behind only this one file, which the next start recognizes.
+const VERSION_TMP_FILE_NAME: &str = "VERSION.tmp";
 
 /// Migrates the data directory to the up-to-date format if necessary.
 ///
@@ -1287,17 +1299,27 @@ fn migrate_blocklist_dhcp_fields(value: &[u8]) -> Option<Vec<u8>> {
 /// Returns an error if VERSION cannot be retrieved or created.
 fn retrieve_or_create_version<P: AsRef<Path>>(path: P) -> Result<(PathBuf, Version)> {
     let path = path.as_ref();
-    let file = path.join("VERSION");
+    let file = path.join(VERSION_FILE_NAME);
 
     if !path.exists() {
         create_dir_all(path)?;
     }
-    if path
+
+    // A temporary left behind by an interrupted write must not make an
+    // otherwise empty directory look populated, or VERSION would never be
+    // created here and the read below would fail on a fresh data directory.
+    // Only that one name is forgiven: a directory holding anything else but
+    // no VERSION stays an error, since creating one would stamp the current
+    // version onto an existing tree and skip its migration entirely.
+    let tmp = path.join(VERSION_TMP_FILE_NAME);
+    let populated = path
         .read_dir()
         .context("cannot read data dir")?
-        .next()
-        .is_none()
-    {
+        .any(|entry| match entry {
+            Ok(entry) => entry.path() != tmp,
+            Err(_) => true,
+        });
+    if !populated {
         create_version_file(&file)?;
     }
 
@@ -1305,15 +1327,58 @@ fn retrieve_or_create_version<P: AsRef<Path>>(path: P) -> Result<(PathBuf, Versi
     Ok((file, version))
 }
 
-/// Creates the VERSION file in the data directory.
+/// Writes the current version to the VERSION file in the data directory,
+/// creating it if it does not exist.
+///
+/// The file is replaced rather than rewritten: the version goes to a
+/// temporary in the same directory and is renamed over VERSION, so an
+/// interrupted write cannot leave VERSION empty or partial.
 ///
 /// # Errors
 ///
-/// Returns an error if the VERSION file cannot be created or written.
+/// Returns an error if the temporary file cannot be created, written, or
+/// flushed, if it cannot be renamed over the VERSION file, or if the
+/// containing directory cannot be flushed.
 fn create_version_file(path: &Path) -> Result<()> {
-    let mut f = File::create(path).context("cannot create VERSION")?;
+    let dir = path.parent().unwrap_or_else(|| Path::new("."));
+    let tmp = dir.join(VERSION_TMP_FILE_NAME);
+
+    // No mode is requested here. `rename` installs this inode at the
+    // destination, so the temporary's mode becomes VERSION's, and
+    // `File::create` asks for `0o666` and lets the umask narrow it — which is
+    // what VERSION has had all along. It records a format version, not a
+    // secret, so there is nothing to tighten.
+    let mut f = File::create(&tmp).context("cannot create temporary VERSION")?;
     f.write_all(env!("CARGO_PKG_VERSION").as_bytes())
-        .context("cannot write VERSION")?;
+        .context("cannot write temporary VERSION")?;
+
+    // Flush before the rename. `migrate_data_dir` writes VERSION only once the
+    // migration has already rewritten the database, and the next start reads
+    // it back to decide whether to migrate again, so a rename reaching disk
+    // ahead of these bytes would leave a version that cannot be parsed and a
+    // database that will not open.
+    f.sync_all().context("cannot flush temporary VERSION")?;
+    drop(f);
+
+    if let Err(rename_err) = rename(&tmp, path) {
+        // Leave nothing behind that would make an empty data directory look
+        // populated to `retrieve_or_create_version`.
+        return match remove_file(&tmp) {
+            Ok(()) => Err(rename_err).context("cannot replace VERSION"),
+            Err(remove_err) => {
+                Err(remove_err).context("cannot remove temporary VERSION after a failed rename")
+            }
+        };
+    }
+
+    // Flush the directory as well: the rename is what makes the new version
+    // visible, and until that directory entry is on disk a power loss can
+    // still lose it, leaving a migrated database recorded as the version it
+    // held before the migration.
+    File::open(dir)
+        .and_then(|dir| dir.sync_all())
+        .context("cannot flush the data dir")?;
+
     Ok(())
 }
 
@@ -1339,8 +1404,9 @@ mod tests {
     use semver::{Version, VersionReq};
 
     use super::{
-        COMPATIBLE_VERSION_REQ, create_version_file, migrate_data_dir, migrate_event_country_codes,
-        migrate_event_stored_schema_to_v0_46, read_version_file,
+        COMPATIBLE_VERSION_REQ, VERSION_FILE_NAME, VERSION_TMP_FILE_NAME, create_version_file,
+        migrate_data_dir, migrate_event_country_codes, migrate_event_stored_schema_to_v0_46,
+        read_version_file, retrieve_or_create_version,
     };
     use crate::event::{
         BlocklistConnFields, BlocklistConnFieldsStored, EventKind, EventMessage,
@@ -1832,6 +1898,54 @@ mod tests {
         // Read it back
         let version = read_version_file(&version_path).unwrap();
         assert_eq!(version, Version::parse(env!("CARGO_PKG_VERSION")).unwrap());
+    }
+
+    /// Test that writing over an existing `VERSION` leaves the current version
+    /// readable and no temporary behind.
+    ///
+    /// The ordering the flushes in `create_version_file` buy cannot be
+    /// observed without fault injection, so this covers the states a test can
+    /// reach: the replacement itself, and the directory it leaves.
+    #[test]
+    fn version_file_is_replaced() {
+        let temp = tempfile::tempdir().unwrap();
+        write_version(temp.path(), "0.45.0");
+        let version_path = temp.path().join(VERSION_FILE_NAME);
+
+        create_version_file(&version_path).unwrap();
+
+        assert_eq!(
+            read_version_file(&version_path).unwrap(),
+            Version::parse(env!("CARGO_PKG_VERSION")).unwrap()
+        );
+        assert!(!temp.path().join(VERSION_TMP_FILE_NAME).exists());
+    }
+
+    /// Test that a temporary left behind by an interrupted write does not stop
+    /// `VERSION` from being created in an otherwise empty data directory.
+    #[test]
+    fn stale_version_temp_does_not_block_creation() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join(VERSION_TMP_FILE_NAME), b"0.4").unwrap();
+
+        let (path, version) = retrieve_or_create_version(temp.path()).unwrap();
+
+        assert_eq!(path, temp.path().join(VERSION_FILE_NAME));
+        assert_eq!(version, Version::parse(env!("CARGO_PKG_VERSION")).unwrap());
+    }
+
+    /// Test that a populated data directory without a `VERSION` file is still
+    /// rejected rather than stamped with the current version, which would skip
+    /// the migration its contents need.
+    #[test]
+    fn populated_dir_without_version_is_rejected() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join("states.db"), b"not a version file").unwrap();
+
+        let result = retrieve_or_create_version(temp.path());
+
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("cannot open VERSION"));
     }
 
     /// Test that reading a non-existent `VERSION` file returns an error.
