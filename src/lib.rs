@@ -45,16 +45,17 @@ pub use self::tables::{
     AccessToken, Agent, AgentConfig, AgentKind, AgentStatus, AllowNetwork, AllowNetworkUpdate,
     AttrCmpKind, BackupConfig, BackupConfigUpdate, BlockNetwork, BlockNetworkUpdate, Cluster,
     ClusterTimeSeries, ColumnStats, ColumnTimeSeries, Confidence,
-    CsvColumnExtra as CsvColumnExtraConfig, Customer, CustomerNetwork, CustomerUpdate, DataSource,
-    DataSourceUpdate, DataType, ExclusionReason, ExternalService, ExternalServiceConfig,
-    ExternalServiceKind, ExternalServiceStatus, Filter, FilterValue, Host, IndexedTable, Iterable,
-    LabelDb, LabelDbKind, LabelDbRule, LabelDbRuleKind, Model as ModelDigest, ModelIndicator,
-    Network, NetworkFilter, NetworkUpdate, Node, NodeProfile, NodeTable, NodeUpdate, OutlierInfo,
-    OutlierInfoKey, OutlierInfoValue, PacketAttr, PeriodForSearch, ProtocolPorts, Response,
-    ResponseKind, RetentionConfig, RetentionConfigUpdate, SamplingInterval, SamplingKind,
-    SamplingPeriod, SamplingPolicy, SamplingPolicyUpdate, Structured,
-    StructuredClusteringAlgorithm, Table, Template, TimeSeries, TopColumnsOfCluster, TopMultimaps,
-    TorExitNode, TrafficFilter, TriageExclusion, TriageExclusionReason,
+    CsvColumnExtra as CsvColumnExtraConfig, Customer, CustomerDataDeletionJob,
+    CustomerDataDeletionService, CustomerDataDeletionServiceResult, CustomerDataDeletionStatus,
+    CustomerNetwork, CustomerUpdate, DataSource, DataSourceUpdate, DataType, ExclusionReason,
+    ExternalService, ExternalServiceConfig, ExternalServiceKind, ExternalServiceStatus, Filter,
+    FilterValue, Host, IndexedTable, Iterable, LabelDb, LabelDbKind, LabelDbRule, LabelDbRuleKind,
+    Model as ModelDigest, ModelIndicator, Network, NetworkFilter, NetworkUpdate, Node, NodeProfile,
+    NodeTable, NodeUpdate, OutlierInfo, OutlierInfoKey, OutlierInfoValue, PacketAttr,
+    PeriodForSearch, ProtocolPorts, Response, ResponseKind, RetentionConfig, RetentionConfigUpdate,
+    SamplingInterval, SamplingKind, SamplingPeriod, SamplingPolicy, SamplingPolicyUpdate,
+    Structured, StructuredClusteringAlgorithm, Table, Template, TimeSeries, TopColumnsOfCluster,
+    TopMultimaps, TorExitNode, TrafficFilter, TriageExclusion, TriageExclusionReason,
     TriageExclusionReasonUpdate, TriagePolicy, TriagePolicyInput, TriagePolicyUpdate,
     TriageResponse, TriageResponseUpdate, TrustedDomain, TrustedUserAgent, UniqueKey, Unstructured,
     UnstructuredClusteringAlgorithm, UserAgent, ValueKind,
@@ -619,6 +620,11 @@ impl Store {
     #[allow(clippy::missing_panics_doc)]
     pub fn customer_map(&self) -> IndexedTable<'_, Customer> {
         self.states.customers()
+    }
+
+    #[must_use]
+    pub fn customer_data_deletion_map(&self) -> Table<'_, CustomerDataDeletionJob> {
+        self.states.customer_data_deletion_jobs()
     }
 
     #[must_use]
