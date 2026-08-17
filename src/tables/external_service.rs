@@ -170,6 +170,14 @@ impl<'d> Table<'d, ExternalService> {
         Map::open(db, super::EXTERNAL_SERVICES).map(Table::new)
     }
 
+    /// Returns the underlying map, so a test can write bytes this crate would
+    /// never produce — a record from a build that knows more lifecycle values
+    /// than this one.
+    #[cfg(test)]
+    pub(crate) fn raw(&self) -> &Map<'_> {
+        &self.map
+    }
+
     /// Returns an external service with the given `node_id` and `id`.
     ///
     /// # Errors
