@@ -1586,6 +1586,71 @@ mod test {
         assert_eq!(updated.agents[1].status, Status::Disabled);
     }
 
+    /// Writing a status must not disturb the install state stored beside it, and
+    /// the read that returns the new status must return the lifecycle with it.
+    ///
+    /// `update_agent_status_by_hostname` is the crate's only status-only write
+    /// path, so it is the one place where a record rebuilt from a status instead
+    /// of read back whole would silently reset the four install fields.
+    #[test]
+    fn update_agent_status_by_hostname_preserves_install_state() {
+        let (_permit, store) = setup_store();
+        let kinds = vec![AgentKind::Sensor, AgentKind::SemiSupervised];
+        let configs: Vec<_> = create_agent_configs(&kinds);
+
+        let profile = Profile {
+            hostname: "test-hostname".to_string(),
+            ..Default::default()
+        };
+
+        let mut agents = create_agents(456, &kinds, &configs, &configs);
+        let target = agents.get_mut(1).expect("two agents");
+        target.installed_version = Some("1.2.3".to_string());
+        target.installed_commit = Some("deadbeef".to_string());
+        target.lifecycle = Lifecycle::Running;
+        target.bound_addrs = vec![("addr".to_string(), "127.0.0.1:1111".to_string())];
+
+        let mut node = create_node(
+            456,
+            "test",
+            Some("test"),
+            Some(profile.clone()),
+            Some(profile),
+            agents,
+            vec![],
+        );
+
+        let mut node_table = store.node_map();
+        let id = node_table.put(&node).unwrap();
+        node.id = id;
+        node.agents.iter_mut().for_each(|a| a.node_id = id);
+
+        node_table
+            .update_agent_status_by_hostname("test-hostname", "3", Status::Disabled)
+            .unwrap();
+
+        let (updated, invalid_agents, invalid_external_services) =
+            node_table.get_by_id(id).unwrap().unwrap();
+        assert!(invalid_agents.is_empty());
+        assert!(invalid_external_services.is_empty());
+
+        // One read returns the new status and the untouched lifecycle together.
+        let updated_agent = updated.agents.get(1).expect("two agents");
+        assert_eq!(updated_agent.status, Status::Disabled);
+        assert_eq!(updated_agent.lifecycle, Lifecycle::Running);
+        assert_eq!(updated_agent.installed_version.as_deref(), Some("1.2.3"));
+        assert_eq!(updated_agent.installed_commit.as_deref(), Some("deadbeef"));
+        assert_eq!(
+            updated_agent.bound_addrs,
+            vec![("addr".to_string(), "127.0.0.1:1111".to_string())]
+        );
+
+        // The agent that was not targeted is untouched in both fields.
+        let untouched = updated.agents.first().expect("two agents");
+        assert_eq!(untouched.status, Status::Enabled);
+        assert_eq!(untouched.lifecycle, Lifecycle::NotInstalled);
+    }
+
     #[test]
     fn hostname_uniqueness_on_put() {
         let (_permit, store) = setup_store();
