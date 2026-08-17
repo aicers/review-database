@@ -20,6 +20,20 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **BREAKING**: `Agent` and `ExternalService` now record the build installed on
+  the host, through four new public fields: `installed_version` and
+  `installed_commit` (the build's identity, both `None` until a host reports
+  one), `lifecycle`, and `bound_addrs` (the `(config key, host:port)` pairs the
+  instance actually bound, which stay empty for agents). `lifecycle` is a new
+  public `Lifecycle` type — `NotInstalled`, `Installing`, `Running`, `Stopped`,
+  `Failed`, `Removing`, `Unknown` — describing the install and run state a host
+  reports. It is distinct from `AgentStatus` / `ExternalServiceStatus`, which
+  still report the outcome of a configuration reload, and nothing converts
+  between the two. `Agent::new` and `ExternalService::new` keep their parameter
+  lists and start the new fields empty, at `NotInstalled`; install state is
+  assigned to a record afterwards. The stored records in the agents and external
+  services column families carry the four fields, so records written by earlier
+  versions no longer deserialize and are not migrated.
 - Classifier files are now created requesting owner-only permissions (`0o600`)
   instead of the previous `0o666` reduced by the umask. The umask still applies,
   so the resulting mode is not fixed, but no group or other bit is ever granted.
