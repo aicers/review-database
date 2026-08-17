@@ -900,7 +900,7 @@ mod test {
 
     use super::*;
     use crate::test::{DbGuard, acquire_db_permit};
-    use crate::{AgentKind, ExternalServiceKind, Store};
+    use crate::{AgentKind, ExternalServiceKind, Lifecycle, Store};
 
     type PortNumber = u16;
 
@@ -987,6 +987,10 @@ mod test {
                 status: Status::Enabled,
                 config: config.clone(),
                 draft: draft.clone(),
+                installed_version: None,
+                installed_commit: None,
+                lifecycle: Lifecycle::NotInstalled,
+                bound_addrs: Vec::new(),
             })
             .collect()
     }
@@ -1005,6 +1009,10 @@ mod test {
                 kind: *kind,
                 status: Status::Enabled,
                 draft: draft.clone(),
+                installed_version: None,
+                installed_commit: None,
+                lifecycle: Lifecycle::NotInstalled,
+                bound_addrs: Vec::new(),
             })
             .collect()
     }
@@ -1578,6 +1586,71 @@ mod test {
         assert_eq!(updated.agents[1].status, Status::Disabled);
     }
 
+    /// Writing a status must not disturb the install state stored beside it, and
+    /// the read that returns the new status must return the lifecycle with it.
+    ///
+    /// `update_agent_status_by_hostname` is the crate's only status-only write
+    /// path, so it is the one place where a record rebuilt from a status instead
+    /// of read back whole would silently reset the four install fields.
+    #[test]
+    fn update_agent_status_by_hostname_preserves_install_state() {
+        let (_permit, store) = setup_store();
+        let kinds = vec![AgentKind::Sensor, AgentKind::SemiSupervised];
+        let configs: Vec<_> = create_agent_configs(&kinds);
+
+        let profile = Profile {
+            hostname: "test-hostname".to_string(),
+            ..Default::default()
+        };
+
+        let mut agents = create_agents(456, &kinds, &configs, &configs);
+        let target = agents.get_mut(1).expect("two agents");
+        target.installed_version = Some("1.2.3".to_string());
+        target.installed_commit = Some("deadbeef".to_string());
+        target.lifecycle = Lifecycle::Running;
+        target.bound_addrs = vec![("addr".to_string(), "127.0.0.1:1111".to_string())];
+
+        let mut node = create_node(
+            456,
+            "test",
+            Some("test"),
+            Some(profile.clone()),
+            Some(profile),
+            agents,
+            vec![],
+        );
+
+        let mut node_table = store.node_map();
+        let id = node_table.put(&node).unwrap();
+        node.id = id;
+        node.agents.iter_mut().for_each(|a| a.node_id = id);
+
+        node_table
+            .update_agent_status_by_hostname("test-hostname", "3", Status::Disabled)
+            .unwrap();
+
+        let (updated, invalid_agents, invalid_external_services) =
+            node_table.get_by_id(id).unwrap().unwrap();
+        assert!(invalid_agents.is_empty());
+        assert!(invalid_external_services.is_empty());
+
+        // One read returns the new status and the untouched lifecycle together.
+        let updated_agent = updated.agents.get(1).expect("two agents");
+        assert_eq!(updated_agent.status, Status::Disabled);
+        assert_eq!(updated_agent.lifecycle, Lifecycle::Running);
+        assert_eq!(updated_agent.installed_version.as_deref(), Some("1.2.3"));
+        assert_eq!(updated_agent.installed_commit.as_deref(), Some("deadbeef"));
+        assert_eq!(
+            updated_agent.bound_addrs,
+            vec![("addr".to_string(), "127.0.0.1:1111".to_string())]
+        );
+
+        // The agent that was not targeted is untouched in both fields.
+        let untouched = updated.agents.first().expect("two agents");
+        assert_eq!(untouched.status, Status::Enabled);
+        assert_eq!(untouched.lifecycle, Lifecycle::NotInstalled);
+    }
+
     #[test]
     fn hostname_uniqueness_on_put() {
         let (_permit, store) = setup_store();
@@ -1857,6 +1930,236 @@ mod test {
         assert!(invalid_external_services.is_empty());
 
         assert_eq!(updated.external_services, update.external_services);
+    }
+
+    /// The install state written on an agent and on an external service must
+    /// survive `Node::update`'s single atomic diff, which compares whole
+    /// records, and must not disturb `config` or `draft`.
+    #[test]
+    fn update_install_state_on_agents_and_external_services() {
+        let (_permit, store) = setup_store();
+
+        let agent_kinds = vec![AgentKind::Unsupervised, AgentKind::SemiSupervised];
+        let agent_configs = create_agent_configs(&agent_kinds);
+        let agent_drafts = vec![None, None];
+        let agents = create_agents(0, &agent_kinds, &agent_configs, &agent_drafts);
+
+        let external_service_kinds = vec![ExternalServiceKind::DataStore];
+        let external_service_drafts = create_external_service_configs(&external_service_kinds);
+        let external_services =
+            create_external_services(0, &external_service_kinds, &external_service_drafts);
+
+        let mut node = create_node(
+            0,
+            "test",
+            None,
+            Some(Profile::default()),
+            None,
+            agents,
+            external_services,
+        );
+
+        let mut node_table = store.node_map();
+        let id = node_table.put(&node).unwrap();
+        node.id = id;
+        node.agents.iter_mut().for_each(|a| a.node_id = id);
+        node.external_services
+            .iter_mut()
+            .for_each(|e| e.node_id = id);
+
+        let old: Update = node.clone().into();
+
+        let mut new_node = node.clone();
+        let agent = new_node.agents.get_mut(1).expect("two agents");
+        agent.installed_version = Some("1.2.3".to_string());
+        agent.installed_commit = Some("f0f0f0f".to_string());
+        agent.lifecycle = Lifecycle::Running;
+        agent.status = Status::ReloadFailed;
+        // Agents bind no service address in practice, but the diff must carry
+        // whatever is on the record rather than assuming the field is empty.
+        agent.bound_addrs = vec![("addr".to_string(), "127.0.0.1:1111".to_string())];
+        let external_service = new_node
+            .external_services
+            .first_mut()
+            .expect("one external service");
+        external_service.installed_version = Some("0.9.0-alpha".to_string());
+        external_service.installed_commit = Some("abcdef1".to_string());
+        external_service.lifecycle = Lifecycle::Failed;
+        external_service.bound_addrs = vec![
+            ("ingest_srv_addr".to_string(), "10.0.0.1:38370".to_string()),
+            ("publish_srv_addr".to_string(), "10.0.0.1:38371".to_string()),
+        ];
+        let new: Update = new_node.clone().into();
+
+        let returned = node_table.update(id, &old, &new).unwrap();
+        assert_eq!(returned.agents, new_node.agents);
+        assert_eq!(returned.external_services, new_node.external_services);
+
+        // A single read returns `status` and `lifecycle` together.
+        let (updated, invalid_agents, invalid_external_services) =
+            node_table.get_by_id(id).unwrap().unwrap();
+        assert!(invalid_agents.is_empty());
+        assert!(invalid_external_services.is_empty());
+
+        let updated_agent = updated.agents.get(1).expect("two agents");
+        assert_eq!(updated_agent.installed_version.as_deref(), Some("1.2.3"));
+        assert_eq!(updated_agent.installed_commit.as_deref(), Some("f0f0f0f"));
+        assert_eq!(updated_agent.lifecycle, Lifecycle::Running);
+        assert_eq!(updated_agent.status, Status::ReloadFailed);
+        assert_eq!(
+            updated_agent.bound_addrs,
+            vec![("addr".to_string(), "127.0.0.1:1111".to_string())]
+        );
+        assert_eq!(updated_agent.config, node.agents.get(1).unwrap().config);
+        assert_eq!(updated_agent.draft, node.agents.get(1).unwrap().draft);
+
+        // The untouched agent keeps the values it was registered with.
+        let untouched_agent = updated.agents.first().expect("two agents");
+        assert_eq!(untouched_agent.installed_version, None);
+        assert_eq!(untouched_agent.installed_commit, None);
+        assert_eq!(untouched_agent.lifecycle, Lifecycle::NotInstalled);
+        assert!(untouched_agent.bound_addrs.is_empty());
+
+        let updated_external_service = updated
+            .external_services
+            .first()
+            .expect("one external service");
+        assert_eq!(
+            updated_external_service.installed_version.as_deref(),
+            Some("0.9.0-alpha")
+        );
+        assert_eq!(
+            updated_external_service.installed_commit.as_deref(),
+            Some("abcdef1")
+        );
+        assert_eq!(updated_external_service.lifecycle, Lifecycle::Failed);
+        assert_eq!(
+            updated_external_service.bound_addrs,
+            vec![
+                ("ingest_srv_addr".to_string(), "10.0.0.1:38370".to_string()),
+                ("publish_srv_addr".to_string(), "10.0.0.1:38371".to_string()),
+            ]
+        );
+        assert_eq!(
+            updated_external_service.draft,
+            node.external_services.first().unwrap().draft
+        );
+    }
+
+    /// Returns `value` with the byte encoding the lifecycle replaced by
+    /// `number`.
+    ///
+    /// The byte is located by comparing `value` against the same record
+    /// serialized under a different lifecycle, so the forgery does not hard-code
+    /// the layout of the private persisted struct.
+    fn forge_lifecycle_byte(value: &[u8], other: &[u8], number: u8) -> Vec<u8> {
+        let position = value
+            .iter()
+            .zip(other)
+            .position(|(a, b)| a != b)
+            .expect("the two records differ in the lifecycle byte");
+        let mut forged = value.to_vec();
+        *forged.get_mut(position).expect("position is in bounds") = number;
+        forged
+    }
+
+    /// A node read must still return an agent and an external service whose
+    /// stored lifecycle number this build does not recognize.
+    ///
+    /// `get_by_id` propagates a failed record deserialization, so storing the
+    /// lifecycle as a `Lifecycle` instead of a raw index would not merely lose
+    /// the field: a single row written by a newer build would fail the whole
+    /// node read. `TableIter` is worse still — it drops such a record silently,
+    /// so the instance would vanish from the node it belongs to.
+    #[test]
+    fn node_read_survives_an_unknown_lifecycle_number() {
+        use crate::tables::Value as ValueTrait;
+
+        let (_permit, store) = setup_store();
+
+        let agent_kinds = vec![AgentKind::Unsupervised];
+        let agent_configs = create_agent_configs(&agent_kinds);
+        let agents = create_agents(0, &agent_kinds, &agent_configs, &agent_configs);
+
+        let external_service_kinds = vec![ExternalServiceKind::DataStore];
+        let external_service_drafts = create_external_service_configs(&external_service_kinds);
+        let external_services =
+            create_external_services(0, &external_service_kinds, &external_service_drafts);
+
+        let mut node = create_node(
+            0,
+            "test",
+            None,
+            Some(Profile::default()),
+            None,
+            agents,
+            external_services,
+        );
+
+        let node_table = store.node_map();
+        let id = node_table.put(&node).unwrap();
+        node.id = id;
+        node.agents.iter_mut().for_each(|a| a.node_id = id);
+        node.external_services
+            .iter_mut()
+            .for_each(|e| e.node_id = id);
+
+        let agent = node.agents.first().expect("one agent").clone();
+        let mut relabelled_agent = agent.clone();
+        relabelled_agent.lifecycle = Lifecycle::Removing;
+        let agent_table = store.agents_map();
+        agent_table
+            .raw()
+            .put(
+                &agent.unique_key(),
+                &forge_lifecycle_byte(&agent.value(), &relabelled_agent.value(), 9),
+            )
+            .unwrap();
+
+        let external_service = node
+            .external_services
+            .first()
+            .expect("one external service")
+            .clone();
+        let mut relabelled_external_service = external_service.clone();
+        relabelled_external_service.lifecycle = Lifecycle::Removing;
+        let external_service_table = store.external_service_map();
+        external_service_table
+            .raw()
+            .put(
+                &external_service.unique_key(),
+                &forge_lifecycle_byte(
+                    &external_service.value(),
+                    &relabelled_external_service.value(),
+                    9,
+                ),
+            )
+            .unwrap();
+
+        let (read, invalid_agents, invalid_external_services) =
+            node_table.get_by_id(id).unwrap().unwrap();
+        assert!(invalid_agents.is_empty());
+        assert!(invalid_external_services.is_empty());
+
+        let read_agent = read.agents.first().expect("one agent");
+        assert_eq!(read_agent.lifecycle, Lifecycle::Unknown);
+        assert_ne!(read_agent.lifecycle, Lifecycle::NotInstalled);
+        assert_eq!(read_agent.key, agent.key);
+        assert_eq!(read_agent.kind, agent.kind);
+        assert_eq!(read_agent.status, agent.status);
+        assert_eq!(read_agent.config, agent.config);
+        assert_eq!(read_agent.draft, agent.draft);
+
+        let read_external_service = read
+            .external_services
+            .first()
+            .expect("one external service");
+        assert_eq!(read_external_service.lifecycle, Lifecycle::Unknown);
+        assert_ne!(read_external_service.lifecycle, Lifecycle::NotInstalled);
+        assert_eq!(read_external_service.key, external_service.key);
+        assert_eq!(read_external_service.kind, external_service.kind);
+        assert_eq!(read_external_service.status, external_service.status);
+        assert_eq!(read_external_service.draft, external_service.draft);
     }
 
     #[test]

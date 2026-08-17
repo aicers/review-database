@@ -17,6 +17,7 @@ mod external_service;
 mod filter;
 mod hosts;
 mod label_db;
+mod lifecycle;
 mod model;
 mod model_indicator;
 mod network;
@@ -67,6 +68,7 @@ pub use self::hosts::{Host, UserAgent};
 pub use self::label_db::{
     Kind as LabelDbKind, LabelDb, Rule as LabelDbRule, RuleKind as LabelDbRuleKind,
 };
+pub use self::lifecycle::Lifecycle;
 pub use self::model::Model;
 pub use self::model_indicator::ModelIndicator;
 pub use self::network::{Network, Update as NetworkUpdate};
