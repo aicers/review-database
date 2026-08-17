@@ -84,6 +84,16 @@ impl Lifecycle {
     /// explicit `match` rather than through `ToPrimitive::to_u8`, which would
     /// yield the discriminant instead.
     ///
+    /// `Unknown` is written as one number among the seven rather than as a
+    /// sentinel, because it is also what [`Lifecycle::from_stored_index`]
+    /// answers for a number this build does not recognize: a row written by a
+    /// newer build reads back as `Unknown`, never as `NotInstalled`.
+    ///
+    /// That is also why the paired read cannot use `FromPrimitive::from_u8`.
+    /// It maps discriminants, so it would answer `None` for the `6` this
+    /// function writes, and `Some(Unknown)` for a `255` this encoding never
+    /// writes.
+    ///
     /// This is one of exactly two functions that move a `Lifecycle` between the
     /// enum and its stored number; [`Lifecycle::from_stored_index`] is the
     /// other.
