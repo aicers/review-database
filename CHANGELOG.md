@@ -17,6 +17,19 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   REview, Sensor, and SemiSupervised services. REview results retain every
   target host FQDN for reliable deletion retries, while Sensor and
   SemiSupervised results retain exactly one host FQDN.
+- Added the `OperationAttempt` record and its supporting `OperationAction`,
+  `OperationPhase`, `OperationCleanupState`, `OperationOutcome`, and
+  `OperationRetryPolicy` types, describing a package install, update, or
+  removal on a host, or a pending host onboarding. An attempt is identified by
+  its idempotency key alone, which must not be empty, so resuming an
+  interrupted operation finalizes the same row instead of adding another, and
+  it records the host, the instance, the
+  resolved version and commit, the coarse phase, the retry budget, an absolute
+  expiry deadline, and any compensation still owed. `is_terminal` reports
+  whether the operation reached a result, and `is_fully_discharged` whether it
+  also owes no compensation. The table these records live in becomes reachable
+  from `Store` in a later release, along with the database format bump that
+  creates its column family.
 
 ### Changed
 

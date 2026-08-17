@@ -22,6 +22,7 @@ mod model;
 mod model_indicator;
 mod network;
 mod node;
+mod operation_attempt;
 mod outlier_info;
 mod qualifier;
 mod retention_config;
@@ -78,6 +79,10 @@ pub use self::node::{
     Status as AgentStatus, Status as ExternalServiceStatus, Table as NodeTable,
     Update as NodeUpdate,
 };
+pub use self::operation_attempt::{
+    Action as OperationAction, CleanupState as OperationCleanupState, OperationAttempt,
+    Outcome as OperationOutcome, Phase as OperationPhase, RetryPolicy as OperationRetryPolicy,
+};
 pub use self::outlier_info::{Key as OutlierInfoKey, OutlierInfo, Value as OutlierInfoValue};
 pub use self::retention_config::{RetentionConfig, RetentionConfigUpdate};
 pub use self::sampling_policy::{
@@ -131,6 +136,11 @@ pub(super) const MODEL_INDICATORS: &str = "model indicators";
 pub(crate) const META: &str = "meta";
 pub(super) const NETWORKS: &str = "networks";
 pub(super) const NODES: &str = "nodes";
+// Deliberately absent from `MAP_NAMES`: registering this column family belongs
+// with the database format bump, because `migrate_data_dir` returns early for a
+// data dir already at a compatible version and would otherwise gain a column
+// family with no version change.
+pub(super) const OPERATION_ATTEMPTS: &str = "operation attempts";
 pub(super) const OUTLIERS: &str = "outliers";
 pub(super) const QUALIFIERS: &str = "qualifiers";
 pub(super) const EXTERNAL_SERVICES: &str = "external services";

@@ -44,6 +44,7 @@ mod private {
     impl Sealed for tables::Model {}
     impl Sealed for tables::ModelIndicator {}
     impl Sealed for tables::Network {}
+    impl Sealed for tables::OperationAttempt {}
     impl Sealed for tables::OutlierInfo {}
     impl Sealed for types::Qualifier {}
     impl Sealed for tables::ExternalService {}
