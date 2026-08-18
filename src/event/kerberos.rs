@@ -1,10 +1,11 @@
-use std::{fmt, net::IpAddr, num::NonZeroU8};
+use std::{fmt, net::IpAddr};
 
 use attrievent::attribute::{KerberosAttr, RawEventAttrKind};
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
-use super::{EventCategory, LearningMethod, MEDIUM, TriageScore, common::Match};
+use super::timestamp;
+use super::{EventCategory, LearningMethod, ThreatLevel, TriageScore, common::Match};
 use crate::event::common::{AttrValue, triage_scores_to_string};
 
 macro_rules! find_kerberos_attr_by_kind {
@@ -27,12 +28,12 @@ macro_rules! find_kerberos_attr_by_kind {
                 KerberosAttr::ClientRealm => AttrValue::String(&$event.client_realm),
                 KerberosAttr::CnameType => AttrValue::UInt($event.cname_type.into()),
                 KerberosAttr::ClientName => {
-                    AttrValue::VecString(std::borrow::Cow::Borrowed(&$event.client_name))
+                    AttrValue::VecString(std::borrow::Cow::Borrowed(&$event.cname))
                 }
                 KerberosAttr::Realm => AttrValue::String(&$event.realm),
                 KerberosAttr::SnameType => AttrValue::UInt($event.sname_type.into()),
                 KerberosAttr::ServiceName => {
-                    AttrValue::VecString(std::borrow::Cow::Borrowed(&$event.service_name))
+                    AttrValue::VecString(std::borrow::Cow::Borrowed(&$event.sname))
                 }
             };
             Some(target_value)
@@ -42,10 +43,8 @@ macro_rules! find_kerberos_attr_by_kind {
     }};
 }
 
-pub type BlocklistKerberosFields = BlocklistKerberosFieldsV0_42;
-
 #[derive(Serialize, Deserialize)]
-pub struct BlocklistKerberosFieldsV0_42 {
+pub struct BlocklistKerberosFields {
     pub sensor: String,
     pub orig_addr: IpAddr,
     pub orig_port: u16,
@@ -64,60 +63,27 @@ pub struct BlocklistKerberosFieldsV0_42 {
     pub error_code: u32,
     pub client_realm: String,
     pub cname_type: u8,
-    pub client_name: Vec<String>,
+    pub cname: Vec<String>,
     pub realm: String,
     pub sname_type: u8,
-    pub service_name: Vec<String>,
+    pub sname: Vec<String>,
     pub confidence: f32,
     pub category: Option<EventCategory>,
 }
 
-impl BlocklistKerberosFields {
-    #[must_use]
-    pub fn syslog_rfc5424(&self) -> String {
-        let start_time_dt = DateTime::from_timestamp_nanos(self.start_time);
-        format!(
-            "category={:?} sensor={:?} orig_addr={:?} orig_port={:?} resp_addr={:?} resp_port={:?} proto={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} client_time={:?} server_time={:?} error_code={:?} client_realm={:?} cname_type={:?} client_name={:?} realm={:?} sname_type={:?} service_name={:?} confidence={:?}",
-            self.category.as_ref().map_or_else(
-                || "Unspecified".to_string(),
-                std::string::ToString::to_string
-            ),
-            self.sensor,
-            self.orig_addr.to_string(),
-            self.orig_port.to_string(),
-            self.resp_addr.to_string(),
-            self.resp_port.to_string(),
-            self.proto.to_string(),
-            start_time_dt.to_rfc3339(),
-            self.duration.to_string(),
-            self.orig_pkts.to_string(),
-            self.resp_pkts.to_string(),
-            self.orig_l2_bytes.to_string(),
-            self.resp_l2_bytes.to_string(),
-            self.client_time.to_string(),
-            self.server_time.to_string(),
-            self.error_code.to_string(),
-            self.client_realm,
-            self.cname_type.to_string(),
-            self.client_name.join(","),
-            self.realm,
-            self.sname_type.to_string(),
-            self.service_name.join(","),
-            self.confidence.to_string()
-        )
-    }
-}
+pub(crate) type BlocklistKerberosFieldsStored = BlocklistKerberosFieldsStoredV0_46;
 
-#[allow(clippy::module_name_repetitions)]
-pub struct BlocklistKerberos {
-    pub time: DateTime<Utc>,
+#[derive(Deserialize, Serialize)]
+pub(crate) struct BlocklistKerberosFieldsStoredV0_46 {
     pub sensor: String,
     pub orig_addr: IpAddr,
     pub orig_port: u16,
+    pub orig_country_code: [u8; 2],
     pub resp_addr: IpAddr,
     pub resp_port: u16,
+    pub resp_country_code: [u8; 2],
     pub proto: u8,
-    pub start_time: DateTime<Utc>,
+    pub start_time: i64,
     pub duration: i64,
     pub orig_pkts: u64,
     pub resp_pkts: u64,
@@ -128,27 +94,63 @@ pub struct BlocklistKerberos {
     pub error_code: u32,
     pub client_realm: String,
     pub cname_type: u8,
-    pub client_name: Vec<String>,
+    pub cname: Vec<String>,
     pub realm: String,
     pub sname_type: u8,
-    pub service_name: Vec<String>,
+    pub sname: Vec<String>,
     pub confidence: f32,
     pub category: Option<EventCategory>,
-    pub triage_scores: Option<Vec<TriageScore>>,
 }
 
-impl fmt::Display for BlocklistKerberos {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "sensor={:?} orig_addr={:?} orig_port={:?} resp_addr={:?} resp_port={:?} proto={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} client_time={:?} server_time={:?} error_code={:?} client_realm={:?} cname_type={:?} client_name={:?} realm={:?} sname_type={:?} service_name={:?} triage_scores={:?}",
+impl From<BlocklistKerberosFields> for BlocklistKerberosFieldsStored {
+    fn from(value: BlocklistKerberosFields) -> Self {
+        Self {
+            sensor: value.sensor,
+            orig_addr: value.orig_addr,
+            orig_port: value.orig_port,
+            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
+            resp_addr: value.resp_addr,
+            resp_port: value.resp_port,
+            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
+            proto: value.proto,
+            start_time: value.start_time,
+            duration: value.duration,
+            orig_pkts: value.orig_pkts,
+            resp_pkts: value.resp_pkts,
+            orig_l2_bytes: value.orig_l2_bytes,
+            resp_l2_bytes: value.resp_l2_bytes,
+            client_time: value.client_time,
+            server_time: value.server_time,
+            error_code: value.error_code,
+            client_realm: value.client_realm,
+            cname_type: value.cname_type,
+            cname: value.cname,
+            realm: value.realm,
+            sname_type: value.sname_type,
+            sname: value.sname,
+            confidence: value.confidence,
+            category: value.category,
+        }
+    }
+}
+
+impl BlocklistKerberosFields {
+    #[must_use]
+    pub fn syslog_rfc5424(&self) -> String {
+        let start_time = timestamp::format_i64_nanos_rfc3339(self.start_time).unwrap_or_default();
+        format!(
+            "category={:?} sensor={:?} orig_addr={:?} orig_port={:?} resp_addr={:?} resp_port={:?} proto={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} client_time={:?} server_time={:?} error_code={:?} client_realm={:?} cname_type={:?} cname={:?} realm={:?} sname_type={:?} sname={:?} confidence={:?}",
+            self.category.as_ref().map_or_else(
+                || "Unspecified".to_string(),
+                std::string::ToString::to_string
+            ),
             self.sensor,
             self.orig_addr.to_string(),
             self.orig_port.to_string(),
             self.resp_addr.to_string(),
             self.resp_port.to_string(),
             self.proto.to_string(),
-            self.start_time.to_rfc3339(),
+            start_time,
             self.duration.to_string(),
             self.orig_pkts.to_string(),
             self.resp_pkts.to_string(),
@@ -159,26 +161,93 @@ impl fmt::Display for BlocklistKerberos {
             self.error_code.to_string(),
             self.client_realm,
             self.cname_type.to_string(),
-            self.client_name.join(","),
+            self.cname.join(","),
             self.realm,
             self.sname_type.to_string(),
-            self.service_name.join(","),
+            self.sname.join(","),
+            self.confidence.to_string()
+        )
+    }
+}
+
+#[allow(clippy::module_name_repetitions)]
+pub struct BlocklistKerberos {
+    pub time: Timestamp,
+    pub sensor: String,
+    pub orig_addr: IpAddr,
+    pub orig_port: u16,
+    pub orig_country_code: [u8; 2],
+    pub resp_addr: IpAddr,
+    pub resp_port: u16,
+    pub resp_country_code: [u8; 2],
+    pub proto: u8,
+    pub start_time: Timestamp,
+    pub duration: i64,
+    pub orig_pkts: u64,
+    pub resp_pkts: u64,
+    pub orig_l2_bytes: u64,
+    pub resp_l2_bytes: u64,
+    pub client_time: i64,
+    pub server_time: i64,
+    pub error_code: u32,
+    pub client_realm: String,
+    pub cname_type: u8,
+    pub cname: Vec<String>,
+    pub realm: String,
+    pub sname_type: u8,
+    pub sname: Vec<String>,
+    pub confidence: f32,
+    pub category: Option<EventCategory>,
+    pub triage_scores: Option<Vec<TriageScore>>,
+}
+
+impl fmt::Display for BlocklistKerberos {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "sensor={:?} orig_addr={:?} orig_port={:?} orig_country_code={:?} resp_addr={:?} resp_port={:?} resp_country_code={:?} proto={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} client_time={:?} server_time={:?} error_code={:?} client_realm={:?} cname_type={:?} cname={:?} realm={:?} sname_type={:?} sname={:?} triage_scores={:?}",
+            self.sensor,
+            self.orig_addr.to_string(),
+            self.orig_port.to_string(),
+            crate::util::country_code_as_str(&self.orig_country_code),
+            self.resp_addr.to_string(),
+            self.resp_port.to_string(),
+            crate::util::country_code_as_str(&self.resp_country_code),
+            self.proto.to_string(),
+            timestamp::format_rfc3339(self.start_time).unwrap_or_default(),
+            self.duration.to_string(),
+            self.orig_pkts.to_string(),
+            self.resp_pkts.to_string(),
+            self.orig_l2_bytes.to_string(),
+            self.resp_l2_bytes.to_string(),
+            self.client_time.to_string(),
+            self.server_time.to_string(),
+            self.error_code.to_string(),
+            self.client_realm,
+            self.cname_type.to_string(),
+            self.cname.join(","),
+            self.realm,
+            self.sname_type.to_string(),
+            self.sname.join(","),
             triage_scores_to_string(self.triage_scores.as_ref())
         )
     }
 }
 
 impl BlocklistKerberos {
-    pub(super) fn new(time: DateTime<Utc>, fields: BlocklistKerberosFields) -> Self {
+    pub(super) fn new(time: Timestamp, fields: BlocklistKerberosFieldsStored) -> Self {
         Self {
             time,
             sensor: fields.sensor,
             orig_addr: fields.orig_addr,
             orig_port: fields.orig_port,
+            orig_country_code: fields.orig_country_code,
             resp_addr: fields.resp_addr,
             resp_port: fields.resp_port,
+            resp_country_code: fields.resp_country_code,
             proto: fields.proto,
-            start_time: DateTime::from_timestamp_nanos(fields.start_time),
+            start_time: timestamp::from_i64_nanos(fields.start_time)
+                .expect(timestamp::I64_NANOS_JIFF_INVARIANT),
             duration: fields.duration,
             orig_pkts: fields.orig_pkts,
             resp_pkts: fields.resp_pkts,
@@ -189,10 +258,10 @@ impl BlocklistKerberos {
             error_code: fields.error_code,
             client_realm: fields.client_realm,
             cname_type: fields.cname_type,
-            client_name: fields.client_name,
+            cname: fields.cname,
             realm: fields.realm,
             sname_type: fields.sname_type,
-            service_name: fields.service_name,
+            sname: fields.sname,
             confidence: fields.confidence,
             category: fields.category,
             triage_scores: None,
@@ -200,21 +269,36 @@ impl BlocklistKerberos {
     }
 }
 
+impl BlocklistKerberos {
+    #[must_use]
+    pub fn threat_level() -> ThreatLevel {
+        ThreatLevel::Medium
+    }
+}
+
 impl Match for BlocklistKerberos {
-    fn src_addrs(&self) -> &[IpAddr] {
+    fn orig_addrs(&self) -> &[IpAddr] {
         std::slice::from_ref(&self.orig_addr)
     }
 
-    fn src_port(&self) -> u16 {
+    fn orig_port(&self) -> u16 {
         self.orig_port
     }
 
-    fn dst_addrs(&self) -> &[IpAddr] {
+    fn orig_country_codes(&self) -> &[[u8; 2]] {
+        std::slice::from_ref(&self.orig_country_code)
+    }
+
+    fn resp_addrs(&self) -> &[IpAddr] {
         std::slice::from_ref(&self.resp_addr)
     }
 
-    fn dst_port(&self) -> u16 {
+    fn resp_port(&self) -> u16 {
         self.resp_port
+    }
+
+    fn resp_country_codes(&self) -> &[[u8; 2]] {
+        std::slice::from_ref(&self.resp_country_code)
     }
 
     fn proto(&self) -> u8 {
@@ -225,8 +309,8 @@ impl Match for BlocklistKerberos {
         self.category
     }
 
-    fn level(&self) -> NonZeroU8 {
-        MEDIUM
+    fn level(&self) -> ThreatLevel {
+        Self::threat_level()
     }
 
     fn kind(&self) -> &'static str {

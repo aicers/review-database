@@ -7,6 +7,7 @@ mod cluster;
 mod collections;
 mod column_statistics;
 pub mod event;
+mod geo;
 mod migration;
 mod model;
 mod scores;
@@ -18,13 +19,13 @@ mod top_n;
 pub mod types;
 mod util;
 
-use std::io;
 use std::path::{Path, PathBuf};
+use std::{io, sync::Arc};
 
 use anyhow::{Result, anyhow};
 pub use attrievent::attribute::RawEventKind;
 pub use rocksdb::backup::BackupEngineInfo;
-pub use tags::TagSet;
+pub use tags::{CustomerTagSet, TagSet};
 use tags::{EventTagId, NetworkTagId, WorkflowTagId};
 use thiserror::Error;
 
@@ -35,21 +36,25 @@ pub use self::cluster::*;
 pub use self::collections::Indexable;
 pub(crate) use self::collections::{IndexedMap, IndexedMapUpdate, Map};
 pub use self::column_statistics::*;
-pub use self::event::{Event, EventDb, EventKind, EventMessage};
+pub use self::event::{Event, EventDb, EventKind, EventMessage, ThreatLevel};
 pub use self::migration::migrate_data_dir;
 pub use self::model::{Digest, Model};
 pub use self::scores::Scores;
 use self::tables::StateDb;
 pub use self::tables::{
     AccessToken, Agent, AgentConfig, AgentKind, AgentStatus, AllowNetwork, AllowNetworkUpdate,
-    AttrCmpKind, BackupConfig, BlockNetwork, BlockNetworkUpdate, Cluster, ClusterTimeSeries,
-    ColumnStats, ColumnTimeSeries, Confidence, CsvColumnExtra as CsvColumnExtraConfig, Customer,
+    AttrCmpKind, BackupConfig, BackupConfigUpdate, BlockNetwork, BlockNetworkUpdate, Cluster,
+    ClusterTimeSeries, ColumnStats, ColumnTimeSeries, Confidence, CoreComponent,
+    CsvColumnExtra as CsvColumnExtraConfig, Customer, CustomerDataDeletionJob,
+    CustomerDataDeletionService, CustomerDataDeletionServiceResult, CustomerDataDeletionStatus,
     CustomerNetwork, CustomerUpdate, DataSource, DataSourceUpdate, DataType, ExclusionReason,
     ExternalService, ExternalServiceConfig, ExternalServiceKind, ExternalServiceStatus, Filter,
     FilterValue, Host, IndexedTable, Iterable, LabelDb, LabelDbKind, LabelDbRule, LabelDbRuleKind,
-    Model as ModelDigest, ModelIndicator, Network, NetworkFilter, NetworkUpdate, Node, NodeProfile,
-    NodeTable, NodeUpdate, OutlierInfo, OutlierInfoKey, OutlierInfoValue, PacketAttr,
-    PeriodForSearch, ProtocolPorts, Response, ResponseKind, SamplingInterval, SamplingKind,
+    Lifecycle, Model as ModelDigest, ModelIndicator, Network, NetworkFilter, NetworkUpdate, Node,
+    NodeProfile, NodeTable, NodeUpdate, OperationAction, OperationAttempt, OperationCleanupState,
+    OperationOutcome, OperationPhase, OperationRetentionBound, OperationRetryPolicy, OutlierInfo,
+    OutlierInfoKey, OutlierInfoValue, PacketAttr, PeriodForSearch, ProtocolPorts, Response,
+    ResponseKind, RetentionConfig, RetentionConfigUpdate, SamplingInterval, SamplingKind,
     SamplingPeriod, SamplingPolicy, SamplingPolicyUpdate, Structured,
     StructuredClusteringAlgorithm, Table, Template, TimeSeries, TopColumnsOfCluster, TopMultimaps,
     TorExitNode, TrafficFilter, TriageExclusion, TriageExclusionReason,
@@ -73,6 +78,7 @@ pub struct Store {
     states: StateDb,
     pretrained: PathBuf,
     classifier_fm: classifier_fs::ClassifierFileManager,
+    country_lookup: Option<geo::SharedCountryLookup>,
 }
 
 impl Store {
@@ -82,7 +88,25 @@ impl Store {
     /// # Errors
     ///
     /// Returns an error if the key-value store or its backup cannot be opened.
-    pub fn new(path: &Path, backup: &Path) -> Result<Self, anyhow::Error> {
+    pub fn new(
+        path: &Path,
+        backup: &Path,
+        ip2location: Option<Arc<ip2location::DB>>,
+    ) -> Result<Self, anyhow::Error> {
+        let country_lookup = ip2location
+            .map(|db| Arc::new(geo::Ip2LocationResolver::new(db)) as geo::SharedCountryLookup);
+        Self::new_with_country_lookup(path, backup, country_lookup)
+    }
+
+    /// Opens a key-value store with a country lookup for ingestion-time
+    /// endpoint country-code resolution.
+    ///
+    /// Used by tests to inject deterministic lookup behavior.
+    fn new_with_country_lookup(
+        path: &Path,
+        backup: &Path,
+        country_lookup: Option<geo::SharedCountryLookup>,
+    ) -> Result<Self, anyhow::Error> {
         let db_path = path.join(DEFAULT_STATES);
         let backup_path = backup.join(DEFAULT_STATES);
         let states = StateDb::open(&db_path, backup_path)?;
@@ -97,6 +121,7 @@ impl Store {
             states,
             pretrained,
             classifier_fm,
+            country_lookup,
         };
         Ok(store)
     }
@@ -104,7 +129,7 @@ impl Store {
     #[must_use]
     #[allow(clippy::missing_panics_doc)]
     pub fn events(&self) -> EventDb<'_> {
-        self.states.events()
+        self.states.events(self.country_lookup.clone())
     }
 
     #[must_use]
@@ -167,10 +192,280 @@ impl Store {
         self.states.configs()
     }
 
-    #[must_use]
-    #[allow(clippy::missing_panics_doc)]
-    pub fn backup_config_map(&self) -> Table<'_, BackupConfig> {
-        self.states.backup_configs()
+    /// Initializes backup configuration in the config table.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if config is invalid, any of the config values have
+    /// already been initialized or if database operation fails.
+    pub fn init_backup_config(&self, config: &BackupConfig) -> Result<()> {
+        config.validate()?;
+
+        let config_map = self.config_map();
+        let duration = config.backup_duration.to_string();
+        let time = config.backup_time.clone();
+        let num = config.num_of_backups_to_keep.to_string();
+
+        let updates = vec![
+            (tables::KEY_BACKUP_DURATION, duration.as_str()),
+            (tables::KEY_BACKUP_TIME, time.as_str()),
+            (tables::KEY_NUM_OF_BACKUPS_TO_KEEP, num.as_str()),
+        ];
+        config_map.init_multi(&updates)?;
+        Ok(())
+    }
+
+    /// Updates backup configuration in the config table.
+    ///
+    /// This function updates backup config fields using compare-and-swap
+    /// semantics. Both old config (for verification) and new config update must
+    /// be provided to ensure no concurrent modifications have occurred.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the new config is invalid, if any old value does not
+    /// match the current value in the database (indicating concurrent
+    /// modification), if the key does not exist, or if the database operation
+    /// fails.
+    pub fn update_backup_config(
+        &self,
+        old_config: &BackupConfig,
+        update: &BackupConfigUpdate,
+    ) -> Result<()> {
+        let config_map = self.config_map();
+        let mut updates = Vec::new();
+
+        let old_duration_str = old_config.backup_duration.to_string();
+        let new_duration_str;
+        if let Some(new_val) = update.backup_duration {
+            new_duration_str = new_val.to_string();
+            updates.push((
+                tables::KEY_BACKUP_DURATION,
+                old_duration_str.as_str(),
+                new_duration_str.as_str(),
+            ));
+        }
+
+        let old_time_str = old_config.backup_time.clone();
+        let new_time_str;
+        if let Some(ref new_val) = update.backup_time {
+            new_time_str = new_val.clone();
+            updates.push((
+                tables::KEY_BACKUP_TIME,
+                old_time_str.as_str(),
+                new_time_str.as_str(),
+            ));
+        }
+
+        let old_num_str = old_config.num_of_backups_to_keep.to_string();
+        let new_num_str;
+        if let Some(new_val) = update.num_of_backups_to_keep {
+            new_num_str = new_val.to_string();
+            updates.push((
+                tables::KEY_NUM_OF_BACKUPS_TO_KEEP,
+                old_num_str.as_str(),
+                new_num_str.as_str(),
+            ));
+        }
+
+        // Validate the NEW resulting config
+        let resulting_config = BackupConfig {
+            backup_duration: update.backup_duration.unwrap_or(old_config.backup_duration),
+            backup_time: update
+                .backup_time
+                .clone()
+                .unwrap_or_else(|| old_config.backup_time.clone()),
+            num_of_backups_to_keep: update
+                .num_of_backups_to_keep
+                .unwrap_or(old_config.num_of_backups_to_keep),
+        };
+        resulting_config.validate()?;
+
+        if !updates.is_empty() {
+            config_map.update_compare_multi(&updates)?;
+        }
+
+        Ok(())
+    }
+
+    /// Returns the current backup configuration from the config table.
+    ///
+    /// Returns `Ok(None)` if the backup configuration has not been initialized.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if numeric fields cannot be parsed, if the
+    /// configuration is only partially initialized, or if the database
+    /// operation fails.
+    pub fn backup_config(&self) -> Result<Option<BackupConfig>> {
+        let config = self.config_map();
+
+        let duration = config.current(tables::KEY_BACKUP_DURATION)?;
+        let time = config.current(tables::KEY_BACKUP_TIME)?;
+        let num = config.current(tables::KEY_NUM_OF_BACKUPS_TO_KEEP)?;
+
+        match (duration, time, num) {
+            (Some(d), Some(t), Some(n)) => {
+                let backup_duration = d.parse()?;
+                let backup_time = t;
+                let num_of_backups_to_keep = n.parse()?;
+                Ok(Some(BackupConfig {
+                    backup_duration,
+                    backup_time,
+                    num_of_backups_to_keep,
+                }))
+            }
+            (None, None, None) => Ok(None),
+            (duration, time, num) => Err(anyhow!(
+                "incomplete backup configuration: missing keys: {}",
+                [
+                    duration.is_none().then_some(tables::KEY_BACKUP_DURATION),
+                    time.is_none().then_some(tables::KEY_BACKUP_TIME),
+                    num.is_none().then_some(tables::KEY_NUM_OF_BACKUPS_TO_KEEP),
+                ]
+                .into_iter()
+                .flatten()
+                .collect::<Vec<_>>()
+                .join(", ")
+            )),
+        }
+    }
+
+    /// Returns the current event retention period in days, or `None` if
+    /// retention is unlimited (key absent).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the stored value cannot be parsed or if the
+    /// database operation fails.
+    pub fn event_retention_period(&self) -> Result<Option<u32>> {
+        let config = self.config_map();
+        match config.current(tables::KEY_EVENT_RETENTION_PERIOD_DAYS)? {
+            Some(v) => {
+                let days: u32 = v.parse()?;
+                Ok(Some(days))
+            }
+            None => Ok(None),
+        }
+    }
+
+    /// Sets the event retention period in days.
+    ///
+    /// Pass `Some(days)` to set a retention period (must be >= 1), or
+    /// `None` to remove the key and indicate unlimited retention.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `days` is `Some(0)` or if the database
+    /// operation fails.
+    pub fn set_event_retention_period(&self, days: Option<u32>) -> Result<()> {
+        match days {
+            Some(0) => Err(anyhow!("event retention period must be >= 1 day")),
+            Some(d) => self
+                .config_map()
+                .update(tables::KEY_EVENT_RETENTION_PERIOD_DAYS, &d.to_string()),
+            None => {
+                let config = self.config_map();
+                // Only delete if the key exists; absence already means unlimited.
+                if config
+                    .current(tables::KEY_EVENT_RETENTION_PERIOD_DAYS)?
+                    .is_some()
+                {
+                    config.delete(tables::KEY_EVENT_RETENTION_PERIOD_DAYS)
+                } else {
+                    Ok(())
+                }
+            }
+        }
+    }
+
+    /// Initializes retention configuration in the config table.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if config is invalid, the config value has already
+    /// been initialized, or if the database operation fails.
+    pub fn init_retention_config(&self, config: &RetentionConfig) -> Result<()> {
+        config.validate()?;
+
+        let config_map = self.config_map();
+        let period = config.period_in_days.to_string();
+
+        config_map.init(tables::KEY_RETENTION_PERIOD, period.as_str())?;
+        Ok(())
+    }
+
+    /// Updates retention configuration in the config table.
+    ///
+    /// This function updates the retention config using compare-and-swap
+    /// semantics. Both old config (for verification) and new config update
+    /// must be provided to ensure no concurrent modifications have occurred.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the new config is invalid, if the old value does
+    /// not match the current value in the database (indicating concurrent
+    /// modification), if the key does not exist, or if the database
+    /// operation fails.
+    pub fn update_retention_config(
+        &self,
+        old_config: &RetentionConfig,
+        update: &RetentionConfigUpdate,
+    ) -> Result<()> {
+        let resulting_config = RetentionConfig {
+            period_in_days: update.period_in_days.unwrap_or(old_config.period_in_days),
+        };
+        resulting_config.validate()?;
+
+        if let Some(new_val) = update.period_in_days {
+            let config_map = self.config_map();
+            let old_str = old_config.period_in_days.to_string();
+            let new_str = new_val.to_string();
+            config_map.update_compare(tables::KEY_RETENTION_PERIOD, &old_str, &new_str)?;
+        }
+
+        Ok(())
+    }
+
+    /// Clears the retention configuration, returning it to the disabled
+    /// (unset) state.
+    ///
+    /// After calling this, [`Store::purge_old_column_stats`] will return
+    /// `Ok(None)` until a new configuration is initialized.
+    ///
+    /// This is a no-op when no retention configuration is currently set.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database operation fails.
+    pub fn clear_retention_config(&self) -> Result<()> {
+        let config_map = self.config_map();
+        if config_map.current(tables::KEY_RETENTION_PERIOD)?.is_some() {
+            config_map.delete(tables::KEY_RETENTION_PERIOD)?;
+        }
+        Ok(())
+    }
+
+    /// Returns the current retention configuration from the config table.
+    ///
+    /// Returns `Ok(None)` if the retention configuration has not been
+    /// initialized.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the numeric field cannot be parsed or if the
+    /// database operation fails.
+    pub fn retention_config(&self) -> Result<Option<RetentionConfig>> {
+        let config = self.config_map();
+        let period = config.current(tables::KEY_RETENTION_PERIOD)?;
+
+        match period {
+            Some(p) => {
+                let period_in_days = p.parse()?;
+                Ok(Some(RetentionConfig { period_in_days }))
+            }
+            None => Ok(None),
+        }
     }
 
     /// Initializes account policy settings in the config table.
@@ -330,6 +625,11 @@ impl Store {
     }
 
     #[must_use]
+    pub fn customer_data_deletion_map(&self) -> Table<'_, CustomerDataDeletionJob> {
+        self.states.customer_data_deletion_jobs()
+    }
+
+    #[must_use]
     #[allow(clippy::missing_panics_doc)]
     pub fn data_source_map(&self) -> IndexedTable<'_, DataSource> {
         self.states.data_sources()
@@ -373,18 +673,22 @@ impl Store {
         self.states.networks()
     }
 
-    /// Returns the tag set for network.
+    /// Returns the customer-scoped tag set for network tags.
+    ///
+    /// Network tags are now scoped per customer. Each customer has their own
+    /// isolated set of network tags, allowing multiple customers to have tags
+    /// with the same name without conflicts.
     ///
     /// # Errors
     ///
     /// Returns an error if database operation fails or the data is invalid.
     #[allow(clippy::missing_panics_doc)]
-    pub fn network_tag_set(&self) -> Result<TagSet<'_, NetworkTagId>> {
+    pub fn network_tag_set(&self, customer_id: u32) -> Result<CustomerTagSet<'_, NetworkTagId>> {
         let set = self
             .states
             .indexed_set(tables::NETWORK_TAGS)
             .expect("always available");
-        TagSet::new(set)
+        CustomerTagSet::new(set, customer_id)
     }
 
     #[must_use]
@@ -704,6 +1008,29 @@ impl Store {
         txn.commit()?;
 
         Ok(())
+    }
+
+    /// Removes column statistics entries older than the configured
+    /// retention period.
+    ///
+    /// Returns the number of entries removed, or `Ok(None)` if no
+    /// retention configuration has been set.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the retention configuration cannot be read or
+    /// if the database operation fails.
+    pub fn purge_old_column_stats(&self) -> Result<Option<usize>> {
+        let Some(config) = self.retention_config()? else {
+            return Ok(None);
+        };
+
+        let cutoff = chrono::Utc::now().naive_utc()
+            - chrono::Duration::days(i64::from(config.period_in_days));
+
+        let table = self.column_stats_map();
+        let count = table.remove_older_than(cutoff)?;
+        Ok(Some(count))
     }
 
     /// Returns the model and classifer with the given model name.

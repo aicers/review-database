@@ -1,17 +1,28 @@
-use std::{env, path::PathBuf, process::exit};
+use std::{env, path::PathBuf, process::exit, sync::Arc};
 
 use anyhow::{Context, Result};
 use config::File;
 use review_database::migrate_data_dir;
 use serde::Deserialize;
+use tracing_subscriber::EnvFilter;
 
 #[cfg(feature = "migrate")]
 fn main() -> Result<()> {
+    let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+    tracing_subscriber::fmt().with_env_filter(env_filter).init();
+
     let config = Config::load_config(parse().as_deref())?;
 
     println!("Starting migration process...");
+    let locator = config
+        .ip2location
+        .as_ref()
+        .map(ip2location::DB::from_file)
+        .transpose()
+        .context("failed to open ip2location database")?
+        .map(Arc::new);
     println!("Migrating data directory...");
-    migrate_data_dir(&config.data_dir, &config.backup_dir).context("migration failed")?;
+    migrate_data_dir(&config.data_dir, &config.backup_dir, locator).context("migration failed")?;
     Ok(())
 }
 
@@ -57,6 +68,7 @@ fn bin() -> &'static str {
 pub struct Config {
     data_dir: PathBuf,
     backup_dir: PathBuf,
+    ip2location: Option<PathBuf>,
 }
 
 impl Config {
@@ -83,6 +95,7 @@ impl Config {
         Ok(Self {
             data_dir: config.data_dir,
             backup_dir: config.backup_dir,
+            ip2location: config.ip2location,
         })
     }
 }
@@ -91,4 +104,5 @@ impl Config {
 struct ConfigParser {
     data_dir: PathBuf,
     backup_dir: PathBuf,
+    ip2location: Option<PathBuf>,
 }

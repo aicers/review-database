@@ -14,7 +14,7 @@ use crate::{
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 pub struct Cluster {
     pub model_id: u32,
-    pub id: i32,
+    pub id: u32,
     pub category_id: i32,
     pub detector_id: i32,
     pub event_ids: Vec<i64>,
@@ -63,7 +63,7 @@ impl<'d> Table<'d, Cluster> {
     pub fn update_cluster(
         &self,
         model_id: u32,
-        id: i32,
+        id: u32,
         category: Option<i32>,
         qualifier: Option<i32>,
         status: Option<i32>,
@@ -191,8 +191,8 @@ impl<'d> Table<'d, Cluster> {
         detectors: Option<&[i32]>,
         qualifiers: Option<&[i32]>,
         statuses: Option<&[i32]>,
-        after: &Option<(i32, i64)>,
-        before: &Option<(i32, i64)>,
+        after: &Option<(u32, i64)>,
+        before: &Option<(u32, i64)>,
         is_first: bool,
         limit: usize,
     ) -> Result<Vec<Cluster>> {
@@ -294,7 +294,7 @@ impl ValueTrait for Cluster {
 }
 struct Key {
     model_id: u32,
-    cluster_id: i32,
+    cluster_id: u32,
 }
 
 impl FromKeyValue for Cluster {
@@ -336,7 +336,7 @@ impl UniqueKey for Cluster {
 impl Key {
     #[must_use]
     pub fn to_bytes(&self) -> Vec<u8> {
-        let capacity = size_of::<u32>() + size_of::<i32>();
+        let capacity = size_of::<u32>() + size_of::<u32>();
 
         let mut buf = Vec::with_capacity(capacity);
         buf.extend(self.model_id.to_be_bytes());
@@ -351,9 +351,9 @@ impl Key {
         buf.copy_from_slice(val);
         let model_id = u32::from_be_bytes(buf);
 
-        let mut buf = [0; size_of::<i32>()];
+        let mut buf = [0; size_of::<u32>()];
         buf.copy_from_slice(rest);
-        let cluster_id = i32::from_be_bytes(buf);
+        let cluster_id = u32::from_be_bytes(buf);
 
         Self {
             model_id,
@@ -623,7 +623,7 @@ mod tests {
         }
     }
 
-    fn make_cluster(model_id: u32, cluster_id: i32) -> Cluster {
+    fn make_cluster(model_id: u32, cluster_id: u32) -> Cluster {
         Cluster {
             model_id,
             id: cluster_id,
@@ -645,7 +645,145 @@ mod tests {
         let permit = acquire_db_permit();
         let db_dir = tempfile::tempdir().unwrap();
         let backup_dir = tempfile::tempdir().unwrap();
-        let store = Arc::new(Store::new(db_dir.path(), backup_dir.path()).unwrap());
+        let store = Arc::new(Store::new(db_dir.path(), backup_dir.path(), None).unwrap());
         (permit, store)
+    }
+
+    const FIXTURE_MODEL_ID: u32 = 1;
+    const FIXTURE_CLUSTER_ID: u32 = 2;
+
+    // Generated once locally from the production `Cluster::value()` path using
+    // `fixture_cluster` below. Embedded as literals so these tests fail if the
+    // serializer changes.
+    const FIXTURE_OPTION_NAIVEDATETIME_SOME: &[u8] = &[
+        0x14, 0x28, 0x02, 0xfb, 0xd2, 0x07, 0xfb, 0xd4, 0x07, 0x02, 0x04, 0x73, 0x72, 0x63, 0x31,
+        0x04, 0x73, 0x72, 0x63, 0x32, 0x00, 0x06, 0x08, 0x06, 0x61, 0x62, 0x63, 0x64, 0x65, 0x66,
+        0xfb, 0xa4, 0x09, 0x01, 0x3d, 0x0a, 0xd7, 0xa3, 0x70, 0xbd, 0x23, 0x40, 0x01, 0x1d, 0x32,
+        0x30, 0x30, 0x30, 0x2d, 0x30, 0x32, 0x2d, 0x32, 0x39, 0x54, 0x31, 0x32, 0x3a, 0x33, 0x34,
+        0x3a, 0x35, 0x36, 0x2e, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37, 0x38, 0x39,
+    ];
+
+    const FIXTURE_OPTION_NAIVEDATETIME_NONE: &[u8] = &[
+        0x14, 0x28, 0x02, 0xfb, 0xd2, 0x07, 0xfb, 0xd4, 0x07, 0x02, 0x04, 0x73, 0x72, 0x63, 0x31,
+        0x04, 0x73, 0x72, 0x63, 0x32, 0x00, 0x06, 0x08, 0x06, 0x61, 0x62, 0x63, 0x64, 0x65, 0x66,
+        0xfb, 0xa4, 0x09, 0x01, 0x3d, 0x0a, 0xd7, 0xa3, 0x70, 0xbd, 0x23, 0x40, 0x00,
+    ];
+
+    // Generated once locally from `bincode::DefaultOptions` serialization of
+    // `fixture_cluster` below. Pins the public `Cluster` serde payload, which
+    // includes `model_id` and `id` absent from the stored `Value` bytes.
+    const PUBLIC_SERDE_FIXTURE_OPTION_NAIVEDATETIME_SOME: &[u8] = &[
+        0x01, 0x02, 0x14, 0x28, 0x02, 0xfb, 0xd2, 0x07, 0xfb, 0xd4, 0x07, 0x02, 0x04, 0x73, 0x72,
+        0x63, 0x31, 0x04, 0x73, 0x72, 0x63, 0x32, 0x00, 0x06, 0x08, 0x06, 0x61, 0x62, 0x63, 0x64,
+        0x65, 0x66, 0xfb, 0xa4, 0x09, 0x01, 0x3d, 0x0a, 0xd7, 0xa3, 0x70, 0xbd, 0x23, 0x40, 0x01,
+        0x1d, 0x32, 0x30, 0x30, 0x30, 0x2d, 0x30, 0x32, 0x2d, 0x32, 0x39, 0x54, 0x31, 0x32, 0x3a,
+        0x33, 0x34, 0x3a, 0x35, 0x36, 0x2e, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37, 0x38, 0x39,
+    ];
+
+    const PUBLIC_SERDE_FIXTURE_OPTION_NAIVEDATETIME_NONE: &[u8] = &[
+        0x01, 0x02, 0x14, 0x28, 0x02, 0xfb, 0xd2, 0x07, 0xfb, 0xd4, 0x07, 0x02, 0x04, 0x73, 0x72,
+        0x63, 0x31, 0x04, 0x73, 0x72, 0x63, 0x32, 0x00, 0x06, 0x08, 0x06, 0x61, 0x62, 0x63, 0x64,
+        0x65, 0x66, 0xfb, 0xa4, 0x09, 0x01, 0x3d, 0x0a, 0xd7, 0xa3, 0x70, 0xbd, 0x23, 0x40, 0x00,
+    ];
+
+    /// Returns a leap-day timestamp with full nanosecond precision to pin
+    /// chrono string formatting in serialized cluster values.
+    fn fixture_naive_datetime() -> NaiveDateTime {
+        use chrono::NaiveDate;
+
+        NaiveDate::from_ymd_opt(2000, 2, 29)
+            .unwrap()
+            .and_hms_nano_opt(12, 34, 56, 123_456_789)
+            .unwrap()
+    }
+
+    fn fixture_cluster(last_modification_time: Option<NaiveDateTime>) -> Cluster {
+        Cluster {
+            model_id: FIXTURE_MODEL_ID,
+            id: FIXTURE_CLUSTER_ID,
+            category_id: 10,
+            detector_id: 20,
+            event_ids: vec![1001, 1002],
+            sensors: vec!["src1".into(), "src2".into()],
+            labels: None,
+            qualifier_id: 3,
+            status_id: 4,
+            signature: "abcdef".into(),
+            size: 1234,
+            score: Some(9.87),
+            last_modification_time,
+        }
+    }
+
+    fn fixture_key_bytes() -> Vec<u8> {
+        Key {
+            model_id: FIXTURE_MODEL_ID,
+            cluster_id: FIXTURE_CLUSTER_ID,
+        }
+        .to_bytes()
+    }
+
+    fn serialize_public_cluster(cluster: &Cluster) -> Vec<u8> {
+        use bincode::Options;
+
+        bincode::DefaultOptions::new()
+            .serialize(cluster)
+            .expect("serializable")
+    }
+
+    fn deserialize_public_cluster(bytes: &[u8]) -> Cluster {
+        use bincode::Options;
+
+        bincode::DefaultOptions::new()
+            .deserialize(bytes)
+            .expect("fixture bytes must deserialize as public Cluster")
+    }
+
+    #[test]
+    fn test_cluster_literal_fixture_option_naivedatetime_some() -> anyhow::Result<()> {
+        let key_bytes = fixture_key_bytes();
+        let decoded = Cluster::from_key_value(&key_bytes, FIXTURE_OPTION_NAIVEDATETIME_SOME)?;
+        let expected = fixture_cluster(Some(fixture_naive_datetime()));
+
+        assert_eq!(decoded, expected);
+        assert_eq!(expected.value(), FIXTURE_OPTION_NAIVEDATETIME_SOME);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_cluster_literal_fixture_option_naivedatetime_none() -> anyhow::Result<()> {
+        let key_bytes = fixture_key_bytes();
+        let decoded = Cluster::from_key_value(&key_bytes, FIXTURE_OPTION_NAIVEDATETIME_NONE)?;
+        let expected = fixture_cluster(None);
+
+        assert_eq!(decoded, expected);
+        assert_eq!(expected.value(), FIXTURE_OPTION_NAIVEDATETIME_NONE);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_cluster_public_serde_literal_fixture_option_naivedatetime_some() {
+        let decoded = deserialize_public_cluster(PUBLIC_SERDE_FIXTURE_OPTION_NAIVEDATETIME_SOME);
+        let expected = fixture_cluster(Some(fixture_naive_datetime()));
+
+        assert_eq!(decoded, expected);
+        assert_eq!(
+            serialize_public_cluster(&expected),
+            PUBLIC_SERDE_FIXTURE_OPTION_NAIVEDATETIME_SOME
+        );
+    }
+
+    #[test]
+    fn test_cluster_public_serde_literal_fixture_option_naivedatetime_none() {
+        let decoded = deserialize_public_cluster(PUBLIC_SERDE_FIXTURE_OPTION_NAIVEDATETIME_NONE);
+        let expected = fixture_cluster(None);
+
+        assert_eq!(decoded, expected);
+        assert_eq!(
+            serialize_public_cluster(&expected),
+            PUBLIC_SERDE_FIXTURE_OPTION_NAIVEDATETIME_NONE
+        );
     }
 }

@@ -5,6 +5,351 @@ file is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), and
 this project adheres to [Semantic
 Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Added `EventDb::remove_by_sensors` to delete events whose sensor exactly
+  matches one of the specified service FQDNs, with batched database writes.
+- Added persistent customer data deletion jobs through
+  `Store::customer_data_deletion_map`, with public job, service, result, and
+  status types and atomic APIs for adding and updating results reported by
+  REview, Sensor, and SemiSupervised services. REview results retain every
+  target host FQDN for reliable deletion retries, while Sensor and
+  SemiSupervised results retain exactly one host FQDN.
+- Added the `CoreComponent` record, the registry of the platform's own
+  host-fixed infrastructure — `review`, `aice-web-next`, `roxyd` and `bootroot`
+  — which is neither an agent nor an external service. A row is keyed by its
+  component and host, and records the installed version and commit that
+  together identify a build, the install and run lifecycle, and whether the
+  component is installer-managed and so excluded from update through the user
+  interface. Components are single-instance, so a second row for a component
+  and host that already has one is refused rather than given another number.
+  The table these records live in becomes reachable from `Store` in a later
+  release, along with the database format bump that creates its column family.
+- Added the `OperationAttempt` record and its supporting `OperationAction`,
+  `OperationPhase`, `OperationCleanupState`, `OperationOutcome`,
+  `OperationRetryPolicy`, and `OperationRetentionBound` types, describing a
+  package install, update, or removal on a host, or a pending host onboarding.
+  An attempt is identified by its idempotency key alone, which must not be
+  empty, so resuming an interrupted operation finalizes the same row instead of
+  adding another, and it records the host, the instance, the
+  resolved version and commit, the coarse phase, the retry budget, an absolute
+  expiry deadline, and any compensation still owed. `is_terminal` reports
+  whether the operation reached a result, and `is_fully_discharged` whether it
+  also owes no compensation. The table answers three further questions about
+  the attempts it holds: whether a host, target, and instance already has a
+  live attempt, which attempts still owe a compensation for one, and which
+  deadlines have passed. At most one live attempt is accepted per host, target,
+  and instance, so a double-click cannot drive one operation twice, while a
+  second instance of the same module may install alongside the first.
+  `sweep_expired` finalizes every attempt whose deadline has passed as failed,
+  which frees that slot but leaves any compensation still recorded as owed, and
+  `prune` bounds the table by age and by count per host, target, and instance,
+  keeping the most recent finished attempt of each along with every attempt
+  that is unfinished or still owes something. Both take the instant to measure
+  against and neither reads the clock, so a caller decides what "now" means.
+  The table these records live in becomes reachable
+  from `Store` in a later release, along with the database format bump that
+  creates its column family.
+
+### Changed
+
+- **BREAKING**: `Agent` and `ExternalService` now record the build installed on
+  the host, through four new public fields: `installed_version` and
+  `installed_commit` (the build's identity, both `None` until a host reports
+  one), `lifecycle`, and `bound_addrs` (the `(config key, host:port)` pairs the
+  instance actually bound, which stay empty for agents). `lifecycle` is a new
+  public `Lifecycle` type — `NotInstalled`, `Installing`, `Running`, `Stopped`,
+  `Failed`, `Removing`, `Unknown` — describing the install and run state a host
+  reports. It is distinct from `AgentStatus` / `ExternalServiceStatus`, which
+  still report the outcome of a configuration reload, and nothing converts
+  between the two. `Agent::new` and `ExternalService::new` keep their parameter
+  lists and start the new fields empty, at `NotInstalled`; install state is
+  assigned to a record afterwards. The stored records in the agents and external
+  services column families carry the four fields, so records written by earlier
+  versions no longer deserialize and are not migrated.
+- Classifier files are now created requesting owner-only permissions (`0o600`)
+  instead of the previous `0o666` reduced by the umask. The umask still applies,
+  so the resulting mode is not fixed, but no group or other bit is ever granted.
+  Under the common `umask 022`, for example, a stored classifier that used to be
+  `0o644` is now `0o600`, so anything reading these files as another account
+  stops working.
+- **BREAKING**: Bumped the database format to `0.47.0-alpha.1`. The migration
+  from `0.46.x` creates the customer data deletion jobs column family
+  explicitly; migrations from older supported formats preserve their legacy
+  column-family sets while applying intermediate migrations before creating the
+  new family.
+- **BREAKING**: Event timestamps now use `jiff::Timestamp` instead of chrono's
+  `DateTime<Utc>`. Existing databases need no migration, because timestamps are
+  still stored as `i64` epoch nanoseconds.
+  - Returned `Event` values expose `jiff::Timestamp` for all timestamp
+    fields: `time` on every event, plus the session start and
+    sampling-window times carried across the returned event graph
+    (`start_time`, `first_event_start_time`, `last_event_start_time`,
+    `sampling_window_start_time`, `sampling_window_end_time`).
+  - `EventMessage::time` and the `time` field on the `*Fields` structs that
+    callers construct are now `jiff::Timestamp`.
+  - `EventDb::remove_before` now takes a `jiff::Timestamp`.
+  - `NetworkThreatFields::start_time`, which callers set, changes from
+    `DateTime<Utc>` to `i64` epoch nanoseconds, aligning it with the `i64`
+    `start_time` every other event's producer fields already use; it was the
+    only caller-set `start_time` still typed as a timestamp.
+
+## [0.46.0] - 2026-07-23
+
+### Added
+
+- Triage rules can now match DHCP option codes and option payloads, and
+  DCE/RPC connection, context, and request attributes on blocklist events.
+
+### Changed
+
+- Event country filtering and `Event::count_country` aggregation now read
+  stored origin and response country codes on event records instead of
+  performing IP2Location lookups at query time. `EventFilter::countries`
+  matches when either stored endpoint code equals a requested code; pending
+  (`ZZ`) and invalid (`XX`) codes never match. Country-based search and
+  aggregation no longer require an IP2Location database at query time.
+- **BREAKING**: `Event::matches`, `Event::count_country`, and the other
+  `Event::count_*` query helpers no longer take an IP2Location locator
+  argument. IP2Location is now used only when events are stored or during
+  migration.
+- **BREAKING**: Renamed the public event counting helpers
+  `Event::count_src_ip_address` and `Event::count_dst_ip_address` to
+  `Event::count_originator_ip_address` and
+  `Event::count_responder_ip_address` to match the `orig_`/`resp_`
+  terminology used throughout session-oriented event APIs.
+- **BREAKING**: Bumped the database format to `0.46.0`, changed `Store::new` to
+  take an `Option<Arc<ip2location::DB>>` argument, and changed
+  `migrate_data_dir` to accept the same optional shared database handle. Event
+  stored schemas and runtime event types that track endpoints now include
+  country-code fields. Producer-facing event fields still do not require
+  country-code input; new writes resolve country codes when `Store::new`
+  receives `Some(Arc<ip2location::DB>)` and store `ZZ` placeholders when no
+  database is provided. The `0.45.x` to `0.46.0` migration rewrites existing
+  endpoint event records into the new stored schema, resolves country codes when
+  an IP2Location database is provided, preserves `ZZ` when no lookup is
+  performed, and uses `XX` when lookup fails or returns an invalid code. Event
+  `Display` output now includes country-code fields rendered as two-letter
+  strings.
+- **BREAKING**: Renamed multi-raw detection event time fields to clarify
+  semantics. `PortScan`, `MultiHostPortScan`, `ExternalDdos`,
+  `FtpBruteForce`, `LdapBruteForce`, `RdpBruteForce`, and
+  `RepeatedHttpSessions` now use `first_event_start_time` and
+  `last_event_start_time` instead of `start_time` and `end_time`.
+  `UnusualDestinationPattern` now uses
+  `sampling_window_start_time`/`sampling_window_end_time` to clarify that
+  those timestamps represent the anomaly sampling window. This changes the
+  Rust API and text output schema while preserving bincode compatibility.
+- **BREAKING**: Renamed `TrafficFilter::agent` to `host_fqdn` to clarify
+  that it stores a host fully-qualified domain name. Related
+  `Table<'_, TrafficFilter>` method parameters were also renamed from
+  `agent`/`agents` to `host_fqdn`/`host_fqdns`.
+- **BREAKING**: Renamed `ExternalService::node` to `node_id` to clarify
+  that it holds a node identifier. Related `Table::<ExternalService>::get`
+  and `Table::<ExternalService>::delete` parameters were also renamed
+  from `node` to `node_id`.
+- **BREAKING**: Renamed `Agent.node` to `node_id` to align with
+  `ExternalService.node_id`. Related `Table::<Agent>::get` and
+  `Table::<Agent>::delete` parameters were also renamed from `node`
+  to `node_id`.
+- **BREAKING**: Renamed `BlocklistKerberos` and `BlocklistKerberosFields`
+  fields `client_name` to `cname` and `service_name` to `sname` to match
+  Kerberos protocol terminology and align with the existing
+  `cname_type`/`sname_type` fields.
+- Separated producer-facing event field schemas from on-disk storage schemas.
+  The producer-facing `*Fields` types remain the public ingestion interface,
+  while new repository-local `*FieldsStored` types are the schema written to
+  disk and consumed on read. No external wire-format change is intended;
+  the split is scaffolding so the stored schemas can evolve independently
+  of the producer interface in future releases.
+- Aligned the `ExtraThreat`, `NetworkThreat`, and `WindowsThreat` event
+  families with the rest of the public event model: their producer-facing
+  schemas are now `*Fields` types, and their `Event` variants expose
+  runtime domain types.
+
+### Fixed
+
+- Fixed `review-migrate` producing no migration logs by initializing a
+  `tracing` subscriber with an `RUST_LOG`-configurable environment filter.
+- Domain and Hostname triage exclusions now apply to TLS events. Previously
+  these exclusion kinds were silently ignored for TLS records, so a Domain or
+  Hostname rule (e.g. `internal-cert.example.com`) had no effect on matching
+  TLS events. Both kinds now match against the TLS `server_name` (SNI):
+  Domain via subdomain-aware regex, Hostname via exact equality. URI
+  exclusions remain unmatched for TLS, since TLS records do not carry URIs.
+  NTLM remains intentionally out of scope: its `hostname` and `domainname`
+  fields are NetBIOS-style identifiers, not DNS names.
+- Fixed `Table<'_, ColumnStats>::load_rounds_by_cluster` pagination to seek
+  from the round key itself, which preserves correct forward and reverse
+  paging when an `after` or `before` boundary is supplied. Also, a zero
+  `limit` now returns an empty round list instead of reading and returning
+  one round as before.
+- `NetworkFilter` no longer drops IPv4 or IPv6 exclusions when a
+  `HostNetworkGroup` contains entries from both families. Mixed-family IP
+  address exclusions now match addresses from each family independently.
+
+## [0.45.0] - 2026-05-09
+
+### Added
+
+- Added `event_retention_period` and `set_event_retention_period`
+  methods to `Store` for managing event retention configuration.
+  `None` means unlimited retention (key absent); `Some(days)` sets
+  a retention period in days.
+- Added `EventDb::remove_before` method to delete all detected
+  events older than a given timestamp. This enables periodic
+  cleanup of expired events based on the retention policy.
+- Added retention option for cluster statistics (column statistics) data. New
+  `RetentionConfig` and `RetentionConfigUpdate` structs with
+  `init_retention_config`, `update_retention_config`, `retention_config`, and
+  `clear_retention_config` methods on `Store` for managing the retention
+  period. Added `purge_old_column_stats` method to `Store` that deletes column
+  statistics older than the configured retention period.
+- Added `Event::matches_exclusion` and `Event::score_against_policies` public
+  helpers so callers can perform inline triage exclusion matching and inline
+  policy scoring without going through the full `Event::matches` filter
+  pipeline. `score_against_policies` sums only `score_by_attr +
+  score_by_confidence` and assumes exclusions have already been applied by the
+  caller; policies whose `response` is empty contribute no score.
+
+### Changed
+
+- **BREAKING**: `Confidence::threat_category` is now
+  `Option<EventCategory>`. `None` matches only events whose
+  category is absent; `Some(category)` preserves existing
+  behavior. A migration converts persisted records so previous
+  category values become `Some(...)`.
+- **BREAKING**: `tables::node::Table::update` is now fully atomic
+  across the Node, Agent, and ExternalService tables. All Node,
+  Agent, and ExternalService write operations execute inside a
+  single optimistic transaction, so either the entire update
+  commits or no state change is observable. Callers that relied
+  on observing intermediate partial-update states are no longer
+  supported.
+- **BREAKING**: `tables::node::Table::update`'s return type changed
+  from `Result<()>` to `Result<Node>`. The returned `Node` is
+  assembled inside the successfully-committed transaction
+  attempt: `creation_time` comes from the existing record;
+  `name`, `name_draft`, `profile`, and `profile_draft` come from
+  the applied update; and `agents` / `external_services` come
+  from `new.agents` / `new.external_services` with each element's
+  `node` field normalized to the node's `id`. Callers no longer
+  need to issue a follow-up `get_by_id` read to observe the
+  post-update state.
+
+## [0.44.1] - 2026-04-16
+
+### Fixed
+
+- Fixed event migration failure introduced in 0.44.0 where
+  `migrate_http_threat_fields`, `migrate_blocklist_dcerpc_fields`, and
+  `migrate_blocklist_dhcp_fields` used `bincode::DefaultOptions` (varint
+  encoding) to deserialize records that were stored with `bincode::serialize`
+  (fixint encoding). The mismatch caused all records to fail deserialization
+  and be counted as skipped, resulting in 0 events migrated. The migration
+  functions now consistently use `bincode::serialize`/`bincode::deserialize`
+  to match the runtime event storage path.
+
+## [0.44.0] - 2026-04-10
+
+### Added
+
+- Added `init_backup_config`, `update_backup_config`, and `backup_config`
+  methods to `Store` for managing backup configuration in the config table.
+  This aligns with the `AccountPolicy` pattern where configuration is stored
+  as separate key-value pairs.
+- Added `BackupConfigUpdate` struct for partial backup configuration updates.
+- Re-exported `ThreatLevel` from `review-protocol` as
+  `review_database::ThreatLevel`.
+- Added `options: Vec<(u8, Vec<u8>)>` field to
+  `BlocklistDhcpFields` and `BlocklistDhcp` to support all
+  DHCP option values. Existing records are migrated with an
+  empty options list.
+
+### Changed
+
+- **BREAKING**: Updated `BlocklistDceRpcFields` to replace
+  `rtt`, `named_pipe`, `endpoint`, and `operation` fields
+  with `context: Vec<DceRpcContext>` and
+  `request: Vec<String>` to support multiple DCE/RPC
+  contexts and requests. Added `DceRpcContext` struct.
+  Includes migration from the old format.
+- **BREAKING**: Replaced hardcoded `NonZeroU8` threat level
+  constants with `review-protocol`'s `ThreatLevel` enum.
+  `EventFilter::levels` now uses `Vec<ThreatLevel>` instead of
+  `Vec<NonZeroU8>`. `Event::count_level` now uses
+  `HashMap<ThreatLevel, usize>` instead of `HashMap<NonZeroU8, usize>`.
+- **BREAKING**: Refactored `BackupConfig` to remove embedded policy defaults.
+- **BREAKING**: Removed `BackupConfig::default()` implementation. Applications
+  that relied on default values must now explicitly construct `BackupConfig`.
+- **BREAKING**: `backup_config` no longer returns a pre-defined default
+  configuration when none has been initialized. It now indicates that nothing
+  is stored.
+- **BREAKING**: Backup configuration is now stored in `config_map` using
+  separate keys (`backup_duration`, `backup_time`, `num_of_backups_to_keep`)
+  instead of a single serialized entry.
+- `EventIterator` now skips entries with unknown `EventKind` values
+  instead of returning an error. A warning is logged for each
+  skipped entry. This improves resilience when new event types
+  are stored by newer agents.
+- Added `#[repr(u32)]` and `#[non_exhaustive]` attributes to `EventKind` enum.
+  Explicit discriminant values are now assigned to each variant to ensure
+  stable serialization. The numeric values are guaranteed not to change in
+  future versions. New variants must be appended to the end of the enum and
+  assigned the next sequential value.
+- Unified `cluster_id` and `model_id` types to `u32` across the
+  codebase. This affects the following:
+  - `Cluster::id` in `tables/cluster.rs` changed from `i32` to `u32`
+  - `TimeSeries::cluster_id` in `tables/time_series.rs` changed from `i32` to
+    `u32`
+  - `UpdateClusterRequest::cluster_id` changed from `i32` to `u32`
+  - `ClusterDbSchema` fields `cluster_id` and `model_id` changed from `i32` to
+    `u32`
+  - Event structs (`NetworkThreat`, `HttpThreat`, `HttpThreatFields`,
+    `WindowsThreat`, `ExtraThreat`) now use `Option<u32>` instead of
+    `Option<usize>` for `cluster_id`
+  - Function signatures updated: `get_top_time_series_of_cluster`,
+    `add_time_series`, `update_cluster`, `count_rounds_by_cluster`,
+    `get_top_ip_addresses_of_cluster`, `insert` and `get_by_model` in
+    `csv_column_extra`
+  - `TopColumnsOfCluster::cluster_id` changed from `i32` to `u32`
+  - `ModelIndicator` serialization now uses `u32` for `model_id`
+  - Data migration is automatically performed for `HttpThreat` events with
+    `cluster_id` field serialization change from `Option<usize>` to
+    `Option<u32>`
+  - No migration is needed for `Cluster` and `TimeSeries` tables because the
+    big-endian byte representation is identical between `i32` and `u32` for
+    non-negative values. Other event types (`NetworkThreat`, `WindowsThreat`,
+    `ExtraThreat`) are not generated on production servers and do not require
+    migration.
+- Changed `Store::network_tag_set` signature to require a `customer_id: u32`
+  parameter and now returns `CustomerTagSet` instead of `TagSet<NetworkTagId>`.
+  Existing network tags are automatically migrated to be associated with the
+  smallest customer ID found in the database.
+- Removed `customer_ids` field from `Network` struct. Networks are now globally
+  shared and managed by administrators, rather than being tied to specific
+  customers. The database key for networks is now based solely on the name
+  (enforcing global uniqueness) instead of name + id. The `id` is now stored in
+  the value. A migration automatically deduplicates networks by name, keeping
+  only the entry with the smallest id.
+- Updated `Network::new` to no longer accept a `customer_ids` parameter.
+- Updated `NetworkUpdate::new` to no longer accept a `customer_ids` parameter.
+
+### Fixed
+
+- Fixed `CsvColumnExtra::get_by_model` to use big-endian byte encoding for the
+  `model_id` key lookup. Previously, `to_byte_slice` produced native-endian raw
+  bytes, which mismatched the table's big-endian key encoding on little-endian
+  architectures.
+
+### Removed
+
+- Removed `Store::backup_config_map()` method. Use `init_backup_config`,
+  `update_backup_config`, and `backup_config` methods instead.
+- Removed `IndexedTable<Network>::remove_customer` method.
+
 ## [0.43.0] - 2025-12-18
 
 ### Added
@@ -684,8 +1029,8 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   generating `rustls::ClientConfig`.
 - Changed the display message format of `EventMessage` and `Event` to RFC 5424.
   Modified messages will be sent to syslog.
-- Used `FromPrimitive` and `ToPrimitive` for converting `EventCategory` instead of
-  manually implementing `TryFrom`.
+- Used `FromPrimitive` and `ToPrimitive` for converting `EventCategory` instead
+  of manually implementing `TryFrom`.
 - `EventCategory` definition is moved to `review-protocol`.
 
 ### Removed
@@ -1279,37 +1624,42 @@ AsRef<[u8]>`). This change accommodates scenarios where the information stored
 - Modified `FtpBruteForce` by adding an `is_internal` field which is a boolean
   indicating whether it is internal or not.
 
-[0.43.0]: https://github.com/petabi/review-database/compare/0.42.0...0.43.0
-[0.42.0]: https://github.com/petabi/review-database/compare/0.41.0...0.42.0
-[0.41.0]: https://github.com/petabi/review-database/compare/0.40.0...0.41.0
-[0.40.0]: https://github.com/petabi/review-database/compare/0.39.0...0.40.0
-[0.39.0]: https://github.com/petabi/review-database/compare/0.38.0...0.39.0
-[0.38.0]: https://github.com/petabi/review-database/compare/0.37.0...0.38.0
-[0.37.0]: https://github.com/petabi/review-database/compare/0.36.0...0.37.0
-[0.36.0]: https://github.com/petabi/review-database/compare/0.35.0...0.36.0
-[0.35.0]: https://github.com/petabi/review-database/compare/0.34.0...0.35.0
-[0.34.0]: https://github.com/petabi/review-database/compare/0.33.1...0.34.0
-[0.33.1]: https://github.com/petabi/review-database/compare/0.33.0...0.33.1
-[0.33.0]: https://github.com/petabi/review-database/compare/0.32.0...0.33.0
-[0.32.0]: https://github.com/petabi/review-database/compare/0.31.0...0.32.0
-[0.31.0]: https://github.com/petabi/review-database/compare/0.30.0...0.31.0
-[0.30.0]: https://github.com/petabi/review-database/compare/0.29.1...0.30.0
-[0.29.1]: https://github.com/petabi/review-database/compare/0.29.0...0.29.1
-[0.29.0]: https://github.com/petabi/review-database/compare/0.28.0...0.29.0
-[0.28.0]: https://github.com/petabi/review-database/compare/0.27.1...0.28.0
-[0.27.1]: https://github.com/petabi/review-database/compare/0.27.0...0.27.1
-[0.27.0]: https://github.com/petabi/review-database/compare/0.26.0...0.27.0
-[0.26.0]: https://github.com/petabi/review-database/compare/0.25.0...0.26.0
-[0.25.0]: https://github.com/petabi/review-database/compare/0.24.0...0.25.0
-[0.24.0]: https://github.com/petabi/review-database/compare/0.23.0...0.24.0
-[0.23.0]: https://github.com/petabi/review-database/compare/0.22.1...0.23.0
-[0.22.1]: https://github.com/petabi/review-database/compare/0.22.0...0.22.1
-[0.22.0]: https://github.com/petabi/review-database/compare/0.21.0...0.22.0
-[0.21.0]: https://github.com/petabi/review-database/compare/0.20.0...0.21.0
-[0.20.0]: https://github.com/petabi/review-database/compare/0.19.0...0.20.0
-[0.19.0]: https://github.com/petabi/review-database/compare/0.18.0...0.19.0
-[0.18.0]: https://github.com/petabi/review-database/compare/0.17.1...0.18.0
-[0.17.1]: https://github.com/petabi/review-database/compare/0.17.0...0.17.1
-[0.17.0]: https://github.com/petabi/review-database/compare/0.16.0...0.17.0
-[0.16.0]: https://github.com/petabi/review-database/compare/0.15.2...0.16.0
-[0.15.2]: https://github.com/petabi/review-database/compare/0.15.1...0.15.2
+[Unreleased]: https://github.com/aicers/review-database/compare/0.46.0...main
+[0.46.0]: https://github.com/aicers/review-database/compare/0.45.0...0.46.0
+[0.45.0]: https://github.com/aicers/review-database/compare/0.44.1...0.45.0
+[0.44.1]: https://github.com/aicers/review-database/compare/0.44.0...0.44.1
+[0.44.0]: https://github.com/aicers/review-database/compare/0.43.0...0.44.0
+[0.43.0]: https://github.com/aicers/review-database/compare/0.42.0...0.43.0
+[0.42.0]: https://github.com/aicers/review-database/compare/0.41.0...0.42.0
+[0.41.0]: https://github.com/aicers/review-database/compare/0.40.0...0.41.0
+[0.40.0]: https://github.com/aicers/review-database/compare/0.39.0...0.40.0
+[0.39.0]: https://github.com/aicers/review-database/compare/0.38.0...0.39.0
+[0.38.0]: https://github.com/aicers/review-database/compare/0.37.0...0.38.0
+[0.37.0]: https://github.com/aicers/review-database/compare/0.36.0...0.37.0
+[0.36.0]: https://github.com/aicers/review-database/compare/0.35.0...0.36.0
+[0.35.0]: https://github.com/aicers/review-database/compare/0.34.0...0.35.0
+[0.34.0]: https://github.com/aicers/review-database/compare/0.33.1...0.34.0
+[0.33.1]: https://github.com/aicers/review-database/compare/0.33.0...0.33.1
+[0.33.0]: https://github.com/aicers/review-database/compare/0.32.0...0.33.0
+[0.32.0]: https://github.com/aicers/review-database/compare/0.31.0...0.32.0
+[0.31.0]: https://github.com/aicers/review-database/compare/0.30.0...0.31.0
+[0.30.0]: https://github.com/aicers/review-database/compare/0.29.1...0.30.0
+[0.29.1]: https://github.com/aicers/review-database/compare/0.29.0...0.29.1
+[0.29.0]: https://github.com/aicers/review-database/compare/0.28.0...0.29.0
+[0.28.0]: https://github.com/aicers/review-database/compare/0.27.1...0.28.0
+[0.27.1]: https://github.com/aicers/review-database/compare/0.27.0...0.27.1
+[0.27.0]: https://github.com/aicers/review-database/compare/0.26.0...0.27.0
+[0.26.0]: https://github.com/aicers/review-database/compare/0.25.0...0.26.0
+[0.25.0]: https://github.com/aicers/review-database/compare/0.24.0...0.25.0
+[0.24.0]: https://github.com/aicers/review-database/compare/0.23.0...0.24.0
+[0.23.0]: https://github.com/aicers/review-database/compare/0.22.1...0.23.0
+[0.22.1]: https://github.com/aicers/review-database/compare/0.22.0...0.22.1
+[0.22.0]: https://github.com/aicers/review-database/compare/0.21.0...0.22.0
+[0.21.0]: https://github.com/aicers/review-database/compare/0.20.0...0.21.0
+[0.20.0]: https://github.com/aicers/review-database/compare/0.19.0...0.20.0
+[0.19.0]: https://github.com/aicers/review-database/compare/0.18.0...0.19.0
+[0.18.0]: https://github.com/aicers/review-database/compare/0.17.1...0.18.0
+[0.17.1]: https://github.com/aicers/review-database/compare/0.17.0...0.17.1
+[0.17.0]: https://github.com/aicers/review-database/compare/0.16.0...0.17.0
+[0.16.0]: https://github.com/aicers/review-database/compare/0.15.2...0.16.0
+[0.15.2]: https://github.com/aicers/review-database/compare/0.15.1...0.15.2

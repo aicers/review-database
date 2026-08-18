@@ -161,7 +161,7 @@ mod tests {
         let permit = acquire_db_permit();
         let db_dir = tempfile::tempdir().unwrap();
         let backup_dir = tempfile::tempdir().unwrap();
-        let store = Arc::new(Store::new(db_dir.path(), backup_dir.path()).unwrap());
+        let store = Arc::new(Store::new(db_dir.path(), backup_dir.path(), None).unwrap());
         let table = store.status_map();
 
         let testers = &["c", "a", "b", "d"];

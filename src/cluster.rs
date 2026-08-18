@@ -6,7 +6,7 @@ use crate::types::Cluster;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct UpdateClusterRequest {
-    pub cluster_id: i32,
+    pub cluster_id: u32,
     pub detector_id: i32,
     pub signature: String,
     pub score: Option<f64>,
@@ -18,7 +18,7 @@ pub struct UpdateClusterRequest {
 
 struct ClusterDbSchema {
     id: i32,
-    cluster_id: i32,
+    cluster_id: u32,
     category_id: i32,
     detector_id: i32,
     event_ids: Vec<Option<i64>>,
@@ -30,7 +30,7 @@ struct ClusterDbSchema {
     size: i64,
     score: Option<f64>,
     last_modification_time: Option<NaiveDateTime>,
-    model_id: i32,
+    model_id: u32,
 }
 
 impl From<ClusterDbSchema> for Cluster {
@@ -42,7 +42,7 @@ impl From<ClusterDbSchema> for Cluster {
             .map(|labels| labels.into_iter().flatten().collect());
         Cluster {
             id: c.id,
-            cluster_id: c.cluster_id.try_into().unwrap_or(0),
+            cluster_id: c.cluster_id,
             category_id: c.category_id,
             detector_id: c.detector_id,
             event_ids,
@@ -54,7 +54,7 @@ impl From<ClusterDbSchema> for Cluster {
             size: c.size,
             score: c.score,
             last_modification_time: c.last_modification_time,
-            model_id: c.model_id.try_into().unwrap_or(0),
+            model_id: c.model_id,
         }
     }
 }

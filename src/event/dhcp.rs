@@ -1,14 +1,17 @@
-use std::{fmt, net::IpAddr, num::NonZeroU8};
+use std::{fmt, net::IpAddr};
 
 use attrievent::attribute::{DhcpAttr, RawEventAttrKind};
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
+use super::timestamp;
 use super::{
-    EventCategory, LearningMethod, MEDIUM, TriageScore,
+    EventCategory, LearningMethod, ThreatLevel, TriageScore,
     common::{AttrValue, Match},
 };
-use crate::event::common::{to_hardware_address, triage_scores_to_string, vector_to_string};
+use crate::event::common::{
+    dhcp_options_to_string, to_hardware_address, triage_scores_to_string, vector_to_string,
+};
 
 macro_rules! find_dhcp_attr_by_kind {
     ($event: expr, $raw_event_attr: expr) => {{
@@ -50,6 +53,20 @@ macro_rules! find_dhcp_attr_by_kind {
                 DhcpAttr::ClassId => AttrValue::VecRaw(&$event.class_id),
                 DhcpAttr::ClientIdType => AttrValue::UInt($event.client_id_type.into()),
                 DhcpAttr::ClientId => AttrValue::VecRaw(&$event.client_id),
+                DhcpAttr::OptionCode => AttrValue::VecUInt(std::borrow::Cow::Owned(
+                    $event
+                        .options
+                        .iter()
+                        .map(|(code, _)| u64::from(*code))
+                        .collect(),
+                )),
+                DhcpAttr::OptionData => AttrValue::VecRawList(std::borrow::Cow::Owned(
+                    $event
+                        .options
+                        .iter()
+                        .map(|(_, data)| data.as_slice())
+                        .collect(),
+                )),
             };
             Some(target_value)
         } else {
@@ -58,10 +75,8 @@ macro_rules! find_dhcp_attr_by_kind {
     }};
 }
 
-pub type BlocklistDhcpFields = BlocklistDhcpFieldsV0_42;
-
 #[derive(Serialize, Deserialize)]
-pub struct BlocklistDhcpFieldsV0_42 {
+pub struct BlocklistDhcpFields {
     pub sensor: String,
     pub orig_addr: IpAddr,
     pub orig_port: u16,
@@ -93,8 +108,92 @@ pub struct BlocklistDhcpFieldsV0_42 {
     pub class_id: Vec<u8>,
     pub client_id_type: u8,
     pub client_id: Vec<u8>,
+    pub options: Vec<(u8, Vec<u8>)>,
     pub confidence: f32,
     pub category: Option<EventCategory>,
+}
+
+pub(crate) type BlocklistDhcpFieldsStored = BlocklistDhcpFieldsStoredV0_46;
+
+#[derive(Deserialize, Serialize)]
+pub(crate) struct BlocklistDhcpFieldsStoredV0_46 {
+    pub sensor: String,
+    pub orig_addr: IpAddr,
+    pub orig_port: u16,
+    pub orig_country_code: [u8; 2],
+    pub resp_addr: IpAddr,
+    pub resp_port: u16,
+    pub resp_country_code: [u8; 2],
+    pub proto: u8,
+    pub start_time: i64,
+    pub duration: i64,
+    pub orig_pkts: u64,
+    pub resp_pkts: u64,
+    pub orig_l2_bytes: u64,
+    pub resp_l2_bytes: u64,
+    pub msg_type: u8,
+    pub ciaddr: IpAddr,
+    pub yiaddr: IpAddr,
+    pub siaddr: IpAddr,
+    pub giaddr: IpAddr,
+    pub subnet_mask: IpAddr,
+    pub router: Vec<IpAddr>,
+    pub domain_name_server: Vec<IpAddr>,
+    pub req_ip_addr: IpAddr,
+    pub lease_time: u32,
+    pub server_id: IpAddr,
+    pub param_req_list: Vec<u8>,
+    pub message: String,
+    pub renewal_time: u32,
+    pub rebinding_time: u32,
+    pub class_id: Vec<u8>,
+    pub client_id_type: u8,
+    pub client_id: Vec<u8>,
+    pub options: Vec<(u8, Vec<u8>)>,
+    pub confidence: f32,
+    pub category: Option<EventCategory>,
+}
+
+impl From<BlocklistDhcpFields> for BlocklistDhcpFieldsStored {
+    fn from(value: BlocklistDhcpFields) -> Self {
+        Self {
+            sensor: value.sensor,
+            orig_addr: value.orig_addr,
+            orig_port: value.orig_port,
+            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
+            resp_addr: value.resp_addr,
+            resp_port: value.resp_port,
+            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
+            proto: value.proto,
+            start_time: value.start_time,
+            duration: value.duration,
+            orig_pkts: value.orig_pkts,
+            resp_pkts: value.resp_pkts,
+            orig_l2_bytes: value.orig_l2_bytes,
+            resp_l2_bytes: value.resp_l2_bytes,
+            msg_type: value.msg_type,
+            ciaddr: value.ciaddr,
+            yiaddr: value.yiaddr,
+            siaddr: value.siaddr,
+            giaddr: value.giaddr,
+            subnet_mask: value.subnet_mask,
+            router: value.router,
+            domain_name_server: value.domain_name_server,
+            req_ip_addr: value.req_ip_addr,
+            lease_time: value.lease_time,
+            server_id: value.server_id,
+            param_req_list: value.param_req_list,
+            message: value.message,
+            renewal_time: value.renewal_time,
+            rebinding_time: value.rebinding_time,
+            class_id: value.class_id,
+            client_id_type: value.client_id_type,
+            client_id: value.client_id,
+            options: value.options,
+            confidence: value.confidence,
+            category: value.category,
+        }
+    }
 }
 
 // TODO: DHCP client identifier type.
@@ -105,9 +204,9 @@ pub struct BlocklistDhcpFieldsV0_42 {
 impl BlocklistDhcpFields {
     #[must_use]
     pub fn syslog_rfc5424(&self) -> String {
-        let start_time_dt = DateTime::from_timestamp_nanos(self.start_time);
+        let start_time = timestamp::format_i64_nanos_rfc3339(self.start_time).unwrap_or_default();
         format!(
-            "category={:?} sensor={:?} orig_addr={:?} orig_port={:?} resp_addr={:?} resp_port={:?} proto={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} msg_type={:?} ciaddr={:?} yiaddr={:?} siaddr={:?} giaddr={:?} subnet_mask={:?} router={:?} domain_name_server={:?} req_ip_addr={:?} lease_time={:?} server_id={:?} param_req_list={:?} message={:?} renewal_time={:?} rebinding_time={:?} class_id={:?} client_id_type={:?} client_id={:?} confidence={:?}",
+            "category={:?} sensor={:?} orig_addr={:?} orig_port={:?} resp_addr={:?} resp_port={:?} proto={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} msg_type={:?} ciaddr={:?} yiaddr={:?} siaddr={:?} giaddr={:?} subnet_mask={:?} router={:?} domain_name_server={:?} req_ip_addr={:?} lease_time={:?} server_id={:?} param_req_list={:?} message={:?} renewal_time={:?} rebinding_time={:?} class_id={:?} client_id_type={:?} client_id={:?} options={:?} confidence={:?}",
             self.category.as_ref().map_or_else(
                 || "Unspecified".to_string(),
                 std::string::ToString::to_string
@@ -118,7 +217,7 @@ impl BlocklistDhcpFields {
             self.resp_addr.to_string(),
             self.resp_port.to_string(),
             self.proto.to_string(),
-            start_time_dt.to_rfc3339(),
+            start_time,
             self.duration.to_string(),
             self.orig_pkts.to_string(),
             self.resp_pkts.to_string(),
@@ -144,6 +243,7 @@ impl BlocklistDhcpFields {
                 .to_string(),
             self.client_id_type.to_string(),
             to_hardware_address(&self.client_id),
+            dhcp_options_to_string(&self.options),
             self.confidence.to_string(),
         )
     }
@@ -151,14 +251,16 @@ impl BlocklistDhcpFields {
 
 #[allow(clippy::module_name_repetitions)]
 pub struct BlocklistDhcp {
-    pub time: DateTime<Utc>,
+    pub time: Timestamp,
     pub sensor: String,
     pub orig_addr: IpAddr,
     pub orig_port: u16,
+    pub orig_country_code: [u8; 2],
     pub resp_addr: IpAddr,
     pub resp_port: u16,
+    pub resp_country_code: [u8; 2],
     pub proto: u8,
-    pub start_time: DateTime<Utc>,
+    pub start_time: Timestamp,
     pub duration: i64,
     pub orig_pkts: u64,
     pub resp_pkts: u64,
@@ -182,6 +284,7 @@ pub struct BlocklistDhcp {
     pub class_id: Vec<u8>,
     pub client_id_type: u8,
     pub client_id: Vec<u8>,
+    pub options: Vec<(u8, Vec<u8>)>,
     pub confidence: f32,
     pub category: Option<EventCategory>,
     pub triage_scores: Option<Vec<TriageScore>>,
@@ -190,14 +293,16 @@ impl fmt::Display for BlocklistDhcp {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "sensor={:?} orig_addr={:?} orig_port={:?} resp_addr={:?} resp_port={:?} proto={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} msg_type={:?} ciaddr={:?} yiaddr={:?} siaddr={:?} giaddr={:?} subnet_mask={:?} router={:?} domain_name_server={:?} req_ip_addr={:?} lease_time={:?} server_id={:?} param_req_list={:?} message={:?} renewal_time={:?} rebinding_time={:?} class_id={:?} client_id_type={:?} client_id={:?} triage_scores={:?}",
+            "sensor={:?} orig_addr={:?} orig_port={:?} orig_country_code={:?} resp_addr={:?} resp_port={:?} resp_country_code={:?} proto={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} msg_type={:?} ciaddr={:?} yiaddr={:?} siaddr={:?} giaddr={:?} subnet_mask={:?} router={:?} domain_name_server={:?} req_ip_addr={:?} lease_time={:?} server_id={:?} param_req_list={:?} message={:?} renewal_time={:?} rebinding_time={:?} class_id={:?} client_id_type={:?} client_id={:?} options={:?} triage_scores={:?}",
             self.sensor,
             self.orig_addr.to_string(),
             self.orig_port.to_string(),
+            crate::util::country_code_as_str(&self.orig_country_code),
             self.resp_addr.to_string(),
             self.resp_port.to_string(),
+            crate::util::country_code_as_str(&self.resp_country_code),
             self.proto.to_string(),
-            self.start_time.to_rfc3339(),
+            timestamp::format_rfc3339(self.start_time).unwrap_or_default(),
             self.duration.to_string(),
             self.orig_pkts.to_string(),
             self.resp_pkts.to_string(),
@@ -223,22 +328,26 @@ impl fmt::Display for BlocklistDhcp {
                 .to_string(),
             self.client_id_type.to_string(),
             to_hardware_address(&self.client_id),
+            dhcp_options_to_string(&self.options),
             triage_scores_to_string(self.triage_scores.as_ref())
         )
     }
 }
 
 impl BlocklistDhcp {
-    pub(super) fn new(time: DateTime<Utc>, fields: BlocklistDhcpFields) -> Self {
+    pub(super) fn new(time: Timestamp, fields: BlocklistDhcpFieldsStored) -> Self {
         Self {
             time,
             sensor: fields.sensor,
             orig_addr: fields.orig_addr,
             orig_port: fields.orig_port,
+            orig_country_code: fields.orig_country_code,
             resp_addr: fields.resp_addr,
             resp_port: fields.resp_port,
+            resp_country_code: fields.resp_country_code,
             proto: fields.proto,
-            start_time: DateTime::from_timestamp_nanos(fields.start_time),
+            start_time: timestamp::from_i64_nanos(fields.start_time)
+                .expect(timestamp::I64_NANOS_JIFF_INVARIANT),
             duration: fields.duration,
             orig_pkts: fields.orig_pkts,
             resp_pkts: fields.resp_pkts,
@@ -262,6 +371,7 @@ impl BlocklistDhcp {
             class_id: fields.class_id,
             client_id_type: fields.client_id_type,
             client_id: fields.client_id,
+            options: fields.options,
             confidence: fields.confidence,
             category: fields.category,
             triage_scores: None,
@@ -269,21 +379,36 @@ impl BlocklistDhcp {
     }
 }
 
+impl BlocklistDhcp {
+    #[must_use]
+    pub fn threat_level() -> ThreatLevel {
+        ThreatLevel::Medium
+    }
+}
+
 impl Match for BlocklistDhcp {
-    fn src_addrs(&self) -> &[IpAddr] {
+    fn orig_addrs(&self) -> &[IpAddr] {
         std::slice::from_ref(&self.orig_addr)
     }
 
-    fn src_port(&self) -> u16 {
+    fn orig_port(&self) -> u16 {
         self.orig_port
     }
 
-    fn dst_addrs(&self) -> &[IpAddr] {
+    fn orig_country_codes(&self) -> &[[u8; 2]] {
+        std::slice::from_ref(&self.orig_country_code)
+    }
+
+    fn resp_addrs(&self) -> &[IpAddr] {
         std::slice::from_ref(&self.resp_addr)
     }
 
-    fn dst_port(&self) -> u16 {
+    fn resp_port(&self) -> u16 {
         self.resp_port
+    }
+
+    fn resp_country_codes(&self) -> &[[u8; 2]] {
+        std::slice::from_ref(&self.resp_country_code)
     }
 
     fn proto(&self) -> u8 {
@@ -294,8 +419,8 @@ impl Match for BlocklistDhcp {
         self.category
     }
 
-    fn level(&self) -> NonZeroU8 {
-        MEDIUM
+    fn level(&self) -> ThreatLevel {
+        Self::threat_level()
     }
 
     fn kind(&self) -> &'static str {
@@ -316,5 +441,128 @@ impl Match for BlocklistDhcp {
 
     fn find_attr_by_kind(&self, raw_event_attr: RawEventAttrKind) -> Option<AttrValue<'_>> {
         find_dhcp_attr_by_kind!(self, raw_event_attr)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        cmp::Ordering,
+        net::{IpAddr, Ipv4Addr},
+    };
+
+    use attrievent::attribute::{DhcpAttr, RawEventAttrKind, RawEventKind};
+    use chrono::{TimeZone, Utc};
+
+    use super::{BlocklistDhcp, BlocklistDhcpFieldsStored};
+    use crate::event::timestamp;
+    use crate::{
+        AttrCmpKind, PacketAttr, ValueKind,
+        event::common::{AttrValue, Match},
+    };
+
+    fn dhcp_fields_with_options() -> BlocklistDhcpFieldsStored {
+        BlocklistDhcpFieldsStored {
+            sensor: "sensor".to_string(),
+            orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
+            orig_port: 68,
+            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
+            resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
+            resp_port: 67,
+            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
+            proto: 17,
+            start_time: Utc
+                .with_ymd_and_hms(1970, 1, 1, 0, 0, 0)
+                .unwrap()
+                .timestamp_nanos_opt()
+                .unwrap(),
+            duration: 0,
+            orig_pkts: 0,
+            resp_pkts: 0,
+            orig_l2_bytes: 0,
+            resp_l2_bytes: 0,
+            msg_type: 1,
+            ciaddr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 5)),
+            yiaddr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 6)),
+            siaddr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 7)),
+            giaddr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 8)),
+            subnet_mask: IpAddr::V4(Ipv4Addr::new(255, 255, 255, 0)),
+            router: vec![IpAddr::V4(Ipv4Addr::LOCALHOST)],
+            domain_name_server: vec![IpAddr::V4(Ipv4Addr::LOCALHOST)],
+            req_ip_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 100)),
+            lease_time: 100,
+            server_id: IpAddr::V4(Ipv4Addr::LOCALHOST),
+            param_req_list: vec![1, 2, 3],
+            message: "message".to_string(),
+            renewal_time: 100,
+            rebinding_time: 200,
+            class_id: "MSFT 5.0".as_bytes().to_vec(),
+            client_id_type: 1,
+            client_id: vec![7, 8, 9],
+            options: vec![(53, vec![1]), (61, vec![0x01, 0x02, 0x03])],
+            confidence: 1.0,
+            category: None,
+        }
+    }
+
+    #[test]
+    fn dhcp_option_code_attr_mapping() {
+        let time = timestamp::from_chrono(Utc.with_ymd_and_hms(1970, 1, 1, 0, 0, 0).unwrap())
+            .expect(timestamp::I64_NANOS_JIFF_INVARIANT);
+        let event = BlocklistDhcp::new(time, dhcp_fields_with_options());
+        let attr = RawEventAttrKind::Dhcp(DhcpAttr::OptionCode);
+
+        let Some(AttrValue::VecUInt(codes)) = event.find_attr_by_kind(attr) else {
+            panic!("Expected OptionCode as VecUInt");
+        };
+        assert_eq!(codes.as_ref(), &[53_u64, 61_u64]);
+    }
+
+    #[test]
+    fn dhcp_option_data_attr_mapping() {
+        let time = timestamp::from_chrono(Utc.with_ymd_and_hms(1970, 1, 1, 0, 0, 0).unwrap())
+            .expect(timestamp::I64_NANOS_JIFF_INVARIANT);
+        let event = BlocklistDhcp::new(time, dhcp_fields_with_options());
+        let attr = RawEventAttrKind::Dhcp(DhcpAttr::OptionData);
+
+        let Some(AttrValue::VecRawList(data)) = event.find_attr_by_kind(attr) else {
+            panic!("Expected OptionData as VecRawList");
+        };
+        assert_eq!(data.as_ref(), &[&[1_u8][..], &[0x01, 0x02, 0x03][..]]);
+    }
+
+    #[test]
+    fn dhcp_option_data_score_by_attr() {
+        let time = timestamp::from_chrono(Utc.with_ymd_and_hms(1970, 1, 1, 0, 0, 0).unwrap())
+            .expect(timestamp::I64_NANOS_JIFF_INVARIANT);
+        let event = BlocklistDhcp::new(time, dhcp_fields_with_options());
+
+        let match_attr = vec![PacketAttr {
+            raw_event_kind: RawEventKind::Dhcp,
+            attr_name: DhcpAttr::OptionData.to_string(),
+            value_kind: ValueKind::Vector,
+            cmp_kind: AttrCmpKind::Contain,
+            first_value: vec![0x02, 0x03],
+            second_value: None,
+            weight: Some(1.0),
+        }];
+        assert_eq!(
+            event.score_by_attr(&match_attr).partial_cmp(&1.0),
+            Some(Ordering::Equal)
+        );
+
+        let no_match_attr = vec![PacketAttr {
+            raw_event_kind: RawEventKind::Dhcp,
+            attr_name: DhcpAttr::OptionData.to_string(),
+            value_kind: ValueKind::Vector,
+            cmp_kind: AttrCmpKind::Contain,
+            first_value: vec![0xff],
+            second_value: None,
+            weight: Some(1.0),
+        }];
+        assert_eq!(
+            event.score_by_attr(&no_match_attr).partial_cmp(&0.0),
+            Some(Ordering::Equal)
+        );
     }
 }

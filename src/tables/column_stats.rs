@@ -17,7 +17,7 @@ const DEFAULT_PORTION_OF_TOP_N: f64 = 1.0;
 
 #[derive(Deserialize)]
 pub struct TopColumnsOfCluster {
-    pub cluster_id: i32,
+    pub cluster_id: u32,
     pub columns: Vec<TopElementCountsByColumn>,
 }
 
@@ -74,6 +74,55 @@ impl<'d> Table<'d, ColumnStats> {
             self.map.delete(&to_delete)?;
         }
 
+        Ok(())
+    }
+
+    /// Removes all column statistics with `batch_ts` strictly before the
+    /// given `cutoff` timestamp.
+    ///
+    /// Deletions are committed in bounded batches so that memory usage and
+    /// per-transaction size stay constant regardless of how many expired
+    /// entries exist.
+    ///
+    /// Returns the number of entries removed.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if iteration fails to decode an entry or if the
+    /// database operation fails.
+    pub fn remove_older_than(&self, cutoff: NaiveDateTime) -> Result<usize> {
+        const BATCH_SIZE: usize = 1024;
+
+        let cutoff_ts = from_naive_utc(cutoff);
+        let mut total = 0;
+        let mut batch: Vec<Vec<u8>> = Vec::with_capacity(BATCH_SIZE);
+
+        for result in self.iter(Direction::Forward, None) {
+            let stats = result?;
+            if stats.batch_ts < cutoff_ts {
+                batch.push(stats.unique_key());
+                if batch.len() >= BATCH_SIZE {
+                    self.delete_keys_in_transaction(&batch)?;
+                    total += batch.len();
+                    batch.clear();
+                }
+            }
+        }
+
+        if !batch.is_empty() {
+            self.delete_keys_in_transaction(&batch)?;
+            total += batch.len();
+        }
+
+        Ok(total)
+    }
+
+    fn delete_keys_in_transaction(&self, keys: &[Vec<u8>]) -> Result<()> {
+        let txn = self.transaction();
+        for key in keys {
+            self.delete_with_transaction(key, &txn)?;
+        }
+        txn.commit()?;
         Ok(())
     }
 
@@ -242,8 +291,8 @@ impl<'d> Table<'d, ColumnStats> {
             );
 
             for counts in clusters.values_mut() {
-                counts.sort_unstable_by(|a, b| b.0.cmp(&a.0));
-                counts.sort_unstable_by(|a, b| b.1.cmp(&a.1));
+                counts.sort_unstable_by_key(|b| std::cmp::Reverse(b.0));
+                counts.sort_unstable_by_key(|b| std::cmp::Reverse(b.1));
             }
 
             let mut clusters: Vec<_> = clusters.into_iter().map(|(k, val)| (k, val[0])).collect();
@@ -359,7 +408,7 @@ impl<'d> Table<'d, ColumnStats> {
     pub fn get_top_ip_addresses_of_cluster(
         &self,
         model_id: u32,
-        cluster_ids: &[i32],
+        cluster_ids: &[u32],
         size: usize,
     ) -> Result<Vec<TopElementCountsByColumn>> {
         use std::cmp::Reverse;
@@ -367,13 +416,13 @@ impl<'d> Table<'d, ColumnStats> {
         if cluster_ids.is_empty() {
             return Ok(Vec::new());
         }
-        let mut prefix = Vec::with_capacity(size_of::<i32>() + size_of::<u32>());
+        let mut prefix = Vec::with_capacity(size_of::<u32>() + size_of::<u32>());
         prefix.extend(model_id.to_be_bytes());
         prefix.extend(u32::to_be_bytes(0)); // placeholder for cluster_id
 
         let mut top_n: HashMap<u32, HashMap<String, i64>> = HashMap::new();
         for cluster_id in cluster_ids {
-            prefix[size_of::<i32>()..].copy_from_slice(&cluster_id.to_be_bytes());
+            prefix[size_of::<u32>()..].copy_from_slice(&cluster_id.to_be_bytes());
             let iter = self.prefix_iter(Direction::Forward, None, &prefix);
             for result in iter {
                 let column_stats = result?;
@@ -494,7 +543,7 @@ impl<'d> Table<'d, ColumnStats> {
     /// # Errors
     ///
     /// Returns an error if the database operation fails.
-    pub fn count_rounds_by_cluster(&self, model_id: i32, cluster_id: u32) -> Result<i64> {
+    pub fn count_rounds_by_cluster(&self, model_id: u32, cluster_id: u32) -> Result<i64> {
         let mut prefix = model_id.to_be_bytes().to_vec();
         prefix.extend(cluster_id.to_be_bytes());
         let iter = self.prefix_iter(Direction::Forward, None, &prefix);
@@ -509,7 +558,22 @@ impl<'d> Table<'d, ColumnStats> {
         .map_err(|_| anyhow::anyhow!("Failed to convert count to i64"))
     }
 
-    /// Returns the rounds in the given cluster.
+    /// Returns a page of distinct round timestamps for the given cluster.
+    ///
+    /// Each round corresponds to a unique `batch_ts`. Multiple column-statistics
+    /// rows that share the same `batch_ts` are collapsed into a single entry.
+    ///
+    /// When `is_first` is `true`, pagination proceeds forward from the oldest
+    /// rounds and `after` is an exclusive lower bound: rounds at exactly
+    /// `after` are omitted and only strictly later rounds are returned.
+    ///
+    /// When `is_first` is `false`, pagination proceeds backward from the newest
+    /// rounds and `before` is an exclusive upper bound: rounds at exactly
+    /// `before` are omitted and only strictly earlier rounds are returned.
+    /// Results are still returned in ascending timestamp order.
+    ///
+    /// Returns at most `limit` rounds. When `limit` is `0`, returns an empty
+    /// list without scanning the table.
     ///
     /// # Errors
     ///
@@ -523,47 +587,46 @@ impl<'d> Table<'d, ColumnStats> {
         is_first: bool,
         limit: usize,
     ) -> Result<(i32, Vec<NaiveDateTime>)> {
+        let model_id_i32 = i32::try_from(model_id)?;
+        if limit == 0 {
+            return Ok((model_id_i32, Vec::new()));
+        }
+
         let mut prefix = model_id.to_be_bytes().to_vec();
         prefix.extend(cluster_id.to_be_bytes());
-        let mut buf = Vec::with_capacity(size_of::<u32>() + size_of::<i64>());
-        buf.extend(cluster_id.to_be_bytes());
-        let (direction, from) = if is_first {
-            if let Some(after) = after {
-                let after_ts = from_naive_utc(*after);
-                buf.extend(after_ts.to_be_bytes());
-                (Direction::Forward, Some(buf.as_slice()))
-            } else {
-                (Direction::Forward, None)
-            }
-        } else if let Some(before) = before {
-            let before_ts = from_naive_utc(*before);
-            buf.extend(before_ts.to_be_bytes());
-            (Direction::Reverse, Some(buf.as_slice()))
+        let boundary = if is_first { after } else { before };
+        let boundary_ts = boundary.map(from_naive_utc);
+        let seek_key = boundary_ts.map(|batch_ts| round_seek_key(model_id, cluster_id, batch_ts));
+        let direction = if is_first {
+            Direction::Forward
         } else {
-            (Direction::Reverse, None)
+            Direction::Reverse
         };
+        let from = seek_key.as_deref();
         let iter = self.prefix_iter(direction, from, &prefix);
-        let mut model_id = Option::None;
-        let mut rounds = HashSet::new();
-        for (m_id, round) in iter.filter_map(|result| {
-            let column_stats = result.ok()?;
-            Some((
-                column_stats.model_id,
-                from_timestamp(column_stats.batch_ts).ok()?,
-            ))
-        }) {
-            if model_id.is_none() {
-                model_id = Some(m_id);
-            } else if model_id != Some(m_id) {
-                return Err(anyhow::anyhow!("Model ID mismatch"));
+
+        let mut rounds = Vec::with_capacity(limit);
+        let mut last_batch_ts = None;
+        for result in iter {
+            let column_stats = result?;
+            if boundary_ts == Some(column_stats.batch_ts)
+                || last_batch_ts == Some(column_stats.batch_ts)
+            {
+                continue;
             }
-            rounds.insert(round);
+
+            last_batch_ts = Some(column_stats.batch_ts);
+            rounds.push(from_timestamp(column_stats.batch_ts)?);
             if rounds.len() >= limit {
                 break;
             }
         }
-        let model_id = model_id.ok_or_else(|| anyhow::anyhow!("No model ID found"))?;
-        Ok((i32::try_from(model_id)?, rounds.into_iter().collect()))
+
+        if !is_first {
+            rounds.reverse();
+        }
+
+        Ok((model_id_i32, rounds))
     }
 
     /// # Errors
@@ -739,26 +802,23 @@ fn to_multi_maps(
         n_index: column.to_usize().expect("column index < usize::max"),
         selected: selected
             .into_iter()
-            .map(|(cluster_id, v)| {
-                let cluster_id = cluster_id.to_i32().expect("cluster_id is a valid i32");
-                TopColumnsOfCluster {
-                    cluster_id,
-                    columns: v
-                        .into_iter()
-                        .map(|(col, top_n)| TopElementCountsByColumn {
-                            column_index: col.to_usize().expect("column index < usize::max"),
-                            counts: top_n
-                                .into_iter()
-                                .flat_map(|ecs| {
-                                    ecs.iter().map(|ec| ElementCount {
-                                        value: ec.value.to_string(),
-                                        count: ec.count.to_i64().expect("Count is not a valid i64"),
-                                    })
+            .map(|(cluster_id, v)| TopColumnsOfCluster {
+                cluster_id,
+                columns: v
+                    .into_iter()
+                    .map(|(col, top_n)| TopElementCountsByColumn {
+                        column_index: col.to_usize().expect("column index < usize::max"),
+                        counts: top_n
+                            .into_iter()
+                            .flat_map(|ecs| {
+                                ecs.iter().map(|ec| ElementCount {
+                                    value: ec.value.to_string(),
+                                    count: ec.count.to_i64().expect("Count is not a valid i64"),
                                 })
-                                .collect(),
-                        })
-                        .collect(),
-                }
+                            })
+                            .collect(),
+                    })
+                    .collect(),
             })
             .collect(),
     }
@@ -823,6 +883,15 @@ struct Key {
     pub batch_ts: i64,
     pub column_index: u32,
 }
+
+fn round_seek_key(model_id: u32, cluster_id: u32, batch_ts: i64) -> Vec<u8> {
+    let mut key = Vec::with_capacity(size_of::<u32>() * 2 + size_of::<i64>());
+    key.extend(model_id.to_be_bytes());
+    key.extend(cluster_id.to_be_bytes());
+    key.extend(batch_ts.to_be_bytes());
+    key
+}
+
 impl Key {
     #[must_use]
     pub fn to_bytes(&self) -> Vec<u8> {
@@ -1023,14 +1092,14 @@ mod tests {
         let cluster_id = 123;
         let model_id = 42_u32;
 
-        let batch1 = NaiveDate::from_ymd_opt(2024, 1, 10)
-            .unwrap()
-            .and_hms_opt(0, 0, 0)
-            .unwrap();
-        let batch2 = NaiveDate::from_ymd_opt(2024, 2, 10)
-            .unwrap()
-            .and_hms_opt(0, 0, 0)
-            .unwrap();
+        let batches: Vec<_> = (1..=4)
+            .map(|month| {
+                NaiveDate::from_ymd_opt(2024, month, 10)
+                    .unwrap()
+                    .and_hms_opt(0, 0, 0)
+                    .unwrap()
+            })
+            .collect();
 
         let stats = ColumnStatistics {
             description: Description::default(),
@@ -1044,20 +1113,69 @@ mod tests {
             ),
         };
 
-        for batch in &[batch1, batch2] {
+        for batch in &batches {
             table
-                .insert_column_statistics(vec![(cluster_id, vec![stats.clone()])], model_id, *batch)
+                .insert_column_statistics(
+                    vec![(cluster_id, vec![stats.clone(), stats.clone()])],
+                    model_id,
+                    *batch,
+                )
                 .unwrap();
         }
 
         let (retrieved_model_id, rounds) = table
-            .load_rounds_by_cluster(model_id, cluster_id, &None, &None, true, 10)
+            .load_rounds_by_cluster(model_id, cluster_id, &None, &None, true, 2)
             .unwrap();
 
         assert_eq!(u32::try_from(retrieved_model_id).unwrap(), model_id);
-        assert_eq!(rounds.len(), 2);
-        assert!(rounds.contains(&batch1));
-        assert!(rounds.contains(&batch2));
+        assert_eq!(rounds, batches[..2]);
+
+        let (_, rounds) = table
+            .load_rounds_by_cluster(model_id, cluster_id, &Some(batches[1]), &None, true, 2)
+            .unwrap();
+        assert_eq!(rounds, batches[2..]);
+
+        let (_, rounds) = table
+            .load_rounds_by_cluster(model_id, cluster_id, &None, &None, false, 2)
+            .unwrap();
+        assert_eq!(rounds, batches[2..]);
+
+        let (_, rounds) = table
+            .load_rounds_by_cluster(model_id, cluster_id, &None, &Some(batches[2]), false, 2)
+            .unwrap();
+        assert_eq!(rounds, batches[..2]);
+
+        let (_, rounds) = table
+            .load_rounds_by_cluster(model_id, cluster_id, &Some(batches[3]), &None, true, 2)
+            .unwrap();
+        assert!(rounds.is_empty());
+
+        let (retrieved_model_id, rounds) = table
+            .load_rounds_by_cluster(model_id, cluster_id, &None, &None, true, 0)
+            .unwrap();
+        assert_eq!(u32::try_from(retrieved_model_id).unwrap(), model_id);
+        assert!(rounds.is_empty());
+
+        let (_, rounds) = table
+            .load_rounds_by_cluster(model_id, cluster_id, &None, &Some(batches[0]), false, 2)
+            .unwrap();
+        assert!(rounds.is_empty());
+    }
+
+    #[test]
+    fn round_seek_key_matches_stored_key_prefix() {
+        let model_id = 42;
+        let cluster_id = 123;
+        let batch_ts = 1_704_844_800;
+        let stored_key = Key {
+            model_id,
+            cluster_id,
+            batch_ts,
+            column_index: 7,
+        }
+        .to_bytes();
+
+        assert!(stored_key.starts_with(&round_seek_key(model_id, cluster_id, batch_ts)));
     }
 
     #[test]
@@ -1296,11 +1414,670 @@ mod tests {
         assert_eq!(counts, vec![30, 20]);
     }
 
+    #[test]
+    fn test_remove_older_than() {
+        let (_permit, store) = setup_store();
+        let table = store.column_stats_map();
+
+        let old_ts = NaiveDate::from_ymd_opt(2023, 1, 1)
+            .unwrap()
+            .and_hms_opt(0, 0, 0)
+            .unwrap();
+        let recent_ts = NaiveDate::from_ymd_opt(2025, 6, 1)
+            .unwrap()
+            .and_hms_opt(0, 0, 0)
+            .unwrap();
+        let cutoff = NaiveDate::from_ymd_opt(2024, 1, 1)
+            .unwrap()
+            .and_hms_opt(0, 0, 0)
+            .unwrap();
+
+        // Insert old stats
+        let old_stats = vec![(
+            1u32,
+            vec![structured::ColumnStatistics {
+                description: Description::default(),
+                n_largest_count: NLargestCount::default(),
+            }],
+        )];
+        table
+            .insert_column_statistics(old_stats, 1, old_ts)
+            .unwrap();
+
+        // Insert recent stats
+        let recent_stats = vec![(
+            1u32,
+            vec![structured::ColumnStatistics {
+                description: Description::default(),
+                n_largest_count: NLargestCount::default(),
+            }],
+        )];
+        table
+            .insert_column_statistics(recent_stats, 1, recent_ts)
+            .unwrap();
+
+        // Verify both exist
+        let all: Vec<_> = table
+            .iter(Direction::Forward, None)
+            .collect::<Result<Vec<_>>>()
+            .unwrap();
+        assert_eq!(all.len(), 2);
+
+        // Remove entries older than cutoff
+        let removed = table.remove_older_than(cutoff).unwrap();
+        assert_eq!(removed, 1);
+
+        // Only recent entry should remain
+        let remaining: Vec<_> = table
+            .iter(Direction::Forward, None)
+            .collect::<Result<Vec<_>>>()
+            .unwrap();
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].batch_ts, from_naive_utc(recent_ts));
+    }
+
+    #[test]
+    fn test_remove_older_than_none_to_remove() {
+        let (_permit, store) = setup_store();
+        let table = store.column_stats_map();
+
+        let recent_ts = NaiveDate::from_ymd_opt(2025, 6, 1)
+            .unwrap()
+            .and_hms_opt(0, 0, 0)
+            .unwrap();
+        let cutoff = NaiveDate::from_ymd_opt(2024, 1, 1)
+            .unwrap()
+            .and_hms_opt(0, 0, 0)
+            .unwrap();
+
+        let stats = vec![(
+            1u32,
+            vec![structured::ColumnStatistics {
+                description: Description::default(),
+                n_largest_count: NLargestCount::default(),
+            }],
+        )];
+        table.insert_column_statistics(stats, 1, recent_ts).unwrap();
+
+        let removed = table.remove_older_than(cutoff).unwrap();
+        assert_eq!(removed, 0);
+
+        let remaining: Vec<_> = table
+            .iter(Direction::Forward, None)
+            .collect::<Result<Vec<_>>>()
+            .unwrap();
+        assert_eq!(remaining.len(), 1);
+    }
+
+    #[test]
+    fn test_purge_old_column_stats_no_config() {
+        let (_permit, store) = setup_store();
+
+        // Without retention config, purge returns None
+        let result = store.purge_old_column_stats().unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_purge_old_column_stats_with_config() {
+        let (_permit, store) = setup_store();
+
+        // Set retention to 1 day
+        let config = crate::RetentionConfig::new(1).unwrap();
+        store.init_retention_config(&config).unwrap();
+
+        let table = store.column_stats_map();
+
+        // Insert old stats (well in the past)
+        let old_ts = NaiveDate::from_ymd_opt(2020, 1, 1)
+            .unwrap()
+            .and_hms_opt(0, 0, 0)
+            .unwrap();
+        let old_stats = vec![(
+            1u32,
+            vec![structured::ColumnStatistics {
+                description: Description::default(),
+                n_largest_count: NLargestCount::default(),
+            }],
+        )];
+        table
+            .insert_column_statistics(old_stats, 1, old_ts)
+            .unwrap();
+
+        // Insert recent stats (now)
+        let recent_ts = chrono::Utc::now().naive_utc();
+        let recent_stats = vec![(
+            2u32,
+            vec![structured::ColumnStatistics {
+                description: Description::default(),
+                n_largest_count: NLargestCount::default(),
+            }],
+        )];
+        table
+            .insert_column_statistics(recent_stats, 1, recent_ts)
+            .unwrap();
+
+        // Purge should remove only old stats
+        let removed = store.purge_old_column_stats().unwrap();
+        assert_eq!(removed, Some(1));
+
+        // Only recent entry should remain
+        let remaining: Vec<_> = table
+            .iter(Direction::Forward, None)
+            .collect::<Result<Vec<_>>>()
+            .unwrap();
+        assert_eq!(remaining.len(), 1);
+    }
+
+    #[test]
+    fn test_remove_older_than_exact_cutoff_boundary() {
+        let (_permit, store) = setup_store();
+        let table = store.column_stats_map();
+
+        let cutoff = NaiveDate::from_ymd_opt(2024, 1, 1)
+            .unwrap()
+            .and_hms_opt(0, 0, 0)
+            .unwrap();
+        let just_before = cutoff - chrono::Duration::nanoseconds(1);
+        let at_cutoff = cutoff;
+        let just_after = cutoff + chrono::Duration::nanoseconds(1);
+
+        for (model_id, ts) in [(1u32, just_before), (2, at_cutoff), (3, just_after)] {
+            let stats = vec![(
+                1u32,
+                vec![structured::ColumnStatistics {
+                    description: Description::default(),
+                    n_largest_count: NLargestCount::default(),
+                }],
+            )];
+            table.insert_column_statistics(stats, model_id, ts).unwrap();
+        }
+
+        // `remove_older_than` is strictly less than: only `just_before` removed.
+        let removed = table.remove_older_than(cutoff).unwrap();
+        assert_eq!(removed, 1);
+
+        let remaining: Vec<_> = table
+            .iter(Direction::Forward, None)
+            .collect::<Result<Vec<_>>>()
+            .unwrap();
+        let mut remaining_ts: Vec<_> = remaining.iter().map(|s| s.batch_ts).collect();
+        remaining_ts.sort_unstable();
+        assert_eq!(
+            remaining_ts,
+            vec![from_naive_utc(at_cutoff), from_naive_utc(just_after)]
+        );
+    }
+
+    #[test]
+    fn test_remove_older_than_large_batched_deletion() {
+        let (_permit, store) = setup_store();
+        let table = store.column_stats_map();
+
+        // Insert more entries than the internal batch size (1024) to exercise
+        // the bounded-batch code path.
+        let old_ts = NaiveDate::from_ymd_opt(2023, 1, 1)
+            .unwrap()
+            .and_hms_opt(0, 0, 0)
+            .unwrap();
+        let recent_ts = NaiveDate::from_ymd_opt(2025, 6, 1)
+            .unwrap()
+            .and_hms_opt(0, 0, 0)
+            .unwrap();
+        let cutoff = NaiveDate::from_ymd_opt(2024, 1, 1)
+            .unwrap()
+            .and_hms_opt(0, 0, 0)
+            .unwrap();
+
+        let old_count = 2500u32;
+        let recent_count = 5u32;
+
+        for model_id in 0..old_count {
+            let stats = vec![(
+                1u32,
+                vec![structured::ColumnStatistics {
+                    description: Description::default(),
+                    n_largest_count: NLargestCount::default(),
+                }],
+            )];
+            table
+                .insert_column_statistics(stats, model_id, old_ts)
+                .unwrap();
+        }
+        for model_id in old_count..(old_count + recent_count) {
+            let stats = vec![(
+                1u32,
+                vec![structured::ColumnStatistics {
+                    description: Description::default(),
+                    n_largest_count: NLargestCount::default(),
+                }],
+            )];
+            table
+                .insert_column_statistics(stats, model_id, recent_ts)
+                .unwrap();
+        }
+
+        let removed = table.remove_older_than(cutoff).unwrap();
+        assert_eq!(removed, old_count as usize);
+
+        let remaining: Vec<_> = table
+            .iter(Direction::Forward, None)
+            .collect::<Result<Vec<_>>>()
+            .unwrap();
+        assert_eq!(remaining.len(), recent_count as usize);
+        for stats in &remaining {
+            assert_eq!(stats.batch_ts, from_naive_utc(recent_ts));
+        }
+    }
+
+    #[test]
+    fn test_purge_old_column_stats_reconfigure() {
+        let (_permit, store) = setup_store();
+        let table = store.column_stats_map();
+
+        // Insert a single aged entry.
+        let old_ts = chrono::Utc::now().naive_utc() - chrono::Duration::days(30);
+        let stats = vec![(
+            1u32,
+            vec![structured::ColumnStatistics {
+                description: Description::default(),
+                n_largest_count: NLargestCount::default(),
+            }],
+        )];
+        table.insert_column_statistics(stats, 1, old_ts).unwrap();
+
+        // With no retention configured, purge is a no-op.
+        assert!(store.purge_old_column_stats().unwrap().is_none());
+        assert_eq!(
+            table
+                .iter(Direction::Forward, None)
+                .collect::<Result<Vec<_>>>()
+                .unwrap()
+                .len(),
+            1
+        );
+
+        // Configure a long retention: the entry is still within the window.
+        let long = crate::RetentionConfig::new(365).unwrap();
+        store.init_retention_config(&long).unwrap();
+        assert_eq!(store.purge_old_column_stats().unwrap(), Some(0));
+        assert_eq!(
+            table
+                .iter(Direction::Forward, None)
+                .collect::<Result<Vec<_>>>()
+                .unwrap()
+                .len(),
+            1
+        );
+
+        // Shorten retention: the entry now falls outside the window.
+        let update = crate::RetentionConfigUpdate {
+            period_in_days: Some(1),
+        };
+        store.update_retention_config(&long, &update).unwrap();
+        assert_eq!(store.purge_old_column_stats().unwrap(), Some(1));
+        assert!(
+            table
+                .iter(Direction::Forward, None)
+                .collect::<Result<Vec<_>>>()
+                .unwrap()
+                .is_empty()
+        );
+
+        // Re-insert and then clear retention: purge becomes a no-op again.
+        let stats = vec![(
+            1u32,
+            vec![structured::ColumnStatistics {
+                description: Description::default(),
+                n_largest_count: NLargestCount::default(),
+            }],
+        )];
+        table.insert_column_statistics(stats, 1, old_ts).unwrap();
+        store.clear_retention_config().unwrap();
+        assert!(store.purge_old_column_stats().unwrap().is_none());
+        assert_eq!(
+            table
+                .iter(Direction::Forward, None)
+                .collect::<Result<Vec<_>>>()
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
     fn setup_store() -> (DbGuard<'static>, Arc<Store>) {
         let permit = acquire_db_permit();
         let db_dir = tempfile::tempdir().unwrap();
         let backup_dir = tempfile::tempdir().unwrap();
-        let store = Arc::new(Store::new(db_dir.path(), backup_dir.path()).unwrap());
+        let store = Arc::new(Store::new(db_dir.path(), backup_dir.path(), None).unwrap());
         (permit, store)
+    }
+
+    /// Baseline tests for the `column_stats` timestamp contract between the
+    /// public `chrono::NaiveDateTime` API and the stored big-endian `i64`
+    /// nanosecond key layout.
+    mod timestamp_contract {
+        use chrono::NaiveDate;
+        use rocksdb::Direction;
+        use structured::{ColumnStatistics, Description, Element, ElementCount, NLargestCount};
+
+        use super::*;
+        use crate::Table;
+
+        const BATCH_TS_KEY_OFFSET: usize = size_of::<u32>() + size_of::<u32>();
+
+        fn default_column_statistics() -> ColumnStatistics {
+            ColumnStatistics {
+                description: Description::default(),
+                n_largest_count: NLargestCount::default(),
+            }
+        }
+
+        fn timestamp_bytes_in_key(key: &[u8]) -> &[u8] {
+            &key[BATCH_TS_KEY_OFFSET..BATCH_TS_KEY_OFFSET + size_of::<i64>()]
+        }
+
+        fn ordered_unique_batch_ts(
+            table: &Table<'_, ColumnStats>,
+            model_id: u32,
+            cluster_id: u32,
+            direction: Direction,
+            from: Option<&[u8]>,
+        ) -> Vec<i64> {
+            let mut prefix = model_id.to_be_bytes().to_vec();
+            prefix.extend(cluster_id.to_be_bytes());
+
+            let mut ordered = Vec::new();
+            for result in table.prefix_iter(direction, from, &prefix) {
+                let stats = result.expect("prefix iteration succeeds");
+                if ordered.last() != Some(&stats.batch_ts) {
+                    ordered.push(stats.batch_ts);
+                }
+            }
+            ordered
+        }
+
+        #[test]
+        fn test_key_bytes_for_timestamp() {
+            let epoch = NaiveDate::from_ymd_opt(1970, 1, 1)
+                .unwrap()
+                .and_hms_opt(0, 0, 0)
+                .unwrap();
+            let leap_second = NaiveDate::from_ymd_opt(2000, 2, 29)
+                .unwrap()
+                .and_hms_nano_opt(12, 34, 56, 123_456_789)
+                .unwrap();
+            let pre_epoch = NaiveDate::from_ymd_opt(1969, 12, 31)
+                .unwrap()
+                .and_hms_nano_opt(23, 59, 59, 999_999_999)
+                .unwrap();
+
+            let cases = [
+                (epoch, 0_i64),
+                (leap_second, from_naive_utc(leap_second)),
+                (pre_epoch, -1_i64),
+            ];
+
+            for (timestamp, expected_nanos) in cases {
+                assert_eq!(from_naive_utc(timestamp), expected_nanos);
+                assert_eq!(from_timestamp(expected_nanos).unwrap(), timestamp);
+
+                let key = Key {
+                    model_id: 7,
+                    cluster_id: 11,
+                    batch_ts: expected_nanos,
+                    column_index: 3,
+                };
+                let bytes = key.to_bytes();
+                assert_eq!(
+                    timestamp_bytes_in_key(&bytes),
+                    expected_nanos.to_be_bytes(),
+                    "batch_ts must be big-endian i64 nanoseconds at offset {BATCH_TS_KEY_OFFSET}"
+                );
+
+                let parsed = Key::from_be_bytes(&bytes);
+                assert_eq!(parsed.batch_ts, expected_nanos);
+            }
+        }
+
+        #[test]
+        fn test_key_bytes_for_timestamp_in_database() {
+            let (_permit, store) = super::setup_store();
+            let table = store.column_stats_map();
+
+            let model_id = 42;
+            let cluster_id = 99;
+            let timestamp = NaiveDate::from_ymd_opt(2000, 2, 29)
+                .unwrap()
+                .and_hms_nano_opt(12, 34, 56, 123_456_789)
+                .unwrap();
+            let expected_nanos = from_naive_utc(timestamp);
+
+            table
+                .insert_column_statistics(
+                    vec![(cluster_id, vec![default_column_statistics()])],
+                    model_id,
+                    timestamp,
+                )
+                .unwrap();
+
+            let stored = table
+                .get(expected_nanos, model_id, cluster_id)
+                .next()
+                .unwrap()
+                .unwrap();
+            assert_eq!(stored.batch_ts, expected_nanos);
+            assert_eq!(
+                timestamp_bytes_in_key(&stored.unique_key()),
+                expected_nanos.to_be_bytes()
+            );
+        }
+
+        #[test]
+        fn test_seek_ordering_by_timestamp() {
+            let (_permit, store) = super::setup_store();
+            let table = store.column_stats_map();
+
+            let model_id = 5;
+            let cluster_id = 17;
+            let pre_epoch = NaiveDate::from_ymd_opt(1969, 12, 31)
+                .unwrap()
+                .and_hms_nano_opt(23, 59, 59, 999_999_999)
+                .unwrap();
+            let epoch = NaiveDate::from_ymd_opt(1970, 1, 1)
+                .unwrap()
+                .and_hms_opt(0, 0, 0)
+                .unwrap();
+            let leap_second = NaiveDate::from_ymd_opt(2000, 2, 29)
+                .unwrap()
+                .and_hms_nano_opt(12, 34, 56, 123_456_789)
+                .unwrap();
+
+            // Insert out of chronological order to prove ordering comes from key bytes.
+            for timestamp in [leap_second, pre_epoch, epoch] {
+                table
+                    .insert_column_statistics(
+                        vec![(cluster_id, vec![default_column_statistics()])],
+                        model_id,
+                        timestamp,
+                    )
+                    .unwrap();
+            }
+
+            let epoch_nanos = from_naive_utc(epoch);
+            let leap_nanos = from_naive_utc(leap_second);
+            let pre_epoch_nanos = from_naive_utc(pre_epoch);
+
+            // RocksDB orders keys by unsigned byte comparison. Big-endian `i64`
+            // nanoseconds therefore sort non-negative timestamps before negative
+            // ones, which differs from numeric `i64` ordering when pre-1970
+            // timestamps are present.
+            let forward =
+                ordered_unique_batch_ts(&table, model_id, cluster_id, Direction::Forward, None);
+            assert_eq!(forward, vec![epoch_nanos, leap_nanos, pre_epoch_nanos]);
+            let mut numeric_order = [epoch_nanos, leap_nanos, pre_epoch_nanos];
+            numeric_order.sort_unstable();
+            assert_ne!(
+                forward, numeric_order,
+                "forward iteration must follow key-byte order, not numeric i64 order"
+            );
+
+            let reverse =
+                ordered_unique_batch_ts(&table, model_id, cluster_id, Direction::Reverse, None);
+            assert_eq!(reverse, vec![pre_epoch_nanos, leap_nanos, epoch_nanos]);
+        }
+
+        #[test]
+        fn test_load_rounds_by_cluster_seek_post_epoch() {
+            let (_permit, store) = super::setup_store();
+            let table = store.column_stats_map();
+
+            let model_id = 6;
+            let cluster_id = 21;
+            let batch_a = NaiveDate::from_ymd_opt(2020, 1, 1)
+                .unwrap()
+                .and_hms_opt(0, 0, 0)
+                .unwrap();
+            let batch_b = NaiveDate::from_ymd_opt(2021, 6, 15)
+                .unwrap()
+                .and_hms_nano_opt(12, 0, 0, 500)
+                .unwrap();
+            let batch_c = NaiveDate::from_ymd_opt(2022, 12, 31)
+                .unwrap()
+                .and_hms_nano_opt(23, 59, 59, 999_999_999)
+                .unwrap();
+
+            for timestamp in [batch_c, batch_a, batch_b] {
+                table
+                    .insert_column_statistics(
+                        vec![(cluster_id, vec![default_column_statistics()])],
+                        model_id,
+                        timestamp,
+                    )
+                    .unwrap();
+            }
+
+            let forward =
+                ordered_unique_batch_ts(&table, model_id, cluster_id, Direction::Forward, None);
+            let expected = vec![
+                from_naive_utc(batch_a),
+                from_naive_utc(batch_b),
+                from_naive_utc(batch_c),
+            ];
+            assert_eq!(forward, expected);
+
+            let (_, all_rounds) = table
+                .load_rounds_by_cluster(model_id, cluster_id, &None, &None, true, 10)
+                .unwrap();
+            assert_eq!(all_rounds, vec![batch_a, batch_b, batch_c]);
+
+            // Forward pagination with `after` is an exclusive lower bound.
+            let (_, rounds_after_b) = table
+                .load_rounds_by_cluster(model_id, cluster_id, &Some(batch_b), &None, true, 10)
+                .unwrap();
+            assert_eq!(rounds_after_b, vec![batch_c]);
+
+            // Reverse pagination with `before` is an exclusive upper bound.
+            let (_, rounds_before_b) = table
+                .load_rounds_by_cluster(model_id, cluster_id, &None, &Some(batch_b), false, 10)
+                .unwrap();
+            assert_eq!(rounds_before_b, vec![batch_a]);
+
+            // A full-key seek including `model_id` honors timestamp order.
+            let mut full_seek_key = model_id.to_be_bytes().to_vec();
+            full_seek_key.extend(cluster_id.to_be_bytes());
+            full_seek_key.extend(from_naive_utc(batch_b).to_be_bytes());
+            let forward_from_b = ordered_unique_batch_ts(
+                &table,
+                model_id,
+                cluster_id,
+                Direction::Forward,
+                Some(&full_seek_key),
+            );
+            assert_eq!(
+                forward_from_b,
+                vec![from_naive_utc(batch_b), from_naive_utc(batch_c)]
+            );
+        }
+
+        #[test]
+        fn test_batch_ts_roundtrip() {
+            let (_permit, store) = super::setup_store();
+            let table = store.column_stats_map();
+
+            let model_id = 3;
+            let cluster_id = 8;
+            let timestamp = NaiveDate::from_ymd_opt(2000, 2, 29)
+                .unwrap()
+                .and_hms_nano_opt(12, 34, 56, 123_456_789)
+                .unwrap();
+
+            table
+                .insert_column_statistics(
+                    vec![(cluster_id, vec![default_column_statistics()])],
+                    model_id,
+                    timestamp,
+                )
+                .unwrap();
+
+            let stats = table
+                .get_column_statistics(model_id, cluster_id, vec![timestamp])
+                .unwrap();
+            assert_eq!(stats.len(), 1);
+            assert_eq!(stats[0].batch_ts, timestamp);
+            assert_eq!(from_naive_utc(stats[0].batch_ts), from_naive_utc(timestamp));
+
+            let all_stats = table
+                .get_column_statistics(model_id, cluster_id, vec![])
+                .unwrap();
+            assert_eq!(all_stats.len(), 1);
+            assert_eq!(all_stats[0].batch_ts, timestamp);
+        }
+
+        #[test]
+        fn test_structured_element_datetime() {
+            let (_permit, store) = super::setup_store();
+            let table = store.column_stats_map();
+
+            let model_id = 12;
+            let cluster_id = 4;
+            let batch_ts = NaiveDate::from_ymd_opt(2024, 6, 15)
+                .unwrap()
+                .and_hms_nano_opt(10, 30, 45, 123_000_000)
+                .unwrap();
+            let jiff_dt = jiff::civil::DateTime::new(2024, 6, 15, 10, 30, 45, 123_000_000).unwrap();
+            let element = Element::DateTime(jiff_dt);
+
+            let statistics = ColumnStatistics {
+                description: Description::default(),
+                n_largest_count: NLargestCount::new(
+                    1,
+                    vec![ElementCount {
+                        value: element.clone(),
+                        count: 1,
+                    }],
+                    Some(element.clone()),
+                ),
+            };
+
+            table
+                .insert_column_statistics(vec![(cluster_id, vec![statistics])], model_id, batch_ts)
+                .unwrap();
+
+            let stats = table
+                .get_column_statistics(model_id, cluster_id, vec![batch_ts])
+                .unwrap();
+            assert_eq!(stats.len(), 1);
+            match stats[0].column_stats.n_largest_count.mode().as_ref() {
+                Some(Element::DateTime(dt)) => assert_eq!(*dt, jiff_dt),
+                other => panic!("expected DateTime mode, got {other:?}"),
+            }
+            let top_n = stats[0].column_stats.n_largest_count.top_n();
+            assert_eq!(top_n.len(), 1);
+            match &top_n[0].value {
+                Element::DateTime(dt) => assert_eq!(*dt, jiff_dt),
+                other => panic!("expected DateTime value, got {other:?}"),
+            }
+        }
     }
 }

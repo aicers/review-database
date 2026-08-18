@@ -366,7 +366,7 @@ impl<'d> Table<'d> {
             // Insert agents within the same transaction
             for agent in &entry.agents {
                 let mut agent = agent.clone();
-                agent.node = node_id;
+                agent.node_id = node_id;
                 if let Err(e) = self.agent.put_with_transaction(&agent, &txn) {
                     if e.to_string().contains("Resource busy")
                         || e.to_string().contains("already exists")
@@ -380,7 +380,7 @@ impl<'d> Table<'d> {
             // Insert external services within the same transaction
             for external_service in &entry.external_services {
                 let mut external_service = external_service.clone();
-                external_service.node = node_id;
+                external_service.node_id = node_id;
                 if let Err(e) = self
                     .external_service
                     .put_with_transaction(&external_service, &txn)
@@ -443,20 +443,51 @@ impl<'d> Table<'d> {
     }
 
     /// Updates the `Node` from `old` to `new` using the specified `id`. The `id` is used for both
-    /// the `Agent::node` and `ExternalService::node` fields, meaning the `node` field of each agent
-    ///  in both `old.agents` and `new.agents`, as well as each external service in both
+    /// the `Agent::node_id` and `ExternalService::node_id` fields, meaning those fields on each agent
+    /// in both `old.agents` and `new.agents`, as well as each external service in both
     /// `old.external_services` and `new.external_services`, will be disregarded.
+    ///
+    /// All `Node`, `Agent`, and `ExternalService` writes execute inside a single optimistic
+    /// transaction; either the entire update commits or no state change is observable.
+    /// Returns the post-update `Node` constructed from the successfully-committed
+    /// transaction attempt, with `creation_time` preserved from the existing record.
     ///
     /// # Errors
     ///
     /// Returns an error if the `id` is invalid, the database operation fails, or if the hostname is already in use.
     #[allow(clippy::too_many_lines)]
-    pub fn update(&mut self, id: u32, old: &Update, new: &Update) -> Result<()> {
-        // Use optimistic transaction to atomically check hostname uniqueness and update the node
-        loop {
+    pub fn update(&mut self, id: u32, old: &Update, new: &Update) -> Result<Node> {
+        use crate::collections::Indexed;
+
+        let old_inner = InnerUpdate {
+            name: old.name.clone(),
+            name_draft: old.name_draft.clone(),
+            profile: old.profile.clone(),
+            profile_draft: old.profile_draft.clone(),
+            agents: old.agents.iter().map(|a| a.key.clone()).collect(),
+            external_services: old
+                .external_services
+                .iter()
+                .map(|a| a.key.clone())
+                .collect(),
+        };
+        let new_inner = InnerUpdate {
+            name: new.name.clone(),
+            name_draft: new.name_draft.clone(),
+            profile: new.profile.clone(),
+            profile_draft: new.profile_draft.clone(),
+            agents: new.agents.iter().map(|a| a.key.clone()).collect(),
+            external_services: new
+                .external_services
+                .iter()
+                .map(|a| a.key.clone())
+                .collect(),
+        };
+
+        'outer: loop {
             let txn = self.node.raw().db().transaction();
 
-            // Check hostname uniqueness within transaction
+            // Check hostname uniqueness within the transaction
             if let Some(new_profile) = &new.profile
                 && self.is_hostname_in_use_except_transaction(&txn, &new_profile.hostname, id)?
             {
@@ -479,31 +510,11 @@ impl<'d> Table<'d> {
                 );
             }
 
-            // Update Node within the transaction
-            let old_inner = InnerUpdate {
-                name: old.name.clone(),
-                name_draft: old.name_draft.clone(),
-                profile: old.profile.clone(),
-                profile_draft: old.profile_draft.clone(),
-                agents: old.agents.iter().map(|a| a.key.clone()).collect(),
-                external_services: old
-                    .external_services
-                    .iter()
-                    .map(|a| a.key.clone())
-                    .collect(),
-            };
-
-            let new_inner = InnerUpdate {
-                name: new.name.clone(),
-                name_draft: new.name_draft.clone(),
-                profile: new.profile.clone(),
-                profile_draft: new.profile_draft.clone(),
-                agents: new.agents.iter().map(|a| a.key.clone()).collect(),
-                external_services: new
-                    .external_services
-                    .iter()
-                    .map(|a| a.key.clone())
-                    .collect(),
+            // Read the existing inner record under this transaction so the returned
+            // Node observes the same snapshot that ultimately commits.
+            let existing_inner: Inner = match self.node.get_by_id_in_transaction(id, &txn)? {
+                Some(inner) => inner,
+                None => bail!("no such id"),
             };
 
             if let Err(e) = self
@@ -511,14 +522,160 @@ impl<'d> Table<'d> {
                 .update_with_transaction(id, &old_inner, &new_inner, &txn)
             {
                 if e.to_string().contains("Resource busy") {
-                    continue;
+                    continue 'outer;
                 }
                 return Err(e);
             }
 
-            // Commit the hostname check and node update transaction atomically
+            // Process Agent diffs within the same transaction
+            let mut old_agents: HashMap<_, _> = old.agents.iter().map(|a| (&a.key, a)).collect();
+            let mut new_agents: HashMap<_, _> = new.agents.iter().map(|a| (&a.key, a)).collect();
+
+            for to_remove in old_agents.keys().filter(|k| !new_agents.contains_key(*k)) {
+                let mut key = id.to_be_bytes().to_vec();
+                key.extend(to_remove.as_bytes());
+                if let Err(e) = self.agent.delete_with_transaction(&key, &txn) {
+                    if e.to_string().contains("Resource busy") {
+                        continue 'outer;
+                    }
+                    return Err(e);
+                }
+            }
+            old_agents.retain(|&k, _| new_agents.contains_key(k));
+
+            for to_insert in new_agents
+                .values()
+                .filter(|v| !old_agents.contains_key(&v.key))
+            {
+                let mut to_insert: Agent = (*to_insert).clone();
+                to_insert.node_id = id;
+                if let Err(e) = self.agent.put_with_transaction(&to_insert, &txn) {
+                    if e.to_string().contains("Resource busy") {
+                        continue 'outer;
+                    }
+                    return Err(e);
+                }
+            }
+            new_agents.retain(|&k, _| old_agents.contains_key(k));
+
+            let mut old_agents_v: Vec<_> = old_agents.values().collect();
+            old_agents_v.sort_unstable_by_key(|a| a.key.clone());
+            let mut new_agents_v: Vec<_> = new_agents.values().collect();
+            new_agents_v.sort_unstable_by_key(|a| a.key.clone());
+            for (old_a, new_a) in old_agents_v
+                .into_iter()
+                .zip(new_agents_v)
+                .filter(|(o, n)| **o != **n)
+            {
+                let mut old_a = (*old_a).clone();
+                old_a.node_id = id;
+                let mut new_a = (*new_a).clone();
+                new_a.node_id = id;
+                if let Err(e) = self.agent.update_with_transaction(&old_a, &new_a, &txn) {
+                    if e.to_string().contains("Resource busy") {
+                        continue 'outer;
+                    }
+                    return Err(e);
+                }
+            }
+
+            // Process ExternalService diffs within the same transaction
+            let mut old_external_services: HashMap<_, _> =
+                old.external_services.iter().map(|a| (&a.key, a)).collect();
+            let mut new_external_services: HashMap<_, _> =
+                new.external_services.iter().map(|a| (&a.key, a)).collect();
+
+            for to_remove in old_external_services
+                .keys()
+                .filter(|k| !new_external_services.contains_key(*k))
+            {
+                let mut key = id.to_be_bytes().to_vec();
+                key.extend(to_remove.as_bytes());
+                if let Err(e) = self.external_service.delete_with_transaction(&key, &txn) {
+                    if e.to_string().contains("Resource busy") {
+                        continue 'outer;
+                    }
+                    return Err(e);
+                }
+            }
+            old_external_services.retain(|&k, _| new_external_services.contains_key(k));
+
+            for to_insert in new_external_services
+                .values()
+                .filter(|v| !old_external_services.contains_key(&v.key))
+            {
+                let mut to_insert: ExternalService = (*to_insert).clone();
+                to_insert.node_id = id;
+                if let Err(e) = self.external_service.put_with_transaction(&to_insert, &txn) {
+                    if e.to_string().contains("Resource busy") {
+                        continue 'outer;
+                    }
+                    return Err(e);
+                }
+            }
+            new_external_services.retain(|&k, _| old_external_services.contains_key(k));
+
+            let mut old_es_v: Vec<_> = old_external_services.values().collect();
+            old_es_v.sort_unstable_by_key(|a| a.key.clone());
+            let mut new_es_v: Vec<_> = new_external_services.values().collect();
+            new_es_v.sort_unstable_by_key(|a| a.key.clone());
+            for (old_es, new_es) in old_es_v
+                .into_iter()
+                .zip(new_es_v)
+                .filter(|(o, n)| **o != **n)
+            {
+                let mut old_es = (*old_es).clone();
+                old_es.node_id = id;
+                let mut new_es = (*new_es).clone();
+                new_es.node_id = id;
+                if let Err(e) = self
+                    .external_service
+                    .update_with_transaction(&old_es, &new_es, &txn)
+                {
+                    if e.to_string().contains("Resource busy") {
+                        continue 'outer;
+                    }
+                    return Err(e);
+                }
+            }
+
+            // Commit all writes atomically
             match txn.commit() {
-                Ok(()) => break,
+                Ok(()) => {
+                    // Build the post-update Node from this committed attempt's snapshot.
+                    let final_name = new
+                        .name
+                        .clone()
+                        .unwrap_or_else(|| existing_inner.name.clone());
+                    let final_agents: Vec<Agent> = new
+                        .agents
+                        .iter()
+                        .map(|a| {
+                            let mut a = a.clone();
+                            a.node_id = id;
+                            a
+                        })
+                        .collect();
+                    let final_external_services: Vec<ExternalService> = new
+                        .external_services
+                        .iter()
+                        .map(|a| {
+                            let mut a = a.clone();
+                            a.node_id = id;
+                            a
+                        })
+                        .collect();
+                    return Ok(Node {
+                        id,
+                        name: final_name,
+                        name_draft: new.name_draft.clone(),
+                        profile: new.profile.clone(),
+                        profile_draft: new.profile_draft.clone(),
+                        agents: final_agents,
+                        external_services: final_external_services,
+                        creation_time: existing_inner.creation_time,
+                    });
+                }
                 Err(e) => {
                     if !e.as_ref().starts_with("Resource busy:") {
                         return Err(e).context("failed to update node");
@@ -527,83 +684,6 @@ impl<'d> Table<'d> {
                 }
             }
         }
-
-        // Update Agent operations (outside the hostname transaction)
-        let mut old_agents: HashMap<_, _> = old.agents.iter().map(|a| (&a.key, a)).collect();
-        let mut new_agents: HashMap<_, _> = new.agents.iter().map(|a| (&a.key, a)).collect();
-
-        for to_remove in old_agents.keys().filter(|k| !new_agents.contains_key(*k)) {
-            self.agent.delete(id, to_remove)?;
-        }
-        old_agents.retain(|&k, _| new_agents.contains_key(k));
-
-        for (_k, to_insert) in new_agents
-            .iter()
-            .filter(|(k, _v)| !old_agents.contains_key(*k))
-        {
-            let mut to_insert: Agent = (*to_insert).clone();
-            to_insert.node = id;
-            self.agent.put(&to_insert)?;
-        }
-        new_agents.retain(|&k, _| old_agents.contains_key(k));
-
-        let mut old_agents: Vec<_> = old_agents.values().collect();
-        old_agents.sort_unstable_by_key(|a| a.key.clone());
-        let mut new_agents: Vec<_> = new_agents.values().collect();
-        new_agents.sort_unstable_by_key(|a| a.key.clone());
-        for (old, new) in old_agents
-            .into_iter()
-            .zip(new_agents)
-            .filter(|(o, n)| **o != **n)
-        {
-            let mut old = (*old).clone();
-            old.node = id;
-            let mut new = (*new).clone();
-            new.node = id;
-            self.agent.update(&old, &new)?;
-        }
-
-        // Update ExternalService operations (outside the hostname transaction)
-        let mut old_external_services: HashMap<_, _> =
-            old.external_services.iter().map(|a| (&a.key, a)).collect();
-        let mut new_external_services: HashMap<_, _> =
-            new.external_services.iter().map(|a| (&a.key, a)).collect();
-
-        for to_remove in old_external_services
-            .keys()
-            .filter(|k| !new_external_services.contains_key(*k))
-        {
-            self.external_service.delete(id, to_remove)?;
-        }
-        old_external_services.retain(|&k, _| new_external_services.contains_key(k));
-
-        for (_k, to_insert) in new_external_services
-            .iter()
-            .filter(|(k, _v)| !old_external_services.contains_key(*k))
-        {
-            let mut to_insert: ExternalService = (*to_insert).clone();
-            to_insert.node = id;
-            self.external_service.put(&to_insert)?;
-        }
-        new_external_services.retain(|&k, _| old_external_services.contains_key(k));
-
-        let mut old_external_services: Vec<_> = old_external_services.values().collect();
-        old_external_services.sort_unstable_by_key(|a| a.key.clone());
-        let mut new_external_services: Vec<_> = new_external_services.values().collect();
-        new_external_services.sort_unstable_by_key(|a| a.key.clone());
-        for (old, new) in old_external_services
-            .into_iter()
-            .zip(new_external_services)
-            .filter(|(o, n)| **o != **n)
-        {
-            let mut old = (*old).clone();
-            old.node = id;
-            let mut new = (*new).clone();
-            new.node = id;
-            self.external_service.update(&old, &new)?;
-        }
-
-        Ok(())
     }
 
     /// Updates the status of an agent specified by `agent_key`, which belongs to the node whose
@@ -699,7 +779,7 @@ pub struct Profile {
     pub hostname: String,
 }
 
-#[derive(Clone, Deserialize, Serialize)]
+#[derive(Clone, Deserialize, Serialize, PartialEq, Debug)]
 pub(crate) struct Inner {
     pub id: u32,
     pub name: String,
@@ -820,7 +900,7 @@ mod test {
 
     use super::*;
     use crate::test::{DbGuard, acquire_db_permit};
-    use crate::{AgentKind, ExternalServiceKind, Store};
+    use crate::{AgentKind, ExternalServiceKind, Lifecycle, Store};
 
     type PortNumber = u16;
 
@@ -864,7 +944,7 @@ mod test {
         let permit = acquire_db_permit();
         let db_dir = tempfile::tempdir().unwrap();
         let backup_dir = tempfile::tempdir().unwrap();
-        let store = Arc::new(Store::new(db_dir.path(), backup_dir.path()).unwrap());
+        let store = Arc::new(Store::new(db_dir.path(), backup_dir.path(), None).unwrap());
         (permit, store)
     }
 
@@ -891,7 +971,7 @@ mod test {
     }
 
     fn create_agents(
-        node: u32,
+        node_id: u32,
         kinds: &[AgentKind],
         configs: &[Option<Config>],
         drafts: &[Option<Config>],
@@ -901,18 +981,22 @@ mod test {
             .zip(configs)
             .zip(drafts)
             .map(|((kind, config), draft)| Agent {
-                node,
+                node_id,
                 key: kind.to_u32().unwrap().to_string(),
                 kind: *kind,
                 status: Status::Enabled,
                 config: config.clone(),
                 draft: draft.clone(),
+                installed_version: None,
+                installed_commit: None,
+                lifecycle: Lifecycle::NotInstalled,
+                bound_addrs: Vec::new(),
             })
             .collect()
     }
 
     fn create_external_services(
-        node: u32,
+        node_id: u32,
         kinds: &[ExternalServiceKind],
         drafts: &[Option<Config>],
     ) -> Vec<ExternalService> {
@@ -920,11 +1004,15 @@ mod test {
             .iter()
             .zip(drafts)
             .map(|(kind, draft)| ExternalService {
-                node,
+                node_id,
                 key: kind.to_u32().unwrap().to_string(),
                 kind: *kind,
                 status: Status::Enabled,
                 draft: draft.clone(),
+                installed_version: None,
+                installed_commit: None,
+                lifecycle: Lifecycle::NotInstalled,
+                bound_addrs: Vec::new(),
             })
             .collect()
     }
@@ -982,6 +1070,135 @@ mod test {
                 }
             })
             .collect()
+    }
+
+    const FIXTURE_AGENT_CONFIG: &str = "enabled = true";
+    const FIXTURE_AGENT_DRAFT: &str = "enabled = false";
+    const FIXTURE_EXTERNAL_SERVICE_DRAFT: &str = "port = 8080";
+
+    /// Builds a deterministic public `Node` for the serde baseline test.
+    fn deterministic_node() -> Node {
+        let creation_time = DateTime::parse_from_rfc3339("2000-02-29T12:34:56.123456789Z")
+            .expect("valid RFC3339 timestamp")
+            .with_timezone(&Utc);
+        Node {
+            id: 42,
+            name: "fixture-node".to_string(),
+            name_draft: Some("fixture-draft".to_string()),
+            profile: Some(Profile {
+                customer_id: 7,
+                description: "fixture profile".to_string(),
+                hostname: "fixture.example.com".to_string(),
+            }),
+            profile_draft: Some(Profile {
+                customer_id: 8,
+                description: "fixture profile draft".to_string(),
+                hostname: "draft.fixture.example.com".to_string(),
+            }),
+            agents: vec![
+                Agent::new(
+                    42,
+                    "1".to_string(),
+                    AgentKind::Unsupervised,
+                    Status::Enabled,
+                    Some(FIXTURE_AGENT_CONFIG.to_string()),
+                    None,
+                )
+                .expect("valid agent config"),
+                Agent::new(
+                    42,
+                    "3".to_string(),
+                    AgentKind::SemiSupervised,
+                    Status::Enabled,
+                    None,
+                    Some(FIXTURE_AGENT_DRAFT.to_string()),
+                )
+                .expect("valid agent draft"),
+            ],
+            external_services: vec![
+                ExternalService::new(
+                    42,
+                    "0".to_string(),
+                    ExternalServiceKind::DataStore,
+                    Status::Enabled,
+                    None,
+                )
+                .expect("valid external service"),
+                ExternalService::new(
+                    42,
+                    "1".to_string(),
+                    ExternalServiceKind::TiContainer,
+                    Status::Enabled,
+                    Some(FIXTURE_EXTERNAL_SERVICE_DRAFT.to_string()),
+                )
+                .expect("valid external service draft"),
+            ],
+            creation_time,
+        }
+    }
+
+    /// Builds a deterministic `Inner` for the literal-byte contract test.
+    fn deterministic_node_inner() -> Inner {
+        let creation_time = DateTime::parse_from_rfc3339("2000-02-29T12:34:56.123456789Z")
+            .expect("valid RFC3339 timestamp")
+            .with_timezone(&Utc);
+        Inner {
+            id: 42,
+            name: "fixture-node".to_string(),
+            name_draft: Some("fixture-draft".to_string()),
+            profile: Some(Profile {
+                customer_id: 7,
+                description: "fixture profile".to_string(),
+                hostname: "fixture.example.com".to_string(),
+            }),
+            profile_draft: Some(Profile {
+                customer_id: 8,
+                description: "fixture profile draft".to_string(),
+                hostname: "draft.fixture.example.com".to_string(),
+            }),
+            creation_time,
+            agents: vec!["1".to_string(), "3".to_string()],
+            external_services: vec!["0".to_string(), "1".to_string()],
+        }
+    }
+
+    /// Locks the on-disk bincode byte contract for the persisted `Inner` record.
+    ///
+    /// Expected bytes come from the committed literal fixture (not from the
+    /// production serializer inside this test). `creation_time` is pinned to
+    /// `2000-02-29T12:34:56.123456789Z` so the encoding stays deterministic.
+    #[test]
+    fn node_inner_literal_bytes_contract() -> Result<()> {
+        const FIXTURE_BYTES: &[u8] = include_bytes!("../../tests/fixtures/node_inner_literal.bin");
+
+        let decoded = Inner::from_key_value(b"fixture-node", FIXTURE_BYTES)?;
+        let expected = deterministic_node_inner();
+        assert_eq!(decoded, expected);
+
+        let serialized = Indexable::value(&expected);
+        assert_eq!(serialized.as_slice(), FIXTURE_BYTES);
+
+        Ok(())
+    }
+
+    /// Locks the public `Node` serde contract separately from the persisted
+    /// `Inner` record.
+    ///
+    /// Expected JSON comes from the committed literal fixture (not from the
+    /// production serializer inside this test). `creation_time` is pinned to
+    /// `2000-02-29T12:34:56.123456789Z` so the encoding stays deterministic.
+    #[test]
+    fn node_public_serde_baseline() -> Result<()> {
+        const FIXTURE_JSON: &str = include_str!("../../tests/fixtures/node_public_serde.json");
+
+        let expected = deterministic_node();
+        let decoded: Node = serde_json::from_str(FIXTURE_JSON)?;
+        assert_eq!(decoded, expected);
+
+        let serialized = serde_json::to_string(&expected)?;
+        assert_eq!(serialized, FIXTURE_JSON);
+
+        Ok(())
     }
 
     #[test]
@@ -1071,10 +1288,10 @@ mod test {
 
         // update node id to the actual id in database.
         node.id = res.unwrap();
-        node.agents.iter_mut().for_each(|a| a.node = node.id);
+        node.agents.iter_mut().for_each(|a| a.node_id = node.id);
         node.external_services
             .iter_mut()
-            .for_each(|a| a.node = node.id);
+            .for_each(|a| a.node_id = node.id);
 
         let res = node_table.get_by_id(node.id).unwrap();
         assert!(res.is_some());
@@ -1132,10 +1349,10 @@ mod test {
 
         // update node id to the actual id in database.
         node.id = res.unwrap();
-        node.agents.iter_mut().for_each(|a| a.node = node.id);
+        node.agents.iter_mut().for_each(|a| a.node_id = node.id);
         node.external_services
             .iter_mut()
-            .for_each(|a| a.node = node.id);
+            .for_each(|a| a.node_id = node.id);
 
         assert_eq!(node_table.count().unwrap(), 1);
         assert_eq!(store.agents_map().iter(Direction::Forward, None).count(), 3);
@@ -1199,10 +1416,10 @@ mod test {
 
         // update node id to the actual id in database.
         node.id = res.unwrap();
-        node.agents.iter_mut().for_each(|a| a.node = node.id);
+        node.agents.iter_mut().for_each(|a| a.node_id = node.id);
         node.external_services
             .iter_mut()
-            .for_each(|a| a.node = node.id);
+            .for_each(|a| a.node_id = node.id);
 
         let id = node.id;
 
@@ -1216,7 +1433,7 @@ mod test {
         };
         let old = node.clone().into();
 
-        assert!(node_table.update(id, &old, &update).is_ok());
+        let returned = node_table.update(id, &old, &update).unwrap();
 
         let updated = node_table.get_by_id(id).unwrap();
         assert!(updated.is_some());
@@ -1232,6 +1449,7 @@ mod test {
         node.external_services = node.external_services.into_iter().skip(1).collect();
 
         assert_eq!(updated, node);
+        assert_eq!(returned, node);
     }
 
     #[test]
@@ -1269,10 +1487,10 @@ mod test {
 
         // update node id to the actual id in database.
         node.id = res.unwrap();
-        node.agents.iter_mut().for_each(|a| a.node = node.id);
+        node.agents.iter_mut().for_each(|a| a.node_id = node.id);
         node.external_services
             .iter_mut()
-            .for_each(|a| a.node = node.id);
+            .for_each(|a| a.node_id = node.id);
 
         let id = node.id;
 
@@ -1342,7 +1560,7 @@ mod test {
         assert!(res.is_ok());
 
         node.id = res.unwrap();
-        node.agents.iter_mut().for_each(|a| a.node = node.id);
+        node.agents.iter_mut().for_each(|a| a.node_id = node.id);
 
         let id = node.id;
 
@@ -1366,6 +1584,71 @@ mod test {
 
         // Check that the status of the `AgentKind::SemiSupervised` agent was updated.
         assert_eq!(updated.agents[1].status, Status::Disabled);
+    }
+
+    /// Writing a status must not disturb the install state stored beside it, and
+    /// the read that returns the new status must return the lifecycle with it.
+    ///
+    /// `update_agent_status_by_hostname` is the crate's only status-only write
+    /// path, so it is the one place where a record rebuilt from a status instead
+    /// of read back whole would silently reset the four install fields.
+    #[test]
+    fn update_agent_status_by_hostname_preserves_install_state() {
+        let (_permit, store) = setup_store();
+        let kinds = vec![AgentKind::Sensor, AgentKind::SemiSupervised];
+        let configs: Vec<_> = create_agent_configs(&kinds);
+
+        let profile = Profile {
+            hostname: "test-hostname".to_string(),
+            ..Default::default()
+        };
+
+        let mut agents = create_agents(456, &kinds, &configs, &configs);
+        let target = agents.get_mut(1).expect("two agents");
+        target.installed_version = Some("1.2.3".to_string());
+        target.installed_commit = Some("deadbeef".to_string());
+        target.lifecycle = Lifecycle::Running;
+        target.bound_addrs = vec![("addr".to_string(), "127.0.0.1:1111".to_string())];
+
+        let mut node = create_node(
+            456,
+            "test",
+            Some("test"),
+            Some(profile.clone()),
+            Some(profile),
+            agents,
+            vec![],
+        );
+
+        let mut node_table = store.node_map();
+        let id = node_table.put(&node).unwrap();
+        node.id = id;
+        node.agents.iter_mut().for_each(|a| a.node_id = id);
+
+        node_table
+            .update_agent_status_by_hostname("test-hostname", "3", Status::Disabled)
+            .unwrap();
+
+        let (updated, invalid_agents, invalid_external_services) =
+            node_table.get_by_id(id).unwrap().unwrap();
+        assert!(invalid_agents.is_empty());
+        assert!(invalid_external_services.is_empty());
+
+        // One read returns the new status and the untouched lifecycle together.
+        let updated_agent = updated.agents.get(1).expect("two agents");
+        assert_eq!(updated_agent.status, Status::Disabled);
+        assert_eq!(updated_agent.lifecycle, Lifecycle::Running);
+        assert_eq!(updated_agent.installed_version.as_deref(), Some("1.2.3"));
+        assert_eq!(updated_agent.installed_commit.as_deref(), Some("deadbeef"));
+        assert_eq!(
+            updated_agent.bound_addrs,
+            vec![("addr".to_string(), "127.0.0.1:1111".to_string())]
+        );
+
+        // The agent that was not targeted is untouched in both fields.
+        let untouched = updated.agents.first().expect("two agents");
+        assert_eq!(untouched.status, Status::Enabled);
+        assert_eq!(untouched.lifecycle, Lifecycle::NotInstalled);
     }
 
     #[test]
@@ -1616,10 +1899,10 @@ mod test {
 
         // update node id to the actual id in database.
         node.id = res.unwrap();
-        node.agents.iter_mut().for_each(|a| a.node = node.id);
+        node.agents.iter_mut().for_each(|a| a.node_id = node.id);
         node.external_services
             .iter_mut()
-            .for_each(|a| a.node = node.id);
+            .for_each(|a| a.node_id = node.id);
 
         let id = node.id;
 
@@ -1647,5 +1930,466 @@ mod test {
         assert!(invalid_external_services.is_empty());
 
         assert_eq!(updated.external_services, update.external_services);
+    }
+
+    /// The install state written on an agent and on an external service must
+    /// survive `Node::update`'s single atomic diff, which compares whole
+    /// records, and must not disturb `config` or `draft`.
+    #[test]
+    fn update_install_state_on_agents_and_external_services() {
+        let (_permit, store) = setup_store();
+
+        let agent_kinds = vec![AgentKind::Unsupervised, AgentKind::SemiSupervised];
+        let agent_configs = create_agent_configs(&agent_kinds);
+        let agent_drafts = vec![None, None];
+        let agents = create_agents(0, &agent_kinds, &agent_configs, &agent_drafts);
+
+        let external_service_kinds = vec![ExternalServiceKind::DataStore];
+        let external_service_drafts = create_external_service_configs(&external_service_kinds);
+        let external_services =
+            create_external_services(0, &external_service_kinds, &external_service_drafts);
+
+        let mut node = create_node(
+            0,
+            "test",
+            None,
+            Some(Profile::default()),
+            None,
+            agents,
+            external_services,
+        );
+
+        let mut node_table = store.node_map();
+        let id = node_table.put(&node).unwrap();
+        node.id = id;
+        node.agents.iter_mut().for_each(|a| a.node_id = id);
+        node.external_services
+            .iter_mut()
+            .for_each(|e| e.node_id = id);
+
+        let old: Update = node.clone().into();
+
+        let mut new_node = node.clone();
+        let agent = new_node.agents.get_mut(1).expect("two agents");
+        agent.installed_version = Some("1.2.3".to_string());
+        agent.installed_commit = Some("f0f0f0f".to_string());
+        agent.lifecycle = Lifecycle::Running;
+        agent.status = Status::ReloadFailed;
+        // Agents bind no service address in practice, but the diff must carry
+        // whatever is on the record rather than assuming the field is empty.
+        agent.bound_addrs = vec![("addr".to_string(), "127.0.0.1:1111".to_string())];
+        let external_service = new_node
+            .external_services
+            .first_mut()
+            .expect("one external service");
+        external_service.installed_version = Some("0.9.0-alpha".to_string());
+        external_service.installed_commit = Some("abcdef1".to_string());
+        external_service.lifecycle = Lifecycle::Failed;
+        external_service.bound_addrs = vec![
+            ("ingest_srv_addr".to_string(), "10.0.0.1:38370".to_string()),
+            ("publish_srv_addr".to_string(), "10.0.0.1:38371".to_string()),
+        ];
+        let new: Update = new_node.clone().into();
+
+        let returned = node_table.update(id, &old, &new).unwrap();
+        assert_eq!(returned.agents, new_node.agents);
+        assert_eq!(returned.external_services, new_node.external_services);
+
+        // A single read returns `status` and `lifecycle` together.
+        let (updated, invalid_agents, invalid_external_services) =
+            node_table.get_by_id(id).unwrap().unwrap();
+        assert!(invalid_agents.is_empty());
+        assert!(invalid_external_services.is_empty());
+
+        let updated_agent = updated.agents.get(1).expect("two agents");
+        assert_eq!(updated_agent.installed_version.as_deref(), Some("1.2.3"));
+        assert_eq!(updated_agent.installed_commit.as_deref(), Some("f0f0f0f"));
+        assert_eq!(updated_agent.lifecycle, Lifecycle::Running);
+        assert_eq!(updated_agent.status, Status::ReloadFailed);
+        assert_eq!(
+            updated_agent.bound_addrs,
+            vec![("addr".to_string(), "127.0.0.1:1111".to_string())]
+        );
+        assert_eq!(updated_agent.config, node.agents.get(1).unwrap().config);
+        assert_eq!(updated_agent.draft, node.agents.get(1).unwrap().draft);
+
+        // The untouched agent keeps the values it was registered with.
+        let untouched_agent = updated.agents.first().expect("two agents");
+        assert_eq!(untouched_agent.installed_version, None);
+        assert_eq!(untouched_agent.installed_commit, None);
+        assert_eq!(untouched_agent.lifecycle, Lifecycle::NotInstalled);
+        assert!(untouched_agent.bound_addrs.is_empty());
+
+        let updated_external_service = updated
+            .external_services
+            .first()
+            .expect("one external service");
+        assert_eq!(
+            updated_external_service.installed_version.as_deref(),
+            Some("0.9.0-alpha")
+        );
+        assert_eq!(
+            updated_external_service.installed_commit.as_deref(),
+            Some("abcdef1")
+        );
+        assert_eq!(updated_external_service.lifecycle, Lifecycle::Failed);
+        assert_eq!(
+            updated_external_service.bound_addrs,
+            vec![
+                ("ingest_srv_addr".to_string(), "10.0.0.1:38370".to_string()),
+                ("publish_srv_addr".to_string(), "10.0.0.1:38371".to_string()),
+            ]
+        );
+        assert_eq!(
+            updated_external_service.draft,
+            node.external_services.first().unwrap().draft
+        );
+    }
+
+    /// Returns `value` with the byte encoding the lifecycle replaced by
+    /// `number`.
+    ///
+    /// The byte is located by comparing `value` against the same record
+    /// serialized under a different lifecycle, so the forgery does not hard-code
+    /// the layout of the private persisted struct.
+    fn forge_lifecycle_byte(value: &[u8], other: &[u8], number: u8) -> Vec<u8> {
+        let position = value
+            .iter()
+            .zip(other)
+            .position(|(a, b)| a != b)
+            .expect("the two records differ in the lifecycle byte");
+        let mut forged = value.to_vec();
+        *forged.get_mut(position).expect("position is in bounds") = number;
+        forged
+    }
+
+    /// A node read must still return an agent and an external service whose
+    /// stored lifecycle number this build does not recognize.
+    ///
+    /// `get_by_id` propagates a failed record deserialization, so storing the
+    /// lifecycle as a `Lifecycle` instead of a raw index would not merely lose
+    /// the field: a single row written by a newer build would fail the whole
+    /// node read. `TableIter` is worse still — it drops such a record silently,
+    /// so the instance would vanish from the node it belongs to.
+    #[test]
+    fn node_read_survives_an_unknown_lifecycle_number() {
+        use crate::tables::Value as ValueTrait;
+
+        let (_permit, store) = setup_store();
+
+        let agent_kinds = vec![AgentKind::Unsupervised];
+        let agent_configs = create_agent_configs(&agent_kinds);
+        let agents = create_agents(0, &agent_kinds, &agent_configs, &agent_configs);
+
+        let external_service_kinds = vec![ExternalServiceKind::DataStore];
+        let external_service_drafts = create_external_service_configs(&external_service_kinds);
+        let external_services =
+            create_external_services(0, &external_service_kinds, &external_service_drafts);
+
+        let mut node = create_node(
+            0,
+            "test",
+            None,
+            Some(Profile::default()),
+            None,
+            agents,
+            external_services,
+        );
+
+        let node_table = store.node_map();
+        let id = node_table.put(&node).unwrap();
+        node.id = id;
+        node.agents.iter_mut().for_each(|a| a.node_id = id);
+        node.external_services
+            .iter_mut()
+            .for_each(|e| e.node_id = id);
+
+        let agent = node.agents.first().expect("one agent").clone();
+        let mut relabelled_agent = agent.clone();
+        relabelled_agent.lifecycle = Lifecycle::Removing;
+        let agent_table = store.agents_map();
+        agent_table
+            .raw()
+            .put(
+                &agent.unique_key(),
+                &forge_lifecycle_byte(&agent.value(), &relabelled_agent.value(), 9),
+            )
+            .unwrap();
+
+        let external_service = node
+            .external_services
+            .first()
+            .expect("one external service")
+            .clone();
+        let mut relabelled_external_service = external_service.clone();
+        relabelled_external_service.lifecycle = Lifecycle::Removing;
+        let external_service_table = store.external_service_map();
+        external_service_table
+            .raw()
+            .put(
+                &external_service.unique_key(),
+                &forge_lifecycle_byte(
+                    &external_service.value(),
+                    &relabelled_external_service.value(),
+                    9,
+                ),
+            )
+            .unwrap();
+
+        let (read, invalid_agents, invalid_external_services) =
+            node_table.get_by_id(id).unwrap().unwrap();
+        assert!(invalid_agents.is_empty());
+        assert!(invalid_external_services.is_empty());
+
+        let read_agent = read.agents.first().expect("one agent");
+        assert_eq!(read_agent.lifecycle, Lifecycle::Unknown);
+        assert_ne!(read_agent.lifecycle, Lifecycle::NotInstalled);
+        assert_eq!(read_agent.key, agent.key);
+        assert_eq!(read_agent.kind, agent.kind);
+        assert_eq!(read_agent.status, agent.status);
+        assert_eq!(read_agent.config, agent.config);
+        assert_eq!(read_agent.draft, agent.draft);
+
+        let read_external_service = read
+            .external_services
+            .first()
+            .expect("one external service");
+        assert_eq!(read_external_service.lifecycle, Lifecycle::Unknown);
+        assert_ne!(read_external_service.lifecycle, Lifecycle::NotInstalled);
+        assert_eq!(read_external_service.key, external_service.key);
+        assert_eq!(read_external_service.kind, external_service.kind);
+        assert_eq!(read_external_service.status, external_service.status);
+        assert_eq!(read_external_service.draft, external_service.draft);
+    }
+
+    #[test]
+    fn update_returns_node_with_added_agent() {
+        let (_permit, store) = setup_store();
+
+        let initial_kinds = vec![AgentKind::Unsupervised];
+        let initial_configs = create_agent_configs(&initial_kinds);
+        let initial_drafts = vec![None];
+        let profile = Profile::default();
+        let agents = create_agents(0, &initial_kinds, &initial_configs, &initial_drafts);
+
+        let mut node = create_node(0, "test", None, Some(profile), None, agents, vec![]);
+        let mut node_table = store.node_map();
+        let id = node_table.put(&node).unwrap();
+        node.id = id;
+        node.agents.iter_mut().for_each(|a| a.node_id = id);
+
+        let old: Update = node.clone().into();
+        let added_kinds = vec![AgentKind::Sensor];
+        let added_configs = create_agent_configs(&added_kinds);
+        let added_drafts = vec![None];
+        let added = create_agents(id, &added_kinds, &added_configs, &added_drafts);
+
+        let mut new_agents = node.agents.clone();
+        new_agents.extend(added.clone());
+        let new = Update {
+            name: Some(node.name.clone()),
+            name_draft: node.name_draft.clone(),
+            profile: node.profile.clone(),
+            profile_draft: node.profile_draft.clone(),
+            agents: new_agents.clone(),
+            external_services: vec![],
+        };
+
+        let returned = node_table.update(id, &old, &new).unwrap();
+        assert_eq!(returned.agents, new_agents);
+    }
+
+    #[test]
+    fn update_returns_node_with_removed_agent() {
+        let (_permit, store) = setup_store();
+
+        let kinds = vec![AgentKind::Unsupervised, AgentKind::Sensor];
+        let configs = create_agent_configs(&kinds);
+        let drafts = vec![None, None];
+        let profile = Profile::default();
+        let agents = create_agents(0, &kinds, &configs, &drafts);
+
+        let mut node = create_node(0, "test", None, Some(profile), None, agents, vec![]);
+        let mut node_table = store.node_map();
+        let id = node_table.put(&node).unwrap();
+        node.id = id;
+        node.agents.iter_mut().for_each(|a| a.node_id = id);
+
+        let old: Update = node.clone().into();
+        let kept_agents: Vec<_> = node.agents.iter().take(1).cloned().collect();
+        let new = Update {
+            name: Some(node.name.clone()),
+            name_draft: node.name_draft.clone(),
+            profile: node.profile.clone(),
+            profile_draft: node.profile_draft.clone(),
+            agents: kept_agents.clone(),
+            external_services: vec![],
+        };
+
+        let returned = node_table.update(id, &old, &new).unwrap();
+        assert_eq!(returned.agents, kept_agents);
+        assert_eq!(returned.agents.len(), 1);
+    }
+
+    #[test]
+    fn update_returns_node_with_changed_profile() {
+        let (_permit, store) = setup_store();
+
+        let initial_profile = Profile {
+            customer_id: 1,
+            description: "initial".to_string(),
+            hostname: "initial-host".to_string(),
+        };
+        let mut node = create_node(
+            0,
+            "test",
+            None,
+            Some(initial_profile.clone()),
+            None,
+            vec![],
+            vec![],
+        );
+        let mut node_table = store.node_map();
+        let id = node_table.put(&node).unwrap();
+        node.id = id;
+
+        let new_profile = Profile {
+            customer_id: 1,
+            description: "updated".to_string(),
+            hostname: "updated-host".to_string(),
+        };
+
+        let old: Update = node.clone().into();
+        let new = Update {
+            name: Some(node.name.clone()),
+            name_draft: None,
+            profile: Some(new_profile.clone()),
+            profile_draft: None,
+            agents: vec![],
+            external_services: vec![],
+        };
+
+        let returned = node_table.update(id, &old, &new).unwrap();
+        assert_eq!(returned.profile, Some(new_profile));
+    }
+
+    #[test]
+    fn update_preserves_creation_time() {
+        let (_permit, store) = setup_store();
+
+        let profile = Profile::default();
+        let mut node = create_node(0, "test", None, Some(profile), None, vec![], vec![]);
+        let original_creation_time = node.creation_time;
+
+        let mut node_table = store.node_map();
+        let id = node_table.put(&node).unwrap();
+        node.id = id;
+
+        let old: Update = node.clone().into();
+        let new = Update {
+            name: Some(node.name.clone()),
+            name_draft: Some("draft".to_string()),
+            profile: node.profile.clone(),
+            profile_draft: None,
+            agents: vec![],
+            external_services: vec![],
+        };
+
+        let returned = node_table.update(id, &old, &new).unwrap();
+        assert_eq!(returned.creation_time, original_creation_time);
+    }
+
+    #[test]
+    fn update_noop_returns_unchanged_node() {
+        let (_permit, store) = setup_store();
+
+        let kinds = vec![AgentKind::Unsupervised];
+        let configs = create_agent_configs(&kinds);
+        let drafts = vec![None];
+        let profile = Profile::default();
+        let agents = create_agents(0, &kinds, &configs, &drafts);
+        let mut node = create_node(
+            0,
+            "test",
+            Some("draft"),
+            Some(profile),
+            None,
+            agents,
+            vec![],
+        );
+
+        let mut node_table = store.node_map();
+        let id = node_table.put(&node).unwrap();
+        node.id = id;
+        node.agents.iter_mut().for_each(|a| a.node_id = id);
+
+        let old: Update = node.clone().into();
+        let new: Update = node.clone().into();
+
+        let returned = node_table.update(id, &old, &new).unwrap();
+        assert_eq!(returned, node);
+    }
+
+    #[test]
+    fn update_atomic_rollback_on_agent_failure() {
+        let (_permit, store) = setup_store();
+
+        let kinds = vec![AgentKind::Sensor];
+        let configs = create_agent_configs(&kinds);
+        let drafts = vec![None];
+        let profile = Profile {
+            customer_id: 1,
+            description: "original".to_string(),
+            hostname: "original-host".to_string(),
+        };
+        let agents = create_agents(0, &kinds, &configs, &drafts);
+        let mut node = create_node(0, "test", None, Some(profile.clone()), None, agents, vec![]);
+
+        let mut node_table = store.node_map();
+        let id = node_table.put(&node).unwrap();
+        node.id = id;
+        node.agents.iter_mut().for_each(|a| a.node_id = id);
+
+        // Construct an `old` with a stale agent value (different draft) so the
+        // agent.update_with_transaction step fails with "old value mismatch"
+        // *after* the node-inner update has already been staged within the txn.
+        let stale_drafts: Vec<Option<Config>> =
+            vec![Some("stale_key=1".to_string().try_into().unwrap())];
+        let stale_agents = create_agents(id, &kinds, &configs, &stale_drafts);
+
+        let old = Update {
+            name: Some(node.name.clone()),
+            name_draft: None,
+            profile: Some(profile.clone()),
+            profile_draft: None,
+            agents: stale_agents,
+            external_services: vec![],
+        };
+        let new_profile = Profile {
+            customer_id: 1,
+            description: "modified".to_string(),
+            hostname: "modified-host".to_string(),
+        };
+        let new_drafts: Vec<Option<Config>> =
+            vec![Some("new_key=2".to_string().try_into().unwrap())];
+        let new_agents = create_agents(id, &kinds, &configs, &new_drafts);
+        let new = Update {
+            name: Some(node.name.clone()),
+            name_draft: None,
+            profile: Some(new_profile),
+            profile_draft: None,
+            agents: new_agents,
+            external_services: vec![],
+        };
+
+        let result = node_table.update(id, &old, &new);
+        assert!(result.is_err());
+
+        // Verify that no state change occurred — the node and its agent still
+        // reflect the pre-update state.
+        let (after, invalid_agents, _) = node_table.get_by_id(id).unwrap().unwrap();
+        assert!(invalid_agents.is_empty());
+        assert_eq!(after.profile, Some(profile));
+        assert_eq!(after.agents, node.agents);
     }
 }

@@ -4,7 +4,7 @@ This crate provides a permanent storage solution for data collected and
 maintained by REview, a cybersecurity analysis system. It offers a robust and
 flexible database interface for efficient data management.
 
-[![Coverage Status](https://codecov.io/gh/petabi/review-database/branch/main/graphs/badge.svg)](https://codecov.io/gh/petabi/review-database)
+[![Coverage Status](https://codecov.io/gh/aicers/review-database/branch/main/graphs/badge.svg)](https://codecov.io/gh/aicers/review-database)
 
 ## Features
 
@@ -31,6 +31,19 @@ flexible database interface for efficient data management.
   support
 - Data Analysis: Support for outlier detection, time series analysis, and
   statistical computations
+
+## Country Codes At Ingestion
+
+Open an IP2Location database in the caller application and pass it to
+`Store::new` as `Some(Arc<ip2location::DB>)` to share it with event writers.
+`EventDb::put` then resolves endpoint country codes while converting
+producer-facing fields to the stored schema. Producers do not provide
+country-code fields.
+
+`ZZ` means no lookup was performed because the store was opened with
+`None`. `XX` means a configured lookup was attempted but failed or did not
+return a valid two-letter code. Vector country-code fields retain the same
+length and ordering as their corresponding address vectors.
 
 ## License
 

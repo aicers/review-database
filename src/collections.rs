@@ -20,7 +20,7 @@ enum KeyIndexEntry {
 }
 
 #[derive(Default, Deserialize, Serialize)]
-pub struct KeyIndex {
+pub(crate) struct KeyIndex {
     keys: Vec<KeyIndexEntry>,
     available: u32,
     inactive: Option<u32>,
@@ -28,7 +28,7 @@ pub struct KeyIndex {
 
 impl KeyIndex {
     /// Deserializes a `KeyIndex` from a byte slice.
-    pub fn from_bytes(bytes: impl AsRef<[u8]>) -> Result<Self> {
+    pub(crate) fn from_bytes(bytes: impl AsRef<[u8]>) -> Result<Self> {
         bincode::DefaultOptions::new()
             .deserialize_from(bytes.as_ref())
             .context("invalid serialized form")
@@ -51,7 +51,7 @@ impl KeyIndex {
         })
     }
 
-    pub fn iter(&self) -> KeyIndexIterator<'_> {
+    pub(crate) fn iter(&self) -> KeyIndexIterator<'_> {
         KeyIndexIterator {
             entries: &self.keys,
             i: 0,
@@ -133,7 +133,7 @@ impl KeyIndex {
     }
 
     /// Updates a key for the given index to a new one.
-    fn update(&mut self, id: u32, key: &[u8]) -> Result<Vec<u8>> {
+    pub(crate) fn update(&mut self, id: u32, key: &[u8]) -> Result<Vec<u8>> {
         let i = usize::try_from(id).context("index out of range")?;
         let key = match self.keys.get_mut(i) {
             Some(KeyIndexEntry::Key(old_key)) => mem::replace(old_key, key.to_vec()),
@@ -313,6 +313,28 @@ pub trait Indexed {
             .transpose()
     }
 
+    /// Gets an entry corresponding to the given index within a transaction,
+    /// acquiring an exclusive lock on the entry.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the index is invalid or cannot be read.
+    fn get_by_id_in_transaction<T: Indexable + FromKeyValue>(
+        &self,
+        id: u32,
+        txn: &rocksdb::Transaction<rocksdb::OptimisticTransactionDB>,
+    ) -> Result<Option<T>> {
+        let index = self.index_in_transaction(txn)?;
+        let Some(key) = index.get(id).context("invalid ID")? else {
+            return Ok(None);
+        };
+        let key = T::make_indexed_key(Cow::Borrowed(key), id);
+        txn.get_for_update_cf(self.cf(), &key, super::EXCLUSIVE)
+            .context("cannot read entry")?
+            .map(|value| T::from_key_value(&key, &value))
+            .transpose()
+    }
+
     /// Inserts a new key-value pair.
     ///
     /// # Errors
@@ -461,38 +483,6 @@ pub trait Indexed {
         txn.delete_cf(self.cf(), indexed_key)
             .context("failed to remove entry")?;
         Ok(key)
-    }
-
-    /// Overwrites the value of an existing key-value pair.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the key doesn't exist.
-    fn overwrite<T: Indexable>(&self, entry: &T) -> Result<()> {
-        loop {
-            let txn = self.db().transaction();
-            if entry.indexed_key().is_empty() {
-                bail!("key shouldn't be empty");
-            }
-            if txn
-                .get_for_update_cf(self.cf(), entry.indexed_key(), super::EXCLUSIVE)
-                .context("cannot read from database")?
-                .is_none()
-            {
-                bail!("key doesn't exist");
-            }
-            txn.put_cf(self.cf(), entry.indexed_key(), entry.value())
-                .context("failed to write new entry")?;
-            match txn.commit() {
-                Ok(()) => break,
-                Err(e) => {
-                    if !e.as_ref().starts_with("Resource busy:") {
-                        return Err(e).context("failed to store new entry");
-                    }
-                }
-            }
-        }
-        Ok(())
     }
 
     /// Updates an old key-value pair to a new one.

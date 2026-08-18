@@ -266,7 +266,7 @@ mod tests {
         use crate::Iterable;
         let db_dir = tempfile::tempdir().unwrap();
         let backup_dir = tempfile::tempdir().unwrap();
-        let store = Arc::new(Store::new(db_dir.path(), backup_dir.path()).unwrap());
+        let store = Arc::new(Store::new(db_dir.path(), backup_dir.path(), None).unwrap());
         let table = store.label_db_map();
 
         let tester = &["1", "2", "3"];

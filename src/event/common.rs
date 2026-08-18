@@ -2,7 +2,6 @@ use std::{
     borrow::Cow,
     fmt::{self, Formatter, Write},
     net::IpAddr,
-    num::NonZeroU8,
 };
 
 use anyhow::Result;
@@ -11,27 +10,28 @@ use bincode::Options;
 use num_traits::ToPrimitive;
 use serde::{Deserialize, Serialize};
 
-use super::{
-    EventCategory, EventFilter, FlowKind, LearningMethod, TrafficDirection, eq_ip_country,
+use super::{EventCategory, EventFilter, FlowKind, LearningMethod, ThreatLevel, TrafficDirection};
+use crate::{
+    AttrCmpKind, Confidence, PacketAttr, Response, TriageExclusion, TriagePolicyInput, ValueKind,
 };
-use crate::{AttrCmpKind, Confidence, PacketAttr, TriageExclusion, ValueKind};
 
 /// Epsilon value for inclusive confidence comparisons
 const CONFIDENCE_EPSILON: f32 = 1e-6;
-
 // TODO: Make new Match trait to support Windows Events
 
 pub(super) trait Match {
-    fn src_addrs(&self) -> &[IpAddr];
+    fn orig_addrs(&self) -> &[IpAddr];
     #[allow(dead_code)] // for future use
-    fn src_port(&self) -> u16;
-    fn dst_addrs(&self) -> &[IpAddr];
+    fn orig_port(&self) -> u16;
+    fn orig_country_codes(&self) -> &[[u8; 2]];
+    fn resp_addrs(&self) -> &[IpAddr];
     #[allow(dead_code)] // for future use
-    fn dst_port(&self) -> u16;
+    fn resp_port(&self) -> u16;
+    fn resp_country_codes(&self) -> &[[u8; 2]];
     #[allow(dead_code)] // for future use
     fn proto(&self) -> u8;
     fn category(&self) -> Option<EventCategory>;
-    fn level(&self) -> NonZeroU8;
+    fn level(&self) -> ThreatLevel;
     fn kind(&self) -> &str;
     fn sensor(&self) -> &str;
     fn confidence(&self) -> Option<f32>;
@@ -60,20 +60,11 @@ pub(super) trait Match {
 
     /// Returns whether the event matches the filter and the triage scores. The triage scores are
     /// only returned if the event matches the filter.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the filter contains a country filter but the ip2location database is
-    /// not available.
-    fn matches(
-        &self,
-        locator: Option<&ip2location::DB>,
-        filter: &EventFilter,
-    ) -> Result<(bool, Option<Vec<TriageScore>>)> {
+    fn matches(&self, filter: &EventFilter) -> Result<(bool, Option<Vec<TriageScore>>)> {
         if !self.kind_matches(filter) {
             return Ok((false, None));
         }
-        self.other_matches(filter, locator)
+        self.other_matches(filter)
     }
 
     fn kind_matches(&self, filter: &EventFilter) -> bool {
@@ -88,26 +79,23 @@ pub(super) trait Match {
 
     /// Returns whether the event matches the filter (excluding `kinds`) and the triage scores. The
     /// triage scores are only returned if the event matches the filter.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the filter contains a country filter but the ip2location database is
-    /// not available.
     #[allow(clippy::too_many_lines)]
-    fn other_matches(
-        &self,
-        filter: &EventFilter,
-        locator: Option<&ip2location::DB>,
-    ) -> Result<(bool, Option<Vec<TriageScore>>)> {
+    fn other_matches(&self, filter: &EventFilter) -> Result<(bool, Option<Vec<TriageScore>>)> {
+        // Customer matching uses the customer's registered network ranges to
+        // test event addresses (orig_addrs/resp_addrs). It does NOT filter based
+        // on a customer ID attached to the event. If you need per-event
+        // customer attribution, that requires modifying the EventDb schema
+        // (see issue #687) — do not attempt to change storage layout in this
+        // function.
         if let Some(customers) = &filter.customers
             && customers.iter().all(|customer| {
-                self.src_addrs()
+                self.orig_addrs()
                     .iter()
-                    .all(|&src_addr| !customer.contains(src_addr))
+                    .all(|&orig_addr| !customer.contains(orig_addr))
                     && self
-                        .dst_addrs()
+                        .resp_addrs()
                         .iter()
-                        .all(|&dst_addr| !customer.contains(dst_addr))
+                        .all(|&resp_addr| !customer.contains(resp_addr))
             })
         {
             return Ok((false, None));
@@ -116,51 +104,51 @@ pub(super) trait Match {
         if let Some(endpoints) = &filter.endpoints
             && endpoints.iter().all(|endpoint| match endpoint.direction {
                 Some(TrafficDirection::From) => self
-                    .src_addrs()
+                    .orig_addrs()
                     .iter()
-                    .all(|&src_addr| !endpoint.network.contains(src_addr)),
+                    .all(|&orig_addr| !endpoint.network.contains(orig_addr)),
                 Some(TrafficDirection::To) => self
-                    .dst_addrs()
+                    .resp_addrs()
                     .iter()
-                    .all(|&dst_addr| !endpoint.network.contains(dst_addr)),
+                    .all(|&resp_addr| !endpoint.network.contains(resp_addr)),
                 None => {
-                    self.src_addrs()
+                    self.orig_addrs()
                         .iter()
-                        .all(|&src_addr| !endpoint.network.contains(src_addr))
+                        .all(|&orig_addr| !endpoint.network.contains(orig_addr))
                         && self
-                            .dst_addrs()
+                            .resp_addrs()
                             .iter()
-                            .all(|&dst_addr| !endpoint.network.contains(dst_addr))
+                            .all(|&resp_addr| !endpoint.network.contains(resp_addr))
                 }
             })
         {
             return Ok((false, None));
         }
 
-        if let Some(addr) = filter.source
-            && self.src_addrs().iter().all(|&src_addr| src_addr != addr)
+        if let Some(addr) = filter.originator
+            && self.orig_addrs().iter().all(|&orig_addr| orig_addr != addr)
         {
             return Ok((false, None));
         }
 
-        if let Some(addr) = filter.destination
-            && self.dst_addrs().iter().all(|&dst_addr| dst_addr != addr)
+        if let Some(addr) = filter.responder
+            && self.resp_addrs().iter().all(|&resp_addr| resp_addr != addr)
         {
             return Ok((false, None));
         }
 
         if let Some((kinds, internal)) = &filter.directions {
-            let internal_src = internal.iter().any(|net| {
-                self.src_addrs()
+            let internal_orig = internal.iter().any(|net| {
+                self.orig_addrs()
                     .iter()
-                    .any(|&src_addr| net.contains(src_addr))
+                    .any(|&orig_addr| net.contains(orig_addr))
             });
-            let internal_dst = internal.iter().any(|net| {
-                self.dst_addrs()
+            let internal_resp = internal.iter().any(|net| {
+                self.resp_addrs()
                     .iter()
-                    .any(|&dst_addr| net.contains(dst_addr))
+                    .any(|&resp_addr| net.contains(resp_addr))
             });
-            match (internal_src, internal_dst) {
+            match (internal_orig, internal_resp) {
                 (true, true) => {
                     if !kinds.contains(&FlowKind::Internal) {
                         return Ok((false, None));
@@ -181,19 +169,16 @@ pub(super) trait Match {
         }
 
         if let Some(countries) = &filter.countries {
-            if let Some(locator) = locator {
-                if countries.iter().all(|country| {
-                    self.src_addrs()
+            let orig_codes = self.orig_country_codes();
+            let resp_codes = self.resp_country_codes();
+            if countries.iter().all(|country| {
+                orig_codes
+                    .iter()
+                    .all(|&code| !crate::util::stored_country_code_matches(code, *country))
+                    && resp_codes
                         .iter()
-                        .all(|&src_addr| !eq_ip_country(locator, src_addr, *country))
-                        && self
-                            .dst_addrs()
-                            .iter()
-                            .all(|&dst_addr| !eq_ip_country(locator, dst_addr, *country))
-                }) {
-                    return Ok((false, None));
-                }
-            } else {
+                        .all(|&code| !crate::util::stored_country_code_matches(code, *country))
+            }) {
                 return Ok((false, None));
             }
         }
@@ -248,14 +233,7 @@ pub(super) trait Match {
                     let score = self.score_by_triage_exclusion(&triage.triage_exclusion)
                         + self.score_by_attr(&triage.packet_attr)
                         + self.score_by_confidence(&triage.confidence);
-                    if triage.response.iter().any(|r| score >= r.minimum_score) {
-                        Some(TriageScore {
-                            policy_id: triage.id,
-                            score,
-                        })
-                    } else {
-                        None
-                    }
+                    self.build_triage_score(triage.id, score, &triage.response)
                 })
                 .collect::<Vec<_>>();
             if triage_scores.is_empty() {
@@ -270,8 +248,8 @@ pub(super) trait Match {
     fn score_by_triage_exclusion(&self, triage_exclusion: &[TriageExclusion]) -> f64 {
         let matched = triage_exclusion.iter().any(|ti| {
             if let TriageExclusion::IpAddress(filter) = ti {
-                self.src_addrs().iter().any(|&addr| filter.contains(addr))
-                    || self.dst_addrs().iter().any(|&addr| filter.contains(addr))
+                self.orig_addrs().iter().any(|&addr| filter.contains(addr))
+                    || self.resp_addrs().iter().any(|&addr| filter.contains(addr))
             } else {
                 false
             }
@@ -279,9 +257,61 @@ pub(super) trait Match {
         if matched { f64::MIN } else { 0.0 }
     }
 
+    /// Returns whether any of `exclusions` matches this event.
+    ///
+    /// Hides the `f64::MIN` sentinel returned by `score_by_triage_exclusion`
+    /// so callers don't have to know that internal contract.
+    fn matched_any_exclusion(&self, exclusions: &[TriageExclusion]) -> bool {
+        // `score_by_triage_exclusion` returns the bit-exact constant `f64::MIN`
+        // as a sentinel; this is a deliberate equality check, not an
+        // approximate comparison.
+        #[allow(clippy::float_cmp)]
+        {
+            self.score_by_triage_exclusion(exclusions) == f64::MIN
+        }
+    }
+
+    /// Builds a `TriageScore` if `score` reaches at least one threshold in
+    /// `response`. Returns `None` when `response` is empty or when no
+    /// threshold is met.
+    fn build_triage_score(
+        &self,
+        policy_id: u32,
+        score: f64,
+        response: &[Response],
+    ) -> Option<TriageScore> {
+        if response.iter().any(|r| score >= r.minimum_score) {
+            Some(TriageScore { policy_id, score })
+        } else {
+            None
+        }
+    }
+
+    /// Computes inline triage scores for `policies`, treating each policy's
+    /// `triage_exclusion` as already applied by the caller.
+    ///
+    /// Each policy contributes a `TriageScore` only when
+    /// `score_by_attr + score_by_confidence` reaches at least one
+    /// `response.minimum_score` threshold. Policies whose `response` is
+    /// empty contribute no score.
+    fn inline_scores_against_policies(&self, policies: &[TriagePolicyInput]) -> Vec<TriageScore> {
+        policies
+            .iter()
+            .filter_map(|p| {
+                debug_assert!(
+                    p.triage_exclusion.is_empty(),
+                    "inline scoring expects exclusions to have been applied by the caller"
+                );
+                let score =
+                    self.score_by_attr(&p.packet_attr) + self.score_by_confidence(&p.confidence);
+                self.build_triage_score(p.id, score, &p.response)
+            })
+            .collect()
+    }
+
     fn score_by_confidence(&self, confidence: &[Confidence]) -> f64 {
         confidence.iter().fold(0.0, |score, conf| {
-            if Some(conf.threat_category) == self.category()
+            if conf.threat_category == self.category()
                 && conf.threat_kind.to_lowercase() == self.kind().to_lowercase()
                 && self
                     .confidence()
@@ -329,6 +359,29 @@ pub fn vector_to_string<T: ToString>(v: &[T]) -> String {
     }
 }
 
+/// Formats DHCP options as a compact string.
+///
+/// Each option is represented as `code:hex_data` where the data is
+/// hex-encoded. Options are comma-separated.
+pub fn dhcp_options_to_string(options: &[(u8, Vec<u8>)]) -> String {
+    use std::fmt::Write;
+
+    if options.is_empty() {
+        return String::new();
+    }
+    let mut buf = String::new();
+    for (i, (code, data)) in options.iter().enumerate() {
+        if i > 0 {
+            buf.push(',');
+        }
+        write!(buf, "{code}:").ok();
+        for byte in data {
+            write!(buf, "{byte:02x}").ok();
+        }
+    }
+    buf
+}
+
 /// Converts a hardware address to a colon-separated string.
 pub fn to_hardware_address(chaddr: &[u8]) -> String {
     let mut iter = chaddr.iter();
@@ -364,6 +417,7 @@ pub enum AttrValue<'a> {
     VecUInt(Cow<'a, [u64]>),
     VecString(Cow<'a, [String]>),
     VecRaw(&'a [u8]),
+    VecRawList(Cow<'a, [&'a [u8]]>),
 }
 
 fn is_matching_list<T, F>(attr_val: &[T], packet_attr: &PacketAttr, compare_fn: F) -> bool
@@ -409,6 +463,9 @@ fn is_attr_matched(target_value: AttrValue, attr: &PacketAttr) -> bool {
             })
         }
         AttrValue::VecRaw(vec_raw_val) => matches_vec_raw_attr(vec_raw_val, attr),
+        AttrValue::VecRawList(list) => is_matching_list(list.as_ref(), attr, |val, packet_attr| {
+            matches_vec_raw_attr(val, packet_attr)
+        }),
     }
 }
 
@@ -556,7 +613,7 @@ fn matches_byte_attr(cmp_kind: AttrCmpKind, target_val: &[u8], compare_val: &[u8
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use std::{
         cmp::Ordering,
         net::{IpAddr, Ipv4Addr},
@@ -566,32 +623,38 @@ mod tests {
         ConnAttr, DhcpAttr, DnsAttr, FtpAttr, HttpAttr, RadiusAttr, RawEventKind,
     };
     use bincode::Options;
-    use chrono::{TimeZone, Utc};
+    use chrono::{DateTime, TimeZone, Utc};
+    use jiff::Timestamp;
     use serde::Serialize;
 
     use super::{AttrValue, Match, is_attr_matched};
+    use crate::event::timestamp;
     use crate::{
         AttrCmpKind, Customer, CustomerNetwork, EventCategory, HostNetworkGroup, PacketAttr,
         ValueKind,
         event::{
-            BlocklistBootp, BlocklistBootpFields, BlocklistConn, BlocklistConnFields,
-            BlocklistDceRpc, BlocklistDceRpcFields, BlocklistDhcp, BlocklistDhcpFields,
-            BlocklistDns, BlocklistDnsFields, BlocklistFtp, BlocklistHttp, BlocklistHttpFields,
-            BlocklistKerberos, BlocklistKerberosFields, BlocklistLdap, BlocklistMalformedDns,
-            BlocklistMalformedDnsFields, BlocklistMqtt, BlocklistMqttFields, BlocklistNfs,
-            BlocklistNfsFields, BlocklistNtlm, BlocklistNtlmFields, BlocklistRadius,
-            BlocklistRadiusFields, BlocklistRdp, BlocklistRdpFields, BlocklistSmb,
-            BlocklistSmbFields, BlocklistSmtp, BlocklistSmtpFields, BlocklistSsh,
-            BlocklistSshFields, BlocklistTls, BlocklistTlsFields, CryptocurrencyMiningPool,
-            CryptocurrencyMiningPoolFields, DgaFields, DnsCovertChannel, DnsEventFields,
-            DomainGenerationAlgorithm, Event, EventFilter, ExternalDdos, ExternalDdosFields,
-            ExtraThreat, FlowKind, FtpBruteForce, FtpBruteForceFields, FtpEventFields,
-            FtpPlainText, HttpEventFields, HttpThreat, HttpThreatFields, LdapBruteForce,
-            LdapBruteForceFields, LdapEventFields, LdapPlainText, LearningMethod, LockyRansomware,
-            MultiHostPortScan, MultiHostPortScanFields, NetworkThreat, NetworkType, NonBrowser,
-            PortScan, PortScanFields, RdpBruteForce, RdpBruteForceFields, RecordType,
-            RepeatedHttpSessions, RepeatedHttpSessionsFields, SuspiciousTlsTraffic, TorConnection,
-            UnusualDestinationPattern, UnusualDestinationPatternFields, WindowsThreat,
+            BlocklistBootp, BlocklistBootpFieldsStored, BlocklistConn, BlocklistConnFieldsStored,
+            BlocklistDceRpc, BlocklistDceRpcFieldsStored, BlocklistDhcp, BlocklistDhcpFieldsStored,
+            BlocklistDns, BlocklistDnsFieldsStored, BlocklistFtp, BlocklistHttp,
+            BlocklistHttpFieldsStored, BlocklistKerberos, BlocklistKerberosFieldsStored,
+            BlocklistLdap, BlocklistMalformedDns, BlocklistMalformedDnsFieldsStored, BlocklistMqtt,
+            BlocklistMqttFieldsStored, BlocklistNfs, BlocklistNfsFieldsStored, BlocklistNtlm,
+            BlocklistNtlmFieldsStored, BlocklistRadius, BlocklistRadiusFieldsStored, BlocklistRdp,
+            BlocklistRdpFieldsStored, BlocklistSmb, BlocklistSmbFieldsStored, BlocklistSmtp,
+            BlocklistSmtpFieldsStored, BlocklistSsh, BlocklistSshFieldsStored, BlocklistTls,
+            BlocklistTlsFieldsStored, CryptocurrencyMiningPool,
+            CryptocurrencyMiningPoolFieldsStored, DgaFieldsStored, DnsCovertChannel,
+            DnsEventFieldsStored, DomainGenerationAlgorithm, Event, EventFilter, ExternalDdos,
+            ExternalDdosFieldsStored, ExtraThreat, ExtraThreatFieldsStored, FlowKind,
+            FtpBruteForce, FtpBruteForceFieldsStored, FtpEventFieldsStored, FtpPlainText,
+            HttpEventFieldsStored, HttpThreat, HttpThreatFieldsStored, LdapBruteForce,
+            LdapBruteForceFieldsStored, LdapEventFieldsStored, LdapPlainText, LearningMethod,
+            LockyRansomware, MultiHostPortScan, MultiHostPortScanFieldsStored, NetworkThreat,
+            NetworkThreatFieldsStored, NetworkType, NonBrowser, PortScan, PortScanFieldsStored,
+            RdpBruteForce, RdpBruteForceFieldsStored, RecordType, RepeatedHttpSessions,
+            RepeatedHttpSessionsFieldsStored, SuspiciousTlsTraffic, TorConnection,
+            UnusualDestinationPattern, UnusualDestinationPatternFieldsStored, WindowsThreat,
+            WindowsThreatFieldsStored,
         },
         types::Endpoint,
     };
@@ -611,7 +674,7 @@ mod tests {
 
     #[test]
     fn learning_method_match_on_semi_supervised_events() {
-        let time = Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap();
+        let time = stored_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap());
         let mut semi_supervised_events = Vec::new();
 
         let dns_event = Event::DnsCovertChannel(DnsCovertChannel::new(time, dns_event_fields()));
@@ -783,7 +846,7 @@ mod tests {
         assert!(
             semi_supervised_events
                 .iter()
-                .all(|event| event.matches(None, &filter).unwrap().0)
+                .all(|event| event.matches(&filter).unwrap().0)
         );
 
         // Unsupervised engine-generated event filtering
@@ -791,7 +854,7 @@ mod tests {
         assert!(
             semi_supervised_events
                 .iter()
-                .all(|event| !event.matches(None, &filter).unwrap().0)
+                .all(|event| !event.matches(&filter).unwrap().0)
         );
 
         // All event filtering
@@ -802,7 +865,7 @@ mod tests {
         assert!(
             semi_supervised_events
                 .iter()
-                .all(|event| event.matches(None, &filter).unwrap().0)
+                .all(|event| event.matches(&filter).unwrap().0)
         );
     }
 
@@ -811,7 +874,7 @@ mod tests {
         let mut unsupervised_events = Vec::new();
 
         let http_threat_event = Event::HttpThreat(HttpThreat::new(
-            Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap(),
+            stored_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap()),
             http_threat_fields(),
         ));
         unsupervised_events.push(http_threat_event);
@@ -832,7 +895,7 @@ mod tests {
         assert!(
             unsupervised_events
                 .iter()
-                .all(|event| !event.matches(None, &filter).unwrap().0)
+                .all(|event| !event.matches(&filter).unwrap().0)
         );
 
         // Unsupervised engine-generated event filtering
@@ -840,7 +903,7 @@ mod tests {
         assert!(
             unsupervised_events
                 .iter()
-                .all(|event| event.matches(None, &filter).unwrap().0)
+                .all(|event| event.matches(&filter).unwrap().0)
         );
 
         // All event filtering
@@ -851,13 +914,13 @@ mod tests {
         assert!(
             unsupervised_events
                 .iter()
-                .all(|event| event.matches(None, &filter).unwrap().0)
+                .all(|event| event.matches(&filter).unwrap().0)
         );
     }
 
     #[test]
     fn filter_events_by_address() {
-        let time = Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap();
+        let time = stored_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap());
         let mut single_address_events = Vec::new();
 
         let dns_event = Event::DnsCovertChannel(DnsCovertChannel::new(time, dns_event_fields()));
@@ -1018,18 +1081,18 @@ mod tests {
 
         // Filtering success.
         let mut success_filter = event_filter();
-        let src_addr = IpAddr::V4(Ipv4Addr::LOCALHOST);
-        let dst_addr = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2));
-        success_filter.customers = Some(vec![create_customer(src_addr)]);
-        success_filter.endpoints = Some(vec![create_endpoint(src_addr)]);
-        success_filter.source = Some(src_addr);
-        success_filter.destination = Some(dst_addr);
-        success_filter.directions = Some(create_directions(FlowKind::Outbound, src_addr));
+        let orig_addr = IpAddr::V4(Ipv4Addr::LOCALHOST);
+        let resp_addr = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2));
+        success_filter.customers = Some(vec![create_customer(orig_addr)]);
+        success_filter.endpoints = Some(vec![create_endpoint(orig_addr)]);
+        success_filter.originator = Some(orig_addr);
+        success_filter.responder = Some(resp_addr);
+        success_filter.directions = Some(create_directions(FlowKind::Outbound, orig_addr));
 
         assert!(
             single_address_events
                 .iter()
-                .all(|event| event.matches(None, &success_filter).unwrap().0)
+                .all(|event| event.matches(&success_filter).unwrap().0)
         );
 
         // Filtering fail.
@@ -1040,7 +1103,7 @@ mod tests {
         assert!(
             single_address_events
                 .iter()
-                .all(|event| !event.matches(None, &fail_filter).unwrap().0)
+                .all(|event| !event.matches(&fail_filter).unwrap().0)
         );
 
         let mut fail_filter = event_filter();
@@ -1048,23 +1111,23 @@ mod tests {
         assert!(
             single_address_events
                 .iter()
-                .all(|event| !event.matches(None, &fail_filter).unwrap().0)
+                .all(|event| !event.matches(&fail_filter).unwrap().0)
         );
 
         let mut fail_filter = event_filter();
-        fail_filter.source = Some(fail_addr);
+        fail_filter.originator = Some(fail_addr);
         assert!(
             single_address_events
                 .iter()
-                .all(|event| !event.matches(None, &fail_filter).unwrap().0)
+                .all(|event| !event.matches(&fail_filter).unwrap().0)
         );
 
         let mut fail_filter = event_filter();
-        fail_filter.destination = Some(fail_addr);
+        fail_filter.responder = Some(fail_addr);
         assert!(
             single_address_events
                 .iter()
-                .all(|event| !event.matches(None, &fail_filter).unwrap().0)
+                .all(|event| !event.matches(&fail_filter).unwrap().0)
         );
 
         let mut fail_filter = event_filter();
@@ -1072,7 +1135,7 @@ mod tests {
         assert!(
             single_address_events
                 .iter()
-                .all(|event| !event.matches(None, &fail_filter).unwrap().0)
+                .all(|event| !event.matches(&fail_filter).unwrap().0)
         );
 
         let mut multi_address_events = Vec::new();
@@ -1091,18 +1154,18 @@ mod tests {
 
         // Filtering success.
         let mut success_filter = event_filter();
-        let src_addr = IpAddr::V4(Ipv4Addr::LOCALHOST);
-        let dst_addr = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2));
-        success_filter.customers = Some(vec![create_customer(src_addr)]);
-        success_filter.endpoints = Some(vec![create_endpoint(src_addr)]);
-        success_filter.source = Some(src_addr);
-        success_filter.destination = Some(dst_addr);
-        success_filter.directions = Some(create_directions(FlowKind::Outbound, src_addr));
+        let orig_addr = IpAddr::V4(Ipv4Addr::LOCALHOST);
+        let resp_addr = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2));
+        success_filter.customers = Some(vec![create_customer(orig_addr)]);
+        success_filter.endpoints = Some(vec![create_endpoint(orig_addr)]);
+        success_filter.originator = Some(orig_addr);
+        success_filter.responder = Some(resp_addr);
+        success_filter.directions = Some(create_directions(FlowKind::Outbound, orig_addr));
 
         assert!(
             multi_address_events
                 .iter()
-                .all(|event| event.matches(None, &success_filter).unwrap().0)
+                .all(|event| event.matches(&success_filter).unwrap().0)
         );
 
         // Filtering fail.
@@ -1113,7 +1176,7 @@ mod tests {
         assert!(
             multi_address_events
                 .iter()
-                .all(|event| !event.matches(None, &fail_filter).unwrap().0)
+                .all(|event| !event.matches(&fail_filter).unwrap().0)
         );
 
         let mut fail_filter = event_filter();
@@ -1121,23 +1184,23 @@ mod tests {
         assert!(
             multi_address_events
                 .iter()
-                .all(|event| !event.matches(None, &fail_filter).unwrap().0)
+                .all(|event| !event.matches(&fail_filter).unwrap().0)
         );
 
         let mut fail_filter = event_filter();
-        fail_filter.source = Some(fail_addr);
+        fail_filter.originator = Some(fail_addr);
         assert!(
             multi_address_events
                 .iter()
-                .all(|event| !event.matches(None, &fail_filter).unwrap().0)
+                .all(|event| !event.matches(&fail_filter).unwrap().0)
         );
 
         let mut fail_filter = event_filter();
-        fail_filter.destination = Some(fail_addr);
+        fail_filter.responder = Some(fail_addr);
         assert!(
             multi_address_events
                 .iter()
-                .all(|event| !event.matches(None, &fail_filter).unwrap().0)
+                .all(|event| !event.matches(&fail_filter).unwrap().0)
         );
 
         let mut fail_filter = event_filter();
@@ -1145,7 +1208,7 @@ mod tests {
         assert!(
             multi_address_events
                 .iter()
-                .all(|event| !event.matches(None, &fail_filter).unwrap().0)
+                .all(|event| !event.matches(&fail_filter).unwrap().0)
         );
 
         let mut no_address_events = Vec::new();
@@ -1164,7 +1227,7 @@ mod tests {
         assert!(
             no_address_events
                 .iter()
-                .all(|event| !event.matches(None, &fail_filter).unwrap().0)
+                .all(|event| !event.matches(&fail_filter).unwrap().0)
         );
 
         let mut fail_filter = event_filter();
@@ -1172,23 +1235,23 @@ mod tests {
         assert!(
             no_address_events
                 .iter()
-                .all(|event| !event.matches(None, &fail_filter).unwrap().0)
+                .all(|event| !event.matches(&fail_filter).unwrap().0)
         );
 
         let mut fail_filter = event_filter();
-        fail_filter.source = Some(fail_addr);
+        fail_filter.originator = Some(fail_addr);
         assert!(
             no_address_events
                 .iter()
-                .all(|event| !event.matches(None, &fail_filter).unwrap().0)
+                .all(|event| !event.matches(&fail_filter).unwrap().0)
         );
 
         let mut fail_filter = event_filter();
-        fail_filter.destination = Some(fail_addr);
+        fail_filter.responder = Some(fail_addr);
         assert!(
             no_address_events
                 .iter()
-                .all(|event| !event.matches(None, &fail_filter).unwrap().0)
+                .all(|event| !event.matches(&fail_filter).unwrap().0)
         );
 
         let mut fail_filter = event_filter();
@@ -1196,13 +1259,13 @@ mod tests {
         assert!(
             no_address_events
                 .iter()
-                .all(|event| !event.matches(None, &fail_filter).unwrap().0)
+                .all(|event| !event.matches(&fail_filter).unwrap().0)
         );
     }
 
     #[test]
     fn compare_attribute() {
-        let time = Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap();
+        let time = stored_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap());
 
         // Compare `Addr`, `String`, `UInt`, `VecString` type
         let http_event = DomainGenerationAlgorithm::new(time, dga_fields());
@@ -1482,8 +1545,42 @@ mod tests {
     }
 
     #[test]
+    fn vec_raw_list_matching() {
+        let option_data: Vec<Vec<u8>> = vec![vec![1], vec![0x01, 0x02, 0x03]];
+        let slices: Vec<&[u8]> = option_data.iter().map(Vec::as_slice).collect();
+
+        let contain_attr = PacketAttr {
+            raw_event_kind: RawEventKind::Dhcp,
+            attr_name: DhcpAttr::OptionData.to_string(),
+            value_kind: ValueKind::Vector,
+            cmp_kind: AttrCmpKind::Contain,
+            first_value: vec![0x02, 0x03],
+            second_value: None,
+            weight: None,
+        };
+        assert!(is_attr_matched(
+            AttrValue::VecRawList(std::borrow::Cow::Borrowed(&slices)),
+            &contain_attr
+        ));
+
+        let not_contain_attr = PacketAttr {
+            raw_event_kind: RawEventKind::Dhcp,
+            attr_name: DhcpAttr::OptionData.to_string(),
+            value_kind: ValueKind::Vector,
+            cmp_kind: AttrCmpKind::NotContain,
+            first_value: vec![0xff],
+            second_value: None,
+            weight: None,
+        };
+        assert!(is_attr_matched(
+            AttrValue::VecRawList(std::borrow::Cow::Borrowed(&slices)),
+            &not_contain_attr
+        ));
+    }
+
+    #[test]
     fn compare_attribute_new_protocols() {
-        let time = Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap();
+        let time = stored_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap());
 
         // 1. Radius
         let radius_event = BlocklistRadius::new(time, blocklist_radius_fields());
@@ -1520,10 +1617,10 @@ mod tests {
             Some(Ordering::Equal)
         );
 
-        // 3. Unusual Destination Pattern (Uses ConnAttr::DstAddr)
+        // 3. Unusual Destination Pattern (uses external ConnAttr::DstAddr)
         let unusual_dest_event =
             UnusualDestinationPattern::new(time, unusual_destination_pattern_fields());
-        // UnusualDestinationPattern maps ConnAttr::DstAddr to its destination_ips vector
+        // UnusualDestinationPattern maps ConnAttr::DstAddr to destination_ips
         let conn_attr = vec![PacketAttr {
             raw_event_kind: RawEventKind::Conn,
             attr_name: ConnAttr::DstAddr.to_string(),
@@ -1587,8 +1684,8 @@ mod tests {
             customers: None,
             endpoints: None,
             directions: None,
-            source: None,
-            destination: None,
+            originator: None,
+            responder: None,
             countries: None,
             categories: None,
             levels: None,
@@ -1601,13 +1698,15 @@ mod tests {
         }
     }
 
-    fn blocklist_bootp_fields() -> BlocklistBootpFields {
-        BlocklistBootpFields {
+    fn blocklist_bootp_fields() -> BlocklistBootpFieldsStored {
+        BlocklistBootpFieldsStored {
             sensor: "sensor".to_string(),
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             orig_port: 68,
+            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
             resp_port: 67,
+            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
             proto: 17,
             start_time: Utc
                 .with_ymd_and_hms(1970, 1, 1, 0, 0, 0)
@@ -1635,13 +1734,15 @@ mod tests {
         }
     }
 
-    fn blocklist_conn_fields() -> BlocklistConnFields {
-        BlocklistConnFields {
+    fn blocklist_conn_fields() -> BlocklistConnFieldsStored {
+        BlocklistConnFieldsStored {
             sensor: "collector1".to_string(),
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             orig_port: 10000,
+            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
             resp_port: 80,
+            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
             proto: 6,
             conn_state: "SAF".to_string(),
             start_time: Utc
@@ -1662,13 +1763,15 @@ mod tests {
         }
     }
 
-    fn blocklist_dcerpc_fields() -> BlocklistDceRpcFields {
-        BlocklistDceRpcFields {
+    fn blocklist_dcerpc_fields() -> BlocklistDceRpcFieldsStored {
+        BlocklistDceRpcFieldsStored {
             sensor: "sensor".to_string(),
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             orig_port: 10000,
+            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
             resp_port: 135,
+            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
             proto: 6,
             start_time: Utc
                 .with_ymd_and_hms(1970, 1, 1, 0, 0, 0)
@@ -1680,22 +1783,22 @@ mod tests {
             resp_pkts: 0,
             orig_l2_bytes: 0,
             resp_l2_bytes: 0,
-            rtt: 1,
-            named_pipe: "svcctl".to_string(),
-            endpoint: "epmapper".to_string(),
-            operation: "bind".to_string(),
+            context: Vec::new(),
+            request: vec!["svcctl".to_string()],
             confidence: 1.0,
             category: Some(EventCategory::InitialAccess),
         }
     }
 
-    fn blocklist_dhcp_fields() -> BlocklistDhcpFields {
-        BlocklistDhcpFields {
+    fn blocklist_dhcp_fields() -> BlocklistDhcpFieldsStored {
+        BlocklistDhcpFieldsStored {
             sensor: "sensor".to_string(),
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             orig_port: 68,
+            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
             resp_port: 67,
+            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
             proto: 17,
             start_time: Utc
                 .with_ymd_and_hms(1970, 1, 1, 0, 0, 0)
@@ -1726,18 +1829,21 @@ mod tests {
             class_id: "MSFT 5.0".as_bytes().to_vec(),
             client_id_type: 1,
             client_id: vec![7, 8, 9],
+            options: vec![],
             confidence: 1.0,
             category: Some(EventCategory::InitialAccess),
         }
     }
 
-    fn blocklist_dns_fields() -> BlocklistDnsFields {
-        BlocklistDnsFields {
+    fn blocklist_dns_fields() -> BlocklistDnsFieldsStored {
+        BlocklistDnsFieldsStored {
             sensor: "sensor".to_string(),
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             orig_port: 10000,
+            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
             resp_port: 53,
+            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
             proto: 17,
             start_time: Utc
                 .with_ymd_and_hms(1970, 1, 1, 0, 0, 0)
@@ -1766,13 +1872,15 @@ mod tests {
         }
     }
 
-    fn blocklist_http_fields() -> BlocklistHttpFields {
-        BlocklistHttpFields {
+    fn blocklist_http_fields() -> BlocklistHttpFieldsStored {
+        BlocklistHttpFieldsStored {
             sensor: "sensor".to_string(),
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             orig_port: 10000,
+            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
             resp_port: 80,
+            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
             proto: 6,
             start_time: Utc
                 .with_ymd_and_hms(1970, 1, 1, 0, 0, 0)
@@ -1809,13 +1917,15 @@ mod tests {
         }
     }
 
-    fn blocklist_kerberos_fields() -> BlocklistKerberosFields {
-        BlocklistKerberosFields {
+    fn blocklist_kerberos_fields() -> BlocklistKerberosFieldsStored {
+        BlocklistKerberosFieldsStored {
             sensor: "sensor".to_string(),
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             orig_port: 10000,
+            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
             resp_port: 88,
+            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
             proto: 17,
             start_time: Utc
                 .with_ymd_and_hms(1970, 1, 1, 0, 0, 0)
@@ -1832,22 +1942,24 @@ mod tests {
             error_code: 0,
             client_realm: "EXAMPLE.COM".to_string(),
             cname_type: 1,
-            client_name: vec!["user1".to_string()],
+            cname: vec!["user1".to_string()],
             realm: "EXAMPLE.COM".to_string(),
             sname_type: 1,
-            service_name: vec!["krbtgt/EXAMPLE.COM".to_string()],
+            sname: vec!["krbtgt/EXAMPLE.COM".to_string()],
             confidence: 1.0,
             category: Some(EventCategory::InitialAccess),
         }
     }
 
-    fn blocklist_mqtt_fields() -> BlocklistMqttFields {
-        BlocklistMqttFields {
+    fn blocklist_mqtt_fields() -> BlocklistMqttFieldsStored {
+        BlocklistMqttFieldsStored {
             sensor: "sensor".to_string(),
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             orig_port: 10000,
+            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
             resp_port: 1883,
+            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
             proto: 6,
             start_time: Utc
                 .with_ymd_and_hms(1970, 1, 1, 0, 0, 0)
@@ -1870,13 +1982,15 @@ mod tests {
         }
     }
 
-    fn blocklist_nfs_fields() -> BlocklistNfsFields {
-        BlocklistNfsFields {
+    fn blocklist_nfs_fields() -> BlocklistNfsFieldsStored {
+        BlocklistNfsFieldsStored {
             sensor: "sensor".to_string(),
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             orig_port: 10000,
+            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
             resp_port: 2049,
+            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
             proto: 6,
             start_time: Utc
                 .with_ymd_and_hms(1970, 1, 1, 0, 0, 0)
@@ -1895,13 +2009,15 @@ mod tests {
         }
     }
 
-    fn blocklist_ntlm_fields() -> BlocklistNtlmFields {
-        BlocklistNtlmFields {
+    fn blocklist_ntlm_fields() -> BlocklistNtlmFieldsStored {
+        BlocklistNtlmFieldsStored {
             sensor: "sensor".to_string(),
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             orig_port: 10000,
+            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
             resp_port: 445,
+            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
             proto: 6,
             start_time: Utc
                 .with_ymd_and_hms(1970, 1, 1, 0, 0, 0)
@@ -1923,13 +2039,15 @@ mod tests {
         }
     }
 
-    fn blocklist_rdp_fields() -> BlocklistRdpFields {
-        BlocklistRdpFields {
+    fn blocklist_rdp_fields() -> BlocklistRdpFieldsStored {
+        BlocklistRdpFieldsStored {
             sensor: "sensor".to_string(),
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             orig_port: 10000,
+            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
             resp_port: 3389,
+            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
             proto: 6,
             start_time: Utc
                 .with_ymd_and_hms(1970, 1, 1, 0, 0, 0)
@@ -1947,13 +2065,15 @@ mod tests {
         }
     }
 
-    fn blocklist_smb_fields() -> BlocklistSmbFields {
-        BlocklistSmbFields {
+    fn blocklist_smb_fields() -> BlocklistSmbFieldsStored {
+        BlocklistSmbFieldsStored {
             sensor: "sensor".to_string(),
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             orig_port: 10000,
+            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
             resp_port: 445,
+            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
             proto: 6,
             start_time: Utc
                 .with_ymd_and_hms(1970, 1, 1, 0, 0, 0)
@@ -1981,13 +2101,15 @@ mod tests {
         }
     }
 
-    fn blocklist_smtp_fields() -> BlocklistSmtpFields {
-        BlocklistSmtpFields {
+    fn blocklist_smtp_fields() -> BlocklistSmtpFieldsStored {
+        BlocklistSmtpFieldsStored {
             sensor: "sensor".to_string(),
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             orig_port: 10000,
+            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
             resp_port: 25,
+            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
             proto: 6,
             start_time: Utc
                 .with_ymd_and_hms(1970, 1, 1, 0, 0, 0)
@@ -2011,13 +2133,15 @@ mod tests {
         }
     }
 
-    fn blocklist_ssh_fields() -> BlocklistSshFields {
-        BlocklistSshFields {
+    fn blocklist_ssh_fields() -> BlocklistSshFieldsStored {
+        BlocklistSshFieldsStored {
             sensor: "sensor".to_string(),
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             orig_port: 10000,
+            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
             resp_port: 22,
+            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
             proto: 6,
             start_time: Utc
                 .with_ymd_and_hms(1970, 1, 1, 0, 0, 0)
@@ -2047,13 +2171,15 @@ mod tests {
         }
     }
 
-    fn blocklist_tls_fields() -> BlocklistTlsFields {
-        BlocklistTlsFields {
+    fn blocklist_tls_fields() -> BlocklistTlsFieldsStored {
+        BlocklistTlsFieldsStored {
             sensor: "sensor".to_string(),
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             orig_port: 10000,
+            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
             resp_port: 443,
+            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
             proto: 6,
             start_time: Utc
                 .with_ymd_and_hms(1970, 1, 1, 0, 0, 0)
@@ -2091,13 +2217,15 @@ mod tests {
         }
     }
 
-    fn ldap_event_fields() -> LdapEventFields {
-        LdapEventFields {
+    fn ldap_event_fields() -> LdapEventFieldsStored {
+        LdapEventFieldsStored {
             sensor: "sensor".to_string(),
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             orig_port: 10000,
+            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
             resp_port: 389,
+            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
             proto: 6,
             start_time: Utc
                 .with_ymd_and_hms(1970, 1, 1, 0, 1, 1)
@@ -2121,7 +2249,7 @@ mod tests {
         }
     }
 
-    fn ftp_event_fields() -> FtpEventFields {
+    fn ftp_event_fields() -> FtpEventFieldsStored {
         use crate::event::ftp::FtpCommand;
 
         let command = FtpCommand {
@@ -2137,12 +2265,14 @@ mod tests {
             file_id: "123".to_string(),
         };
 
-        FtpEventFields {
+        FtpEventFieldsStored {
             sensor: "collector1".to_string(),
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             orig_port: 10000,
+            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
             resp_port: 21,
+            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
             proto: 6,
             start_time: Utc
                 .with_ymd_and_hms(1970, 1, 1, 0, 1, 1)
@@ -2162,18 +2292,20 @@ mod tests {
         }
     }
 
-    fn port_scan_fields() -> PortScanFields {
-        PortScanFields {
+    fn port_scan_fields() -> PortScanFieldsStored {
+        PortScanFieldsStored {
             sensor: String::new(),
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
+            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
             resp_ports: vec![80, 443, 8000, 8080, 8888, 8443, 9000, 9001, 9002],
-            start_time: Utc
+            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
+            first_event_start_time: Utc
                 .with_ymd_and_hms(1970, 1, 1, 0, 1, 1)
                 .unwrap()
                 .timestamp_nanos_opt()
                 .unwrap(),
-            end_time: Utc
+            last_event_start_time: Utc
                 .with_ymd_and_hms(1970, 1, 1, 0, 1, 2)
                 .unwrap()
                 .timestamp_nanos_opt()
@@ -2184,21 +2316,23 @@ mod tests {
         }
     }
 
-    fn multi_host_port_scan_fields() -> MultiHostPortScanFields {
-        MultiHostPortScanFields {
+    fn multi_host_port_scan_fields() -> MultiHostPortScanFieldsStored {
+        MultiHostPortScanFieldsStored {
             sensor: String::new(),
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
+            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
             resp_addrs: vec![
                 IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
                 IpAddr::V4(Ipv4Addr::new(127, 0, 0, 3)),
             ],
             resp_port: 80,
-            start_time: Utc
+            resp_country_codes: vec![crate::util::COUNTRY_CODE_PENDING; 2],
+            first_event_start_time: Utc
                 .with_ymd_and_hms(1970, 1, 1, 0, 1, 1)
                 .unwrap()
                 .timestamp_nanos_opt()
                 .unwrap(),
-            end_time: Utc
+            last_event_start_time: Utc
                 .with_ymd_and_hms(1970, 1, 1, 0, 1, 2)
                 .unwrap()
                 .timestamp_nanos_opt()
@@ -2209,20 +2343,22 @@ mod tests {
         }
     }
 
-    fn external_ddos_fields() -> ExternalDdosFields {
-        ExternalDdosFields {
+    fn external_ddos_fields() -> ExternalDdosFieldsStored {
+        ExternalDdosFieldsStored {
             sensor: String::new(),
             orig_addrs: vec![
                 IpAddr::V4(Ipv4Addr::LOCALHOST),
                 IpAddr::V4(Ipv4Addr::new(127, 0, 0, 3)),
             ],
+            orig_country_codes: vec![crate::util::COUNTRY_CODE_PENDING; 2],
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
-            start_time: Utc
+            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
+            first_event_start_time: Utc
                 .with_ymd_and_hms(1970, 1, 1, 0, 1, 1)
                 .unwrap()
                 .timestamp_nanos_opt()
                 .unwrap(),
-            end_time: Utc
+            last_event_start_time: Utc
                 .with_ymd_and_hms(1970, 1, 1, 0, 1, 2)
                 .unwrap()
                 .timestamp_nanos_opt()
@@ -2233,13 +2369,15 @@ mod tests {
         }
     }
 
-    fn crypto_miining_pool_fields() -> CryptocurrencyMiningPoolFields {
-        CryptocurrencyMiningPoolFields {
+    fn crypto_miining_pool_fields() -> CryptocurrencyMiningPoolFieldsStored {
+        CryptocurrencyMiningPoolFieldsStored {
             sensor: "sensro".to_string(),
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             orig_port: 10000,
+            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
             resp_port: 53,
+            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
             proto: 17,
             start_time: Utc
                 .with_ymd_and_hms(1970, 1, 1, 0, 1, 1)
@@ -2269,20 +2407,22 @@ mod tests {
         }
     }
 
-    fn ftp_brute_force_fields() -> FtpBruteForceFields {
-        FtpBruteForceFields {
+    fn ftp_brute_force_fields() -> FtpBruteForceFieldsStored {
+        FtpBruteForceFieldsStored {
             sensor: String::new(),
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
+            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
             resp_port: 21,
+            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
             proto: 6,
             user_list: vec!["user1".to_string(), "user_2".to_string()],
-            start_time: Utc
+            first_event_start_time: Utc
                 .with_ymd_and_hms(1970, 1, 1, 0, 1, 1)
                 .unwrap()
                 .timestamp_nanos_opt()
                 .unwrap(),
-            end_time: Utc
+            last_event_start_time: Utc
                 .with_ymd_and_hms(1970, 1, 1, 0, 1, 2)
                 .unwrap()
                 .timestamp_nanos_opt()
@@ -2293,29 +2433,33 @@ mod tests {
         }
     }
 
-    fn repeated_http_sessions_fiedls() -> RepeatedHttpSessionsFields {
+    fn repeated_http_sessions_fiedls() -> RepeatedHttpSessionsFieldsStored {
         let now = chrono::Utc::now().timestamp_nanos_opt().unwrap();
-        RepeatedHttpSessionsFields {
+        RepeatedHttpSessionsFieldsStored {
             sensor: "sensor".to_string(),
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             orig_port: 10000,
+            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
             resp_port: 443,
+            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
             proto: 6,
-            start_time: now,
-            end_time: now,
+            first_event_start_time: now,
+            last_event_start_time: now,
             confidence: 0.3,
             category: Some(EventCategory::Exfiltration),
         }
     }
 
-    fn dga_fields() -> DgaFields {
-        DgaFields {
+    fn dga_fields() -> DgaFieldsStored {
+        DgaFieldsStored {
             sensor: "sensor".to_string(),
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             orig_port: 10000,
+            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
             resp_port: 80,
+            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
             proto: 6,
             start_time: Utc
                 .with_ymd_and_hms(1970, 1, 1, 0, 0, 0)
@@ -2352,13 +2496,15 @@ mod tests {
         }
     }
 
-    fn http_event_fields() -> HttpEventFields {
-        HttpEventFields {
+    fn http_event_fields() -> HttpEventFieldsStored {
+        HttpEventFieldsStored {
             sensor: "sensor".to_string(),
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             orig_port: 10000,
+            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
             resp_port: 80,
+            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
             proto: 6,
             start_time: Utc
                 .with_ymd_and_hms(1970, 1, 1, 0, 1, 1)
@@ -2395,23 +2541,25 @@ mod tests {
         }
     }
 
-    fn ldap_brute_force_fields() -> LdapBruteForceFields {
-        LdapBruteForceFields {
+    fn ldap_brute_force_fields() -> LdapBruteForceFieldsStored {
+        LdapBruteForceFieldsStored {
             sensor: String::new(),
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
+            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
             resp_port: 389,
+            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
             proto: 6,
             user_pw_list: vec![
                 ("user1".to_string(), "pw1".to_string()),
                 ("user_2".to_string(), "pw2".to_string()),
             ],
-            start_time: Utc
+            first_event_start_time: Utc
                 .with_ymd_and_hms(1970, 1, 1, 0, 1, 1)
                 .unwrap()
                 .timestamp_nanos_opt()
                 .unwrap(),
-            end_time: Utc
+            last_event_start_time: Utc
                 .with_ymd_and_hms(1970, 1, 1, 0, 1, 2)
                 .unwrap()
                 .timestamp_nanos_opt()
@@ -2421,20 +2569,22 @@ mod tests {
         }
     }
 
-    fn rdp_brute_force_fields() -> RdpBruteForceFields {
-        RdpBruteForceFields {
+    fn rdp_brute_force_fields() -> RdpBruteForceFieldsStored {
+        RdpBruteForceFieldsStored {
             sensor: String::new(),
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
+            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
             resp_addrs: vec![
                 IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
                 IpAddr::V4(Ipv4Addr::new(127, 0, 0, 3)),
             ],
-            start_time: Utc
+            resp_country_codes: vec![crate::util::COUNTRY_CODE_PENDING; 2],
+            first_event_start_time: Utc
                 .with_ymd_and_hms(1970, 1, 1, 0, 1, 1)
                 .unwrap()
                 .timestamp_nanos_opt()
                 .unwrap(),
-            end_time: Utc
+            last_event_start_time: Utc
                 .with_ymd_and_hms(1970, 1, 1, 0, 10, 2)
                 .unwrap()
                 .timestamp_nanos_opt()
@@ -2445,13 +2595,15 @@ mod tests {
         }
     }
 
-    fn dns_event_fields() -> DnsEventFields {
-        DnsEventFields {
+    fn dns_event_fields() -> DnsEventFieldsStored {
+        DnsEventFieldsStored {
             sensor: "sensor".to_string(),
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             orig_port: 10000,
+            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
             resp_port: 53,
+            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
             proto: 17,
             start_time: Utc
                 .with_ymd_and_hms(1970, 1, 1, 0, 1, 1)
@@ -2482,15 +2634,17 @@ mod tests {
 
     fn network_threat() -> NetworkThreat {
         NetworkThreat {
-            time: Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap(),
+            time: stored_time(Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap()),
             sensor: "sensor".to_string(),
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             orig_port: 10000,
+            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
             resp_port: 80,
+            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
             proto: 6,
             service: "http".to_string(),
-            start_time: Utc.with_ymd_and_hms(1970, 1, 1, 0, 0, 0).unwrap(),
+            start_time: stored_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 0, 0).unwrap()),
             duration: 100,
             orig_pkts: 10,
             resp_pkts: 20,
@@ -2510,7 +2664,7 @@ mod tests {
 
     fn extra_threat() -> ExtraThreat {
         ExtraThreat {
-            time: Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap(),
+            time: stored_time(Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap()),
             sensor: "sensor".to_string(),
             service: "service".to_string(),
             content: "content".to_string(),
@@ -2527,7 +2681,7 @@ mod tests {
 
     fn windows_threat() -> WindowsThreat {
         WindowsThreat {
-            time: Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap(),
+            time: stored_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap()),
             sensor: "sensor".to_string(),
             service: "notepad".to_string(),
             agent_name: "win64".to_string(),
@@ -2548,14 +2702,94 @@ mod tests {
         }
     }
 
-    fn http_threat_fields() -> HttpThreatFields {
-        HttpThreatFields {
-            time: Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap(),
+    fn stored_time(time: DateTime<Utc>) -> Timestamp {
+        timestamp::from_chrono(time).expect("test stored timestamp must fit i64 nanoseconds")
+    }
+
+    fn extra_threat_fields_v0_46() -> ExtraThreatFieldsStored {
+        ExtraThreatFieldsStored {
+            time: stored_time(Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap()),
+            sensor: "sensor".to_string(),
+            service: "service".to_string(),
+            content: "content".to_string(),
+            db_name: "db_name".to_string(),
+            rule_id: 1,
+            matched_to: "matched_to".to_string(),
+            cluster_id: Some(1),
+            attack_kind: "attack_kind".to_string(),
+            confidence: 0.9,
+            category: Some(EventCategory::Reconnaissance),
+            triage_scores: None,
+        }
+    }
+
+    fn network_threat_fields_v0_46() -> NetworkThreatFieldsStored {
+        NetworkThreatFieldsStored {
+            time: stored_time(Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap()),
             sensor: "sensor".to_string(),
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             orig_port: 10000,
+            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
             resp_port: 80,
+            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
+            proto: 6,
+            service: "http".to_string(),
+            start_time: Utc
+                .with_ymd_and_hms(1970, 1, 1, 0, 0, 0)
+                .unwrap()
+                .timestamp_nanos_opt()
+                .unwrap(),
+            duration: 100,
+            orig_pkts: 10,
+            resp_pkts: 20,
+            orig_l2_bytes: 1000,
+            resp_l2_bytes: 2000,
+            content: "content".to_string(),
+            db_name: "db_name".to_string(),
+            rule_id: 1,
+            matched_to: "matched_to".to_string(),
+            cluster_id: Some(1),
+            attack_kind: "attack_kind".to_string(),
+            confidence: 0.9,
+            category: Some(EventCategory::Reconnaissance),
+            triage_scores: None,
+        }
+    }
+
+    fn windows_threat_fields_v0_46() -> WindowsThreatFieldsStored {
+        WindowsThreatFieldsStored {
+            time: stored_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap()),
+            sensor: "sensor".to_string(),
+            service: "notepad".to_string(),
+            agent_name: "win64".to_string(),
+            agent_id: "e7e2386a-5485-4da9-b388-b3e50ee7cbb0".to_string(),
+            process_guid: "{bac98147-6b03-64d4-8200-000000000700}".to_string(),
+            process_id: 2972,
+            image: r"C:\Users\vboxuser\Desktop\mal_bazaar\ransomware\918504.exe".to_string(),
+            user: r"WIN64\vboxuser".to_string(),
+            content: r#"cmd /c "vssadmin.exe Delete Shadows /all /quiet""#.to_string(),
+            db_name: "db".to_string(),
+            rule_id: 100,
+            matched_to: "match".to_string(),
+            cluster_id: Some(900),
+            attack_kind: "Ransomware_Alcatraz".to_string(),
+            confidence: 0.9,
+            category: Some(EventCategory::Impact),
+            triage_scores: None,
+        }
+    }
+
+    fn http_threat_fields() -> HttpThreatFieldsStored {
+        HttpThreatFieldsStored {
+            time: stored_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap()),
+            sensor: "sensor".to_string(),
+            orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
+            orig_port: 10000,
+            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
+            resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
+            resp_port: 80,
+            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
             proto: 6,
             start_time: Utc
                 .with_ymd_and_hms(1970, 1, 1, 0, 0, 0)
@@ -2596,13 +2830,66 @@ mod tests {
             category: Some(EventCategory::Reconnaissance),
         }
     }
-    fn blocklist_radius_fields() -> BlocklistRadiusFields {
-        BlocklistRadiusFields {
+
+    fn http_threat_fields_v0_46() -> HttpThreatFieldsStored {
+        HttpThreatFieldsStored {
+            time: stored_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap()),
             sensor: "sensor".to_string(),
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             orig_port: 10000,
+            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
+            resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
+            resp_port: 80,
+            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
+            proto: 6,
+            start_time: Utc
+                .with_ymd_and_hms(1970, 1, 1, 0, 0, 0)
+                .unwrap()
+                .timestamp_nanos_opt()
+                .unwrap(),
+            duration: 0,
+            orig_pkts: 0,
+            resp_pkts: 0,
+            orig_l2_bytes: 0,
+            resp_l2_bytes: 0,
+            method: "GET".to_string(),
+            host: "example.com".to_string(),
+            uri: "/uri/path".to_string(),
+            referer: "-".to_string(),
+            version: "1.1".to_string(),
+            user_agent: "browser".to_string(),
+            request_len: 100,
+            response_len: 100,
+            status_code: 200,
+            status_msg: "-".to_string(),
+            username: "-".to_string(),
+            password: "-".to_string(),
+            cookie: "cookie".to_string(),
+            content_encoding: "encoding type".to_string(),
+            content_type: "content type".to_string(),
+            cache_control: "no cache".to_string(),
+            filenames: vec!["a1".to_string(), "a2".to_string()],
+            mime_types: vec!["b1".to_string(), "b2".to_string()],
+            body: "12345678901234567890".to_string().into_bytes(),
+            state: String::new(),
+            db_name: "db".to_string(),
+            rule_id: 12000,
+            cluster_id: Some(1111),
+            matched_to: "match".to_string(),
+            attack_kind: "attack".to_string(),
+            confidence: 0.8,
+            category: Some(EventCategory::Reconnaissance),
+        }
+    }
+    fn blocklist_radius_fields() -> BlocklistRadiusFieldsStored {
+        BlocklistRadiusFieldsStored {
+            sensor: "sensor".to_string(),
+            orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
+            orig_port: 10000,
+            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
             resp_port: 1812,
+            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
             proto: 17,
             start_time: Utc
                 .with_ymd_and_hms(1970, 1, 1, 0, 0, 0)
@@ -2633,13 +2920,15 @@ mod tests {
         }
     }
 
-    fn blocklist_malformed_dns_fields() -> BlocklistMalformedDnsFields {
-        BlocklistMalformedDnsFields {
+    fn blocklist_malformed_dns_fields() -> BlocklistMalformedDnsFieldsStored {
+        BlocklistMalformedDnsFieldsStored {
             sensor: "sensor".to_string(),
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             orig_port: 10000,
+            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
             resp_port: 53,
+            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
             proto: 17,
             start_time: Utc
                 .with_ymd_and_hms(1970, 1, 1, 0, 0, 0)
@@ -2668,20 +2957,21 @@ mod tests {
         }
     }
 
-    fn unusual_destination_pattern_fields() -> UnusualDestinationPatternFields {
-        UnusualDestinationPatternFields {
+    fn unusual_destination_pattern_fields() -> UnusualDestinationPatternFieldsStored {
+        UnusualDestinationPatternFieldsStored {
             sensor: "sensor".to_string(),
-            start_time: Utc
+            sampling_window_start_time: Utc
                 .with_ymd_and_hms(1970, 1, 1, 0, 0, 0)
                 .unwrap()
                 .timestamp_nanos_opt()
                 .unwrap(),
-            end_time: Utc
+            sampling_window_end_time: Utc
                 .with_ymd_and_hms(1970, 1, 1, 0, 0, 0)
                 .unwrap()
                 .timestamp_nanos_opt()
                 .unwrap(),
             destination_ips: vec![IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1))],
+            resp_country_codes: vec![crate::util::COUNTRY_CODE_PENDING; 1],
             count: 1,
             expected_mean: 0.0,
             std_deviation: 0.0,
@@ -2689,5 +2979,576 @@ mod tests {
             confidence: 1.0,
             category: Some(EventCategory::InitialAccess),
         }
+    }
+
+    pub(crate) fn stored_event_samples_v0_46() -> Vec<(crate::event::EventKind, Vec<u8>)> {
+        use crate::event::EventKind;
+
+        macro_rules! sample {
+            ($kind:expr, $fields_type:ty, $fields:expr) => {{
+                let fields: $fields_type = $fields;
+                ($kind, bincode::serialize(&fields).unwrap())
+            }};
+        }
+
+        // These samples are intentionally pinned to the 0.46 migration output schema. If a
+        // current-schema alias changes, add a dedicated V0_46 builder instead of updating these
+        // annotations to the new schema.
+        vec![
+            sample!(
+                EventKind::DnsCovertChannel,
+                crate::event::DnsEventFieldsStoredV0_46,
+                dns_event_fields()
+            ),
+            sample!(
+                EventKind::HttpThreat,
+                crate::event::HttpThreatFieldsStoredV0_46,
+                http_threat_fields_v0_46()
+            ),
+            sample!(
+                EventKind::RdpBruteForce,
+                crate::event::RdpBruteForceFieldsStoredV0_46,
+                rdp_brute_force_fields()
+            ),
+            sample!(
+                EventKind::RepeatedHttpSessions,
+                crate::event::RepeatedHttpSessionsFieldsStoredV0_46,
+                repeated_http_sessions_fiedls()
+            ),
+            sample!(
+                EventKind::ExtraThreat,
+                crate::event::ExtraThreatFieldsStoredV0_46,
+                extra_threat_fields_v0_46()
+            ),
+            sample!(
+                EventKind::TorConnection,
+                crate::event::HttpEventFieldsStoredV0_46,
+                http_event_fields()
+            ),
+            sample!(
+                EventKind::DomainGenerationAlgorithm,
+                crate::event::DgaFieldsStoredV0_46,
+                dga_fields()
+            ),
+            sample!(
+                EventKind::FtpBruteForce,
+                crate::event::FtpBruteForceFieldsStoredV0_46,
+                ftp_brute_force_fields()
+            ),
+            sample!(
+                EventKind::FtpPlainText,
+                crate::event::FtpEventFieldsStoredV0_46,
+                ftp_event_fields()
+            ),
+            sample!(
+                EventKind::PortScan,
+                crate::event::PortScanFieldsStoredV0_46,
+                port_scan_fields()
+            ),
+            sample!(
+                EventKind::MultiHostPortScan,
+                crate::event::MultiHostPortScanFieldsStoredV0_46,
+                multi_host_port_scan_fields()
+            ),
+            sample!(
+                EventKind::NonBrowser,
+                crate::event::HttpEventFieldsStoredV0_46,
+                http_event_fields()
+            ),
+            sample!(
+                EventKind::LdapBruteForce,
+                crate::event::LdapBruteForceFieldsStoredV0_46,
+                ldap_brute_force_fields()
+            ),
+            sample!(
+                EventKind::LdapPlainText,
+                crate::event::LdapEventFieldsStoredV0_46,
+                ldap_event_fields()
+            ),
+            sample!(
+                EventKind::ExternalDdos,
+                crate::event::ExternalDdosFieldsStoredV0_46,
+                external_ddos_fields()
+            ),
+            sample!(
+                EventKind::CryptocurrencyMiningPool,
+                crate::event::CryptocurrencyMiningPoolFieldsStoredV0_46,
+                crypto_miining_pool_fields()
+            ),
+            sample!(
+                EventKind::BlocklistConn,
+                crate::event::BlocklistConnFieldsStoredV0_46,
+                blocklist_conn_fields()
+            ),
+            sample!(
+                EventKind::BlocklistDns,
+                crate::event::BlocklistDnsFieldsStoredV0_46,
+                blocklist_dns_fields()
+            ),
+            sample!(
+                EventKind::BlocklistDceRpc,
+                crate::event::BlocklistDceRpcFieldsStoredV0_46,
+                blocklist_dcerpc_fields()
+            ),
+            sample!(
+                EventKind::BlocklistFtp,
+                crate::event::FtpEventFieldsStoredV0_46,
+                ftp_event_fields()
+            ),
+            sample!(
+                EventKind::BlocklistHttp,
+                crate::event::DgaFieldsStoredV0_46,
+                dga_fields()
+            ),
+            sample!(
+                EventKind::BlocklistKerberos,
+                crate::event::BlocklistKerberosFieldsStoredV0_46,
+                blocklist_kerberos_fields()
+            ),
+            sample!(
+                EventKind::BlocklistLdap,
+                crate::event::LdapEventFieldsStoredV0_46,
+                ldap_event_fields()
+            ),
+            sample!(
+                EventKind::BlocklistMqtt,
+                crate::event::BlocklistMqttFieldsStoredV0_46,
+                blocklist_mqtt_fields()
+            ),
+            sample!(
+                EventKind::BlocklistNfs,
+                crate::event::BlocklistNfsFieldsStoredV0_46,
+                blocklist_nfs_fields()
+            ),
+            sample!(
+                EventKind::BlocklistNtlm,
+                crate::event::BlocklistNtlmFieldsStoredV0_46,
+                blocklist_ntlm_fields()
+            ),
+            sample!(
+                EventKind::BlocklistRdp,
+                crate::event::BlocklistRdpFieldsStoredV0_46,
+                blocklist_rdp_fields()
+            ),
+            sample!(
+                EventKind::BlocklistSmb,
+                crate::event::BlocklistSmbFieldsStoredV0_46,
+                blocklist_smb_fields()
+            ),
+            sample!(
+                EventKind::BlocklistSmtp,
+                crate::event::BlocklistSmtpFieldsStoredV0_46,
+                blocklist_smtp_fields()
+            ),
+            sample!(
+                EventKind::BlocklistSsh,
+                crate::event::BlocklistSshFieldsStoredV0_46,
+                blocklist_ssh_fields()
+            ),
+            sample!(
+                EventKind::BlocklistTls,
+                crate::event::BlocklistTlsFieldsStoredV0_46,
+                blocklist_tls_fields()
+            ),
+            sample!(
+                EventKind::WindowsThreat,
+                crate::event::WindowsThreatFieldsStoredV0_46,
+                windows_threat_fields_v0_46()
+            ),
+            sample!(
+                EventKind::NetworkThreat,
+                crate::event::NetworkThreatFieldsStoredV0_46,
+                network_threat_fields_v0_46()
+            ),
+            sample!(
+                EventKind::LockyRansomware,
+                crate::event::DnsEventFieldsStoredV0_46,
+                dns_event_fields()
+            ),
+            sample!(
+                EventKind::SuspiciousTlsTraffic,
+                crate::event::BlocklistTlsFieldsStoredV0_46,
+                blocklist_tls_fields()
+            ),
+            sample!(
+                EventKind::BlocklistBootp,
+                crate::event::BlocklistBootpFieldsStoredV0_46,
+                blocklist_bootp_fields()
+            ),
+            sample!(
+                EventKind::BlocklistDhcp,
+                crate::event::BlocklistDhcpFieldsStoredV0_46,
+                blocklist_dhcp_fields()
+            ),
+            sample!(
+                EventKind::TorConnectionConn,
+                crate::event::BlocklistConnFieldsStoredV0_46,
+                blocklist_conn_fields()
+            ),
+            sample!(
+                EventKind::BlocklistRadius,
+                crate::event::BlocklistRadiusFieldsStoredV0_46,
+                blocklist_radius_fields()
+            ),
+            sample!(
+                EventKind::BlocklistMalformedDns,
+                crate::event::BlocklistMalformedDnsFieldsStoredV0_46,
+                blocklist_malformed_dns_fields()
+            ),
+            sample!(
+                EventKind::UnusualDestinationPattern,
+                crate::event::UnusualDestinationPatternFieldsStoredV0_46,
+                unusual_destination_pattern_fields()
+            ),
+        ]
+    }
+
+    use crate::Confidence;
+
+    fn make_confidence(
+        category: Option<EventCategory>,
+        kind: &str,
+        confidence: f64,
+        weight: Option<f64>,
+    ) -> Confidence {
+        Confidence {
+            threat_category: category,
+            threat_kind: kind.to_string(),
+            confidence,
+            weight,
+        }
+    }
+
+    /// Tests that `score_by_confidence` with `None` category matches only
+    /// events whose `category()` returns `None`, and `Some(category)` matches
+    /// only events with the same category.
+    #[test]
+    fn score_by_confidence_none_matches_only_none_category() {
+        let time = stored_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap());
+
+        // Event with category = Some(Reconnaissance)
+        let fields_with_cat = http_threat_fields(); // category: Some(Reconnaissance)
+        let event_with_cat = HttpThreat::new(time, fields_with_cat);
+
+        // Event with category = None
+        let mut fields_no_cat = http_threat_fields();
+        fields_no_cat.category = None;
+        let event_no_cat = HttpThreat::new(time, fields_no_cat);
+
+        // Confidence targeting None category, matching kind "http threat"
+        let conf_none = vec![make_confidence(None, "http threat", 0.0, Some(5.0))];
+
+        // Confidence targeting Some(Reconnaissance), matching kind "http threat"
+        let conf_some = vec![make_confidence(
+            Some(EventCategory::Reconnaissance),
+            "http threat",
+            0.0,
+            Some(3.0),
+        )];
+
+        // None-category confidence must NOT match an event with Some(Reconnaissance)
+        assert_eq!(
+            event_with_cat
+                .score_by_confidence(&conf_none)
+                .partial_cmp(&0.0),
+            Some(Ordering::Equal)
+        );
+
+        // None-category confidence MUST match an event with None category
+        assert_eq!(
+            event_no_cat
+                .score_by_confidence(&conf_none)
+                .partial_cmp(&5.0),
+            Some(Ordering::Equal)
+        );
+
+        // Some(Recon) confidence MUST match an event with Some(Reconnaissance)
+        assert_eq!(
+            event_with_cat
+                .score_by_confidence(&conf_some)
+                .partial_cmp(&3.0),
+            Some(Ordering::Equal)
+        );
+
+        // Some(Recon) confidence must NOT match an event with None category
+        assert_eq!(
+            event_no_cat
+                .score_by_confidence(&conf_some)
+                .partial_cmp(&0.0),
+            Some(Ordering::Equal)
+        );
+    }
+
+    fn dns_covert_channel_event() -> Event {
+        let time = stored_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap());
+        Event::DnsCovertChannel(DnsCovertChannel::new(time, dns_event_fields()))
+    }
+
+    fn blocklist_http_event() -> Event {
+        let time = stored_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap());
+        Event::Blocklist(RecordType::Http(BlocklistHttp::new(
+            time,
+            blocklist_http_fields(),
+        )))
+    }
+
+    fn confidence_for_dns_covert_channel(weight: f64) -> crate::Confidence {
+        make_confidence(
+            Some(EventCategory::CommandAndControl),
+            "dns covert channel",
+            0.0,
+            Some(weight),
+        )
+    }
+
+    fn make_policy(
+        id: u32,
+        confidence: Vec<crate::Confidence>,
+        response: Vec<crate::Response>,
+    ) -> crate::TriagePolicyInput {
+        crate::TriagePolicyInput {
+            id,
+            name: format!("policy-{id}"),
+            creation_time: Utc.with_ymd_and_hms(1970, 1, 1, 0, 0, 0).unwrap(),
+            triage_exclusion: Vec::new(),
+            packet_attr: Vec::new(),
+            confidence,
+            response,
+        }
+    }
+
+    fn make_response(minimum_score: f64) -> crate::Response {
+        crate::Response {
+            minimum_score,
+            kind: crate::ResponseKind::Manual,
+        }
+    }
+
+    #[test]
+    fn matches_exclusion_dns_covert_channel_match_and_non_match() {
+        let event = dns_covert_channel_event();
+
+        // dns_event_fields() uses query "foo.com"; the per-event override
+        // splits at the first dot, leaving "foo" as the hostname label.
+        let matching = vec![crate::TriageExclusion::Hostname(vec!["foo".to_string()])];
+        let non_matching = vec![crate::TriageExclusion::Hostname(vec![
+            "nomatch".to_string(),
+        ])];
+
+        assert!(event.matches_exclusion(&matching));
+        assert!(!event.matches_exclusion(&non_matching));
+        assert!(!event.matches_exclusion(&[]));
+    }
+
+    #[test]
+    fn matches_exclusion_blocklist_http_uri() {
+        let event = blocklist_http_event();
+
+        // blocklist_http_fields() uses uri "/uri/path".
+        let matching = vec![crate::TriageExclusion::Uri(vec!["/uri/path".to_string()])];
+        let non_matching = vec![crate::TriageExclusion::Uri(vec!["/other".to_string()])];
+
+        assert!(event.matches_exclusion(&matching));
+        assert!(!event.matches_exclusion(&non_matching));
+    }
+
+    #[test]
+    fn matches_exclusion_mixed_ipv4_ipv6_ip_address() {
+        use std::ops::RangeInclusive;
+
+        use ipnet::IpNet;
+
+        use crate::tables::ExclusionReason;
+
+        let networks: Vec<IpNet> = vec![
+            "10.0.0.0/8".parse().unwrap(),
+            "2001:db8::/32".parse().unwrap(),
+        ];
+        let exclusion = vec![crate::TriageExclusion::from(ExclusionReason::IpAddress(
+            HostNetworkGroup::new(Vec::new(), networks, Vec::new()),
+        ))];
+
+        let time = stored_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap());
+
+        let mut v4_fields = blocklist_http_fields();
+        v4_fields.orig_addr = "10.1.2.3".parse().unwrap();
+        v4_fields.resp_addr = "10.9.9.9".parse().unwrap();
+        let v4_event = Event::Blocklist(RecordType::Http(BlocklistHttp::new(time, v4_fields)));
+
+        let mut v6_fields = blocklist_http_fields();
+        v6_fields.orig_addr = "2001:db8::1".parse().unwrap();
+        v6_fields.resp_addr = "2001:db8::2".parse().unwrap();
+        let v6_event = Event::Blocklist(RecordType::Http(BlocklistHttp::new(time, v6_fields)));
+
+        assert!(v4_event.matches_exclusion(&exclusion));
+        assert!(v6_event.matches_exclusion(&exclusion));
+
+        let mut non_matching_fields = blocklist_http_fields();
+        non_matching_fields.orig_addr = "11.0.0.1".parse().unwrap();
+        let non_matching = Event::Blocklist(RecordType::Http(BlocklistHttp::new(
+            time,
+            non_matching_fields,
+        )));
+        assert!(!non_matching.matches_exclusion(&exclusion));
+
+        let ip_ranges = vec![RangeInclusive::new(
+            "192.0.2.1".parse().unwrap(),
+            "2001:db8::1".parse().unwrap(),
+        )];
+        let invalid_exclusion = vec![crate::TriageExclusion::from(ExclusionReason::IpAddress(
+            HostNetworkGroup::new(Vec::new(), Vec::new(), ip_ranges),
+        ))];
+        assert!(!v4_event.matches_exclusion(&invalid_exclusion));
+    }
+
+    #[test]
+    fn score_against_policies_empty_slice_returns_empty() {
+        let event = dns_covert_channel_event();
+        assert!(event.score_against_policies(&[]).is_empty());
+    }
+
+    #[test]
+    fn score_against_policies_only_passing_policy_returned() {
+        let event = dns_covert_channel_event();
+
+        // Both policies score weight=10 from confidence; the first
+        // policy's threshold is met, the second is not.
+        let passing = make_policy(
+            1,
+            vec![confidence_for_dns_covert_channel(10.0)],
+            vec![make_response(5.0)],
+        );
+        let failing = make_policy(
+            2,
+            vec![confidence_for_dns_covert_channel(10.0)],
+            vec![make_response(100.0)],
+        );
+
+        let scores = event.score_against_policies(&[passing, failing]);
+        assert_eq!(scores.len(), 1);
+        assert_eq!(scores[0].policy_id, 1);
+        assert_eq!(scores[0].score.partial_cmp(&10.0), Some(Ordering::Equal));
+    }
+
+    #[test]
+    fn score_against_policies_empty_response_drops_score() {
+        let event = dns_covert_channel_event();
+
+        let policy = make_policy(
+            42,
+            vec![confidence_for_dns_covert_channel(10.0)],
+            Vec::new(),
+        );
+
+        assert!(event.score_against_policies(&[policy]).is_empty());
+    }
+
+    #[test]
+    fn legacy_matches_drops_event_when_no_policy_passes() {
+        let event = dns_covert_channel_event();
+
+        // The legacy formula sums score_by_triage_exclusion +
+        // score_by_attr + score_by_confidence and threshold-filters by
+        // response.minimum_score. None of the policies below should pass.
+        let unreachable_policy = make_policy(
+            1,
+            vec![confidence_for_dns_covert_channel(1.0)],
+            vec![make_response(1_000.0)],
+        );
+
+        let filter = EventFilter {
+            customers: None,
+            endpoints: None,
+            directions: None,
+            originator: None,
+            responder: None,
+            countries: None,
+            categories: None,
+            levels: None,
+            kinds: None,
+            learning_methods: None,
+            sensors: None,
+            confidence_min: None,
+            confidence_max: None,
+            triage_policies: Some(vec![unreachable_policy]),
+        };
+
+        let (matched, scores) = event.matches(&filter).unwrap();
+        assert!(!matched);
+        assert!(scores.is_none());
+    }
+
+    fn http_threat_event_with_country_codes(orig: [u8; 2], resp: [u8; 2]) -> Event {
+        let time = stored_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap());
+        let mut fields = http_threat_fields();
+        fields.orig_country_code = orig;
+        fields.resp_country_code = resp;
+        Event::HttpThreat(HttpThreat::new(time, fields))
+    }
+
+    fn country_filter(orig: [u8; 2]) -> EventFilter {
+        EventFilter {
+            countries: Some(vec![orig]),
+            ..event_filter()
+        }
+    }
+
+    #[test]
+    fn country_filter_matches_stored_orig_country_code() {
+        let event = http_threat_event_with_country_codes(*b"US", *b"KR");
+        let filter = country_filter(*b"US");
+        assert!(event.matches(&filter).unwrap().0);
+    }
+
+    #[test]
+    fn country_filter_matches_stored_resp_country_code() {
+        let event = http_threat_event_with_country_codes(*b"US", *b"KR");
+        let filter = country_filter(*b"KR");
+        assert!(event.matches(&filter).unwrap().0);
+    }
+
+    #[test]
+    fn country_filter_rejects_when_no_stored_code_matches() {
+        let event = http_threat_event_with_country_codes(*b"US", *b"KR");
+        let filter = country_filter(*b"JP");
+        assert!(!event.matches(&filter).unwrap().0);
+    }
+
+    #[test]
+    fn country_filter_rejects_pending_stored_codes() {
+        let event = http_threat_event_with_country_codes(
+            crate::util::COUNTRY_CODE_PENDING,
+            crate::util::COUNTRY_CODE_PENDING,
+        );
+        let filter = country_filter(*b"US");
+        assert!(!event.matches(&filter).unwrap().0);
+    }
+
+    #[test]
+    fn country_filter_rejects_events_without_stored_country_codes() {
+        let filter = country_filter(*b"US");
+        assert!(
+            !Event::ExtraThreat(extra_threat())
+                .matches(&filter)
+                .unwrap()
+                .0
+        );
+        assert!(
+            !Event::WindowsThreat(windows_threat())
+                .matches(&filter)
+                .unwrap()
+                .0
+        );
+    }
+
+    #[test]
+    fn country_filter_matches_any_vector_response_code() {
+        let time = stored_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap());
+        let mut fields = multi_host_port_scan_fields();
+        fields.orig_country_code = *b"US";
+        fields.resp_country_codes = vec![*b"JP", *b"DE"];
+        let event = Event::MultiHostPortScan(MultiHostPortScan::new(time, &fields));
+        let filter = country_filter(*b"DE");
+        assert!(event.matches(&filter).unwrap().0);
     }
 }

@@ -1,36 +1,17 @@
 //! The `backup_config` table.
 
 use anyhow::{Context, Result, anyhow};
-use rocksdb::OptimisticTransactionDB;
 use serde::{Deserialize, Serialize};
-
-use super::Value;
-use crate::{Map, Table, UniqueKey, types::FromKeyValue};
-
-const BACKUP_CONFIG_KEY: &str = "backup_config";
-const DEFAULT_BACKUP_TIME: &str = "23:59:59"; // format: "%H:%M:%S"
-const DEFAULT_BACKUP_DURATION: u16 = 1; // unit: day
-const DEFAULT_NUM_OF_BACKUPS_TO_KEEP: u16 = 5;
 
 /// Configuration for RocksDB backup settings.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BackupConfig {
     /// Backup interval in days (must be >= 1).
     pub backup_duration: u16,
-    /// Backup time in HH:MM:SS (UTC) format.
+    /// Backup time in HH:MM:SS (UTC) format (two digits per field).
     pub backup_time: String,
     /// Maximum number of backup snapshots to retain (must be >= 1).
     pub num_of_backups_to_keep: u16,
-}
-
-impl Default for BackupConfig {
-    fn default() -> Self {
-        Self {
-            backup_duration: DEFAULT_BACKUP_DURATION,
-            backup_time: DEFAULT_BACKUP_TIME.to_string(),
-            num_of_backups_to_keep: DEFAULT_NUM_OF_BACKUPS_TO_KEEP,
-        }
-    }
 }
 
 impl BackupConfig {
@@ -39,7 +20,7 @@ impl BackupConfig {
     /// # Arguments
     ///
     /// * `backup_duration` - Backup interval in days (must be >= 1)
-    /// * `backup_time` - Backup time in HH:MM:SS (UTC) format
+    /// * `backup_time` - Backup time in HH:MM:SS (UTC) format (two digits per field)
     /// * `num_of_backups_to_keep` - Maximum number of backup snapshots to retain (must be >= 1)
     ///
     /// # Returns
@@ -81,7 +62,7 @@ impl BackupConfig {
 
         // Validate backup_time format (HH:MM:SS)
         let parts: Vec<&str> = self.backup_time.split(':').collect();
-        if parts.len() != 3 {
+        if parts.len() != 3 || parts.iter().any(|part| part.len() != 2) {
             return Err(anyhow!(
                 "backup_time must be in HH:MM:SS format, got: {}",
                 self.backup_time
@@ -116,102 +97,46 @@ impl BackupConfig {
     }
 }
 
-impl FromKeyValue for BackupConfig {
-    fn from_key_value(_key: &[u8], value: &[u8]) -> Result<Self> {
-        super::deserialize(value).context("failed to deserialize BackupConfig")
-    }
-}
-
-impl UniqueKey for BackupConfig {
-    type AsBytes<'a> = &'a [u8];
-
-    fn unique_key(&self) -> &[u8] {
-        BACKUP_CONFIG_KEY.as_bytes()
-    }
-}
-
-impl Value for BackupConfig {
-    type AsBytes<'a> = Vec<u8>;
-
-    fn value(&self) -> Vec<u8> {
-        super::serialize(self).expect("BackupConfig serialization should not fail")
-    }
-}
-
-/// Functions for the `backup_config` map.
-impl<'d> Table<'d, BackupConfig> {
-    /// Opens the `backup_config` map in the database.
-    ///
-    /// Returns `None` if the map does not exist.
-    pub(super) fn open(db: &'d OptimisticTransactionDB) -> Option<Self> {
-        Map::open(db, super::CONFIGS).map(Table::new)
-    }
-
-    /// Saves or updates the backup configuration.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if validation fails or the database operation fails.
-    pub fn save(&self, config: &BackupConfig) -> Result<()> {
-        config.validate()?;
-        self.put(config)
-    }
-
-    /// Updates the backup configuration.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if validation fails or the database operation fails.
-    pub fn update_config(&self, old: &BackupConfig, new: &BackupConfig) -> Result<()> {
-        new.validate()?;
-        let old_value = old.value();
-        let new_value = new.value();
-        self.map.update(
-            (old.unique_key(), old_value.as_ref()),
-            (new.unique_key(), new_value.as_ref()),
-        )
-    }
-
-    /// Reads the backup configuration from the database.
-    ///
-    /// Returns the default configuration if none exists.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the database operation fails or the data is invalid.
-    pub fn read(&self) -> Result<BackupConfig> {
-        match self.map.get(BACKUP_CONFIG_KEY.as_bytes())? {
-            Some(value) => {
-                BackupConfig::from_key_value(BACKUP_CONFIG_KEY.as_bytes(), value.as_ref())
-            }
-            None => Ok(BackupConfig::default()),
-        }
-    }
+/// Update struct for partial backup configuration updates.
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+pub struct BackupConfigUpdate {
+    /// New backup interval in days (if Some).
+    pub backup_duration: Option<u16>,
+    /// New backup time in HH:MM:SS (UTC) format (two digits per field, if Some).
+    pub backup_time: Option<String>,
+    /// New maximum number of backup snapshots to retain (if Some).
+    pub num_of_backups_to_keep: Option<u16>,
 }
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-
     use super::*;
-    use crate::Store;
-    use crate::test::{DbGuard, acquire_db_permit};
 
-    fn setup_store() -> (DbGuard<'static>, Arc<Store>) {
-        let permit = acquire_db_permit();
-        let db_dir = tempfile::tempdir().unwrap();
-        let backup_dir = tempfile::tempdir().unwrap();
-        let store = Arc::new(Store::new(db_dir.path(), backup_dir.path()).unwrap());
-        (permit, store)
+    fn assert_new_err(
+        backup_duration: u16,
+        backup_time: &str,
+        num_of_backups_to_keep: u16,
+        expected_msg: &str,
+    ) {
+        let err = BackupConfig::new(
+            backup_duration,
+            backup_time.to_string(),
+            num_of_backups_to_keep,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            err.contains(expected_msg),
+            "expected error to contain '{expected_msg}', got '{err}'"
+        );
     }
 
-    #[test]
-    fn test_default_backup_config() {
-        let config = BackupConfig::default();
-        assert_eq!(config.backup_duration, 1);
-        assert_eq!(config.backup_time, "23:59:59");
-        assert_eq!(config.num_of_backups_to_keep, 5);
-        assert!(config.validate().is_ok());
+    fn assert_validate_err(config: &BackupConfig, expected_msg: &str) {
+        let err = config.validate().unwrap_err().to_string();
+        assert!(
+            err.contains(expected_msg),
+            "expected error to contain '{expected_msg}', got '{err}'"
+        );
     }
 
     #[test]
@@ -220,154 +145,160 @@ mod tests {
         assert_eq!(config.backup_duration, 7);
         assert_eq!(config.backup_time, "02:00:00");
         assert_eq!(config.num_of_backups_to_keep, 10);
+    }
+
+    #[test]
+    fn test_new_invalid_backup_duration_zero() {
+        assert_new_err(0, "02:00:00", 5, "backup_duration must be >= 1");
+    }
+
+    #[test]
+    fn test_new_invalid_time_format() {
+        assert_new_err(1, "2:00", 5, "backup_time must be in HH:MM:SS format");
+    }
+
+    #[test]
+    fn test_new_invalid_hours() {
+        assert_new_err(1, "24:00:00", 5, "hours must be between 0 and 23");
+    }
+
+    #[test]
+    fn test_new_invalid_minutes() {
+        assert_new_err(1, "12:60:00", 5, "minutes must be between 0 and 59");
+    }
+
+    #[test]
+    fn test_new_invalid_seconds() {
+        assert_new_err(1, "12:30:60", 5, "seconds must be between 0 and 59");
+    }
+
+    #[test]
+    fn test_new_invalid_num_of_backups_zero() {
+        assert_new_err(1, "02:00:00", 0, "num_of_backups_to_keep must be >= 1");
+    }
+
+    #[test]
+    fn test_valid_backup_config_min_values() {
+        let config = BackupConfig::new(1, "00:00:00".to_string(), 1).unwrap();
+        assert_eq!(config.backup_duration, 1);
+        assert_eq!(config.backup_time, "00:00:00");
+        assert_eq!(config.num_of_backups_to_keep, 1);
+    }
+
+    #[test]
+    fn test_valid_backup_config_max_time_bounds() {
+        let config = BackupConfig::new(1, "23:59:59".to_string(), 1).unwrap();
+        assert_eq!(config.backup_time, "23:59:59");
+    }
+
+    #[test]
+    fn test_invalid_time_non_numeric_hours() {
+        assert_new_err(1, "aa:00:00", 1, "hours must be a valid number");
+    }
+
+    #[test]
+    fn test_invalid_time_non_numeric_minutes() {
+        assert_new_err(1, "00:bb:00", 1, "minutes must be a valid number");
+    }
+
+    #[test]
+    fn test_invalid_time_non_numeric_seconds() {
+        assert_new_err(1, "00:00:cc", 1, "seconds must be a valid number");
+    }
+
+    #[test]
+    fn test_invalid_time_empty() {
+        assert_new_err(1, "", 1, "backup_time must be in HH:MM:SS format");
+    }
+
+    #[test]
+    fn test_invalid_time_whitespace() {
+        assert_new_err(1, "   ", 1, "backup_time must be in HH:MM:SS format");
+    }
+
+    #[test]
+    fn test_invalid_time_missing_field() {
+        assert_new_err(1, "00:00", 1, "backup_time must be in HH:MM:SS format");
+    }
+
+    #[test]
+    fn test_invalid_time_single_digit_hours() {
+        assert_new_err(1, "2:03:04", 1, "backup_time must be in HH:MM:SS format");
+    }
+
+    #[test]
+    fn test_invalid_time_single_digit_minutes() {
+        assert_new_err(1, "02:3:04", 1, "backup_time must be in HH:MM:SS format");
+    }
+
+    #[test]
+    fn test_invalid_time_single_digit_seconds() {
+        assert_new_err(1, "02:03:4", 1, "backup_time must be in HH:MM:SS format");
+    }
+
+    #[test]
+    fn test_invalid_time_extra_field() {
+        assert_new_err(
+            1,
+            "00:00:00:00",
+            1,
+            "backup_time must be in HH:MM:SS format",
+        );
+    }
+
+    #[test]
+    fn test_invalid_time_leading_space() {
+        assert_new_err(1, " 00:00:00", 1, "backup_time must be in HH:MM:SS format");
+    }
+
+    #[test]
+    fn test_invalid_time_trailing_space() {
+        assert_new_err(1, "00:00:00 ", 1, "backup_time must be in HH:MM:SS format");
+    }
+
+    #[test]
+    fn test_validate_direct_success() {
+        let config = BackupConfig {
+            backup_duration: 7,
+            backup_time: "02:00:00".to_string(),
+            num_of_backups_to_keep: 10,
+        };
         assert!(config.validate().is_ok());
     }
 
     #[test]
-    fn test_validation_backup_duration_zero() {
-        let result = BackupConfig::new(0, "02:00:00".to_string(), 5);
-        assert!(result.is_err());
-        assert!(
-            result
-                .unwrap_err()
-                .to_string()
-                .contains("backup_duration must be >= 1")
+    fn test_validate_direct_invalid_time_format() {
+        assert_validate_err(
+            &BackupConfig {
+                backup_duration: 1,
+                backup_time: "2:03:04".to_string(),
+                num_of_backups_to_keep: 1,
+            },
+            "backup_time must be in HH:MM:SS format",
         );
     }
 
     #[test]
-    fn test_validation_invalid_time_format() {
-        let result = BackupConfig::new(1, "2:00".to_string(), 5);
-        assert!(result.is_err());
-        assert!(
-            result
-                .unwrap_err()
-                .to_string()
-                .contains("backup_time must be in HH:MM:SS format")
+    fn test_validate_direct_invalid_backup_duration() {
+        assert_validate_err(
+            &BackupConfig {
+                backup_duration: 0,
+                backup_time: "02:03:04".to_string(),
+                num_of_backups_to_keep: 1,
+            },
+            "backup_duration must be >= 1",
         );
     }
 
     #[test]
-    fn test_validation_invalid_hours() {
-        let result = BackupConfig::new(1, "24:00:00".to_string(), 5);
-        assert!(result.is_err());
-        assert!(
-            result
-                .unwrap_err()
-                .to_string()
-                .contains("hours must be between 0 and 23")
+    fn test_validate_direct_invalid_num_of_backups_to_keep() {
+        assert_validate_err(
+            &BackupConfig {
+                backup_duration: 1,
+                backup_time: "02:03:04".to_string(),
+                num_of_backups_to_keep: 0,
+            },
+            "num_of_backups_to_keep must be >= 1",
         );
-    }
-
-    #[test]
-    fn test_validation_invalid_minutes() {
-        let result = BackupConfig::new(1, "12:60:00".to_string(), 5);
-        assert!(result.is_err());
-        assert!(
-            result
-                .unwrap_err()
-                .to_string()
-                .contains("minutes must be between 0 and 59")
-        );
-    }
-
-    #[test]
-    fn test_validation_invalid_seconds() {
-        let result = BackupConfig::new(1, "12:30:60".to_string(), 5);
-        assert!(result.is_err());
-        assert!(
-            result
-                .unwrap_err()
-                .to_string()
-                .contains("seconds must be between 0 and 59")
-        );
-    }
-
-    #[test]
-    fn test_validation_num_of_backups_zero() {
-        let result = BackupConfig::new(1, "02:00:00".to_string(), 0);
-        assert!(result.is_err());
-        assert!(
-            result
-                .unwrap_err()
-                .to_string()
-                .contains("num_of_backups_to_keep must be >= 1")
-        );
-    }
-
-    #[test]
-    fn test_save_and_read() {
-        let (_permit, store) = setup_store();
-        let table = store.backup_config_map();
-
-        // Read should return default when no config exists
-        let config = table.read().unwrap();
-        assert_eq!(config, BackupConfig::default());
-
-        // Save a new config
-        let new_config = BackupConfig::new(7, "02:00:00".to_string(), 10).unwrap();
-        assert!(table.save(&new_config).is_ok());
-
-        // Read should return the saved config
-        let read_config = table.read().unwrap();
-        assert_eq!(read_config, new_config);
-    }
-
-    #[test]
-    fn test_update_config() {
-        let (_permit, store) = setup_store();
-        let table = store.backup_config_map();
-
-        // Save initial config
-        let old_config = BackupConfig::new(7, "02:00:00".to_string(), 10).unwrap();
-        assert!(table.save(&old_config).is_ok());
-
-        // Update the config
-        let new_config = BackupConfig::new(14, "03:30:00".to_string(), 15).unwrap();
-        assert!(table.update_config(&old_config, &new_config).is_ok());
-
-        // Read should return the updated config
-        let read_config = table.read().unwrap();
-        assert_eq!(read_config, new_config);
-    }
-
-    #[test]
-    fn test_save_invalid_config() {
-        let (_permit, store) = setup_store();
-        let table = store.backup_config_map();
-
-        // Try to save an invalid config
-        let invalid_config = BackupConfig {
-            backup_duration: 0,
-            backup_time: "02:00:00".to_string(),
-            num_of_backups_to_keep: 5,
-        };
-        assert!(table.save(&invalid_config).is_err());
-    }
-
-    #[test]
-    fn test_update_config_invalid_new_config() {
-        let (_permit, store) = setup_store();
-        let table = store.backup_config_map();
-
-        // Save a valid initial config
-        let old_config = BackupConfig::new(7, "02:00:00".to_string(), 10).unwrap();
-        assert!(table.save(&old_config).is_ok());
-
-        // Try to update with an invalid new config (backup_duration = 0)
-        let invalid_new_config = BackupConfig {
-            backup_duration: 0,
-            backup_time: "03:30:00".to_string(),
-            num_of_backups_to_keep: 15,
-        };
-        assert!(
-            table
-                .update_config(&old_config, &invalid_new_config)
-                .is_err()
-        );
-
-        // Verify the original config remains unchanged
-        let read_config = table.read().unwrap();
-        assert_eq!(read_config, old_config);
     }
 }

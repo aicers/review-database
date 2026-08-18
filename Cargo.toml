@@ -1,26 +1,27 @@
 [package]
 name = "review-database"
-version = "0.43.0"
+version = "0.47.0-alpha.1"
 edition = "2024"
 
 [dependencies]
 aho-corasick = "1"
 anyhow = "1"
 argon2 = { version = "0.5", features = ["std"] }
-attrievent = { git = "https://github.com/aicers/attrievent.git", rev = "a360cd9" }
+attrievent = { git = "https://github.com/aicers/attrievent.git", rev = "2e6d14d" }
 bincode = "1"
 chrono = { version = "0.4.42", default-features = false, features = ["serde"] }
 config = { version = "0.15", optional = true }
 data-encoding = "2"
 flate2 = "1.0"
-ip2location = "0.6.0"
+ip2location = "0.6"
 ipnet = { version = "2", features = ["serde"] }
-jiff = "0.2.15"
+jiff = "0.2"
 memchr = "2"
 num-derive = "0.4"
 num-traits = "0.2"
 rand = "0.9"
 regex = "1"
+review-protocol = { git = "https://github.com/petabi/review-protocol.git", tag = "0.19.0" }
 ring = { version = "0.17", features = ["std"] }
 rocksdb = "0.24"
 semver = "1"
@@ -31,8 +32,9 @@ structured = "0.16"
 strum = "0.27"
 strum_macros = "0.27"
 thiserror = "2"
-toml = "0.8.13"
+toml = "1"
 tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"], optional = true }
 
 [dev-dependencies]
 tempfile = "3"
@@ -44,7 +46,7 @@ path = "src/migrate.rs"
 
 [features]
 default = []
-migrate = ["config"]
+migrate = ["config", "tracing-subscriber"]
 
 [lints.clippy]
 pedantic = "warn"

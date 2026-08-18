@@ -4,7 +4,6 @@ use std::borrow::Cow;
 use anyhow::Result;
 use rocksdb::OptimisticTransactionDB;
 use serde::{Deserialize, Serialize};
-use structured::arrow::datatypes::ToByteSlice;
 
 use crate::{
     Indexable, IndexedMap, IndexedMapUpdate, IndexedTable, collections::Indexed,
@@ -105,7 +104,7 @@ impl<'d> IndexedTable<'d, CsvColumnExtra> {
     /// the same `model_id`.
     pub fn insert(
         &self,
-        model_id: i32,
+        model_id: u32,
         column_alias: Option<&[String]>,
         column_display: Option<&[bool]>,
         column_top_n: Option<&[bool]>,
@@ -114,7 +113,7 @@ impl<'d> IndexedTable<'d, CsvColumnExtra> {
     ) -> Result<u32> {
         let entry = CsvColumnExtra {
             id: u32::MAX,
-            model_id: u32::try_from(model_id)?,
+            model_id,
             column_alias: column_alias.map(ToOwned::to_owned),
             column_display: column_display.map(ToOwned::to_owned),
             column_top_n: column_top_n.map(ToOwned::to_owned),
@@ -129,8 +128,9 @@ impl<'d> IndexedTable<'d, CsvColumnExtra> {
     /// # Errors
     ///
     /// Returns an error if the connection to the database fails.
-    pub fn get_by_model(&self, model_id: i32) -> Result<Option<CsvColumnExtra>> {
-        let res = self.indexed_map.get_by_key(model_id.to_byte_slice())?;
+    pub fn get_by_model(&self, model_id: u32) -> Result<Option<CsvColumnExtra>> {
+        let key = model_id.to_be_bytes();
+        let res = self.indexed_map.get_by_key(&key)?;
 
         res.map(|r| super::deserialize(r.as_ref())).transpose()
     }

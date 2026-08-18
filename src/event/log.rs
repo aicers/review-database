@@ -2,34 +2,72 @@
 use std::{
     fmt,
     net::{IpAddr, Ipv4Addr},
-    num::NonZeroU8,
 };
 
 use attrievent::attribute::{LogAttr, RawEventAttrKind};
-use chrono::{DateTime, Utc, serde::ts_nanoseconds};
+use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
-use super::{EventCategory, LearningMethod, MEDIUM, TriageScore, common::Match};
+use super::timestamp::ts_nanoseconds as jiff_ts_nanoseconds;
+use super::{EventCategory, LearningMethod, ThreatLevel, TriageScore, common::Match};
 use crate::event::common::{AttrValue, triage_scores_to_string};
 
 #[derive(Serialize, Deserialize)]
-pub struct ExtraThreat {
-    #[serde(with = "ts_nanoseconds")]
-    pub time: DateTime<Utc>,
+pub struct ExtraThreatFields {
+    #[serde(with = "jiff_ts_nanoseconds")]
+    pub time: Timestamp,
     pub sensor: String,
     pub service: String,
     pub content: String,
     pub db_name: String,
     pub rule_id: u32,
     pub matched_to: String,
-    pub cluster_id: Option<usize>,
+    pub cluster_id: Option<u32>,
     pub attack_kind: String,
     pub confidence: f32,
     pub category: Option<EventCategory>,
     pub triage_scores: Option<Vec<TriageScore>>,
 }
 
-impl ExtraThreat {
+pub type ExtraThreatFieldsStored = ExtraThreatFieldsStoredV0_46;
+
+#[derive(Deserialize, Serialize)]
+pub struct ExtraThreatFieldsStoredV0_46 {
+    #[serde(with = "jiff_ts_nanoseconds")]
+    pub time: Timestamp,
+    pub sensor: String,
+    pub service: String,
+    pub content: String,
+    pub db_name: String,
+    pub rule_id: u32,
+    pub matched_to: String,
+    pub cluster_id: Option<u32>,
+    pub attack_kind: String,
+    pub confidence: f32,
+    pub category: Option<EventCategory>,
+    pub triage_scores: Option<Vec<TriageScore>>,
+}
+
+impl From<ExtraThreatFields> for ExtraThreatFieldsStored {
+    fn from(value: ExtraThreatFields) -> Self {
+        Self {
+            time: value.time,
+            sensor: value.sensor,
+            service: value.service,
+            content: value.content,
+            db_name: value.db_name,
+            rule_id: value.rule_id,
+            matched_to: value.matched_to,
+            cluster_id: value.cluster_id,
+            attack_kind: value.attack_kind,
+            confidence: value.confidence,
+            category: value.category,
+            triage_scores: value.triage_scores,
+        }
+    }
+}
+
+impl ExtraThreatFields {
     #[must_use]
     pub fn syslog_rfc5424(&self) -> String {
         format!(
@@ -48,6 +86,45 @@ impl ExtraThreat {
             self.attack_kind,
             self.confidence.to_string()
         )
+    }
+}
+
+pub struct ExtraThreat {
+    pub time: Timestamp,
+    pub sensor: String,
+    pub service: String,
+    pub content: String,
+    pub db_name: String,
+    pub rule_id: u32,
+    pub matched_to: String,
+    pub cluster_id: Option<u32>,
+    pub attack_kind: String,
+    pub confidence: f32,
+    pub category: Option<EventCategory>,
+    pub triage_scores: Option<Vec<TriageScore>>,
+}
+
+impl ExtraThreat {
+    pub(super) fn new(time: Timestamp, fields: ExtraThreatFieldsStored) -> Self {
+        Self {
+            time,
+            sensor: fields.sensor,
+            service: fields.service,
+            content: fields.content,
+            db_name: fields.db_name,
+            rule_id: fields.rule_id,
+            matched_to: fields.matched_to,
+            cluster_id: fields.cluster_id,
+            attack_kind: fields.attack_kind,
+            confidence: fields.confidence,
+            category: fields.category,
+            triage_scores: fields.triage_scores,
+        }
+    }
+
+    #[must_use]
+    pub fn threat_level() -> ThreatLevel {
+        ThreatLevel::Medium
     }
 }
 
@@ -71,20 +148,28 @@ impl fmt::Display for ExtraThreat {
 }
 
 impl Match for ExtraThreat {
-    fn src_addrs(&self) -> &[IpAddr] {
+    fn orig_addrs(&self) -> &[IpAddr] {
         std::slice::from_ref(&IpAddr::V4(Ipv4Addr::UNSPECIFIED))
     }
 
-    fn src_port(&self) -> u16 {
+    fn orig_port(&self) -> u16 {
         0
     }
 
-    fn dst_addrs(&self) -> &[IpAddr] {
+    fn orig_country_codes(&self) -> &[[u8; 2]] {
+        &[]
+    }
+
+    fn resp_addrs(&self) -> &[IpAddr] {
         std::slice::from_ref(&IpAddr::V4(Ipv4Addr::UNSPECIFIED))
     }
 
-    fn dst_port(&self) -> u16 {
+    fn resp_port(&self) -> u16 {
         0
+    }
+
+    fn resp_country_codes(&self) -> &[[u8; 2]] {
+        &[]
     }
 
     fn proto(&self) -> u8 {
@@ -95,8 +180,8 @@ impl Match for ExtraThreat {
         self.category
     }
 
-    fn level(&self) -> NonZeroU8 {
-        MEDIUM
+    fn level(&self) -> ThreatLevel {
+        Self::threat_level()
     }
 
     fn kind(&self) -> &'static str {

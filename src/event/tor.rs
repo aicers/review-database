@@ -1,28 +1,33 @@
-use std::{fmt, net::IpAddr, num::NonZeroU8};
+use std::{fmt, net::IpAddr};
 
 use attrievent::attribute::{ConnAttr, HttpAttr, RawEventAttrKind};
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
-use super::{EventCategory, LearningMethod, MEDIUM, TriageScore, common::Match};
+use super::timestamp::{self, ts_nanoseconds as jiff_ts_nanoseconds};
+use super::{EventCategory, LearningMethod, ThreatLevel, TriageScore, common::Match};
 use crate::TriageExclusion;
 use crate::event::{
     common::{AttrValue, triage_scores_to_string},
-    conn::{BlocklistConnFields, find_conn_attr_by_kind},
-    http::{find_http_attr_by_kind, get_post_body},
+    conn::{BlocklistConnFieldsStored, find_conn_attr_by_kind},
+    http::{HttpEventFieldsStored, find_http_attr_by_kind, get_post_body},
 };
 
 #[allow(clippy::module_name_repetitions)]
 #[derive(Serialize, Deserialize)]
 pub struct TorConnection {
-    pub time: DateTime<Utc>,
+    #[serde(with = "jiff_ts_nanoseconds")]
+    pub time: Timestamp,
     pub sensor: String,
     pub orig_addr: IpAddr,
     pub orig_port: u16,
+    pub orig_country_code: [u8; 2],
     pub resp_addr: IpAddr,
     pub resp_port: u16,
+    pub resp_country_code: [u8; 2],
     pub proto: u8,
-    pub start_time: DateTime<Utc>,
+    #[serde(with = "jiff_ts_nanoseconds")]
+    pub start_time: Timestamp,
     pub duration: i64,
     pub orig_pkts: u64,
     pub resp_pkts: u64,
@@ -57,14 +62,16 @@ impl fmt::Display for TorConnection {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "sensor={:?} orig_addr={:?} orig_port={:?} resp_addr={:?} resp_port={:?} proto={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} method={:?} host={:?} uri={:?} referer={:?} version={:?} user_agent={:?} request_len={:?} response_len={:?} status_code={:?} status_msg={:?} username={:?} password={:?} cookie={:?} content_encoding={:?} content_type={:?} cache_control={:?} filenames={:?} mime_types={:?} body={:?} state={:?} triage_scores={:?}",
+            "sensor={:?} orig_addr={:?} orig_port={:?} orig_country_code={:?} resp_addr={:?} resp_port={:?} resp_country_code={:?} proto={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} method={:?} host={:?} uri={:?} referer={:?} version={:?} user_agent={:?} request_len={:?} response_len={:?} status_code={:?} status_msg={:?} username={:?} password={:?} cookie={:?} content_encoding={:?} content_type={:?} cache_control={:?} filenames={:?} mime_types={:?} body={:?} state={:?} triage_scores={:?}",
             self.sensor,
             self.orig_addr.to_string(),
             self.orig_port.to_string(),
+            crate::util::country_code_as_str(&self.orig_country_code),
             self.resp_addr.to_string(),
             self.resp_port.to_string(),
+            crate::util::country_code_as_str(&self.resp_country_code),
             self.proto.to_string(),
-            self.start_time.to_rfc3339(),
+            timestamp::format_rfc3339(self.start_time).unwrap_or_default(),
             self.duration.to_string(),
             self.orig_pkts.to_string(),
             self.resp_pkts.to_string(),
@@ -96,11 +103,12 @@ impl fmt::Display for TorConnection {
 }
 
 impl TorConnection {
-    pub(super) fn new(time: DateTime<Utc>, fields: &super::HttpEventFields) -> Self {
+    pub(super) fn new(time: Timestamp, fields: &HttpEventFieldsStored) -> Self {
         TorConnection {
             time,
             sensor: fields.sensor.clone(),
-            start_time: DateTime::from_timestamp_nanos(fields.start_time),
+            start_time: timestamp::from_i64_nanos(fields.start_time)
+                .expect(timestamp::I64_NANOS_JIFF_INVARIANT),
             duration: fields.duration,
             orig_pkts: fields.orig_pkts,
             resp_pkts: fields.resp_pkts,
@@ -108,8 +116,10 @@ impl TorConnection {
             resp_l2_bytes: fields.resp_l2_bytes,
             orig_addr: fields.orig_addr,
             orig_port: fields.orig_port,
+            orig_country_code: fields.orig_country_code,
             resp_addr: fields.resp_addr,
             resp_port: fields.resp_port,
+            resp_country_code: fields.resp_country_code,
             proto: fields.proto,
             method: fields.method.clone(),
             host: fields.host.clone(),
@@ -138,21 +148,36 @@ impl TorConnection {
     }
 }
 
+impl TorConnection {
+    #[must_use]
+    pub fn threat_level() -> ThreatLevel {
+        ThreatLevel::Medium
+    }
+}
+
 impl Match for TorConnection {
-    fn src_addrs(&self) -> &[IpAddr] {
+    fn orig_addrs(&self) -> &[IpAddr] {
         std::slice::from_ref(&self.orig_addr)
     }
 
-    fn src_port(&self) -> u16 {
+    fn orig_port(&self) -> u16 {
         self.orig_port
     }
 
-    fn dst_addrs(&self) -> &[IpAddr] {
+    fn orig_country_codes(&self) -> &[[u8; 2]] {
+        std::slice::from_ref(&self.orig_country_code)
+    }
+
+    fn resp_addrs(&self) -> &[IpAddr] {
         std::slice::from_ref(&self.resp_addr)
     }
 
-    fn dst_port(&self) -> u16 {
+    fn resp_port(&self) -> u16 {
         self.resp_port
+    }
+
+    fn resp_country_codes(&self) -> &[[u8; 2]] {
+        std::slice::from_ref(&self.resp_country_code)
     }
 
     fn proto(&self) -> u8 {
@@ -163,8 +188,8 @@ impl Match for TorConnection {
         self.category
     }
 
-    fn level(&self) -> NonZeroU8 {
-        MEDIUM
+    fn level(&self) -> ThreatLevel {
+        Self::threat_level()
     }
 
     fn kind(&self) -> &'static str {
@@ -190,9 +215,9 @@ impl Match for TorConnection {
     fn score_by_triage_exclusion(&self, triage_exclusion: &[TriageExclusion]) -> f64 {
         let matched = triage_exclusion.iter().any(|ti| match ti {
             TriageExclusion::IpAddress(filter) => self
-                .src_addrs()
+                .orig_addrs()
                 .iter()
-                .chain(self.dst_addrs().iter())
+                .chain(self.resp_addrs().iter())
                 .any(|&ip| filter.contains(ip)),
             TriageExclusion::Domain(regex_set) => regex_set.is_match(&self.host),
             TriageExclusion::Hostname(hostnames) => hostnames.contains(&self.host),
@@ -205,13 +230,15 @@ impl Match for TorConnection {
 #[allow(clippy::module_name_repetitions)]
 pub struct TorConnectionConn {
     pub sensor: String,
-    pub time: DateTime<Utc>,
+    pub time: Timestamp,
     pub orig_addr: IpAddr,
     pub orig_port: u16,
+    pub orig_country_code: [u8; 2],
     pub resp_addr: IpAddr,
     pub resp_port: u16,
+    pub resp_country_code: [u8; 2],
     pub proto: u8,
-    pub start_time: DateTime<Utc>,
+    pub start_time: Timestamp,
     pub duration: i64,
     pub conn_state: String,
     pub service: String,
@@ -230,15 +257,17 @@ impl fmt::Display for TorConnectionConn {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(
             f,
-            "sensor={:?} orig_addr={:?} orig_port={:?} resp_addr={:?} resp_port={:?} proto={:?} conn_state={:?} start_time={:?} duration={:?} service={:?} orig_bytes={:?} resp_bytes={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} triage_scores={:?}",
+            "sensor={:?} orig_addr={:?} orig_port={:?} orig_country_code={:?} resp_addr={:?} resp_port={:?} resp_country_code={:?} proto={:?} conn_state={:?} start_time={:?} duration={:?} service={:?} orig_bytes={:?} resp_bytes={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} triage_scores={:?}",
             self.sensor,
             self.orig_addr.to_string(),
             self.orig_port.to_string(),
+            crate::util::country_code_as_str(&self.orig_country_code),
             self.resp_addr.to_string(),
             self.resp_port.to_string(),
+            crate::util::country_code_as_str(&self.resp_country_code),
             self.proto.to_string(),
             self.conn_state,
-            self.start_time.to_rfc3339(),
+            timestamp::format_rfc3339(self.start_time).unwrap_or_default(),
             self.duration.to_string(),
             self.service,
             self.orig_bytes.to_string(),
@@ -253,15 +282,18 @@ impl fmt::Display for TorConnectionConn {
 }
 
 impl TorConnectionConn {
-    pub(super) fn new(time: DateTime<Utc>, fields: BlocklistConnFields) -> Self {
+    pub(super) fn new(time: Timestamp, fields: BlocklistConnFieldsStored) -> Self {
         Self {
             time,
             sensor: fields.sensor,
-            start_time: DateTime::from_timestamp_nanos(fields.start_time),
+            start_time: timestamp::from_i64_nanos(fields.start_time)
+                .expect(timestamp::I64_NANOS_JIFF_INVARIANT),
             orig_addr: fields.orig_addr,
             orig_port: fields.orig_port,
+            orig_country_code: fields.orig_country_code,
             resp_addr: fields.resp_addr,
             resp_port: fields.resp_port,
+            resp_country_code: fields.resp_country_code,
             proto: fields.proto,
             conn_state: fields.conn_state,
             duration: fields.duration,
@@ -279,21 +311,36 @@ impl TorConnectionConn {
     }
 }
 
+impl TorConnectionConn {
+    #[must_use]
+    pub fn threat_level() -> ThreatLevel {
+        ThreatLevel::Medium
+    }
+}
+
 impl Match for TorConnectionConn {
-    fn src_addrs(&self) -> &[IpAddr] {
+    fn orig_addrs(&self) -> &[IpAddr] {
         std::slice::from_ref(&self.orig_addr)
     }
 
-    fn src_port(&self) -> u16 {
+    fn orig_port(&self) -> u16 {
         self.orig_port
     }
 
-    fn dst_addrs(&self) -> &[IpAddr] {
+    fn orig_country_codes(&self) -> &[[u8; 2]] {
+        std::slice::from_ref(&self.orig_country_code)
+    }
+
+    fn resp_addrs(&self) -> &[IpAddr] {
         std::slice::from_ref(&self.resp_addr)
     }
 
-    fn dst_port(&self) -> u16 {
+    fn resp_port(&self) -> u16 {
         self.resp_port
+    }
+
+    fn resp_country_codes(&self) -> &[[u8; 2]] {
+        std::slice::from_ref(&self.resp_country_code)
     }
 
     fn proto(&self) -> u8 {
@@ -304,8 +351,8 @@ impl Match for TorConnectionConn {
         self.category
     }
 
-    fn level(&self) -> NonZeroU8 {
-        MEDIUM
+    fn level(&self) -> ThreatLevel {
+        Self::threat_level()
     }
 
     fn kind(&self) -> &'static str {
@@ -337,22 +384,26 @@ mod tests {
     use chrono::{TimeZone, Utc};
 
     use super::{Match, TorConnectionConn};
+    use crate::event::timestamp;
     use crate::event::{
-        EventCategory, LearningMethod, MEDIUM, common::AttrValue, conn::BlocklistConnFields,
+        EventCategory, LearningMethod, ThreatLevel, common::AttrValue,
+        conn::BlocklistConnFieldsStored,
     };
 
-    fn tor_connection_conn_fields() -> BlocklistConnFields {
+    fn tor_connection_conn_fields() -> BlocklistConnFieldsStored {
         let start_time = Utc
             .with_ymd_and_hms(2023, 1, 1, 12, 0, 0)
             .unwrap()
             .timestamp_nanos_opt()
             .unwrap();
-        BlocklistConnFields {
+        BlocklistConnFieldsStored {
             sensor: "test-sensor".to_string(),
             orig_addr: "192.168.1.100".parse().unwrap(),
             orig_port: 12345,
+            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
             resp_addr: "198.51.100.1".parse().unwrap(),
             resp_port: 443,
+            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
             proto: 6,
             conn_state: "SF".to_string(),
             start_time,
@@ -371,7 +422,8 @@ mod tests {
 
     #[test]
     fn tor_connection_conn_new() {
-        let time = Utc.with_ymd_and_hms(2023, 1, 1, 12, 0, 0).unwrap();
+        let time = timestamp::from_chrono(Utc.with_ymd_and_hms(2023, 1, 1, 12, 0, 0).unwrap())
+            .expect(timestamp::I64_NANOS_JIFF_INVARIANT);
         let fields = tor_connection_conn_fields();
 
         let event = TorConnectionConn::new(time, fields);
@@ -399,7 +451,8 @@ mod tests {
 
     #[test]
     fn tor_connection_conn_display() {
-        let time = Utc.with_ymd_and_hms(2023, 1, 1, 12, 0, 0).unwrap();
+        let time = timestamp::from_chrono(Utc.with_ymd_and_hms(2023, 1, 1, 12, 0, 0).unwrap())
+            .expect(timestamp::I64_NANOS_JIFF_INVARIANT);
         let event = TorConnectionConn::new(time, tor_connection_conn_fields());
 
         let display_output = format!("{event}");
@@ -412,22 +465,23 @@ mod tests {
 
     #[test]
     fn tor_connection_conn_match_trait() {
-        let time = Utc.with_ymd_and_hms(2023, 1, 1, 12, 0, 0).unwrap();
+        let time = timestamp::from_chrono(Utc.with_ymd_and_hms(2023, 1, 1, 12, 0, 0).unwrap())
+            .expect(timestamp::I64_NANOS_JIFF_INVARIANT);
         let event = TorConnectionConn::new(time, tor_connection_conn_fields());
 
         assert_eq!(
-            event.src_addrs(),
+            event.orig_addrs(),
             &["192.168.1.100".parse::<IpAddr>().unwrap()]
         );
-        assert_eq!(event.src_port(), 12345);
+        assert_eq!(event.orig_port(), 12345);
         assert_eq!(
-            event.dst_addrs(),
+            event.resp_addrs(),
             &["198.51.100.1".parse::<IpAddr>().unwrap()]
         );
-        assert_eq!(event.dst_port(), 443);
+        assert_eq!(event.resp_port(), 443);
         assert_eq!(event.proto(), 6);
         assert_eq!(event.category(), Some(EventCategory::CommandAndControl));
-        assert_eq!(event.level(), MEDIUM);
+        assert_eq!(event.level(), ThreatLevel::Medium);
         assert_eq!(event.kind(), "tor exit nodes");
         assert_eq!(event.sensor(), "test-sensor");
         assert_eq!(event.confidence(), Some(0.95));
@@ -439,10 +493,11 @@ mod tests {
 
     #[test]
     fn tor_connection_conn_find_attr_by_kind() {
-        let time = Utc.with_ymd_and_hms(2023, 1, 1, 12, 0, 0).unwrap();
+        let time = timestamp::from_chrono(Utc.with_ymd_and_hms(2023, 1, 1, 12, 0, 0).unwrap())
+            .expect(timestamp::I64_NANOS_JIFF_INVARIANT);
         let event = TorConnectionConn::new(time, tor_connection_conn_fields());
 
-        // Test finding source address attribute
+        // Test finding originator address attribute (ConnAttr::SrcAddr from attrievent)
         let orig_addr_attr = RawEventAttrKind::Conn(ConnAttr::SrcAddr);
         if let Some(AttrValue::Addr(addr)) = event.find_attr_by_kind(orig_addr_attr) {
             assert_eq!(addr, "192.168.1.100".parse::<IpAddr>().unwrap());
@@ -450,7 +505,7 @@ mod tests {
             panic!("Expected SrcAddr attribute");
         }
 
-        // Test finding destination port attribute
+        // Test finding responder port attribute (ConnAttr::DstPort from attrievent)
         let resp_port_attr = RawEventAttrKind::Conn(ConnAttr::DstPort);
         if let Some(AttrValue::UInt(port)) = event.find_attr_by_kind(resp_port_attr) {
             assert_eq!(port, 443);

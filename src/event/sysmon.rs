@@ -2,14 +2,14 @@
 use std::{
     fmt,
     net::{IpAddr, Ipv4Addr},
-    num::NonZeroU8,
 };
 
 use attrievent::attribute::{RawEventAttrKind, WindowAttr};
-use chrono::{DateTime, Utc, serde::ts_nanoseconds};
+use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
-use super::{EventCategory, LearningMethod, MEDIUM, TriageScore, common::Match};
+use super::timestamp::ts_nanoseconds as jiff_ts_nanoseconds;
+use super::{EventCategory, LearningMethod, ThreatLevel, TriageScore, common::Match};
 use crate::event::common::{AttrValue, triage_scores_to_string};
 
 // TODO: We plan to implement the triage feature only after we have cleaned up the range of
@@ -35,9 +35,9 @@ macro_rules! find_window_attr_by_kind {
 }
 
 #[derive(Serialize, Deserialize)]
-pub struct WindowsThreat {
-    #[serde(with = "ts_nanoseconds")]
-    pub time: DateTime<Utc>,
+pub struct WindowsThreatFields {
+    #[serde(with = "jiff_ts_nanoseconds")]
+    pub time: Timestamp,
     pub sensor: String,
     pub service: String,
     pub agent_name: String,
@@ -50,15 +50,65 @@ pub struct WindowsThreat {
     pub db_name: String,
     pub rule_id: u32,
     pub matched_to: String,
-    pub cluster_id: Option<usize>,
+    pub cluster_id: Option<u32>,
     pub attack_kind: String,
     pub confidence: f32,
     pub category: Option<EventCategory>,
     pub triage_scores: Option<Vec<TriageScore>>,
 }
 
+pub type WindowsThreatFieldsStored = WindowsThreatFieldsStoredV0_46;
+
+#[derive(Deserialize, Serialize)]
+pub struct WindowsThreatFieldsStoredV0_46 {
+    #[serde(with = "jiff_ts_nanoseconds")]
+    pub time: Timestamp,
+    pub sensor: String,
+    pub service: String,
+    pub agent_name: String,
+    pub agent_id: String,
+    pub process_guid: String,
+    pub process_id: u32,
+    pub image: String,
+    pub user: String,
+    pub content: String,
+    pub db_name: String,
+    pub rule_id: u32,
+    pub matched_to: String,
+    pub cluster_id: Option<u32>,
+    pub attack_kind: String,
+    pub confidence: f32,
+    pub category: Option<EventCategory>,
+    pub triage_scores: Option<Vec<TriageScore>>,
+}
+
+impl From<WindowsThreatFields> for WindowsThreatFieldsStored {
+    fn from(value: WindowsThreatFields) -> Self {
+        Self {
+            time: value.time,
+            sensor: value.sensor,
+            service: value.service,
+            agent_name: value.agent_name,
+            agent_id: value.agent_id,
+            process_guid: value.process_guid,
+            process_id: value.process_id,
+            image: value.image,
+            user: value.user,
+            content: value.content,
+            db_name: value.db_name,
+            rule_id: value.rule_id,
+            matched_to: value.matched_to,
+            cluster_id: value.cluster_id,
+            attack_kind: value.attack_kind,
+            confidence: value.confidence,
+            category: value.category,
+            triage_scores: value.triage_scores,
+        }
+    }
+}
+
 // image, user, content field enclosed with double quotes(\") instead of "{:?}"
-impl WindowsThreat {
+impl WindowsThreatFields {
     #[must_use]
     pub fn syslog_rfc5424(&self) -> String {
         format!(
@@ -83,6 +133,57 @@ impl WindowsThreat {
             self.attack_kind,
             self.confidence.to_string()
         )
+    }
+}
+
+pub struct WindowsThreat {
+    pub time: Timestamp,
+    pub sensor: String,
+    pub service: String,
+    pub agent_name: String,
+    pub agent_id: String,
+    pub process_guid: String,
+    pub process_id: u32,
+    pub image: String,
+    pub user: String,
+    pub content: String,
+    pub db_name: String,
+    pub rule_id: u32,
+    pub matched_to: String,
+    pub cluster_id: Option<u32>,
+    pub attack_kind: String,
+    pub confidence: f32,
+    pub category: Option<EventCategory>,
+    pub triage_scores: Option<Vec<TriageScore>>,
+}
+
+impl WindowsThreat {
+    pub(super) fn new(time: Timestamp, fields: WindowsThreatFieldsStored) -> Self {
+        Self {
+            time,
+            sensor: fields.sensor,
+            service: fields.service,
+            agent_name: fields.agent_name,
+            agent_id: fields.agent_id,
+            process_guid: fields.process_guid,
+            process_id: fields.process_id,
+            image: fields.image,
+            user: fields.user,
+            content: fields.content,
+            db_name: fields.db_name,
+            rule_id: fields.rule_id,
+            matched_to: fields.matched_to,
+            cluster_id: fields.cluster_id,
+            attack_kind: fields.attack_kind,
+            confidence: fields.confidence,
+            category: fields.category,
+            triage_scores: fields.triage_scores,
+        }
+    }
+
+    #[must_use]
+    pub fn threat_level() -> ThreatLevel {
+        ThreatLevel::Medium
     }
 }
 
@@ -113,24 +214,28 @@ impl fmt::Display for WindowsThreat {
 
 // TODO: Make new Match trait for Windows threat events
 impl Match for WindowsThreat {
-    fn sensor(&self) -> &str {
-        &self.sensor
-    }
-
-    fn src_addrs(&self) -> &[IpAddr] {
+    fn orig_addrs(&self) -> &[IpAddr] {
         std::slice::from_ref(&IpAddr::V4(Ipv4Addr::UNSPECIFIED))
     }
 
-    fn src_port(&self) -> u16 {
+    fn orig_port(&self) -> u16 {
         0
     }
 
-    fn dst_addrs(&self) -> &[IpAddr] {
+    fn orig_country_codes(&self) -> &[[u8; 2]] {
+        &[]
+    }
+
+    fn resp_addrs(&self) -> &[IpAddr] {
         std::slice::from_ref(&IpAddr::V4(Ipv4Addr::UNSPECIFIED))
     }
 
-    fn dst_port(&self) -> u16 {
+    fn resp_port(&self) -> u16 {
         0
+    }
+
+    fn resp_country_codes(&self) -> &[[u8; 2]] {
+        &[]
     }
 
     fn proto(&self) -> u8 {
@@ -141,12 +246,16 @@ impl Match for WindowsThreat {
         self.category
     }
 
-    fn level(&self) -> NonZeroU8 {
-        MEDIUM
+    fn level(&self) -> ThreatLevel {
+        Self::threat_level()
     }
 
     fn kind(&self) -> &'static str {
         "windows threat"
+    }
+
+    fn sensor(&self) -> &str {
+        &self.sensor
     }
 
     fn confidence(&self) -> Option<f32> {

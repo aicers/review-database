@@ -1,10 +1,11 @@
-use std::{fmt, net::IpAddr, num::NonZeroU8};
+use std::{fmt, net::IpAddr};
 
 use attrievent::attribute::{DnsAttr, RawEventAttrKind};
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
-use super::{EventCategory, LearningMethod, MEDIUM, TriageScore, common::Match};
+use super::timestamp;
+use super::{EventCategory, LearningMethod, ThreatLevel, TriageScore, common::Match};
 use crate::event::common::{AttrValue, triage_scores_to_string};
 
 macro_rules! find_malformed_dns_attr_by_kind {
@@ -61,10 +62,79 @@ pub struct BlocklistMalformedDnsFields {
     pub category: Option<EventCategory>,
 }
 
+pub(crate) type BlocklistMalformedDnsFieldsStored = BlocklistMalformedDnsFieldsStoredV0_46;
+
+#[derive(Deserialize, Serialize)]
+pub(crate) struct BlocklistMalformedDnsFieldsStoredV0_46 {
+    pub sensor: String,
+    pub orig_addr: IpAddr,
+    pub orig_port: u16,
+    pub orig_country_code: [u8; 2],
+    pub resp_addr: IpAddr,
+    pub resp_port: u16,
+    pub resp_country_code: [u8; 2],
+    pub proto: u8,
+    pub start_time: i64,
+    pub duration: i64,
+    pub orig_pkts: u64,
+    pub resp_pkts: u64,
+    pub orig_l2_bytes: u64,
+    pub resp_l2_bytes: u64,
+    pub trans_id: u16,
+    pub flags: u16,
+    pub question_count: u16,
+    pub answer_count: u16,
+    pub authority_count: u16,
+    pub additional_count: u16,
+    pub query_count: u32,
+    pub resp_count: u32,
+    pub query_bytes: u64,
+    pub resp_bytes: u64,
+    pub query_body: Vec<Vec<u8>>,
+    pub resp_body: Vec<Vec<u8>>,
+    pub confidence: f32,
+    pub category: Option<EventCategory>,
+}
+
+impl From<BlocklistMalformedDnsFields> for BlocklistMalformedDnsFieldsStored {
+    fn from(value: BlocklistMalformedDnsFields) -> Self {
+        Self {
+            sensor: value.sensor,
+            orig_addr: value.orig_addr,
+            orig_port: value.orig_port,
+            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
+            resp_addr: value.resp_addr,
+            resp_port: value.resp_port,
+            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
+            proto: value.proto,
+            start_time: value.start_time,
+            duration: value.duration,
+            orig_pkts: value.orig_pkts,
+            resp_pkts: value.resp_pkts,
+            orig_l2_bytes: value.orig_l2_bytes,
+            resp_l2_bytes: value.resp_l2_bytes,
+            trans_id: value.trans_id,
+            flags: value.flags,
+            question_count: value.question_count,
+            answer_count: value.answer_count,
+            authority_count: value.authority_count,
+            additional_count: value.additional_count,
+            query_count: value.query_count,
+            resp_count: value.resp_count,
+            query_bytes: value.query_bytes,
+            resp_bytes: value.resp_bytes,
+            query_body: value.query_body,
+            resp_body: value.resp_body,
+            confidence: value.confidence,
+            category: value.category,
+        }
+    }
+}
+
 impl BlocklistMalformedDnsFields {
     #[must_use]
     pub fn syslog_rfc5424(&self) -> String {
-        let start_time_dt = DateTime::from_timestamp_nanos(self.start_time);
+        let start_time = timestamp::format_i64_nanos_rfc3339(self.start_time).unwrap_or_default();
         format!(
             "category={:?} sensor={:?} orig_addr={:?} orig_port={:?} resp_addr={:?} resp_port={:?} proto={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} trans_id={:?} flags={:?} question_count={:?} answer_count={:?} authority_count={:?} additional_count={:?} query_count={:?} resp_count={:?} query_bytes={:?} resp_bytes={:?} query_body={:?} resp_body={:?} confidence={:?}",
             self.category.as_ref().map_or_else(
@@ -77,7 +147,7 @@ impl BlocklistMalformedDnsFields {
             self.resp_addr.to_string(),
             self.resp_port.to_string(),
             self.proto.to_string(),
-            start_time_dt.to_rfc3339(),
+            start_time,
             self.duration.to_string(),
             self.orig_pkts.to_string(),
             self.resp_pkts.to_string(),
@@ -109,14 +179,16 @@ fn format_vec_vec_u8(data: &[Vec<u8>]) -> String {
 }
 
 pub struct BlocklistMalformedDns {
-    pub time: DateTime<Utc>,
+    pub time: Timestamp,
     pub sensor: String,
     pub orig_addr: IpAddr,
     pub orig_port: u16,
+    pub orig_country_code: [u8; 2],
     pub resp_addr: IpAddr,
     pub resp_port: u16,
+    pub resp_country_code: [u8; 2],
     pub proto: u8,
-    pub start_time: DateTime<Utc>,
+    pub start_time: Timestamp,
     pub duration: i64,
     pub orig_pkts: u64,
     pub resp_pkts: u64,
@@ -141,16 +213,18 @@ pub struct BlocklistMalformedDns {
 
 impl fmt::Display for BlocklistMalformedDns {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let start_time_str = self.start_time.to_rfc3339();
+        let start_time_str = timestamp::format_rfc3339(self.start_time).unwrap_or_default();
 
         write!(
             f,
-            "sensor={:?} orig_addr={:?} orig_port={:?} resp_addr={:?} resp_port={:?} proto={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} trans_id={:?} flags={:?} question_count={:?} answer_count={:?} authority_count={:?} additional_count={:?} query_count={:?} resp_count={:?} query_bytes={:?} resp_bytes={:?} query_body={:?} resp_body={:?} triage_scores={:?}",
+            "sensor={:?} orig_addr={:?} orig_port={:?} orig_country_code={:?} resp_addr={:?} resp_port={:?} resp_country_code={:?} proto={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} trans_id={:?} flags={:?} question_count={:?} answer_count={:?} authority_count={:?} additional_count={:?} query_count={:?} resp_count={:?} query_bytes={:?} resp_bytes={:?} query_body={:?} resp_body={:?} triage_scores={:?}",
             self.sensor,
             self.orig_addr.to_string(),
             self.orig_port.to_string(),
+            crate::util::country_code_as_str(&self.orig_country_code),
             self.resp_addr.to_string(),
             self.resp_port.to_string(),
+            crate::util::country_code_as_str(&self.resp_country_code),
             self.proto.to_string(),
             start_time_str,
             self.duration.to_string(),
@@ -176,16 +250,19 @@ impl fmt::Display for BlocklistMalformedDns {
 }
 
 impl BlocklistMalformedDns {
-    pub(super) fn new(time: DateTime<Utc>, fields: BlocklistMalformedDnsFields) -> Self {
+    pub(super) fn new(time: Timestamp, fields: BlocklistMalformedDnsFieldsStored) -> Self {
         Self {
             time,
             sensor: fields.sensor,
             orig_addr: fields.orig_addr,
             orig_port: fields.orig_port,
+            orig_country_code: fields.orig_country_code,
             resp_addr: fields.resp_addr,
             resp_port: fields.resp_port,
+            resp_country_code: fields.resp_country_code,
             proto: fields.proto,
-            start_time: DateTime::from_timestamp_nanos(fields.start_time),
+            start_time: timestamp::from_i64_nanos(fields.start_time)
+                .expect(timestamp::I64_NANOS_JIFF_INVARIANT),
             duration: fields.duration,
             orig_pkts: fields.orig_pkts,
             resp_pkts: fields.resp_pkts,
@@ -210,21 +287,36 @@ impl BlocklistMalformedDns {
     }
 }
 
+impl BlocklistMalformedDns {
+    #[must_use]
+    pub fn threat_level() -> ThreatLevel {
+        ThreatLevel::Medium
+    }
+}
+
 impl Match for BlocklistMalformedDns {
-    fn src_addrs(&self) -> &[IpAddr] {
+    fn orig_addrs(&self) -> &[IpAddr] {
         std::slice::from_ref(&self.orig_addr)
     }
 
-    fn src_port(&self) -> u16 {
+    fn orig_port(&self) -> u16 {
         self.orig_port
     }
 
-    fn dst_addrs(&self) -> &[IpAddr] {
+    fn orig_country_codes(&self) -> &[[u8; 2]] {
+        std::slice::from_ref(&self.orig_country_code)
+    }
+
+    fn resp_addrs(&self) -> &[IpAddr] {
         std::slice::from_ref(&self.resp_addr)
     }
 
-    fn dst_port(&self) -> u16 {
+    fn resp_port(&self) -> u16 {
         self.resp_port
+    }
+
+    fn resp_country_codes(&self) -> &[[u8; 2]] {
+        std::slice::from_ref(&self.resp_country_code)
     }
 
     fn proto(&self) -> u8 {
@@ -235,8 +327,8 @@ impl Match for BlocklistMalformedDns {
         self.category
     }
 
-    fn level(&self) -> NonZeroU8 {
-        MEDIUM
+    fn level(&self) -> ThreatLevel {
+        Self::threat_level()
     }
 
     fn kind(&self) -> &'static str {

@@ -5,10 +5,22 @@ use rocksdb::OptimisticTransactionDB;
 
 use crate::{Map, Table};
 
+// Account policy keys
 pub const KEY_EXPIRY_PERIOD: &str = "expiry_period_in_secs";
 pub const KEY_LOCKOUT_THRESHOLD: &str = "lockout_threshold";
 pub const KEY_LOCKOUT_DURATION: &str = "lockout_duration_in_secs";
 pub const KEY_SUSPENSION_THRESHOLD: &str = "suspension_threshold";
+
+// Backup config keys
+pub const KEY_BACKUP_DURATION: &str = "backup_duration";
+pub const KEY_BACKUP_TIME: &str = "backup_time";
+pub const KEY_NUM_OF_BACKUPS_TO_KEEP: &str = "num_of_backups_to_keep";
+
+// Event retention config key
+pub const KEY_EVENT_RETENTION_PERIOD_DAYS: &str = "event_retention_period_days";
+
+// Retention config keys
+pub const KEY_RETENTION_PERIOD: &str = "stats_retention_period_in_days";
 
 /// Functions for the `configs` map.
 impl<'d> Table<'d, String> {
@@ -89,6 +101,15 @@ impl<'d> Table<'d, String> {
         self.map.update_compare_multi(&updates)
     }
 
+    /// Deletes a config value by key.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database operation fails.
+    pub fn delete(&self, key: &str) -> Result<()> {
+        self.map.delete(key.as_bytes())
+    }
+
     /// Returns the current account policy expiry period,
     /// or `None` if it hasn't been initialized.
     ///
@@ -110,16 +131,21 @@ mod tests {
     use std::sync::Arc;
 
     use crate::tables::config::{
-        KEY_EXPIRY_PERIOD, KEY_LOCKOUT_DURATION, KEY_LOCKOUT_THRESHOLD, KEY_SUSPENSION_THRESHOLD,
+        KEY_BACKUP_DURATION, KEY_BACKUP_TIME, KEY_EVENT_RETENTION_PERIOD_DAYS, KEY_EXPIRY_PERIOD,
+        KEY_LOCKOUT_DURATION, KEY_LOCKOUT_THRESHOLD, KEY_NUM_OF_BACKUPS_TO_KEEP,
+        KEY_RETENTION_PERIOD, KEY_SUSPENSION_THRESHOLD,
     };
     use crate::test::{DbGuard, acquire_db_permit};
-    use crate::{AccountPolicy, AccountPolicyUpdate, Store};
+    use crate::{
+        AccountPolicy, AccountPolicyUpdate, BackupConfig, BackupConfigUpdate, RetentionConfig,
+        RetentionConfigUpdate, Store,
+    };
 
     fn setup_store() -> (DbGuard<'static>, Arc<Store>) {
         let permit = acquire_db_permit();
         let db_dir = tempfile::tempdir().unwrap();
         let backup_dir = tempfile::tempdir().unwrap();
-        let store = Arc::new(Store::new(db_dir.path(), backup_dir.path()).unwrap());
+        let store = Arc::new(Store::new(db_dir.path(), backup_dir.path(), None).unwrap());
         (permit, store)
     }
 
@@ -520,5 +546,526 @@ mod tests {
             config.current(KEY_LOCKOUT_THRESHOLD).unwrap(),
             Some("5".to_string())
         );
+    }
+
+    fn assert_backup_config_values(
+        store: &Store,
+        duration: Option<&str>,
+        time: Option<&str>,
+        num_to_keep: Option<&str>,
+    ) {
+        let config_map = store.config_map();
+        assert_eq!(
+            config_map.current(KEY_BACKUP_DURATION).unwrap(),
+            duration.map(ToString::to_string)
+        );
+        assert_eq!(
+            config_map.current(KEY_BACKUP_TIME).unwrap(),
+            time.map(ToString::to_string)
+        );
+        assert_eq!(
+            config_map.current(KEY_NUM_OF_BACKUPS_TO_KEEP).unwrap(),
+            num_to_keep.map(ToString::to_string)
+        );
+    }
+
+    #[test]
+    fn backup_config_read_returns_none_when_missing() {
+        let (_permit, store) = setup_store();
+
+        // Read should return None when no config exists
+        let config = store.backup_config().unwrap();
+        assert!(config.is_none());
+    }
+
+    #[test]
+    fn init_backup_config_success() {
+        let (_permit, store) = setup_store();
+
+        let config = BackupConfig::new(7, "02:00:00".to_string(), 10).unwrap();
+
+        // Initialize backup config
+        assert!(store.init_backup_config(&config).is_ok());
+
+        // Verify all values were stored correctly
+        assert_backup_config_values(&store, Some("7"), Some("02:00:00"), Some("10"));
+
+        // Read should return the initialized config
+        let read_config = store.backup_config().unwrap();
+        assert_eq!(read_config, Some(config));
+    }
+
+    #[test]
+    fn init_backup_config_already_exists_fails_without_overwrite() {
+        let (_permit, store) = setup_store();
+
+        let config = BackupConfig::new(7, "02:00:00".to_string(), 10).unwrap();
+
+        // Initialize backup config
+        assert!(store.init_backup_config(&config).is_ok());
+
+        let new_config = BackupConfig::new(14, "03:00:00".to_string(), 5).unwrap();
+
+        // Try to initialize again - should fail
+        assert!(store.init_backup_config(&new_config).is_err());
+
+        // Verify existing values were NOT overwritten
+        assert_backup_config_values(&store, Some("7"), Some("02:00:00"), Some("10"));
+    }
+
+    #[test]
+    fn init_backup_config_validation_failure() {
+        let (_permit, store) = setup_store();
+
+        // Invalid config: backup_duration = 0
+        let config = BackupConfig {
+            backup_duration: 0,
+            backup_time: "02:00:00".to_string(),
+            num_of_backups_to_keep: 10,
+        };
+
+        // Should return error due to validation
+        let result = store.init_backup_config(&config);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("backup_duration must be >= 1")
+        );
+
+        // Verify nothing was written
+        assert_backup_config_values(&store, None, None, None);
+    }
+
+    #[test]
+    fn update_backup_config_all_fields() {
+        let (_permit, store) = setup_store();
+
+        let config = BackupConfig::new(7, "02:00:00".to_string(), 10).unwrap();
+
+        // Initialize backup config
+        assert!(store.init_backup_config(&config).is_ok());
+
+        let update = BackupConfigUpdate {
+            backup_duration: Some(14),
+            backup_time: Some("03:30:00".to_string()),
+            num_of_backups_to_keep: Some(15),
+        };
+
+        // Update all fields
+        assert!(store.update_backup_config(&config, &update).is_ok());
+
+        // Verify all values were updated
+        assert_backup_config_values(&store, Some("14"), Some("03:30:00"), Some("15"));
+
+        // Read should return the updated config
+        let expected = BackupConfig::new(14, "03:30:00".to_string(), 15).unwrap();
+        let read_config = store.backup_config().unwrap();
+        assert_eq!(read_config, Some(expected));
+    }
+
+    #[test]
+    fn update_backup_config_partial() {
+        let (_permit, store) = setup_store();
+
+        let config = BackupConfig::new(7, "02:00:00".to_string(), 10).unwrap();
+
+        // Initialize backup config
+        assert!(store.init_backup_config(&config).is_ok());
+
+        let update = BackupConfigUpdate {
+            backup_duration: Some(14),
+            ..Default::default()
+        };
+
+        // Update only backup_duration
+        assert!(store.update_backup_config(&config, &update).is_ok());
+
+        // Verify only backup_duration changed
+        assert_backup_config_values(&store, Some("14"), Some("02:00:00"), Some("10"));
+    }
+
+    #[test]
+    fn update_backup_config_fails_on_old_value_mismatch() {
+        let (_permit, store) = setup_store();
+
+        let config = BackupConfig::new(7, "02:00:00".to_string(), 10).unwrap();
+
+        // Initialize backup config
+        assert!(store.init_backup_config(&config).is_ok());
+
+        let wrong_config = BackupConfig {
+            backup_duration: 999, // wrong old value
+            ..config.clone()
+        };
+
+        let update = BackupConfigUpdate {
+            backup_duration: Some(14),
+            ..Default::default()
+        };
+
+        // Try to update with wrong old values - should fail
+        assert!(store.update_backup_config(&wrong_config, &update).is_err());
+
+        // Verify values remained unchanged
+        assert_backup_config_values(&store, Some("7"), Some("02:00:00"), Some("10"));
+    }
+
+    #[test]
+    fn update_backup_config_validation_failure() {
+        let (_permit, store) = setup_store();
+
+        let config = BackupConfig::new(7, "02:00:00".to_string(), 10).unwrap();
+        store.init_backup_config(&config).unwrap();
+
+        // Try to update to an invalid state: backup_duration = 0
+        let update = BackupConfigUpdate {
+            backup_duration: Some(0),
+            ..Default::default()
+        };
+
+        let result = store.update_backup_config(&config, &update);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("backup_duration must be >= 1")
+        );
+
+        // Verify values remained unchanged
+        assert_backup_config_values(&store, Some("7"), Some("02:00:00"), Some("10"));
+    }
+
+    #[test]
+    fn update_backup_config_no_changes() {
+        let (_permit, store) = setup_store();
+
+        let config = BackupConfig::new(7, "02:00:00".to_string(), 10).unwrap();
+
+        // Initialize backup config
+        assert!(store.init_backup_config(&config).is_ok());
+
+        let update = BackupConfigUpdate::default();
+
+        // Update with no changes (all None)
+        assert!(store.update_backup_config(&config, &update).is_ok());
+
+        // Verify values remained unchanged
+        assert_backup_config_values(&store, Some("7"), Some("02:00:00"), Some("10"));
+    }
+
+    #[test]
+    fn update_backup_config_atomicity_on_mixed_old_values() {
+        let (_permit, store) = setup_store();
+
+        let config = BackupConfig::new(7, "02:00:00".to_string(), 10).unwrap();
+
+        // Initialize backup config
+        assert!(store.init_backup_config(&config).is_ok());
+
+        // Try to update with mixed valid/invalid old values
+        let mixed_config = BackupConfig {
+            backup_duration: 999, // incorrect
+            ..config.clone()
+        };
+
+        let update = BackupConfigUpdate {
+            backup_duration: Some(14),
+            backup_time: Some("03:00:00".to_string()),
+            ..Default::default()
+        };
+
+        assert!(store.update_backup_config(&mixed_config, &update).is_err());
+
+        // Verify NO values were updated (atomicity)
+        assert_backup_config_values(&store, Some("7"), Some("02:00:00"), Some("10"));
+    }
+
+    #[test]
+    fn init_backup_config_atomicity() {
+        let (_permit, store) = setup_store();
+
+        // Pre-create ONE of the keys (simulating partial state or conflict)
+        store.config_map().init(KEY_BACKUP_DURATION, "7").unwrap();
+
+        let config = BackupConfig::new(14, "02:00:00".to_string(), 10).unwrap();
+
+        // Try to initialize config (should fail because one key exists)
+        let result = store.init_backup_config(&config);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("key already exists")
+        );
+
+        // Verify ALL other keys were NOT created (atomicity check)
+        assert_backup_config_values(&store, Some("7"), None, None);
+    }
+
+    #[test]
+    fn update_backup_config_fails_when_missing() {
+        let (_permit, store) = setup_store();
+
+        let config = BackupConfig::new(7, "02:00:00".to_string(), 10).unwrap();
+
+        let update = BackupConfigUpdate {
+            backup_duration: Some(14),
+            ..Default::default()
+        };
+
+        // Try to update when no config exists - should fail
+        let result = store.update_backup_config(&config, &update);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("no such entry"));
+
+        // Verify nothing was written
+        assert_backup_config_values(&store, None, None, None);
+    }
+
+    #[test]
+    fn backup_config_missing_keys_error_includes_keys() {
+        let (_permit, store) = setup_store();
+        let config_map = store.config_map();
+
+        config_map.init(KEY_BACKUP_DURATION, "7").unwrap();
+
+        let err = store.backup_config().unwrap_err().to_string();
+        assert!(
+            err.contains("incomplete backup configuration: missing keys:"),
+            "error message should include missing keys prefix: {err}"
+        );
+        assert!(
+            err.contains(KEY_BACKUP_TIME),
+            "error should mention missing backup_time: {err}"
+        );
+        assert!(
+            err.contains(KEY_NUM_OF_BACKUPS_TO_KEEP),
+            "error should mention missing num_of_backups_to_keep: {err}"
+        );
+    }
+
+    #[test]
+    fn event_retention_default_is_none() {
+        let (_permit, store) = setup_store();
+        let result = store.event_retention_period().unwrap();
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn set_event_retention_period_days() {
+        let (_permit, store) = setup_store();
+
+        store.set_event_retention_period(Some(365)).unwrap();
+        assert_eq!(store.event_retention_period().unwrap(), Some(365));
+
+        // Update to a different value.
+        store.set_event_retention_period(Some(30)).unwrap();
+        assert_eq!(store.event_retention_period().unwrap(), Some(30));
+    }
+
+    #[test]
+    fn set_event_retention_unlimited() {
+        let (_permit, store) = setup_store();
+
+        // Set a value first, then switch to unlimited.
+        store.set_event_retention_period(Some(90)).unwrap();
+        assert_eq!(store.event_retention_period().unwrap(), Some(90));
+
+        store.set_event_retention_period(None).unwrap();
+        assert_eq!(store.event_retention_period().unwrap(), None);
+    }
+
+    #[test]
+    fn set_event_retention_zero_is_rejected() {
+        let (_permit, store) = setup_store();
+        let err = store.set_event_retention_period(Some(0));
+        assert!(err.is_err());
+        assert!(err.unwrap_err().to_string().contains("must be >= 1 day"));
+    }
+
+    #[test]
+    fn event_retention_raw_value() {
+        let (_permit, store) = setup_store();
+        let config = store.config_map();
+
+        // Verify the raw config key is correct.
+        store.set_event_retention_period(Some(180)).unwrap();
+        assert_eq!(
+            config.current(KEY_EVENT_RETENTION_PERIOD_DAYS).unwrap(),
+            Some("180".to_string())
+        );
+
+        // Setting unlimited removes the key entirely.
+        store.set_event_retention_period(None).unwrap();
+        assert_eq!(
+            config.current(KEY_EVENT_RETENTION_PERIOD_DAYS).unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn retention_config_read_returns_none_when_missing() {
+        let (_permit, store) = setup_store();
+        let config = store.retention_config().unwrap();
+        assert!(config.is_none());
+    }
+
+    #[test]
+    fn init_retention_config_success() {
+        let (_permit, store) = setup_store();
+
+        let config = RetentionConfig::new(90).unwrap();
+        assert!(store.init_retention_config(&config).is_ok());
+
+        let config_map = store.config_map();
+        assert_eq!(
+            config_map.current(KEY_RETENTION_PERIOD).unwrap(),
+            Some("90".to_string())
+        );
+
+        let read_config = store.retention_config().unwrap();
+        assert_eq!(read_config, Some(config));
+    }
+
+    #[test]
+    fn init_retention_config_already_exists() {
+        let (_permit, store) = setup_store();
+
+        let config = RetentionConfig::new(90).unwrap();
+        assert!(store.init_retention_config(&config).is_ok());
+
+        let new_config = RetentionConfig::new(180).unwrap();
+        assert!(store.init_retention_config(&new_config).is_err());
+
+        // Verify original value is unchanged
+        let read_config = store.retention_config().unwrap();
+        assert_eq!(read_config, Some(config));
+    }
+
+    #[test]
+    fn init_retention_config_validation_failure() {
+        let (_permit, store) = setup_store();
+
+        let config = RetentionConfig { period_in_days: 0 };
+        let result = store.init_retention_config(&config);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("period_in_days must be >= 1")
+        );
+
+        // Verify nothing was written
+        let config_map = store.config_map();
+        assert!(config_map.current(KEY_RETENTION_PERIOD).unwrap().is_none());
+    }
+
+    #[test]
+    fn update_retention_config_success() {
+        let (_permit, store) = setup_store();
+
+        let config = RetentionConfig::new(90).unwrap();
+        store.init_retention_config(&config).unwrap();
+
+        let update = RetentionConfigUpdate {
+            period_in_days: Some(180),
+        };
+        assert!(store.update_retention_config(&config, &update).is_ok());
+
+        let read_config = store.retention_config().unwrap();
+        assert_eq!(
+            read_config,
+            Some(RetentionConfig {
+                period_in_days: 180
+            })
+        );
+    }
+
+    #[test]
+    fn update_retention_config_no_changes() {
+        let (_permit, store) = setup_store();
+
+        let config = RetentionConfig::new(90).unwrap();
+        store.init_retention_config(&config).unwrap();
+
+        let update = RetentionConfigUpdate::default();
+        assert!(store.update_retention_config(&config, &update).is_ok());
+
+        let read_config = store.retention_config().unwrap();
+        assert_eq!(read_config, Some(config));
+    }
+
+    #[test]
+    fn update_retention_config_wrong_old_value() {
+        let (_permit, store) = setup_store();
+
+        let config = RetentionConfig::new(90).unwrap();
+        store.init_retention_config(&config).unwrap();
+
+        let wrong = RetentionConfig {
+            period_in_days: 999,
+        };
+        let update = RetentionConfigUpdate {
+            period_in_days: Some(180),
+        };
+        assert!(store.update_retention_config(&wrong, &update).is_err());
+
+        // Verify value unchanged
+        let read_config = store.retention_config().unwrap();
+        assert_eq!(read_config, Some(config));
+    }
+
+    #[test]
+    fn clear_retention_config_removes_existing() {
+        let (_permit, store) = setup_store();
+
+        let config = RetentionConfig::new(90).unwrap();
+        store.init_retention_config(&config).unwrap();
+        assert_eq!(store.retention_config().unwrap(), Some(config.clone()));
+
+        store.clear_retention_config().unwrap();
+        assert!(store.retention_config().unwrap().is_none());
+
+        // After clearing, re-initialization must succeed again.
+        store.init_retention_config(&config).unwrap();
+        assert_eq!(store.retention_config().unwrap(), Some(config));
+    }
+
+    #[test]
+    fn clear_retention_config_when_unset_is_noop() {
+        let (_permit, store) = setup_store();
+
+        assert!(store.retention_config().unwrap().is_none());
+        store.clear_retention_config().unwrap();
+        assert!(store.retention_config().unwrap().is_none());
+    }
+
+    #[test]
+    fn update_retention_config_validation_failure() {
+        let (_permit, store) = setup_store();
+
+        let config = RetentionConfig::new(90).unwrap();
+        store.init_retention_config(&config).unwrap();
+
+        let update = RetentionConfigUpdate {
+            period_in_days: Some(0),
+        };
+        let result = store.update_retention_config(&config, &update);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("period_in_days must be >= 1")
+        );
+
+        // Verify value unchanged
+        let read_config = store.retention_config().unwrap();
+        assert_eq!(read_config, Some(config));
     }
 }

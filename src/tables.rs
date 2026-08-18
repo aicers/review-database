@@ -9,19 +9,24 @@ mod category;
 mod cluster;
 mod column_stats;
 mod config;
+mod core_component;
 mod csv_column_extra;
 mod customer;
+mod customer_data_deletion_job;
 mod data_source;
 mod external_service;
 mod filter;
 mod hosts;
 mod label_db;
+mod lifecycle;
 mod model;
 mod model_indicator;
 mod network;
 mod node;
+mod operation_attempt;
 mod outlier_info;
 mod qualifier;
+mod retention_config;
 mod sampling_policy;
 mod scores;
 mod status;
@@ -43,15 +48,22 @@ use serde::{Deserialize, Serialize};
 pub use self::access_token::AccessToken;
 pub use self::agent::{Agent, AgentKind};
 pub use self::allow_network::{AllowNetwork, Update as AllowNetworkUpdate};
-pub use self::backup_config::BackupConfig;
+pub use self::backup_config::{BackupConfig, BackupConfigUpdate};
 pub use self::block_network::{BlockNetwork, Update as BlockNetworkUpdate};
 pub use self::cluster::Cluster;
 pub use self::column_stats::{ColumnStats, TopColumnsOfCluster, TopMultimaps};
 pub use self::config::{
-    KEY_EXPIRY_PERIOD, KEY_LOCKOUT_DURATION, KEY_LOCKOUT_THRESHOLD, KEY_SUSPENSION_THRESHOLD,
+    KEY_BACKUP_DURATION, KEY_BACKUP_TIME, KEY_EVENT_RETENTION_PERIOD_DAYS, KEY_EXPIRY_PERIOD,
+    KEY_LOCKOUT_DURATION, KEY_LOCKOUT_THRESHOLD, KEY_NUM_OF_BACKUPS_TO_KEEP, KEY_RETENTION_PERIOD,
+    KEY_SUSPENSION_THRESHOLD,
 };
+pub use self::core_component::CoreComponent;
 pub use self::csv_column_extra::CsvColumnExtra;
 pub use self::customer::{Customer, Network as CustomerNetwork, Update as CustomerUpdate};
+pub use self::customer_data_deletion_job::{
+    CustomerDataDeletionJob, CustomerDataDeletionService, CustomerDataDeletionServiceResult,
+    CustomerDataDeletionStatus,
+};
 pub use self::data_source::{DataSource, DataType, Update as DataSourceUpdate};
 pub use self::external_service::{ExternalService, ExternalServiceKind};
 pub use self::filter::{Filter, PeriodForSearch, Value as FilterValue};
@@ -59,6 +71,7 @@ pub use self::hosts::{Host, UserAgent};
 pub use self::label_db::{
     Kind as LabelDbKind, LabelDb, Rule as LabelDbRule, RuleKind as LabelDbRuleKind,
 };
+pub use self::lifecycle::Lifecycle;
 pub use self::model::Model;
 pub use self::model_indicator::ModelIndicator;
 pub use self::network::{Network, Update as NetworkUpdate};
@@ -68,7 +81,13 @@ pub use self::node::{
     Status as AgentStatus, Status as ExternalServiceStatus, Table as NodeTable,
     Update as NodeUpdate,
 };
+pub use self::operation_attempt::{
+    Action as OperationAction, CleanupState as OperationCleanupState, OperationAttempt,
+    Outcome as OperationOutcome, Phase as OperationPhase,
+    RetentionBound as OperationRetentionBound, RetryPolicy as OperationRetryPolicy,
+};
 pub use self::outlier_info::{Key as OutlierInfoKey, OutlierInfo, Value as OutlierInfoValue};
+pub use self::retention_config::{RetentionConfig, RetentionConfigUpdate};
 pub use self::sampling_policy::{
     Interval as SamplingInterval, Kind as SamplingKind, Period as SamplingPeriod, SamplingPolicy,
     Update as SamplingPolicyUpdate,
@@ -109,16 +128,27 @@ pub(super) const CATEGORY: &str = "category";
 pub(super) const CLUSTER: &str = "cluster";
 pub(super) const COLUMN_STATS: &str = "column stats";
 pub(super) const CONFIGS: &str = "configs";
+// Deliberately absent from `MAP_NAMES`: registering this column family belongs
+// with the database format bump, because `migrate_data_dir` returns early for a
+// data dir already at a compatible version and would otherwise gain a column
+// family with no version change.
+pub(super) const CORE_COMPONENTS: &str = "core components";
 pub(super) const CSV_COLUMN_EXTRAS: &str = "csv column extras";
-pub(super) const CUSTOMERS: &str = "customers";
+pub(crate) const CUSTOMERS: &str = "customers";
+pub(super) const CUSTOMER_DELETION_JOBS: &str = "customer deletion jobs";
 pub(super) const DATA_SOURCES: &str = "data sources";
 pub(super) const FILTERS: &str = "filters";
 pub(super) const HOSTS: &str = "hosts";
 pub(super) const MODELS: &str = "models";
 pub(super) const MODEL_INDICATORS: &str = "model indicators";
-const META: &str = "meta";
+pub(crate) const META: &str = "meta";
 pub(super) const NETWORKS: &str = "networks";
 pub(super) const NODES: &str = "nodes";
+// Deliberately absent from `MAP_NAMES`: registering this column family belongs
+// with the database format bump, because `migrate_data_dir` returns early for a
+// data dir already at a compatible version and would otherwise gain a column
+// family with no version change.
+pub(super) const OPERATION_ATTEMPTS: &str = "operation attempts";
 pub(super) const OUTLIERS: &str = "outliers";
 pub(super) const QUALIFIERS: &str = "qualifiers";
 pub(super) const EXTERNAL_SERVICES: &str = "external services";
@@ -136,7 +166,7 @@ pub(super) const TRIAGE_RESPONSE: &str = "triage response";
 pub(super) const TRUSTED_DNS_SERVERS: &str = "trusted DNS servers";
 pub(super) const TRUSTED_USER_AGENTS: &str = "trusted user agents";
 
-pub(crate) const MAP_NAMES: [&str; 36] = [
+pub(crate) const MAP_NAMES: [&str; 37] = [
     ACCESS_TOKENS,
     ACCOUNTS,
     AGENTS,
@@ -149,6 +179,7 @@ pub(crate) const MAP_NAMES: [&str; 36] = [
     CONFIGS,
     CSV_COLUMN_EXTRAS,
     CUSTOMERS,
+    CUSTOMER_DELETION_JOBS,
     DATA_SOURCES,
     FILTERS,
     HOSTS,
@@ -320,6 +351,16 @@ impl StateDb {
     }
 
     #[must_use]
+    pub(crate) fn customer_data_deletion_jobs(&self) -> Table<'_, CustomerDataDeletionJob> {
+        let inner = self
+            .inner
+            .as_ref()
+            .expect("table access requires a successfully opened StateDb");
+        Table::<CustomerDataDeletionJob>::open(inner)
+            .expect("StateDb::open initializes the customer deletion jobs column family")
+    }
+
+    #[must_use]
     pub(crate) fn data_sources(&self) -> IndexedTable<'_, DataSource> {
         let inner = self.inner.as_ref().expect("database must be open");
         IndexedTable::<DataSource>::open(inner).expect("{DATA_SOURCES} table must be present")
@@ -371,9 +412,12 @@ impl StateDb {
     }
 
     #[must_use]
-    pub fn events(&self) -> event::EventDb<'_> {
+    pub fn events(
+        &self,
+        country_lookup: Option<crate::geo::SharedCountryLookup>,
+    ) -> event::EventDb<'_> {
         let inner = self.inner.as_ref().expect("database must be open");
-        event::EventDb::new(inner)
+        event::EventDb::new_with_country_lookup(inner, country_lookup)
     }
 
     #[must_use]
@@ -404,12 +448,6 @@ impl StateDb {
     pub(crate) fn configs(&self) -> Table<'_, String> {
         let inner = self.inner.as_ref().expect("database must be open");
         Table::<String>::open(inner).expect("{CONFIGS} table must be present")
-    }
-
-    #[must_use]
-    pub(crate) fn backup_configs(&self) -> Table<'_, BackupConfig> {
-        let inner = self.inner.as_ref().expect("database must be open");
-        Table::<BackupConfig>::open(inner).expect("{CONFIGS} table must be present")
     }
 
     #[must_use]
@@ -820,6 +858,23 @@ impl<'d, R> IndexedTable<'d, R> {
         R: Indexable + FromKeyValue,
     {
         self.indexed_map.get_by_id(id)
+    }
+
+    /// Gets a record with the given ID within a transaction, acquiring an
+    /// exclusive lock on the entry.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database operation fails.
+    pub fn get_by_id_in_transaction(
+        &self,
+        id: u32,
+        txn: &rocksdb::Transaction<rocksdb::OptimisticTransactionDB>,
+    ) -> Result<Option<R>>
+    where
+        R: Indexable + FromKeyValue,
+    {
+        self.indexed_map.get_by_id_in_transaction(id, txn)
     }
 
     /// Deactivates a key-value pair with the given ID.

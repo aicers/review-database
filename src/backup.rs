@@ -96,17 +96,21 @@ mod tests {
         sync::Arc,
     };
 
-    use bincode::Options;
-    use chrono::{TimeZone, Utc};
+    use chrono::{DateTime, TimeZone, Utc};
+    use jiff::Timestamp;
 
+    use crate::event::timestamp;
     use crate::test::acquire_db_permit;
     use crate::{
         Store,
         event::{DnsEventFields, EventKind, EventMessage},
     };
 
+    fn msg_time(time: DateTime<Utc>) -> Timestamp {
+        timestamp::from_chrono(time).expect("test event message time must fit i64 nanoseconds")
+    }
+
     fn example_message() -> EventMessage {
-        let codec = bincode::DefaultOptions::new();
         let fields = DnsEventFields {
             sensor: "collector1".to_string(),
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
@@ -140,9 +144,9 @@ mod tests {
             category: Some(crate::EventCategory::CommandAndControl),
         };
         EventMessage {
-            time: Utc::now(),
+            time: msg_time(Utc::now()),
             kind: EventKind::DnsCovertChannel,
-            fields: codec.serialize(&fields).expect("serializable"),
+            fields: bincode::serialize(&fields).expect("serializable"),
         }
     }
 
@@ -157,7 +161,7 @@ mod tests {
         let backup_dir = tempfile::tempdir().unwrap();
 
         let store = Arc::new(RwLock::new(
-            Store::new(db_dir.path(), backup_dir.path()).unwrap(),
+            Store::new(db_dir.path(), backup_dir.path(), None).unwrap(),
         ));
 
         {
@@ -227,6 +231,6 @@ mod tests {
         // The timestamp should be in 2025, not 1970
         let expected_timestamp = DateTime::from_timestamp(timestamp_seconds, 0).unwrap();
         assert_eq!(backup_info.timestamp, expected_timestamp);
-        assert!(backup_info.timestamp.year() == 2025);
+        assert_eq!(backup_info.timestamp.year(), 2025);
     }
 }

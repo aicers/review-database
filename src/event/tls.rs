@@ -1,10 +1,12 @@
-use std::{fmt, net::IpAddr, num::NonZeroU8};
+use std::{fmt, net::IpAddr};
 
 use attrievent::attribute::{RawEventAttrKind, TlsAttr};
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
-use super::{EventCategory, LearningMethod, MEDIUM, TriageScore, common::Match};
+use super::timestamp;
+use super::{EventCategory, LearningMethod, ThreatLevel, TriageScore, common::Match};
+use crate::TriageExclusion;
 use crate::event::common::{AttrValue, triage_scores_to_string, vector_to_string};
 
 macro_rules! find_tls_attr_by_kind {
@@ -68,10 +70,8 @@ macro_rules! find_tls_attr_by_kind {
     }};
 }
 
-pub type BlocklistTlsFields = BlocklistTlsFieldsV0_42;
-
 #[derive(Serialize, Deserialize)]
-pub struct BlocklistTlsFieldsV0_42 {
+pub struct BlocklistTlsFields {
     pub sensor: String,
     pub orig_addr: IpAddr,
     pub orig_port: u16,
@@ -110,10 +110,97 @@ pub struct BlocklistTlsFieldsV0_42 {
     pub category: Option<EventCategory>,
 }
 
+pub(crate) type BlocklistTlsFieldsStored = BlocklistTlsFieldsStoredV0_46;
+
+#[derive(Deserialize, Serialize)]
+pub(crate) struct BlocklistTlsFieldsStoredV0_46 {
+    pub sensor: String,
+    pub orig_addr: IpAddr,
+    pub orig_port: u16,
+    pub orig_country_code: [u8; 2],
+    pub resp_addr: IpAddr,
+    pub resp_port: u16,
+    pub resp_country_code: [u8; 2],
+    pub proto: u8,
+    pub start_time: i64,
+    pub duration: i64,
+    pub orig_pkts: u64,
+    pub resp_pkts: u64,
+    pub orig_l2_bytes: u64,
+    pub resp_l2_bytes: u64,
+    pub server_name: String,
+    pub alpn_protocol: String,
+    pub ja3: String,
+    pub version: String,
+    pub client_cipher_suites: Vec<u16>,
+    pub client_extensions: Vec<u16>,
+    pub cipher: u16,
+    pub extensions: Vec<u16>,
+    pub ja3s: String,
+    pub serial: String,
+    pub subject_country: String,
+    pub subject_org_name: String,
+    pub subject_common_name: String,
+    pub validity_not_before: i64,
+    pub validity_not_after: i64,
+    pub subject_alt_name: String,
+    pub issuer_country: String,
+    pub issuer_org_name: String,
+    pub issuer_org_unit_name: String,
+    pub issuer_common_name: String,
+    pub last_alert: u8,
+    pub confidence: f32,
+    pub category: Option<EventCategory>,
+}
+
+impl From<BlocklistTlsFields> for BlocklistTlsFieldsStored {
+    fn from(value: BlocklistTlsFields) -> Self {
+        Self {
+            sensor: value.sensor,
+            orig_addr: value.orig_addr,
+            orig_port: value.orig_port,
+            orig_country_code: crate::util::COUNTRY_CODE_PENDING,
+            resp_addr: value.resp_addr,
+            resp_port: value.resp_port,
+            resp_country_code: crate::util::COUNTRY_CODE_PENDING,
+            proto: value.proto,
+            start_time: value.start_time,
+            duration: value.duration,
+            orig_pkts: value.orig_pkts,
+            resp_pkts: value.resp_pkts,
+            orig_l2_bytes: value.orig_l2_bytes,
+            resp_l2_bytes: value.resp_l2_bytes,
+            server_name: value.server_name,
+            alpn_protocol: value.alpn_protocol,
+            ja3: value.ja3,
+            version: value.version,
+            client_cipher_suites: value.client_cipher_suites,
+            client_extensions: value.client_extensions,
+            cipher: value.cipher,
+            extensions: value.extensions,
+            ja3s: value.ja3s,
+            serial: value.serial,
+            subject_country: value.subject_country,
+            subject_org_name: value.subject_org_name,
+            subject_common_name: value.subject_common_name,
+            validity_not_before: value.validity_not_before,
+            validity_not_after: value.validity_not_after,
+            subject_alt_name: value.subject_alt_name,
+            issuer_country: value.issuer_country,
+            issuer_org_name: value.issuer_org_name,
+            issuer_org_unit_name: value.issuer_org_unit_name,
+            issuer_common_name: value.issuer_common_name,
+            last_alert: value.last_alert,
+            confidence: value.confidence,
+            category: value.category,
+        }
+    }
+}
+
 impl BlocklistTlsFields {
     #[must_use]
     pub fn syslog_rfc5424(&self) -> String {
-        let start_time_dt = DateTime::from_timestamp_nanos(self.start_time);
+        let start_time = timestamp::format_i64_nanos_rfc3339(self.start_time).unwrap_or_default();
         format!(
             "category={:?} sensor={:?} orig_addr={:?} orig_port={:?} resp_addr={:?} resp_port={:?} proto={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} server_name={:?} alpn_protocol={:?} ja3={:?} version={:?} client_cipher_suites={:?} client_extensions={:?} cipher={:?} extensions={:?} ja3s={:?} serial={:?} subject_country={:?} subject_org_name={:?} subject_common_name={:?} validity_not_before={:?} validity_not_after={:?} subject_alt_name={:?} issuer_country={:?} issuer_org_name={:?} issuer_org_unit_name={:?} issuer_common_name={:?} last_alert={:?} confidence={:?}",
             self.category.as_ref().map_or_else(
@@ -126,7 +213,7 @@ impl BlocklistTlsFields {
             self.resp_addr.to_string(),
             self.resp_port.to_string(),
             self.proto.to_string(),
-            start_time_dt.to_rfc3339(),
+            start_time,
             self.duration.to_string(),
             self.orig_pkts.to_string(),
             self.resp_pkts.to_string(),
@@ -160,14 +247,16 @@ impl BlocklistTlsFields {
 
 #[allow(clippy::module_name_repetitions)]
 pub struct BlocklistTls {
-    pub time: DateTime<Utc>,
+    pub time: Timestamp,
     pub sensor: String,
     pub orig_addr: IpAddr,
     pub orig_port: u16,
+    pub orig_country_code: [u8; 2],
     pub resp_addr: IpAddr,
     pub resp_port: u16,
+    pub resp_country_code: [u8; 2],
     pub proto: u8,
-    pub start_time: DateTime<Utc>,
+    pub start_time: Timestamp,
     pub duration: i64,
     pub orig_pkts: u64,
     pub resp_pkts: u64,
@@ -203,14 +292,16 @@ impl fmt::Display for BlocklistTls {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "sensor={:?} orig_addr={:?} orig_port={:?} resp_addr={:?} resp_port={:?} proto={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} server_name={:?} alpn_protocol={:?} ja3={:?} version={:?} client_cipher_suites={:?} client_extensions={:?} cipher={:?} extensions={:?} ja3s={:?} serial={:?} subject_country={:?} subject_org_name={:?} subject_common_name={:?} validity_not_before={:?} validity_not_after={:?} subject_alt_name={:?} issuer_country={:?} issuer_org_name={:?} issuer_org_unit_name={:?} issuer_common_name={:?} last_alert={:?} confidence={:?} triage_scores={:?}",
+            "sensor={:?} orig_addr={:?} orig_port={:?} orig_country_code={:?} resp_addr={:?} resp_port={:?} resp_country_code={:?} proto={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} server_name={:?} alpn_protocol={:?} ja3={:?} version={:?} client_cipher_suites={:?} client_extensions={:?} cipher={:?} extensions={:?} ja3s={:?} serial={:?} subject_country={:?} subject_org_name={:?} subject_common_name={:?} validity_not_before={:?} validity_not_after={:?} subject_alt_name={:?} issuer_country={:?} issuer_org_name={:?} issuer_org_unit_name={:?} issuer_common_name={:?} last_alert={:?} confidence={:?} triage_scores={:?}",
             self.sensor,
             self.orig_addr.to_string(),
             self.orig_port.to_string(),
+            crate::util::country_code_as_str(&self.orig_country_code),
             self.resp_addr.to_string(),
             self.resp_port.to_string(),
+            crate::util::country_code_as_str(&self.resp_country_code),
             self.proto.to_string(),
-            self.start_time.to_rfc3339(),
+            timestamp::format_rfc3339(self.start_time).unwrap_or_default(),
             self.duration.to_string(),
             self.orig_pkts.to_string(),
             self.resp_pkts.to_string(),
@@ -244,16 +335,19 @@ impl fmt::Display for BlocklistTls {
 }
 
 impl BlocklistTls {
-    pub(super) fn new(time: DateTime<Utc>, fields: BlocklistTlsFields) -> Self {
+    pub(super) fn new(time: Timestamp, fields: BlocklistTlsFieldsStored) -> Self {
         Self {
             time,
             sensor: fields.sensor,
             orig_addr: fields.orig_addr,
             orig_port: fields.orig_port,
+            orig_country_code: fields.orig_country_code,
             resp_addr: fields.resp_addr,
             resp_port: fields.resp_port,
+            resp_country_code: fields.resp_country_code,
             proto: fields.proto,
-            start_time: DateTime::from_timestamp_nanos(fields.start_time),
+            start_time: timestamp::from_i64_nanos(fields.start_time)
+                .expect(timestamp::I64_NANOS_JIFF_INVARIANT),
             duration: fields.duration,
             orig_pkts: fields.orig_pkts,
             resp_pkts: fields.resp_pkts,
@@ -287,21 +381,36 @@ impl BlocklistTls {
     }
 }
 
+impl BlocklistTls {
+    #[must_use]
+    pub fn threat_level() -> ThreatLevel {
+        ThreatLevel::Medium
+    }
+}
+
 impl Match for BlocklistTls {
-    fn src_addrs(&self) -> &[IpAddr] {
+    fn orig_addrs(&self) -> &[IpAddr] {
         std::slice::from_ref(&self.orig_addr)
     }
 
-    fn src_port(&self) -> u16 {
+    fn orig_port(&self) -> u16 {
         self.orig_port
     }
 
-    fn dst_addrs(&self) -> &[IpAddr] {
+    fn orig_country_codes(&self) -> &[[u8; 2]] {
+        std::slice::from_ref(&self.orig_country_code)
+    }
+
+    fn resp_addrs(&self) -> &[IpAddr] {
         std::slice::from_ref(&self.resp_addr)
     }
 
-    fn dst_port(&self) -> u16 {
+    fn resp_port(&self) -> u16 {
         self.resp_port
+    }
+
+    fn resp_country_codes(&self) -> &[[u8; 2]] {
+        std::slice::from_ref(&self.resp_country_code)
     }
 
     fn proto(&self) -> u8 {
@@ -312,8 +421,8 @@ impl Match for BlocklistTls {
         self.category
     }
 
-    fn level(&self) -> NonZeroU8 {
-        MEDIUM
+    fn level(&self) -> ThreatLevel {
+        Self::threat_level()
     }
 
     fn kind(&self) -> &'static str {
@@ -335,17 +444,33 @@ impl Match for BlocklistTls {
     fn find_attr_by_kind(&self, raw_event_attr: RawEventAttrKind) -> Option<AttrValue<'_>> {
         find_tls_attr_by_kind!(self, raw_event_attr)
     }
+
+    fn score_by_triage_exclusion(&self, triage_exclusion: &[TriageExclusion]) -> f64 {
+        let matched = triage_exclusion.iter().any(|ti| match ti {
+            TriageExclusion::IpAddress(filter) => self
+                .orig_addrs()
+                .iter()
+                .chain(self.resp_addrs().iter())
+                .any(|&ip| filter.contains(ip)),
+            TriageExclusion::Domain(regex_set) => regex_set.is_match(&self.server_name),
+            TriageExclusion::Hostname(hostnames) => hostnames.contains(&self.server_name),
+            TriageExclusion::Uri(_) => false, // TLS records don't carry URIs
+        });
+        if matched { f64::MIN } else { 0.0 }
+    }
 }
 
 pub struct SuspiciousTlsTraffic {
-    pub time: DateTime<Utc>,
+    pub time: Timestamp,
     pub sensor: String,
     pub orig_addr: IpAddr,
     pub orig_port: u16,
+    pub orig_country_code: [u8; 2],
     pub resp_addr: IpAddr,
     pub resp_port: u16,
+    pub resp_country_code: [u8; 2],
     pub proto: u8,
-    pub start_time: DateTime<Utc>,
+    pub start_time: Timestamp,
     pub duration: i64,
     pub orig_pkts: u64,
     pub resp_pkts: u64,
@@ -381,14 +506,16 @@ impl fmt::Display for SuspiciousTlsTraffic {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "sensor={:?} orig_addr={:?} orig_port={:?} resp_addr={:?} resp_port={:?} proto={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} server_name={:?} alpn_protocol={:?} ja3={:?} version={:?} client_cipher_suites={:?} client_extensions={:?} cipher={:?} extensions={:?} ja3s={:?} serial={:?} subject_country={:?} subject_org_name={:?} subject_common_name={:?} validity_not_before={:?} validity_not_after={:?} subject_alt_name={:?} issuer_country={:?} issuer_org_name={:?} issuer_org_unit_name={:?} issuer_common_name={:?} last_alert={:?} confidence={:?} triage_scores={:?}",
+            "sensor={:?} orig_addr={:?} orig_port={:?} orig_country_code={:?} resp_addr={:?} resp_port={:?} resp_country_code={:?} proto={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} server_name={:?} alpn_protocol={:?} ja3={:?} version={:?} client_cipher_suites={:?} client_extensions={:?} cipher={:?} extensions={:?} ja3s={:?} serial={:?} subject_country={:?} subject_org_name={:?} subject_common_name={:?} validity_not_before={:?} validity_not_after={:?} subject_alt_name={:?} issuer_country={:?} issuer_org_name={:?} issuer_org_unit_name={:?} issuer_common_name={:?} last_alert={:?} confidence={:?} triage_scores={:?}",
             self.sensor,
             self.orig_addr.to_string(),
             self.orig_port.to_string(),
+            crate::util::country_code_as_str(&self.orig_country_code),
             self.resp_addr.to_string(),
             self.resp_port.to_string(),
+            crate::util::country_code_as_str(&self.resp_country_code),
             self.proto.to_string(),
-            self.start_time.to_rfc3339(),
+            timestamp::format_rfc3339(self.start_time).unwrap_or_default(),
             self.duration.to_string(),
             self.orig_pkts.to_string(),
             self.resp_pkts.to_string(),
@@ -422,15 +549,18 @@ impl fmt::Display for SuspiciousTlsTraffic {
 }
 
 impl SuspiciousTlsTraffic {
-    pub(super) fn new(time: DateTime<Utc>, fields: BlocklistTlsFields) -> Self {
+    pub(super) fn new(time: Timestamp, fields: BlocklistTlsFieldsStored) -> Self {
         Self {
             time,
             sensor: fields.sensor,
-            start_time: DateTime::from_timestamp_nanos(fields.start_time),
+            start_time: timestamp::from_i64_nanos(fields.start_time)
+                .expect(timestamp::I64_NANOS_JIFF_INVARIANT),
             orig_addr: fields.orig_addr,
             orig_port: fields.orig_port,
+            orig_country_code: fields.orig_country_code,
             resp_addr: fields.resp_addr,
             resp_port: fields.resp_port,
+            resp_country_code: fields.resp_country_code,
             proto: fields.proto,
             duration: fields.duration,
             orig_pkts: fields.orig_pkts,
@@ -465,21 +595,36 @@ impl SuspiciousTlsTraffic {
     }
 }
 
+impl SuspiciousTlsTraffic {
+    #[must_use]
+    pub fn threat_level() -> ThreatLevel {
+        ThreatLevel::Medium
+    }
+}
+
 impl Match for SuspiciousTlsTraffic {
-    fn src_addrs(&self) -> &[IpAddr] {
+    fn orig_addrs(&self) -> &[IpAddr] {
         std::slice::from_ref(&self.orig_addr)
     }
 
-    fn src_port(&self) -> u16 {
+    fn orig_port(&self) -> u16 {
         self.orig_port
     }
 
-    fn dst_addrs(&self) -> &[IpAddr] {
+    fn orig_country_codes(&self) -> &[[u8; 2]] {
+        std::slice::from_ref(&self.orig_country_code)
+    }
+
+    fn resp_addrs(&self) -> &[IpAddr] {
         std::slice::from_ref(&self.resp_addr)
     }
 
-    fn dst_port(&self) -> u16 {
+    fn resp_port(&self) -> u16 {
         self.resp_port
+    }
+
+    fn resp_country_codes(&self) -> &[[u8; 2]] {
+        std::slice::from_ref(&self.resp_country_code)
     }
 
     fn proto(&self) -> u8 {
@@ -490,8 +635,8 @@ impl Match for SuspiciousTlsTraffic {
         self.category
     }
 
-    fn level(&self) -> NonZeroU8 {
-        MEDIUM
+    fn level(&self) -> ThreatLevel {
+        Self::threat_level()
     }
 
     fn kind(&self) -> &'static str {
@@ -512,5 +657,211 @@ impl Match for SuspiciousTlsTraffic {
 
     fn find_attr_by_kind(&self, raw_event_attr: RawEventAttrKind) -> Option<AttrValue<'_>> {
         find_tls_attr_by_kind!(self, raw_event_attr)
+    }
+
+    fn score_by_triage_exclusion(&self, triage_exclusion: &[TriageExclusion]) -> f64 {
+        let matched = triage_exclusion.iter().any(|ti| match ti {
+            TriageExclusion::IpAddress(filter) => self
+                .orig_addrs()
+                .iter()
+                .chain(self.resp_addrs().iter())
+                .any(|&ip| filter.contains(ip)),
+            TriageExclusion::Domain(regex_set) => regex_set.is_match(&self.server_name),
+            TriageExclusion::Hostname(hostnames) => hostnames.contains(&self.server_name),
+            TriageExclusion::Uri(_) => false, // TLS records don't carry URIs
+        });
+        if matched { f64::MIN } else { 0.0 }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::net::{IpAddr, Ipv4Addr};
+
+    use chrono::{TimeZone, Utc};
+
+    use super::{
+        BlocklistTls, BlocklistTlsFields, BlocklistTlsFieldsStored, Match, SuspiciousTlsTraffic,
+    };
+    use crate::event::EventCategory;
+    use crate::event::timestamp;
+    use crate::tables::{ExclusionReason, TriageExclusion};
+    use crate::types::HostNetworkGroup;
+
+    fn tls_fields(server_name: &str) -> BlocklistTlsFieldsStored {
+        BlocklistTlsFields {
+            sensor: "sensor".to_string(),
+            orig_addr: IpAddr::V4(Ipv4Addr::new(192, 168, 1, 100)),
+            orig_port: 12345,
+            resp_addr: IpAddr::V4(Ipv4Addr::new(198, 51, 100, 1)),
+            resp_port: 443,
+            proto: 6,
+            start_time: Utc
+                .with_ymd_and_hms(2023, 1, 1, 12, 0, 0)
+                .unwrap()
+                .timestamp_nanos_opt()
+                .unwrap(),
+            duration: 1_000_000_000,
+            orig_pkts: 10,
+            resp_pkts: 15,
+            orig_l2_bytes: 1100,
+            resp_l2_bytes: 2200,
+            server_name: server_name.to_string(),
+            alpn_protocol: "h2".to_string(),
+            ja3: "ja3".to_string(),
+            version: "TLSv1.3".to_string(),
+            client_cipher_suites: vec![],
+            client_extensions: vec![],
+            cipher: 0,
+            extensions: vec![],
+            ja3s: "ja3s".to_string(),
+            serial: "serial".to_string(),
+            subject_country: "US".to_string(),
+            subject_org_name: "org".to_string(),
+            subject_common_name: "common".to_string(),
+            validity_not_before: 0,
+            validity_not_after: 0,
+            subject_alt_name: "alt".to_string(),
+            issuer_country: "US".to_string(),
+            issuer_org_name: "org".to_string(),
+            issuer_org_unit_name: "unit".to_string(),
+            issuer_common_name: "common".to_string(),
+            last_alert: 0,
+            confidence: 0.9,
+            category: Some(EventCategory::InitialAccess),
+        }
+        .into()
+    }
+
+    fn ip_exclusion(addr: &str) -> TriageExclusion {
+        TriageExclusion::from(ExclusionReason::IpAddress(HostNetworkGroup::new(
+            vec![addr.parse().unwrap()],
+            vec![],
+            vec![],
+        )))
+    }
+
+    fn domain_exclusion(domain: &str) -> TriageExclusion {
+        TriageExclusion::from(ExclusionReason::Domain(vec![domain.to_string()]))
+    }
+
+    fn hostname_exclusion(hostname: &str) -> TriageExclusion {
+        TriageExclusion::from(ExclusionReason::Hostname(vec![hostname.to_string()]))
+    }
+
+    fn uri_exclusion(uri: &str) -> TriageExclusion {
+        TriageExclusion::from(ExclusionReason::Uri(vec![uri.to_string()]))
+    }
+
+    #[test]
+    fn blocklist_tls_exclusion_matches_ip_address() {
+        let time = timestamp::from_chrono(Utc.with_ymd_and_hms(2023, 1, 1, 12, 0, 0).unwrap())
+            .expect(timestamp::I64_NANOS_JIFF_INVARIANT);
+        let event = BlocklistTls::new(time, tls_fields("internal-cert.example.com"));
+
+        assert!(event.matched_any_exclusion(&[ip_exclusion("192.168.1.100")]));
+        assert!(event.matched_any_exclusion(&[ip_exclusion("198.51.100.1")]));
+        assert!(!event.matched_any_exclusion(&[ip_exclusion("10.0.0.1")]));
+    }
+
+    #[test]
+    fn blocklist_tls_exclusion_matches_domain_via_server_name() {
+        let time = timestamp::from_chrono(Utc.with_ymd_and_hms(2023, 1, 1, 12, 0, 0).unwrap())
+            .expect(timestamp::I64_NANOS_JIFF_INVARIANT);
+        let event = BlocklistTls::new(time, tls_fields("internal-cert.example.com"));
+
+        // Subdomain match: "example.com" matches "internal-cert.example.com".
+        assert!(event.matched_any_exclusion(&[domain_exclusion("example.com")]));
+        // Exact match.
+        assert!(event.matched_any_exclusion(&[domain_exclusion("internal-cert.example.com")]));
+        // Non-match.
+        assert!(!event.matched_any_exclusion(&[domain_exclusion("other.com")]));
+    }
+
+    #[test]
+    fn blocklist_tls_exclusion_matches_hostname_exact() {
+        let time = timestamp::from_chrono(Utc.with_ymd_and_hms(2023, 1, 1, 12, 0, 0).unwrap())
+            .expect(timestamp::I64_NANOS_JIFF_INVARIANT);
+        let event = BlocklistTls::new(time, tls_fields("internal-cert.example.com"));
+
+        assert!(event.matched_any_exclusion(&[hostname_exclusion("internal-cert.example.com")]));
+        // Hostname matching is exact equality, not substring.
+        assert!(!event.matched_any_exclusion(&[hostname_exclusion("example.com")]));
+        assert!(!event.matched_any_exclusion(&[hostname_exclusion("other")]));
+    }
+
+    #[test]
+    fn blocklist_tls_exclusion_does_not_match_uri() {
+        let time = timestamp::from_chrono(Utc.with_ymd_and_hms(2023, 1, 1, 12, 0, 0).unwrap())
+            .expect(timestamp::I64_NANOS_JIFF_INVARIANT);
+        let event = BlocklistTls::new(time, tls_fields("internal-cert.example.com"));
+
+        assert!(!event.matched_any_exclusion(&[uri_exclusion("/anything")]));
+        assert!(!event.matched_any_exclusion(&[uri_exclusion("internal-cert.example.com")]));
+    }
+
+    #[test]
+    fn blocklist_tls_exclusion_does_not_match_empty() {
+        let time = timestamp::from_chrono(Utc.with_ymd_and_hms(2023, 1, 1, 12, 0, 0).unwrap())
+            .expect(timestamp::I64_NANOS_JIFF_INVARIANT);
+        let event = BlocklistTls::new(time, tls_fields("internal-cert.example.com"));
+
+        assert!(!event.matched_any_exclusion(&[]));
+    }
+
+    #[test]
+    fn suspicious_tls_traffic_exclusion_matches_ip_address() {
+        let time = timestamp::from_chrono(Utc.with_ymd_and_hms(2023, 1, 1, 12, 0, 0).unwrap())
+            .expect(timestamp::I64_NANOS_JIFF_INVARIANT);
+        let event = SuspiciousTlsTraffic::new(time, tls_fields("internal-cert.example.com"));
+
+        assert!(event.matched_any_exclusion(&[ip_exclusion("192.168.1.100")]));
+        assert!(event.matched_any_exclusion(&[ip_exclusion("198.51.100.1")]));
+        assert!(!event.matched_any_exclusion(&[ip_exclusion("10.0.0.1")]));
+    }
+
+    #[test]
+    fn suspicious_tls_traffic_exclusion_matches_domain_via_server_name() {
+        let time = timestamp::from_chrono(Utc.with_ymd_and_hms(2023, 1, 1, 12, 0, 0).unwrap())
+            .expect(timestamp::I64_NANOS_JIFF_INVARIANT);
+        let event = SuspiciousTlsTraffic::new(time, tls_fields("internal-cert.example.com"));
+
+        // Subdomain match: "example.com" matches "internal-cert.example.com".
+        assert!(event.matched_any_exclusion(&[domain_exclusion("example.com")]));
+        // Exact match.
+        assert!(event.matched_any_exclusion(&[domain_exclusion("internal-cert.example.com")]));
+        // Non-match.
+        assert!(!event.matched_any_exclusion(&[domain_exclusion("other.com")]));
+    }
+
+    #[test]
+    fn suspicious_tls_traffic_exclusion_matches_hostname_exact() {
+        let time = timestamp::from_chrono(Utc.with_ymd_and_hms(2023, 1, 1, 12, 0, 0).unwrap())
+            .expect(timestamp::I64_NANOS_JIFF_INVARIANT);
+        let event = SuspiciousTlsTraffic::new(time, tls_fields("internal-cert.example.com"));
+
+        assert!(event.matched_any_exclusion(&[hostname_exclusion("internal-cert.example.com")]));
+        // Hostname matching is exact equality, not substring.
+        assert!(!event.matched_any_exclusion(&[hostname_exclusion("example.com")]));
+        assert!(!event.matched_any_exclusion(&[hostname_exclusion("other")]));
+    }
+
+    #[test]
+    fn suspicious_tls_traffic_exclusion_does_not_match_uri() {
+        let time = timestamp::from_chrono(Utc.with_ymd_and_hms(2023, 1, 1, 12, 0, 0).unwrap())
+            .expect(timestamp::I64_NANOS_JIFF_INVARIANT);
+        let event = SuspiciousTlsTraffic::new(time, tls_fields("internal-cert.example.com"));
+
+        assert!(!event.matched_any_exclusion(&[uri_exclusion("/anything")]));
+        assert!(!event.matched_any_exclusion(&[uri_exclusion("internal-cert.example.com")]));
+    }
+
+    #[test]
+    fn suspicious_tls_traffic_exclusion_does_not_match_empty() {
+        let time = timestamp::from_chrono(Utc.with_ymd_and_hms(2023, 1, 1, 12, 0, 0).unwrap())
+            .expect(timestamp::I64_NANOS_JIFF_INVARIANT);
+        let event = SuspiciousTlsTraffic::new(time, tls_fields("internal-cert.example.com"));
+
+        assert!(!event.matched_any_exclusion(&[]));
     }
 }
