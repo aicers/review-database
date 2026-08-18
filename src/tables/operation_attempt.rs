@@ -683,6 +683,14 @@ impl<'d> Table<'d, OperationAttempt> {
             let txn = self.transaction();
             let mut finalized = 0;
             for expired in self.expired_attempts(instant)? {
+                // A row stays in the `expires_at` index once it is finalized,
+                // so the whole retained history of a past deadline comes back
+                // on every later sweep. Dropping the terminal ones before the
+                // lock keeps a sweep from reading and validating each of them
+                // again; the re-read below is what actually decides.
+                if expired.is_terminal() {
+                    continue;
+                }
                 let Some(stored) = self.get_for_update(&expired.idempotency_key, &txn)? else {
                     continue;
                 };
