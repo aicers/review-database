@@ -83,7 +83,8 @@ pub use self::node::{
 };
 pub use self::operation_attempt::{
     Action as OperationAction, CleanupState as OperationCleanupState, OperationAttempt,
-    Outcome as OperationOutcome, Phase as OperationPhase, RetryPolicy as OperationRetryPolicy,
+    Outcome as OperationOutcome, Phase as OperationPhase,
+    RetentionBound as OperationRetentionBound, RetryPolicy as OperationRetryPolicy,
 };
 pub use self::outlier_info::{Key as OutlierInfoKey, OutlierInfo, Value as OutlierInfoValue};
 pub use self::retention_config::{RetentionConfig, RetentionConfigUpdate};
