@@ -605,6 +605,41 @@ mod tests {
         );
     }
 
+    /// Iteration is the one path that decodes keys it did not just encode, so
+    /// a mixed set of rows must come back whole — and in both directions, since
+    /// a reverse scan reads the same keys from the other end.
+    #[test]
+    fn iteration_returns_every_row() {
+        let test_db = TestDb::new();
+        let table = test_db.table();
+
+        let mut rows = vec![
+            installed("review", "host-01.example.com"),
+            installed("aice-web-next", "host-01.example.com"),
+            installed("roxyd", "host-01.example.com"),
+            installed("roxyd", "host-02.example.com"),
+            installed("bootroot", "host-02.example.com"),
+        ];
+        rows[1].lifecycle = Lifecycle::Stopped;
+        rows[2].installed_version = None;
+        rows[3].installed_commit = None;
+        rows[4].installer_managed = true;
+        for row in &rows {
+            table.insert(row).unwrap();
+        }
+
+        for direction in [Direction::Forward, Direction::Reverse] {
+            let mut read = table
+                .iter(direction, None)
+                .collect::<Result<Vec<_>>>()
+                .unwrap();
+            read.sort_unstable_by(|a, b| (&a.component, &a.host).cmp(&(&b.component, &b.host)));
+            let mut expected = rows.clone();
+            expected.sort_unstable_by(|a, b| (&a.component, &a.host).cmp(&(&b.component, &b.host)));
+            assert_eq!(read, expected);
+        }
+    }
+
     #[test]
     fn installer_managed_round_trips() {
         let test_db = TestDb::new();
