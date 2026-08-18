@@ -551,7 +551,72 @@ impl StateDb {
     }
 }
 
+/// The opt-in list of record types whose [`Table`] may be scanned generically.
+///
+/// A [`Table`] scan covers the whole column family, so it is safe only where
+/// the column family holds nothing but records. Most tables are of that shape
+/// and are listed below; `operation_attempt` is not, because it reserves the
+/// top of its key space for secondary indexes, and is therefore deliberately
+/// absent.
+///
+/// The trait is not exported, so this list is the only way in: nothing outside
+/// the crate can implement it, and a record type added here gets generic
+/// iteration only once someone writes it down. That is the point — the
+/// exclusion holds unless it is removed on purpose, rather than lapsing the
+/// next time a bound elsewhere is broadened.
+mod iteration {
+    use crate::{tables, types};
+
+    pub trait Eligible {}
+
+    impl Eligible for tables::AccessToken {}
+    impl Eligible for types::Account {}
+    impl Eligible for tables::Agent {}
+    impl Eligible for tables::AllowNetwork {}
+    impl Eligible for crate::BatchInfo {}
+    impl Eligible for tables::BlockNetwork {}
+    impl Eligible for crate::Category {}
+    impl Eligible for tables::Cluster {}
+    impl Eligible for tables::ColumnStats {}
+    impl Eligible for tables::CoreComponent {}
+    impl Eligible for tables::CsvColumnExtra {}
+    impl Eligible for tables::Customer {}
+    impl Eligible for tables::CustomerDataDeletionJob {}
+    impl Eligible for tables::DataSource {}
+    impl Eligible for tables::ExternalService {}
+    impl Eligible for tables::Filter {}
+    impl Eligible for tables::Host {}
+    impl Eligible for tables::InnerNode {}
+    impl Eligible for tables::LabelDb {}
+    impl Eligible for tables::Model {}
+    impl Eligible for tables::ModelIndicator {}
+    impl Eligible for tables::Network {}
+    impl Eligible for tables::OutlierInfo {}
+    impl Eligible for types::Qualifier {}
+    impl Eligible for tables::SamplingPolicy {}
+    impl Eligible for types::Status {}
+    impl Eligible for tables::Template {}
+    impl Eligible for tables::TimeSeries {}
+    impl Eligible for tables::TorExitNode {}
+    impl Eligible for tables::TrafficFilter {}
+    impl Eligible for tables::TriageExclusionReason {}
+    impl Eligible for tables::TriagePolicy {}
+    impl Eligible for tables::TriageResponse {}
+    impl Eligible for tables::TrustedDomain {}
+    impl Eligible for tables::TrustedUserAgent {}
+}
+
 /// Represents a table that can be iterated over.
+///
+/// A [`Table`] offers this only for a record type whose column family holds
+/// records and nothing else, because both scans cover key ranges the caller
+/// does not choose: [`iter`](Iterable::iter) covers the whole column family,
+/// and [`prefix_iter`](Iterable::prefix_iter) covers whatever the given
+/// prefix spans, which for an empty prefix is again the whole of it. A table
+/// that reserves part of its key space for secondary index entries — at
+/// present only `operation_attempt`, whose keys are described on
+/// [`OperationAttempt`] — is therefore left out, and offers a bounded
+/// iterator of its own that stops below the reserved range.
 pub trait Iterable<'i, I>
 where
     I: Iterator,
@@ -718,11 +783,16 @@ impl<R: UniqueKey + Value> Table<'_, R> {
     }
 }
 
+// The `iteration::Eligible` bound is what keeps `Table<OperationAttempt>` out
+// of this implementation, whose scans reach the index key spaces that table
+// reserves. `IndexedTable` below does not carry the bound: no table that
+// reserves part of its key space is indexed, and `NodeTable` iterates through
+// that implementation.
 impl<'i, 'j, 'k, R> Iterable<'i, TableIter<'k, R>> for Table<'j, R>
 where
     'j: 'k,
     'i: 'k,
-    R: FromKeyValue,
+    R: FromKeyValue + iteration::Eligible,
 {
     fn iter(&self, direction: Direction, from: Option<&[u8]>) -> TableIter<'k, R> {
         use rocksdb::IteratorMode;

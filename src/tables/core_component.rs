@@ -440,6 +440,39 @@ mod tests {
         table.delete("roxyd", "host-99.example.com").unwrap();
     }
 
+    /// This column family holds records and nothing else, so the generic
+    /// `Iterable` API stays available for it: both of its scans cover a key
+    /// range the caller does not choose, and here every key in that range is a
+    /// record.
+    #[test]
+    fn generic_iteration_yields_every_stored_record() {
+        let test_db = TestDb::new();
+        let table = test_db.table();
+
+        let bootroot = installed("bootroot", "host-01.example.com");
+        let roxyd = installed("roxyd", "host-01.example.com");
+        table.insert(&bootroot).unwrap();
+        table.insert(&roxyd).unwrap();
+
+        // The component name is length-prefixed, so the shorter one sorts
+        // first whatever the letters say.
+        let in_key_order = vec![roxyd, bootroot];
+        assert_eq!(
+            table
+                .iter(Direction::Forward, None)
+                .collect::<Result<Vec<_>>>()
+                .unwrap(),
+            in_key_order
+        );
+        assert_eq!(
+            table
+                .prefix_iter(Direction::Forward, None, b"")
+                .collect::<Result<Vec<_>>>()
+                .unwrap(),
+            in_key_order
+        );
+    }
+
     /// `get` and `delete` build their key from the pair they are given, so
     /// iteration is the one path that hands `from_key_value` raw bytes.
     #[test]

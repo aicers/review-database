@@ -40,6 +40,17 @@
 //! learn about, or drop one and leave its entries behind. The record's key and
 //! serialized value are reached through [`OperationAttempt::record_key`] and
 //! [`OperationAttempt::record_value`], which are private to this module.
+//!
+//! The same boundary governs reading. [`Table::iter`] bounds its scan below
+//! [`RESERVED`], so it yields records and nothing else, and the generic
+//! [`Iterable`](crate::Iterable) API is not implemented for this record at
+//! all. Its scans cover key ranges the caller does not choose — the whole
+//! column family for `iter`, and for `prefix_iter` whatever the prefix spans,
+//! which an empty or deliberately reserved prefix extends over the index
+//! entries — and an index key is not a record and does not decode as one, so
+//! such a scan would yield a decoding error rather than a row. That exclusion
+//! is enforced as the write one is, by a bound this record does not satisfy
+//! rather than by convention.
 
 use std::borrow::Cow;
 use std::collections::HashMap;
@@ -199,6 +210,39 @@ pub struct RetryPolicy {
 /// ```compile_fail
 /// fn generic_write_api<R: review_database::UniqueKey>() {}
 /// generic_write_api::<review_database::OperationAttempt>();
+/// ```
+///
+/// # Iterating
+///
+/// The record space and the index spaces share one column family, so a scan
+/// whose range the caller does not choose can run off the records and into the
+/// index entries, which are not records and do not decode as one. The generic
+/// [`Iterable`](crate::Iterable) API on [`Table`] is therefore not implemented
+/// for this record: `iter` there covers the whole column family, and
+/// `prefix_iter` covers whatever the prefix spans, which for an empty or
+/// deliberately reserved prefix is the index entries too. `Table::iter` on
+/// this table is the supported record iterator, and it bounds its scan below
+/// the reserved range.
+///
+/// A record whose column family holds records alone is admitted:
+///
+/// ```
+/// use review_database::{Iterable, Table, TorExitNode};
+///
+/// fn generic_iteration(table: &Table<TorExitNode>) {
+///     let _ = table.prefix_iter(todo!(), None, b"");
+/// }
+/// ```
+///
+/// An `OperationAttempt` is not, which is what stops a caller from reaching an
+/// index entry through a scan that expects a row:
+///
+/// ```compile_fail,E0599
+/// use review_database::{Iterable, OperationAttempt, Table};
+///
+/// fn generic_iteration(table: &Table<OperationAttempt>) {
+///     let _ = table.prefix_iter(todo!(), None, b"");
+/// }
 /// ```
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct OperationAttempt {
@@ -504,10 +548,13 @@ impl<'d> Table<'d, OperationAttempt> {
     /// Returns an iterator over the stored attempts, whose keys are the
     /// idempotency keys in lexicographic order.
     ///
-    /// This shadows the blanket [`Iterable::iter`](crate::Iterable)
-    /// implementation on [`Table`], whose scan covers the whole column family
-    /// and would therefore also yield the index key spaces, which are not
-    /// records and do not decode as one.
+    /// This is the table's only iterator. The generic
+    /// [`Iterable`](crate::Iterable) API on [`Table`] is not implemented for
+    /// this record, because its scans cover key ranges the caller does not
+    /// choose and would therefore also yield the index key spaces, which are
+    /// not records and do not decode as one. This one stops below the first
+    /// byte the index key spaces reserve, so it yields records and nothing
+    /// else.
     #[must_use]
     pub fn iter(
         &self,
@@ -1365,6 +1412,30 @@ mod tests {
         // A key that was never written seeks to the next one in the direction
         // of travel, so a scan resuming past a deleted row does not stall.
         assert_eq!(keys(&table, Direction::Forward, Some(b"op-25")), ["op-3"]);
+
+        // An attempt that is non-terminal and still owes a cleanup owns an
+        // entry in all three indexes, so it is the case that puts the most of
+        // the reserved space in the iterator's way.
+        let mut owes_cleanup = module_attempt("op-4");
+        owes_cleanup.instance = Some(3);
+        owes_cleanup.cleanup_state = Some(CleanupState::PendingDeregister);
+        table.upsert(&owes_cleanup).unwrap();
+        let index_entries = test_db
+            .raw_keys()
+            .into_iter()
+            .filter(|key| key.first().is_some_and(|first| *first >= RESERVED))
+            .count();
+        assert_eq!(
+            index_entries, 9,
+            "the three earlier attempts own two entries each, and this one owns three"
+        );
+
+        // `keys` unwraps the decode of every item, so this is also the
+        // assertion that the bounded scan yields no index key.
+        assert_eq!(
+            keys(&table, Direction::Forward, None),
+            ["op-1", "op-2", "op-3", "op-4"]
+        );
     }
 
     #[test]

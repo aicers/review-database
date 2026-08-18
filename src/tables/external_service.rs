@@ -220,8 +220,8 @@ mod test {
     use std::sync::Arc;
 
     use super::*;
-    use crate::Store;
     use crate::test::{DbGuard, acquire_db_permit};
+    use crate::{Iterable, Store};
 
     const VALID_TOML: &str = r#"test = "true""#;
 
@@ -343,6 +343,38 @@ mod test {
         assert_eq!(external_service.installed_commit, None);
         assert_eq!(external_service.lifecycle, Lifecycle::NotInstalled);
         assert!(external_service.bound_addrs.is_empty());
+    }
+
+    /// This column family holds records and nothing else, so the generic
+    /// `Iterable` API stays available for it: both of its scans cover a key
+    /// range the caller does not choose, and here every key in that range is a
+    /// record.
+    #[test]
+    fn generic_iteration_yields_every_stored_external_service() {
+        let (_permit, store) = setup_store();
+        let table = store.external_service_map();
+
+        let first = create_external_service(1, "001.store", ExternalServiceKind::DataStore, None);
+        let second =
+            create_external_service(1, "002.store", ExternalServiceKind::TiContainer, None);
+        table.insert(&first).unwrap();
+        table.insert(&second).unwrap();
+
+        let in_key_order = vec![first, second];
+        assert_eq!(
+            table
+                .iter(rocksdb::Direction::Forward, None)
+                .collect::<Result<Vec<_>>>()
+                .unwrap(),
+            in_key_order
+        );
+        assert_eq!(
+            table
+                .prefix_iter(rocksdb::Direction::Forward, None, b"")
+                .collect::<Result<Vec<_>>>()
+                .unwrap(),
+            in_key_order
+        );
     }
 
     #[test]

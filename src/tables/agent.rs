@@ -342,6 +342,37 @@ mod test {
         assert!(result.is_none());
     }
 
+    /// This column family holds records and nothing else, so the generic
+    /// `Iterable` API stays available for it: both of its scans cover a key
+    /// range the caller does not choose, and here every key in that range is a
+    /// record.
+    #[test]
+    fn generic_iteration_yields_every_stored_agent() {
+        let (_permit, store) = setup_store();
+        let table = store.agents_map();
+
+        let first = create_agent(1, "001.piglet", AgentKind::Sensor, Some(VALID_TOML), None);
+        let second = create_agent(1, "002.piglet", AgentKind::Sensor, Some(VALID_TOML), None);
+        table.insert(&first).unwrap();
+        table.insert(&second).unwrap();
+
+        let in_key_order = vec![first, second];
+        assert_eq!(
+            table
+                .iter(rocksdb::Direction::Forward, None)
+                .collect::<Result<Vec<_>>>()
+                .unwrap(),
+            in_key_order
+        );
+        assert_eq!(
+            table
+                .prefix_iter(rocksdb::Direction::Forward, None, b"")
+                .collect::<Result<Vec<_>>>()
+                .unwrap(),
+            in_key_order
+        );
+    }
+
     #[test]
     fn new_agent_has_no_install_state() {
         let agent = create_agent(1, "test_key", AgentKind::Sensor, Some(VALID_TOML), None);
