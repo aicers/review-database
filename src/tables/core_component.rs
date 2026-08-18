@@ -506,6 +506,35 @@ mod tests {
         assert_eq!(table.iter(Direction::Forward, None).count(), 1);
     }
 
+    /// `update` is the other path that could put a second row on a pair that
+    /// already has one, so it refuses a move onto an occupied pair just as
+    /// `insert` refuses a duplicate. Both rows survive unchanged.
+    #[test]
+    fn update_onto_an_occupied_pair_is_refused() {
+        let test_db = TestDb::new();
+        let table = test_db.table();
+
+        let old = installed("roxyd", "host-01.example.com");
+        let occupant = installed("roxyd", "host-02.example.com");
+        table.insert(&old).unwrap();
+        table.insert(&occupant).unwrap();
+
+        let mut moved = old.clone();
+        moved.host = occupant.host.clone();
+        moved.lifecycle = Lifecycle::Failed;
+        assert!(table.update(&old, &moved).is_err());
+
+        assert_eq!(
+            table.get("roxyd", "host-01.example.com").unwrap(),
+            Some(old)
+        );
+        assert_eq!(
+            table.get("roxyd", "host-02.example.com").unwrap(),
+            Some(occupant)
+        );
+        assert_eq!(table.iter(Direction::Forward, None).count(), 2);
+    }
+
     #[test]
     fn crud_and_iteration() {
         let test_db = TestDb::new();
