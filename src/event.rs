@@ -2348,15 +2348,23 @@ impl EventMessage {
         };
 
         match msg {
-            Ok(msg) => Ok((
-                "DETECT".to_string(),
-                format!("{:?}", self.kind),
-                format!(
-                    "time={:?} event_kind=\"{:?}\" {msg}",
-                    self.time.to_rfc3339(),
-                    self.kind
-                ),
-            )),
+            Ok(msg) => {
+                let kind_string = if self.kind == EventKind::HttpThreat {
+                    "Threat".to_string()
+                } else {
+                    format!("{:?}", self.kind)
+                };
+
+                Ok((
+                    "DETECT".to_string(),
+                    kind_string.clone(),
+                    format!(
+                        "time={:?} event_kind={:?} {msg}",
+                        self.time.to_rfc3339(),
+                        kind_string
+                    ),
+                ))
+            }
             Err(e) => Err(anyhow::anyhow!(
                 "failed to deserialize event fields: {e}. time={:?}, event_kind={:?}",
                 self.time.to_rfc3339(),
@@ -3282,11 +3290,16 @@ mod tests {
         let message = message.syslog_rfc5424();
         assert!(message.is_ok());
         let (_, _, syslog_message) = message.unwrap();
-        let start_time = chrono::DateTime::<Utc>::from_timestamp_nanos(0).to_rfc3339();
+        // let start_time =
+        // chrono::DateTime::<Utc>::from_timestamp_nanos(0).to_rfc3339();
+        let start_time = Utc
+            .with_ymd_and_hms(1970, 1, 1, 0, 0, 0)
+            .unwrap()
+            .to_rfc3339();
         assert_eq!(
             syslog_message,
             format!(
-                "time=\"1970-01-01T00:01:01+00:00\" event_kind=\"HttpThreat\" category=\"Reconnaissance\" sensor=\"collector1\" orig_addr=\"127.0.0.1\" orig_port=\"10000\" resp_addr=\"127.0.0.2\" resp_port=\"80\" proto=\"6\" start_time=\"{start_time}\" duration=\"0\" orig_pkts=\"0\" resp_pkts=\"0\" orig_l2_bytes=\"0\" resp_l2_bytes=\"0\" method=\"GET\" host=\"example.com\" uri=\"/uri/path\" referer=\"-\" version=\"1.1\" user_agent=\"browser\" request_len=\"100\" response_len=\"100\" status_code=\"200\" status_msg=\"-\" username=\"-\" password=\"-\" cookie=\"cookie\" content_encoding=\"encoding type\" content_type=\"content type\" cache_control=\"no cache\" filenames=\"a1,a2\" mime_types=\"b1,b2\" body=\"1234567890...\" state=\"\" db_name=\"db\" rule_id=\"12000\" matched_to=\"match\" cluster_id=\"1111\" attack_kind=\"attack\" confidence=\"0.8\""
+                "time=\"1970-01-01T00:01:01+00:00\" event_kind=\"Threat\" orig_addr=\"127.0.0.1\" orig_port=\"10000\" resp_addr=\"127.0.0.2\" resp_port=\"80\" proto=\"6\" start_time=\"{start_time}\" duration=\"0\" orig_pkts=\"0\" resp_pkts=\"0\" orig_l2_bytes=\"0\" resp_l2_bytes=\"0\" method=\"GET\" host=\"example.com\" uri=\"/uri/path\" referer=\"-\" version=\"1.1\" user_agent=\"browser\" request_len=\"100\" response_len=\"100\" status_code=\"200\" status_msg=\"-\" username=\"-\" password=\"-\" cookie=\"cookie\" content_encoding=\"encoding type\" content_type=\"content type\" cache_control=\"no cache\" filenames=\"a1,a2\" mime_types=\"b1,b2\" body=\"1234567890...\" state=\"\""
             )
         );
 
