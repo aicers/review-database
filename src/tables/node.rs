@@ -1305,7 +1305,10 @@ mod test {
     /// `NodeTable` writes its own `Iterable` implementation over an
     /// `IndexedTable<Inner>`, so it is the one iteration route that is neither
     /// the blanket `Table` implementation nor a table-specific inherent
-    /// iterator, and it composes each `Node` from three column families.
+    /// iterator, and it composes each `Node` from three column families. Its
+    /// inherent `iter` shadows the trait method under method syntax, so that
+    /// half is called through UFCS to keep the trait route the thing under
+    /// test.
     #[test]
     fn generic_iteration_yields_every_stored_node() {
         let (_permit, store) = setup_store();
@@ -1337,8 +1340,7 @@ mod test {
         }
 
         for iterated in [
-            node_table
-                .iter(Direction::Forward, None)
+            Iterable::iter(&node_table, Direction::Forward, None)
                 .collect::<Result<Vec<_>>>()
                 .unwrap(),
             node_table
