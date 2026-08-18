@@ -2044,4 +2044,120 @@ mod tests {
         assert_eq!(table.prune(policy, timestamp(6_000)).unwrap(), 1);
         assert_eq!(keys(&table, Direction::Forward, None), ["op-3"]);
     }
+
+    #[test]
+    fn owed_cleanup_lists_every_attempt_of_one_triple() {
+        let test_db = TestDb::new();
+        let table = test_db.table();
+
+        // One triple owes several cleanups at once: a re-drive leaves the
+        // earlier attempt's obligation standing, so the index key carries the
+        // idempotency key and the lookup answers with all of them.
+        let mut live = live_attempt("op-c", HOST, TARGET, Some(1));
+        live.cleanup_state = Some(CleanupState::PendingDeregister);
+        let mut first = terminal_attempt("op-a", HOST, TARGET, Some(1), 1_000, 9_000);
+        first.cleanup_state = Some(CleanupState::PendingIdentityTeardown);
+        let mut second = terminal_attempt("op-b", HOST, TARGET, Some(1), 2_000, 9_000);
+        second.cleanup_state = Some(CleanupState::PendingDeregister);
+        for attempt in [&first, &second, &live] {
+            table.upsert(attempt).unwrap();
+        }
+
+        assert_eq!(
+            table.attempts_owing_cleanup(TARGET, HOST, Some(1)).unwrap(),
+            vec![first.clone(), second.clone(), live.clone()],
+            "the lookup answers in idempotency-key order"
+        );
+
+        // Discharging one leaves the other two owed.
+        second.cleanup_state = None;
+        table.upsert(&second).unwrap();
+        assert_eq!(
+            table.attempts_owing_cleanup(TARGET, HOST, Some(1)).unwrap(),
+            vec![first, live]
+        );
+    }
+
+    #[test]
+    fn an_onboard_attempt_owes_its_teardown_under_an_empty_target() {
+        let test_db = TestDb::new();
+        let table = test_db.table();
+
+        // An onboarding has no package, so its `target` segment is empty. The
+        // length prefix is what keeps that from swallowing the host segment
+        // beside it.
+        let here = onboard_attempt("op-onboard");
+        let mut there = onboard_attempt("op-elsewhere");
+        there.host = "other.example".to_string();
+        table.upsert(&here).unwrap();
+        table.upsert(&there).unwrap();
+
+        assert_eq!(
+            table.attempts_owing_cleanup("", &here.host, None).unwrap(),
+            vec![here.clone()]
+        );
+        assert_eq!(
+            table.attempts_owing_cleanup("", &there.host, None).unwrap(),
+            vec![there]
+        );
+
+        // Per-hostname onboard idempotency falls out of the same index: a
+        // second onboarding of a host already being onboarded is refused,
+        // while another host onboards alongside it.
+        assert_eq!(
+            table.live_attempt(&here.host, "", None).unwrap(),
+            Some(here.clone())
+        );
+        let mut again = onboard_attempt("op-onboard-again");
+        again.host.clone_from(&here.host);
+        assert!(table.upsert(&again).is_err());
+
+        // The teardown stays owed once the onboarding times out, which is what
+        // blocks a re-onboard until `review` has discharged it.
+        assert_eq!(table.sweep_expired(here.expires_at).unwrap(), 2);
+        assert_eq!(table.live_attempt(&here.host, "", None).unwrap(), None);
+        let mut owed = here;
+        owed.outcome = Some(Outcome::Failed);
+        assert_eq!(
+            table.attempts_owing_cleanup("", &owed.host, None).unwrap(),
+            vec![owed]
+        );
+    }
+
+    #[test]
+    fn expired_attempts_come_back_earliest_deadline_first() {
+        let test_db = TestDb::new();
+        let table = test_db.table();
+
+        // A deadline before the epoch sorts before one after it, which the
+        // two's-complement bytes would otherwise invert.
+        let before_epoch = terminal_attempt("op-3", HOST, TARGET, Some(3), 1_000, -60);
+        let at_epoch = terminal_attempt("op-2", HOST, TARGET, Some(2), 1_000, 0);
+        let after_epoch = terminal_attempt("op-1", HOST, TARGET, Some(1), 1_000, 60);
+        for attempt in [&after_epoch, &at_epoch, &before_epoch] {
+            table.upsert(attempt).unwrap();
+        }
+
+        assert_eq!(
+            table
+                .expired_attempts(timestamp(60))
+                .unwrap()
+                .into_iter()
+                .map(|attempt| attempt.idempotency_key)
+                .collect::<Vec<_>>(),
+            ["op-3", "op-2", "op-1"],
+            "the scan runs in deadline order, not in idempotency-key order"
+        );
+        // The cutoff is inclusive and stops the scan where it should.
+        assert_eq!(
+            table
+                .expired_attempts(timestamp(0))
+                .unwrap()
+                .into_iter()
+                .map(|attempt| attempt.idempotency_key)
+                .collect::<Vec<_>>(),
+            ["op-3", "op-2"]
+        );
+        assert!(table.expired_attempts(timestamp(-61)).unwrap().is_empty());
+    }
 }
