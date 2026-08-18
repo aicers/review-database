@@ -634,12 +634,18 @@ impl<'d> Table<'d, OperationAttempt> {
             else {
                 return Ok(());
             };
-            // A row that does not decode owns no index entries this table can
-            // name, and deleting the row itself is still the right repair.
-            if let Ok(attempt) = OperationAttempt::from_key_value(key, &value) {
-                for index_key in index_keys(&attempt)? {
-                    self.map.delete_with_transaction(&index_key, &txn)?;
-                }
+            // A row that does not decode cannot name its index entries, and
+            // leaving them is not an option: the single-flight entry is checked
+            // as raw presence, so an orphan holds its triple's slot for good.
+            // Reading them back out of the index space costs a scan of it,
+            // which is the right trade on a repair path a sound row never
+            // reaches.
+            let index_keys = match OperationAttempt::from_key_value(key, &value) {
+                Ok(attempt) => index_keys(&attempt)?,
+                Err(_) => self.index_keys_naming(key)?,
+            };
+            for index_key in index_keys {
+                self.map.delete_with_transaction(&index_key, &txn)?;
             }
             self.map.delete_with_transaction(key, &txn)?;
             match txn.commit() {
@@ -834,6 +840,30 @@ impl<'d> Table<'d, OperationAttempt> {
             }
         }
         Ok(attempts)
+    }
+
+    /// Returns every index entry that names `idempotency_key`.
+    ///
+    /// This scans the whole index space, so it is only for the repair path in
+    /// [`Table::delete`], where the row is unreadable and there is nothing
+    /// left to derive its entries from. The idempotency key is unique, so no
+    /// entry of another row can name it.
+    fn index_keys_naming(&self, idempotency_key: &[u8]) -> Result<Vec<Vec<u8>>> {
+        let mut readopts = ReadOptions::default();
+        readopts.set_iterate_lower_bound([RESERVED]);
+        let iter = self
+            .map
+            .db
+            .iterator_cf_opt(self.map.cf, readopts, IteratorMode::Start);
+
+        let mut keys = Vec::new();
+        for entry in iter {
+            let (key, value) = entry.context("cannot read the index")?;
+            if value.as_ref() == idempotency_key {
+                keys.push(key.to_vec());
+            }
+        }
+        Ok(keys)
     }
 
     /// Reads an attempt within a transaction, locking its key.
@@ -1309,6 +1339,29 @@ mod tests {
     }
 
     #[test]
+    fn deleting_an_undecodable_row_takes_its_index_entries_with_it() {
+        let test_db = TestDb::new();
+        let table = test_db.table();
+
+        let mut attempt = live_attempt("op-1", HOST, TARGET, Some(1));
+        attempt.cleanup_state = Some(CleanupState::PendingDeregister);
+        table.upsert(&attempt).unwrap();
+        // Corrupt the row in place, leaving its three index entries behind.
+        table.map.put(b"op-1", b"not a stored value").unwrap();
+
+        table.delete("op-1").unwrap();
+        assert_eq!(table.get("op-1").unwrap(), None);
+        // Nothing of it is left, the single-flight entry included: an orphaned
+        // one is checked as raw presence, so it would hold the triple's slot
+        // against every later attempt while `live_attempt` reported it free.
+        assert!(test_db.raw_keys().is_empty());
+        assert_eq!(table.live_attempt(HOST, TARGET, Some(1)).unwrap(), None);
+        table
+            .upsert(&live_attempt("op-2", HOST, TARGET, Some(1)))
+            .unwrap();
+    }
+
+    #[test]
     fn rejects_an_empty_idempotency_key() {
         let test_db = TestDb::new();
         let table = test_db.table();
@@ -1468,6 +1521,41 @@ mod tests {
             Some(second)
         );
         assert_eq!(keys(&table, Direction::Forward, None), ["op-1", "op-2"]);
+    }
+
+    #[test]
+    fn refuses_a_second_live_attempt_racing_the_first() {
+        // The guard is a read of the index entry inside the write's own
+        // transaction, so it is the commit that has to reject the loser. A
+        // check outside the transaction would let two racing writers both pass
+        // it, which is the double-click this table exists to stop.
+        for round in 0..8 {
+            let test_db = TestDb::new();
+            let accepted = std::sync::atomic::AtomicUsize::new(0);
+            std::thread::scope(|scope| {
+                for n in 0..4 {
+                    let db = &test_db.db;
+                    let accepted = &accepted;
+                    scope.spawn(move || {
+                        let table = Table::<OperationAttempt>::open(db).unwrap();
+                        let attempt = live_attempt(&format!("op-{n}"), HOST, TARGET, Some(1));
+                        if table.upsert(&attempt).is_ok() {
+                            accepted.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        }
+                    });
+                }
+            });
+
+            let table = test_db.table();
+            assert_eq!(
+                accepted.load(std::sync::atomic::Ordering::Relaxed),
+                1,
+                "round {round}: more than one racing writer took the slot"
+            );
+            assert!(table.live_attempt(HOST, TARGET, Some(1)).unwrap().is_some());
+            // The refused writers left no row behind either.
+            assert_eq!(keys(&table, Direction::Forward, None).len(), 1);
+        }
     }
 
     #[test]
