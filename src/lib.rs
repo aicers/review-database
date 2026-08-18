@@ -44,7 +44,7 @@ use self::tables::StateDb;
 pub use self::tables::{
     AccessToken, Agent, AgentConfig, AgentKind, AgentStatus, AllowNetwork, AllowNetworkUpdate,
     AttrCmpKind, BackupConfig, BackupConfigUpdate, BlockNetwork, BlockNetworkUpdate, Cluster,
-    ClusterTimeSeries, ColumnStats, ColumnTimeSeries, Confidence,
+    ClusterTimeSeries, ColumnStats, ColumnTimeSeries, Confidence, CoreComponent,
     CsvColumnExtra as CsvColumnExtraConfig, Customer, CustomerDataDeletionJob,
     CustomerDataDeletionService, CustomerDataDeletionServiceResult, CustomerDataDeletionStatus,
     CustomerNetwork, CustomerUpdate, DataSource, DataSourceUpdate, DataType, ExclusionReason,

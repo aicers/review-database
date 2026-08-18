@@ -9,6 +9,7 @@ mod category;
 mod cluster;
 mod column_stats;
 mod config;
+mod core_component;
 mod csv_column_extra;
 mod customer;
 mod customer_data_deletion_job;
@@ -56,6 +57,7 @@ pub use self::config::{
     KEY_LOCKOUT_DURATION, KEY_LOCKOUT_THRESHOLD, KEY_NUM_OF_BACKUPS_TO_KEEP, KEY_RETENTION_PERIOD,
     KEY_SUSPENSION_THRESHOLD,
 };
+pub use self::core_component::CoreComponent;
 pub use self::csv_column_extra::CsvColumnExtra;
 pub use self::customer::{Customer, Network as CustomerNetwork, Update as CustomerUpdate};
 pub use self::customer_data_deletion_job::{
@@ -125,6 +127,11 @@ pub(super) const CATEGORY: &str = "category";
 pub(super) const CLUSTER: &str = "cluster";
 pub(super) const COLUMN_STATS: &str = "column stats";
 pub(super) const CONFIGS: &str = "configs";
+// Deliberately absent from `MAP_NAMES`: registering this column family belongs
+// with the database format bump, because `migrate_data_dir` returns early for a
+// data dir already at a compatible version and would otherwise gain a column
+// family with no version change.
+pub(super) const CORE_COMPONENTS: &str = "core components";
 pub(super) const CSV_COLUMN_EXTRAS: &str = "csv column extras";
 pub(crate) const CUSTOMERS: &str = "customers";
 pub(super) const CUSTOMER_DELETION_JOBS: &str = "customer deletion jobs";

@@ -17,6 +17,16 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   REview, Sensor, and SemiSupervised services. REview results retain every
   target host FQDN for reliable deletion retries, while Sensor and
   SemiSupervised results retain exactly one host FQDN.
+- Added the `CoreComponent` record, the registry of the platform's own
+  host-fixed infrastructure — `review`, `aice-web-next`, `roxyd` and `bootroot`
+  — which is neither an agent nor an external service. A row is keyed by its
+  component and host, and records the installed version and commit that
+  together identify a build, the install and run lifecycle, and whether the
+  component is installer-managed and so excluded from update through the user
+  interface. Components are single-instance, so a second row for a component
+  and host that already has one is refused rather than given another number.
+  The table these records live in becomes reachable from `Store` in a later
+  release, along with the database format bump that creates its column family.
 - Added the `OperationAttempt` record and its supporting `OperationAction`,
   `OperationPhase`, `OperationCleanupState`, `OperationOutcome`, and
   `OperationRetryPolicy` types, describing a package install, update, or
