@@ -186,10 +186,6 @@ impl<'d> Table<'d, CoreComponent> {
     /// Opens the `core_component` table in the database.
     ///
     /// Returns `None` if the table does not exist.
-    // Allowed as unused because the column family is not in `MAP_NAMES` yet:
-    // registering it and adding the `Store` accessor that calls this belong with
-    // the database format bump. Until then only the tests below open the table.
-    #[allow(dead_code)]
     pub(super) fn open(db: &'d OptimisticTransactionDB) -> Option<Self> {
         Map::open(db, super::CORE_COMPONENTS).map(Table::new)
     }
@@ -252,8 +248,7 @@ mod tests {
     /// A lifecycle index no variant is stored as.
     const UNRECOGNIZED_LIFECYCLE: u8 = 9;
 
-    /// A database carrying this table's column family, which `StateDb::open`
-    /// does not yet create because the name is not in `MAP_NAMES`.
+    /// A database carrying this table's column family.
     struct TestDb {
         db: OptimisticTransactionDB,
         _dir: tempfile::TempDir,
@@ -267,12 +262,10 @@ mod tests {
             let mut opts = rocksdb::Options::default();
             opts.create_if_missing(true);
             opts.create_missing_column_families(true);
-            let mut column_families = super::super::MAP_NAMES.to_vec();
-            column_families.push(super::super::CORE_COMPONENTS);
             let db = OptimisticTransactionDB::open_cf(
                 &opts,
                 dir.path().join("states.db"),
-                column_families,
+                super::super::MAP_NAMES,
             )
             .unwrap();
             Self {

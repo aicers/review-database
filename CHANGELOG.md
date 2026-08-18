@@ -25,8 +25,7 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   component is installer-managed and so excluded from update through the user
   interface. Components are single-instance, so a second row for a component
   and host that already has one is refused rather than given another number.
-  The table these records live in becomes reachable from `Store` in a later
-  release, along with the database format bump that creates its column family.
+  These records live in a table reachable through `Store::core_component_map`.
 - Added the `OperationAttempt` record and its supporting `OperationAction`,
   `OperationPhase`, `OperationCleanupState`, `OperationOutcome`,
   `OperationRetryPolicy`, and `OperationRetentionBound` types, describing a
@@ -49,9 +48,8 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   keeping the most recent finished attempt of each along with every attempt
   that is unfinished or still owes something. Both take the instant to measure
   against and neither reads the clock, so a caller decides what "now" means.
-  The table these records live in becomes reachable
-  from `Store` in a later release, along with the database format bump that
-  creates its column family.
+  These records live in a table reachable through
+  `Store::operation_attempt_map`.
 
 ### Changed
 
@@ -66,20 +64,23 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   still report the outcome of a configuration reload, and nothing converts
   between the two. `Agent::new` and `ExternalService::new` keep their parameter
   lists and start the new fields empty, at `NotInstalled`; install state is
-  assigned to a record afterwards. The stored records in the agents and external
-  services column families carry the four fields, so records written by earlier
-  versions no longer deserialize and are not migrated.
+  assigned to a record afterwards. Records written by earlier versions are
+  migrated rather than left unreadable: each keeps its key and every field it
+  already had, and gains no installed version or commit, `NotInstalled`, and no
+  bound addresses, until a host reports otherwise.
 - Classifier files are now created requesting owner-only permissions (`0o600`)
   instead of the previous `0o666` reduced by the umask. The umask still applies,
   so the resulting mode is not fixed, but no group or other bit is ever granted.
   Under the common `umask 022`, for example, a stored classifier that used to be
   `0o644` is now `0o600`, so anything reading these files as another account
   stops working.
-- **BREAKING**: Bumped the database format to `0.47.0-alpha.1`. The migration
-  from `0.46.x` creates the customer data deletion jobs column family
-  explicitly; migrations from older supported formats preserve their legacy
-  column-family sets while applying intermediate migrations before creating the
-  new family.
+- **BREAKING**: Bumped the database format to `0.47.0-alpha.2`. The migration
+  from `0.46.x` creates the customer data deletion jobs, core components, and
+  operation attempts column families and converts every stored agent and
+  external-service value to the layout carrying install state. Migrations from
+  older supported formats apply their intermediate steps over the column
+  families the database physically holds, so an update interrupted part-way can
+  simply be retried.
 - **BREAKING**: Event timestamps now use `jiff::Timestamp` instead of chrono's
   `DateTime<Utc>`. Existing databases need no migration, because timestamps are
   still stored as `i64` epoch nanoseconds.

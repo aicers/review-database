@@ -128,10 +128,6 @@ pub(super) const CATEGORY: &str = "category";
 pub(super) const CLUSTER: &str = "cluster";
 pub(super) const COLUMN_STATS: &str = "column stats";
 pub(super) const CONFIGS: &str = "configs";
-// Deliberately absent from `MAP_NAMES`: registering this column family belongs
-// with the database format bump, because `migrate_data_dir` returns early for a
-// data dir already at a compatible version and would otherwise gain a column
-// family with no version change.
 pub(super) const CORE_COMPONENTS: &str = "core components";
 pub(super) const CSV_COLUMN_EXTRAS: &str = "csv column extras";
 pub(crate) const CUSTOMERS: &str = "customers";
@@ -144,10 +140,6 @@ pub(super) const MODEL_INDICATORS: &str = "model indicators";
 pub(crate) const META: &str = "meta";
 pub(super) const NETWORKS: &str = "networks";
 pub(super) const NODES: &str = "nodes";
-// Deliberately absent from `MAP_NAMES`: registering this column family belongs
-// with the database format bump, because `migrate_data_dir` returns early for a
-// data dir already at a compatible version and would otherwise gain a column
-// family with no version change.
 pub(super) const OPERATION_ATTEMPTS: &str = "operation attempts";
 pub(super) const OUTLIERS: &str = "outliers";
 pub(super) const QUALIFIERS: &str = "qualifiers";
@@ -166,7 +158,7 @@ pub(super) const TRIAGE_RESPONSE: &str = "triage response";
 pub(super) const TRUSTED_DNS_SERVERS: &str = "trusted DNS servers";
 pub(super) const TRUSTED_USER_AGENTS: &str = "trusted user agents";
 
-pub(crate) const MAP_NAMES: [&str; 37] = [
+pub(crate) const MAP_NAMES: [&str; 39] = [
     ACCESS_TOKENS,
     ACCOUNTS,
     AGENTS,
@@ -177,6 +169,7 @@ pub(crate) const MAP_NAMES: [&str; 37] = [
     CLUSTER,
     COLUMN_STATS,
     CONFIGS,
+    CORE_COMPONENTS,
     CSV_COLUMN_EXTRAS,
     CUSTOMERS,
     CUSTOMER_DELETION_JOBS,
@@ -188,6 +181,7 @@ pub(crate) const MAP_NAMES: [&str; 37] = [
     META,
     NETWORKS,
     NODES,
+    OPERATION_ATTEMPTS,
     OUTLIERS,
     QUALIFIERS,
     EXTERNAL_SERVICES,
@@ -358,6 +352,26 @@ impl StateDb {
             .expect("table access requires a successfully opened StateDb");
         Table::<CustomerDataDeletionJob>::open(inner)
             .expect("StateDb::open initializes the customer deletion jobs column family")
+    }
+
+    #[must_use]
+    pub(crate) fn core_components(&self) -> Table<'_, CoreComponent> {
+        let inner = self
+            .inner
+            .as_ref()
+            .expect("table access requires a successfully opened StateDb");
+        Table::<CoreComponent>::open(inner)
+            .expect("StateDb::open initializes the core components column family")
+    }
+
+    #[must_use]
+    pub(crate) fn operation_attempts(&self) -> Table<'_, OperationAttempt> {
+        let inner = self
+            .inner
+            .as_ref()
+            .expect("table access requires a successfully opened StateDb");
+        Table::<OperationAttempt>::open(inner)
+            .expect("StateDb::open initializes the operation attempts column family")
     }
 
     #[must_use]
