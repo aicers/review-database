@@ -1302,6 +1302,65 @@ mod test {
         assert_eq!(returned, node);
     }
 
+    /// `NodeTable` writes its own `Iterable` implementation over an
+    /// `IndexedTable<Inner>`, so it is the one iteration route that is neither
+    /// the blanket `Table` implementation nor a table-specific inherent
+    /// iterator, and it composes each `Node` from three column families.
+    #[test]
+    fn generic_iteration_yields_every_stored_node() {
+        let (_permit, store) = setup_store();
+
+        let agent_kinds = vec![AgentKind::Sensor];
+        let agent_configs = create_agent_configs(&agent_kinds);
+        let external_service_kinds = vec![ExternalServiceKind::DataStore];
+        let external_service_configs = create_external_service_configs(&external_service_kinds);
+
+        let node_table = store.node_map();
+        let mut names = vec![];
+        for name in ["node-a", "node-b"] {
+            // Two nodes cannot share a hostname, so each carries its own.
+            let profile = Profile {
+                hostname: format!("{name}.example.com"),
+                ..Profile::default()
+            };
+            let node = create_node(
+                0,
+                name,
+                None,
+                Some(profile),
+                None,
+                create_agents(0, &agent_kinds, &agent_configs, &[None]),
+                create_external_services(0, &external_service_kinds, &external_service_configs),
+            );
+            node_table.put(&node).unwrap();
+            names.push(name.to_string());
+        }
+
+        for iterated in [
+            node_table
+                .iter(Direction::Forward, None)
+                .collect::<Result<Vec<_>>>()
+                .unwrap(),
+            node_table
+                .prefix_iter(Direction::Forward, None, b"")
+                .collect::<Result<Vec<_>>>()
+                .unwrap(),
+        ] {
+            let mut read: Vec<_> = iterated
+                .iter()
+                .map(|node| node.name.clone())
+                .collect::<Vec<_>>();
+            read.sort_unstable();
+            assert_eq!(read, names);
+            // The agent and the external service come from their own column
+            // families, so an empty one would mean the composition was skipped.
+            for node in &iterated {
+                assert_eq!(node.agents.len(), 1);
+                assert_eq!(node.external_services.len(), 1);
+            }
+        }
+    }
+
     #[test]
     fn remove() {
         let (_permit, store) = setup_store();
