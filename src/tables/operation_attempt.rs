@@ -31,9 +31,15 @@
 //! Every index entry is written and removed in the same transaction as its
 //! row, so one can never outlive the other. [`Table::upsert`],
 //! [`Table::delete`], [`Table::sweep_expired`] and [`Table::prune`] are
-//! therefore this table's only writers; the generic [`Table::put`] and
-//! [`Table::insert`] write the record alone and would leave the indexes
-//! behind.
+//! therefore this table's only writers, and that is enforced by the compiler
+//! rather than by convention: the generic write API on [`Table`] is bounded by
+//! [`UniqueKey`](crate::UniqueKey) and [`Value`](super::Value), and
+//! [`OperationAttempt`] implements neither. `put`, `insert`,
+//! `update_with_transaction` and `delete_with_transaction` therefore do not
+//! exist for this table at all, so no caller can store a row the indexes never
+//! learn about, or drop one and leave its entries behind. The record's key and
+//! serialized value are reached through [`OperationAttempt::record_key`] and
+//! [`OperationAttempt::record_value`], which are private to this module.
 
 use std::borrow::Cow;
 use std::collections::HashMap;
@@ -43,7 +49,7 @@ use chrono::{DateTime, TimeDelta, Utc};
 use rocksdb::{Direction, IteratorMode, OptimisticTransactionDB, ReadOptions, Transaction};
 use serde::{Deserialize, Serialize};
 
-use crate::{EXCLUSIVE, Map, Table, UniqueKey, tables::Value as ValueTrait, types::FromKeyValue};
+use crate::{EXCLUSIVE, Map, Table, types::FromKeyValue};
 
 /// The first byte reserved for the index key spaces.
 ///
@@ -168,6 +174,32 @@ pub struct RetryPolicy {
 /// the shared table iterator reads an empty key as indexed-table metadata and
 /// skips it, so such a row would be invisible to the very scans this ledger
 /// exists to support.
+///
+/// # Writing
+///
+/// Every write to this table has to maintain the three secondary indexes in
+/// the same transaction as the row, so the record is written only through the
+/// index-aware `upsert`, `delete`, `sweep_expired` and `prune` on
+/// `Table<'_, OperationAttempt>`. Nothing else can write it: the generic write
+/// API on [`Table`] — `put`, `insert`,
+/// `update_with_transaction`, `delete_with_transaction` — is bounded by
+/// [`UniqueKey`](crate::UniqueKey) and the crate's `Value` trait, and this
+/// record implements neither, so those methods do not exist for its table.
+///
+/// A record that does implement [`UniqueKey`](crate::UniqueKey) is admitted:
+///
+/// ```
+/// fn generic_write_api<R: review_database::UniqueKey>() {}
+/// generic_write_api::<review_database::TorExitNode>();
+/// ```
+///
+/// An `OperationAttempt` is not, which is what stops a caller from storing a
+/// live row that `live_attempt` and the sweep would never see:
+///
+/// ```compile_fail
+/// fn generic_write_api<R: review_database::UniqueKey>() {}
+/// generic_write_api::<review_database::OperationAttempt>();
+/// ```
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct OperationAttempt {
     /// The globally unique key of the logical operation. Never empty.
@@ -244,20 +276,21 @@ impl OperationAttempt {
     pub fn is_fully_discharged(&self) -> bool {
         self.is_terminal() && self.cleanup_state.is_none()
     }
-}
 
-impl UniqueKey for OperationAttempt {
-    type AsBytes<'a> = &'a [u8];
-
-    fn unique_key(&self) -> &[u8] {
+    /// Returns the key the record is stored under.
+    ///
+    /// This is deliberately not a [`UniqueKey`](crate::UniqueKey)
+    /// implementation: that trait, together with [`Value`](super::Value), is
+    /// what admits a record to the generic write API on [`Table`], which
+    /// writes the row alone. See the module documentation.
+    fn record_key(&self) -> &[u8] {
         self.idempotency_key.as_bytes()
     }
-}
 
-impl ValueTrait for OperationAttempt {
-    type AsBytes<'a> = Vec<u8>;
-
-    fn value(&self) -> Vec<u8> {
+    /// Returns the record's serialized value.
+    ///
+    /// Private for the same reason as [`OperationAttempt::record_key`].
+    fn record_value(&self) -> Vec<u8> {
         let value = Value {
             host: Cow::Borrowed(&self.host),
             target: Cow::Borrowed(&self.target),
@@ -924,7 +957,8 @@ impl<'d> Table<'d, OperationAttempt> {
                 );
             }
         }
-        self.put_with_transaction(new, txn)?;
+        self.map
+            .put_with_transaction(new.record_key(), &new.record_value(), txn)?;
         for key in keys {
             self.map
                 .put_with_transaction(&key, new.idempotency_key.as_bytes(), txn)?;
@@ -1145,7 +1179,7 @@ mod tests {
     }
 
     fn round_trip(attempt: &OperationAttempt) -> OperationAttempt {
-        OperationAttempt::from_key_value(attempt.unique_key(), &attempt.value()).unwrap()
+        OperationAttempt::from_key_value(attempt.record_key(), &attempt.record_value()).unwrap()
     }
 
     fn keys(
@@ -1382,7 +1416,7 @@ mod tests {
         // the shared iterator reads an empty key as indexed-table metadata and
         // skips it, so an attempt stored under one would be invisible to every
         // scan this ledger exists to support, including the owed-cleanup scan.
-        table.map.put(b"", &empty_key.value()).unwrap();
+        table.map.put(b"", &empty_key.record_value()).unwrap();
         assert_eq!(table.iter(Direction::Forward, None).count(), 0);
         assert!(table.get("").is_err());
 
@@ -1404,7 +1438,7 @@ mod tests {
         // Below the reserved space, so the scan still reaches it: a key from
         // `RESERVED` up belongs to an index and is not read as a record.
         let attempt = module_attempt("op-1");
-        table.map.put(b"op-\xff", &attempt.value()).unwrap();
+        table.map.put(b"op-\xff", &attempt.record_value()).unwrap();
 
         assert!(
             table
