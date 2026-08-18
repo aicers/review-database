@@ -19,9 +19,11 @@ use crate::{
     event::{EventKind, resolve_stored_country_codes},
     geo::{CountryLookup, Ip2LocationResolver},
     migration::migration_structures::{
-        AllowNetworkV0_42, BlockNetworkV0_42, BlocklistDceRpcFieldsStoredV0_42,
-        BlocklistDceRpcFieldsStoredV0_44, BlocklistDhcpFieldsStoredV0_42,
-        BlocklistDhcpFieldsStoredV0_44, HttpThreatFieldsStoredV0_43, HttpThreatFieldsStoredV0_44,
+        AgentValueV0_47Alpha1, AgentValueV0_47Alpha2, AllowNetworkV0_42, BlockNetworkV0_42,
+        BlocklistDceRpcFieldsStoredV0_42, BlocklistDceRpcFieldsStoredV0_44,
+        BlocklistDhcpFieldsStoredV0_42, BlocklistDhcpFieldsStoredV0_44,
+        ExternalServiceValueV0_47Alpha1, ExternalServiceValueV0_47Alpha2,
+        HttpThreatFieldsStoredV0_43, HttpThreatFieldsStoredV0_44,
         migrate_event_stored_schema_to_v0_46, validate_event_stored_schema_v0_46,
     },
     tables::{NETWORK_TAGS, TRIAGE_EXCLUSION_REASON},
@@ -108,7 +110,7 @@ use crate::{
 /// // release that involves database format change) to 3.5.0, including
 /// // all alpha changes finalized in 3.5.0.
 /// ```
-const COMPATIBLE_VERSION_REQ: &str = ">=0.47.0-alpha.1,<0.47.0-alpha.2";
+const COMPATIBLE_VERSION_REQ: &str = ">=0.47.0-alpha.2,<0.47.0-alpha.3";
 
 /// Number of event records applied in each atomic migration write.
 const EVENT_MIGRATION_BATCH_SIZE: usize = 100;
@@ -178,6 +180,12 @@ pub fn migrate_data_dir<P: AsRef<Path>>(
     // A list of migrations where each item is a tuple of (version requirement, to version,
     // migration function).
     //
+    // Every migration body below writes only inside `data_dir/states.db`. A
+    // rollback snapshot taken before an update therefore has to cover that one
+    // database and nothing else, and restoring it does not restore the two
+    // `VERSION` files, which this function writes after the whole chain
+    // succeeds and which a rollback must put back separately.
+    //
     // * The "version requirement" should include all the earlier, released versions that use the
     //   database format the migration function can handle, and exclude the first future version
     //   that uses a new database format.
@@ -208,8 +216,8 @@ pub fn migrate_data_dir<P: AsRef<Path>>(
             |data_dir, _backup_dir, locator| migrate_0_45_to_0_46(data_dir, locator),
         ),
         (
-            VersionReq::parse(">=0.46.0,<0.47.0-alpha.1")?,
-            Version::parse("0.47.0-alpha.1")?,
+            VersionReq::parse(">=0.46.0,<0.47.0-alpha.2")?,
+            Version::parse("0.47.0-alpha.2")?,
             |data_dir, _backup_dir, _locator| migrate_0_46_to_0_47(data_dir),
         ),
     ];
@@ -234,34 +242,101 @@ fn migrate_0_45_to_0_46(data_dir: &Path, locator: Option<&dyn CountryLookup>) ->
     migrate_event_country_codes(data_dir, locator).map(|_| ())
 }
 
+/// Migrates a database in any supported 0.46.x or 0.47.0-alpha.1 format to
+/// 0.47.0-alpha.2.
+///
+/// The two alpha formats share one migration because the format is still
+/// changing during the prerelease: an alpha-to-alpha change extends the
+/// migration that produced the earlier alpha instead of adding one beside it,
+/// so a 0.46.x database reaches the newest alpha in a single step.
+///
+/// Opening the pinned 0.47.0-alpha.2 list with
+/// [`create_missing_column_families`](rocksdb::Options::create_missing_column_families)
+/// creates whichever of the customer deletion jobs, core components and
+/// operation attempts families is absent and leaves the rest alone, so a retry
+/// after an interrupted run finds nothing to do rather than failing on a family
+/// that already exists.
 fn migrate_0_46_to_0_47(data_dir: &Path) -> Result<()> {
     let db_path = data_dir.join("states.db");
     let mut opts = rocksdb::Options::default();
     opts.create_if_missing(false);
-    opts.create_missing_column_families(false);
+    opts.create_missing_column_families(true);
 
-    let existing =
-        rocksdb::OptimisticTransactionDB::<rocksdb::SingleThreaded>::list_cf(&opts, &db_path)
-            .context("failed to list column families for the 0.47.0-alpha.1 migration")?;
-    let already_created = existing
-        .iter()
-        .any(|name| name == crate::tables::CUSTOMER_DELETION_JOBS);
-    let column_families: &[&str] = if already_created {
-        &crate::tables::MAP_NAMES
-    } else {
-        &MAP_NAMES_V0_43_TO_V0_46
-    };
+    let db: rocksdb::OptimisticTransactionDB<rocksdb::SingleThreaded> =
+        rocksdb::OptimisticTransactionDB::open_cf(&opts, &db_path, MAP_NAMES_V0_47_ALPHA_2)
+            .context("failed to open database for the 0.47.0-alpha.2 migration")?;
 
-    let mut db: rocksdb::OptimisticTransactionDB<rocksdb::SingleThreaded> =
-        rocksdb::OptimisticTransactionDB::open_cf(&opts, &db_path, column_families)
-            .context("failed to open database for the 0.47.0-alpha.1 migration")?;
-    if !already_created {
-        db.create_cf(
-            crate::tables::CUSTOMER_DELETION_JOBS,
-            &rocksdb::Options::default(),
-        )
-        .context("failed to create customer deletion jobs column family")?;
+    migrate_install_state::<AgentValueV0_47Alpha2, AgentValueV0_47Alpha1>(
+        &db,
+        crate::tables::AGENTS,
+        "agent",
+    )?;
+    migrate_install_state::<ExternalServiceValueV0_47Alpha2, ExternalServiceValueV0_47Alpha1>(
+        &db,
+        crate::tables::EXTERNAL_SERVICES,
+        "external service",
+    )?;
+    Ok(())
+}
+
+/// Rewrites every value in `cf_name` that predates the install-state fields.
+///
+/// `Current` is probed first, so a row already carrying the four fields is
+/// recognized as it is and its stored bytes are left untouched; only a row that
+/// fails that probe is read back as `Old` and rewritten with the documented
+/// defaults. A value that matches neither layout aborts the migration with its
+/// raw key and both decoding errors, rather than being skipped or overwritten.
+///
+/// Both layouts are table values, so they are encoded with
+/// [`bincode::DefaultOptions`] — the varint encoding `crate::tables` uses — and
+/// not with the fixint helpers the event records go through.
+fn migrate_install_state<Current, Old>(
+    db: &rocksdb::OptimisticTransactionDB<rocksdb::SingleThreaded>,
+    cf_name: &str,
+    record: &str,
+) -> Result<()>
+where
+    Current: serde::Serialize + serde::de::DeserializeOwned + From<Old>,
+    Old: serde::de::DeserializeOwned,
+{
+    let cf = db
+        .cf_handle(cf_name)
+        .with_context(|| format!("{cf_name} column family not found"))?;
+
+    let mut batch = rocksdb::WriteBatchWithTransaction::<true>::default();
+    let mut converted = 0usize;
+    let mut already_current = 0usize;
+
+    for entry in db.iterator_cf(&cf, rocksdb::IteratorMode::Start) {
+        let (key, value) = entry.with_context(|| format!("failed to read a {record} record"))?;
+        let Err(current_error) = bincode::DefaultOptions::new().deserialize::<Current>(&value)
+        else {
+            already_current += 1;
+            continue;
+        };
+        let old: Old = bincode::DefaultOptions::new()
+            .deserialize(&value)
+            .map_err(|previous_error| {
+                anyhow!(
+                    "{record} record with key {} matches neither the current nor the previous stored schema: current schema error: {current_error}; previous schema error: {previous_error}",
+                    data_encoding::HEXLOWER.encode(&key)
+                )
+            })?;
+        let migrated = bincode::DefaultOptions::new()
+            .serialize(&Current::from(old))
+            .with_context(|| format!("failed to serialize the migrated {record} record"))?;
+        batch.put_cf(&cf, &key, migrated);
+        converted += 1;
+
+        if batch.len() >= EVENT_MIGRATION_BATCH_SIZE {
+            write_migration_batch(db, &mut batch, record)?;
+        }
     }
+
+    write_migration_batch(db, &mut batch, record)?;
+    info!(
+        "Install-state migration of {record} records complete: converted_count={converted}, already_current_count={already_current}"
+    );
     Ok(())
 }
 
@@ -321,11 +396,11 @@ pub(crate) fn migrate_event_country_codes(
         stats.processed += 1;
 
         if batch.len() >= EVENT_MIGRATION_BATCH_SIZE {
-            write_event_migration_batch(&db, &mut batch)?;
+            write_migration_batch(&db, &mut batch, "event country-code")?;
         }
     }
 
-    write_event_migration_batch(&db, &mut batch)?;
+    write_migration_batch(&db, &mut batch, "event country-code")?;
     info!(
         "Event country-code migration complete: processed_count={}, converted_count={}, already_current_count={}",
         stats.processed, stats.converted, stats.already_current
@@ -333,9 +408,11 @@ pub(crate) fn migrate_event_country_codes(
     Ok(stats)
 }
 
-fn write_event_migration_batch(
+/// Commits and clears `batch`, naming `what` in the error if the write fails.
+fn write_migration_batch(
     db: &rocksdb::OptimisticTransactionDB<rocksdb::SingleThreaded>,
     batch: &mut rocksdb::WriteBatchWithTransaction<true>,
+    what: &str,
 ) -> Result<()> {
     if batch.is_empty() {
         return Ok(());
@@ -343,7 +420,7 @@ fn write_event_migration_batch(
 
     let pending = std::mem::take(batch);
     db.write(pending)
-        .context("failed to commit event country-code migration batch")
+        .with_context(|| format!("failed to commit {what} migration batch"))
 }
 
 /// Column family names for version 0.42 (includes the deprecated "account policy" column family)
@@ -388,6 +465,7 @@ const MAP_NAMES_V0_42: [&str; 36] = [
 ];
 
 /// Lists column family names shared by database formats 0.43 through 0.46.
+#[cfg(test)]
 const MAP_NAMES_V0_43_TO_V0_46: [&str; 36] = [
     "access_tokens",
     "accounts",
@@ -427,29 +505,113 @@ const MAP_NAMES_V0_43_TO_V0_46: [&str; 36] = [
     "trusted user agents",
 ];
 
-/// Selects the column families that physically exist during a migration.
+/// Lists column family names for database format 0.47.0-alpha.1, which added
+/// "customer deletion jobs" to the 0.43-through-0.46 set.
+#[cfg(test)]
+const MAP_NAMES_V0_47_ALPHA_1: [&str; 37] = [
+    "access_tokens",
+    "accounts",
+    "agents",
+    "allow networks",
+    "batch_info",
+    "block networks",
+    "category",
+    "cluster",
+    "column stats",
+    "configs",
+    "csv column extras",
+    "customers",
+    "customer deletion jobs",
+    "data sources",
+    "filters",
+    "hosts",
+    "models",
+    "model indicators",
+    "meta",
+    "networks",
+    "nodes",
+    "outliers",
+    "qualifiers",
+    "external services",
+    "sampling policy",
+    "scores",
+    "statuses",
+    "templates",
+    "label database",
+    "time series",
+    "Tor exit nodes",
+    "traffic filter rules",
+    "triage exclusion reason",
+    "triage policy",
+    "triage response",
+    "trusted DNS servers",
+    "trusted user agents",
+];
+
+/// Lists column family names for database format 0.47.0-alpha.2, which added
+/// "core components" and "operation attempts" to the 0.47.0-alpha.1 set.
 ///
-/// `VERSION` is updated only after the complete migration chain succeeds. If a
-/// process stops after the 0.47.0-alpha.1 migration creates its column family
-/// but before that update, a retry starts from the older recorded version while
-/// the new column family already exists. Intermediate migrations must therefore
-/// open either column-family set so that the retry can reach the idempotent
-/// 0.47.0-alpha.1 migration and finish updating `VERSION`.
-fn map_names_for_existing_format(
-    opts: &rocksdb::Options,
-    db_path: &Path,
-) -> Result<&'static [&'static str]> {
-    let existing =
-        rocksdb::OptimisticTransactionDB::<rocksdb::SingleThreaded>::list_cf(opts, db_path)
-            .context("failed to list column families for migration")?;
-    if existing
-        .iter()
-        .any(|name| name == crate::tables::CUSTOMER_DELETION_JOBS)
-    {
-        Ok(&crate::tables::MAP_NAMES)
-    } else {
-        Ok(&MAP_NAMES_V0_43_TO_V0_46)
-    }
+/// The names are written out rather than taken from
+/// [`crate::tables::MAP_NAMES`], as every other list here is: this one is what
+/// [`migrate_0_46_to_0_47`] creates, and a later rename or format bump must
+/// change what a future migration creates, never what this historical one did.
+const MAP_NAMES_V0_47_ALPHA_2: [&str; 39] = [
+    "access_tokens",
+    "accounts",
+    "agents",
+    "allow networks",
+    "batch_info",
+    "block networks",
+    "category",
+    "cluster",
+    "column stats",
+    "configs",
+    "core components",
+    "csv column extras",
+    "customers",
+    "customer deletion jobs",
+    "data sources",
+    "filters",
+    "hosts",
+    "models",
+    "model indicators",
+    "meta",
+    "networks",
+    "nodes",
+    "operation attempts",
+    "outliers",
+    "qualifiers",
+    "external services",
+    "sampling policy",
+    "scores",
+    "statuses",
+    "templates",
+    "label database",
+    "time series",
+    "Tor exit nodes",
+    "traffic filter rules",
+    "triage exclusion reason",
+    "triage policy",
+    "triage response",
+    "trusted DNS servers",
+    "trusted user agents",
+];
+
+/// Returns the column families an intermediate migration must open.
+///
+/// `VERSION` is updated only after the complete migration chain succeeds, so a
+/// process that stops part-way leaves a marker older than the families that are
+/// physically there. A retry then starts from that older version and reaches
+/// these migrations again, and RocksDB refuses an open that names a family the
+/// database does not have or omits one it does. The physical set is therefore
+/// read back rather than chosen from a static list or inferred from a count:
+/// between 0.46 and 0.47.0-alpha.2 alone it may hold the 36 legacy families,
+/// all 37 of 0.47.0-alpha.1, or those plus either or both of the two families
+/// 0.47.0-alpha.2 adds. Opening exactly what is there lets the retry run
+/// through to [`migrate_0_46_to_0_47`], which repairs whichever families are
+/// still missing.
+fn map_names_for_existing_format(opts: &rocksdb::Options, db_path: &Path) -> Result<Vec<String>> {
+    existing_map_names(opts, db_path)
 }
 
 /// Returns the non-default column families that physically exist.
@@ -953,8 +1115,9 @@ fn migrate_network_cf(data_dir: &Path) -> Result<()> {
     opts.create_if_missing(false);
     opts.create_missing_column_families(false);
     let column_families = map_names_for_existing_format(&opts, &db_path)?;
+    let column_families: Vec<&str> = column_families.iter().map(String::as_str).collect();
 
-    migrate_network_cf_inner(&db_path, &opts, column_families)?;
+    migrate_network_cf_inner(&db_path, &opts, &column_families)?;
 
     info!("Successfully migrated Network table");
     Ok(())
@@ -1553,6 +1716,7 @@ fn read_version_file(path: &Path) -> Result<Version> {
 mod tests {
     use std::{collections::HashMap, io::Write, net::IpAddr, path::Path};
 
+    use bincode::Options;
     use num_traits::ToPrimitive;
     use semver::{Version, VersionReq};
 
@@ -1567,11 +1731,17 @@ mod tests {
     };
     use crate::geo::CountryLookup;
     use crate::migration::migration_structures::{
-        BlocklistConnFieldsStoredV0_42, MultiHostPortScanFieldsStoredV0_42,
+        AgentValueV0_47Alpha1, AgentValueV0_47Alpha2, BlocklistConnFieldsStoredV0_42,
+        ExternalServiceValueV0_47Alpha1, ExternalServiceValueV0_47Alpha2,
+        MultiHostPortScanFieldsStoredV0_42,
     };
     use crate::tables::NETWORK_TAGS;
     use crate::test::{DbGuard, acquire_db_permit};
-    use crate::{Indexable, Store};
+    use crate::{
+        Agent, AgentConfig, AgentKind, AgentStatus, CoreComponent, ExternalService,
+        ExternalServiceConfig, ExternalServiceKind, ExternalServiceStatus, Indexable, Lifecycle,
+        Store,
+    };
 
     #[derive(Default)]
     struct FakeCountryLookup {
@@ -2180,27 +2350,30 @@ mod tests {
         }
     }
 
-    fn assert_migration_creates_customer_deletion_jobs_cf(version: &str) {
+    /// Migrates a database in the 0.43-through-0.46 layout, recorded as
+    /// `version`, and asserts that it reaches the current format with its agent
+    /// and external-service values converted.
+    fn assert_migration_creates_new_column_families(version: &str) {
         let current_version = Version::parse(env!("CARGO_PKG_VERSION")).unwrap();
 
         let data_dir = tempfile::tempdir().unwrap();
         let backup_dir = tempfile::tempdir().unwrap();
         let db_path = data_dir.path().join("states.db");
 
-        let mut create_opts = rocksdb::Options::default();
-        create_opts.create_if_missing(true);
-        create_opts.create_missing_column_families(true);
-        let db: rocksdb::OptimisticTransactionDB = rocksdb::OptimisticTransactionDB::open_cf(
-            &create_opts,
+        create_states_db(&db_path, super::MAP_NAMES_V0_43_TO_V0_46);
+        let (agents, external_services) = old_install_state_fixture();
+        put_entries(
             &db_path,
             super::MAP_NAMES_V0_43_TO_V0_46,
-        )
-        .unwrap();
-        assert!(
-            db.cf_handle(crate::tables::CUSTOMER_DELETION_JOBS)
-                .is_none()
+            crate::tables::AGENTS,
+            &agents,
         );
-        drop(db);
+        put_entries(
+            &db_path,
+            super::MAP_NAMES_V0_43_TO_V0_46,
+            crate::tables::EXTERNAL_SERVICES,
+            &external_services,
+        );
 
         write_version(data_dir.path(), version);
         write_version(backup_dir.path(), version);
@@ -2215,21 +2388,43 @@ mod tests {
             crate::tables::MAP_NAMES,
         )
         .unwrap();
-        assert!(
-            db.cf_handle(crate::tables::CUSTOMER_DELETION_JOBS)
-                .is_some()
-        );
+        for name in [
+            crate::tables::CUSTOMER_DELETION_JOBS,
+            crate::tables::CORE_COMPONENTS,
+            crate::tables::OPERATION_ATTEMPTS,
+        ] {
+            assert!(db.cf_handle(name).is_some(), "{name} must exist");
+        }
         drop(db);
 
-        assert!(
-            rocksdb::OptimisticTransactionDB::<rocksdb::SingleThreaded>::open_cf(
-                &open_opts,
-                &db_path,
-                super::MAP_NAMES_V0_43_TO_V0_46,
-            )
-            .is_err(),
-            "the 0.46 column-family list must not open the migrated format"
-        );
+        for (list, name) in [
+            (
+                super::MAP_NAMES_V0_43_TO_V0_46.as_slice(),
+                "0.43-through-0.46",
+            ),
+            (super::MAP_NAMES_V0_47_ALPHA_1.as_slice(), "0.47.0-alpha.1"),
+        ] {
+            assert!(
+                rocksdb::OptimisticTransactionDB::<rocksdb::SingleThreaded>::open_cf(
+                    &open_opts, &db_path, list,
+                )
+                .is_err(),
+                "the {name} column-family list must not open the migrated format"
+            );
+        }
+
+        let migrated = raw_value(
+            &db_path,
+            crate::tables::MAP_NAMES,
+            crate::tables::AGENTS,
+            &record_key(1, "sensor@host1"),
+        )
+        .unwrap();
+        let value: AgentValueV0_47Alpha2 = bincode::DefaultOptions::new()
+            .deserialize(&migrated)
+            .unwrap();
+        assert_eq!(value.lifecycle, 0);
+        assert!(value.bound_addrs.is_empty());
 
         assert_eq!(
             read_version_file(&data_dir.path().join("VERSION")).unwrap(),
@@ -2242,23 +2437,23 @@ mod tests {
     }
 
     #[test]
-    fn migration_from_v0_43_schema_creates_customer_deletion_jobs_cf() {
-        assert_migration_creates_customer_deletion_jobs_cf("0.43.0");
+    fn migration_from_v0_43_schema_creates_new_column_families() {
+        assert_migration_creates_new_column_families("0.43.0");
     }
 
     #[test]
-    fn migration_from_v0_44_schema_creates_customer_deletion_jobs_cf() {
-        assert_migration_creates_customer_deletion_jobs_cf("0.44.0");
+    fn migration_from_v0_44_schema_creates_new_column_families() {
+        assert_migration_creates_new_column_families("0.44.0");
     }
 
     #[test]
-    fn migration_from_v0_45_schema_creates_customer_deletion_jobs_cf() {
-        assert_migration_creates_customer_deletion_jobs_cf("0.45.0");
+    fn migration_from_v0_45_schema_creates_new_column_families() {
+        assert_migration_creates_new_column_families("0.45.0");
     }
 
     #[test]
-    fn migration_from_v0_46_schema_creates_customer_deletion_jobs_cf() {
-        assert_migration_creates_customer_deletion_jobs_cf("0.46.0");
+    fn migration_from_v0_46_schema_creates_new_column_families() {
+        assert_migration_creates_new_column_families("0.46.0");
     }
 
     #[test]
@@ -2295,6 +2490,655 @@ mod tests {
         );
     }
 
+    // ---------------------------------------------------------------------
+    // 0.47.0-alpha.2: install-state values and the two new column families
+    // ---------------------------------------------------------------------
+
+    /// The stored key of an agent or external-service record.
+    fn record_key(node_id: u32, key: &str) -> Vec<u8> {
+        let mut buf = node_id.to_be_bytes().to_vec();
+        buf.extend(key.as_bytes());
+        buf
+    }
+
+    /// Serializes an agent value in the layout stored up to 0.47.0-alpha.1.
+    fn old_agent_value(
+        kind: AgentKind,
+        status: AgentStatus,
+        config: Option<&str>,
+        draft: Option<&str>,
+    ) -> Vec<u8> {
+        let value = AgentValueV0_47Alpha1 {
+            kind,
+            status,
+            config: config.map(|c| AgentConfig::try_from(c.to_string()).unwrap()),
+            draft: draft.map(|d| AgentConfig::try_from(d.to_string()).unwrap()),
+        };
+        bincode::DefaultOptions::new().serialize(&value).unwrap()
+    }
+
+    /// Serializes an external-service value in the layout stored up to
+    /// 0.47.0-alpha.1.
+    fn old_external_service_value(
+        kind: ExternalServiceKind,
+        status: ExternalServiceStatus,
+        draft: Option<&str>,
+    ) -> Vec<u8> {
+        let value = ExternalServiceValueV0_47Alpha1 {
+            kind,
+            status,
+            draft: draft.map(|d| ExternalServiceConfig::try_from(d.to_string()).unwrap()),
+        };
+        bincode::DefaultOptions::new().serialize(&value).unwrap()
+    }
+
+    fn create_states_db<'a>(db_path: &Path, families: impl IntoIterator<Item = &'a str>) {
+        let mut opts = rocksdb::Options::default();
+        opts.create_if_missing(true);
+        opts.create_missing_column_families(true);
+        let db: rocksdb::OptimisticTransactionDB =
+            rocksdb::OptimisticTransactionDB::open_cf(&opts, db_path, families).unwrap();
+        drop(db);
+    }
+
+    fn open_states_db<'a>(
+        db_path: &Path,
+        families: impl IntoIterator<Item = &'a str>,
+    ) -> rocksdb::OptimisticTransactionDB {
+        let mut opts = rocksdb::Options::default();
+        opts.create_if_missing(false);
+        opts.create_missing_column_families(false);
+        rocksdb::OptimisticTransactionDB::open_cf(&opts, db_path, families).unwrap()
+    }
+
+    /// Writes the given entries into `cf_name` of an existing database.
+    fn put_entries<'a>(
+        db_path: &Path,
+        families: impl IntoIterator<Item = &'a str>,
+        cf_name: &str,
+        entries: &[(Vec<u8>, Vec<u8>)],
+    ) {
+        let db = open_states_db(db_path, families);
+        let cf = db.cf_handle(cf_name).unwrap();
+        for (key, value) in entries {
+            db.put_cf(&cf, key, value).unwrap();
+        }
+    }
+
+    fn raw_value<'a>(
+        db_path: &Path,
+        families: impl IntoIterator<Item = &'a str>,
+        cf_name: &str,
+        key: &[u8],
+    ) -> Option<Vec<u8>> {
+        let db = open_states_db(db_path, families);
+        let cf = db.cf_handle(cf_name).unwrap();
+        db.get_cf(&cf, key).unwrap()
+    }
+
+    /// A column family's worth of raw entries.
+    type Entries = Vec<(Vec<u8>, Vec<u8>)>;
+
+    /// The agents and external services an alpha.1 fixture holds, in the layout
+    /// that format stored.
+    fn old_install_state_fixture() -> (Entries, Entries) {
+        let agents = vec![
+            (
+                record_key(1, "sensor@host1"),
+                old_agent_value(
+                    AgentKind::Sensor,
+                    AgentStatus::Enabled,
+                    Some("a = 1"),
+                    Some("a = 2"),
+                ),
+            ),
+            (
+                record_key(2, "unsupervised@host2"),
+                old_agent_value(AgentKind::Unsupervised, AgentStatus::Disabled, None, None),
+            ),
+            (
+                record_key(3, "semi@host3"),
+                old_agent_value(
+                    AgentKind::SemiSupervised,
+                    AgentStatus::ReloadFailed,
+                    Some("b = \"x\""),
+                    None,
+                ),
+            ),
+        ];
+        let external_services = vec![
+            (
+                record_key(1, "datastore@host1"),
+                old_external_service_value(
+                    ExternalServiceKind::DataStore,
+                    ExternalServiceStatus::Enabled,
+                    Some("c = 3"),
+                ),
+            ),
+            (
+                record_key(4, "ti@host4"),
+                old_external_service_value(
+                    ExternalServiceKind::TiContainer,
+                    ExternalServiceStatus::Disabled,
+                    None,
+                ),
+            ),
+        ];
+        (agents, external_services)
+    }
+
+    #[test]
+    fn migration_from_v0_47_alpha_1_fills_install_state_defaults() {
+        let permit = acquire_db_permit();
+        let current_version = Version::parse(env!("CARGO_PKG_VERSION")).unwrap();
+        let data_dir = tempfile::tempdir().unwrap();
+        let backup_dir = tempfile::tempdir().unwrap();
+        let db_path = data_dir.path().join("states.db");
+
+        create_states_db(&db_path, super::MAP_NAMES_V0_47_ALPHA_1);
+        let (agents, external_services) = old_install_state_fixture();
+        put_entries(
+            &db_path,
+            super::MAP_NAMES_V0_47_ALPHA_1,
+            crate::tables::AGENTS,
+            &agents,
+        );
+        put_entries(
+            &db_path,
+            super::MAP_NAMES_V0_47_ALPHA_1,
+            crate::tables::EXTERNAL_SERVICES,
+            &external_services,
+        );
+
+        write_version(data_dir.path(), "0.47.0-alpha.1");
+        write_version(backup_dir.path(), "0.47.0-alpha.1");
+        migrate_data_dir(data_dir.path(), backup_dir.path(), None).unwrap();
+
+        assert_eq!(
+            read_version_file(&data_dir.path().join("VERSION")).unwrap(),
+            current_version
+        );
+        assert_eq!(
+            read_version_file(&backup_dir.path().join("VERSION")).unwrap(),
+            current_version
+        );
+        assert_eq!(current_version.to_string(), "0.47.0-alpha.2");
+
+        // The migration created both new families, and they start empty.
+        {
+            let db = open_states_db(&db_path, crate::tables::MAP_NAMES);
+            for name in [
+                crate::tables::CORE_COMPONENTS,
+                crate::tables::OPERATION_ATTEMPTS,
+            ] {
+                let cf = db.cf_handle(name).unwrap();
+                assert!(
+                    db.iterator_cf(&cf, rocksdb::IteratorMode::Start)
+                        .next()
+                        .is_none()
+                );
+            }
+        }
+
+        let store = Store::new(data_dir.path(), backup_dir.path(), None).unwrap();
+
+        let agent_map = store.agents_map();
+        let sensor = agent_map.get(1, "sensor@host1").unwrap().unwrap();
+        assert_eq!(sensor.node_id, 1);
+        assert_eq!(sensor.key, "sensor@host1");
+        assert_eq!(sensor.kind, AgentKind::Sensor);
+        assert_eq!(sensor.status, AgentStatus::Enabled);
+        assert_eq!(sensor.config.as_ref().map(AsRef::as_ref), Some("a = 1"));
+        assert_eq!(sensor.draft.as_ref().map(AsRef::as_ref), Some("a = 2"));
+        assert_eq!(sensor.installed_version, None);
+        assert_eq!(sensor.installed_commit, None);
+        assert_eq!(sensor.lifecycle, Lifecycle::NotInstalled);
+        assert!(sensor.bound_addrs.is_empty());
+
+        let unsupervised = agent_map.get(2, "unsupervised@host2").unwrap().unwrap();
+        assert_eq!(unsupervised.kind, AgentKind::Unsupervised);
+        assert_eq!(unsupervised.status, AgentStatus::Disabled);
+        assert_eq!(unsupervised.config, None);
+        assert_eq!(unsupervised.draft, None);
+        assert_eq!(unsupervised.lifecycle, Lifecycle::NotInstalled);
+
+        let semi = agent_map.get(3, "semi@host3").unwrap().unwrap();
+        assert_eq!(semi.status, AgentStatus::ReloadFailed);
+        assert_eq!(semi.config.as_ref().map(AsRef::as_ref), Some("b = \"x\""));
+        assert_eq!(semi.draft, None);
+
+        let external_service_map = store.external_service_map();
+        let datastore = external_service_map
+            .get(1, "datastore@host1")
+            .unwrap()
+            .unwrap();
+        assert_eq!(datastore.node_id, 1);
+        assert_eq!(datastore.key, "datastore@host1");
+        assert_eq!(datastore.kind, ExternalServiceKind::DataStore);
+        assert_eq!(datastore.status, ExternalServiceStatus::Enabled);
+        assert_eq!(datastore.draft.as_ref().map(AsRef::as_ref), Some("c = 3"));
+        assert_eq!(datastore.installed_version, None);
+        assert_eq!(datastore.installed_commit, None);
+        assert_eq!(datastore.lifecycle, Lifecycle::NotInstalled);
+        assert!(datastore.bound_addrs.is_empty());
+
+        let ti = external_service_map.get(4, "ti@host4").unwrap().unwrap();
+        assert_eq!(ti.kind, ExternalServiceKind::TiContainer);
+        assert_eq!(ti.status, ExternalServiceStatus::Disabled);
+        assert_eq!(ti.draft, None);
+
+        // Both new tables are reachable from `Store` and usable.
+        let core_components = store.core_component_map();
+        let component = CoreComponent {
+            component: "roxyd".to_string(),
+            host: "host1.example".to_string(),
+            installed_version: Some("0.47.0".to_string()),
+            installed_commit: Some("c0ffee".to_string()),
+            lifecycle: Lifecycle::Running,
+            installer_managed: false,
+        };
+        core_components.insert(&component).unwrap();
+        assert_eq!(
+            core_components.get("roxyd", "host1.example").unwrap(),
+            Some(component)
+        );
+
+        let operation_attempts = store.operation_attempt_map();
+        assert!(operation_attempts.get("no-such-key").unwrap().is_none());
+        assert_eq!(
+            operation_attempts
+                .iter(rocksdb::Direction::Forward, None)
+                .count(),
+            0
+        );
+
+        drop(store);
+        drop(permit);
+    }
+
+    /// Builds an alpha.1 database that also holds `extra` families, rewinds the
+    /// version marker, and asserts that the retry completes.
+    fn assert_retry_completes_with_families(extra: &[&str]) {
+        let current_version = Version::parse(env!("CARGO_PKG_VERSION")).unwrap();
+        let data_dir = tempfile::tempdir().unwrap();
+        let backup_dir = tempfile::tempdir().unwrap();
+        let db_path = data_dir.path().join("states.db");
+
+        let families: Vec<&str> = super::MAP_NAMES_V0_47_ALPHA_1
+            .iter()
+            .copied()
+            .chain(extra.iter().copied())
+            .collect();
+        create_states_db(&db_path, families.iter().copied());
+
+        let (agents, external_services) = old_install_state_fixture();
+        put_entries(
+            &db_path,
+            families.iter().copied(),
+            crate::tables::AGENTS,
+            &agents,
+        );
+        put_entries(
+            &db_path,
+            families.iter().copied(),
+            crate::tables::EXTERNAL_SERVICES,
+            &external_services,
+        );
+
+        // A marker older than the families physically present: the chain reruns
+        // the intermediate migrations, which must open exactly this set.
+        write_version(data_dir.path(), "0.45.0");
+        write_version(backup_dir.path(), "0.45.0");
+        migrate_data_dir(data_dir.path(), backup_dir.path(), None).unwrap();
+
+        assert_eq!(
+            read_version_file(&data_dir.path().join("VERSION")).unwrap(),
+            current_version
+        );
+        assert_eq!(
+            read_version_file(&backup_dir.path().join("VERSION")).unwrap(),
+            current_version
+        );
+
+        let db = open_states_db(&db_path, crate::tables::MAP_NAMES);
+        let cf = db.cf_handle(crate::tables::AGENTS).unwrap();
+        let migrated = db
+            .get_cf(&cf, record_key(1, "sensor@host1"))
+            .unwrap()
+            .unwrap();
+        let value: AgentValueV0_47Alpha2 = bincode::DefaultOptions::new()
+            .deserialize(&migrated)
+            .unwrap();
+        assert_eq!(value.lifecycle, 0);
+    }
+
+    #[test]
+    fn migration_retries_with_neither_new_family() {
+        assert_retry_completes_with_families(&[]);
+    }
+
+    #[test]
+    fn migration_retries_with_core_components_only() {
+        assert_retry_completes_with_families(&[crate::tables::CORE_COMPONENTS]);
+    }
+
+    #[test]
+    fn migration_retries_with_operation_attempts_only() {
+        assert_retry_completes_with_families(&[crate::tables::OPERATION_ATTEMPTS]);
+    }
+
+    #[test]
+    fn migration_retries_with_both_new_families() {
+        assert_retry_completes_with_families(&[
+            crate::tables::CORE_COMPONENTS,
+            crate::tables::OPERATION_ATTEMPTS,
+        ]);
+    }
+
+    #[test]
+    fn migration_leaves_current_values_byte_identical() {
+        let data_dir = tempfile::tempdir().unwrap();
+        let backup_dir = tempfile::tempdir().unwrap();
+        let db_path = data_dir.path().join("states.db");
+
+        create_states_db(&db_path, super::MAP_NAMES_V0_47_ALPHA_1);
+
+        // A current-shaped agent carrying a lifecycle index no variant is
+        // stored as, which must survive the migration untouched.
+        let unrecognized_lifecycle = 9_u8;
+        let current_agent = bincode::DefaultOptions::new()
+            .serialize(&AgentValueV0_47Alpha2 {
+                kind: AgentKind::TimeSeriesGenerator,
+                status: AgentStatus::Enabled,
+                config: None,
+                draft: Some(AgentConfig::try_from("d = 4".to_string()).unwrap()),
+                installed_version: Some("0.47.0".to_string()),
+                installed_commit: Some("c0ffee".to_string()),
+                lifecycle: unrecognized_lifecycle,
+                bound_addrs: vec![("addr".to_string(), "host:1234".to_string())],
+            })
+            .unwrap();
+        let current_external_service = bincode::DefaultOptions::new()
+            .serialize(&ExternalServiceValueV0_47Alpha2 {
+                kind: ExternalServiceKind::DataStore,
+                status: ExternalServiceStatus::Enabled,
+                draft: None,
+                installed_version: Some("0.47.0".to_string()),
+                installed_commit: None,
+                lifecycle: unrecognized_lifecycle,
+                bound_addrs: vec![("rpc".to_string(), "host:5678".to_string())],
+            })
+            .unwrap();
+
+        let old_agent =
+            old_agent_value(AgentKind::Sensor, AgentStatus::Enabled, Some("a = 1"), None);
+        let old_external_service = old_external_service_value(
+            ExternalServiceKind::TiContainer,
+            ExternalServiceStatus::Disabled,
+            Some("c = 3"),
+        );
+
+        put_entries(
+            &db_path,
+            super::MAP_NAMES_V0_47_ALPHA_1,
+            crate::tables::AGENTS,
+            &[
+                (record_key(1, "old"), old_agent.clone()),
+                (record_key(2, "current"), current_agent.clone()),
+            ],
+        );
+        put_entries(
+            &db_path,
+            super::MAP_NAMES_V0_47_ALPHA_1,
+            crate::tables::EXTERNAL_SERVICES,
+            &[
+                (record_key(1, "old"), old_external_service.clone()),
+                (record_key(2, "current"), current_external_service.clone()),
+            ],
+        );
+
+        write_version(data_dir.path(), "0.47.0-alpha.1");
+        write_version(backup_dir.path(), "0.47.0-alpha.1");
+        migrate_data_dir(data_dir.path(), backup_dir.path(), None).unwrap();
+
+        assert_eq!(
+            raw_value(
+                &db_path,
+                crate::tables::MAP_NAMES,
+                crate::tables::AGENTS,
+                &record_key(2, "current")
+            ),
+            Some(current_agent)
+        );
+        assert_eq!(
+            raw_value(
+                &db_path,
+                crate::tables::MAP_NAMES,
+                crate::tables::EXTERNAL_SERVICES,
+                &record_key(2, "current")
+            ),
+            Some(current_external_service)
+        );
+        assert_ne!(
+            raw_value(
+                &db_path,
+                crate::tables::MAP_NAMES,
+                crate::tables::AGENTS,
+                &record_key(1, "old")
+            ),
+            Some(old_agent)
+        );
+        assert_ne!(
+            raw_value(
+                &db_path,
+                crate::tables::MAP_NAMES,
+                crate::tables::EXTERNAL_SERVICES,
+                &record_key(1, "old")
+            ),
+            Some(old_external_service)
+        );
+
+        // The unrecognized lifecycle still reads back, as `Unknown`.
+        let permit = acquire_db_permit();
+        let store = Store::new(data_dir.path(), backup_dir.path(), None).unwrap();
+        let agent = store.agents_map().get(2, "current").unwrap().unwrap();
+        assert_eq!(agent.lifecycle, Lifecycle::Unknown);
+        assert_eq!(
+            agent.bound_addrs,
+            vec![("addr".to_string(), "host:1234".to_string())]
+        );
+        let external_service = store
+            .external_service_map()
+            .get(2, "current")
+            .unwrap()
+            .unwrap();
+        assert_eq!(external_service.lifecycle, Lifecycle::Unknown);
+        let old = store.agents_map().get(1, "old").unwrap().unwrap();
+        assert_eq!(old.lifecycle, Lifecycle::NotInstalled);
+        drop(store);
+        drop(permit);
+    }
+
+    /// A value matching neither pinned layout: the leading byte is a variant
+    /// index neither `AgentKind` nor `ExternalServiceKind` defines.
+    const FOREIGN_VALUE: &[u8] = b"\x09foreign value";
+
+    fn assert_migration_rejects_foreign_value(cf_name: &str, record: &str) {
+        let data_dir = tempfile::tempdir().unwrap();
+        let db_path = data_dir.path().join("states.db");
+
+        create_states_db(&db_path, super::MAP_NAMES_V0_47_ALPHA_1);
+        let key = record_key(7, "foreign");
+        put_entries(
+            &db_path,
+            super::MAP_NAMES_V0_47_ALPHA_1,
+            cf_name,
+            &[(key.clone(), FOREIGN_VALUE.to_vec())],
+        );
+
+        let error = super::migrate_0_46_to_0_47(data_dir.path()).unwrap_err();
+        let message = format!("{error:#}");
+        assert!(message.contains(record), "{message}");
+        assert!(
+            message.contains(&data_encoding::HEXLOWER.encode(&key)),
+            "{message}"
+        );
+        assert!(message.contains("current schema error"), "{message}");
+        assert!(message.contains("previous schema error"), "{message}");
+
+        assert_eq!(
+            raw_value(&db_path, crate::tables::MAP_NAMES, cf_name, &key),
+            Some(FOREIGN_VALUE.to_vec()),
+            "the unreadable value must be left as it was"
+        );
+    }
+
+    #[test]
+    fn migration_rejects_agent_value_matching_neither_schema() {
+        assert_migration_rejects_foreign_value(crate::tables::AGENTS, "agent");
+    }
+
+    #[test]
+    fn migration_rejects_external_service_value_matching_neither_schema() {
+        assert_migration_rejects_foreign_value(
+            crate::tables::EXTERNAL_SERVICES,
+            "external service",
+        );
+    }
+
+    /// Holds the pinned current layouts against the live table encodings they
+    /// mirror, so a change to either side of that deliberate coupling fails
+    /// here rather than at the next migration.
+    ///
+    /// Field-by-field comparison alone would not notice a field appended to a
+    /// live `Value`, because `bincode` ignores bytes left over after the last
+    /// field it was asked for. Re-encoding the pinned layout and demanding the
+    /// same bytes back closes that, and an appended field is exactly the drift
+    /// that would make this migration write values missing it.
+    #[test]
+    fn pinned_current_layouts_match_live_table_values() {
+        use crate::tables::Value as ValueTrait;
+
+        let agent = Agent {
+            node_id: 11,
+            key: "sensor@host".to_string(),
+            kind: AgentKind::Sensor,
+            status: AgentStatus::ReloadFailed,
+            config: Some(AgentConfig::try_from("a = 1".to_string()).unwrap()),
+            draft: Some(AgentConfig::try_from("a = 2".to_string()).unwrap()),
+            installed_version: Some("0.47.0".to_string()),
+            installed_commit: Some("c0ffee".to_string()),
+            lifecycle: Lifecycle::Running,
+            bound_addrs: vec![("addr".to_string(), "host:1234".to_string())],
+        };
+        let stored = agent.value();
+        let pinned: AgentValueV0_47Alpha2 = bincode::DefaultOptions::new()
+            .deserialize(stored.as_ref())
+            .unwrap();
+        assert_eq!(pinned.kind, agent.kind);
+        assert_eq!(pinned.status, agent.status);
+        assert_eq!(pinned.config, agent.config);
+        assert_eq!(pinned.draft, agent.draft);
+        assert_eq!(pinned.installed_version, agent.installed_version);
+        assert_eq!(pinned.installed_commit, agent.installed_commit);
+        assert_eq!(pinned.lifecycle, agent.lifecycle.to_stored_index());
+        assert_eq!(pinned.bound_addrs, agent.bound_addrs);
+        assert_eq!(
+            bincode::DefaultOptions::new().serialize(&pinned).unwrap(),
+            stored,
+            "the pinned agent layout must re-encode to the live table value"
+        );
+
+        let external_service = ExternalService {
+            node_id: 12,
+            key: "datastore@host".to_string(),
+            kind: ExternalServiceKind::DataStore,
+            status: ExternalServiceStatus::Enabled,
+            draft: Some(ExternalServiceConfig::try_from("c = 3".to_string()).unwrap()),
+            installed_version: Some("0.47.0".to_string()),
+            installed_commit: None,
+            lifecycle: Lifecycle::Stopped,
+            bound_addrs: vec![("rpc".to_string(), "host:5678".to_string())],
+        };
+        let stored = external_service.value();
+        let pinned: ExternalServiceValueV0_47Alpha2 = bincode::DefaultOptions::new()
+            .deserialize(stored.as_ref())
+            .unwrap();
+        assert_eq!(pinned.kind, external_service.kind);
+        assert_eq!(pinned.status, external_service.status);
+        assert_eq!(pinned.draft, external_service.draft);
+        assert_eq!(pinned.installed_version, external_service.installed_version);
+        assert_eq!(pinned.installed_commit, external_service.installed_commit);
+        assert_eq!(
+            pinned.lifecycle,
+            external_service.lifecycle.to_stored_index()
+        );
+        assert_eq!(pinned.bound_addrs, external_service.bound_addrs);
+        assert_eq!(
+            bincode::DefaultOptions::new().serialize(&pinned).unwrap(),
+            stored,
+            "the pinned external-service layout must re-encode to the live table value"
+        );
+    }
+
+    #[test]
+    fn migration_body_writes_only_states_db() {
+        let data_dir = tempfile::tempdir().unwrap();
+        let db_path = data_dir.path().join("states.db");
+
+        create_states_db(&db_path, super::MAP_NAMES_V0_47_ALPHA_1);
+        let (agents, external_services) = old_install_state_fixture();
+        put_entries(
+            &db_path,
+            super::MAP_NAMES_V0_47_ALPHA_1,
+            crate::tables::AGENTS,
+            &agents,
+        );
+        put_entries(
+            &db_path,
+            super::MAP_NAMES_V0_47_ALPHA_1,
+            crate::tables::EXTERNAL_SERVICES,
+            &external_services,
+        );
+        std::fs::write(data_dir.path().join("untouched"), b"keep me").unwrap();
+        std::fs::create_dir(data_dir.path().join("events.db")).unwrap();
+        std::fs::write(data_dir.path().join("events.db").join("CURRENT"), b"events").unwrap();
+
+        let before = entries_outside_states_db(data_dir.path());
+        super::migrate_0_46_to_0_47(data_dir.path()).unwrap();
+        assert_eq!(entries_outside_states_db(data_dir.path()), before);
+    }
+
+    /// Every file under `data_dir` except the `states.db` directory, with its
+    /// contents.
+    fn entries_outside_states_db(data_dir: &Path) -> Vec<(std::path::PathBuf, Vec<u8>)> {
+        fn collect(dir: &Path, entries: &mut Vec<(std::path::PathBuf, Vec<u8>)>) {
+            for entry in std::fs::read_dir(dir).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    collect(&path, entries);
+                } else {
+                    entries.push((path.clone(), std::fs::read(&path).unwrap()));
+                }
+            }
+        }
+
+        let mut entries = Vec::new();
+        for entry in std::fs::read_dir(data_dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.file_name().is_some_and(|name| name == "states.db") {
+                continue;
+            }
+            if path.is_dir() {
+                collect(&path, &mut entries);
+            } else {
+                entries.push((path.clone(), std::fs::read(&path).unwrap()));
+            }
+        }
+        entries.sort_unstable();
+        entries
+    }
+
     /// Test that the `0.42`-specific migration loop runs and updates `VERSION` files.
     #[test]
     fn migration_from_v0_42_schema() {
@@ -2311,6 +3155,20 @@ mod tests {
                 .unwrap();
         drop(db);
 
+        let (agents, external_services) = old_install_state_fixture();
+        put_entries(
+            &db_path,
+            super::MAP_NAMES_V0_42,
+            crate::tables::AGENTS,
+            &agents,
+        );
+        put_entries(
+            &db_path,
+            super::MAP_NAMES_V0_42,
+            crate::tables::EXTERNAL_SERVICES,
+            &external_services,
+        );
+
         // Write an old version that needs migration
         write_version(data_dir.path(), "0.42.0");
         write_version(backup_dir.path(), "0.42.0");
@@ -2325,7 +3183,39 @@ mod tests {
                 .unwrap();
         assert!(db.cf_handle("label database").is_some());
         assert!(db.cf_handle("TI database").is_none());
+        for name in [
+            crate::tables::CUSTOMER_DELETION_JOBS,
+            crate::tables::CORE_COMPONENTS,
+            crate::tables::OPERATION_ATTEMPTS,
+        ] {
+            assert!(db.cf_handle(name).is_some(), "{name} must exist");
+        }
         drop(db);
+
+        // The install-state conversion also runs at the end of the longest
+        // chain, over a database that started three formats back.
+        for (cf_name, key) in [
+            (crate::tables::AGENTS, record_key(1, "sensor@host1")),
+            (
+                crate::tables::EXTERNAL_SERVICES,
+                record_key(1, "datastore@host1"),
+            ),
+        ] {
+            let migrated =
+                raw_value(&db_path, crate::tables::MAP_NAMES, cf_name, &key).expect("{cf_name}");
+            let lifecycle = if cf_name == crate::tables::AGENTS {
+                bincode::DefaultOptions::new()
+                    .deserialize::<AgentValueV0_47Alpha2>(&migrated)
+                    .unwrap()
+                    .lifecycle
+            } else {
+                bincode::DefaultOptions::new()
+                    .deserialize::<ExternalServiceValueV0_47Alpha2>(&migrated)
+                    .unwrap()
+                    .lifecycle
+            };
+            assert_eq!(lifecycle, 0, "{cf_name}");
+        }
 
         // Verify both VERSION files are updated to the current package version
         let data_version = read_version_file(&data_dir.path().join("VERSION")).unwrap();

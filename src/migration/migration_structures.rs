@@ -9,6 +9,8 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::{
+    AgentConfig, AgentKind, AgentStatus, ExternalServiceConfig, ExternalServiceKind,
+    ExternalServiceStatus,
     event::{DceRpcContext, EventKind, FtpCommand, TriageScore},
     types::HostNetworkGroup,
 };
@@ -104,6 +106,103 @@ impl From<TriagePolicyV0_44> for crate::TriagePolicy {
             response: old.response,
             creation_time: old.creation_time,
             customer_id: old.customer_id,
+        }
+    }
+}
+
+/// The stored `Agent` value up to database format 0.47.0-alpha.1, before the
+/// install-state fields were added.
+///
+/// The field order is the wire order: an encoded value of this layout is a
+/// strict prefix of an [`AgentValueV0_47Alpha2`] one, so the current layout is
+/// probed first and only a value that fails it is read back through this one.
+#[derive(Deserialize, Serialize)]
+pub(crate) struct AgentValueV0_47Alpha1 {
+    pub kind: AgentKind,
+    pub status: AgentStatus,
+    pub config: Option<AgentConfig>,
+    pub draft: Option<AgentConfig>,
+}
+
+/// The stored `Agent` value as of database format 0.47.0-alpha.2.
+///
+/// This mirrors the private `Value` of the live agents table, whose component
+/// types it deliberately reuses, and the drift test in
+/// [`super`](crate::migration) holds the two together. `lifecycle` is the
+/// stored variant index rather than the `Lifecycle` enum, because a row written
+/// by a newer build may carry an index this build does not recognize and must
+/// still read back.
+#[derive(Deserialize, Serialize)]
+pub(crate) struct AgentValueV0_47Alpha2 {
+    pub kind: AgentKind,
+    pub status: AgentStatus,
+    pub config: Option<AgentConfig>,
+    pub draft: Option<AgentConfig>,
+    pub installed_version: Option<String>,
+    pub installed_commit: Option<String>,
+    pub lifecycle: u8,
+    pub bound_addrs: Vec<(String, String)>,
+}
+
+impl From<AgentValueV0_47Alpha1> for AgentValueV0_47Alpha2 {
+    /// Adds the install state a host has not reported yet.
+    ///
+    /// `lifecycle` is the literal `0` that `Lifecycle::NotInstalled` is stored
+    /// as. A registered agent whose host has reported nothing has nothing
+    /// installed, and the true state arrives with the next status report.
+    fn from(old: AgentValueV0_47Alpha1) -> Self {
+        Self {
+            kind: old.kind,
+            status: old.status,
+            config: old.config,
+            draft: old.draft,
+            installed_version: None,
+            installed_commit: None,
+            lifecycle: 0,
+            bound_addrs: Vec::new(),
+        }
+    }
+}
+
+/// The stored `ExternalService` value up to database format 0.47.0-alpha.1,
+/// before the install-state fields were added.
+///
+/// As with [`AgentValueV0_47Alpha1`], an encoded value of this layout is a
+/// strict prefix of an [`ExternalServiceValueV0_47Alpha2`] one.
+#[derive(Deserialize, Serialize)]
+pub(crate) struct ExternalServiceValueV0_47Alpha1 {
+    pub kind: ExternalServiceKind,
+    pub status: ExternalServiceStatus,
+    pub draft: Option<ExternalServiceConfig>,
+}
+
+/// The stored `ExternalService` value as of database format 0.47.0-alpha.2.
+///
+/// This mirrors the private `Value` of the live external services table, on the
+/// same terms as [`AgentValueV0_47Alpha2`].
+#[derive(Deserialize, Serialize)]
+pub(crate) struct ExternalServiceValueV0_47Alpha2 {
+    pub kind: ExternalServiceKind,
+    pub status: ExternalServiceStatus,
+    pub draft: Option<ExternalServiceConfig>,
+    pub installed_version: Option<String>,
+    pub installed_commit: Option<String>,
+    pub lifecycle: u8,
+    pub bound_addrs: Vec<(String, String)>,
+}
+
+impl From<ExternalServiceValueV0_47Alpha1> for ExternalServiceValueV0_47Alpha2 {
+    /// Adds the install state a host has not reported yet, on the same terms as
+    /// [`AgentValueV0_47Alpha2::from`].
+    fn from(old: ExternalServiceValueV0_47Alpha1) -> Self {
+        Self {
+            kind: old.kind,
+            status: old.status,
+            draft: old.draft,
+            installed_version: None,
+            installed_commit: None,
+            lifecycle: 0,
+            bound_addrs: Vec::new(),
         }
     }
 }

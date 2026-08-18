@@ -192,6 +192,20 @@ impl Store {
         self.states.configs()
     }
 
+    /// Returns the registry of the platform's own host-fixed infrastructure.
+    #[must_use]
+    #[allow(clippy::missing_panics_doc)]
+    pub fn core_component_map(&self) -> Table<'_, CoreComponent> {
+        self.states.core_components()
+    }
+
+    /// Returns the ledger of package operations executed on hosts.
+    #[must_use]
+    #[allow(clippy::missing_panics_doc)]
+    pub fn operation_attempt_map(&self) -> Table<'_, OperationAttempt> {
+        self.states.operation_attempts()
+    }
+
     /// Initializes backup configuration in the config table.
     ///
     /// # Errors
