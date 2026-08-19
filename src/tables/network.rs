@@ -326,7 +326,7 @@ mod test {
         let retrieved_network = table.get_by_id(inserted_id2).unwrap().unwrap();
         assert_eq!(retrieved_network, network);
 
-        assert!(inserted_id1 != inserted_id2);
+        assert_ne!(inserted_id1, inserted_id2);
     }
 
     #[test]

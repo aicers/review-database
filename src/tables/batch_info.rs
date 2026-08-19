@@ -159,10 +159,7 @@ mod tests {
 
         let res = table.get_all_for(1).unwrap();
         assert_eq!(res.len(), 2);
-        for (r, e) in res
-            .into_iter()
-            .zip(vec![&entries[1], &entries[0]].into_iter())
-        {
+        for (r, e) in res.into_iter().zip(vec![&entries[1], &entries[0]]) {
             assert_eq!(&r, e);
         }
 
