@@ -357,12 +357,7 @@ impl HttpThreatFields {
     pub fn syslog_rfc5424(&self) -> String {
         let start_time_dt = DateTime::from_timestamp_nanos(self.start_time);
         format!(
-            "category={:?} sensor={:?} orig_addr={:?} orig_port={:?} resp_addr={:?} resp_port={:?} proto={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} method={:?} host={:?} uri={:?} referer={:?} version={:?} user_agent={:?} request_len={:?} response_len={:?} status_code={:?} status_msg={:?} username={:?} password={:?} cookie={:?} content_encoding={:?} content_type={:?} cache_control={:?} filenames={:?} mime_types={:?} body={:?} state={:?} db_name={:?} rule_id={:?} matched_to={:?} cluster_id={:?} attack_kind={:?} confidence={:?}",
-            self.category.as_ref().map_or_else(
-                || "Unspecified".to_string(),
-                std::string::ToString::to_string
-            ),
-            self.sensor,
+            "orig_addr={:?} orig_port={:?} resp_addr={:?} resp_port={:?} proto={:?} start_time={:?} duration={:?} orig_pkts={:?} resp_pkts={:?} orig_l2_bytes={:?} resp_l2_bytes={:?} method={:?} host={:?} uri={:?} referer={:?} version={:?} user_agent={:?} request_len={:?} response_len={:?} status_code={:?} status_msg={:?} username={:?} password={:?} cookie={:?} content_encoding={:?} content_type={:?} cache_control={:?} filenames={:?} mime_types={:?} body={:?} state={:?}",
             self.orig_addr.to_string(),
             self.orig_port.to_string(),
             self.resp_addr.to_string(),
@@ -394,12 +389,6 @@ impl HttpThreatFields {
             self.mime_types.join(","),
             get_post_body(&self.body),
             self.state,
-            self.db_name,
-            self.rule_id.to_string(),
-            self.matched_to,
-            self.cluster_id.map_or("-".to_string(), |s| s.to_string()),
-            self.attack_kind,
-            self.confidence.to_string(),
         )
     }
 }
