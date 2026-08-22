@@ -1703,7 +1703,7 @@ fn create_version_file(path: &Path, version: &str) -> Result<()> {
     // held before the migration.
     File::open(dir)
         .and_then(|dir| dir.sync_all())
-        .context("cannot flush the data dir")?;
+        .context("cannot flush the directory holding VERSION")?;
 
     Ok(())
 }
