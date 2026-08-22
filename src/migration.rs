@@ -2470,6 +2470,29 @@ mod tests {
         }
     }
 
+    /// Test that an existing marker is replaced rather than appended to, even
+    /// when it names a newer format or was not stored canonically. This is the
+    /// rollback case: the update left both markers at the version being rolled
+    /// back from.
+    #[test]
+    fn write_version_markers_replaces_existing_markers() {
+        let data_dir = tempfile::tempdir().unwrap();
+        let backup_dir = tempfile::tempdir().unwrap();
+
+        write_version(data_dir.path(), env!("CARGO_PKG_VERSION"));
+        write_version(backup_dir.path(), "0.47.0-alpha.2\n");
+
+        write_version_markers(data_dir.path(), backup_dir.path(), "0.46.0").unwrap();
+
+        for dir in [data_dir.path(), backup_dir.path()] {
+            assert_eq!(
+                std::fs::read_to_string(dir.join(VERSION_FILE_NAME)).unwrap(),
+                "0.46.0"
+            );
+            assert!(!dir.join(VERSION_TMP_FILE_NAME).exists());
+        }
+    }
+
     /// Test that a failure on the backup marker names the backup directory and
     /// that the same call, repeated after the failure is corrected, leaves both
     /// markers canonical and equal.
@@ -2726,6 +2749,11 @@ mod tests {
             crate::tables::EXTERNAL_SERVICES,
             &external_services,
         );
+
+        // What the update left behind: both markers name the newer format even
+        // though the restored `states.db` above is the older one.
+        write_version(data_dir.path(), env!("CARGO_PKG_VERSION"));
+        write_version(backup_dir.path(), env!("CARGO_PKG_VERSION"));
 
         write_version_markers(data_dir.path(), backup_dir.path(), "0.46.0").unwrap();
 
