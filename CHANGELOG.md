@@ -50,6 +50,17 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   against and neither reads the clock, so a caller decides what "now" means.
   These records live in a table reachable through
   `Store::operation_attempt_map`.
+- Added `write_version_markers`, which records a caller-supplied database
+  format version in the `VERSION` files of a data directory and a backup
+  directory. It is the metadata companion to restoring a rollback snapshot:
+  the snapshot covers `states.db` alone, so putting an older database back
+  leaves both markers naming the newer format and the earlier binary finds no
+  migration for them. The version is parsed before anything is written and
+  reaches each file in its canonical form; a missing directory is created, and
+  each marker is replaced through the same temporary-file, sync, and rename
+  path a migration uses. The two files can live on different filesystems, so a
+  failure on the second reports which directory it was and the call can simply
+  be repeated once the failure is corrected.
 
 ### Changed
 

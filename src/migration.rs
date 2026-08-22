@@ -121,10 +121,13 @@ const VERSION_FILE_NAME: &str = "VERSION";
 /// The name of the temporary file that [`create_version_file`] renames over
 /// [`VERSION_FILE_NAME`].
 ///
-/// The name is fixed rather than unique because `migrate_data_dir` runs once
-/// at startup with exclusive access to the data directory, so there is no
-/// concurrent writer to collide with. In exchange, an interrupted write can
-/// leave behind only this one file, which the next start recognizes.
+/// The name is fixed rather than unique, so every writer of a marker in one
+/// directory collides with every other. Both writers this crate has require
+/// exclusive access to each directory they touch for that reason:
+/// `migrate_data_dir` runs once at startup, and [`write_version_markers`] is a
+/// rollback step the caller serializes against it and against any other
+/// rollback. In exchange, an interrupted write can leave behind only this one
+/// file, which the next start recognizes.
 const VERSION_TMP_FILE_NAME: &str = "VERSION.tmp";
 
 /// Migrates the data directory to the up-to-date format if necessary.
@@ -184,7 +187,8 @@ pub fn migrate_data_dir<P: AsRef<Path>>(
     // rollback snapshot taken before an update therefore has to cover that one
     // database and nothing else, and restoring it does not restore the two
     // `VERSION` files, which this function writes after the whole chain
-    // succeeds and which a rollback must put back separately.
+    // succeeds and which a rollback must put back separately, through
+    // `write_version_markers`.
     //
     // * The "version requirement" should include all the earlier, released versions that use the
     //   database format the migration function can handle, and exclude the first future version
@@ -230,8 +234,10 @@ pub fn migrate_data_dir<P: AsRef<Path>>(
         m(data_dir, backup_dir, locator)?;
         version = to.clone();
         if compatible.matches(&version) {
-            create_version_file(&backup).context("failed to update VERSION")?;
-            return create_version_file(&data).context("failed to update VERSION");
+            create_version_file(&backup, env!("CARGO_PKG_VERSION"))
+                .context("failed to update VERSION")?;
+            return create_version_file(&data, env!("CARGO_PKG_VERSION"))
+                .context("failed to update VERSION");
         }
     }
 
@@ -1636,26 +1642,30 @@ fn retrieve_or_create_version<P: AsRef<Path>>(path: P) -> Result<(PathBuf, Versi
             Err(_) => true,
         });
     if !populated {
-        create_version_file(&file)?;
+        create_version_file(&file, env!("CARGO_PKG_VERSION"))?;
     }
 
     let version = read_version_file(&file)?;
     Ok((file, version))
 }
 
-/// Writes the current version to the VERSION file in the data directory,
-/// creating it if it does not exist.
+/// Writes `version` to the VERSION file at `path`, creating it if it does not
+/// exist.
 ///
 /// The file is replaced rather than rewritten: the version goes to a
 /// temporary in the same directory and is renamed over VERSION, so an
 /// interrupted write cannot leave VERSION empty or partial.
+///
+/// `version` is written verbatim, so every caller passes a string it has
+/// already validated: the current crate version during migration, and the
+/// canonical form of a parsed [`Version`] from [`write_version_markers`].
 ///
 /// # Errors
 ///
 /// Returns an error if the temporary file cannot be created, written, or
 /// flushed, if it cannot be renamed over the VERSION file, or if the
 /// containing directory cannot be flushed.
-fn create_version_file(path: &Path) -> Result<()> {
+fn create_version_file(path: &Path, version: &str) -> Result<()> {
     let dir = path.parent().unwrap_or_else(|| Path::new("."));
     let tmp = dir.join(VERSION_TMP_FILE_NAME);
 
@@ -1665,7 +1675,7 @@ fn create_version_file(path: &Path) -> Result<()> {
     // what VERSION has had all along. It records a format version, not a
     // secret, so there is nothing to tighten.
     let mut f = File::create(&tmp).context("cannot create temporary VERSION")?;
-    f.write_all(env!("CARGO_PKG_VERSION").as_bytes())
+    f.write_all(version.as_bytes())
         .context("cannot write temporary VERSION")?;
 
     // Flush before the rename. `migrate_data_dir` writes VERSION only once the
@@ -1712,6 +1722,83 @@ fn read_version_file(path: &Path) -> Result<Version> {
     Version::parse(&ver).context("cannot parse VERSION")
 }
 
+/// Records `version` as the database format version of both `data_dir` and
+/// `backup_dir`.
+///
+/// This is the metadata companion to restoring a rollback snapshot. The
+/// migration bodies rewrite `data_dir/states.db` only, while the format
+/// version lives beside it in the two `VERSION` files, so restoring the
+/// snapshot taken before an update puts the older database back under markers
+/// that still name the newer format, and the earlier binary finds no migration
+/// for a marker it does not know. After restoring the snapshot, the caller
+/// passes the format version it recorded before the update — the
+/// `pre_update_version` of the operation attempt — and both markers again
+/// describe the restored contents.
+///
+/// `version` is parsed as a [`semver::Version`] before anything is written,
+/// and it is the parsed value's canonical `to_string()` form that reaches each
+/// file, with no trailing bytes. Validation is syntactic only: this function
+/// does not read `states.db`, does not read the markers it replaces, and does
+/// not judge whether any binary can migrate from `version`. Choosing a version
+/// the rollback binary supports remains the caller's responsibility.
+///
+/// A missing directory, and any missing component of its path, is created.
+/// Each marker is replaced through the same write-to-a-temporary, sync,
+/// rename, and directory-sync path a migration uses, so an interruption cannot
+/// leave a marker empty or partially written. The two files can live on
+/// different filesystems, so there is no cross-directory atomic commit: a
+/// failure on the second leaves the first already updated. The operation is
+/// idempotent — correct the filesystem failure and call it again with the same
+/// paths and version, and both markers end up canonical and equal.
+///
+/// `VERSION.tmp`, the temporary each replacement goes through, is a fixed name,
+/// so the caller must serialize this call against migration and against any
+/// other marker write for each directory involved.
+///
+/// # Errors
+///
+/// Returns an error if `version` is not a complete semantic version, if either
+/// directory is missing and cannot be created, or if either marker cannot be
+/// written, renamed into place, or flushed. The error identifies which of the
+/// two directories the failing operation belonged to.
+pub fn write_version_markers<P: AsRef<Path>, Q: AsRef<Path>>(
+    data_dir: P,
+    backup_dir: Q,
+    version: &str,
+) -> Result<()> {
+    let parsed = Version::parse(version)
+        .with_context(|| format!("cannot parse the requested format version {version}"))?;
+    let canonical = parsed.to_string();
+
+    let data_dir = data_dir.as_ref();
+    let backup_dir = backup_dir.as_ref();
+
+    write_version_marker(data_dir, &canonical).with_context(|| {
+        format!(
+            "cannot write the data directory VERSION in {}",
+            data_dir.display()
+        )
+    })?;
+    write_version_marker(backup_dir, &canonical).with_context(|| {
+        format!(
+            "cannot write the backup directory VERSION in {}",
+            backup_dir.display()
+        )
+    })
+}
+
+/// Creates `dir` if it is missing and replaces the VERSION file in it with
+/// `version`.
+///
+/// # Errors
+///
+/// Returns an error if `dir` cannot be created or if the marker cannot be
+/// replaced.
+fn write_version_marker(dir: &Path, version: &str) -> Result<()> {
+    create_dir_all(dir).context("cannot create the directory")?;
+    create_version_file(&dir.join(VERSION_FILE_NAME), version)
+}
+
 #[cfg(test)]
 mod tests {
     use std::{collections::HashMap, io::Write, net::IpAddr, path::Path};
@@ -1723,7 +1810,7 @@ mod tests {
     use super::{
         COMPATIBLE_VERSION_REQ, VERSION_FILE_NAME, VERSION_TMP_FILE_NAME, create_version_file,
         migrate_data_dir, migrate_event_country_codes, migrate_event_stored_schema_to_v0_46,
-        read_version_file, retrieve_or_create_version,
+        read_version_file, retrieve_or_create_version, write_version_markers,
     };
     use crate::event::{
         BlocklistConnFields, BlocklistConnFieldsStored, EventKind, EventMessage,
@@ -2216,7 +2303,7 @@ mod tests {
         let version_path = temp.path().join("VERSION");
 
         // Create a version file
-        create_version_file(&version_path).unwrap();
+        create_version_file(&version_path, env!("CARGO_PKG_VERSION")).unwrap();
 
         // Read it back
         let version = read_version_file(&version_path).unwrap();
@@ -2235,7 +2322,7 @@ mod tests {
         write_version(temp.path(), "0.45.0");
         let version_path = temp.path().join(VERSION_FILE_NAME);
 
-        create_version_file(&version_path).unwrap();
+        create_version_file(&version_path, env!("CARGO_PKG_VERSION")).unwrap();
 
         assert_eq!(
             read_version_file(&version_path).unwrap(),
@@ -2281,6 +2368,160 @@ mod tests {
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("cannot open VERSION"));
+    }
+
+    /// Test that the public marker writer puts the canonical form of the
+    /// parsed version in both directories, byte for byte.
+    #[test]
+    fn write_version_markers_writes_canonical_markers() {
+        const REQUESTED: &str = "0.46.0";
+
+        let data_dir = tempfile::tempdir().unwrap();
+        let backup_dir = tempfile::tempdir().unwrap();
+
+        write_version_markers(data_dir.path(), backup_dir.path(), REQUESTED).unwrap();
+
+        let expected = Version::parse(REQUESTED).unwrap().to_string();
+        for dir in [data_dir.path(), backup_dir.path()] {
+            let marker = std::fs::read_to_string(dir.join(VERSION_FILE_NAME)).unwrap();
+            assert_eq!(marker, expected);
+        }
+    }
+
+    /// Test that a prerelease marker survives the round trip unchanged, so the
+    /// alpha format versions this crate migrates between can be recorded.
+    #[test]
+    fn write_version_markers_keeps_prerelease_versions() {
+        let data_dir = tempfile::tempdir().unwrap();
+        let backup_dir = tempfile::tempdir().unwrap();
+
+        write_version_markers(data_dir.path(), backup_dir.path(), "0.47.0-alpha.1").unwrap();
+
+        assert_eq!(
+            read_version_file(&data_dir.path().join(VERSION_FILE_NAME)).unwrap(),
+            Version::parse("0.47.0-alpha.1").unwrap()
+        );
+        assert_eq!(
+            read_version_file(&backup_dir.path().join(VERSION_FILE_NAME)).unwrap(),
+            Version::parse("0.47.0-alpha.1").unwrap()
+        );
+    }
+
+    /// Test that missing marker directories, including intermediate
+    /// components, are created and receive their markers.
+    #[test]
+    fn write_version_markers_creates_missing_directories() {
+        let root = tempfile::tempdir().unwrap();
+        let data_dir = root.path().join("restored").join("data");
+        let backup_dir = root.path().join("restored").join("backup");
+
+        write_version_markers(&data_dir, &backup_dir, "0.46.0").unwrap();
+
+        for dir in [&data_dir, &backup_dir] {
+            assert!(dir.is_dir());
+            assert_eq!(
+                std::fs::read_to_string(dir.join(VERSION_FILE_NAME)).unwrap(),
+                "0.46.0"
+            );
+        }
+    }
+
+    /// Test that an unparsable version is rejected before any filesystem
+    /// change: no directory appears, and an existing marker keeps its
+    /// contents.
+    #[test]
+    fn write_version_markers_rejects_invalid_versions() {
+        for invalid in ["", "0.46", "not a version", "0.46.0 ", "0.46.0extra"] {
+            let root = tempfile::tempdir().unwrap();
+            let data_dir = root.path().join("data");
+            let backup_dir = root.path().join("backup");
+
+            assert!(
+                write_version_markers(&data_dir, &backup_dir, invalid).is_err(),
+                "{invalid:?} must be rejected"
+            );
+            assert!(
+                !data_dir.exists(),
+                "{invalid:?} must not create a directory"
+            );
+            assert!(
+                !backup_dir.exists(),
+                "{invalid:?} must not create a directory"
+            );
+
+            let existing_data = tempfile::tempdir().unwrap();
+            let existing_backup = tempfile::tempdir().unwrap();
+            write_version(existing_data.path(), "0.45.0");
+            write_version(existing_backup.path(), "0.45.0");
+
+            assert!(
+                write_version_markers(existing_data.path(), existing_backup.path(), invalid)
+                    .is_err(),
+                "{invalid:?} must be rejected"
+            );
+            for dir in [existing_data.path(), existing_backup.path()] {
+                assert_eq!(
+                    std::fs::read_to_string(dir.join(VERSION_FILE_NAME)).unwrap(),
+                    "0.45.0",
+                    "{invalid:?} must leave the existing marker alone"
+                );
+                assert!(!dir.join(VERSION_TMP_FILE_NAME).exists());
+            }
+        }
+    }
+
+    /// Test that a failure on the backup marker names the backup directory and
+    /// that the same call, repeated after the failure is corrected, leaves both
+    /// markers canonical and equal.
+    #[test]
+    fn write_version_markers_reports_the_failing_directory_and_retries() {
+        let root = tempfile::tempdir().unwrap();
+        let data_dir = root.path().join("data");
+        let backup_dir = root.path().join("backup");
+        std::fs::write(&backup_dir, b"a regular file, not a directory").unwrap();
+
+        let err = write_version_markers(&data_dir, &backup_dir, "0.46.0")
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("backup directory VERSION"),
+            "the error must name the backup directory, got {err}"
+        );
+
+        std::fs::remove_file(&backup_dir).unwrap();
+        write_version_markers(&data_dir, &backup_dir, "0.46.0").unwrap();
+
+        let data_marker = std::fs::read_to_string(data_dir.join(VERSION_FILE_NAME)).unwrap();
+        let backup_marker = std::fs::read_to_string(backup_dir.join(VERSION_FILE_NAME)).unwrap();
+        assert_eq!(data_marker, Version::parse("0.46.0").unwrap().to_string());
+        assert_eq!(data_marker, backup_marker);
+    }
+
+    /// Test that a failure on the data marker names the data directory and
+    /// stops before the backup one, so the pair is never left describing two
+    /// different formats.
+    #[test]
+    fn write_version_markers_reports_a_failing_data_directory() {
+        let root = tempfile::tempdir().unwrap();
+        let data_dir = root.path().join("data");
+        std::fs::write(&data_dir, b"a regular file, not a directory").unwrap();
+        let backup_dir = tempfile::tempdir().unwrap();
+        write_version(backup_dir.path(), "0.45.0");
+
+        let err = write_version_markers(&data_dir, backup_dir.path(), "0.46.0")
+            .unwrap_err()
+            .to_string();
+
+        assert!(
+            err.contains("data directory VERSION"),
+            "the error must name the data directory, got {err}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(backup_dir.path().join(VERSION_FILE_NAME)).unwrap(),
+            "0.45.0",
+            "the backup marker must be left alone"
+        );
+        assert!(!backup_dir.path().join(VERSION_TMP_FILE_NAME).exists());
     }
 
     /// Test that migrations from `START_VERSION` up to the current version succeed and update `VERSION` files.
@@ -2454,6 +2695,94 @@ mod tests {
     #[test]
     fn migration_from_v0_46_schema_creates_new_column_families() {
         assert_migration_creates_new_column_families("0.46.0");
+    }
+
+    /// Test the rollback path end to end: a populated 0.46-format store whose
+    /// markers are set through the public API migrates forward exactly as one
+    /// whose markers were written by hand.
+    ///
+    /// This is what a rollback leaves behind — the restored `states.db` of the
+    /// prior format under markers naming that format — so the next start must
+    /// select the 0.46 migration rather than refuse the version.
+    #[test]
+    fn markers_written_for_rollback_let_migration_run_again() {
+        let current_version = Version::parse(env!("CARGO_PKG_VERSION")).unwrap();
+
+        let data_dir = tempfile::tempdir().unwrap();
+        let backup_dir = tempfile::tempdir().unwrap();
+        let db_path = data_dir.path().join("states.db");
+
+        create_states_db(&db_path, super::MAP_NAMES_V0_43_TO_V0_46);
+        let (agents, external_services) = old_install_state_fixture();
+        put_entries(
+            &db_path,
+            super::MAP_NAMES_V0_43_TO_V0_46,
+            crate::tables::AGENTS,
+            &agents,
+        );
+        put_entries(
+            &db_path,
+            super::MAP_NAMES_V0_43_TO_V0_46,
+            crate::tables::EXTERNAL_SERVICES,
+            &external_services,
+        );
+
+        write_version_markers(data_dir.path(), backup_dir.path(), "0.46.0").unwrap();
+
+        let result = migrate_data_dir(data_dir.path(), backup_dir.path(), None);
+        assert!(
+            result.is_ok(),
+            "migration must run from the marker this API wrote, got {:?}",
+            result.as_ref().err().map(ToString::to_string)
+        );
+
+        let db = open_states_db(&db_path, crate::tables::MAP_NAMES);
+        for name in [
+            crate::tables::CUSTOMER_DELETION_JOBS,
+            crate::tables::CORE_COMPONENTS,
+            crate::tables::OPERATION_ATTEMPTS,
+        ] {
+            assert!(db.cf_handle(name).is_some(), "{name} must exist");
+        }
+        drop(db);
+
+        for (key, _) in &agents {
+            let migrated = raw_value(
+                &db_path,
+                crate::tables::MAP_NAMES,
+                crate::tables::AGENTS,
+                key,
+            )
+            .unwrap();
+            let value: AgentValueV0_47Alpha2 = bincode::DefaultOptions::new()
+                .deserialize(&migrated)
+                .unwrap();
+            assert_eq!(value.lifecycle, 0);
+            assert!(value.bound_addrs.is_empty());
+        }
+        for (key, _) in &external_services {
+            let migrated = raw_value(
+                &db_path,
+                crate::tables::MAP_NAMES,
+                crate::tables::EXTERNAL_SERVICES,
+                key,
+            )
+            .unwrap();
+            let value: ExternalServiceValueV0_47Alpha2 = bincode::DefaultOptions::new()
+                .deserialize(&migrated)
+                .unwrap();
+            assert_eq!(value.lifecycle, 0);
+            assert!(value.bound_addrs.is_empty());
+        }
+
+        assert_eq!(
+            read_version_file(&data_dir.path().join(VERSION_FILE_NAME)).unwrap(),
+            current_version
+        );
+        assert_eq!(
+            read_version_file(&backup_dir.path().join(VERSION_FILE_NAME)).unwrap(),
+            current_version
+        );
     }
 
     #[test]
