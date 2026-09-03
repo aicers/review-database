@@ -64,6 +64,13 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **BREAKING**: Swapped the stored event country-code placeholder meanings:
+  `ZZ` now means a lookup was attempted but returned no valid country, following
+  CLDR's Unknown or Invalid Territory code, while `XX` means no lookup was
+  performed. `find_ip_country` now returns `ZZ` on lookup failure, and event
+  country filters can match either placeholder explicitly. The database format
+  is now `0.47.0-alpha.3`; migration swaps both scalar and vector placeholders
+  from the 0.46/earlier-alpha representation with durable retry checkpoints.
 - **BREAKING**: `Agent` and `ExternalService` now record the build installed on
   the host, through four new public fields: `installed_version` and
   `installed_commit` (the build's identity, both `None` until a host reports

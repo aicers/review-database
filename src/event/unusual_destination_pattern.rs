@@ -47,7 +47,7 @@ impl From<UnusualDestinationPatternFields> for UnusualDestinationPatternFieldsSt
             sampling_window_start_time: value.sampling_window_start_time,
             sampling_window_end_time: value.sampling_window_end_time,
             destination_ips: value.destination_ips,
-            resp_country_codes: vec![crate::util::COUNTRY_CODE_PENDING; destination_ip_count],
+            resp_country_codes: vec![crate::util::COUNTRY_CODE_UNRESOLVED; destination_ip_count],
             count: value.count,
             expected_mean: value.expected_mean,
             std_deviation: value.std_deviation,

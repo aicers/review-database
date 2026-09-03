@@ -19,7 +19,7 @@
 //! | --- | --- | --- |
 //! | Single `ts_nanoseconds` field | `TsNanosecondsField` round-trip and size checks | [`HttpThreatFieldsStored`](super::HttpThreatFieldsStored) and [`NetworkThreatFieldsStored`](super::network::NetworkThreatFieldsStored) (`time`) |
 //! | Multiple `ts_nanoseconds` fields | `DualTsNanosecondsFields` adjacent eight-byte values | Test-only adapter composition |
-//! | Full stored-event bytes | Checked-in fixture decode + `convert_for_storage` byte match | [`ExtraThreatFieldsStored`](super::log::ExtraThreatFieldsStored), [`HttpThreatFieldsStored`](super::HttpThreatFieldsStored), [`NetworkThreatFieldsStored`](super::network::NetworkThreatFieldsStored), [`WindowsThreatFieldsStored`](super::sysmon::WindowsThreatFieldsStored) (`time`) |
+//! | Full stored-event bytes | Checked-in 0.46 fixture decode + current-format conversion match | [`ExtraThreatFieldsStored`](super::log::ExtraThreatFieldsStored), [`HttpThreatFieldsStored`](super::HttpThreatFieldsStored), [`NetworkThreatFieldsStored`](super::network::NetworkThreatFieldsStored), [`WindowsThreatFieldsStored`](super::sysmon::WindowsThreatFieldsStored) (`time`) |
 
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
@@ -27,7 +27,8 @@ use serde::{Deserialize, Serialize};
 use super::{
     EventKind, ExtraThreatFields, ExtraThreatFieldsStored, HttpThreatFields,
     HttpThreatFieldsStored, NetworkThreatFields, NetworkThreatFieldsStored, WindowsThreatFields,
-    WindowsThreatFieldsStored, convert_for_storage, timestamp,
+    WindowsThreatFieldsStored, convert_for_storage, swap_stored_country_code_placeholders,
+    timestamp,
 };
 
 /// Mirrors a single stored `ts_nanoseconds` field for isolated size checks.
@@ -283,7 +284,9 @@ fn http_threat_production_bytes_match_stored_fixture() {
         bincode::serialize(&http_threat_fields(time)).expect("serializable producer fields");
     let bytes = convert_for_storage(EventKind::HttpThreat, &producer_bytes, None)
         .expect("convertible to stored fields");
-    assert_eq!(bytes, FIXTURE);
+    let expected = swap_stored_country_code_placeholders(EventKind::HttpThreat, FIXTURE)
+        .expect("0.46 fixture is migratable");
+    assert_eq!(bytes, expected);
     assert_eight_byte_i64_contract(
         bytes.get(..8).expect("timestamp prefix"),
         timestamp::to_i64_nanos(time).expect("in range"),
@@ -318,7 +321,9 @@ fn network_threat_production_bytes_match_stored_fixture() {
         bincode::serialize(&network_threat_fields(time)).expect("serializable producer fields");
     let bytes = convert_for_storage(EventKind::NetworkThreat, &producer_bytes, None)
         .expect("convertible to stored fields");
-    assert_eq!(bytes, FIXTURE);
+    let expected = swap_stored_country_code_placeholders(EventKind::NetworkThreat, FIXTURE)
+        .expect("0.46 fixture is migratable");
+    assert_eq!(bytes, expected);
     assert_eight_byte_i64_contract(
         bytes.get(..8).expect("timestamp prefix"),
         timestamp::to_i64_nanos(time).expect("in range"),
