@@ -159,6 +159,52 @@ use super::{
 };
 
 const EVENT_DELETION_BATCH_SIZE: usize = 1000;
+const FIRST_NON_NEGATIVE_EVENT_KEY: [u8; 16] = 0_i128.to_be_bytes();
+const FIRST_NEGATIVE_EVENT_KEY: [u8; 16] = i128::MIN.to_be_bytes();
+
+type PhysicalEventIterator<'i> = rocksdb::DBIteratorWithThreadMode<
+    'i,
+    rocksdb::OptimisticTransactionDB<rocksdb::SingleThreaded>,
+>;
+
+#[derive(Clone, Copy)]
+enum EventKeyRegion {
+    NonNegative,
+    Negative,
+}
+
+fn signed_event_key(key_bytes: &[u8]) -> Option<i128> {
+    let key_bytes: [u8; 16] = key_bytes.try_into().ok()?;
+    Some(i128::from_be_bytes(key_bytes))
+}
+
+fn is_signed_negative(key_bytes: &[u8]) -> bool {
+    signed_event_key(key_bytes).is_some_and(i128::is_negative)
+}
+
+fn event_region_read_options(region: EventKeyRegion) -> rocksdb::ReadOptions {
+    let mut readopts = rocksdb::ReadOptions::default();
+    match region {
+        // The physical database starts with non-negative i128 keys. The first
+        // negative key is therefore the exclusive end of this region.
+        EventKeyRegion::NonNegative => {
+            readopts.set_iterate_upper_bound(FIRST_NEGATIVE_EVENT_KEY);
+        }
+        // Negative i128 keys occupy the remainder of the physical key space.
+        EventKeyRegion::Negative => {
+            readopts.set_iterate_lower_bound(FIRST_NEGATIVE_EVENT_KEY);
+        }
+    }
+    readopts
+}
+
+fn physical_event_iterator<'i>(
+    db: &'i rocksdb::OptimisticTransactionDB,
+    region: EventKeyRegion,
+    mode: IteratorMode<'_>,
+) -> PhysicalEventIterator<'i> {
+    db.iterator_opt(mode, event_region_read_options(region))
+}
 
 // event kind
 const DNS_COVERT_CHANNEL: &str = "DNS Covert Channel";
@@ -3288,20 +3334,72 @@ impl<'a> EventDb<'a> {
         }
     }
 
-    /// Creates an iterator over key-value pairs, starting from `key`.
+    /// Creates an iterator over key-value pairs, starting inclusively from `key`.
+    ///
+    /// Keys are interpreted as signed `i128` values without changing their
+    /// stored bytes. Forward iteration yields the nearest key greater than or
+    /// equal to `key` first; reverse iteration yields the nearest key less than
+    /// or equal to `key` first. Both directions follow signed chronological
+    /// order across the Unix epoch.
     #[must_use]
     pub fn iter_from(&self, key: i128, direction: Direction) -> EventIterator<'_> {
-        let iter = self
-            .inner
-            .iterator(IteratorMode::From(&key.to_be_bytes(), direction));
-        EventIterator { inner: iter }
+        let key_bytes = key.to_be_bytes();
+        match (is_signed_negative(&key_bytes), direction) {
+            (true, Direction::Forward) => EventIterator::new(
+                self.inner,
+                EventKeyRegion::Negative,
+                IteratorMode::From(&key_bytes, Direction::Forward),
+                Some(EventKeyRegion::NonNegative),
+                Direction::Forward,
+            ),
+            (true, Direction::Reverse) => EventIterator::new(
+                self.inner,
+                EventKeyRegion::Negative,
+                IteratorMode::From(&key_bytes, Direction::Reverse),
+                None,
+                Direction::Reverse,
+            ),
+            (false, Direction::Forward) => EventIterator::new(
+                self.inner,
+                EventKeyRegion::NonNegative,
+                IteratorMode::From(&key_bytes, Direction::Forward),
+                None,
+                Direction::Forward,
+            ),
+            (false, Direction::Reverse) => EventIterator::new(
+                self.inner,
+                EventKeyRegion::NonNegative,
+                IteratorMode::From(&key_bytes, Direction::Reverse),
+                Some(EventKeyRegion::Negative),
+                Direction::Reverse,
+            ),
+        }
     }
 
-    /// Creates an iterator over key-value pairs for the entire events.
+    /// Creates an iterator over all events in ascending signed `i128`
+    /// chronological key order.
     #[must_use]
     pub fn iter_forward(&self) -> EventIterator<'_> {
-        let iter = self.inner.iterator(IteratorMode::Start);
-        EventIterator { inner: iter }
+        EventIterator::new(
+            self.inner,
+            EventKeyRegion::Negative,
+            IteratorMode::From(&FIRST_NEGATIVE_EVENT_KEY, Direction::Forward),
+            Some(EventKeyRegion::NonNegative),
+            Direction::Forward,
+        )
+    }
+
+    /// Creates an iterator over all events in descending signed `i128`
+    /// chronological key order.
+    #[must_use]
+    pub fn iter_reverse(&self) -> EventIterator<'_> {
+        EventIterator::new(
+            self.inner,
+            EventKeyRegion::NonNegative,
+            IteratorMode::End,
+            Some(EventKeyRegion::Negative),
+            Direction::Reverse,
+        )
     }
 
     #[cfg(test)]
@@ -3406,10 +3504,10 @@ impl<'a> EventDb<'a> {
 
     /// Removes all events whose timestamp is strictly before `before`.
     ///
-    /// Events are stored with an i128 key whose upper 64 bits encode the
-    /// timestamp in nanoseconds. This method iterates from the beginning
-    /// of the event database and deletes every entry whose timestamp is
-    /// earlier than `before`, using batched writes for efficiency.
+    /// Event keys are interpreted in signed `i128` chronological order. The
+    /// upper 64 bits encode signed epoch nanoseconds. An event exactly at
+    /// `before` is retained, and cutoffs outside the supported `i64`
+    /// epoch-nanosecond range delete none or all events as appropriate.
     ///
     /// Returns the number of events deleted.
     ///
@@ -3417,55 +3515,76 @@ impl<'a> EventDb<'a> {
     ///
     /// Returns an error if a database operation fails.
     pub fn remove_before(&self, before: Timestamp) -> Result<u64> {
-        let cutoff_nanos = match timestamp::to_i64_nanos(before) {
-            Ok(nanos) => nanos,
-            Err(timestamp::TimestampError::OutOfI64Range(nanos)) => {
-                if nanos >= 0 {
-                    i64::MAX // far-future cutoff → delete everything
-                } else {
-                    i64::MIN // far-past cutoff → delete nothing
-                }
+        let cutoff_nanos = before.as_nanosecond();
+        if cutoff_nanos <= i128::from(i64::MIN) {
+            return Ok(0);
+        }
+
+        if cutoff_nanos > i128::from(i64::MAX) {
+            let negative = self.delete_event_region(EventKeyRegion::Negative, None)?;
+            let non_negative = self.delete_event_region(EventKeyRegion::NonNegative, None)?;
+            return Ok(negative + non_negative);
+        }
+
+        let cutoff_nanos = i64::try_from(cutoff_nanos)
+            .context("cutoff within the checked i64 epoch-nanosecond range")?;
+        let cutoff_key = (i128::from(cutoff_nanos) << 64).to_be_bytes();
+        if cutoff_nanos < 0 {
+            self.delete_event_region(EventKeyRegion::Negative, Some(cutoff_key))
+        } else {
+            let negative = self.delete_event_region(EventKeyRegion::Negative, None)?;
+            let non_negative = if cutoff_key == FIRST_NON_NEGATIVE_EVENT_KEY {
+                0
+            } else {
+                self.delete_event_region(EventKeyRegion::NonNegative, Some(cutoff_key))?
+            };
+            Ok(negative + non_negative)
+        }
+    }
+
+    fn delete_event_region(
+        &self,
+        region: EventKeyRegion,
+        upper_bound: Option<[u8; 16]>,
+    ) -> Result<u64> {
+        let mut readopts = event_region_read_options(region);
+        if let Some(upper_bound) = upper_bound {
+            readopts.set_iterate_upper_bound(upper_bound);
+        }
+        let mode = match region {
+            EventKeyRegion::NonNegative => IteratorMode::Start,
+            EventKeyRegion::Negative => {
+                IteratorMode::From(&FIRST_NEGATIVE_EVENT_KEY, Direction::Forward)
             }
-            Err(timestamp::TimestampError::Invalid(err)) => return Err(err.into()),
         };
-        let mut deleted: u64 = 0;
+        let iter = self.inner.iterator_opt(mode, readopts);
+        let mut batch = rocksdb::WriteBatchWithTransaction::<true>::default();
+        let mut batch_count = 0_usize;
+        let mut deleted = 0_u64;
 
-        loop {
-            let iter = self.inner.iterator(IteratorMode::Start);
-            let mut batch = rocksdb::WriteBatchWithTransaction::<true>::default();
-            let mut batch_count = 0;
-
-            for item in iter {
-                let (k, _v) = item.context("cannot read from event database")?;
-                let key_bytes: [u8; 16] = match k.as_ref().try_into() {
-                    Ok(b) => b,
-                    Err(_) => continue,
-                };
-                let key = i128::from_be_bytes(key_bytes);
-                let ts = (key >> 64) as i64;
-
-                if ts >= cutoff_nanos {
-                    break;
-                }
-
-                batch.delete(&k);
-                batch_count += 1;
-
-                if batch_count >= EVENT_DELETION_BATCH_SIZE {
-                    break;
-                }
+        for item in iter {
+            let (key, _value) = item.context("cannot read from event database")?;
+            if signed_event_key(&key).is_none() {
+                continue;
             }
+            batch.delete(&key);
+            batch_count += 1;
 
-            if batch_count == 0 {
-                break;
+            if batch_count == EVENT_DELETION_BATCH_SIZE {
+                self.inner
+                    .write(std::mem::take(&mut batch))
+                    .context("failed to delete expired events")?;
+                deleted += u64::try_from(batch_count).expect("batch size fits in u64");
+                batch_count = 0;
             }
+        }
 
+        if batch_count > 0 {
             self.inner
                 .write(batch)
                 .context("failed to delete expired events")?;
-            deleted += batch_count as u64;
+            deleted += u64::try_from(batch_count).expect("batch size fits in u64");
         }
-
         Ok(deleted)
     }
 
@@ -3546,10 +3665,39 @@ impl<'a> EventDb<'a> {
 
 #[allow(clippy::module_name_repetitions)]
 pub struct EventIterator<'i> {
-    inner: rocksdb::DBIteratorWithThreadMode<
-        'i,
-        rocksdb::OptimisticTransactionDB<rocksdb::SingleThreaded>,
-    >,
+    db: &'i rocksdb::OptimisticTransactionDB,
+    inner: PhysicalEventIterator<'i>,
+    next_region: Option<EventKeyRegion>,
+    direction: Direction,
+}
+
+impl<'i> EventIterator<'i> {
+    fn new(
+        db: &'i rocksdb::OptimisticTransactionDB,
+        region: EventKeyRegion,
+        mode: IteratorMode<'_>,
+        next_region: Option<EventKeyRegion>,
+        direction: Direction,
+    ) -> Self {
+        Self {
+            db,
+            inner: physical_event_iterator(db, region, mode),
+            next_region,
+            direction,
+        }
+    }
+
+    fn advance_region(&mut self) -> bool {
+        let Some(region) = self.next_region.take() else {
+            return false;
+        };
+        let mode = match self.direction {
+            Direction::Forward => IteratorMode::Start,
+            Direction::Reverse => IteratorMode::End,
+        };
+        self.inner = physical_event_iterator(self.db, region, mode);
+        true
+    }
 }
 
 #[allow(clippy::module_name_repetitions)]
@@ -3578,7 +3726,11 @@ impl Iterator for EventIterator<'_> {
 
     fn next(&mut self) -> Option<Self::Item> {
         let (key, kind, time, v) = loop {
-            let (k, v) = self.inner.next().transpose().ok().flatten()?;
+            let (k, v) = match self.inner.next() {
+                Some(Ok(item)) => item,
+                None if self.advance_region() => continue,
+                Some(Err(_)) | None => return None,
+            };
 
             let key: [u8; 16] = if let Ok(key) = k.as_ref().try_into() {
                 key
@@ -4066,7 +4218,7 @@ mod tests {
             BlocklistRadiusFields, BlocklistRdp, BlocklistRdpFields, BlocklistSmb,
             BlocklistSmbFields, BlocklistSmtp, BlocklistSmtpFields, BlocklistSsh,
             BlocklistSshFields, BlocklistTls, BlocklistTlsFields, CryptocurrencyMiningPool,
-            CryptocurrencyMiningPoolFields, DceRpcContext, DgaFields, DnsCovertChannel,
+            CryptocurrencyMiningPoolFields, DceRpcContext, DgaFields, Direction, DnsCovertChannel,
             DnsEventFields, DomainGenerationAlgorithm, Event, EventFilter, EventKind, EventMessage,
             ExternalDdos, ExternalDdosFields, ExtraThreat, ExtraThreatFields, FtpBruteForce,
             FtpBruteForceFields, FtpEventFields, FtpPlainText, HttpEventFields, HttpThreat,
@@ -4185,6 +4337,21 @@ mod tests {
         event.sensor
     }
 
+    fn message_at_nanos(nanos: i64) -> EventMessage {
+        let mut message = example_message(
+            EventKind::DnsCovertChannel,
+            EventCategory::CommandAndControl,
+        );
+        message.time = timestamp::from_i64_nanos(nanos).expect("i64 nanoseconds fit Timestamp");
+        message
+    }
+
+    fn key_timestamp(key: i128) -> i64 {
+        (key >> 64)
+            .try_into()
+            .expect("the upper half of an event key is an i64 timestamp")
+    }
+
     #[test]
     fn event_db_put() {
         let (_permit, store) = setup_store();
@@ -4218,6 +4385,110 @@ mod tests {
         assert!(iter.next().is_some());
         assert!(iter.next().is_some());
         assert!(iter.next().is_none());
+    }
+
+    #[test]
+    fn event_iterators_use_signed_chronological_order() {
+        let (_permit, store) = setup_store();
+        let db = store.events();
+        let timestamps = [i64::MIN, -1, 0, 1, i64::MAX];
+
+        for nanos in [0, i64::MAX, -1, i64::MIN, 1] {
+            db.put(&message_at_nanos(nanos)).unwrap();
+        }
+
+        let forward: Vec<_> = db
+            .iter_forward()
+            .map(|item| key_timestamp(item.unwrap().0))
+            .collect();
+        assert_eq!(forward, timestamps);
+
+        let reverse: Vec<_> = db
+            .iter_reverse()
+            .map(|item| key_timestamp(item.unwrap().0))
+            .collect();
+        assert_eq!(reverse, timestamps.into_iter().rev().collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn iter_from_is_inclusive_and_crosses_only_the_later_sign_region() {
+        let (_permit, store) = setup_store();
+        let db = store.events();
+        let mut keys = HashMap::new();
+        for nanos in [-5, -1, 0, 4] {
+            keys.insert(nanos, db.put(&message_at_nanos(nanos)).unwrap());
+        }
+
+        let from_negative: Vec<_> = db
+            .iter_from(
+                *keys.get(&-5).expect("inserted key is present"),
+                Direction::Forward,
+            )
+            .map(|item| key_timestamp(item.unwrap().0))
+            .collect();
+        assert_eq!(from_negative, [-5, -1, 0, 4]);
+
+        let from_non_negative: Vec<_> = db
+            .iter_from(
+                *keys.get(&4).expect("inserted key is present"),
+                Direction::Reverse,
+            )
+            .map(|item| key_timestamp(item.unwrap().0))
+            .collect();
+        assert_eq!(from_non_negative, [4, 0, -1, -5]);
+
+        let forward_within_non_negative: Vec<_> = db
+            .iter_from(
+                *keys.get(&0).expect("inserted key is present"),
+                Direction::Forward,
+            )
+            .map(|item| key_timestamp(item.unwrap().0))
+            .collect();
+        assert_eq!(forward_within_non_negative, [0, 4]);
+
+        let reverse_within_negative: Vec<_> = db
+            .iter_from(
+                *keys.get(&-1).expect("inserted key is present"),
+                Direction::Reverse,
+            )
+            .map(|item| key_timestamp(item.unwrap().0))
+            .collect();
+        assert_eq!(reverse_within_negative, [-1, -5]);
+
+        let missing_negative = i128::from(-3_i64) << 64;
+        let forward: Vec<_> = db
+            .iter_from(missing_negative, Direction::Forward)
+            .map(|item| key_timestamp(item.unwrap().0))
+            .collect();
+        assert_eq!(forward, [-1, 0, 4]);
+
+        let missing_positive = i128::from(2_i64) << 64;
+        let reverse: Vec<_> = db
+            .iter_from(missing_positive, Direction::Reverse)
+            .map(|item| key_timestamp(item.unwrap().0))
+            .collect();
+        assert_eq!(reverse, [0, -1, -5]);
+    }
+
+    #[test]
+    fn iterator_preserves_key_order_with_equal_timestamps() {
+        let (_permit, store) = setup_store();
+        let db = store.events();
+        let message = message_at_nanos(-1);
+        let mut inserted = Vec::new();
+
+        for _ in 0..3 {
+            inserted.push(db.put(&message).unwrap());
+        }
+        inserted.sort_unstable();
+
+        let iterated: Vec<_> = db.iter_forward().map(|item| item.unwrap().0).collect();
+        assert_eq!(iterated, inserted);
+        assert!(
+            iterated
+                .iter()
+                .all(|key| key_timestamp(*key) == -1 && key.to_be_bytes().len() == 16)
+        );
     }
 
     #[test]
@@ -8310,6 +8581,40 @@ mod tests {
     }
 
     #[test]
+    fn remove_before_obeys_strict_signed_timestamp_boundaries() {
+        let cases = [
+            (i64::MIN, Vec::new()),
+            (-1, vec![i64::MIN]),
+            (0, vec![i64::MIN, -1]),
+            (1, vec![i64::MIN, -1, 0]),
+            (i64::MAX, vec![i64::MIN, -1, 0, 1]),
+        ];
+
+        for (cutoff, expected_deleted) in cases {
+            let (_permit, store) = setup_store();
+            let db = store.events();
+            for nanos in [i64::MAX, 0, i64::MIN, 1, -1] {
+                db.put(&message_at_nanos(nanos)).unwrap();
+            }
+
+            assert_eq!(
+                db.remove_before(timestamp::from_i64_nanos(cutoff).unwrap())
+                    .unwrap(),
+                u64::try_from(expected_deleted.len()).unwrap()
+            );
+            let remaining: Vec<_> = db
+                .iter_forward()
+                .map(|item| key_timestamp(item.unwrap().0))
+                .collect();
+            let expected_remaining: Vec<_> = [i64::MIN, -1, 0, 1, i64::MAX]
+                .into_iter()
+                .filter(|nanos| !expected_deleted.contains(nanos))
+                .collect();
+            assert_eq!(remaining, expected_remaining);
+        }
+    }
+
+    #[test]
     fn remove_before_exact_cutoff_is_not_deleted() {
         let (_permit, store) = setup_store();
         let db = store.events();
@@ -8454,10 +8759,9 @@ mod tests {
 
         let total: usize = 1_500;
         for i in 0..total {
-            let time =
-                base_time + chrono::Duration::seconds(i64::try_from(i).expect("small value"));
+            let nanos = i64::try_from(i).expect("small value") - 750;
             let msg = EventMessage {
-                time: msg_time(time),
+                time: timestamp::from_i64_nanos(nanos).expect("small nanosecond value is valid"),
                 kind: EventKind::DnsCovertChannel,
                 fields: fields.clone(),
             };
@@ -8466,8 +8770,8 @@ mod tests {
 
         assert_eq!(db.iter_forward().count(), total);
 
-        // Cutoff well after all events.
-        let cutoff = msg_time(Utc.with_ymd_and_hms(2025, 1, 1, 0, 0, 0).unwrap());
+        // The cutoff spans both physical sign regions.
+        let cutoff = timestamp::from_i64_nanos(1_000).unwrap();
         let deleted = db.remove_before(cutoff).unwrap();
         assert_eq!(deleted, u64::try_from(total).unwrap());
         assert_eq!(db.iter_forward().count(), 0);

@@ -7,6 +7,12 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- Corrected `EventDb` iteration to use signed chronological key order across
+  the Unix epoch, and made `remove_before` consistently retain events exactly
+  at its cutoff while deleting all earlier events.
+
 ### Added
 
 - Added `EventDb::remove_by_sensors` to delete events whose sensor exactly
