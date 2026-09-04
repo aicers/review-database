@@ -162,10 +162,9 @@ const EVENT_DELETION_BATCH_SIZE: usize = 1000;
 const FIRST_NON_NEGATIVE_EVENT_KEY: [u8; 16] = 0_i128.to_be_bytes();
 const FIRST_NEGATIVE_EVENT_KEY: [u8; 16] = i128::MIN.to_be_bytes();
 
-type PhysicalEventIterator<'i> = rocksdb::DBIteratorWithThreadMode<
-    'i,
-    rocksdb::OptimisticTransactionDB<rocksdb::SingleThreaded>,
->;
+type PhysicalEventDb = rocksdb::OptimisticTransactionDB<rocksdb::SingleThreaded>;
+type PhysicalEventIterator<'i> = rocksdb::DBIteratorWithThreadMode<'i, PhysicalEventDb>;
+type PhysicalEventSnapshot<'i> = rocksdb::SnapshotWithThreadMode<'i, PhysicalEventDb>;
 
 #[derive(Clone, Copy)]
 enum EventKeyRegion {
@@ -199,11 +198,11 @@ fn event_region_read_options(region: EventKeyRegion) -> rocksdb::ReadOptions {
 }
 
 fn physical_event_iterator<'i>(
-    db: &'i rocksdb::OptimisticTransactionDB,
+    snapshot: &PhysicalEventSnapshot<'i>,
     region: EventKeyRegion,
     mode: IteratorMode<'_>,
 ) -> PhysicalEventIterator<'i> {
-    db.iterator_opt(mode, event_region_read_options(region))
+    snapshot.iterator_opt(mode, event_region_read_options(region))
 }
 
 // event kind
@@ -3665,8 +3664,9 @@ impl<'a> EventDb<'a> {
 
 #[allow(clippy::module_name_repetitions)]
 pub struct EventIterator<'i> {
-    db: &'i rocksdb::OptimisticTransactionDB,
+    // The iterator must be dropped before the snapshot it uses.
     inner: PhysicalEventIterator<'i>,
+    snapshot: PhysicalEventSnapshot<'i>,
     next_region: Option<EventKeyRegion>,
     direction: Direction,
 }
@@ -3679,9 +3679,11 @@ impl<'i> EventIterator<'i> {
         next_region: Option<EventKeyRegion>,
         direction: Direction,
     ) -> Self {
+        let snapshot = db.snapshot();
+        let inner = physical_event_iterator(&snapshot, region, mode);
         Self {
-            db,
-            inner: physical_event_iterator(db, region, mode),
+            inner,
+            snapshot,
             next_region,
             direction,
         }
@@ -3695,7 +3697,7 @@ impl<'i> EventIterator<'i> {
             Direction::Forward => IteratorMode::Start,
             Direction::Reverse => IteratorMode::End,
         };
-        self.inner = physical_event_iterator(self.db, region, mode);
+        self.inner = physical_event_iterator(&self.snapshot, region, mode);
         true
     }
 }
@@ -4474,20 +4476,53 @@ mod tests {
     fn iterator_preserves_key_order_with_equal_timestamps() {
         let (_permit, store) = setup_store();
         let db = store.events();
-        let message = message_at_nanos(-1);
+        let mut dns_message = example_message(
+            EventKind::DnsCovertChannel,
+            EventCategory::CommandAndControl,
+        );
+        dns_message.time = timestamp::from_i64_nanos(-1).unwrap();
+        let mut locky_message = example_message(EventKind::LockyRansomware, EventCategory::Impact);
+        locky_message.time = dns_message.time;
         let mut inserted = Vec::new();
 
-        for _ in 0..3 {
-            inserted.push(db.put(&message).unwrap());
+        for message in [&locky_message, &dns_message, &dns_message] {
+            inserted.push(db.put(message).unwrap());
         }
         inserted.sort_unstable();
 
-        let iterated: Vec<_> = db.iter_forward().map(|item| item.unwrap().0).collect();
-        assert_eq!(iterated, inserted);
+        let forward: Vec<_> = db.iter_forward().map(|item| item.unwrap().0).collect();
+        assert_eq!(forward, inserted);
+        let reverse: Vec<_> = db.iter_reverse().map(|item| item.unwrap().0).collect();
+        assert_eq!(reverse, inserted.into_iter().rev().collect::<Vec<_>>());
         assert!(
-            iterated
+            forward
                 .iter()
                 .all(|key| key_timestamp(*key) == -1 && key.to_be_bytes().len() == 16)
+        );
+    }
+
+    #[test]
+    fn event_iterator_uses_one_snapshot_across_sign_regions() {
+        let (_permit, store) = setup_store();
+        let db = store.events();
+        let negative_key = db.put(&message_at_nanos(-1)).unwrap();
+        let non_negative_key = db.put(&message_at_nanos(1)).unwrap();
+        let mut iter = db.iter_forward();
+
+        assert_eq!(iter.next().unwrap().unwrap().0, negative_key);
+
+        let added_key = db.put(&message_at_nanos(2)).unwrap();
+        db.inner.delete(non_negative_key.to_be_bytes()).unwrap();
+
+        assert_eq!(
+            iter.map(|item| item.unwrap().0).collect::<Vec<_>>(),
+            [non_negative_key]
+        );
+        assert_eq!(
+            db.iter_forward()
+                .map(|item| item.unwrap().0)
+                .collect::<Vec<_>>(),
+            [negative_key, added_key]
         );
     }
 
@@ -8701,11 +8736,8 @@ mod tests {
         let (_permit, store) = setup_store();
         let db = store.events();
 
-        let msg = example_message(
-            EventKind::DnsCovertChannel,
-            EventCategory::CommandAndControl,
-        );
-        db.put(&msg).unwrap();
+        db.put(&message_at_nanos(0)).unwrap();
+        db.put(&message_at_nanos(i64::MAX)).unwrap();
 
         // A cutoff so far in the future that nanoseconds overflow (after 2262).
         let far_future =
@@ -8715,7 +8747,7 @@ mod tests {
             "cutoff should overflow nanosecond representation"
         );
         let deleted = db.remove_before(far_future).unwrap();
-        assert_eq!(deleted, 1);
+        assert_eq!(deleted, 2);
         assert_eq!(db.iter_forward().count(), 0);
     }
 
@@ -8724,8 +8756,8 @@ mod tests {
         let (_permit, store) = setup_store();
         let db = store.events();
 
-        // Insert more than BATCH_SIZE (1000) events so deletion spans
-        // multiple batches.
+        // Insert more than BATCH_SIZE (1000) events in both physical regions
+        // so each region has a full-batch flush and a remainder batch.
         let base_time = Utc.with_ymd_and_hms(2020, 1, 1, 0, 0, 0).unwrap();
         let fields = bincode::serialize(&DnsEventFields {
             sensor: "s1".to_string(),
@@ -8757,21 +8789,27 @@ mod tests {
         })
         .unwrap();
 
-        let total: usize = 1_500;
-        for i in 0..total {
-            let nanos = i64::try_from(i).expect("small value") - 750;
-            let msg = EventMessage {
-                time: timestamp::from_i64_nanos(nanos).expect("small nanosecond value is valid"),
-                kind: EventKind::DnsCovertChannel,
-                fields: fields.clone(),
-            };
-            db.put(&msg).unwrap();
+        let events_per_region = super::EVENT_DELETION_BATCH_SIZE + 1;
+        for i in 0..events_per_region {
+            let offset = i64::try_from(i).expect("small value");
+            for nanos in [-offset - 1, offset] {
+                let msg = EventMessage {
+                    time: timestamp::from_i64_nanos(nanos)
+                        .expect("small nanosecond value is valid"),
+                    kind: EventKind::DnsCovertChannel,
+                    fields: fields.clone(),
+                };
+                db.put(&msg).unwrap();
+            }
         }
 
+        let total = events_per_region * 2;
         assert_eq!(db.iter_forward().count(), total);
 
         // The cutoff spans both physical sign regions.
-        let cutoff = timestamp::from_i64_nanos(1_000).unwrap();
+        let cutoff =
+            timestamp::from_i64_nanos(i64::try_from(events_per_region).expect("small value"))
+                .unwrap();
         let deleted = db.remove_before(cutoff).unwrap();
         assert_eq!(deleted, u64::try_from(total).unwrap());
         assert_eq!(db.iter_forward().count(), 0);
