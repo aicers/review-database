@@ -117,11 +117,11 @@ const EVENT_MIGRATION_BATCH_SIZE: usize = 100;
 
 /// Last default-column-family key durably processed by the placeholder swap.
 const COUNTRY_CODE_SWAP_CHECKPOINT_KEY: &[u8] =
-    b"migration/0.47.0-alpha.3/country-code-placeholder-swap/checkpoint";
+    b"migration/0.47.0/country-code-placeholder-swap/checkpoint";
 
 /// Durable marker preventing the placeholder swap from being applied twice.
 const COUNTRY_CODE_SWAP_COMPLETED_KEY: &[u8] =
-    b"migration/0.47.0-alpha.3/country-code-placeholder-swap/completed";
+    b"migration/0.47.0/country-code-placeholder-swap/completed";
 
 /// The name of the file recording the database format version.
 const VERSION_FILE_NAME: &str = "VERSION";
