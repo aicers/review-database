@@ -476,7 +476,7 @@ The manager (review) and the API (review-web) consume these types:
   **[DECISION] ONE new structure — a latest pointer — and the sweep scans
   rows.** The primary key is `idempotency_key` and the existing indexes cover
   non-terminal rows, owed cleanup and `expires_at` — none of which answers
-  "which is the current attempt for this triple". So a **seventh** column
+  "which is the current attempt for this triple". So a **new** column
   family holds a **latest pointer**, `(host, target, instance)` →
   `idempotency_key`, **overwritten in the same transaction that stamps
   `finalized_at`**. Last writer in transaction order wins, which *is* the most
@@ -518,11 +518,22 @@ The manager (review) and the API (review-web) consume these types:
   - **otherwise** follow the **latest pointer**.
   **[DECISION] At most ONE cleanup-owed row exists per triple, and that is an
   invariant rather than a convention.** An earlier revision allowed several
-  and picked the one with the greatest `started_at`. Both halves were wrong:
-  the owed-teardown index is keyed `(target, host, instance)` with no
-  discriminator, so a second row would **overwrite** the first's entry rather
-  than queue behind it; and `started_at` does not order attempts anyway, since
-  two can share an instant and a clock can go backwards.
+  and picked the one with the greatest `started_at`. That is wrong on the
+  reading half: `started_at` does not order attempts, since two can share an
+  instant and a clock can go backwards, so "the latest owed row" is not a
+  question the store can answer.
+  **The storage half is a CODE CHANGE, not an existing property, and an
+  earlier revision of this section had it backwards.** It argued the invariant
+  was already enforced because the owed-teardown index carries no
+  discriminator and a second row would overwrite the first. The shipped index
+  does the opposite: `owed_cleanup_key` **appends the `idempotency_key`**
+  after `(target, host, instance)`, its own doc comment says "several attempts
+  may owe a cleanup for one triple", and `attempts_owing_cleanup` returns a
+  **`Vec<OperationAttempt>`**. So today a second row **queues** rather than
+  overwriting, and nothing refuses it. Making the invariant real therefore
+  means **dropping the discriminator from the key and narrowing the read to at
+  most one row**, and retiring the tests that assert several. Until that lands,
+  the three-step lookup's second step has no single row to return.
   **The invariant needs RFC-D2's guard to be WIDER than it was, and §4f
   widens it**: while a triple has an owed teardown, **no new
   `operation_attempt` may be created THAT NAMES THAT TRIPLE** — no update, no
@@ -678,7 +689,8 @@ The manager (review) and the API (review-web) consume these types:
   their CF names to `MAP_NAMES` before `COMPATIBLE_VERSION_REQ` bumps, opening
   a `0.46.0` data dir would create the new CFs **without** a version change —
   format drift with no migration record. Therefore the CF registration (adding
-  the seven names to `MAP_NAMES`) is part of the **same** change that bumps
+  the **five** names this amendment introduces to `MAP_NAMES`) is part of the
+  **same** change that bumps
   `COMPATIBLE_VERSION_REQ` to `0.47.0-alpha.3` (§4f); the type/CRUD work for
   those tables may
   precede it, but their CFs are **not registered/opened until the bump lands**.
@@ -687,7 +699,7 @@ The manager (review) and the API (review-web) consume these types:
   migration functions open the DB with `create_missing_column_families(false)`
   and `crate::tables::MAP_NAMES` (`migration.rs`, e.g. `:234`), whereas the
   **runtime** `StateDb::open` uses `create_missing_column_families(true)`
-  (`tables.rs:499`, `:509`). So once the seven new names are in `MAP_NAMES`, a
+  (`tables.rs:499`, `:509`). So once the five new names are in `MAP_NAMES`, a
   migration that opens `MAP_NAMES` with `false` on a `0.46.0` dir (which lacks
   those CFs) **fails at open** — the migration must create the new CFs. And
   because the format-version bump is written only **after** the migration body,
@@ -695,9 +707,10 @@ The manager (review) and the API (review-web) consume these types:
   **`0.46.0` with the new CFs already present**; the rerun must tolerate that.
   - **(recommended) create-missing for this migration** — open
     `migrate_0_46_to_0_47` with `create_missing_column_families(true)` + the new
-    `MAP_NAMES`, so the seven CFs are created when absent and simply opened when
-    present. This is **inherently rerun-safe** — a re-open never fails on "CF
-    already exists" and creates nothing once all seven exist — and mirrors the
+    `MAP_NAMES`, so every CF the dir lacks is created when absent and simply
+    opened when present. This is **inherently rerun-safe** — a re-open never
+    fails on "CF already exists" and creates nothing once they all exist — and
+    mirrors the
     existing CF-adding migration `migration.rs:627`. It matches this repo's
     idempotent-rerun convention (below) with the least machinery. (`:627` is
     `migrate_customer_specific_networks`, which opens with
@@ -705,13 +718,13 @@ The manager (review) and the API (review-web) consume these types:
     rather than adding one — it is the precedent for the **open mode**, not
     for CF creation.)
   - **or a versioned CF list** — a **`MAP_NAMES_V0_46`** constant (`MAP_NAMES`
-    without the seven new names) opened under
+    without the five new names) opened under
     `create_missing_column_families(false)` (mirrors the versioned list
     `MAP_NAMES_V0_42`, `migration.rs:301`/`:342`/`:448` — the repo pins the
     names as literals there but documents no rationale, so treat it as
     precedent for the shape, not as a stated rule), then explicit
-    `db.create_cf` for the seven
-    new CFs (`migration.rs:504`). **This variant is NOT rerun-safe as written**:
+    `db.create_cf` for every CF the dir lacks
+    (`migration.rs:504`). **This variant is NOT rerun-safe as written**:
     after the crash above the DB already holds `core_component`/`operation_attempt`,
     so an old-only-list open fails (RocksDB requires every existing CF to be
     named) and a second `create_cf` fails ("CF already exists"). To use it, the
@@ -1089,19 +1102,26 @@ through.
   concurrent same-package applies to different hosts, and two commits of one
   version, are distinguishable.
 - **The new CFs are created only with the format bump:** opening a `0.46.0`
-  data dir with the pre-bump build does **not** create the
-  `core_component`/`operation_attempt` CFs; they appear only once
-  `COMPATIBLE_VERSION_REQ` is `0.47.0-alpha.3`. A test opens a `0.46.0` dir
-  against the pre-bump `MAP_NAMES` and asserts **none of the seven** new CFs is
-  created.
+  data dir with the pre-bump build does **not** create the CFs this change
+  adds; they appear only once `COMPATIBLE_VERSION_REQ` is `0.47.0-alpha.3`. A
+  test opens a `0.46.0` dir against the pre-bump `MAP_NAMES` and asserts
+  **none of the five** CFs this change adds is created. (`core_component` and
+  `operation_attempt` are **not** among them: they were registered by an
+  earlier slice and are already in `MAP_NAMES` at `0.47.0-alpha.2`.)
 - A data dir written at `0.46.0` migrates cleanly to the new format: every
   existing agent/external-service gains the defaults
   (`None` / `None` / `NotInstalled` / empty `bound_addrs`); no config/draft
   data is lost; migration is
-  resumable/robust in the house style. The migration **opens a `0.46.0` dir
-  that lacks all seven new CFs without failing** — `core_component`,
-  `operation_attempt`, the instance allocation table, the port allocation
-  primary, its two indexes and the latest pointer —
+  resumable/robust in the house style.
+  **Two counts, and they are different — conflating them is the mistake this
+  spells out.** This change adds **five** names to `MAP_NAMES` (39 → 44). But a
+  `0.46.0` store is at 36 CFs, so migrating one **creates eight**: those five
+  plus `core_component`, `operation_attempt` and **`customer deletion jobs`**,
+  all three registered by earlier `0.47.0` alpha slices and none of them
+  present at `0.46`. The migration therefore **opens a `0.46.0` dir that lacks
+  all eight without failing** — the instance allocation table, the port
+  allocation primary, its two indexes, the latest pointer, `core_component`,
+  `operation_attempt` and `customer deletion jobs` —
   and
   creates every one of them (`create_missing_column_families(true)` for this
   migration —
