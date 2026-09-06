@@ -196,17 +196,20 @@ The manager (review) and the API (review-web) consume these types:
     (they dial out on an ephemeral port), so in practice this is populated on
     `ExternalService` and stays empty on `Agent`. It is recorded rather than
     derived because **only the host knows where the instance actually ended
-    up**. In v1 roxyd **chooses nothing** — it renders the package-declared
-    defaults and probes no port (RFC-B §4, RFC-A §4) — but its **first bind
-    still precedes its first configuration**, because Giganto's config
-    arrives direct from REView as a post-install step (RFC-D2 §4b): what the
-    instance is reachable on is what the host bound, not what the draft
-    names. When a later release adds the port chooser that a second instance
-    requires (RFC-B §4), the same field carries the chosen value with no
-    schema change. Two readers need it: the direct-to-Giganto
-    config push, which otherwise has no destination (RFC-D2 §4b), and the UI
-    form, which would otherwise keep offering the package default to an
-    instance that is not on it (RFC-E §4).
+    up**. **REView chooses the addresses** and sends them on `Install` as
+    `bind_addrs` (RFC-D2 §4f, RFC-C §4); roxyd renders them verbatim before
+    the unit starts and never picks. That reverses the earlier position that
+    roxyd renders the component's own defaults and chooses nothing, and it
+    changes what this field is **for**: not how the manager learns what the
+    instance got, which it already knows, but whether the host **agrees**.
+    An instance that failed to bind reports nothing here, and that is the
+    signal.
+    So this field has **one** reader, not two. The direct-to-Giganto config
+    push now dials **the allocated address** (RFC-D2 §4b/§4f) rather than the
+    latest reported value, because the manager assigned it and does not need
+    to read it back — and a reported value is empty exactly when the instance
+    is down, which is when a destination is most needed. The UI reads it to
+    show whether an instance is bound where it was placed (RFC-E §4).
 - These are **actual** state (what roxyd reports). No `desired_*`. In
   particular `bound_addrs` is **observed, not intent**: it records where the
   instance *is*, while `draft`/`config` carry what the operator *wants*, and
@@ -261,12 +264,86 @@ The manager (review) and the API (review-web) consume these types:
 
 - New table (`src/tables/operation_attempt.rs`), a **transient** record:
   - **`idempotency_key: String` is the GLOBALLY UNIQUE key** (not a plain field
-    beside a surrogate `id`). REView generates a **distinct** `idempotency_key`
-    per logical operation (a given host + target + operation gets its own key),
-    so the key **alone** identifies the operation — `host` and `target` are
-    **data on the row, not part of the uniqueness key**. Crash-safe resume
+    beside a surrogate `id`). There is one key per logical operation, so the
+    key **alone** identifies it — `host` and `target` are **data on the row,
+    not part of the uniqueness key**.
+    **Who generates it depends on whether the operation allocates.** For an
+    **allocating install** it is the client-supplied `requestKey` (RFC-D3
+    §5a), persisted verbatim: an allocating call forms a fresh
+    `(host, target, instance)` on every attempt, so only a value the client
+    holds across retries can dedupe the operator's intent, and holding it only
+    in memory would let a resubmit after a REView restart allocate a second
+    instance. For **every other operation** REView generates it, as before.
+    **The format is a UUIDv4 in its canonical hyphenated form** and a value
+    that does not parse as one is **refused**. That is a shape check and
+    nothing more: it does not stop a client sending a constant or replaying a
+    stored value, and this document does not pretend otherwise — **not
+    re-using a key is a client obligation** (RFC-E §4), and the server cannot
+    verify it.
+    **A key that matches an existing row is resolved by comparing a stored
+    DIGEST of the request, because the row does not otherwise carry enough to
+    compare.** "Same payload" is not decidable from what
+    `operation_attempt` holds today: it records the resolved
+    `(version, commit)`, not the `BuildSelector` the operator submitted, so a
+    selector that resolves to a different commit later would read as a
+    different request when it is the same one — and as the same request when
+    it is not. So the row gains
+    **`install_intent: Option<[u8; 32]>`** — `Option`, because the
+    non-allocating operations below store none — holding a SHA-256 over a
+    **byte-exact** encoding. "Length-prefixed" is not a specification: a
+    digest two REView builds compute differently turns every retry across an
+    update into a `RequestKeyReused` refusal, so the transcript is fixed here
+    and a **golden vector** ships with the implementation, so a change to it
+    fails a test rather than a deployment. The hashed transcript is, in order:
+    - `b"clumit-install-intent-v1"` — 24 bytes, domain and version separation;
+    - `host` then `target`, each as a `u32` **big-endian** byte length
+      followed by its UTF-8 bytes;
+    - the selector's **kind** as a `u8` tag, pinned **here** rather than
+      delegated: `0 = Version`, `1 = Commit` — `BuildSelector` is version
+      **XOR** commit (RFC-D2 §3), and a table "beside the type" would let two
+      implementations number them differently and disagree on every digest.
+      Then its value length-prefixed in the same shape — the value **as
+      submitted**, never its resolution;
+    - `on_failure` as a `u8` tag: `0 = Rollback`, `1 = Hold`;
+    - the `bind_addrs` list as a `u32` **big-endian count**, then each entry
+      in ascending `listener_key` order as the length-prefixed key followed by
+      the length-prefixed address rendered as `SocketAddr`'s own `Display` —
+      `<ip>:<port>`, an IPv6 address in square brackets, lowercase, RFC 5952
+      compressed — named explicitly so no implementation re-derives it.
+      **`None` and an empty list are distinct**: `None` encodes count
+      `u32::MAX`, an empty list encodes count `0`.
+
+    Every length and count is `u32` big-endian and fixed width, so no field
+    boundary can shift. Nothing else enters the transcript — not the instance
+    number, which the call allocates, and not any timestamp.
+    Then: a key whose stored `install_intent` **equals** the incoming one
+    **returns that row**, which is what makes a retry idempotent; a key whose
+    digest **differs** is refused with **`RequestKeyReused { request_key }`**,
+    **non-retryable** — it is a client bug, and overwriting the first row
+    would destroy a live attempt's record, including the allocation rows that
+    hang off it. The digest is stored rather than the fields because the only
+    question ever asked of it is equality; the refusal names the key rather
+    than the difference for the same reason.
+    **`install_intent` is `None` for every non-allocating operation.** Update,
+    remove and onboard are keyed by a REView-generated value that is unique by
+    construction, so there is nothing to compare — and a stored `None`
+    presented with a digest, or the reverse, is a `RequestKeyReused` refusal
+    like any other mismatch.
+    **The dedupe guarantee is bounded by retention, and the bound is stated
+    rather than implied.** An earlier revision claimed keys are never
+    reclaimed while also saying retention frees them, which cannot both hold.
+    The row **is** removed by the ordinary retention sweep, and a client that
+    replays a stored request after its row is gone gets a **new** install —
+    there is no tombstone. A permanent tombstone was considered and rejected:
+    it is unbounded growth to defend against a client replaying a request days
+    later, which the client contract already forbids. So the guarantee reads:
+    **a repeated request is deduped for as long as its `operation_attempt`
+    row survives retention**, which is far longer than any dialog lives.
+    Crash-safe resume
     depends on **one** record per logical operation: a re-drive/resume with the
-    same key must **find or upsert the same row**, never create a duplicate.
+    same key **finds and returns the existing row, and never writes over it**.
+    The write is **insert-once**: an insert whose key already exists is not an
+    upsert but a read followed by the digest comparison above.
     **[DECISION]** enforce this by making the table **keyed by
     `idempotency_key`** (or, if a surrogate `id` primary key is kept, a
     **single global unique index on `idempotency_key`**) — **not** a
@@ -284,7 +361,8 @@ The manager (review) and the API (review-web) consume these types:
     **same type the wire carries** (RFC-C §4/§5) so nothing has to convert
     or compare string forms — the three-digit zero-padded rendering belongs
     to the SAN and the `registration_id` (RFC-A §4), never to this field.
-    In v1 it is `Some(1)` for a module and `None` for a core component. The owed
+    It is the allocated number for a module (§4g) and `None` for a core
+    component. The owed
     `Deregister` this row may carry is driven with
     `(service_name, host, instance)` and the **registrar** derives the
     composed identity from those (RFC-C §5, RFC-F §5.1/§5.5), so a name
@@ -360,28 +438,146 @@ The manager (review) and the API (review-web) consume these types:
   the apply budget never orphans the minted identity. An attempt is **fully
   discharged** only once the apply is terminal **and** any owed `cleanup_state`
   is discharged.
-- **[DECISION] A discharged attempt is FINALIZED IN PLACE and retained, not
-  deleted — with a retention rule so the table does not grow without bound.**
+- **[DECISION] A fully discharged attempt is FINALIZED IN PLACE and retained,
+  and the row carries `finalized_at: Option<DateTime<Utc>>` so "retained for
+  how long" is measurable at all.** `started_at` and `expires_at` cannot
+  express it — the first is when the attempt began and the second is a
+  deadline it may never reach.
+  **The invariant is `finalized_at.is_some()` if and only if the outcome is
+  terminal AND `cleanup_state` is empty**, which is the "fully discharged"
+  state the bullet above defines — not merely "terminal". An earlier revision
+  wrote it in the same transaction as the terminal outcome, which is wrong for
+  exactly the case that bullet exists for: an apply that terminates `Failed`
+  with a teardown still owed is terminal and **not** finished, and stamping it
+  then would start a retention clock on a row that still has work to do.
+  So it is written by whichever transaction **completes the pair**: the
+  terminal-outcome write when nothing is owed, and otherwise the later
+  transaction that discharges the last of `cleanup_state`. A terminal row that
+  still owes cleanup carries `finalized_at = None`, and the retention sweep
+  therefore cannot reach it — which is the behaviour that was wanted.
   "Transient" describes the *obligation*, not the row. Deleting the row on
   completion would break the two readers that need it after the fact: RFC-D2
   §4b's "what did the operator last do here" display/audit, and RFC-E §5's
   self-update recovery, where reading the operation record is the **only** way
   the UI learns whether a REView / aice-web-next update succeeded (the response
-  channel was torn down by the swap, RFC-C §4). So: keep the **most recent
-  terminal attempt per `(host, target, instance)`** — the same triple the
-  single-flight key uses (below), so a module running several instances keeps
-  one record each rather than collapsing to one per `(host, target)` and
-  masking a sibling's outcome — plus every attempt that is still
-  non-terminal or still owes `cleanup_state` — and prune older terminal
-  attempts beyond a bounded age/count. Without the prune, every install,
-  update, remove, and onboard accumulates forever.
+  channel was torn down by the swap, RFC-C §4). So, and these two rules are
+  stated together because an earlier revision had them contradicting each
+  other:
+  - **The most recent terminal attempt per `(host, target, instance)` is kept
+    indefinitely**, along with every attempt still non-terminal or still owing
+    `cleanup_state`. It is the same triple the single-flight key uses (below),
+    so a module running several instances keeps one record each rather than
+    collapsing to one per `(host, target)` and masking a sibling's outcome.
+    This is the row RFC-D2 §4b's "what did the operator last do here" and
+    RFC-E §5's self-update recovery read, and neither has a useful expiry.
+  - **Every OLDER terminal attempt is swept 30 days after its
+    `finalized_at`.** Without the prune, every install, update, remove and
+    onboard accumulates forever.
+  **[DECISION] ONE new structure — a latest pointer — and the sweep scans
+  rows.** The primary key is `idempotency_key` and the existing indexes cover
+  non-terminal rows, owed cleanup and `expires_at` — none of which answers
+  "which is the current attempt for this triple". So a **seventh** column
+  family holds a **latest pointer**, `(host, target, instance)` →
+  `idempotency_key`, **overwritten in the same transaction that stamps
+  `finalized_at`**. Last writer in transaction order wins, which *is* the most
+  recent finalization — no timestamp comparison, no tie to break.
+  **An earlier revision added a finalization-time index beside it, and that
+  index is WITHDRAWN.** It was designed to answer "latest per triple" from its
+  last key, and that job moved to the pointer as soon as it was clear that
+  appending an `idempotency_key` for uniqueness makes a key unique, not
+  ordered — UUID byte order has nothing to do with which attempt finished
+  second. What was left was an index kept **only to find age candidates for
+  the sweep**, whose key still began `host` + `target` + `instance`. That key
+  cannot range-serve a global "older than the cutoff" scan at all — it orders
+  by triple first — so the sweep walked the whole index anyway, and the
+  per-triple time order it did provide was read by **nothing**. It bought one
+  avoided row deserialization on a housekeeping pass, at the price of a column
+  family and a bespoke byte encoding.
+  **The sweep therefore walks the terminal rows themselves**, which already
+  carry `finalized_at`: for each row past the cutoff it **keeps** the row when
+  the latest pointer for that triple names it — the current attempt is
+  retained indefinitely regardless of age — and otherwise **deletes** it. The
+  table holds operator actions (installs, updates, removes, onboards), not
+  event data, so a periodic scan is the right shape here; if it ever outgrows
+  that, the answer is an index keyed `finalized_at_nanos` + `idempotency_key`
+  **with no triple prefix**, which is what a cutoff scan actually needs.
+  **[DECISION] "The latest attempt" is not read from the pointer alone,
+  because a terminal attempt that still owes cleanup has no `finalized_at`
+  and therefore no pointer entry.** That is deliberate — §4d
+  distinguishes terminal from fully discharged — but it means a reader
+  consulting only finalized rows would show a **superseded** attempt as
+  current while newer work is still owed. So the lookup is three steps, in this
+  order:
+  - **first**, if a **non-terminal** row exists for the triple, that is the
+    latest attempt. At most one can: the non-terminal
+    `(host, target, instance)` index below enforces one live attempt per
+    triple, so a second cannot start on a triple while one is in flight —
+    and an allocating install forms a *fresh* triple, so it never contends
+    for this slot;
+  - **then**, if the **cleanup-owed** row exists, that is the latest;
+  - **otherwise** follow the **latest pointer**.
+  **[DECISION] At most ONE cleanup-owed row exists per triple, and that is an
+  invariant rather than a convention.** An earlier revision allowed several
+  and picked the one with the greatest `started_at`. Both halves were wrong:
+  the owed-teardown index is keyed `(target, host, instance)` with no
+  discriminator, so a second row would **overwrite** the first's entry rather
+  than queue behind it; and `started_at` does not order attempts anyway, since
+  two can share an instant and a clock can go backwards.
+  **The invariant needs RFC-D2's guard to be WIDER than it was, and §4f
+  widens it**: while a triple has an owed teardown, **no new
+  `operation_attempt` may be created THAT NAMES THAT TRIPLE** — no update, no
+  remove, and no re-onboard of the same identity, where the earlier guard
+  covered host onboarding alone. **An install is not among them.** It
+  allocates a fresh number (§4g) and so names a different triple, so this
+  guard never reaches it — a rule that blocked installs as well would be the
+  component-wide refusal this design removed (§4g). Resuming the **same**
+  `idempotency_key`, and the cleanup driver discharging the teardown, are the
+  only writes that proceed on the owed triple.
+  **A narrower guard would leave the three-step lookup wrong, not merely
+  untidy.** Suppose an owed-cleanup row `A` and a later attempt `B` could
+  coexist. While `B` runs, step one returns `B` and the answer is right. But
+  when `B` **succeeds** the pointer names `B`, and step two — which is
+  consulted before the pointer — returns `A`: the finished newer work is
+  hidden behind older cleanup, and the reader is told the wrong thing at
+  exactly the moment the operator is watching for completion. The priority
+  compares **row states**, and nothing in it compares the two rows' order.
+  Widening the guard removes the coexistence rather than adding an ordering to
+  reason about it, which is the smaller change: the alternative is a
+  per-triple attempt sequence maintained at creation time, and a second thing
+  that has to stay consistent with the pointer.
+  **The three candidate sources are consulted in order rather than merged**,
+  and what they can overlap on is **one row**, not two. A *later* attempt
+  cannot sit beside an earlier cleanup-owed one on the same triple — RFC-D2's
+  guard refuses the update or remove that would create it, and an install
+  allocates a different number and so a different triple. What remains is a
+  **single in-flight row that is both**: non-terminal, and already carrying
+  the `cleanup_state` armed before its mint (§4d), so it appears under both
+  indexes at once. Order matters there only to make the answer deterministic —
+  both steps would name the same row — and it matters for the sequence as a
+  whole, since step two must still run before the pointer for a terminal row
+  whose teardown is outstanding.
+  Both RFC-D3 §5b's inline read and anything else asking "what is the state
+  here" use exactly this order, and it is tested as **one ordered three-branch
+  lookup** rather than as three independent ones — the order is the rule, so
+  testing the branches separately would not exercise it.
+  **[DECISION] The row and the latest pointer move together, in ONE
+  transaction.** They are writes to two column families, and a crash between
+  them leaves a **stale pointer** naming an attempt that is no longer current
+  — silently, since nothing else records which attempt is latest. So the
+  **finalization write and the pointer overwrite** are one transaction. The
+  sweep's delete is a single row and needs no pairing: it never touches the
+  pointer, because it never prunes the row the pointer names.
+  So the dedupe guarantee above is **at least 30 days**, and for the most
+  recent attempt on a triple it does not expire at all — which is strictly
+  stronger than the client's 24-hour key lifetime needs (RFC-E §4).
 - **[DECISION] Secondary indexes — four orchestration guards need a durable
   "is there a live operation for X?" lookup.** The uniqueness key is
   `idempotency_key` alone (above), which deliberately gives no way to ask that
-  question. But RFC-D3 §5a's single-flight per `(host, target, instance)`,
-  and RFC-D2
+  question. But RFC-D3 §5a's single-flight per `(host, target, instance)`
+  **for update and remove** (an install dedupes on its `requestKey`, which
+  *is* the `idempotency_key` and so is already unique above), and RFC-D2
   §4d's per-hostname onboard idempotency, `Register`/`Deregister` mutual
-  exclusion, and "re-onboard blocked while a teardown is owed" **all** need it
+  exclusion, and "blocked while a teardown is owed" **all** need it
   — and need it to survive a REView restart, so it cannot live in process
   memory (a double-click followed by a restart would otherwise re-drive two
   live attempts for one operation). So this table carries:
@@ -393,7 +589,12 @@ The manager (review) and the API (review-web) consume these types:
     second instance while the first one's install is still running — a
     legitimate concurrent operation, not a double-click (RFC-D2 §4b);
   - an index on **`(target, host, instance)`** for rows with a non-empty
-    `cleanup_state` (the owed-teardown lookup);
+    `cleanup_state` (the owed-teardown lookup). The key carries no
+    discriminator, which is **why** at most one such row may exist per triple
+    (§4d): a second would overwrite the first's entry and lose an owed
+    teardown silently. RFC-D2's owed-teardown guard — no further update,
+    remove or re-onboard on a triple whose teardown is outstanding (§4d) —
+    is what keeps a second from arising;
   - an index on **`expires_at`** over **all** rows, not only `Onboard`
     ones — every action carries a deadline (above) and the sweep scans them
     all (the expiry sweep,
@@ -412,10 +613,44 @@ The manager (review) and the API (review-web) consume these types:
 
 ### 4f. Migration + format bump
 
-- Introduce the format change under the next DB-format version (e.g.
-  **`0.47.0`**): bump `COMPATIBLE_VERSION_REQ` (`migration.rs:111`) to
-  `">=0.47.0,<0.48.0"` and append a `migrate_0_46_to_0_47` entry to the
-  `Vec<Migration>` (`migration.rs:177`).
+- **[DECISION] One target version, written out, and every other statement in
+  this document defers to it.** The crate is on a `0.47.0` **prerelease** by
+  the time this lands, so the target is the **next alpha** — concretely
+  `0.47.0-alpha.3` if `alpha.2` is current — and:
+  - `COMPATIBLE_VERSION_REQ` (`migration.rs:111`) becomes
+    `">=0.47.0-alpha.3,<0.47.0-alpha.4"`;
+  - the `Vec<Migration>` (`migration.rs:177`) gains a `migrate_0_46_to_0_47`
+    entry whose requirement is `">=0.46.0,<0.47.0-alpha"` and whose target is
+    `0.47.0-alpha.3`.
+  An earlier revision wrote the target as plain `0.47.0` with a
+  `">=0.47.0,<0.48.0"` range in one place and "the next alpha" in another;
+  those cannot both be implemented, and the prerelease form is the correct
+  one — a released `0.47.0` range would wave through every alpha store.
+- **[DECISION] The target version moves with the shapes, or an existing alpha
+  store is silently accepted.** By the time the allocation table of §4g-bis
+  lands, this crate is at a `0.47.0` **prerelease** and
+  `COMPATIBLE_VERSION_REQ` is a narrow alpha range; `migrate_data_dir` returns
+  `Ok` immediately inside that range, so changing the stored shapes **without**
+  moving the target means a store marked with the superseded alpha is waved
+  through, migrated by nothing, and fails to decode at runtime. The target and
+  the range therefore advance to the next alpha together, in the same change
+  that adds the shapes.
+  **The comparator literal matters.** A `<`-bound carrying a prerelease at
+  `0.47.0` brings that version's *other* prereleases into consideration, so
+  `<0.47.0-alpha.N` still **matches** `0.47.0-alpha.(N-1)`. The `0.46 → 0.47`
+  entry's requirement is written `">=0.46.0,<0.47.0-alpha"`, which excludes
+  every `0.47.0` prerelease while still matching `0.46.x`.
+  **There is no alpha data to convert**, and this crate's own rule is why:
+  migration is supported "between **released versions only**", prereleases
+  being "assumed to be incompatible with each other". An operator upgrading a
+  running alpha deployment performs an operator action — reset or
+  re-provision — and this document says so rather than pretending a conversion
+  could reconstruct records nobody kept.
+- **The new shapes land inside the existing `0.46 → 0.47` step**, which is
+  still a real conversion: `0.46.0` stores exist and their rows predate the
+  install-state fields, so that one step preserves existing fields,
+  initializes the new ones empty, and creates the new column families —
+  including the allocation table's and its two indexes'.
 - **The migration walks the `AGENTS` and `EXTERNAL_SERVICES` column families
   — NOT the `Node` records.** The new fields live on `Agent` /
   `ExternalService`, whose values are persisted in those CFs (§2), while a
@@ -443,15 +678,16 @@ The manager (review) and the API (review-web) consume these types:
   their CF names to `MAP_NAMES` before `COMPATIBLE_VERSION_REQ` bumps, opening
   a `0.46.0` data dir would create the new CFs **without** a version change —
   format drift with no migration record. Therefore the CF registration (adding
-  the two names to `MAP_NAMES`) is part of the **same** change that bumps
-  `COMPATIBLE_VERSION_REQ` to `0.47.0`; the type/CRUD work for those tables may
+  the seven names to `MAP_NAMES`) is part of the **same** change that bumps
+  `COMPATIBLE_VERSION_REQ` to `0.47.0-alpha.3` (§4f); the type/CRUD work for
+  those tables may
   precede it, but their CFs are **not registered/opened until the bump lands**.
 - **[DECISION] How `migrate_0_46_to_0_47` opens a `0.46.0` dir (whose new CFs
   do not exist yet) — AND stays rerun-safe after a mid-migration crash.** The
   migration functions open the DB with `create_missing_column_families(false)`
   and `crate::tables::MAP_NAMES` (`migration.rs`, e.g. `:234`), whereas the
   **runtime** `StateDb::open` uses `create_missing_column_families(true)`
-  (`tables.rs:499`, `:509`). So once the two new names are in `MAP_NAMES`, a
+  (`tables.rs:499`, `:509`). So once the seven new names are in `MAP_NAMES`, a
   migration that opens `MAP_NAMES` with `false` on a `0.46.0` dir (which lacks
   those CFs) **fails at open** — the migration must create the new CFs. And
   because the format-version bump is written only **after** the migration body,
@@ -459,9 +695,9 @@ The manager (review) and the API (review-web) consume these types:
   **`0.46.0` with the new CFs already present**; the rerun must tolerate that.
   - **(recommended) create-missing for this migration** — open
     `migrate_0_46_to_0_47` with `create_missing_column_families(true)` + the new
-    `MAP_NAMES`, so the two CFs are created when absent and simply opened when
+    `MAP_NAMES`, so the seven CFs are created when absent and simply opened when
     present. This is **inherently rerun-safe** — a re-open never fails on "CF
-    already exists" and creates nothing once both exist — and mirrors the
+    already exists" and creates nothing once all seven exist — and mirrors the
     existing CF-adding migration `migration.rs:627`. It matches this repo's
     idempotent-rerun convention (below) with the least machinery. (`:627` is
     `migrate_customer_specific_networks`, which opens with
@@ -469,12 +705,12 @@ The manager (review) and the API (review-web) consume these types:
     rather than adding one — it is the precedent for the **open mode**, not
     for CF creation.)
   - **or a versioned CF list** — a **`MAP_NAMES_V0_46`** constant (`MAP_NAMES`
-    without the two new names) opened under
+    without the seven new names) opened under
     `create_missing_column_families(false)` (mirrors the versioned list
     `MAP_NAMES_V0_42`, `migration.rs:301`/`:342`/`:448` — the repo pins the
     names as literals there but documents no rationale, so treat it as
     precedent for the shape, not as a stated rule), then explicit
-    `db.create_cf` for the two
+    `db.create_cf` for the seven
     new CFs (`migration.rs:504`). **This variant is NOT rerun-safe as written**:
     after the crash above the DB already holds `core_component`/`operation_attempt`,
     so an old-only-list open fails (RocksDB requires every existing CF to be
@@ -496,10 +732,12 @@ The manager (review) and the API (review-web) consume these types:
 - **[DECISION] The migration is forward-only, so a REView core-update that
   carries it MUST snapshot the states DB BEFORE migrating, and rollback
   restores that snapshot together with the format-version markers.**
-  `migrate_0_46_to_0_47` bumps `COMPATIBLE_VERSION_REQ` to `">=0.47.0,<0.48.0"`
+  `migrate_0_46_to_0_47` bumps `COMPATIBLE_VERSION_REQ` to the value §4f
+  fixes
   with **no** down-migration. So if a REView update whose binary carries this
   migration is rolled back to the `.previous` binary (RFC-D2 §4e / RFC-B §8),
-  the old binary (`<0.47.0`) would face an already-migrated `0.47.0` dir and
+  the old binary (below the target) would face an already-migrated
+  `0.47.0-alpha.3` dir and
   **refuse to start** — a control-plane brick. To keep the binary A/B rollback
   safe:
   - **The public backup surface is the `backup` module**, not the `StateDb` /
@@ -530,8 +768,10 @@ The manager (review) and the API (review-web) consume these types:
     `data_dir/VERSION` and `backup_dir/VERSION` (`migration.rs:208`/`:209`) and
     refuses to run when the two disagree (`:155`). A RocksDB restore writes
     only into `data_dir/states.db` and leaves `VERSION` untouched. So restoring
-    the snapshot alone yields `0.46` **content** under a `0.47` **marker**: the
-    reverted `<0.47.0` binary reads `0.47.0`, matches no `VersionReq` in the
+    the snapshot alone yields `0.46` **content** under a `0.47.0-alpha.3`
+    **marker**: the
+    reverted older binary reads `0.47.0-alpha.3`, matches no `VersionReq` in
+    the
     migration chain, and fails with `migration from 0.47.0 is not supported` —
     the same brick, reached through metadata instead of content. Therefore
     review-database exposes **one** public entry point that writes a given
@@ -546,44 +786,266 @@ The manager (review) and the API (review-web) consume these types:
 - Follow the existing style-guide cases in the `migration.rs` doc comment for
   choosing the version range.
 
-### 4g. One instance per `(component, host)` in v1
+### 4g-bis. Bind-address allocation
 
-- **[DECISION] v1 stores at most one instance per `(component, host)`, and
-  the number is always `1`; no allocation state exists.** RFC-A §4 pins the
-  instance for v1 and defers allocating free numbers to a later release, so
-  this schema needs **no counter, no reservation table, and no release
-  rule** — the three things an allocator would require. A second install for
-  a `(component, host)` that already has a row is refused at the mutation
-  boundary (RFC-D3 §5a), not resolved by picking another number.
-- **What this schema nevertheless carries, so that v2 is an extension and
-  not a migration:** `Agent.key` is already `<instance>.<service>` (§2), so
-  two instances are two rows under one `node_id` and one `kind` with **no
-  schema change**; `operation_attempt` records the `instance` (§4d); and the
-  non-terminal index is keyed `(host, target, instance)` (§4d), which with a
-  pinned number behaves exactly like `(host, target)` but does not have to be
-  rebuilt when the number varies. **No code path may assume one row per
-  `(node_id, kind)`** — that assumption is what v2 would have to unpick, and
-  §5 tests against it today.
-- **What v2 adds here** is a source of free numbers for a
-  `(component, host)`, a way to hold one across an in-flight install, and the
-  rule that releases it. Deliberately unspecified: the release rule in
-  particular has to agree with the compensation ledger (§4d) and the
-  registrar's own binding (RFC-F §5.2), and specifying that agreement before
-  the allocator exists is what this deferral avoids.
+- **[DECISION] One row per allocated address**, keyed
+  **`(host, transport, port)`** — the uniqueness that prevents a double
+  allocation. It carries an **owner** `(component, instance, listener_key)`:
+  one Giganto instance owns three listeners, two of them UDP, so
+  `(component, instance)` alone cannot say which row is which key. It carries
+  the full **`SocketAddr`** as a value, because the key deliberately drops the
+  address — the conflict model is address-blind — while a retry must rebuild
+  the request's map. And it carries the **`idempotency_key`** of the attempt
+  that owns it.
+- **[DECISION] No state column.** An earlier shape gave the row
+  `Held | Allocated | Compensating`. Every rule treats a row the same way
+  whatever its attempt is doing — the scan counts every row, the transaction
+  counts a row's existence, no failure is keyed on a state — so the column
+  would decide nothing while standing up a second state machine beside
+  `operation_attempt`'s, which no transaction spans and which a crash can
+  therefore leave disagreeing with it. What remains is a row's **existence**,
+  written once and deleted once.
+- **[DECISION] `Released` is not a state; it is the absence of a row.** This
+  crate is RocksDB, so the uniqueness key is the row's own key: there is no
+  partial index and no way to say "unique among rows that are not released".
+  A released row would make its port permanently unusable. Release is a
+  **delete**, and an audit trail, if wanted, goes to a separate history table
+  rather than into the key space that enforces the invariant.
+- **[DECISION] Two secondary indexes, both one-to-many, both with the
+  discriminator in the key.** Nothing reads a row by the number it already
+  knows, and one attempt and one instance each own three of Giganto's rows —
+  so an index keyed on the attempt or the instance alone would have its
+  entries overwrite one another in a store with no multi-map:
+  - **`(idempotency_key, listener_key)` → the primary key** — a re-driven
+    attempt restores its own rows by prefix scan on `idempotency_key`.
+  - **`(host, component, instance, listener_key)` → the primary key** —
+    removal deletes an instance's rows and the UI reads them, both by prefix
+    scan on `(host, component, instance)`.
+  **Index entries are written and deleted in the same transaction as the
+  primary row.** A half-updated index is not a safe pause, it is a row the
+  only two readers can no longer find; a partial failure must leave the row
+  and both entries all absent or all present.
+- **[DECISION] The write needs a conflict-detecting primitive, and this crate
+  already has one.** Two concurrent installs write **different**
+  `operation_attempt` rows, so their transactions do not conflict and both
+  could commit the same port — "in the same transaction" does not prevent it,
+  the unique key does. A plain atomic write batch is not that primitive:
+  two batches writing one key both succeed and the second overwrites the
+  first. This crate is an `OptimisticTransactionDB`, its generic table helper
+  exposes `insert_with_transaction`, and tables needing a uniqueness check
+  take `get_for_update_cf(..., EXCLUSIVE)` first. The allocation write follows
+  that pattern, reading each key for update before writing it, together with
+  the `operation_attempt` mutation.
+- **[DECISION] Every delete rides the record that justifies it.** "The port
+  stays held" is not an acceptable crash answer on its own: a row whose
+  attempt is terminal and whose cleanup is discharged has nothing left that
+  would revisit it, so a lost delete is a permanent leak rather than a safe
+  pause. There are exactly three deletes, each in the **same transaction** as
+  its justification — the write recording a **failed, cancelled or expired**
+  attempt that owes no cleanup; the `cleanup_state` discharge; and the write
+  recording a confirmed removal. **A terminal SUCCESS is not one of them**:
+  saying "a terminal outcome with no cleanup owed" would sweep success in and
+  contradict the next decision, which is the whole point of holding the row
+  past the attempt. The same three occasions, and the same exclusion, govern
+  the **instance** row of §4g. If the transaction fails, neither half lands, so
+  the existing
+  re-drive path sees work still owed. No sweep, reaper or reconciliation pass
+  is needed for these rows.
+- **[DECISION] Success writes nothing, and lifetime changes hands at success.**
+  A row released on success would be worse than no row at all: a stopped
+  service reports nothing, so its ports would read as free and collide the
+  moment it starts again. **Before** success the row is subordinate to the
+  attempt, which §4d's durable `expires_at` and its sweep already bound.
+  **After** success the **instance** owns it — the attempt is terminal within
+  minutes while the address is owed for as long as the instance exists — so a
+  successful row deliberately outlives its attempt.
+- **`operation_attempt` is otherwise unchanged.** No new action and no new
+  field: this adds no operation of its own, and the expiry sweep it relies on
+  already exists.
+
+### 4g. Instance-number allocation
+
+**This section replaces the earlier "one instance per `(component, host)`,
+the number is always `1`, no allocation state exists" decision.** That
+decision deferred an allocator by name — no counter, no reservation table, no
+release rule — and deferring it is no longer possible: §4g-bis allocates
+*ports* per instance, and a port row's owner is `(component, instance,
+listener_key)`, so the port allocator consumes an instance number it does not
+produce. Two Giganto instances on one host cannot be installed while the
+number is pinned, and that is the case the bind-address work exists for.
+**The two allocators are separate things and both are needed.**
+
+- **[DECISION] One instance row per allocated number**, keyed
+  **`(host, component, instance)`**, carrying the `idempotency_key` of the
+  attempt that owns it. It is deliberately the **same shape and the same
+  primitive** as the port row of §4g-bis: existence means taken, there is no
+  state column, and the uniqueness key is the row's own key, so a
+  `get_for_update_cf(..., EXCLUSIVE)` before the write is what makes two
+  concurrent installs pick different numbers rather than both committing one.
+- **[DECISION] The number is the smallest free `u32` in `1..=999` for
+  `(host, component)`**, found by prefix scan over the instance rows for that
+  pair. Smallest-free rather than monotonic, because instance numbers are
+  **reused** after teardown (RFC-A §4, RFC-D2 §4d) and a monotonic counter
+  would drift upward forever while the reused numbers sat free. A prefix scan
+  is affordable precisely because the count is small.
+  **The ceiling is `999`, and it is not a tuning knob.** RFC-A §4 pins the
+  instance to a **three-digit zero-padded** segment inside the registration
+  identity, bounded at 131 octets; a four-digit number would not fit the shape
+  every certificate and registry entry is composed from. So the allocator's
+  range is fixed by that contract rather than configured, and
+  `InstanceNumbersExhausted` is raised at `1000`, not at some deployment
+  setting.
+- **[DECISION] The prefix scan alone does NOT serialize two concurrent
+  allocations, so the conflict is resolved by re-selecting.** Two
+  transactions that both read an empty prefix both pick `1` and both take
+  `get_for_update_cf` on the **same absent key** — the outcome is `1` and a
+  commit conflict, not `1` and `2`. Locking an absent key orders the writers;
+  it does not tell the loser to look again.
+  So on a commit conflict **the whole transaction re-runs**, not just the
+  port classification: the loser re-reads the prefix, now sees `1` taken, and
+  picks `2`. Re-selecting an instance number is correct rather than a
+  substitution — it came from the allocator, not from the operator, unlike
+  the port candidates the port path must preserve (RFC-D2 §4f). But it is
+  only correct **after** the check below.
+- **[DECISION] EVERY retry re-checks the `requestKey` FIRST, and only then
+  re-selects.** Two concurrent requests carrying the **same** key must not
+  produce two instances, and "re-run from instance selection" alone would do
+  exactly that: the loser would re-read the prefix, see `1` taken, and pick
+  `2` for what is one operator action. So the retry order is fixed —
+  1. re-read the `operation_attempt` by `idempotency_key` (the persisted
+     `requestKey`, RFC-D2 §4f); if a row now exists, **return that attempt**
+     and allocate nothing;
+  2. only when none exists, re-select the instance number, then the ports,
+     then write.
+  This is the single retry rule for the whole allocating transaction. It
+  **supersedes** any statement that a conflict re-runs only the port
+  classification: that narrower rule belongs to the port scan considered
+  alone, and applying it here would skip the key check that makes concurrent
+  same-key requests safe. The three-attempt bound and
+  `AllocationContended` are unchanged.
+- **[DECISION] The instance row and the port rows are written in ONE
+  transaction, instance first.** The port rows' owner names the instance, so
+  it must be chosen before they can be keyed; and if the two were separate
+  transactions a crash between them would leave a held number owning no
+  ports, which nothing would ever collect. The `operation_attempt` mutation
+  joins the same transaction, exactly as §4g-bis requires for ports.
+- **[DECISION] Exhaustion is a typed refusal, not a wrap.**
+  `InstanceNumbersExhausted { component, host }` when every number in
+  `1..=999` is taken. The ceiling is the fixed one above, not a deployment
+  setting. There is no wrap and no reuse of a number whose row still exists.
+- **[DECISION] Release is a delete, on the same three occasions and in the
+  same transactions as the port rows** (§4g-bis): a **failed, cancelled or
+  expired** attempt that owes no cleanup, the `cleanup_state` discharge, and
+  the confirmed removal. **A terminal SUCCESS is not one of them** — the
+  number is owed to the instance for as long as it exists, exactly as its
+  ports are, and writing the exclusion here rather than only at the port row
+  is what stops the two from drifting apart again.
+  This is what the earlier decision meant by "the release rule has to agree
+  with the compensation ledger" — the agreement is that there is no separate
+  rule at all, because the instance row and the port rows are released
+  together by the same write.
+- **[DECISION] A second install for a `(component, host)` that already has a
+  row is no longer refused** — it is given the next free number. The refusal
+  stands for **core components**, which have no instance dimension (RFC-B §4:
+  only the five modules are multi-instance), and for those the number remains
+  `None` rather than being allocated.
+- **What this schema already carried, and still does:** `Agent.key` is
+  `<instance>.<service>` (§2), so two instances are two rows under one
+  `node_id` and one `kind` with **no schema change**; `operation_attempt`
+  records the `instance` (§4d); and the non-terminal index is keyed
+  `(host, target, instance)` (§4d), which now varies rather than being
+  pinned. **No code path may assume one row per `(node_id, kind)`** — that
+  assumption is what this section unpicks, and §5 tests against it.
 
 ## 5. Acceptance criteria
+
+**Idempotency and retention (§4d).** `install_intent` round-trips as
+`Some(digest)` for an allocating install and `None` for update, remove and
+onboard, and a stored `None` presented with a digest is refused. The digest
+matches a **golden vector** committed beside the test, and a re-encode after
+any change to the transcript fails against it rather than silently changing
+what "the same request" means; the `None`-versus-empty `bind_addrs` pair
+produces **different** digests. `finalized_at` is set **iff** the outcome is terminal
+**and** `cleanup_state` is empty: a test asserts a terminal row that still owes
+cleanup has `finalized_at = None` and is **not** reachable by the sweep, and
+that discharging the last owed item stamps it in that same transaction.
+Retention keeps the **most recent** terminal attempt per
+`(host, target, instance)` indefinitely and sweeps **older** terminal attempts
+30 days past their `finalized_at`; a test asserts a sibling instance's record
+is not collapsed away by a newer attempt on the same `(host, target)`, and
+that the latest row survives an advance well past 30 days. **The latest
+pointer is the only thing that names the current attempt**, and it is tested
+on commit order rather than on any key ordering: a test finalizes two attempts
+in the **same nanosecond** in a known order and asserts the pointer names the
+one that committed **second** — the assertion that fails against any scheme
+deriving "latest" from a key, since a key made unique by an appended
+`idempotency_key` is unique, not ordered. **The sweep consults the pointer
+before deleting**: a test ages every terminal row for a triple past the cutoff
+and asserts the pointed-at row survives while the rest are pruned. And the
+**three-step lookup**
+is tested in all three branches: a triple whose newest work is a **running**
+attempt reports that one; a triple with **no** running attempt but a terminal
+row still owing cleanup reports **that** one, even though the pointer names an
+older row; and a triple whose rows are all fully discharged reports the
+**pointed-at** one.
+**The second branch assumes at most one cleanup-owed row per triple, and this
+crate tests the storage side of that only**: a test asserts the owed-teardown
+index holds **one** entry per `(target, host, instance)` and that writing a
+second for one triple **overwrites** rather than queues — which is why the
+invariant matters here. That a second row never arises is RFC-D2's
+owed-teardown guard, and it is asserted **there**, in the repository whose
+orchestration enforces it; a review-database test cannot drive that path.
+Atomicity is
+tested on the one write that can leave a lie behind: a failure injected
+between the finalization write and the pointer overwrite leaves **neither**,
+so no stale pointer names a superseded attempt. The sweep's delete is a single
+row and needs no pairing.
+
+**Bind-address allocation (§4g-bis).** A `0.46` fixture migrates with existing
+values **preserved**, new fields empty and the new column families created. The
+allocation row round-trips; **all three** of one instance's rows survive in
+**each** secondary index and come back from one prefix scan — the test that
+fails against an index keyed on `idempotency_key` or `(host, component,
+instance)` alone, where the third entry overwrites the first two; and an index
+write failing mid-transaction leaves the primary row and **both** entries
+absent, never one listener's entry orphaned from its siblings.
+
+Two concurrent proposals for one host contending for one port produce exactly
+**one** winner, and the loser answers `PortAllocationConflict` **carrying the
+winner's owner triple** — the assertion that fails if the commit conflict is
+reported without looking again. A released port is **immediately
+re-allocatable**, which is the observable consequence of release being a delete.
+
+Delete atomicity has its own tests, because the leak it prevents is invisible
+afterwards: a **failed transaction** at each of the three delete sites leaves
+the row **and** leaves its justifying record unwritten, so a re-drive finds work
+still owed; and after each successful pair the port is allocatable again while
+nothing owed remains.
+
+The migration guard is tested on the literal: the `0.46 → 0.47` entry's
+requirement matches `0.46.0` and `0.46.9` and **not** any `0.47.0` prerelease,
+and a store marked with a superseded alpha is **refused** rather than waved
+through.
 
 - Adding, reading, and updating an `Agent`/`ExternalService` round-trips
   `installed_version`, `installed_commit`, and `lifecycle`; `lifecycle` is
   independent of `Status` (both readable from one status read).
-- **The instance is recorded, not allocated (§4g).** A test asserts an
-  `operation_attempt` for a module carries `instance = Some(1)` and one for
-  a core component carries `None`, and that the non-terminal index is keyed
-  `(host, target, instance)` — the shape v2 needs, exercised today with a
-  pinned number. **No allocation, reservation or release path is
-  implemented**, and a test asserts a second install for a
-  `(component, host)` that already has a row is refused rather than given
-  another number.
+- **The instance is ALLOCATED (§4g).** A test asserts an `operation_attempt`
+  for a module carries the number it was given and one for a core component
+  carries `None`, and that the non-terminal index is keyed
+  `(host, target, instance)` with a number that **varies**. A first install
+  for a `(component, host)` takes `1`; a **second** install takes `2` rather
+  than being refused; and after the first is removed, a third install
+  **reuses `1`** — the observable consequence of smallest-free over
+  monotonic. Two concurrent installs for one `(component, host)` produce
+  **different** numbers with exactly one winner per number, which is the
+  test that fails if the row is written without `get_for_update_cf`. A core
+  component's second install is still refused, because it has no instance
+  dimension. `InstanceNumbersExhausted` is raised rather than wrapping.
+  **The instance row and the port rows are written in ONE transaction**: a
+  test injects a failure after the instance row and asserts **neither** it
+  nor the port rows exist, since a held number owning no ports is a leak
+  nothing collects.
 - **Every attempt expires.** A test writes an `Install` attempt whose
   `expires_at` has passed with no check-in ever arriving, runs the sweep, and
   asserts the attempt is finalized `Failed` and the owed compensation is
@@ -617,7 +1079,10 @@ The manager (review) and the API (review-web) consume these types:
   and `("a","bc")` are **distinct keys** — a test exercises exactly that
   collision case.
 - `operation_attempt` enforces **one record per `idempotency_key`**: a second
-  write with the same key **upserts the same row, never a duplicate** (unique
+  write with the same key and an **identical** request **returns that row,
+  never a duplicate**, while the same key with a **different** `host`,
+  `target` or payload is **refused** with a typed conflict rather than
+  overwriting a live attempt's record (unique
   key / index, §4d) — a test drives the same key twice and asserts a single
   row. Records carry `host`, `instance`, `resolved_version`
   **and** `resolved_commit`, `idempotency_key`, and `cleanup_state`; two
@@ -626,19 +1091,24 @@ The manager (review) and the API (review-web) consume these types:
 - **The new CFs are created only with the format bump:** opening a `0.46.0`
   data dir with the pre-bump build does **not** create the
   `core_component`/`operation_attempt` CFs; they appear only once
-  `COMPATIBLE_VERSION_REQ` is `0.47.0`. A test opens a `0.46.0` dir against the
-  pre-bump `MAP_NAMES` and asserts no new CF is created.
+  `COMPATIBLE_VERSION_REQ` is `0.47.0-alpha.3`. A test opens a `0.46.0` dir
+  against the pre-bump `MAP_NAMES` and asserts **none of the seven** new CFs is
+  created.
 - A data dir written at `0.46.0` migrates cleanly to the new format: every
   existing agent/external-service gains the defaults
   (`None` / `None` / `NotInstalled` / empty `bound_addrs`); no config/draft
   data is lost; migration is
   resumable/robust in the house style. The migration **opens a `0.46.0` dir
-  that lacks the `core_component`/`operation_attempt` CFs without failing** and
-  creates them (`create_missing_column_families(true)` for this migration —
+  that lacks all seven new CFs without failing** — `core_component`,
+  `operation_attempt`, the instance allocation table, the port allocation
+  primary, its two indexes and the latest pointer —
+  and
+  creates every one of them (`create_missing_column_families(true)` for this
+  migration —
   recommended — or `MAP_NAMES_V0_46` + `list_cf` + `create_cf`, §4f) — the
   complement of the "pre-bump open creates no new CF" test above.
 - **Mid-migration crash is rerun-safe:** a fixture at **`0.46.0` VERSION with
-  the two new CFs already present and old-shape `Agent`/`ExternalService`
+  all seven new CFs already present and old-shape `Agent`/`ExternalService`
   values** (the state left by a crash after CF creation but before the version
   bump) re-migrates **idempotently** — no duplicate-CF or open failure, and
   already-new-shape records are skipped (the `already_current` house pattern,
@@ -646,13 +1116,14 @@ The manager (review) and the API (review-web) consume these types:
 - `COMPATIBLE_VERSION_REQ` reflects the new format; the migration test
   fixture (old data dir → migrated) passes.
 - **The format-version markers round-trip through a rollback.** A test
-  migrates a `0.46.0` dir to `0.47.0` (which rewrites **both**
+  migrates a `0.46.0` dir to `0.47.0-alpha.3` (which rewrites **both**
   `data_dir/VERSION` and `backup_dir/VERSION`, `migration.rs:208`/`:209`),
   restores the pre-update snapshot, calls the new public version-writing entry
   point with the recorded `pre_update_version`, and asserts that a
-  `<0.47.0`-compatible open **succeeds** — i.e. both markers read `0.46.0` and
-  `migrate_data_dir`'s data/backup agreement check (`:155`) passes. Without the
-  marker rewrite this test fails with `migration from 0.47.0 is not supported`,
+  pre-target-compatible open **succeeds** — i.e. both markers read `0.46.0`
+  and `migrate_data_dir`'s data/backup agreement check (`:155`) passes.
+  Without the marker rewrite this test fails with
+  `migration from 0.47.0-alpha.3 is not supported`,
   which is exactly the brick §4f exists to prevent.
 - **Rollback-claimed migrations confine their writes to `states.db`.** The
   snapshot covers the states DB only (§4f), so this is a reviewable property of
@@ -661,6 +1132,25 @@ The manager (review) and the API (review-web) consume these types:
   future migrations.
 
 ## 6. Issue decomposition (AgentCoop)
+
+- **Instance-number allocation** (§4g) — the instance row keyed
+  `(host, component, instance)`, its column family, smallest-free selection
+  by prefix scan, `get_for_update_cf` before the write, and
+  `InstanceNumbersExhausted`. Lands before the port table, which keys its
+  owner on the number this produces.
+- **Port allocation** (§4g-bis) — the allocation row and its column family;
+  the two secondary-index column families keyed
+  `(idempotency_key, listener_key)` and
+  `(host, component, instance, listener_key)`, written and deleted in the
+  same transaction as the primary row; the `insert_with_transaction` +
+  `get_for_update_cf` write path; and the three paired deletes, each in the
+  same transaction as the record that justifies it. Depends on the instance
+  row, and both join the `operation_attempt` write in **one** transaction.
+- **Migration for both tables** (§4f) — the new column families created in
+  the existing `0.46 → 0.47` step, and the target version and
+  `COMPATIBLE_VERSION_REQ` advanced together with the shapes, with the
+  comparator literal that excludes every `0.47.0` prerelease while still
+  matching `0.46.x`.
 
 Each issue is self-contained (restate the relevant §3 contract inline).
 Dependency order within this repo:
@@ -674,12 +1164,30 @@ Dependency order within this repo:
    **Does NOT add its CF to `MAP_NAMES`** (that is issue 5).
 4. **`operation_attempt` ledger table** (§4d) — the table struct, CRUD, the
    full field set (including `backup_id` / `pre_update_version` for the REView
-   core-update rollback), the **`idempotency_key`-unique** key (one row per
-   key), tests. **Does NOT add its CF to `MAP_NAMES`** (that is issue 5).
+   core-update rollback, `install_intent` and `finalized_at`), the
+   **`idempotency_key`-unique** key (one row per key), tests. **This issue
+   also owns the latest pointer** (§4d): the pointer keyed
+   `(host, target, instance)`; the pointer overwrite that rides the **same
+   transaction** as the finalization write; the retention sweep as a scan over
+   terminal rows that keeps the one the pointer names; and the **three-step
+   latest lookup** — non-terminal, then the single cleanup-owed row, then the
+   pointer — that RFC-D3 §5b's inline read uses. The pointer is part of this
+   table's storage contract, not a separate store, so splitting it out would
+   leave two issues able to write one invariant. **Does NOT add its CF to
+   `MAP_NAMES`** (that is issue 5).
 5. **Migration + format bump + CF registration** (§4f) — `migrate_0_46_to_0_47`,
    bump `COMPATIBLE_VERSION_REQ`, old-shape structs, migration test fixture,
-   **AND register the two new CFs in `MAP_NAMES`** in this same slice (so no
-   `0.46.0` dir gets a new CF without the bump — §4f). Must specify **how the
+   **AND register all SEVEN new CFs in `MAP_NAMES`** in this same slice (so no
+   `0.46.0` dir gets a new CF without the bump — §4f): `core_component`,
+   `operation_attempt`, and the **five** this amendment adds — the **instance
+   allocation** table (§4g), the **port allocation** primary (§4g-bis), its
+   two indexes keyed `(idempotency_key, listener_key)` and
+   `(host, component, instance, listener_key)`, and the **latest pointer**
+   (§4d). All seven are net-new key
+   spaces that start empty, so they need CF creation and **no data
+   migration** — but every one of them must be named here, because a CF
+   created outside this slice is a CF created without a version change. Must
+   specify **how the
    migration opens a `0.46.0` dir that lacks the new CFs** —
    `create_missing_column_families(true)` for this migration (recommended,
    inherently rerun-safe) or `MAP_NAMES_V0_46` + `list_cf` + `create_cf` (§4f) —
