@@ -1653,6 +1653,81 @@ mod tests {
         assert_eq!(test_db.instance_index(), Vec::new());
     }
 
+    /// Two instances of one component on one host is the case this table
+    /// exists for, and a confirmed removal reaches its rows by prefix scan on
+    /// `(host, component, instance)` — so all three segments have to bound
+    /// that prefix. A removal is a delete, and a prefix reaching past its own
+    /// instance number or its own component would take a running instance's
+    /// addresses with it, which is the one failure here that a live service
+    /// cannot survive.
+    #[test]
+    fn a_removal_leaves_the_sibling_instance_and_component_their_addresses() {
+        let test_db = TestDb::new();
+        let table = test_db.table();
+        let attempts = test_db.attempts();
+
+        let first = allocate(&test_db, "attempt-1", &giganto_bindings()).unwrap();
+        let second_bindings = vec![
+            binding(INGEST, Transport::Tcp, 38_470),
+            binding(PUBLISH, Transport::Udp, 38_471),
+            binding(GRAPHQL, Transport::Udp, 8542),
+        ];
+        let second = allocate(&test_db, "attempt-2", &second_bindings).unwrap();
+        assert_eq!((first.instance, second.instance), (Some(1), Some(2)));
+
+        // A component of its own on the same host, numbered from its own
+        // sequence: `(host, component)` is what the number counts within, so
+        // this one is instance 1 alongside the first above.
+        let mut neighbour = install("attempt-3", None);
+        neighbour.target = OTHER_COMPONENT.to_string();
+        let neighbour = attempts
+            .allocate_instance_and_addrs(&neighbour, &[binding(INGEST, Transport::Tcp, 39_370)])
+            .unwrap();
+        assert_eq!(neighbour.instance, Some(1));
+
+        // Each reader answers for the triple it was asked about and no other.
+        assert_eq!(
+            request_map(&table.allocated_for(HOST, COMPONENT, 1).unwrap()),
+            request_map(&table.allocated_by(&key("attempt-1")).unwrap())
+        );
+        assert_eq!(
+            request_map(&table.allocated_for(HOST, COMPONENT, 2).unwrap()),
+            request_map(&table.allocated_by(&key("attempt-2")).unwrap())
+        );
+        assert_eq!(table.allocated_for(HOST, COMPONENT, 1).unwrap().len(), 3);
+        assert_eq!(table.allocated_for(HOST, COMPONENT, 2).unwrap().len(), 3);
+        assert_eq!(
+            table.allocated_for(HOST, OTHER_COMPONENT, 1).unwrap().len(),
+            1
+        );
+        assert_eq!(table.allocated_for(HOST, COMPONENT, 3).unwrap(), Vec::new());
+
+        attempts
+            .upsert(&terminal(
+                "attempt-remove",
+                2,
+                OperationAction::Remove,
+                OperationOutcome::Succeeded,
+            ))
+            .unwrap();
+
+        // Only the removed instance's rows go, and both indexes lose exactly
+        // its three entries.
+        assert_eq!(table.allocated_for(HOST, COMPONENT, 2).unwrap(), Vec::new());
+        assert_eq!(
+            request_map(&table.allocated_for(HOST, COMPONENT, 1).unwrap()),
+            request_map(&table.allocated_by(&key("attempt-1")).unwrap())
+        );
+        assert_eq!(table.allocated_for(HOST, COMPONENT, 1).unwrap().len(), 3);
+        assert_eq!(
+            table.allocated_for(HOST, OTHER_COMPONENT, 1).unwrap().len(),
+            1
+        );
+        assert_eq!(test_db.rows().len(), 4);
+        assert_eq!(test_db.attempt_index().len(), 4);
+        assert_eq!(test_db.instance_index().len(), 4);
+    }
+
     /// A removal that failed is not a confirmed removal, so the instance
     /// keeps what it holds.
     #[test]
