@@ -80,6 +80,28 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   the attempt the first created, or refused where the request differs. These
   records live in a table reachable
   through `Store::operation_attempt_map`.
+- Added instance-number and bind-address allocation for an install, through
+  `allocate_instance` and `allocate_instance_and_addrs` on the table
+  `Store::operation_attempt_map` returns. Each takes what the install needs
+  and stores the attempt that owns it in one transaction, so a resource held
+  by no record cannot outlive the crash that orphaned it. An install of a
+  module takes the smallest free instance number in `1..=999` for its host and
+  component, which reuses a number a teardown gave back rather than drifting
+  upward, and a core component takes none.
+  `allocate_instance_and_addrs` additionally takes one address per listener
+  the install names: no two instances on a host may hold the same transport
+  and port, whatever address each names it with, and the loser of a race is
+  refused with `AddressAllocationError::PortAllocationConflict` naming the
+  owner that holds it. Both answer a repeated idempotency key with the attempt
+  already recorded under it and take nothing further, so one operator action
+  stays one instance, and both release what the attempt they store gives back
+  — when it ended owing no compensation without succeeding, when its
+  compensation is discharged, and on a confirmed removal; a terminal success
+  keeps its number and its addresses for as long as the instance exists. The
+  addresses a call names are the new public `ListenerBinding` and
+  `ListenerTransport` types, refusals are `InstanceAllocationError` and
+  `AddressAllocationError`, and `InstanceAllocation`, `PortAllocation`, and
+  `PortOwner` describe the rows the two new tables hold.
 - Added `write_version_markers`, which records a caller-supplied database
   format version in the `VERSION` files of a data directory and a backup
   directory. It is the metadata companion to restoring a rollback snapshot:
@@ -99,7 +121,7 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   CLDR's Unknown or Invalid Territory code, while `XX` means no lookup was
   performed. `find_ip_country` now returns `ZZ` on lookup failure, and event
   country filters can match either placeholder explicitly. The database format
-  is now `0.47.0-alpha.3`; migration swaps both scalar and vector placeholders
+  is now `0.47.0-alpha.4`; migration swaps both scalar and vector placeholders
   from the 0.46/earlier-alpha representation with durable retry checkpoints.
 - **BREAKING**: `Agent` and `ExternalService` now record the build installed on
   the host, through four new public fields: `installed_version` and
@@ -122,13 +144,14 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   Under the common `umask 022`, for example, a stored classifier that used to be
   `0o644` is now `0o600`, so anything reading these files as another account
   stops working.
-- **BREAKING**: Bumped the database format to `0.47.0-alpha.2`. The migration
-  from `0.46.x` creates the customer data deletion jobs, core components, and
-  operation attempts column families and converts every stored agent and
-  external-service value to the layout carrying install state. Migrations from
-  older supported formats apply their intermediate steps over the column
-  families the database physically holds, so an update interrupted part-way can
-  simply be retried.
+- **BREAKING**: Bumped the database format to `0.47.0-alpha.4`. The migration
+  from `0.46.x` creates the eight column families such a store lacks — customer
+  data deletion jobs, core components, operation attempts, the latest operation
+  attempt pointer, instance allocations, and the port allocation table with its
+  two indexes — and converts every stored agent and external-service value to
+  the layout carrying install state. Migrations from older supported formats
+  apply their intermediate steps over the column families the database
+  physically holds, so an update interrupted part-way can simply be retried.
 - **BREAKING**: Event timestamps now use `jiff::Timestamp` instead of chrono's
   `DateTime<Utc>`. Existing databases need no migration, because timestamps are
   still stored as `i64` epoch nanoseconds.
