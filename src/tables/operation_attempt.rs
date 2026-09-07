@@ -1256,6 +1256,15 @@ impl<'d> Table<'d, OperationAttempt> {
                 if stored != attempt {
                     continue;
                 }
+                // The ranking above read the pointer outside this
+                // transaction. Reading it again here locks it, so a
+                // finalization that has moved it onto this attempt since is
+                // seen, and one that moves it during the commit fails the
+                // commit rather than leaving the pointer naming a row this
+                // delete took.
+                if self.pointer_names(&stored, &txn)? {
+                    continue;
+                }
                 self.remove_with_transaction(&stored, &txn)?;
                 removed += 1;
             }
@@ -1565,6 +1574,29 @@ impl<'d> Table<'d, OperationAttempt> {
             &attempt.target,
             attempt.instance,
         )?])
+    }
+
+    /// Returns whether the latest pointer names this attempt, locking the
+    /// pointer entry for the duration of `txn`.
+    ///
+    /// This is the transactional form of the rank-1 keep-rule that
+    /// [`Table::prunable`] applies, and it is what makes "the prune never
+    /// removes the row the pointer names" hold against a concurrent
+    /// finalization rather than only against the snapshot the ranking read.
+    fn pointer_names(
+        &self,
+        attempt: &OperationAttempt,
+        txn: &Transaction<'_, OptimisticTransactionDB>,
+    ) -> Result<bool> {
+        let key = latest_pointer_key(&attempt.host, &attempt.target, attempt.instance)?;
+        let latest = self.latest_pointer()?;
+        let Some(named) = txn
+            .get_for_update_cf(latest.cf, &key, EXCLUSIVE)
+            .context("cannot read the latest pointer")?
+        else {
+            return Ok(false);
+        };
+        Ok(named == attempt.idempotency_key.as_bytes())
     }
 
     /// Returns every latest-pointer key naming `idempotency_key`.
