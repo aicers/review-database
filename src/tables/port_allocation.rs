@@ -2394,6 +2394,58 @@ mod tests {
         }
     }
 
+    /// A store opened the way a running system opens one holds the whole
+    /// table, so an install naming its addresses takes them.
+    ///
+    /// Every other test in this module builds its column families itself.
+    /// This one goes through `Store::new`, which creates exactly `MAP_NAMES`,
+    /// and is what registering the three names is for: against the list
+    /// `MAP_NAMES` held before the bump, the same call was refused because
+    /// the families were not there.
+    #[test]
+    fn a_store_opened_through_map_names_takes_addresses() {
+        let _permit = acquire_db_permit();
+        let db_dir = tempfile::tempdir().unwrap();
+        let backup_dir = tempfile::tempdir().unwrap();
+        let store = crate::Store::new(db_dir.path(), backup_dir.path(), None).unwrap();
+        let attempts = store.operation_attempt_map();
+
+        let bindings = giganto_bindings();
+        let mut first = install("map-names-first", None);
+        let request = submit(&mut first, &bindings);
+        let stored = attempts
+            .allocate_instance_and_addrs(&first, &request, &bindings)
+            .unwrap();
+        assert_eq!(stored.instance, Some(1));
+
+        // The rows the first drive wrote are there to be read: another
+        // component asking for one of the same addresses is refused and told
+        // who holds it, which a store lacking the families could not answer.
+        let contended = [binding(INGEST, Transport::Tcp, 38_370)];
+        let mut second = install("map-names-second", None);
+        second.target = OTHER_COMPONENT.to_string();
+        let request = submit(&mut second, &contended);
+        let refusal = attempts
+            .allocate_instance_and_addrs(&second, &request, &contended)
+            .unwrap_err();
+        let AddressAllocationError::PortAllocationConflict {
+            host, port, owner, ..
+        } = refusal
+        else {
+            panic!("expected a port allocation conflict, got {refusal}");
+        };
+        assert_eq!(host, HOST);
+        assert_eq!(port, 38_370);
+        assert_eq!(
+            owner,
+            PortOwner {
+                component: COMPONENT.to_string(),
+                instance: 1,
+                listener_key: INGEST.to_string(),
+            }
+        );
+    }
+
     /// A store carrying the primary family alone is not this table: a row
     /// written there would be one neither reader could find.
     #[test]

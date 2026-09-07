@@ -80,6 +80,28 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   the attempt the first created, or refused where the request differs. These
   records live in a table reachable
   through `Store::operation_attempt_map`.
+- Added instance-number and bind-address allocation for an install, through
+  `allocate_instance` and `allocate_instance_and_addrs` on the table
+  `Store::operation_attempt_map` returns. Each takes what the install needs
+  and stores the attempt that owns it in one transaction, so a resource held
+  by no record cannot outlive the crash that orphaned it. An install of a
+  module takes the smallest free instance number in `1..=999` for its host and
+  component, which reuses a number a teardown gave back rather than drifting
+  upward, and a core component takes none.
+  `allocate_instance_and_addrs` additionally takes one address per listener
+  the install names: no two instances on a host may hold the same transport
+  and port, whatever address each names it with, and the loser of a race is
+  refused with `AddressAllocationError::PortAllocationConflict` naming the
+  owner that holds it. Both answer a repeated idempotency key with the attempt
+  already recorded under it and take nothing further, so one operator action
+  stays one instance, and both release what the attempt they store gives back
+  — when it ended owing no compensation without succeeding, when its
+  compensation is discharged, and on a confirmed removal; a terminal success
+  keeps its number and its addresses for as long as the instance exists. The
+  addresses a call names are the new public `ListenerBinding` and
+  `ListenerTransport` types, refusals are `InstanceAllocationError` and
+  `AddressAllocationError`, and `InstanceAllocation`, `PortAllocation`, and
+  `PortOwner` describe the rows the two new tables hold.
 - Added `write_version_markers`, which records a caller-supplied database
   format version in the `VERSION` files of a data directory and a backup
   directory. It is the metadata companion to restoring a rollback snapshot:
