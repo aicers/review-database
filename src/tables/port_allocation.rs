@@ -1477,6 +1477,82 @@ mod tests {
         );
     }
 
+    /// Two installs of **one** component race for the instance number, each
+    /// naming addresses of its own. The pass that loses is doomed to fail its
+    /// commit on the number the winner took, so it must retry and take the
+    /// next one — not report the winner it now finds live on the triple as a
+    /// refusal, which would answer a lost race with a state the caller never
+    /// asked about, on a number it was never given. Both therefore get a
+    /// number, and the loser's address rows are keyed on the number its retry
+    /// ended up with rather than the one its first pass selected.
+    ///
+    /// The window the losing pass has to be caught in is the one between its
+    /// locking read of the number and its read of the triple, so the race is
+    /// staged rather than left to chance: the two start together on a
+    /// barrier, and the pass that is to lose names enough addresses that the
+    /// other reaches its commit while it is still writing rows. The rounds
+    /// are there because a scheduler may still order one round the other way
+    /// round, not because a single one is expected to miss.
+    #[test]
+    fn a_pass_that_loses_the_instance_race_retries_with_its_addresses() {
+        const ROUNDS: usize = 8;
+        const SHORT: u16 = 1;
+        const LONG: u16 = 64;
+
+        for _ in 0..ROUNDS {
+            let test_db = TestDb::new();
+            let start = std::sync::Barrier::new(2);
+            let (first, second) = std::thread::scope(|scope| {
+                let db = &test_db.db;
+                let start = &start;
+                let take = move |idempotency_key: &'static str, base: u16, listeners: u16| {
+                    move || {
+                        let bindings: Vec<ListenerBinding> = (0..listeners)
+                            .map(|n| binding(&format!("listener-{n}"), Transport::Tcp, base + n))
+                            .collect();
+                        start.wait();
+                        (
+                            Table::<OperationAttempt>::open(db)
+                                .unwrap()
+                                .allocate_instance_and_addrs(
+                                    &install(idempotency_key, None),
+                                    &bindings,
+                                )
+                                .unwrap(),
+                            listeners,
+                        )
+                    }
+                };
+                let a = scope.spawn(take("attempt-a", 38_400, SHORT));
+                let b = scope.spawn(take("attempt-b", 38_500, LONG));
+                (a.join().unwrap(), b.join().unwrap())
+            });
+
+            let table = test_db.table();
+            let mut instances = BTreeSet::new();
+            for ((attempt, listeners), base) in [(first, 38_400), (second, 38_500)] {
+                let instance = attempt.instance.unwrap();
+                instances.insert(instance);
+
+                // Every address the pass named is keyed on the number that
+                // pass ended up holding, so a retry left nothing behind on
+                // the number its first pass selected.
+                let rows = table.allocated_by(&attempt.idempotency_key).unwrap();
+                assert_eq!(rows.len(), usize::from(listeners));
+                assert_eq!(
+                    table.allocated_for(HOST, COMPONENT, instance).unwrap(),
+                    rows
+                );
+                for row in rows {
+                    assert_eq!(row.instance, instance);
+                    assert!((base..base + listeners).contains(&row.port));
+                }
+            }
+            assert_eq!(instances, [1, 2].into_iter().collect());
+            assert_eq!(test_db.rows().len(), usize::from(SHORT + LONG));
+        }
+    }
+
     /// A terminal **success** keeps its addresses. Releasing on success would
     /// be worse than never writing the row: a stopped service reports nothing,
     /// so its ports would read as free and collide the moment it starts again.

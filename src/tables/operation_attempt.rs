@@ -1584,7 +1584,29 @@ impl<'d> Table<'d, OperationAttempt> {
             }
             let mut allocated = attempt.clone();
             allocated.instance = Some(instance);
-            self.upsert_with_transaction(&allocated, &txn)?;
+            if let Err(error) = self.upsert_with_transaction(&allocated, &txn) {
+                // A number this pass has just read as free cannot carry a
+                // live attempt of its own: a live attempt holds the number it
+                // names, so the allocation above would have skipped it. The
+                // one way the single-flight guard refuses a *fresh* number is
+                // a pass that lost the race — a winner committed between this
+                // pass's locking read of the number and the guard's read of
+                // the triple — and this transaction is already doomed to fail
+                // its commit on the very key that winner took. So the number
+                // is looked at again with this transaction rolled back, and a
+                // pass that finds it held by someone else retries exactly as
+                // the commit conflict below would have. Reporting the refusal
+                // instead would answer a lost race with a state the caller
+                // never asked about, on a number it was never given.
+                drop(txn);
+                if allocations
+                    .get(&attempt.host, &attempt.target, instance)?
+                    .is_some_and(|row| row.idempotency_key != attempt.idempotency_key)
+                {
+                    continue;
+                }
+                return Err(error.into());
+            }
             match txn.commit() {
                 Ok(()) => return Ok(allocated),
                 Err(e) => {
