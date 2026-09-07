@@ -1128,7 +1128,7 @@ through.
   recommended — or `MAP_NAMES_V0_46` + `list_cf` + `create_cf`, §4f) — the
   complement of the "pre-bump open creates no new CF" test above.
 - **Mid-migration crash is rerun-safe:** a fixture at **`0.46.0` VERSION with
-  all seven new CFs already present and old-shape `Agent`/`ExternalService`
+  all eight CFs the migration creates already present and old-shape `Agent`/`ExternalService`
   values** (the state left by a crash after CF creation but before the version
   bump) re-migrates **idempotently** — no duplicate-CF or open failure, and
   already-new-shape records are skipped (the `already_current` house pattern,
@@ -1197,16 +1197,20 @@ Dependency order within this repo:
    `MAP_NAMES`** (that is issue 5).
 5. **Migration + format bump + CF registration** (§4f) — `migrate_0_46_to_0_47`,
    bump `COMPATIBLE_VERSION_REQ`, old-shape structs, migration test fixture,
-   **AND register all SEVEN new CFs in `MAP_NAMES`** in this same slice (so no
-   `0.46.0` dir gets a new CF without the bump — §4f): `core_component`,
-   `operation_attempt`, and the **five** this amendment adds — the **instance
-   allocation** table (§4g), the **port allocation** primary (§4g-bis), its
-   two indexes keyed `(idempotency_key, listener_key)` and
+   **AND register the FIVE CFs this amendment adds in `MAP_NAMES`** in this
+   same slice (so no `0.46.0` dir gets a new CF without the bump — §4f): the
+   **instance allocation** table (§4g), the **port allocation** primary
+   (§4g-bis), its two indexes keyed `(idempotency_key, listener_key)` and
    `(host, component, instance, listener_key)`, and the **latest pointer**
-   (§4d). All seven are net-new key
+   (§4d). All five are net-new key
    spaces that start empty, so they need CF creation and **no data
    migration** — but every one of them must be named here, because a CF
-   created outside this slice is a CF created without a version change. Must
+   created outside this slice is a CF created without a version change.
+   **`core_component` and `operation_attempt` are NOT registered here**: they
+   are already in `MAP_NAMES` at `0.47.0-alpha.2`, registered by the earlier
+   slice that added them. They still appear in the **migration** — a `0.46.0`
+   store has neither, nor `customer deletion jobs` — which is why the fixture
+   above creates **eight** while this slice registers five. Must
    specify **how the
    migration opens a `0.46.0` dir that lacks the new CFs** —
    `create_missing_column_families(true)` for this migration (recommended,
