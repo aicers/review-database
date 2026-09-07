@@ -476,7 +476,7 @@ The manager (review) and the API (review-web) consume these types:
   **[DECISION] ONE new structure — a latest pointer — and the sweep scans
   rows.** The primary key is `idempotency_key` and the existing indexes cover
   non-terminal rows, owed cleanup and `expires_at` — none of which answers
-  "which is the current attempt for this triple". So a **seventh** column
+  "which is the current attempt for this triple". So a **new** column
   family holds a **latest pointer**, `(host, target, instance)` →
   `idempotency_key`, **overwritten in the same transaction that stamps
   `finalized_at`**. Last writer in transaction order wins, which *is* the most
@@ -518,11 +518,22 @@ The manager (review) and the API (review-web) consume these types:
   - **otherwise** follow the **latest pointer**.
   **[DECISION] At most ONE cleanup-owed row exists per triple, and that is an
   invariant rather than a convention.** An earlier revision allowed several
-  and picked the one with the greatest `started_at`. Both halves were wrong:
-  the owed-teardown index is keyed `(target, host, instance)` with no
-  discriminator, so a second row would **overwrite** the first's entry rather
-  than queue behind it; and `started_at` does not order attempts anyway, since
-  two can share an instant and a clock can go backwards.
+  and picked the one with the greatest `started_at`. That is wrong on the
+  reading half: `started_at` does not order attempts, since two can share an
+  instant and a clock can go backwards, so "the latest owed row" is not a
+  question the store can answer.
+  **The storage half is a CODE CHANGE, not an existing property, and an
+  earlier revision of this section had it backwards.** It argued the invariant
+  was already enforced because the owed-teardown index carries no
+  discriminator and a second row would overwrite the first. The shipped index
+  does the opposite: `owed_cleanup_key` **appends the `idempotency_key`**
+  after `(target, host, instance)`, its own doc comment says "several attempts
+  may owe a cleanup for one triple", and `attempts_owing_cleanup` returns a
+  **`Vec<OperationAttempt>`**. So today a second row **queues** rather than
+  overwriting, and nothing refuses it. Making the invariant real therefore
+  means **dropping the discriminator from the key and narrowing the read to at
+  most one row**, and retiring the tests that assert several. Until that lands,
+  the three-step lookup's second step has no single row to return.
   **The invariant needs RFC-D2's guard to be WIDER than it was, and §4f
   widens it**: while a triple has an owed teardown, **no new
   `operation_attempt` may be created THAT NAMES THAT TRIPLE** — no update, no
@@ -615,13 +626,17 @@ The manager (review) and the API (review-web) consume these types:
 
 - **[DECISION] One target version, written out, and every other statement in
   this document defers to it.** The crate is on a `0.47.0` **prerelease** by
-  the time this lands, so the target is the **next alpha** — concretely
-  `0.47.0-alpha.3` if `alpha.2` is current — and:
-  - `COMPATIBLE_VERSION_REQ` (`migration.rs:111`) becomes
-    `">=0.47.0-alpha.3,<0.47.0-alpha.4"`;
-  - the `Vec<Migration>` (`migration.rs:177`) gains a `migrate_0_46_to_0_47`
-    entry whose requirement is `">=0.46.0,<0.47.0-alpha"` and whose target is
-    `0.47.0-alpha.3`.
+  the time this lands, so the target is the **next alpha**. `alpha.3` is
+  already released and is what `main` carries, so this amendment targets
+  **`0.47.0-alpha.4`**:
+  - `COMPATIBLE_VERSION_REQ` becomes `">=0.47.0-alpha.4,<0.47.0-alpha.5"`;
+  - the existing `migrate_0_46_to_0_47` entry is **extended**, not joined by a
+    sibling: its requirement becomes `">=0.46.0,<0.47.0-alpha.4"` and its
+    target `0.47.0-alpha.4`.
+  **Read the numbers off the crate, not off this document.** If a further
+  alpha lands before this work does, every literal here moves with it. What
+  does not move is the shape: target the next alpha, and widen the single
+  0.46-to-newest-alpha step to reach it.
   An earlier revision wrote the target as plain `0.47.0` with a
   `">=0.47.0,<0.48.0"` range in one place and "the next alpha" in another;
   those cannot both be implemented, and the prerelease form is the correct
@@ -635,11 +650,18 @@ The manager (review) and the API (review-web) consume these types:
   through, migrated by nothing, and fails to decode at runtime. The target and
   the range therefore advance to the next alpha together, in the same change
   that adds the shapes.
-  **The comparator literal matters.** A `<`-bound carrying a prerelease at
-  `0.47.0` brings that version's *other* prereleases into consideration, so
-  `<0.47.0-alpha.N` still **matches** `0.47.0-alpha.(N-1)`. The `0.46 → 0.47`
-  entry's requirement is written `">=0.46.0,<0.47.0-alpha"`, which excludes
-  every `0.47.0` prerelease while still matching `0.46.x`.
+  **The comparator literal matters, and this crate uses it deliberately.** A
+  `<`-bound carrying a prerelease at `0.47.0` brings that version's *other*
+  prereleases into consideration, so `<0.47.0-alpha.N` also **matches**
+  `0.47.0-alpha.(N-1)`. An earlier revision of this section read that as a
+  hazard and wrote the requirement `">=0.46.0,<0.47.0-alpha"` to exclude every
+  prerelease. **That is backwards.** `migrate_0_46_to_0_47` states the rule it
+  follows — "an alpha-to-alpha change extends the migration that produced the
+  earlier alpha instead of adding one beside it, so a 0.46.x database reaches
+  the newest alpha in a single step" — and its `">=0.46.0,<0.47.0-alpha.3"`
+  catches an `alpha.2` store **on purpose**. Excluding prereleases would
+  strand every alpha store with no step that matches it. The bound therefore
+  carries the target's prerelease and widens with it.
   **There is no alpha data to convert**, and this crate's own rule is why:
   migration is supported "between **released versions only**", prereleases
   being "assumed to be incompatible with each other". An operator upgrading a
@@ -678,47 +700,35 @@ The manager (review) and the API (review-web) consume these types:
   their CF names to `MAP_NAMES` before `COMPATIBLE_VERSION_REQ` bumps, opening
   a `0.46.0` data dir would create the new CFs **without** a version change —
   format drift with no migration record. Therefore the CF registration (adding
-  the seven names to `MAP_NAMES`) is part of the **same** change that bumps
-  `COMPATIBLE_VERSION_REQ` to `0.47.0-alpha.3` (§4f); the type/CRUD work for
+  the **five** names this amendment introduces to `MAP_NAMES`) is part of the
+  **same** change that bumps
+  `COMPATIBLE_VERSION_REQ` to the next alpha (§4f); the type/CRUD work for
   those tables may
   precede it, but their CFs are **not registered/opened until the bump lands**.
-- **[DECISION] How `migrate_0_46_to_0_47` opens a `0.46.0` dir (whose new CFs
-  do not exist yet) — AND stays rerun-safe after a mid-migration crash.** The
-  migration functions open the DB with `create_missing_column_families(false)`
-  and `crate::tables::MAP_NAMES` (`migration.rs`, e.g. `:234`), whereas the
-  **runtime** `StateDb::open` uses `create_missing_column_families(true)`
-  (`tables.rs:499`, `:509`). So once the seven new names are in `MAP_NAMES`, a
-  migration that opens `MAP_NAMES` with `false` on a `0.46.0` dir (which lacks
-  those CFs) **fails at open** — the migration must create the new CFs. And
-  because the format-version bump is written only **after** the migration body,
-  a crash between "CFs created" and "version written" leaves the dir at
-  **`0.46.0` with the new CFs already present**; the rerun must tolerate that.
-  - **(recommended) create-missing for this migration** — open
-    `migrate_0_46_to_0_47` with `create_missing_column_families(true)` + the new
-    `MAP_NAMES`, so the seven CFs are created when absent and simply opened when
-    present. This is **inherently rerun-safe** — a re-open never fails on "CF
-    already exists" and creates nothing once all seven exist — and mirrors the
-    existing CF-adding migration `migration.rs:627`. It matches this repo's
-    idempotent-rerun convention (below) with the least machinery. (`:627` is
-    `migrate_customer_specific_networks`, which opens with
-    `create_missing_column_families(true)` while reformatting existing CFs
-    rather than adding one — it is the precedent for the **open mode**, not
-    for CF creation.)
-  - **or a versioned CF list** — a **`MAP_NAMES_V0_46`** constant (`MAP_NAMES`
-    without the seven new names) opened under
-    `create_missing_column_families(false)` (mirrors the versioned list
-    `MAP_NAMES_V0_42`, `migration.rs:301`/`:342`/`:448` — the repo pins the
-    names as literals there but documents no rationale, so treat it as
-    precedent for the shape, not as a stated rule), then explicit
-    `db.create_cf` for the seven
-    new CFs (`migration.rs:504`). **This variant is NOT rerun-safe as written**:
-    after the crash above the DB already holds `core_component`/`operation_attempt`,
-    so an old-only-list open fails (RocksDB requires every existing CF to be
-    named) and a second `create_cf` fails ("CF already exists"). To use it, the
-    migration MUST first read the **actual** on-disk CF set via
-    `rocksdb::DB::list_cf` (a standard rocksdb API this repo does **not** yet
-    use) and create only the **missing** CFs. The create-missing option avoids
-    all of this, so it is preferred.
+- **[DECISION] How `migrate_0_46_to_0_47` opens a dir whose new CFs do not
+  exist yet — AND stays rerun-safe after a mid-migration crash. `main` has
+  settled this, and the amendment follows it rather than re-deciding it.**
+  The migration opens a **pinned historical CF list** with
+  `create_missing_column_families(true)`, so whichever families are absent are
+  created and the rest are left alone. The list is written out as a constant
+  and **never taken from `crate::tables::MAP_NAMES`**, for the reason the code
+  gives: it is what *this* migration creates, and a later rename or format
+  bump must change what a *future* migration creates, never what this
+  historical one did. `MAP_NAMES_V0_47_ALPHA_2` (39 names) is the current one.
+  **So this amendment adds `MAP_NAMES_V0_47_ALPHA_3` (44 names)** — the 39
+  plus the five of §4g and §4g-bis — and points the migration at it.
+  `crate::tables::MAP_NAMES` still moves to 44 in the same slice, but the two
+  are separate constants on purpose and must not be collapsed.
+  **The crash case is already handled and must not be re-solved.** A run that
+  stops part-way leaves a version marker older than the families physically
+  present, and RocksDB refuses an open that names a family the database does
+  not have or omits one it does. `map_names_for_existing_format` therefore
+  reads the physical set back with `list_cf` rather than choosing a static
+  list or inferring one from a count, and the retry runs through to
+  `migrate_0_46_to_0_47`, which repairs whichever families are still missing.
+  An earlier revision of this section proposed both options as open choices
+  and noted that `list_cf` was "a standard rocksdb API this repo does not yet
+  use". It does now.
   - **The walk+rewrite is likewise rerun-safe**, following this repo's house
     pattern: convert **only** old-shape `Agent`/`ExternalService` values and
     treat an already-new-shape record as a no-op — the `migrate_*_fields ->
@@ -737,7 +747,7 @@ The manager (review) and the API (review-web) consume these types:
   with **no** down-migration. So if a REView update whose binary carries this
   migration is rolled back to the `.previous` binary (RFC-D2 §4e / RFC-B §8),
   the old binary (below the target) would face an already-migrated
-  `0.47.0-alpha.3` dir and
+  next-alpha dir and
   **refuse to start** — a control-plane brick. To keep the binary A/B rollback
   safe:
   - **The public backup surface is the `backup` module**, not the `StateDb` /
@@ -768,9 +778,9 @@ The manager (review) and the API (review-web) consume these types:
     `data_dir/VERSION` and `backup_dir/VERSION` (`migration.rs:208`/`:209`) and
     refuses to run when the two disagree (`:155`). A RocksDB restore writes
     only into `data_dir/states.db` and leaves `VERSION` untouched. So restoring
-    the snapshot alone yields `0.46` **content** under a `0.47.0-alpha.3`
+    the snapshot alone yields `0.46` **content** under a next-alpha
     **marker**: the
-    reverted older binary reads `0.47.0-alpha.3`, matches no `VersionReq` in
+    reverted older binary reads that marker, matches no `VersionReq` in
     the
     migration chain, and fails with `migration from 0.47.0 is not supported` —
     the same brick, reached through metadata instead of content. Therefore
@@ -1089,26 +1099,33 @@ through.
   concurrent same-package applies to different hosts, and two commits of one
   version, are distinguishable.
 - **The new CFs are created only with the format bump:** opening a `0.46.0`
-  data dir with the pre-bump build does **not** create the
-  `core_component`/`operation_attempt` CFs; they appear only once
-  `COMPATIBLE_VERSION_REQ` is `0.47.0-alpha.3`. A test opens a `0.46.0` dir
-  against the pre-bump `MAP_NAMES` and asserts **none of the seven** new CFs is
-  created.
+  data dir with the pre-bump build does **not** create the CFs this change
+  adds; they appear only once `COMPATIBLE_VERSION_REQ` names the new target. A
+  test opens a `0.46.0` dir against the pre-bump `MAP_NAMES` and asserts
+  **none of the five** CFs this change adds is created. (`core_component` and
+  `operation_attempt` are **not** among them: they were registered by an
+  earlier slice and are already in `MAP_NAMES` at `0.47.0-alpha.2`.)
 - A data dir written at `0.46.0` migrates cleanly to the new format: every
   existing agent/external-service gains the defaults
   (`None` / `None` / `NotInstalled` / empty `bound_addrs`); no config/draft
   data is lost; migration is
-  resumable/robust in the house style. The migration **opens a `0.46.0` dir
-  that lacks all seven new CFs without failing** — `core_component`,
-  `operation_attempt`, the instance allocation table, the port allocation
-  primary, its two indexes and the latest pointer —
+  resumable/robust in the house style.
+  **Two counts, and they are different — conflating them is the mistake this
+  spells out.** This change adds **five** names to `MAP_NAMES` (39 → 44). But a
+  `0.46.0` store is at 36 CFs, so migrating one **creates eight**: those five
+  plus `core_component`, `operation_attempt` and **`customer deletion jobs`**,
+  all three registered by earlier `0.47.0` alpha slices and none of them
+  present at `0.46`. The migration therefore **opens a `0.46.0` dir that lacks
+  all eight without failing** — the instance allocation table, the port
+  allocation primary, its two indexes, the latest pointer, `core_component`,
+  `operation_attempt` and `customer deletion jobs` —
   and
   creates every one of them (`create_missing_column_families(true)` for this
   migration —
   recommended — or `MAP_NAMES_V0_46` + `list_cf` + `create_cf`, §4f) — the
   complement of the "pre-bump open creates no new CF" test above.
 - **Mid-migration crash is rerun-safe:** a fixture at **`0.46.0` VERSION with
-  all seven new CFs already present and old-shape `Agent`/`ExternalService`
+  all eight CFs the migration creates already present and old-shape `Agent`/`ExternalService`
   values** (the state left by a crash after CF creation but before the version
   bump) re-migrates **idempotently** — no duplicate-CF or open failure, and
   already-new-shape records are skipped (the `already_current` house pattern,
@@ -1116,14 +1133,14 @@ through.
 - `COMPATIBLE_VERSION_REQ` reflects the new format; the migration test
   fixture (old data dir → migrated) passes.
 - **The format-version markers round-trip through a rollback.** A test
-  migrates a `0.46.0` dir to `0.47.0-alpha.3` (which rewrites **both**
+  migrates a `0.46.0` dir to the new target (which rewrites **both**
   `data_dir/VERSION` and `backup_dir/VERSION`, `migration.rs:208`/`:209`),
   restores the pre-update snapshot, calls the new public version-writing entry
   point with the recorded `pre_update_version`, and asserts that a
   pre-target-compatible open **succeeds** — i.e. both markers read `0.46.0`
   and `migrate_data_dir`'s data/backup agreement check (`:155`) passes.
   Without the marker rewrite this test fails with
-  `migration from 0.47.0-alpha.3 is not supported`,
+  `migration from <the new target> is not supported`,
   which is exactly the brick §4f exists to prevent.
 - **Rollback-claimed migrations confine their writes to `states.db`.** The
   snapshot covers the states DB only (§4f), so this is a reviewable property of
@@ -1147,10 +1164,11 @@ through.
   same transaction as the record that justifies it. Depends on the instance
   row, and both join the `operation_attempt` write in **one** transaction.
 - **Migration for both tables** (§4f) — the new column families created in
-  the existing `0.46 → 0.47` step, and the target version and
-  `COMPATIBLE_VERSION_REQ` advanced together with the shapes, with the
-  comparator literal that excludes every `0.47.0` prerelease while still
-  matching `0.46.x`.
+  the existing `0.46 → 0.47` step — **extended**, not joined by a sibling —
+  with the target version and `COMPATIBLE_VERSION_REQ` advanced to the next
+  alpha together with the shapes, the requirement's `<`-bound carrying that
+  alpha so every earlier prerelease still reaches it in one step, and a new
+  pinned `MAP_NAMES_V0_47_ALPHA_*` list for what this migration creates.
 
 Each issue is self-contained (restate the relevant §3 contract inline).
 Dependency order within this repo:
@@ -1177,16 +1195,20 @@ Dependency order within this repo:
    `MAP_NAMES`** (that is issue 5).
 5. **Migration + format bump + CF registration** (§4f) — `migrate_0_46_to_0_47`,
    bump `COMPATIBLE_VERSION_REQ`, old-shape structs, migration test fixture,
-   **AND register all SEVEN new CFs in `MAP_NAMES`** in this same slice (so no
-   `0.46.0` dir gets a new CF without the bump — §4f): `core_component`,
-   `operation_attempt`, and the **five** this amendment adds — the **instance
-   allocation** table (§4g), the **port allocation** primary (§4g-bis), its
-   two indexes keyed `(idempotency_key, listener_key)` and
+   **AND register the FIVE CFs this amendment adds in `MAP_NAMES`** in this
+   same slice (so no `0.46.0` dir gets a new CF without the bump — §4f): the
+   **instance allocation** table (§4g), the **port allocation** primary
+   (§4g-bis), its two indexes keyed `(idempotency_key, listener_key)` and
    `(host, component, instance, listener_key)`, and the **latest pointer**
-   (§4d). All seven are net-new key
+   (§4d). All five are net-new key
    spaces that start empty, so they need CF creation and **no data
    migration** — but every one of them must be named here, because a CF
-   created outside this slice is a CF created without a version change. Must
+   created outside this slice is a CF created without a version change.
+   **`core_component` and `operation_attempt` are NOT registered here**: they
+   are already in `MAP_NAMES` at `0.47.0-alpha.2`, registered by the earlier
+   slice that added them. They still appear in the **migration** — a `0.46.0`
+   store has neither, nor `customer deletion jobs` — which is why the fixture
+   above creates **eight** while this slice registers five. Must
    specify **how the
    migration opens a `0.46.0` dir that lacks the new CFs** —
    `create_missing_column_families(true)` for this migration (recommended,
