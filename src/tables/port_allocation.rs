@@ -65,6 +65,13 @@
 //! spelled out here so that the loser can name the winner rather than only
 //! failing.
 //!
+//! What is written is what the install request asked for. The attempt row
+//! keeps that request's digest and not its addresses, so these rows are the
+//! only place a retry can read them back from, and nothing downstream could
+//! tell rows taken for one request from rows taken for another. The addresses
+//! are therefore checked against the request the attempt records before any
+//! of them is taken, at the entry point below that sees both.
+//!
 //! As with the instance number, neither half of an address's life has a public
 //! entry point here: an address is taken by the write that records the
 //! operation taking it, and given back by the write that justifies giving it
@@ -805,8 +812,9 @@ mod tests {
     use super::*;
     use crate::tables::operation_attempt::AddressAllocationError;
     use crate::tables::{
-        BuildSelector, InstallIntent, InstanceAllocation, OperationAction, OperationCleanupState,
-        OperationOnFailure, OperationOutcome, OperationPhase, OperationRetryPolicy,
+        BuildSelector, InstallIntent, InstanceAllocation, InstanceAllocationError, OperationAction,
+        OperationCleanupState, OperationOnFailure, OperationOutcome, OperationPhase,
+        OperationRetryPolicy,
     };
     use crate::test::{DbGuard, acquire_db_permit};
 
@@ -945,17 +953,36 @@ mod tests {
         )
     }
 
-    /// The request an install in these tests was submitted with. Nothing here
-    /// compares its digest against the attempt's own fields, so one request
-    /// stands for every install.
-    fn intent() -> InstallIntent {
+    /// The request an install of `target` on `host` naming `bindings` was
+    /// submitted with.
+    ///
+    /// An empty `bindings` is the install that leaves the addresses to the
+    /// component, which is an absent `bind_addrs` rather than an empty list.
+    fn request_for(host: &str, target: &str, bindings: &[ListenerBinding]) -> InstallIntent {
         InstallIntent {
-            host: HOST.to_string(),
-            target: COMPONENT.to_string(),
+            host: host.to_string(),
+            target: target.to_string(),
             selector: BuildSelector::Version("1.2.3".to_string()),
             on_failure: OperationOnFailure::Rollback,
-            bind_addrs: None,
+            bind_addrs: (!bindings.is_empty()).then(|| {
+                bindings
+                    .iter()
+                    .map(|binding| (binding.listener_key.clone(), binding.addr))
+                    .collect()
+            }),
         }
+    }
+
+    /// Stamps `attempt` with the digest of the request that names `bindings`
+    /// on its own pair, and returns that request.
+    ///
+    /// The allocator takes nothing for an attempt presented with a request
+    /// other than the one it records, so a test that moves an attempt to
+    /// another pair, or gives it addresses, submits it through here.
+    fn submit(attempt: &mut OperationAttempt, bindings: &[ListenerBinding]) -> InstallIntent {
+        let request = request_for(&attempt.host, &attempt.target, bindings);
+        attempt.install_intent = Some(request.digest().unwrap());
+        request
     }
 
     /// An install attempt on `(HOST, COMPONENT)`.
@@ -981,23 +1008,47 @@ mod tests {
             expires_at: timestamp(1_700_086_400),
             backup_id: None,
             pre_update_version: None,
-            install_intent: Some(intent().digest().unwrap()),
+            install_intent: Some(request_for(HOST, COMPONENT, &[]).digest().unwrap()),
             finalized_at: None,
         }
     }
 
-    /// A terminal attempt of `action` on the instance the install took.
+    /// A terminal attempt of `action` on the instance an install of the three
+    /// Giganto listeners took.
     fn terminal(
         idempotency_key: &str,
         instance: u32,
         action: OperationAction,
         outcome: OperationOutcome,
     ) -> OperationAttempt {
+        terminal_for(
+            idempotency_key,
+            instance,
+            action,
+            outcome,
+            &giganto_bindings(),
+        )
+    }
+
+    /// [`terminal`] for an instance whose install named `bindings`.
+    fn terminal_for(
+        idempotency_key: &str,
+        instance: u32,
+        action: OperationAction,
+        outcome: OperationOutcome,
+        bindings: &[ListenerBinding],
+    ) -> OperationAttempt {
         let mut attempt = install(idempotency_key, Some(instance));
         attempt.action = action;
         // Only an install records the request digest, and a row that is
         // terminal and owes nothing carries the instant it was finished with.
-        if action != OperationAction::Install {
+        // A terminal install is a second write under the key the allocation
+        // recorded, and `upsert` answers a key presented with any other
+        // request by refusing it, so the digest is of the request that took
+        // these very addresses.
+        if action == OperationAction::Install {
+            submit(&mut attempt, bindings);
+        } else {
             attempt.install_intent = None;
         }
         attempt.phase = OperationPhase::Completed;
@@ -1047,9 +1098,11 @@ mod tests {
         idempotency_key: &str,
         bindings: &[ListenerBinding],
     ) -> Result<OperationAttempt, AddressAllocationError> {
+        let mut attempt = install(idempotency_key, None);
+        let request = submit(&mut attempt, bindings);
         test_db
             .attempts()
-            .allocate_instance_and_addrs(&install(idempotency_key, None), bindings)
+            .allocate_instance_and_addrs(&attempt, &request, bindings)
     }
 
     /// The request map a re-driven attempt rebuilds, sorted by listener key
@@ -1405,14 +1458,13 @@ mod tests {
             let db = &test_db.db;
             let take = move |idempotency_key: &'static str, component: &'static str| {
                 move || {
+                    let bindings = [binding(INGEST, Transport::Tcp, 38_370)];
                     let mut attempt = install(idempotency_key, None);
                     attempt.target = component.to_string();
+                    let request = submit(&mut attempt, &bindings);
                     Table::<OperationAttempt>::open(db)
                         .unwrap()
-                        .allocate_instance_and_addrs(
-                            &attempt,
-                            &[binding(INGEST, Transport::Tcp, 38_370)],
-                        )
+                        .allocate_instance_and_addrs(&attempt, &request, &bindings)
                 }
             };
             let a = scope.spawn(take("attempt-a", COMPONENT));
@@ -1510,14 +1562,13 @@ mod tests {
                         let bindings: Vec<ListenerBinding> = (0..listeners)
                             .map(|n| binding(&format!("listener-{n}"), Transport::Tcp, base + n))
                             .collect();
+                        let mut attempt = install(idempotency_key, None);
+                        let request = submit(&mut attempt, &bindings);
                         start.wait();
                         (
                             Table::<OperationAttempt>::open(db)
                                 .unwrap()
-                                .allocate_instance_and_addrs(
-                                    &install(idempotency_key, None),
-                                    &bindings,
-                                )
+                                .allocate_instance_and_addrs(&attempt, &request, &bindings)
                                 .unwrap(),
                             listeners,
                         )
@@ -1754,10 +1805,12 @@ mod tests {
         // A component of its own on the same host, numbered from its own
         // sequence: `(host, component)` is what the number counts within, so
         // this one is instance 1 alongside the first above.
+        let neighbour_bindings = [binding(INGEST, Transport::Tcp, 39_370)];
         let mut neighbour = install("attempt-3", None);
         neighbour.target = OTHER_COMPONENT.to_string();
+        let neighbour_request = submit(&mut neighbour, &neighbour_bindings);
         let neighbour = attempts
-            .allocate_instance_and_addrs(&neighbour, &[binding(INGEST, Transport::Tcp, 39_370)])
+            .allocate_instance_and_addrs(&neighbour, &neighbour_request, &neighbour_bindings)
             .unwrap();
         assert_eq!(neighbour.instance, Some(1));
 
@@ -2026,11 +2079,13 @@ mod tests {
             &[binding(INGEST, Transport::Tcp, 38_370)],
         )
         .unwrap();
+        let bindings = [binding(INGEST, Transport::Tcp, 38_370)];
         let mut attempt = install("attempt-b", None);
         attempt.host = OTHER_HOST.to_string();
+        let request = submit(&mut attempt, &bindings);
         test_db
             .attempts()
-            .allocate_instance_and_addrs(&attempt, &[binding(INGEST, Transport::Tcp, 38_370)])
+            .allocate_instance_and_addrs(&attempt, &request, &bindings)
             .unwrap();
 
         assert_eq!(test_db.rows().len(), 2);
@@ -2101,16 +2156,16 @@ mod tests {
         let table = test_db.table();
         let addr = SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 38_370);
 
+        let bindings = [ListenerBinding {
+            listener_key: INGEST.to_string(),
+            transport: Transport::Tcp,
+            addr,
+        }];
+        let mut attempt = install("attempt-1", None);
+        let request = submit(&mut attempt, &bindings);
         test_db
             .attempts()
-            .allocate_instance_and_addrs(
-                &install("attempt-1", None),
-                &[ListenerBinding {
-                    listener_key: INGEST.to_string(),
-                    transport: Transport::Tcp,
-                    addr,
-                }],
-            )
+            .allocate_instance_and_addrs(&attempt, &request, &bindings)
             .unwrap();
 
         assert_eq!(
@@ -2147,6 +2202,92 @@ mod tests {
             allocate(&test_db, "attempt-2", &[binding("", Transport::Tcp, 1)]).unwrap_err();
         assert!(matches!(refusal, AddressAllocationError::Database(_)));
         assert_eq!(test_db.rows(), Vec::new());
+    }
+
+    /// The rows are the only place the addresses survive, and the attempt row
+    /// keeps the request's digest rather than the request, so an allocation
+    /// made for one request under an attempt recorded for another would be
+    /// indistinguishable afterwards: a retry resolves its key by that digest
+    /// and rebuilds the map it sent from these rows, and would be answered
+    /// with addresses nobody submitted. The two are tied at the only
+    /// boundary that sees both, and none of these is written.
+    #[test]
+    fn an_allocation_the_request_does_not_ask_for_is_refused() {
+        let test_db = TestDb::new();
+        let attempts = test_db.attempts();
+        let bindings = giganto_bindings();
+
+        // An attempt recorded for a request that leaves the addresses to the
+        // component, taking three of them.
+        let refused = attempts.allocate_instance_and_addrs(
+            &install("attempt-1", None),
+            &request_for(HOST, COMPONENT, &[]),
+            &bindings,
+        );
+        assert!(matches!(refused, Err(AddressAllocationError::Database(_))));
+
+        // The same the other way about: a request naming three addresses,
+        // taking none — which is exactly what `allocate_instance` does with
+        // one.
+        let mut asking = install("attempt-1", None);
+        let asked = submit(&mut asking, &bindings);
+        let refused = attempts.allocate_instance(&asking, &asked);
+        assert!(matches!(refused, Err(InstanceAllocationError::Database(_))));
+
+        // One address of some other map: the pairs are compared, not their
+        // count.
+        let mut renumbered = bindings.clone();
+        renumbered[2] = binding(GRAPHQL, Transport::Udp, 8543);
+        let refused = attempts.allocate_instance_and_addrs(&asking, &asked, &renumbered);
+        assert!(matches!(refused, Err(AddressAllocationError::Database(_))));
+
+        // A request the attempt records the digest of, for another host: the
+        // rows are keyed on the attempt's host, and this is not that host's
+        // request.
+        let elsewhere = request_for(OTHER_HOST, COMPONENT, &bindings);
+        let mut moved = install("attempt-1", None);
+        moved.install_intent = Some(elsewhere.digest().unwrap());
+        let refused = attempts.allocate_instance_and_addrs(&moved, &elsewhere, &bindings);
+        assert!(matches!(refused, Err(AddressAllocationError::Database(_))));
+
+        // And a request that is not the one the row records at all: the same
+        // addresses on the same pair, submitted for another build.
+        let mut resubmitted = asked.clone();
+        resubmitted.selector = BuildSelector::Commit("c0ffee".to_string());
+        let refused = attempts.allocate_instance_and_addrs(&asking, &resubmitted, &bindings);
+        assert!(matches!(refused, Err(AddressAllocationError::Database(_))));
+
+        assert_eq!(test_db.rows(), Vec::new());
+        assert_eq!(test_db.attempt_index(), Vec::new());
+        assert_eq!(test_db.instance_index(), Vec::new());
+        assert_eq!(attempts.get(&key("attempt-1")).unwrap(), None);
+        assert!(
+            test_db
+                .instances()
+                .allocated(HOST, COMPONENT)
+                .unwrap()
+                .is_empty()
+        );
+
+        // The request the attempt records, asking for the addresses it takes.
+        let stored = attempts
+            .allocate_instance_and_addrs(&asking, &asked, &bindings)
+            .unwrap();
+        assert_eq!(stored.instance, Some(1));
+        assert_eq!(test_db.rows().len(), 3);
+
+        // An absent list and an empty one are distinct requests — the digest
+        // encodes them differently — and both take no address, so neither is
+        // refused for taking none.
+        let mut none_at_all = request_for(HOST, COMPONENT, &[]);
+        none_at_all.bind_addrs = Some(Vec::new());
+        let mut asking_none = install("attempt-2", None);
+        asking_none.install_intent = Some(none_at_all.digest().unwrap());
+        let stored = attempts
+            .allocate_instance_and_addrs(&asking_none, &none_at_all, &[])
+            .unwrap();
+        assert_eq!(stored.instance, Some(2));
+        assert_eq!(test_db.rows().len(), 3);
     }
 
     /// A request whose second address is taken leaves none of the first: the
@@ -2216,14 +2357,21 @@ mod tests {
 
         assert!(Table::<PortAllocation>::open(&test_db.db).is_none());
 
+        let bindings = giganto_bindings();
+        let mut attempt = install("attempt-1", None);
+        let request = submit(&mut attempt, &bindings);
         let refusal = attempts
-            .allocate_instance_and_addrs(&install("attempt-1", None), &giganto_bindings())
+            .allocate_instance_and_addrs(&attempt, &request, &bindings)
             .unwrap_err();
         assert!(matches!(refusal, AddressAllocationError::Database(_)));
         assert_eq!(attempts.get(&key("attempt-1")).unwrap(), None);
 
         let stored = attempts
-            .allocate_instance_and_addrs(&install("attempt-2", None), &[])
+            .allocate_instance_and_addrs(
+                &install("attempt-2", None),
+                &request_for(HOST, COMPONENT, &[]),
+                &[],
+            )
             .unwrap();
         assert_eq!(stored.instance, Some(1));
     }

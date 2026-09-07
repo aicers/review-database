@@ -686,18 +686,24 @@ mod tests {
         )
     }
 
-    /// The request an install in these tests was submitted with.
+    /// The request an install of `component` on `host` was submitted with.
     ///
-    /// Its digest is what the row carries; nothing here compares it against
-    /// the attempt's own fields, so one request stands for every install.
-    fn intent() -> InstallIntent {
+    /// Its digest is what the row carries, and the allocator takes no number
+    /// for an attempt presented with any other request, so a test on another
+    /// pair asks for that pair's request here.
+    fn intent_for(host: &str, component: &str) -> InstallIntent {
         InstallIntent {
-            host: HOST.to_string(),
-            target: COMPONENT.to_string(),
+            host: host.to_string(),
+            target: component.to_string(),
             selector: BuildSelector::Version("1.2.3".to_string()),
             on_failure: OperationOnFailure::Rollback,
             bind_addrs: None,
         }
+    }
+
+    /// [`intent_for`] on the pair the tests below are about.
+    fn intent() -> InstallIntent {
+        intent_for(HOST, COMPONENT)
     }
 
     /// The digest [`intent`] hashes to.
@@ -778,10 +784,12 @@ mod tests {
         component: &str,
         idempotency_key: &str,
     ) -> Result<u32, InstanceAllocationError> {
+        let request = intent_for(host, component);
         let mut attempt = install(idempotency_key, None);
         attempt.host = host.to_string();
         attempt.target = component.to_string();
-        let stored = test_db.attempts().allocate_instance(&attempt)?;
+        attempt.install_intent = Some(request.digest().unwrap());
+        let stored = test_db.attempts().allocate_instance(&attempt, &request)?;
         Ok(stored
             .instance
             .expect("the allocator sets the number it picked"))
@@ -1001,7 +1009,7 @@ mod tests {
         assert_eq!(allocate(&test_db, "attempt-2").unwrap(), 1);
 
         let stored = attempts
-            .allocate_instance(&install("attempt-1", None))
+            .allocate_instance(&install("attempt-1", None), &intent())
             .unwrap();
         assert_eq!(stored, failed);
         assert_eq!(held(&table), vec![1]);
@@ -1039,7 +1047,7 @@ mod tests {
         unnamed.target = String::new();
 
         for presented in [updating, core, unnamed] {
-            let returned = attempts.allocate_instance(&presented).unwrap();
+            let returned = attempts.allocate_instance(&presented, &intent()).unwrap();
             assert_eq!(returned, recorded);
             assert_eq!(attempts.get(&key("attempt-1")).unwrap().unwrap(), recorded);
             assert_eq!(held(&table), vec![1]);
@@ -1105,7 +1113,7 @@ mod tests {
         // The re-run, which is what the caller does with the conflict: the
         // committed row is returned untouched and no number is taken for it.
         let stored = attempts
-            .allocate_instance(&install("attempt-1", None))
+            .allocate_instance(&install("attempt-1", None), &intent())
             .unwrap();
         assert_eq!(stored, failed);
         assert!(held(&table).is_empty());
@@ -1275,7 +1283,7 @@ mod tests {
                 move || {
                     Table::<OperationAttempt>::open(db)
                         .unwrap()
-                        .allocate_instance(&install(idempotency_key, None))
+                        .allocate_instance(&install(idempotency_key, None), &intent())
                         .unwrap()
                         .instance
                         .unwrap()
@@ -1322,7 +1330,7 @@ mod tests {
             let drive = move || {
                 Table::<OperationAttempt>::open(db)
                     .unwrap()
-                    .allocate_instance(&install("attempt-1", None))
+                    .allocate_instance(&install("attempt-1", None), &intent())
                     .unwrap()
                     .instance
                     .unwrap()
@@ -1495,7 +1503,12 @@ mod tests {
 
         let mut unowned = install("attempt-unowned", None);
         unowned.idempotency_key = String::new();
-        assert!(test_db.attempts().allocate_instance(&unowned).is_err());
+        assert!(
+            test_db
+                .attempts()
+                .allocate_instance(&unowned, &intent())
+                .is_err()
+        );
         assert_eq!(held(&table), Vec::<u32>::new());
 
         table
@@ -1692,7 +1705,7 @@ mod tests {
             let mut attempt = install(name, None);
             attempt.action = action;
             attempt.install_intent = None;
-            let refused = attempts.allocate_instance(&attempt);
+            let refused = attempts.allocate_instance(&attempt, &intent());
             assert!(matches!(refused, Err(InstanceAllocationError::Database(_))));
             assert!(attempts.get(&key(name)).unwrap().is_none());
         }
@@ -1700,7 +1713,7 @@ mod tests {
         // An install carrying no component would key a row on an unnamed one.
         let mut unnamed = install("attempt-unnamed", None);
         unnamed.target = String::new();
-        let refused = attempts.allocate_instance(&unnamed);
+        let refused = attempts.allocate_instance(&unnamed, &intent());
         assert!(matches!(refused, Err(InstanceAllocationError::Database(_))));
         assert!(attempts.get(&key("attempt-unnamed")).unwrap().is_none());
 
@@ -2091,7 +2104,7 @@ mod tests {
         // row names the attempt that owns it — how a re-drive recognizes its
         // own allocation instead of taking a second number.
         let stored = attempts
-            .allocate_instance(&install("attempt-1", None))
+            .allocate_instance(&install("attempt-1", None), &intent())
             .unwrap();
         assert_eq!(stored.instance, Some(1));
         assert_eq!(held(&table), vec![1]);

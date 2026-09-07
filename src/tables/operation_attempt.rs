@@ -439,6 +439,74 @@ impl From<PortAllocationError> for AddressAllocationError {
     }
 }
 
+/// Checks that `request` is the request `attempt` records, and that
+/// `bindings` are the addresses that request asks for.
+///
+/// The row stores a digest and not the request, so no reader downstream can
+/// tell an attempt recorded for one request from an allocation made for
+/// another: [`Table::resolve_request_key`] answers a retry by comparing
+/// digests, and the retry then rebuilds the map it sent from the allocation
+/// rows. Were the two allowed to disagree, that rebuild would return
+/// addresses the operator never submitted, under a key that answered as the
+/// same request. Nothing else sees both, so they are tied here — the digest
+/// says the request presented is the one the row records, and the comparison
+/// below says the addresses taken are the ones it names.
+///
+/// The transport is not part of the tie. `bind_addrs` carries
+/// `(listener key, address)` and nothing else, because which transport a
+/// listener binds on is the component's to say and not the operator's, so
+/// only the pairs are compared and `bindings` alone supplies the transport
+/// the row is keyed by.
+///
+/// An absent `bind_addrs` and an empty one both take no address, and neither
+/// is refused for an empty `bindings`: what keeps them distinct requests is
+/// the digest, which encodes them differently, and not this check.
+fn check_request(
+    attempt: &OperationAttempt,
+    request: &InstallIntent,
+    bindings: &[ListenerBinding],
+) -> Result<()> {
+    if request.host != attempt.host || request.target != attempt.target {
+        bail!(
+            "operation attempt {} is for component {} on host {}, and the request presented with it asks for component {} on host {}",
+            attempt.idempotency_key,
+            attempt.target,
+            attempt.host,
+            request.target,
+            request.host
+        );
+    }
+    if attempt.install_intent != Some(request.digest()?) {
+        bail!(
+            "operation attempt {} records the digest of a request other than the one presented with it",
+            attempt.idempotency_key
+        );
+    }
+    let mut asked: Vec<(&str, SocketAddr)> = request
+        .bind_addrs
+        .as_deref()
+        .unwrap_or_default()
+        .iter()
+        .map(|(listener_key, addr)| (listener_key.as_str(), *addr))
+        .collect();
+    let mut taken: Vec<(&str, SocketAddr)> = bindings
+        .iter()
+        .map(|binding| (binding.listener_key.as_str(), binding.addr))
+        .collect();
+    // The request's order is not the caller's, exactly as the digest
+    // transcript's is not: two lists naming the same listeners in a different
+    // order are the same list.
+    asked.sort_unstable();
+    taken.sort_unstable();
+    if asked != taken {
+        bail!(
+            "the addresses presented for operation attempt {} are not the ones its request asks for",
+            attempt.idempotency_key
+        );
+    }
+    Ok(())
+}
+
 /// Returns whether `key` is a `UUIDv4` in its canonical hyphenated form.
 ///
 /// Canonical means lowercase: RFC 9562 renders a UUID with `a`-`f` and
@@ -1360,6 +1428,15 @@ impl<'d> Table<'d, OperationAttempt> {
     /// rather than left to a caller to avoid, and so is an install whose
     /// `target` is empty.
     ///
+    /// And only an attempt presented with the request it records. `request`
+    /// is the install request the attempt was submitted with, and its host,
+    /// target and digest must be the attempt's own: the row keeps a digest
+    /// rather than the request itself, so an attempt recorded for one request
+    /// and an allocation made for another are indistinguishable to every
+    /// reader afterwards. An install that names addresses takes them through
+    /// [`Table::allocate_instance_and_addrs`], so a `request` naming any is
+    /// refused here.
+    ///
     /// A core component has no instance dimension at all and takes no number:
     /// its attempts are recorded with [`Table::upsert`] and `instance = None`,
     /// and a second install of one is refused by the single row per
@@ -1414,13 +1491,17 @@ impl<'d> Table<'d, OperationAttempt> {
     /// core component or is registered as one on its `host`, if the database has no
     /// `instance_allocation` column family, if the attempt's idempotency key
     /// is empty, if the attempt is non-terminal and a different attempt is
-    /// already live for its `(host, target, instance)` triple, or if the
-    /// database operation fails.
+    /// already live for its `(host, target, instance)` triple, if `request`
+    /// is not the request the attempt records — a differing host, target or
+    /// digest — or if it asks for addresses, which is
+    /// [`Table::allocate_instance_and_addrs`]'s call and not this one, or if
+    /// the database operation fails.
     pub fn allocate_instance(
         &self,
         attempt: &OperationAttempt,
+        request: &InstallIntent,
     ) -> Result<OperationAttempt, InstanceAllocationError> {
-        self.allocate_instance_and_addrs(attempt, &[])
+        self.allocate_instance_and_addrs(attempt, request, &[])
             .map_err(|error| match error {
                 AddressAllocationError::InstanceNumbersExhausted { component, host } => {
                     InstanceAllocationError::InstanceNumbersExhausted { component, host }
@@ -1443,6 +1524,18 @@ impl<'d> Table<'d, OperationAttempt> {
     /// addresses its instance is to bind. The two differ in nothing else: an
     /// empty `bindings` is exactly the install that leaves the addresses to
     /// the component, and takes none.
+    ///
+    /// `bindings` is what `request` asks for, and is checked against it
+    /// before anything is taken. The two are separate arguments because they
+    /// do not carry the same thing: `bind_addrs` is the operator's, one
+    /// address per listener key, while the transport each listener binds on
+    /// is the component's and reaches this call only through `bindings` —
+    /// which is why only the `(listener key, address)` pairs are compared. A
+    /// `bindings` that is not the request's addresses is refused rather than
+    /// written, because the row keeps only the request's digest: a retry
+    /// resolves its key by that digest and then rebuilds the map it sent from
+    /// these rows, and rows taken for some other map would answer it with
+    /// addresses nobody submitted.
     ///
     /// The instance number is taken **first**, because the address rows'
     /// owner names it and it has to be chosen before they can be keyed. All
@@ -1478,10 +1571,13 @@ impl<'d> Table<'d, OperationAttempt> {
     /// than reporting the bare conflict. A `bindings` naming one listener
     /// twice, or a listener with no key, is refused as a database error, as
     /// is a store whose port allocation column families are not registered
-    /// while `bindings` is not empty.
+    /// while `bindings` is not empty, and so is a `request` that is not the
+    /// one the attempt records or that asks for addresses other than
+    /// `bindings`.
     pub fn allocate_instance_and_addrs(
         &self,
         attempt: &OperationAttempt,
+        request: &InstallIntent,
         bindings: &[ListenerBinding],
     ) -> Result<OperationAttempt, AddressAllocationError> {
         let allocations = Table::<InstanceAllocation>::open(self.map.db);
@@ -1533,6 +1629,11 @@ impl<'d> Table<'d, OperationAttempt> {
                 )
                 .into());
             }
+            // What the attempt is has been judged; what it was submitted with
+            // is judged here, before the store is touched. The row carries
+            // only the request's digest, so this is the one place that can
+            // hold the attempt, the request and the addresses together.
+            check_request(attempt, request, bindings)?;
             let Some(allocations) = allocations.as_ref() else {
                 return Err(anyhow!(
                     "the database has no instance allocation table to take a number from"
@@ -3193,9 +3294,22 @@ mod tests {
         let test_db = TestDb::new();
         let table = test_db.table();
 
-        let attempt = module_attempt("attempt-1");
+        // An install, since only an install takes a number at all: an
+        // attempt refused for its action would never reach the column family
+        // this test is about.
+        let request = InstallIntent {
+            host: "host-a.example".to_string(),
+            target: "sensor".to_string(),
+            selector: BuildSelector::Version("1.2.3".to_string()),
+            on_failure: OnFailure::Rollback,
+            bind_addrs: None,
+        };
+        let mut attempt = module_attempt("attempt-1");
+        attempt.action = Action::Install;
+        attempt.instance = None;
+        attempt.install_intent = Some(request.digest().unwrap());
         let error = table
-            .allocate_instance(&attempt)
+            .allocate_instance(&attempt, &request)
             .expect_err("there is no column family to take a number from");
         assert!(
             matches!(error, InstanceAllocationError::Database(_)),
