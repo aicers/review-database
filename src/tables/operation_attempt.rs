@@ -1121,6 +1121,17 @@ impl<'d> Table<'d, OperationAttempt> {
                 Err(_) => (self.index_keys_naming(key)?, self.pointer_keys_naming(key)?),
             };
             for index_key in index_keys {
+                // The owed-cleanup key carries no idempotency key, so the
+                // entry this row wrote may since have come to name another
+                // attempt of the same triple. Dropping it then would lose
+                // that attempt's obligation silently, so an entry goes only
+                // while it still names this row.
+                let holder = txn
+                    .get_for_update_cf(self.map.cf, &index_key, EXCLUSIVE)
+                    .context("cannot read the index")?;
+                if holder.is_some_and(|holder| holder != key) {
+                    continue;
+                }
                 self.map.delete_with_transaction(&index_key, &txn)?;
             }
             let latest = self.latest_pointer()?;
@@ -3415,6 +3426,39 @@ mod tests {
             .unwrap_err();
         assert!(matches!(error, RequestKeyError::RequestKeyReused { .. }));
         assert!(!error.is_retryable());
+    }
+
+    #[test]
+    fn deleting_an_attempt_leaves_the_owed_cleanup_entry_another_row_has_taken() {
+        let test_db = TestDb::new();
+        let table = test_db.table();
+
+        // The owed-cleanup key is the triple alone, so the second attempt's
+        // entry replaces the first's. Deleting the first must not take the
+        // entry the second now holds with it: the row would still record the
+        // obligation while nothing could find it.
+        let first = owing(
+            terminal_attempt("op-first", HOST, TARGET, Some(1), 1_000, 9_000),
+            CleanupState::PendingIdentityTeardown,
+        );
+        let second = owing(
+            terminal_attempt("op-second", HOST, TARGET, Some(1), 2_000, 9_000),
+            CleanupState::PendingDeregister,
+        );
+        table.upsert(&first).unwrap();
+        table.upsert(&second).unwrap();
+        assert_eq!(
+            table.attempt_owing_cleanup(TARGET, HOST, Some(1)).unwrap(),
+            Some(second.clone())
+        );
+
+        table.delete("op-first").unwrap();
+        assert_eq!(table.get("op-first").unwrap(), None);
+        assert_eq!(
+            table.attempt_owing_cleanup(TARGET, HOST, Some(1)).unwrap(),
+            Some(second)
+        );
+        assert_eq!(owed_cleanup_entries(&test_db), 1);
     }
 
     #[test]
