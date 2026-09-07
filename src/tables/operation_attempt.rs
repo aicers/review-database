@@ -1054,11 +1054,14 @@ impl<'d> Table<'d, OperationAttempt> {
     /// `cleanup_state`.
     ///
     /// A write that leaves the attempt terminal and owing nothing carries
-    /// `finalized_at`, and stamps the latest pointer for its triple in the
-    /// same transaction, so the two can never disagree. A write that moves the
-    /// attempt to another triple drops the pointer it left behind in that same
-    /// transaction, where it still names this attempt, so no triple is left
-    /// pointing at a row that has since moved off it.
+    /// `finalized_at`, and the write that first stamps it moves the latest
+    /// pointer for its triple in the same transaction, so the two can never
+    /// disagree. A later re-write of a row finalized earlier leaves the
+    /// pointer alone, so an idempotent replay cannot name a superseded
+    /// attempt current again. A write that moves the attempt to another
+    /// triple takes the pointer with it, dropping the entry it left behind in
+    /// that same transaction where it still names this attempt, so no triple
+    /// is left pointing at a row that has since moved off it.
     ///
     /// # Errors
     ///
@@ -1069,8 +1072,8 @@ impl<'d> Table<'d, OperationAttempt> {
     /// keyed by something other than a `UUIDv4` in canonical hyphenated form,
     /// if the attempt is non-terminal and a different
     /// attempt is already live for its `(host, target, instance)` triple, if
-    /// the write stamps `finalized_at` and the latest-pointer column family is
-    /// not registered, or if the database operation fails.
+    /// the write moves the latest pointer and that column family is not
+    /// registered, or if the database operation fails.
     ///
     /// An empty key is rejected rather than stored because the shared table
     /// iterator skips one as indexed-table metadata, which would leave an
@@ -1493,17 +1496,22 @@ impl<'d> Table<'d, OperationAttempt> {
         // registered there is no pointer to strand, so its absence is not an
         // error here — unlike a finalization, which would lose the record of
         // which attempt is current.
-        if let Some(stored) = stored {
-            let vacated = latest_pointer_key(&stored.host, &stored.target, stored.instance)?;
-            if vacated != latest_pointer_key(&new.host, &new.target, new.instance)?
-                && let Some(latest) = Map::open(self.map.db, super::OPERATION_ATTEMPT_LATEST)
-            {
-                let holder = txn
-                    .get_for_update_cf(latest.cf, &vacated, EXCLUSIVE)
-                    .context("cannot read the latest pointer")?;
-                if holder.is_some_and(|holder| holder == new.idempotency_key.as_bytes()) {
-                    latest.delete_with_transaction(&vacated, txn)?;
-                }
+        let pointer_key = latest_pointer_key(&new.host, &new.target, new.instance)?;
+        let vacated = match stored {
+            Some(stored) => {
+                let vacated = latest_pointer_key(&stored.host, &stored.target, stored.instance)?;
+                (vacated != pointer_key).then_some(vacated)
+            }
+            None => None,
+        };
+        if let Some(vacated) = &vacated
+            && let Some(latest) = Map::open(self.map.db, super::OPERATION_ATTEMPT_LATEST)
+        {
+            let holder = txn
+                .get_for_update_cf(latest.cf, vacated, EXCLUSIVE)
+                .context("cannot read the latest pointer")?;
+            if holder.is_some_and(|holder| holder == new.idempotency_key.as_bytes()) {
+                latest.delete_with_transaction(vacated, txn)?;
             }
         }
         // Read after that removal, so that a row moving to another triple, or
@@ -1533,10 +1541,17 @@ impl<'d> Table<'d, OperationAttempt> {
         // transaction. A crash between them would leave a pointer naming an
         // attempt that is no longer current, silently, because nothing else
         // records which attempt is latest.
-        if new.finalized_at.is_some() {
-            let key = latest_pointer_key(&new.host, &new.target, new.instance)?;
+        //
+        // The write that stamps the finalization is what moves the pointer,
+        // along with one that carries an already-finalized row to another
+        // triple, which is the one other way a triple's latest attempt
+        // changes. A re-write of a row finalized earlier is neither: it
+        // finalizes nothing, and stamping the pointer again would name it
+        // current over an attempt that finalized after it.
+        let newly_finalized = stored.is_none_or(|stored| stored.finalized_at.is_none());
+        if new.finalized_at.is_some() && (newly_finalized || vacated.is_some()) {
             self.latest_pointer()?.put_with_transaction(
-                &key,
+                &pointer_key,
                 new.idempotency_key.as_bytes(),
                 txn,
             )?;
@@ -3610,6 +3625,37 @@ mod tests {
             table.latest_attempt(HOST, TARGET, Some(2)).unwrap(),
             Some(sibling)
         );
+    }
+
+    #[test]
+    fn re_writing_an_older_finalized_attempt_leaves_the_pointer_where_it_is() {
+        let test_db = TestDb::new();
+        let table = test_db.table();
+
+        // The pointer moves on the write that finalizes, and a row finalized
+        // earlier can be written again — a replayed upsert, a field corrected
+        // after the fact. Neither finalizes anything, so neither may take the
+        // triple back from the attempt that finalized after it.
+        let superseded = terminal_attempt("op-a", HOST, TARGET, Some(1), 1_000, 9_000);
+        let current = terminal_attempt("op-b", HOST, TARGET, Some(1), 2_000, 9_000);
+        table.upsert(&superseded).unwrap();
+        table.upsert(&current).unwrap();
+        assert_eq!(test_db.pointed_at_keys(), ["op-b"]);
+
+        table.upsert(&superseded).unwrap();
+        let mut amended = superseded.clone();
+        amended.expires_at = timestamp(11_000);
+        table.upsert(&amended).unwrap();
+
+        assert_eq!(test_db.pointed_at_keys(), ["op-b"]);
+        assert_eq!(
+            table.latest_attempt(HOST, TARGET, Some(1)).unwrap(),
+            Some(current)
+        );
+        // And retention keeps what the pointer names, not what was written
+        // last: a bound nothing is within leaves the later finalization.
+        assert_eq!(table.prune(bound(0, 0), timestamp(12_000)).unwrap(), 1);
+        assert_eq!(keys(&table, Direction::Forward, None), ["op-b"]);
     }
 
     #[test]
