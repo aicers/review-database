@@ -64,7 +64,11 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   hyphenated form, which is lowercase. `resolve_request_key` uses it to answer
   a resubmitted request key: the same request returns the attempt already held
   under it, and a different one is refused with a non-retryable
-  `RequestKeyError` naming the key. These records live in a table reachable
+  `RequestKeyError` naming the key. That answer is not a reservation, so the
+  same comparison is made again against the row a write would replace: two
+  requests carrying one key cannot both create an attempt under it, and the
+  one that commits second is refused rather than replacing the first. These
+  records live in a table reachable
   through `Store::operation_attempt_map`.
 - Added `write_version_markers`, which records a caller-supplied database
   format version in the `VERSION` files of a data directory and a backup

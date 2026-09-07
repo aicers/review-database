@@ -329,6 +329,11 @@ The manager (review) and the API (review-web) consume these types:
     hang off it. The digest is stored rather than the fields because the only
     question ever asked of it is equality; the refusal names the key rather
     than the difference for the same reason.
+    **The comparison is repeated at the write**, against the row the write
+    would replace and under that row's lock, because the lookup on its own
+    reserves nothing: two requests carrying one key can both be told it is
+    free, and without the second comparison the one that commits second
+    replaces the attempt the first created instead of being refused.
     **`install_intent` is `None` for every non-allocating operation.** Update,
     remove and onboard are keyed by a REView-generated value that is unique by
     construction, so there is nothing to compare — and a stored `None`
