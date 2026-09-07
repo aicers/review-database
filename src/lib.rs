@@ -68,7 +68,7 @@ pub use self::top_n::{
     ClusterTrend, ElementCount, LineSegment, Regression, StructuredColumnType, TopTrendsByColumn,
 };
 pub use self::types::{EventCategory, HostNetworkGroup, Qualifier, Status};
-pub use self::util::find_ip_country;
+pub use self::util::{COUNTRY_CODE_UNKNOWN, COUNTRY_CODE_UNRESOLVED, find_ip_country};
 
 const DEFAULT_STATES: &str = "states.db";
 const EXCLUSIVE: bool = true;
@@ -84,6 +84,10 @@ pub struct Store {
 impl Store {
     const DEFAULT_PRETRAINED: &'static str = "pretrained";
     /// Opens a new key-value store and its backup.
+    ///
+    /// Event ingestion stores [`COUNTRY_CODE_UNRESOLVED`] for endpoint country
+    /// codes when `ip2location` is `None`. With a locator, failed or invalid
+    /// lookups store [`COUNTRY_CODE_UNKNOWN`].
     ///
     /// # Errors
     ///

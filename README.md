@@ -38,12 +38,12 @@ Open an IP2Location database in the caller application and pass it to
 `Store::new` as `Some(Arc<ip2location::DB>)` to share it with event writers.
 `EventDb::put` then resolves endpoint country codes while converting
 producer-facing fields to the stored schema. Producers do not provide
-country-code fields.
-
-`ZZ` means no lookup was performed because the store was opened with
-`None`. `XX` means a configured lookup was attempted but failed or did not
-return a valid two-letter code. Vector country-code fields retain the same
-length and ordering as their corresponding address vectors.
+country-code fields. See the public rustdoc for
+[`COUNTRY_CODE_UNKNOWN`](https://docs.rs/review-database/latest/review_database/constant.COUNTRY_CODE_UNKNOWN.html)
+and
+[`COUNTRY_CODE_UNRESOLVED`](https://docs.rs/review-database/latest/review_database/constant.COUNTRY_CODE_UNRESOLVED.html)
+for placeholder semantics. Vector country-code fields retain the same length
+and ordering as their corresponding address vectors.
 
 ## License
 

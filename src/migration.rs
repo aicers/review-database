@@ -1,6 +1,6 @@
 //! Routines to check the database format version and migrate it if necessary.
 #![allow(clippy::too_many_lines)]
-mod migration_structures;
+pub(crate) mod migration_structures;
 use std::{
     fs::{File, create_dir_all, remove_file, rename},
     io::{Read, Write},
@@ -16,14 +16,14 @@ use tracing::{info, warn};
 
 use crate::{
     AllowNetwork, BlockNetwork, Customer,
-    event::{EventKind, resolve_stored_country_codes},
+    event::{EventKind, resolve_stored_country_codes, swap_stored_country_code_placeholders},
     geo::{CountryLookup, Ip2LocationResolver},
     migration::migration_structures::{
         AgentValueV0_47Alpha1, AgentValueV0_47Alpha2, AllowNetworkV0_42, BlockNetworkV0_42,
         BlocklistDceRpcFieldsStoredV0_42, BlocklistDceRpcFieldsStoredV0_44,
         BlocklistDhcpFieldsStoredV0_42, BlocklistDhcpFieldsStoredV0_44,
         ExternalServiceValueV0_47Alpha1, ExternalServiceValueV0_47Alpha2,
-        HttpThreatFieldsStoredV0_43, HttpThreatFieldsStoredV0_44,
+        HttpThreatFieldsStoredV0_43, HttpThreatFieldsStoredV0_44, V0_46_COUNTRY_CODE_LOOKUP_FAILED,
         migrate_event_stored_schema_to_v0_46, validate_event_stored_schema_v0_46,
     },
     tables::{NETWORK_TAGS, TRIAGE_EXCLUSION_REASON},
@@ -110,10 +110,18 @@ use crate::{
 /// // release that involves database format change) to 3.5.0, including
 /// // all alpha changes finalized in 3.5.0.
 /// ```
-const COMPATIBLE_VERSION_REQ: &str = ">=0.47.0-alpha.2,<0.47.0-alpha.3";
+const COMPATIBLE_VERSION_REQ: &str = ">=0.47.0-alpha.3,<0.47.0-alpha.4";
 
 /// Number of event records applied in each atomic migration write.
 const EVENT_MIGRATION_BATCH_SIZE: usize = 100;
+
+/// Last default-column-family key durably processed by the placeholder swap.
+const COUNTRY_CODE_SWAP_CHECKPOINT_KEY: &[u8] =
+    b"migration/0.47.0/country-code-placeholder-swap/checkpoint";
+
+/// Durable marker preventing the placeholder swap from being applied twice.
+const COUNTRY_CODE_SWAP_COMPLETED_KEY: &[u8] =
+    b"migration/0.47.0/country-code-placeholder-swap/completed";
 
 /// The name of the file recording the database format version.
 const VERSION_FILE_NAME: &str = "VERSION";
@@ -137,7 +145,7 @@ const VERSION_TMP_FILE_NAME: &str = "VERSION.tmp";
 /// Pass a shared `IP2Location` database handle when available so endpoint
 /// country-code fields can be resolved during the stored event schema
 /// migration. If no locator is provided, endpoint country codes remain at the
-/// pre-lookup value `ZZ`.
+/// unresolved value [`crate::COUNTRY_CODE_UNRESOLVED`].
 ///
 /// # Errors
 ///
@@ -220,8 +228,8 @@ pub fn migrate_data_dir<P: AsRef<Path>>(
             |data_dir, _backup_dir, locator| migrate_0_45_to_0_46(data_dir, locator),
         ),
         (
-            VersionReq::parse(">=0.46.0,<0.47.0-alpha.2")?,
-            Version::parse("0.47.0-alpha.2")?,
+            VersionReq::parse(">=0.46.0,<0.47.0-alpha.3")?,
+            Version::parse("0.47.0-alpha.3")?,
             |data_dir, _backup_dir, _locator| migrate_0_46_to_0_47(data_dir),
         ),
     ];
@@ -248,20 +256,25 @@ fn migrate_0_45_to_0_46(data_dir: &Path, locator: Option<&dyn CountryLookup>) ->
     migrate_event_country_codes(data_dir, locator).map(|_| ())
 }
 
-/// Migrates a database in any supported 0.46.x or 0.47.0-alpha.1 format to
-/// 0.47.0-alpha.2.
+/// Migrates a database in any supported 0.46.x, 0.47.0-alpha.1, or
+/// 0.47.0-alpha.2 format to 0.47.0-alpha.3.
 ///
 /// The two alpha formats share one migration because the format is still
 /// changing during the prerelease: an alpha-to-alpha change extends the
 /// migration that produced the earlier alpha instead of adding one beside it,
 /// so a 0.46.x database reaches the newest alpha in a single step.
 ///
-/// Opening the pinned 0.47.0-alpha.2 list with
+/// Opening the pinned 0.47.0-alpha.2 column-family list with
 /// [`create_missing_column_families`](rocksdb::Options::create_missing_column_families)
 /// creates whichever of the customer deletion jobs, core components and
 /// operation attempts families is absent and leaves the rest alone, so a retry
 /// after an interrupted run finds nothing to do rather than failing on a family
 /// that already exists.
+///
+/// Event placeholder rewrites commit a last-processed key in the `meta` column
+/// family atomically with each event batch. Retries resume strictly after that
+/// key, and a durable completion marker prevents a second swap if the database
+/// migration completed before the two on-disk `VERSION` files were updated.
 fn migrate_0_46_to_0_47(data_dir: &Path) -> Result<()> {
     let db_path = data_dir.join("states.db");
     let mut opts = rocksdb::Options::default();
@@ -270,7 +283,7 @@ fn migrate_0_46_to_0_47(data_dir: &Path) -> Result<()> {
 
     let db: rocksdb::OptimisticTransactionDB<rocksdb::SingleThreaded> =
         rocksdb::OptimisticTransactionDB::open_cf(&opts, &db_path, MAP_NAMES_V0_47_ALPHA_2)
-            .context("failed to open database for the 0.47.0-alpha.2 migration")?;
+            .context("failed to open database for the 0.47.0-alpha.3 migration")?;
 
     migrate_install_state::<AgentValueV0_47Alpha2, AgentValueV0_47Alpha1>(
         &db,
@@ -282,7 +295,99 @@ fn migrate_0_46_to_0_47(data_dir: &Path) -> Result<()> {
         crate::tables::EXTERNAL_SERVICES,
         "external service",
     )?;
+    migrate_country_code_placeholders(&db)?;
     Ok(())
+}
+
+/// Swaps the 0.46 country-code placeholders with a durable resume checkpoint.
+fn migrate_country_code_placeholders(
+    db: &rocksdb::OptimisticTransactionDB<rocksdb::SingleThreaded>,
+) -> Result<()> {
+    migrate_country_code_placeholders_inner(db, None).map(|_| ())
+}
+
+/// Runs the placeholder migration, optionally stopping after committed batches.
+///
+/// The limit exists for crash-and-resume tests. A `false` result means the
+/// checkpoint was committed but the completion marker was intentionally not.
+fn migrate_country_code_placeholders_inner(
+    db: &rocksdb::OptimisticTransactionDB<rocksdb::SingleThreaded>,
+    batch_limit: Option<usize>,
+) -> Result<bool> {
+    let meta = db
+        .cf_handle(crate::tables::META)
+        .context("meta column family not found")?;
+    if db
+        .get_cf(&meta, COUNTRY_CODE_SWAP_COMPLETED_KEY)
+        .context("failed to read country-code placeholder migration completion marker")?
+        .is_some()
+    {
+        return Ok(true);
+    }
+
+    let checkpoint = db
+        .get_cf(&meta, COUNTRY_CODE_SWAP_CHECKPOINT_KEY)
+        .context("failed to read country-code placeholder migration checkpoint")?;
+    let mode = checkpoint
+        .as_deref()
+        .map_or(rocksdb::IteratorMode::Start, |key| {
+            rocksdb::IteratorMode::From(key, rocksdb::Direction::Forward)
+        });
+    let mut batch = rocksdb::WriteBatchWithTransaction::<true>::default();
+    let mut scanned = 0usize;
+    let mut converted = 0usize;
+    let mut last_processed = None;
+    let mut committed_batches = 0usize;
+
+    for entry in db.iterator(mode) {
+        let (key, value) = entry.context("failed to read event entry for placeholder migration")?;
+        if checkpoint.as_deref() == Some(key.as_ref()) {
+            continue;
+        }
+
+        if key.len() == 16 {
+            let key_i128 = i128::from_be_bytes(key.as_ref().try_into().expect("checked length"));
+            let kind_num = (key_i128 & 0xffff_ffff_0000_0000) >> 32;
+            if let Some(kind) = EventKind::from_i128(kind_num) {
+                let swapped = swap_stored_country_code_placeholders(kind, &value)
+                    .with_context(|| format!("failed to swap placeholders in event {key_i128}"))?;
+                if swapped.as_slice() != value.as_ref() {
+                    batch.put(&key, swapped);
+                    converted += 1;
+                }
+            }
+        }
+
+        last_processed = Some(key.to_vec());
+        scanned += 1;
+        if scanned == EVENT_MIGRATION_BATCH_SIZE {
+            let key = last_processed
+                .as_deref()
+                .expect("a full migration batch has a last processed key");
+            batch.put_cf(&meta, COUNTRY_CODE_SWAP_CHECKPOINT_KEY, key);
+            write_migration_batch(db, &mut batch, "country-code placeholder")?;
+            scanned = 0;
+            committed_batches += 1;
+            if batch_limit == Some(committed_batches) {
+                return Ok(false);
+            }
+        }
+    }
+
+    if let Some(key) = last_processed.as_deref()
+        && scanned != 0
+    {
+        batch.put_cf(&meta, COUNTRY_CODE_SWAP_CHECKPOINT_KEY, key);
+        write_migration_batch(db, &mut batch, "country-code placeholder")?;
+    }
+
+    let mut completion = rocksdb::WriteBatchWithTransaction::<true>::default();
+    completion.put_cf(&meta, COUNTRY_CODE_SWAP_COMPLETED_KEY, b"1");
+    completion.delete_cf(&meta, COUNTRY_CODE_SWAP_CHECKPOINT_KEY);
+    db.write(completion)
+        .context("failed to complete country-code placeholder migration")?;
+    info!("Country-code placeholder migration complete: converted_count={converted}");
+    Ok(true)
 }
 
 /// Rewrites every value in `cf_name` that predates the install-state fields.
@@ -392,7 +497,7 @@ pub(crate) fn migrate_event_country_codes(
                         )
                     },
                 )?;
-                let resolved = resolve_stored_country_codes(kind, &v0_46, locator)?;
+                let resolved = resolve_country_codes_for_v0_46(kind, &v0_46, locator)?;
                 if resolved.as_slice() != value.as_ref() {
                     batch.put(&key, resolved);
                 }
@@ -412,6 +517,32 @@ pub(crate) fn migrate_event_country_codes(
         stats.processed, stats.converted, stats.already_current
     );
     Ok(stats)
+}
+
+/// Resolves codes using the byte meanings of the historical 0.46 output.
+fn resolve_country_codes_for_v0_46(
+    kind: EventKind,
+    bytes: &[u8],
+    locator: Option<&dyn CountryLookup>,
+) -> Result<Vec<u8>> {
+    struct HistoricalLookup<'a>(&'a dyn CountryLookup);
+
+    impl CountryLookup for HistoricalLookup<'_> {
+        fn lookup_country_code(&self, addr: std::net::IpAddr) -> [u8; 2] {
+            match self.0.lookup_country_code(addr) {
+                crate::COUNTRY_CODE_UNKNOWN => V0_46_COUNTRY_CODE_LOOKUP_FAILED,
+                country => country,
+            }
+        }
+    }
+
+    match locator {
+        Some(locator) => {
+            let historical = HistoricalLookup(locator);
+            resolve_stored_country_codes(kind, bytes, Some(&historical))
+        }
+        None => resolve_stored_country_codes(kind, bytes, None),
+    }
 }
 
 /// Commits and clears `batch`, naming `what` in the error if the write fails.
@@ -1808,9 +1939,11 @@ mod tests {
     use semver::{Version, VersionReq};
 
     use super::{
-        COMPATIBLE_VERSION_REQ, VERSION_FILE_NAME, VERSION_TMP_FILE_NAME, create_version_file,
-        migrate_data_dir, migrate_event_country_codes, migrate_event_stored_schema_to_v0_46,
-        read_version_file, retrieve_or_create_version, write_version_markers,
+        COMPATIBLE_VERSION_REQ, COUNTRY_CODE_SWAP_CHECKPOINT_KEY, COUNTRY_CODE_SWAP_COMPLETED_KEY,
+        VERSION_FILE_NAME, VERSION_TMP_FILE_NAME, create_version_file, migrate_0_46_to_0_47,
+        migrate_country_code_placeholders_inner, migrate_data_dir, migrate_event_country_codes,
+        migrate_event_stored_schema_to_v0_46, read_version_file, retrieve_or_create_version,
+        write_version_markers,
     };
     use crate::event::{
         BlocklistConnFields, BlocklistConnFieldsStored, EventKind, EventMessage,
@@ -1820,7 +1953,7 @@ mod tests {
     use crate::migration::migration_structures::{
         AgentValueV0_47Alpha1, AgentValueV0_47Alpha2, BlocklistConnFieldsStoredV0_42,
         ExternalServiceValueV0_47Alpha1, ExternalServiceValueV0_47Alpha2,
-        MultiHostPortScanFieldsStoredV0_42,
+        MultiHostPortScanFieldsStoredV0_42, V0_46_COUNTRY_CODE_UNRESOLVED,
     };
     use crate::tables::NETWORK_TAGS;
     use crate::test::{DbGuard, acquire_db_permit};
@@ -1840,7 +1973,7 @@ mod tests {
             self.codes
                 .get(&addr)
                 .copied()
-                .unwrap_or(crate::util::COUNTRY_CODE_INVALID)
+                .unwrap_or(crate::util::COUNTRY_CODE_UNKNOWN)
         }
     }
 
@@ -1915,10 +2048,16 @@ mod tests {
 
         assert_eq!(current.orig_addr, old.orig_addr);
         assert_eq!(current.orig_port, old.orig_port);
-        assert_eq!(current.orig_country_code, crate::util::COUNTRY_CODE_PENDING);
+        assert_eq!(
+            current.orig_country_code,
+            crate::migration::migration_structures::V0_46_COUNTRY_CODE_UNRESOLVED
+        );
         assert_eq!(current.resp_addr, old.resp_addr);
         assert_eq!(current.resp_port, old.resp_port);
-        assert_eq!(current.resp_country_code, crate::util::COUNTRY_CODE_PENDING);
+        assert_eq!(
+            current.resp_country_code,
+            crate::migration::migration_structures::V0_46_COUNTRY_CODE_UNRESOLVED
+        );
         assert_eq!(current.conn_state, old.conn_state);
     }
 
@@ -1947,12 +2086,15 @@ mod tests {
         let current: MultiHostPortScanFieldsStored = bincode::deserialize(&converted).unwrap();
 
         assert_eq!(current.orig_addr, old.orig_addr);
-        assert_eq!(current.orig_country_code, crate::util::COUNTRY_CODE_PENDING);
+        assert_eq!(
+            current.orig_country_code,
+            crate::migration::migration_structures::V0_46_COUNTRY_CODE_UNRESOLVED
+        );
         assert_eq!(current.resp_addrs, old.resp_addrs);
         assert_eq!(current.resp_port, old.resp_port);
         assert_eq!(
             current.resp_country_codes,
-            vec![crate::util::COUNTRY_CODE_PENDING; resp_count]
+            vec![crate::migration::migration_structures::V0_46_COUNTRY_CODE_UNRESOLVED; resp_count]
         );
     }
 
@@ -2003,12 +2145,12 @@ mod tests {
         assert_eq!(migrated.orig_addr, legacy.orig_addr);
         assert_eq!(
             migrated.orig_country_code,
-            crate::util::COUNTRY_CODE_PENDING
+            crate::migration::migration_structures::V0_46_COUNTRY_CODE_UNRESOLVED
         );
         assert_eq!(migrated.resp_addr, legacy.resp_addr);
         assert_eq!(
             migrated.resp_country_code,
-            crate::util::COUNTRY_CODE_PENDING
+            crate::migration::migration_structures::V0_46_COUNTRY_CODE_UNRESOLVED
         );
 
         drop(events);
@@ -2072,7 +2214,7 @@ mod tests {
             .unwrap();
 
         let lookup = FakeCountryLookup {
-            codes: HashMap::from([(legacy.orig_addr, *b"US"), (legacy.resp_addr, *b"KR")]),
+            codes: HashMap::from([(legacy.orig_addr, *b"US")]),
         };
         drop(events);
         drop(store);
@@ -2090,7 +2232,19 @@ mod tests {
         assert_eq!(migrated.orig_addr, legacy.orig_addr);
         assert_eq!(migrated.orig_country_code, *b"US");
         assert_eq!(migrated.resp_addr, legacy.resp_addr);
-        assert_eq!(migrated.resp_country_code, *b"KR");
+        assert_eq!(
+            migrated.resp_country_code,
+            crate::migration::migration_structures::V0_46_COUNTRY_CODE_LOOKUP_FAILED
+        );
+
+        let current = crate::event::swap_stored_country_code_placeholders(
+            EventKind::BlocklistConn,
+            &migrated_value,
+        )
+        .unwrap();
+        let current: BlocklistConnFieldsStored = bincode::deserialize(&current).unwrap();
+        assert_eq!(current.orig_country_code, *b"US");
+        assert_eq!(current.resp_country_code, crate::COUNTRY_CODE_UNKNOWN);
     }
 
     #[test]
@@ -2933,6 +3087,40 @@ mod tests {
         db.get_cf(&cf, key).unwrap()
     }
 
+    fn placeholder_event_entries(count: usize) -> Entries {
+        let (kind, value) = crate::event::stored_event_samples_v0_46()
+            .into_iter()
+            .find(|(kind, _)| *kind == EventKind::DnsCovertChannel)
+            .expect("DNS sample exists");
+        (0..count)
+            .map(|index| {
+                let key = (i128::try_from(index).unwrap() << 64)
+                    | (kind.to_i128().unwrap() << 32)
+                    | i128::try_from(index).unwrap();
+                (key.to_be_bytes().to_vec(), value.clone())
+            })
+            .collect()
+    }
+
+    fn put_default_entries(db_path: &Path, entries: &Entries) {
+        let db = open_states_db(db_path, crate::tables::MAP_NAMES);
+        let mut batch = rocksdb::WriteBatchWithTransaction::<true>::default();
+        for (key, value) in entries {
+            batch.put(key, value);
+        }
+        db.write(batch).unwrap();
+    }
+
+    fn default_entries(db_path: &Path) -> Entries {
+        let db = open_states_db(db_path, crate::tables::MAP_NAMES);
+        db.iterator(rocksdb::IteratorMode::Start)
+            .map(|entry| {
+                let (key, value) = entry.unwrap();
+                (key.to_vec(), value.to_vec())
+            })
+            .collect()
+    }
+
     /// A column family's worth of raw entries.
     type Entries = Vec<(Vec<u8>, Vec<u8>)>;
 
@@ -2985,6 +3173,127 @@ mod tests {
     }
 
     #[test]
+    fn country_code_placeholder_migration_resumes_without_double_swapping() {
+        let _permit = acquire_db_permit();
+        let uninterrupted_dir = tempfile::tempdir().unwrap();
+        let resumed_dir = tempfile::tempdir().unwrap();
+        let uninterrupted_path = uninterrupted_dir.path().join("states.db");
+        let resumed_path = resumed_dir.path().join("states.db");
+        let entries = placeholder_event_entries(205);
+
+        for path in [&uninterrupted_path, &resumed_path] {
+            create_states_db(path, crate::tables::MAP_NAMES);
+            put_default_entries(path, &entries);
+        }
+
+        migrate_0_46_to_0_47(uninterrupted_dir.path()).unwrap();
+
+        {
+            let db = open_states_db(&resumed_path, crate::tables::MAP_NAMES);
+            assert!(!migrate_country_code_placeholders_inner(&db, Some(1)).unwrap());
+            let meta = db.cf_handle(crate::tables::META).unwrap();
+            assert!(
+                db.get_cf(&meta, COUNTRY_CODE_SWAP_CHECKPOINT_KEY)
+                    .unwrap()
+                    .is_some()
+            );
+            assert!(
+                db.get_cf(&meta, COUNTRY_CODE_SWAP_COMPLETED_KEY)
+                    .unwrap()
+                    .is_none()
+            );
+
+            let values: Vec<_> = db
+                .iterator(rocksdb::IteratorMode::Start)
+                .map(|entry| entry.unwrap().1)
+                .collect();
+            let first: crate::event::DnsEventFieldsStoredV0_46 =
+                bincode::deserialize(values.first().unwrap()).unwrap();
+            let after_checkpoint: crate::event::DnsEventFieldsStoredV0_46 =
+                bincode::deserialize(values.get(100).unwrap()).unwrap();
+            assert_eq!(first.orig_country_code, crate::COUNTRY_CODE_UNRESOLVED);
+            assert_eq!(
+                after_checkpoint.orig_country_code,
+                V0_46_COUNTRY_CODE_UNRESOLVED
+            );
+        }
+
+        migrate_0_46_to_0_47(resumed_dir.path()).unwrap();
+        let expected = default_entries(&uninterrupted_path);
+        assert_eq!(default_entries(&resumed_path), expected);
+
+        // This models a process restart after DB completion but before either
+        // VERSION file was updated. The durable marker makes the rerun a no-op.
+        migrate_0_46_to_0_47(resumed_dir.path()).unwrap();
+        assert_eq!(default_entries(&resumed_path), expected);
+
+        let db = open_states_db(&resumed_path, crate::tables::MAP_NAMES);
+        let meta = db.cf_handle(crate::tables::META).unwrap();
+        assert!(
+            db.get_cf(&meta, COUNTRY_CODE_SWAP_COMPLETED_KEY)
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            db.get_cf(&meta, COUNTRY_CODE_SWAP_CHECKPOINT_KEY)
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn migration_from_v0_46_and_alpha_2_swaps_placeholders() {
+        let _permit = acquire_db_permit();
+        for version in ["0.46.0", "0.47.0-alpha.2"] {
+            let data_dir = tempfile::tempdir().unwrap();
+            let backup_dir = tempfile::tempdir().unwrap();
+            let db_path = data_dir.path().join("states.db");
+            create_states_db(&db_path, crate::tables::MAP_NAMES);
+            put_default_entries(&db_path, &placeholder_event_entries(1));
+            write_version(data_dir.path(), version);
+            write_version(backup_dir.path(), version);
+
+            migrate_data_dir(data_dir.path(), backup_dir.path(), None).unwrap();
+
+            let entries = default_entries(&db_path);
+            let stored: crate::event::DnsEventFieldsStoredV0_46 =
+                bincode::deserialize(&entries.first().unwrap().1).unwrap();
+            assert_eq!(stored.orig_country_code, crate::COUNTRY_CODE_UNRESOLVED);
+            assert_eq!(stored.resp_country_code, crate::COUNTRY_CODE_UNRESOLVED);
+            assert_eq!(
+                read_version_file(&data_dir.path().join(VERSION_FILE_NAME)).unwrap(),
+                Version::parse("0.47.0-alpha.3").unwrap()
+            );
+        }
+    }
+
+    #[test]
+    fn migration_from_v0_45_keeps_historical_intermediate_then_swaps() {
+        let _permit = acquire_db_permit();
+        let data_dir = tempfile::tempdir().unwrap();
+        let backup_dir = tempfile::tempdir().unwrap();
+        let db_path = data_dir.path().join("states.db");
+        create_states_db(&db_path, crate::tables::MAP_NAMES);
+
+        let legacy = legacy_blocklist_conn();
+        let key = ((EventKind::BlocklistConn.to_i128().unwrap() << 32) | 1)
+            .to_be_bytes()
+            .to_vec();
+        let entries = vec![(key, bincode::serialize(&legacy).unwrap())];
+        put_default_entries(&db_path, &entries);
+        write_version(data_dir.path(), "0.45.0");
+        write_version(backup_dir.path(), "0.45.0");
+
+        migrate_data_dir(data_dir.path(), backup_dir.path(), None).unwrap();
+
+        let entries = default_entries(&db_path);
+        let stored: BlocklistConnFieldsStored =
+            bincode::deserialize(&entries.first().unwrap().1).unwrap();
+        assert_eq!(stored.orig_country_code, crate::COUNTRY_CODE_UNRESOLVED);
+        assert_eq!(stored.resp_country_code, crate::COUNTRY_CODE_UNRESOLVED);
+    }
+
+    #[test]
     fn migration_from_v0_47_alpha_1_fills_install_state_defaults() {
         let permit = acquire_db_permit();
         let current_version = Version::parse(env!("CARGO_PKG_VERSION")).unwrap();
@@ -3019,7 +3328,7 @@ mod tests {
             read_version_file(&backup_dir.path().join("VERSION")).unwrap(),
             current_version
         );
-        assert_eq!(current_version.to_string(), "0.47.0-alpha.2");
+        assert_eq!(current_version.to_string(), "0.47.0-alpha.3");
 
         // The migration created both new families, and they start empty.
         {
