@@ -522,18 +522,20 @@ The manager (review) and the API (review-web) consume these types:
   reading half: `started_at` does not order attempts, since two can share an
   instant and a clock can go backwards, so "the latest owed row" is not a
   question the store can answer.
-  **The storage half is a CODE CHANGE, not an existing property, and an
+  **The storage half was a CODE CHANGE, not an existing property, and an
   earlier revision of this section had it backwards.** It argued the invariant
   was already enforced because the owed-teardown index carries no
-  discriminator and a second row would overwrite the first. The shipped index
-  does the opposite: `owed_cleanup_key` **appends the `idempotency_key`**
-  after `(target, host, instance)`, its own doc comment says "several attempts
-  may owe a cleanup for one triple", and `attempts_owing_cleanup` returns a
-  **`Vec<OperationAttempt>`**. So today a second row **queues** rather than
-  overwriting, and nothing refuses it. Making the invariant real therefore
-  means **dropping the discriminator from the key and narrowing the read to at
-  most one row**, and retiring the tests that assert several. Until that lands,
-  the three-step lookup's second step has no single row to return.
+  discriminator and a second row would overwrite the first. The index as
+  shipped did the opposite: `owed_cleanup_key` **appended the
+  `idempotency_key`** after `(target, host, instance)`, its own doc comment
+  said "several attempts may owe a cleanup for one triple", and the read
+  returned a **`Vec<OperationAttempt>`**, so a second row **queued** rather
+  than overwriting and the three-step lookup's second step had no single row
+  to return. Making the invariant real therefore meant **dropping the
+  discriminator from the key and narrowing the read to at most one row**, and
+  retiring the tests that asserted several. That has landed: the owed-cleanup
+  key is the triple alone, and the read is `attempt_owing_cleanup`, returning
+  at most one row.
   **The invariant needs RFC-D2's guard to be WIDER than it was, and §4f
   widens it**: while a triple has an owed teardown, **no new
   `operation_attempt` may be created THAT NAMES THAT TRIPLE** — no update, no

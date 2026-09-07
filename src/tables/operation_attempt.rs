@@ -1169,8 +1169,9 @@ impl<'d> Table<'d, OperationAttempt> {
     ///
     /// # Errors
     ///
-    /// Returns an error if a stored value is invalid or the database operation
-    /// fails.
+    /// Returns an error if a stored value is invalid, if the sweep stamps
+    /// `finalized_at` and the latest-pointer column family is not registered,
+    /// or if the database operation fails.
     pub fn sweep_expired(&self, instant: DateTime<Utc>) -> Result<usize> {
         loop {
             let txn = self.transaction();
