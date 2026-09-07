@@ -142,10 +142,6 @@ pub(super) const CUSTOMER_DELETION_JOBS: &str = "customer deletion jobs";
 pub(super) const DATA_SOURCES: &str = "data sources";
 pub(super) const FILTERS: &str = "filters";
 pub(super) const HOSTS: &str = "hosts";
-// Deliberately absent from `MAP_NAMES`: registering this column family belongs
-// with the database format bump, because `migrate_data_dir` returns early for a
-// data dir already at a compatible version and would otherwise gain a column
-// family with no version change.
 pub(super) const INSTANCE_ALLOCATIONS: &str = "instance allocations";
 pub(super) const MODELS: &str = "models";
 pub(super) const MODEL_INDICATORS: &str = "model indicators";
@@ -154,22 +150,11 @@ pub(super) const NETWORKS: &str = "networks";
 pub(super) const NODES: &str = "nodes";
 pub(super) const OPERATION_ATTEMPTS: &str = "operation attempts";
 /// The column family holding the `operation_attempt` latest pointer.
-///
-/// It is deliberately absent from [`MAP_NAMES`]: [`StateDb::open`] creates
-/// every family named there, while `migrate_data_dir` returns early for a
-/// data directory it already considers compatible, so listing it before the
-/// format version is bumped would add a column family to an older store with
-/// no migration record of it. The family is registered together with that
-/// bump, and until then [`Table<OperationAttempt>`] reports its absence
-/// rather than writing a pointer nothing can read.
 pub(super) const OPERATION_ATTEMPT_LATEST: &str = "operation attempt latest";
 pub(super) const OUTLIERS: &str = "outliers";
-// The three column families of the port allocation table, deliberately absent
-// from `MAP_NAMES` for the reason `INSTANCE_ALLOCATIONS` is: registering a
-// column family belongs with the database format bump, because
-// `migrate_data_dir` returns early for a data dir already at a compatible
-// version. They are one table and are registered together — a primary without
-// an index would let a row be written that neither of its readers can find.
+// The three column families of the port allocation table. They are one table
+// and are registered together — a primary without an index would let a row be
+// written that neither of its readers can find.
 pub(super) const PORT_ALLOCATIONS: &str = "port allocations";
 pub(super) const PORT_ALLOCATIONS_BY_ATTEMPT: &str = "port allocations by attempt";
 pub(super) const PORT_ALLOCATIONS_BY_INSTANCE: &str = "port allocations by instance";
@@ -189,7 +174,7 @@ pub(super) const TRIAGE_RESPONSE: &str = "triage response";
 pub(super) const TRUSTED_DNS_SERVERS: &str = "trusted DNS servers";
 pub(super) const TRUSTED_USER_AGENTS: &str = "trusted user agents";
 
-pub(crate) const MAP_NAMES: [&str; 39] = [
+pub(crate) const MAP_NAMES: [&str; 44] = [
     ACCESS_TOKENS,
     ACCOUNTS,
     AGENTS,
@@ -207,13 +192,18 @@ pub(crate) const MAP_NAMES: [&str; 39] = [
     DATA_SOURCES,
     FILTERS,
     HOSTS,
+    INSTANCE_ALLOCATIONS,
     MODELS,
     MODEL_INDICATORS,
     META,
     NETWORKS,
     NODES,
     OPERATION_ATTEMPTS,
+    OPERATION_ATTEMPT_LATEST,
     OUTLIERS,
+    PORT_ALLOCATIONS,
+    PORT_ALLOCATIONS_BY_ATTEMPT,
+    PORT_ALLOCATIONS_BY_INSTANCE,
     QUALIFIERS,
     EXTERNAL_SERVICES,
     SAMPLING_POLICY,
@@ -230,6 +220,33 @@ pub(crate) const MAP_NAMES: [&str; 39] = [
     TRUSTED_DNS_SERVERS,
     TRUSTED_USER_AGENTS,
 ];
+
+/// The column families the 0.47.0-alpha.4 format bump added to [`MAP_NAMES`].
+#[cfg(test)]
+const MAP_NAMES_ADDED_BY_V0_47_ALPHA_4: [&str; 5] = [
+    INSTANCE_ALLOCATIONS,
+    OPERATION_ATTEMPT_LATEST,
+    PORT_ALLOCATIONS,
+    PORT_ALLOCATIONS_BY_ATTEMPT,
+    PORT_ALLOCATIONS_BY_INSTANCE,
+];
+
+/// Returns [`MAP_NAMES`] as a store predating the 0.47.0-alpha.4 format bump
+/// held it, followed by `extra`.
+///
+/// A table whose column family that bump registers still has to answer for a
+/// store the bump has not reached, where the family is simply absent. Such a
+/// store is built by taking the current list back to what it was and naming
+/// whichever of the new families the test wants present, so that the physical
+/// set stays what the code under test is being asked about.
+#[cfg(test)]
+pub(super) fn map_names_before_v0_47_alpha_4(extra: &[&'static str]) -> Vec<&'static str> {
+    MAP_NAMES
+        .into_iter()
+        .filter(|name| !MAP_NAMES_ADDED_BY_V0_47_ALPHA_4.contains(name))
+        .chain(extra.iter().copied())
+        .collect()
+}
 
 // Keys for the meta map.
 pub(super) const EVENT_TAGS: &[u8] = b"event tags";

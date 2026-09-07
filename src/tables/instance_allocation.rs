@@ -283,12 +283,10 @@ pub enum InstanceAllocationError {
 impl<'d> Table<'d, InstanceAllocation> {
     /// Opens the `instance_allocation` table in the database.
     ///
-    /// Returns `None` if the table does not exist, which is the state of every
-    /// store until the database format bump registers the column family:
-    /// `migrate_data_dir` returns early for a data dir already at a compatible
-    /// version, so registering it in `MAP_NAMES` now would add a column family
-    /// with no version change. A store without it holds no allocation, which
-    /// is why the release path can treat the `None` as nothing to release.
+    /// Returns `None` if the table does not exist, which is the state of a
+    /// store the format bump registering the column family has not reached. A
+    /// store without it holds no allocation, which is why the release path can
+    /// treat the `None` as nothing to release.
     pub(super) fn open(db: &'d OptimisticTransactionDB) -> Option<Self> {
         Map::open(db, super::INSTANCE_ALLOCATIONS).map(Table::new)
     }
@@ -600,8 +598,8 @@ mod tests {
     const OTHER_HOST: &str = "host-b.example";
     const OTHER_COMPONENT: &str = "sensor";
 
-    /// A database carrying this table's column family, which `StateDb::open`
-    /// does not yet create because the name is not in `MAP_NAMES`.
+    /// A database carrying this table's column family beside the families a
+    /// store held before the format bump that registers it.
     struct TestDb {
         db: OptimisticTransactionDB,
         _dir: tempfile::TempDir,
@@ -615,12 +613,14 @@ mod tests {
             let mut opts = rocksdb::Options::default();
             opts.create_if_missing(true);
             opts.create_missing_column_families(true);
-            let mut column_families = super::super::MAP_NAMES.to_vec();
-            column_families.push(super::super::INSTANCE_ALLOCATIONS);
-            // Neither this table nor the latest-pointer family is in
-            // `MAP_NAMES`: the migration that bumps the database format
-            // registers them, so a test opens them beside the rest here.
-            column_families.push(super::super::OPERATION_ATTEMPT_LATEST);
+            // The pre-bump list plus this table's family and the
+            // latest-pointer family, so that the port allocation families the
+            // same bump registers stay absent: these tests are about a store
+            // that holds no port allocation.
+            let column_families = super::super::map_names_before_v0_47_alpha_4(&[
+                super::super::INSTANCE_ALLOCATIONS,
+                super::super::OPERATION_ATTEMPT_LATEST,
+            ]);
             let db = OptimisticTransactionDB::open_cf(
                 &opts,
                 dir.path().join("states.db"),

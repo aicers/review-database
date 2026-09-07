@@ -110,7 +110,7 @@ use crate::{
 /// // release that involves database format change) to 3.5.0, including
 /// // all alpha changes finalized in 3.5.0.
 /// ```
-const COMPATIBLE_VERSION_REQ: &str = ">=0.47.0-alpha.3,<0.47.0-alpha.4";
+const COMPATIBLE_VERSION_REQ: &str = ">=0.47.0-alpha.4,<0.47.0-alpha.5";
 
 /// Number of event records applied in each atomic migration write.
 const EVENT_MIGRATION_BATCH_SIZE: usize = 100;
@@ -228,8 +228,8 @@ pub fn migrate_data_dir<P: AsRef<Path>>(
             |data_dir, _backup_dir, locator| migrate_0_45_to_0_46(data_dir, locator),
         ),
         (
-            VersionReq::parse(">=0.46.0,<0.47.0-alpha.3")?,
-            Version::parse("0.47.0-alpha.3")?,
+            VersionReq::parse(">=0.46.0,<0.47.0-alpha.4")?,
+            Version::parse("0.47.0-alpha.4")?,
             |data_dir, _backup_dir, _locator| migrate_0_46_to_0_47(data_dir),
         ),
     ];
@@ -256,20 +256,22 @@ fn migrate_0_45_to_0_46(data_dir: &Path, locator: Option<&dyn CountryLookup>) ->
     migrate_event_country_codes(data_dir, locator).map(|_| ())
 }
 
-/// Migrates a database in any supported 0.46.x, 0.47.0-alpha.1, or
-/// 0.47.0-alpha.2 format to 0.47.0-alpha.3.
+/// Migrates a database in any supported 0.46.x, 0.47.0-alpha.1,
+/// 0.47.0-alpha.2, or 0.47.0-alpha.3 format to 0.47.0-alpha.4.
 ///
-/// The two alpha formats share one migration because the format is still
+/// Every alpha format shares this one migration because the format is still
 /// changing during the prerelease: an alpha-to-alpha change extends the
 /// migration that produced the earlier alpha instead of adding one beside it,
 /// so a 0.46.x database reaches the newest alpha in a single step.
 ///
-/// Opening the pinned 0.47.0-alpha.2 column-family list with
+/// Opening the pinned 0.47.0-alpha.3 column-family list with
 /// [`create_missing_column_families`](rocksdb::Options::create_missing_column_families)
-/// creates whichever of the customer deletion jobs, core components and
-/// operation attempts families is absent and leaves the rest alone, so a retry
-/// after an interrupted run finds nothing to do rather than failing on a family
-/// that already exists.
+/// creates whichever of the eight families a 0.46.0 store lacks — customer
+/// deletion jobs, core components and operation attempts, plus the instance
+/// allocations, operation attempt latest and three port allocation families
+/// this format adds — and leaves the rest alone, so a retry after an
+/// interrupted run finds nothing to do rather than failing on a family that
+/// already exists.
 ///
 /// Event placeholder rewrites commit a last-processed key in the `meta` column
 /// family atomically with each event batch. Retries resume strictly after that
@@ -282,8 +284,8 @@ fn migrate_0_46_to_0_47(data_dir: &Path) -> Result<()> {
     opts.create_missing_column_families(true);
 
     let db: rocksdb::OptimisticTransactionDB<rocksdb::SingleThreaded> =
-        rocksdb::OptimisticTransactionDB::open_cf(&opts, &db_path, MAP_NAMES_V0_47_ALPHA_2)
-            .context("failed to open database for the 0.47.0-alpha.3 migration")?;
+        rocksdb::OptimisticTransactionDB::open_cf(&opts, &db_path, MAP_NAMES_V0_47_ALPHA_3)
+            .context("failed to open database for the 0.47.0-alpha.4 migration")?;
 
     migrate_install_state::<AgentValueV0_47Alpha2, AgentValueV0_47Alpha1>(
         &db,
@@ -688,10 +690,8 @@ const MAP_NAMES_V0_47_ALPHA_1: [&str; 37] = [
 /// Lists column family names for database format 0.47.0-alpha.2, which added
 /// "core components" and "operation attempts" to the 0.47.0-alpha.1 set.
 ///
-/// The names are written out rather than taken from
-/// [`crate::tables::MAP_NAMES`], as every other list here is: this one is what
-/// [`migrate_0_46_to_0_47`] creates, and a later rename or format bump must
-/// change what a future migration creates, never what this historical one did.
+/// 0.47.0-alpha.3 changed stored values only, so it shares this set.
+#[cfg(test)]
 const MAP_NAMES_V0_47_ALPHA_2: [&str; 39] = [
     "access_tokens",
     "accounts",
@@ -734,6 +734,65 @@ const MAP_NAMES_V0_47_ALPHA_2: [&str; 39] = [
     "trusted user agents",
 ];
 
+/// Lists column family names for database format 0.47.0-alpha.4, which added
+/// "instance allocations", "operation attempt latest" and the three port
+/// allocation families to the 0.47.0-alpha.2 set.
+///
+/// The name counts the pinned lists rather than the formats: 0.47.0-alpha.3
+/// changed stored values only and created no column family, so it has no list
+/// of its own and this is the third.
+///
+/// The names are written out rather than taken from
+/// [`crate::tables::MAP_NAMES`], as every other list here is: this one is what
+/// [`migrate_0_46_to_0_47`] creates, and a later rename or format bump must
+/// change what a future migration creates, never what this historical one did.
+const MAP_NAMES_V0_47_ALPHA_3: [&str; 44] = [
+    "access_tokens",
+    "accounts",
+    "agents",
+    "allow networks",
+    "batch_info",
+    "block networks",
+    "category",
+    "cluster",
+    "column stats",
+    "configs",
+    "core components",
+    "csv column extras",
+    "customers",
+    "customer deletion jobs",
+    "data sources",
+    "filters",
+    "hosts",
+    "instance allocations",
+    "models",
+    "model indicators",
+    "meta",
+    "networks",
+    "nodes",
+    "operation attempts",
+    "operation attempt latest",
+    "outliers",
+    "port allocations",
+    "port allocations by attempt",
+    "port allocations by instance",
+    "qualifiers",
+    "external services",
+    "sampling policy",
+    "scores",
+    "statuses",
+    "templates",
+    "label database",
+    "time series",
+    "Tor exit nodes",
+    "traffic filter rules",
+    "triage exclusion reason",
+    "triage policy",
+    "triage response",
+    "trusted DNS servers",
+    "trusted user agents",
+];
+
 /// Returns the column families an intermediate migration must open.
 ///
 /// `VERSION` is updated only after the complete migration chain succeeds, so a
@@ -742,9 +801,9 @@ const MAP_NAMES_V0_47_ALPHA_2: [&str; 39] = [
 /// these migrations again, and RocksDB refuses an open that names a family the
 /// database does not have or omits one it does. The physical set is therefore
 /// read back rather than chosen from a static list or inferred from a count:
-/// between 0.46 and 0.47.0-alpha.2 alone it may hold the 36 legacy families,
-/// all 37 of 0.47.0-alpha.1, or those plus either or both of the two families
-/// 0.47.0-alpha.2 adds. Opening exactly what is there lets the retry run
+/// between 0.46 and 0.47.0-alpha.4 alone it may hold the 36 legacy families,
+/// all 37 of 0.47.0-alpha.1, or those plus any subset of the seven families
+/// the later alphas add. Opening exactly what is there lets the retry run
 /// through to [`migrate_0_46_to_0_47`], which repairs whichever families are
 /// still missing.
 fn map_names_for_existing_format(opts: &rocksdb::Options, db_path: &Path) -> Result<Vec<String>> {
@@ -2768,6 +2827,30 @@ mod tests {
         }
     }
 
+    /// The column families a `0.46.0` store lacks and the migration must create.
+    ///
+    /// Eight, not the five this format bump adds: `0.47.0-alpha.1` and
+    /// `0.47.0-alpha.2` registered three more that a `0.46.0` store never had.
+    const FAMILIES_ABSENT_AT_V0_46: [&str; 8] = [
+        crate::tables::CUSTOMER_DELETION_JOBS,
+        crate::tables::CORE_COMPONENTS,
+        crate::tables::OPERATION_ATTEMPTS,
+        crate::tables::INSTANCE_ALLOCATIONS,
+        crate::tables::OPERATION_ATTEMPT_LATEST,
+        crate::tables::PORT_ALLOCATIONS,
+        crate::tables::PORT_ALLOCATIONS_BY_ATTEMPT,
+        crate::tables::PORT_ALLOCATIONS_BY_INSTANCE,
+    ];
+
+    /// The column families this format bump adds to `MAP_NAMES`.
+    const FAMILIES_ADDED_BY_V0_47_ALPHA_4: [&str; 5] = [
+        crate::tables::INSTANCE_ALLOCATIONS,
+        crate::tables::OPERATION_ATTEMPT_LATEST,
+        crate::tables::PORT_ALLOCATIONS,
+        crate::tables::PORT_ALLOCATIONS_BY_ATTEMPT,
+        crate::tables::PORT_ALLOCATIONS_BY_INSTANCE,
+    ];
+
     /// Migrates a database in the 0.43-through-0.46 layout, recorded as
     /// `version`, and asserts that it reaches the current format with its agent
     /// and external-service values converted.
@@ -2806,13 +2889,15 @@ mod tests {
             crate::tables::MAP_NAMES,
         )
         .unwrap();
-        for name in [
-            crate::tables::CUSTOMER_DELETION_JOBS,
-            crate::tables::CORE_COMPONENTS,
-            crate::tables::OPERATION_ATTEMPTS,
-        ] {
+        // A 0.46.0 store lacks eight of the current families, not five: the
+        // three earlier 0.47.0 alphas registered are missing there too.
+        for name in FAMILIES_ABSENT_AT_V0_46 {
             assert!(db.cf_handle(name).is_some(), "{name} must exist");
         }
+        assert_eq!(
+            FAMILIES_ABSENT_AT_V0_46.len(),
+            crate::tables::MAP_NAMES.len() - super::MAP_NAMES_V0_43_TO_V0_46.len()
+        );
         drop(db);
 
         for (list, name) in [
@@ -2821,6 +2906,7 @@ mod tests {
                 "0.43-through-0.46",
             ),
             (super::MAP_NAMES_V0_47_ALPHA_1.as_slice(), "0.47.0-alpha.1"),
+            (super::MAP_NAMES_V0_47_ALPHA_2.as_slice(), "0.47.0-alpha.2"),
         ] {
             assert!(
                 rocksdb::OptimisticTransactionDB::<rocksdb::SingleThreaded>::open_cf(
@@ -3242,9 +3328,9 @@ mod tests {
     }
 
     #[test]
-    fn migration_from_v0_46_and_alpha_2_swaps_placeholders() {
+    fn migration_from_v0_46_and_earlier_alphas_swaps_placeholders() {
         let _permit = acquire_db_permit();
-        for version in ["0.46.0", "0.47.0-alpha.2"] {
+        for version in ["0.46.0", "0.47.0-alpha.2", "0.47.0-alpha.3"] {
             let data_dir = tempfile::tempdir().unwrap();
             let backup_dir = tempfile::tempdir().unwrap();
             let db_path = data_dir.path().join("states.db");
@@ -3262,7 +3348,7 @@ mod tests {
             assert_eq!(stored.resp_country_code, crate::COUNTRY_CODE_UNRESOLVED);
             assert_eq!(
                 read_version_file(&data_dir.path().join(VERSION_FILE_NAME)).unwrap(),
-                Version::parse("0.47.0-alpha.3").unwrap()
+                Version::parse("0.47.0-alpha.4").unwrap()
             );
         }
     }
@@ -3328,15 +3414,19 @@ mod tests {
             read_version_file(&backup_dir.path().join("VERSION")).unwrap(),
             current_version
         );
-        assert_eq!(current_version.to_string(), "0.47.0-alpha.3");
+        assert_eq!(current_version.to_string(), "0.47.0-alpha.4");
 
-        // The migration created both new families, and they start empty.
+        // The migration created every family alpha.1 lacked, and each starts
+        // empty.
         {
             let db = open_states_db(&db_path, crate::tables::MAP_NAMES);
             for name in [
                 crate::tables::CORE_COMPONENTS,
                 crate::tables::OPERATION_ATTEMPTS,
-            ] {
+            ]
+            .into_iter()
+            .chain(FAMILIES_ADDED_BY_V0_47_ALPHA_4)
+            {
                 let cf = db.cf_handle(name).unwrap();
                 assert!(
                     db.iterator_cf(&cf, rocksdb::IteratorMode::Start)
@@ -3499,6 +3589,191 @@ mod tests {
             crate::tables::CORE_COMPONENTS,
             crate::tables::OPERATION_ATTEMPTS,
         ]);
+    }
+
+    #[test]
+    fn migration_retries_with_every_new_family() {
+        assert_retry_completes_with_families(
+            &[
+                crate::tables::CORE_COMPONENTS,
+                crate::tables::OPERATION_ATTEMPTS,
+            ]
+            .into_iter()
+            .chain(FAMILIES_ADDED_BY_V0_47_ALPHA_4)
+            .collect::<Vec<_>>(),
+        );
+    }
+
+    /// The five families this bump adds are created by the bump and by nothing
+    /// before it.
+    ///
+    /// Opening a `0.46.0` store against the column-family list `MAP_NAMES`
+    /// held before this change — which is the pinned `0.47.0-alpha.2` list —
+    /// must leave every one of them absent. The other three families a
+    /// `0.46.0` store lacks are governed by their own earlier bumps and are
+    /// not asserted here.
+    #[test]
+    fn pre_bump_map_names_creates_none_of_the_new_families() {
+        let data_dir = tempfile::tempdir().unwrap();
+        let db_path = data_dir.path().join("states.db");
+        create_states_db(&db_path, super::MAP_NAMES_V0_43_TO_V0_46);
+
+        // The pre-bump `MAP_NAMES` is exactly the current one without the five.
+        let mut pre_bump: Vec<&str> = crate::tables::MAP_NAMES
+            .into_iter()
+            .filter(|name| !FAMILIES_ADDED_BY_V0_47_ALPHA_4.contains(name))
+            .collect();
+        pre_bump.sort_unstable();
+        let mut alpha_2 = super::MAP_NAMES_V0_47_ALPHA_2.to_vec();
+        alpha_2.sort_unstable();
+        assert_eq!(pre_bump, alpha_2);
+
+        create_states_db(&db_path, super::MAP_NAMES_V0_47_ALPHA_2);
+
+        let opts = rocksdb::Options::default();
+        let present = super::existing_map_names(&opts, &db_path).unwrap();
+        for name in FAMILIES_ADDED_BY_V0_47_ALPHA_4 {
+            assert!(
+                !present.iter().any(|existing| existing == name),
+                "{name} must not be created before the format bump"
+            );
+        }
+    }
+
+    /// A store marked with an earlier alpha reaches the new target in one step.
+    ///
+    /// The single `0.46 → 0.47` entry is the only one whose requirement can
+    /// match a `0.47.0` prerelease, so landing on the current version at all
+    /// means it matched. A requirement written to exclude prereleases would
+    /// leave an `alpha.2` or `alpha.3` store with no step and fail here.
+    #[test]
+    fn earlier_alphas_reach_the_new_target_in_one_step() {
+        let permit = acquire_db_permit();
+        let current_version = Version::parse(env!("CARGO_PKG_VERSION")).unwrap();
+        assert_eq!(current_version.to_string(), "0.47.0-alpha.4");
+
+        for (version, families) in [
+            ("0.46.0", super::MAP_NAMES_V0_43_TO_V0_46.as_slice()),
+            ("0.46.3", super::MAP_NAMES_V0_43_TO_V0_46.as_slice()),
+            ("0.47.0-alpha.1", super::MAP_NAMES_V0_47_ALPHA_1.as_slice()),
+            ("0.47.0-alpha.2", super::MAP_NAMES_V0_47_ALPHA_2.as_slice()),
+            ("0.47.0-alpha.3", super::MAP_NAMES_V0_47_ALPHA_2.as_slice()),
+        ] {
+            let data_dir = tempfile::tempdir().unwrap();
+            let backup_dir = tempfile::tempdir().unwrap();
+            let db_path = data_dir.path().join("states.db");
+            create_states_db(&db_path, families.iter().copied());
+
+            write_version(data_dir.path(), version);
+            write_version(backup_dir.path(), version);
+            migrate_data_dir(data_dir.path(), backup_dir.path(), None).unwrap();
+
+            assert_eq!(
+                read_version_file(&data_dir.path().join(VERSION_FILE_NAME)).unwrap(),
+                current_version,
+                "a store marked {version} must land on the new target"
+            );
+            assert_eq!(
+                read_version_file(&backup_dir.path().join(VERSION_FILE_NAME)).unwrap(),
+                current_version
+            );
+
+            let db = open_states_db(&db_path, crate::tables::MAP_NAMES);
+            for name in FAMILIES_ADDED_BY_V0_47_ALPHA_4 {
+                assert!(
+                    db.cf_handle(name).is_some(),
+                    "{name} must exist after migrating from {version}"
+                );
+            }
+        }
+
+        drop(permit);
+    }
+
+    /// A crash between "column families created" and "version written" leaves
+    /// the directory at `0.46.0` with the new families already there; the
+    /// resumed run must create nothing and leave the converted records alone.
+    #[test]
+    fn migration_resumes_after_crash_before_the_version_was_written() {
+        let permit = acquire_db_permit();
+        let current_version = Version::parse(env!("CARGO_PKG_VERSION")).unwrap();
+
+        let clean_dir = tempfile::tempdir().unwrap();
+        let resumed_dir = tempfile::tempdir().unwrap();
+        let backup_dir = tempfile::tempdir().unwrap();
+        let (agents, external_services) = old_install_state_fixture();
+
+        for dir in [clean_dir.path(), resumed_dir.path()] {
+            let db_path = dir.join("states.db");
+            create_states_db(&db_path, super::MAP_NAMES_V0_43_TO_V0_46);
+            put_entries(
+                &db_path,
+                super::MAP_NAMES_V0_43_TO_V0_46,
+                crate::tables::AGENTS,
+                &agents,
+            );
+            put_entries(
+                &db_path,
+                super::MAP_NAMES_V0_43_TO_V0_46,
+                crate::tables::EXTERNAL_SERVICES,
+                &external_services,
+            );
+            write_version(dir, "0.46.0");
+        }
+
+        // The interrupted run: the migration body completed, so the families
+        // are there and the records are converted, but `VERSION` still reads
+        // 0.46.0.
+        migrate_0_46_to_0_47(resumed_dir.path()).unwrap();
+        assert_eq!(
+            read_version_file(&resumed_dir.path().join(VERSION_FILE_NAME)).unwrap(),
+            Version::parse("0.46.0").unwrap()
+        );
+        let after_crash = open_states_db(
+            &resumed_dir.path().join("states.db"),
+            crate::tables::MAP_NAMES,
+        );
+        for name in FAMILIES_ABSENT_AT_V0_46 {
+            assert!(after_crash.cf_handle(name).is_some(), "{name} must exist");
+        }
+        drop(after_crash);
+
+        for dir in [clean_dir.path(), resumed_dir.path()] {
+            write_version(backup_dir.path(), "0.46.0");
+            migrate_data_dir(dir, backup_dir.path(), None).unwrap();
+            assert_eq!(
+                read_version_file(&dir.join(VERSION_FILE_NAME)).unwrap(),
+                current_version
+            );
+        }
+
+        // The resumed run created nothing further and rewrote nothing: it ends
+        // with exactly the families and the bytes the clean run produced.
+        let clean_path = clean_dir.path().join("states.db");
+        let resumed_path = resumed_dir.path().join("states.db");
+        let opts = rocksdb::Options::default();
+        let mut clean_families = super::existing_map_names(&opts, &clean_path).unwrap();
+        let mut resumed_families = super::existing_map_names(&opts, &resumed_path).unwrap();
+        clean_families.sort_unstable();
+        resumed_families.sort_unstable();
+        assert_eq!(clean_families, resumed_families);
+        assert_eq!(clean_families.len(), crate::tables::MAP_NAMES.len());
+
+        for (cf_name, entries) in [
+            (crate::tables::AGENTS, &agents),
+            (crate::tables::EXTERNAL_SERVICES, &external_services),
+        ] {
+            for (key, _) in entries {
+                let converted =
+                    raw_value(&clean_path, crate::tables::MAP_NAMES, cf_name, key).unwrap();
+                assert_eq!(
+                    raw_value(&resumed_path, crate::tables::MAP_NAMES, cf_name, key),
+                    Some(converted)
+                );
+            }
+        }
+
+        drop(permit);
     }
 
     #[test]

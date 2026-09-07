@@ -483,14 +483,11 @@ impl<'d> Table<'d, PortAllocation> {
     /// Opens the `port_allocation` table in the database.
     ///
     /// Returns `None` unless all three column families are present, which is
-    /// the state of every store until the database format bump registers
-    /// them: `migrate_data_dir` returns early for a data dir already at a
-    /// compatible version, so registering them in `MAP_NAMES` now would add
-    /// column families with no version change. The three are one table and
-    /// are opened as one — a primary without an index would let a row be
-    /// written that neither reader can find. A store without them holds no
-    /// allocation, which is why the release path can treat the `None` as
-    /// nothing to release.
+    /// the state of a store the format bump registering them has not reached.
+    /// The three are one table and are opened as one — a primary without an
+    /// index would let a row be written that neither reader can find. A store
+    /// without them holds no allocation, which is why the release path can
+    /// treat the `None` as nothing to release.
     pub(super) fn open(db: &'d OptimisticTransactionDB) -> Option<Self> {
         let primary = Map::open(db, super::PORT_ALLOCATIONS)?;
         Map::open(db, super::PORT_ALLOCATIONS_BY_ATTEMPT)?;
@@ -830,9 +827,8 @@ mod tests {
     const PUBLISH: &str = "publish";
     const GRAPHQL: &str = "graphql";
 
-    /// A database carrying this table's three column families, which
-    /// `StateDb::open` does not yet create because their names are not in
-    /// `MAP_NAMES`.
+    /// A database carrying this table's three column families beside the
+    /// families a store held before the format bump that registers them.
     struct TestDb {
         db: OptimisticTransactionDB,
         _dir: tempfile::TempDir,
@@ -850,16 +846,16 @@ mod tests {
             ])
         }
 
-        /// A store carrying `MAP_NAMES` and the named families and nothing
-        /// else, so that a test can open one the format bump has not reached.
-        fn with_column_families(extra: &[&str]) -> Self {
+        /// A store carrying the column families `MAP_NAMES` held before the
+        /// format bump and the named families and nothing else, so that a
+        /// test can open one that bump has not reached.
+        fn with_column_families(extra: &[&'static str]) -> Self {
             let permit = acquire_db_permit();
             let dir = tempfile::tempdir().unwrap();
             let mut opts = rocksdb::Options::default();
             opts.create_if_missing(true);
             opts.create_missing_column_families(true);
-            let mut column_families = super::super::MAP_NAMES.to_vec();
-            column_families.extend_from_slice(extra);
+            let column_families = super::super::map_names_before_v0_47_alpha_4(extra);
             let db = OptimisticTransactionDB::open_cf(
                 &opts,
                 dir.path().join("states.db"),
@@ -2376,24 +2372,24 @@ mod tests {
         assert_eq!(stored.instance, Some(1));
     }
 
-    /// None of the three names is in `MAP_NAMES`, because `StateDb::open`
-    /// creates every family named there while `migrate_data_dir` returns
-    /// early for a data dir already at a compatible version: registering them
-    /// before the format bump would add the families to a `0.46.0` store with
-    /// no migration record. The tests above open a store that would fail on a
-    /// duplicate family name, so this is already load-bearing; it is asserted
-    /// here so that the reason is stated rather than inferred from a
-    /// `rocksdb` error.
+    /// All three names are in `MAP_NAMES`, so `StateDb::open` creates the
+    /// whole table. They arrived there with the format bump and not before
+    /// it: `StateDb::open` creates every family named there while
+    /// `migrate_data_dir` returns early for a data dir already at a
+    /// compatible version, so registering them earlier would have added the
+    /// families to a `0.46.0` store with no migration record. They are
+    /// registered together, because a store carrying the primary alone is a
+    /// table whose rows neither reader could find.
     #[test]
-    fn the_column_families_are_not_registered_before_the_format_bump() {
+    fn the_column_families_are_registered_by_the_format_bump() {
         for name in [
             super::super::PORT_ALLOCATIONS,
             super::super::PORT_ALLOCATIONS_BY_ATTEMPT,
             super::super::PORT_ALLOCATIONS_BY_INSTANCE,
         ] {
             assert!(
-                !super::super::MAP_NAMES.contains(&name),
-                "{name} is registered before the format bump that creates it"
+                super::super::MAP_NAMES.contains(&name),
+                "{name} must be registered by the format bump that creates it"
             );
         }
     }

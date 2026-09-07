@@ -1665,8 +1665,8 @@ impl<'d> Table<'d, OperationAttempt> {
             // The addresses follow the number their owner is keyed on, in the
             // transaction that took it. An install naming none does not reach
             // the port table at all, which is what lets one run against a
-            // store whose port column families the format bump has not yet
-            // registered.
+            // store whose port column families the format bump that
+            // registers them has not reached.
             if !bindings.is_empty() {
                 let Some(ports) = ports.as_ref() else {
                     return Err(anyhow!(
@@ -2510,13 +2510,13 @@ mod tests {
             let mut opts = rocksdb::Options::default();
             opts.create_if_missing(true);
             opts.create_missing_column_families(true);
-            // The latest-pointer family is not in `MAP_NAMES`: the migration
-            // that bumps the database format registers it, so a test opens it
-            // beside the rest here rather than waiting for that.
-            let names: Vec<&str> = super::super::MAP_NAMES
-                .into_iter()
-                .chain([super::super::OPERATION_ATTEMPT_LATEST])
-                .collect();
+            // The families a store held before the format bump, plus the
+            // latest-pointer family alone: the instance and port allocation
+            // families that bump also registers stay absent, because the
+            // tests below are about a store that holds neither.
+            let names = super::super::map_names_before_v0_47_alpha_4(&[
+                super::super::OPERATION_ATTEMPT_LATEST,
+            ]);
             let db = OptimisticTransactionDB::open_cf(&opts, dir.path().join("states.db"), names)
                 .unwrap();
             Self {
@@ -3259,9 +3259,9 @@ mod tests {
     /// A store that predates the format bump registering that column family
     /// has none, and can hold no allocation either, so the release is a no-op
     /// rather than a failure: the writes go through exactly as they did. This
-    /// `TestDb` is such a store — it opens `MAP_NAMES`, which the column
-    /// family is deliberately absent from — so every other test here covers
-    /// the same ground; this one says so.
+    /// `TestDb` is such a store — it opens the column families `MAP_NAMES`
+    /// held before that bump — so every other test here covers the same
+    /// ground; this one says so.
     #[test]
     fn a_store_without_the_allocation_table_writes_as_it_always_did() {
         let test_db = TestDb::new();

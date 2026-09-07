@@ -99,7 +99,7 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   CLDR's Unknown or Invalid Territory code, while `XX` means no lookup was
   performed. `find_ip_country` now returns `ZZ` on lookup failure, and event
   country filters can match either placeholder explicitly. The database format
-  is now `0.47.0-alpha.3`; migration swaps both scalar and vector placeholders
+  is now `0.47.0-alpha.4`; migration swaps both scalar and vector placeholders
   from the 0.46/earlier-alpha representation with durable retry checkpoints.
 - **BREAKING**: `Agent` and `ExternalService` now record the build installed on
   the host, through four new public fields: `installed_version` and
@@ -122,13 +122,14 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   Under the common `umask 022`, for example, a stored classifier that used to be
   `0o644` is now `0o600`, so anything reading these files as another account
   stops working.
-- **BREAKING**: Bumped the database format to `0.47.0-alpha.2`. The migration
-  from `0.46.x` creates the customer data deletion jobs, core components, and
-  operation attempts column families and converts every stored agent and
-  external-service value to the layout carrying install state. Migrations from
-  older supported formats apply their intermediate steps over the column
-  families the database physically holds, so an update interrupted part-way can
-  simply be retried.
+- **BREAKING**: Bumped the database format to `0.47.0-alpha.4`. The migration
+  from `0.46.x` creates the eight column families such a store lacks — customer
+  data deletion jobs, core components, operation attempts, the latest operation
+  attempt pointer, instance allocations, and the port allocation table with its
+  two indexes — and converts every stored agent and external-service value to
+  the layout carrying install state. Migrations from older supported formats
+  apply their intermediate steps over the column families the database
+  physically holds, so an update interrupted part-way can simply be retried.
 - **BREAKING**: Event timestamps now use `jiff::Timestamp` instead of chrono's
   `DateTime<Utc>`. Existing databases need no migration, because timestamps are
   still stored as `i64` epoch nanoseconds.
