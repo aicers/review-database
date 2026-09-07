@@ -61,11 +61,11 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   taken over the byte-exact transcript that `InstallIntent`, `BuildSelector`,
   and `OperationOnFailure` describe; the table requires one of an install, of
   no other action, and only under a request key that is a UUIDv4 in canonical
-  hyphenated form. `resolve_request_key` uses it to answer a resubmitted
-  request key: the same request returns the attempt already held under it, and
-  a different one is refused with a non-retryable `RequestKeyError` naming the
-  key. These records
-  live in a table reachable through `Store::operation_attempt_map`.
+  hyphenated form, which is lowercase. `resolve_request_key` uses it to answer
+  a resubmitted request key: the same request returns the attempt already held
+  under it, and a different one is refused with a non-retryable
+  `RequestKeyError` naming the key. These records live in a table reachable
+  through `Store::operation_attempt_map`.
 - Added `write_version_markers`, which records a caller-supplied database
   format version in the `VERSION` files of a data directory and a backup
   directory. It is the metadata companion to restoring a rollback snapshot:

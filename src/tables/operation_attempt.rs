@@ -327,7 +327,13 @@ impl InstallIntent {
 #[derive(Debug, Error)]
 pub enum RequestKeyError {
     /// The request key is not a `UUIDv4` in its canonical hyphenated form.
-    #[error("the request key {request_key} is not a UUIDv4 in canonical hyphenated form")]
+    ///
+    /// Canonical is lowercase, so an otherwise well-formed key spelled with
+    /// uppercase hex digits lands here rather than becoming a second key for
+    /// the same UUID.
+    #[error(
+        "the request key {request_key} is not a UUIDv4 in canonical hyphenated form, which is lowercase"
+    )]
     MalformedRequestKey {
         /// The key as submitted.
         request_key: String,
@@ -362,6 +368,12 @@ impl RequestKeyError {
 
 /// Returns whether `key` is a `UUIDv4` in its canonical hyphenated form.
 ///
+/// Canonical means lowercase: RFC 9562 renders a UUID with `a`-`f` and
+/// nothing else, and a key is compared here as the byte string it is keyed
+/// by. Accepting uppercase would let one UUID arrive as two distinct request
+/// keys, each finding no row under the other and each starting its own
+/// install — the deduplication the key exists for, defeated by a spelling.
+///
 /// This is a shape check and nothing more. It does not stop a client sending
 /// a constant or replaying a stored value: not re-using a key is a client
 /// obligation, and the server cannot verify it.
@@ -375,14 +387,13 @@ fn is_uuid_v4(key: &str) -> bool {
             if *byte != b'-' {
                 return false;
             }
-        } else if !byte.is_ascii_hexdigit() {
+        } else if !matches!(byte, b'0'..=b'9' | b'a'..=b'f') {
             return false;
         }
     }
     // The version nibble is `4`, and the variant nibble is one of `8`, `9`,
     // `a` or `b`.
-    bytes.get(14) == Some(&b'4')
-        && matches!(bytes.get(19), Some(b'8' | b'9' | b'a' | b'A' | b'b' | b'B'))
+    bytes.get(14) == Some(&b'4') && matches!(bytes.get(19), Some(b'8' | b'9' | b'a' | b'b'))
 }
 
 /// A package operation `REview` is executing on a host, or a pending host
@@ -1463,7 +1474,7 @@ impl<'d> Table<'d, OperationAttempt> {
             // under: a key it refuses as malformed leaves the row unfindable.
             if !is_uuid_v4(&new.idempotency_key) {
                 bail!(
-                    "the request key {} is not a UUIDv4 in canonical hyphenated form",
+                    "the request key {} is not a UUIDv4 in canonical hyphenated form, which is lowercase",
                     new.idempotency_key
                 );
             }
@@ -1691,7 +1702,7 @@ mod tests {
     const TARGET: &str = "piglet";
 
     /// A request key in the form the client-supplied one takes: a `UUIDv4`,
-    /// canonical and hyphenated.
+    /// canonical and hyphenated, and so lowercase.
     const REQUEST_KEY: &str = "9d5cb6e0-0a3f-41de-9f0a-6b0f4e5c1a27";
     const OTHER_REQUEST_KEY: &str = "3f2c8b41-5e6d-4a7b-b8c9-0d1e2f3a4b5c";
 
@@ -3536,6 +3547,52 @@ mod tests {
             .unwrap_err();
         assert!(matches!(error, RequestKeyError::RequestKeyReused { .. }));
         assert!(!error.is_retryable());
+    }
+
+    #[test]
+    fn an_uppercase_request_key_is_refused_on_both_paths() {
+        let test_db = TestDb::new();
+        let table = test_db.table();
+
+        let digest = golden_intent().digest().unwrap();
+
+        // Canonical is lowercase, so an uppercase spelling of an otherwise
+        // well-formed key is refused rather than admitted as a second key for
+        // the one UUID.
+        for uppercase in [
+            REQUEST_KEY.to_uppercase(),
+            // A single uppercase hex digit is enough.
+            REQUEST_KEY.replace("de", "De"),
+            // The variant nibble included, which this key spells `b`.
+            OTHER_REQUEST_KEY.replace("-b8c9-", "-B8c9-"),
+        ] {
+            assert!(!is_uuid_v4(&uppercase));
+
+            let error = table.resolve_request_key(&uppercase, &digest).unwrap_err();
+            assert!(matches!(error, RequestKeyError::MalformedRequestKey { .. }));
+            assert!(!error.is_retryable());
+
+            // The write path refuses it too: a row keyed by a spelling
+            // `resolve_request_key` will not take is a row no retry can find.
+            let install = install_attempt(&uppercase, HOST, TARGET, Some(1));
+            assert!(table.upsert(&install).is_err());
+            assert_eq!(table.get(&uppercase).unwrap(), None);
+        }
+
+        // The lowercase key holds the row, and the uppercase spelling of that
+        // same UUID does not reach it.
+        let install = install_attempt(REQUEST_KEY, HOST, TARGET, Some(1));
+        table.upsert(&install).unwrap();
+        assert_eq!(
+            table.resolve_request_key(REQUEST_KEY, &digest).unwrap(),
+            Some(install)
+        );
+        assert!(matches!(
+            table
+                .resolve_request_key(&REQUEST_KEY.to_uppercase(), &digest)
+                .unwrap_err(),
+            RequestKeyError::MalformedRequestKey { .. }
+        ));
     }
 
     #[test]

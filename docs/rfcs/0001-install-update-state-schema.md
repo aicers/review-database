@@ -275,9 +275,14 @@ The manager (review) and the API (review-web) consume these types:
     in memory would let a resubmit after a REView restart allocate a second
     instance. For **every other operation** REView generates it, as before.
     **The format is a UUIDv4 in its canonical hyphenated form** and a value
-    that does not parse as one is **refused**. That is a shape check and
-    nothing more: it does not stop a client sending a constant or replaying a
-    stored value, and this document does not pretend otherwise — **not
+    that does not parse as one is **refused**. Canonical is **lowercase**:
+    the key is the row's identity, compared as the bytes it arrived as, so
+    accepting `A`-`F` too would let one UUID arrive as two request keys,
+    each finding nothing under the other and each allocating an instance.
+    A client that holds a UUID uppercase renders it lowercase before
+    submitting; nothing downstream normalizes it for them. That is a shape
+    check and nothing more: it does not stop a client sending a constant or
+    replaying a stored value, and this document does not pretend otherwise — **not
     re-using a key is a client obligation** (RFC-E §4), and the server cannot
     verify it.
     **A key that matches an existing row is resolved by comparing a stored
