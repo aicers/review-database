@@ -7,12 +7,12 @@
 
 use std::borrow::Cow;
 
-use anyhow::Result;
-use rocksdb::OptimisticTransactionDB;
+use anyhow::{Context, Result};
+use rocksdb::{OptimisticTransactionDB, Transaction};
 use serde::{Deserialize, Serialize};
 
 use super::Lifecycle;
-use crate::{Map, Table, UniqueKey, tables::Value as ValueTrait, types::FromKeyValue};
+use crate::{EXCLUSIVE, Map, Table, UniqueKey, tables::Value as ValueTrait, types::FromKeyValue};
 
 /// A core component installed, or due to be installed, on a host.
 ///
@@ -157,6 +157,34 @@ impl<'a> Key<'a> {
     }
 }
 
+/// The canonical package-ids of the core components, as RFC 0001 §1 and §4c
+/// name them.
+///
+/// This is a classification, not a schema. No row stores it, nothing is
+/// migrated when it changes, and the `component` field stays a `String` for
+/// exactly the reasons recorded under *Why `component` is a `String`* on
+/// [`CoreComponent`]. What it buys is that
+/// [`allocate_instance`](Table::allocate_instance) can refuse a core component
+/// an instance number on a store that has never been told about it — before
+/// any registry row exists, which is precisely when the first install of one
+/// arrives.
+const CORE_COMPONENT_IDS: [&str; 4] = ["review", "aice-web-next", "roxyd", "bootroot"];
+
+/// Returns whether `component` is one of the canonical core-component
+/// package-ids.
+///
+/// A core component has no instance dimension, so this is what lets an
+/// instance number be refused for one without a registry row to read. It
+/// answers about the package-id alone: `roxyd` is a core component on every
+/// host, registered there or not.
+///
+/// A `false` here is not a promise that the component is a module — a
+/// package-id this build does not know is not classified by it. The registry
+/// read that follows still answers for a pair some other build registered.
+pub(super) fn is_core_component(component: &str) -> bool {
+    CORE_COMPONENT_IDS.contains(&component)
+}
+
 /// The persisted form of everything but the key.
 ///
 /// `lifecycle` is the [`Lifecycle`] variant index rather than the enum itself:
@@ -203,6 +231,42 @@ impl<'d> Table<'d, CoreComponent> {
             return Ok(None);
         };
         Ok(Some(CoreComponent::from_key_value(&key, value.as_ref())?))
+    }
+
+    /// Returns whether `txn` sees a row registering `component` on `host`.
+    ///
+    /// This asks the registry the one question the instance allocator has to
+    /// put to it: a component recorded here is host-fixed infrastructure and
+    /// has no instance dimension, so it takes no number. The read runs inside
+    /// the allocating transaction rather than beside it, and it is a
+    /// `get_for_update`, so a registration that commits while that transaction
+    /// is open fails its commit instead of being missed. A plain `get_cf`
+    /// would not: an optimistic transaction validates only the keys it read
+    /// for update, so a registration committing after an unlocked read would
+    /// leave this transaction free to commit a number for a pair that is a
+    /// core component by the time the number lands.
+    ///
+    /// It answers about the pair, not about the component alone, because that
+    /// is what the key holds: `roxyd` is registered once per host. It is the
+    /// second of the allocator's two core-component checks, not the only one
+    /// — [`is_core_component`] classifies the canonical package-ids with no
+    /// row to read, and this catches a pair some other build registered under
+    /// a package-id this one does not know.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database operation fails.
+    pub(super) fn is_registered(
+        &self,
+        component: &str,
+        host: &str,
+        txn: &Transaction<'_, OptimisticTransactionDB>,
+    ) -> Result<bool> {
+        let key = Key::new(component, host).to_bytes();
+        Ok(txn
+            .get_for_update_cf(self.map.cf, &key, EXCLUSIVE)
+            .context("cannot read the core component registry")?
+            .is_some())
     }
 
     /// Deletes the row for the given `(component, host)` pair.
