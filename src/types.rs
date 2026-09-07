@@ -48,6 +48,7 @@ mod private {
     impl Sealed for tables::Network {}
     impl Sealed for tables::OperationAttempt {}
     impl Sealed for tables::OutlierInfo {}
+    impl Sealed for tables::PortAllocation {}
     impl Sealed for types::Qualifier {}
     impl Sealed for tables::ExternalService {}
     impl Sealed for tables::SamplingPolicy {}

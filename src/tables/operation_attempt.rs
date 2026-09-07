@@ -51,8 +51,8 @@
 //!
 //! Every index entry is written and removed in the same transaction as its
 //! row, so one can never outlive the other. [`Table::upsert`],
-//! [`Table::allocate_instance`], [`Table::delete`], [`Table::sweep_expired`]
-//! and [`Table::prune`] are
+//! [`Table::allocate_instance`], [`Table::allocate_instance_and_addrs`],
+//! [`Table::delete`], [`Table::sweep_expired`] and [`Table::prune`] are
 //! therefore this table's only writers, and that is enforced by the compiler
 //! rather than by convention: the generic write API on [`Table`] is bounded by
 //! [`UniqueKey`](crate::UniqueKey) and [`Value`](super::Value), and
@@ -86,7 +86,10 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use super::core_component::is_core_component;
-use super::{CoreComponent, InstanceAllocation, InstanceAllocationError};
+use super::{
+    CoreComponent, InstanceAllocation, InstanceAllocationError, ListenerBinding, ListenerTransport,
+    PortAllocation, PortAllocationError, PortOwner,
+};
 use crate::{EXCLUSIVE, Map, Table, types::FromKeyValue};
 
 /// The first byte reserved for the index key spaces.
@@ -367,6 +370,141 @@ impl RequestKeyError {
     pub fn is_retryable(&self) -> bool {
         matches!(self, Self::Read(_))
     }
+}
+
+/// Why an allocating install could not take what it asked for.
+///
+/// The instance number and the addresses are two allocators, and the refusal
+/// names which of them refused rather than collapsing them: an exhausted
+/// number is a host that has run out of room for the component, while a
+/// contended address is one listener the operator has to renumber.
+#[derive(Debug, Error)]
+pub enum AddressAllocationError {
+    /// Every number in `1..=999` is taken for the `(host, component)` pair.
+    #[error("every instance number is taken for component {component} on host {host}")]
+    InstanceNumbersExhausted {
+        /// The component whose numbers ran out.
+        component: String,
+        /// The host they ran out on.
+        host: String,
+    },
+    /// Another owner already holds `(host, transport, port)`.
+    ///
+    /// The refusal carries the winner's owner triple, so the loser of a
+    /// commit race reports who took the address rather than only that it
+    /// failed.
+    #[error("{transport} port {port} on host {host} is already allocated to {owner}")]
+    PortAllocationConflict {
+        /// The host the contended address is bound on.
+        host: String,
+        /// The transport the contended address is bound on.
+        transport: ListenerTransport,
+        /// The contended port.
+        port: u16,
+        /// Who holds it.
+        owner: PortOwner,
+    },
+    /// The database read or write failed, or a stored row was invalid.
+    #[error(transparent)]
+    Database(#[from] anyhow::Error),
+}
+
+impl From<InstanceAllocationError> for AddressAllocationError {
+    fn from(error: InstanceAllocationError) -> Self {
+        match error {
+            InstanceAllocationError::InstanceNumbersExhausted { component, host } => {
+                Self::InstanceNumbersExhausted { component, host }
+            }
+            InstanceAllocationError::Database(error) => Self::Database(error),
+        }
+    }
+}
+
+impl From<PortAllocationError> for AddressAllocationError {
+    fn from(error: PortAllocationError) -> Self {
+        match error {
+            PortAllocationError::PortAllocationConflict {
+                host,
+                transport,
+                port,
+                owner,
+            } => Self::PortAllocationConflict {
+                host,
+                transport,
+                port,
+                owner,
+            },
+            PortAllocationError::Database(error) => Self::Database(error),
+        }
+    }
+}
+
+/// Checks that `request` is the request `attempt` records, and that
+/// `bindings` are the addresses that request asks for.
+///
+/// The row stores a digest and not the request, so no reader downstream can
+/// tell an attempt recorded for one request from an allocation made for
+/// another: [`Table::resolve_request_key`] answers a retry by comparing
+/// digests, and the retry then rebuilds the map it sent from the allocation
+/// rows. Were the two allowed to disagree, that rebuild would return
+/// addresses the operator never submitted, under a key that answered as the
+/// same request. Nothing else sees both, so they are tied here — the digest
+/// says the request presented is the one the row records, and the comparison
+/// below says the addresses taken are the ones it names.
+///
+/// The transport is not part of the tie. `bind_addrs` carries
+/// `(listener key, address)` and nothing else, because which transport a
+/// listener binds on is the component's to say and not the operator's, so
+/// only the pairs are compared and `bindings` alone supplies the transport
+/// the row is keyed by.
+///
+/// An absent `bind_addrs` and an empty one both take no address, and neither
+/// is refused for an empty `bindings`: what keeps them distinct requests is
+/// the digest, which encodes them differently, and not this check.
+fn check_request(
+    attempt: &OperationAttempt,
+    request: &InstallIntent,
+    bindings: &[ListenerBinding],
+) -> Result<()> {
+    if request.host != attempt.host || request.target != attempt.target {
+        bail!(
+            "operation attempt {} is for component {} on host {}, and the request presented with it asks for component {} on host {}",
+            attempt.idempotency_key,
+            attempt.target,
+            attempt.host,
+            request.target,
+            request.host
+        );
+    }
+    if attempt.install_intent != Some(request.digest()?) {
+        bail!(
+            "operation attempt {} records the digest of a request other than the one presented with it",
+            attempt.idempotency_key
+        );
+    }
+    let mut asked: Vec<(&str, SocketAddr)> = request
+        .bind_addrs
+        .as_deref()
+        .unwrap_or_default()
+        .iter()
+        .map(|(listener_key, addr)| (listener_key.as_str(), *addr))
+        .collect();
+    let mut taken: Vec<(&str, SocketAddr)> = bindings
+        .iter()
+        .map(|binding| (binding.listener_key.as_str(), binding.addr))
+        .collect();
+    // The request's order is not the caller's, exactly as the digest
+    // transcript's is not: two lists naming the same listeners in a different
+    // order are the same list.
+    asked.sort_unstable();
+    taken.sort_unstable();
+    if asked != taken {
+        bail!(
+            "the addresses presented for operation attempt {} are not the ones its request asks for",
+            attempt.idempotency_key
+        );
+    }
+    Ok(())
 }
 
 /// Returns whether `key` is a `UUIDv4` in its canonical hyphenated form.
@@ -1266,8 +1404,9 @@ impl<'d> Table<'d, OperationAttempt> {
     /// nothing would ever give it back, because every release is justified by
     /// a record that in that case was never written. Either both land or
     /// neither does, and there is no entry point that takes a number without
-    /// the attempt that owns it. The port rows keyed on the number will join
-    /// this same transaction.
+    /// the attempt that owns it. An install that also names the addresses its
+    /// instance is to bind takes them in that same transaction, through
+    /// [`Table::allocate_instance_and_addrs`].
     ///
     /// Storing the attempt releases what it gives back, exactly as
     /// [`Table::upsert`] does, so a terminal attempt that gives its number
@@ -1288,6 +1427,15 @@ impl<'d> Table<'d, OperationAttempt> {
     /// would key a row on an unnamed component. All three are refused here
     /// rather than left to a caller to avoid, and so is an install whose
     /// `target` is empty.
+    ///
+    /// And only an attempt presented with the request it records. `request`
+    /// is the install request the attempt was submitted with, and its host,
+    /// target and digest must be the attempt's own: the row keeps a digest
+    /// rather than the request itself, so an attempt recorded for one request
+    /// and an allocation made for another are indistinguishable to every
+    /// reader afterwards. An install that names addresses takes them through
+    /// [`Table::allocate_instance_and_addrs`], so a `request` naming any is
+    /// refused here.
     ///
     /// A core component has no instance dimension at all and takes no number:
     /// its attempts are recorded with [`Table::upsert`] and `instance = None`,
@@ -1343,13 +1491,97 @@ impl<'d> Table<'d, OperationAttempt> {
     /// core component or is registered as one on its `host`, if the database has no
     /// `instance_allocation` column family, if the attempt's idempotency key
     /// is empty, if the attempt is non-terminal and a different attempt is
-    /// already live for its `(host, target, instance)` triple, or if the
-    /// database operation fails.
+    /// already live for its `(host, target, instance)` triple, if `request`
+    /// is not the request the attempt records — a differing host, target or
+    /// digest — or if it asks for addresses, which is
+    /// [`Table::allocate_instance_and_addrs`]'s call and not this one, or if
+    /// the database operation fails.
     pub fn allocate_instance(
         &self,
         attempt: &OperationAttempt,
+        request: &InstallIntent,
     ) -> Result<OperationAttempt, InstanceAllocationError> {
+        self.allocate_instance_and_addrs(attempt, request, &[])
+            .map_err(|error| match error {
+                AddressAllocationError::InstanceNumbersExhausted { component, host } => {
+                    InstanceAllocationError::InstanceNumbersExhausted { component, host }
+                }
+                AddressAllocationError::Database(error) => InstanceAllocationError::Database(error),
+                // An install naming no address never reaches the port table,
+                // so this arm cannot be taken. It is carried over rather than
+                // panicking on a state the empty slice above rules out.
+                error @ AddressAllocationError::PortAllocationConflict { .. } => {
+                    InstanceAllocationError::Database(anyhow::Error::new(error))
+                }
+            })
+    }
+
+    /// Takes an instance number and every address in `bindings` for the
+    /// attempt, and stores the attempt carrying the number, in one
+    /// transaction; returns the stored attempt.
+    ///
+    /// This is [`Table::allocate_instance`] for an install that names the
+    /// addresses its instance is to bind. The two differ in nothing else: an
+    /// empty `bindings` is exactly the install that leaves the addresses to
+    /// the component, and takes none.
+    ///
+    /// `bindings` is what `request` asks for, and is checked against it
+    /// before anything is taken. The two are separate arguments because they
+    /// do not carry the same thing: `bind_addrs` is the operator's, one
+    /// address per listener key, while the transport each listener binds on
+    /// is the component's and reaches this call only through `bindings` —
+    /// which is why only the `(listener key, address)` pairs are compared. A
+    /// `bindings` that is not the request's addresses is refused rather than
+    /// written, because the row keeps only the request's digest: a retry
+    /// resolves its key by that digest and then rebuilds the map it sent from
+    /// these rows, and rows taken for some other map would answer it with
+    /// addresses nobody submitted.
+    ///
+    /// The instance number is taken **first**, because the address rows'
+    /// owner names it and it has to be chosen before they can be keyed. All
+    /// of it is one transaction — the number, the address rows with both
+    /// their index entries, and the `operation_attempt` row — which is not a
+    /// convenience: a resource taken by a transaction of its own is held by
+    /// nothing if the process stops before the attempt is recorded, and
+    /// nothing would ever give it back, because every release is justified by
+    /// a record that in that case was never written. A crash between an
+    /// instance row and its address rows would likewise leave a held number
+    /// owning no ports, which nothing collects. Either all of it lands or
+    /// none of it does.
+    ///
+    /// An address is held by the row alone, and the row is the only place the
+    /// full address survives, because the key that enforces uniqueness is
+    /// `(host, transport, port)` and drops it. A re-driven attempt therefore
+    /// rebuilds the map it sent from its own rows, by one prefix scan on its
+    /// idempotency key.
+    ///
+    /// Every condition [`Table::allocate_instance`] documents governs this
+    /// call unchanged, including the key read that opens every pass: a key
+    /// that already names an attempt takes neither a number nor an address,
+    /// and that row is returned as it stands.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AddressAllocationError::InstanceNumbersExhausted`] and
+    /// [`AddressAllocationError::Database`] on everything
+    /// [`Table::allocate_instance`] returns, and
+    /// [`AddressAllocationError::PortAllocationConflict`] where another owner
+    /// already holds one of the addresses — which names that owner, because
+    /// the loser of a commit race re-runs and reads the winner's row rather
+    /// than reporting the bare conflict. A `bindings` naming one listener
+    /// twice, or a listener with no key, is refused as a database error, as
+    /// is a store whose port allocation column families are not registered
+    /// while `bindings` is not empty, and so is a `request` that is not the
+    /// one the attempt records or that asks for addresses other than
+    /// `bindings`.
+    pub fn allocate_instance_and_addrs(
+        &self,
+        attempt: &OperationAttempt,
+        request: &InstallIntent,
+        bindings: &[ListenerBinding],
+    ) -> Result<OperationAttempt, AddressAllocationError> {
         let allocations = Table::<InstanceAllocation>::open(self.map.db);
+        let ports = Table::<PortAllocation>::open(self.map.db);
         let core_components = Table::<CoreComponent>::open(self.map.db);
         loop {
             let txn = self.transaction();
@@ -1397,6 +1629,11 @@ impl<'d> Table<'d, OperationAttempt> {
                 )
                 .into());
             }
+            // What the attempt is has been judged; what it was submitted with
+            // is judged here, before the store is touched. The row carries
+            // only the request's digest, so this is the one place that can
+            // hold the attempt, the request and the addresses together.
+            check_request(attempt, request, bindings)?;
             let Some(allocations) = allocations.as_ref() else {
                 return Err(anyhow!(
                     "the database has no instance allocation table to take a number from"
@@ -1425,9 +1662,52 @@ impl<'d> Table<'d, OperationAttempt> {
                 &attempt.idempotency_key,
                 &txn,
             )?;
+            // The addresses follow the number their owner is keyed on, in the
+            // transaction that took it. An install naming none does not reach
+            // the port table at all, which is what lets one run against a
+            // store whose port column families the format bump has not yet
+            // registered.
+            if !bindings.is_empty() {
+                let Some(ports) = ports.as_ref() else {
+                    return Err(anyhow!(
+                        "the database has no port allocation table to take an address from"
+                    )
+                    .into());
+                };
+                ports.allocate_with_transaction(
+                    &attempt.host,
+                    &attempt.target,
+                    instance,
+                    &attempt.idempotency_key,
+                    bindings,
+                    &txn,
+                )?;
+            }
             let mut allocated = attempt.clone();
             allocated.instance = Some(instance);
-            self.upsert_with_transaction(&allocated, &txn)?;
+            if let Err(error) = self.upsert_with_transaction(&allocated, &txn) {
+                // A number this pass has just read as free cannot carry a
+                // live attempt of its own: a live attempt holds the number it
+                // names, so the allocation above would have skipped it. The
+                // one way the single-flight guard refuses a *fresh* number is
+                // a pass that lost the race — a winner committed between this
+                // pass's locking read of the number and the guard's read of
+                // the triple — and this transaction is already doomed to fail
+                // its commit on the very key that winner took. So the number
+                // is looked at again with this transaction rolled back, and a
+                // pass that finds it held by someone else retries exactly as
+                // the commit conflict below would have. Reporting the refusal
+                // instead would answer a lost race with a state the caller
+                // never asked about, on a number it was never given.
+                drop(txn);
+                if allocations
+                    .get(&attempt.host, &attempt.target, instance)?
+                    .is_some_and(|row| row.idempotency_key != attempt.idempotency_key)
+                {
+                    continue;
+                }
+                return Err(error.into());
+            }
             match txn.commit() {
                 Ok(()) => return Ok(allocated),
                 Err(e) => {
@@ -1535,15 +1815,22 @@ impl<'d> Table<'d, OperationAttempt> {
     /// Every writer of a row goes through here, so the release is not a step a
     /// caller can skip: recording an attempt that ended owing nothing,
     /// discharging its `cleanup_state`, and confirming a removal each delete
-    /// the instance allocation in the very transaction that records why. The
-    /// alternative is a half state the schema forbids — a number held by an
-    /// attempt that nothing will revisit, or given back with no record saying
-    /// so.
+    /// the instance allocation and the address rows keyed on it in the very
+    /// transaction that records why. The alternative is a half state the
+    /// schema forbids — a number or a port held by an attempt that nothing
+    /// will revisit, or given back with no record saying so.
     ///
-    /// A store whose `instance_allocation` column family does not exist yet
-    /// can hold no allocation, so there is nothing to release and the call is
-    /// a no-op. That is the state of a database at format `0.46.0`, which the
-    /// column family reaches only with the format bump that registers it.
+    /// The two allocations are released together, on the same three occasions
+    /// and by the same write, which is what stops them drifting apart: an
+    /// instance whose number is free while its ports are still held is a
+    /// leak nothing collects, and the reverse is an install that starts and
+    /// cannot bind.
+    ///
+    /// A store whose `instance_allocation` or port allocation column families
+    /// do not exist yet can hold no allocation of that kind, so there is
+    /// nothing to release and that half of the call is a no-op. That is the
+    /// state of a database at format `0.46.0`, which the column families
+    /// reach only with the format bump that registers them.
     ///
     /// # Errors
     ///
@@ -1553,6 +1840,9 @@ impl<'d> Table<'d, OperationAttempt> {
         attempt: &OperationAttempt,
         txn: &Transaction<'_, OptimisticTransactionDB>,
     ) -> Result<()> {
+        if let Some(ports) = Table::<PortAllocation>::open(self.map.db) {
+            ports.release_for_attempt(attempt, txn)?;
+        }
         let Some(allocations) = Table::<InstanceAllocation>::open(self.map.db) else {
             return Ok(());
         };
@@ -3004,9 +3294,22 @@ mod tests {
         let test_db = TestDb::new();
         let table = test_db.table();
 
-        let attempt = module_attempt("attempt-1");
+        // An install, since only an install takes a number at all: an
+        // attempt refused for its action would never reach the column family
+        // this test is about.
+        let request = InstallIntent {
+            host: "host-a.example".to_string(),
+            target: "sensor".to_string(),
+            selector: BuildSelector::Version("1.2.3".to_string()),
+            on_failure: OnFailure::Rollback,
+            bind_addrs: None,
+        };
+        let mut attempt = module_attempt("attempt-1");
+        attempt.action = Action::Install;
+        attempt.instance = None;
+        attempt.install_intent = Some(request.digest().unwrap());
         let error = table
-            .allocate_instance(&attempt)
+            .allocate_instance(&attempt, &request)
             .expect_err("there is no column family to take a number from");
         assert!(
             matches!(error, InstanceAllocationError::Database(_)),

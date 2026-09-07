@@ -29,7 +29,8 @@
 //! it back, and by nothing else. So both live on the other side, in
 //! `Table<'_, OperationAttempt>`:
 //! [`allocate_instance`](Table::allocate_instance) takes a number and writes
-//! the attempt that owns it in one transaction, and every writer of an
+//! the attempt that owns it in one transaction — with the address rows keyed
+//! on that number, where the install names any — and every writer of an
 //! `operation_attempt` row releases what the row it stores gives back, in that
 //! row's own transaction. No entry point takes a number without recording the
 //! attempt that holds it, and none records a terminal attempt without giving
@@ -158,14 +159,19 @@ impl FromKeyValue for InstanceAllocation {
     }
 }
 
-/// Why a write releases the number an attempt names.
+/// Why a write releases the resources an attempt names.
 ///
 /// The two differ in whose row they delete, and collapsing them would be
 /// wrong in both directions: an update that failed does not tear down the
 /// instance it was updating, and a removal deletes a number the install
 /// attempt — not the removal — allocated.
+///
+/// The instance row and the port rows keyed on it are released together, by
+/// the same write and on the same three occasions, so this decision is taken
+/// once here and read by both: writing it twice is how the two would drift
+/// apart again.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum Release {
+pub(super) enum Release {
     /// The attempt that allocated the number did not reach a running
     /// instance, so it gives its own row back. A row owned by another attempt
     /// is left alone.
@@ -185,7 +191,7 @@ enum Release {
 /// succeeded is owed its number for as long as the instance exists, and
 /// releasing it would hand it to the next install while the instance is still
 /// running.
-fn release_of(attempt: &OperationAttempt) -> Option<Release> {
+pub(super) fn release_of(attempt: &OperationAttempt) -> Option<Release> {
     if attempt.instance.is_none() || !attempt.is_terminal() || attempt.cleanup_state.is_some() {
         return None;
     }
@@ -469,8 +475,8 @@ impl<'d> Table<'d, InstanceAllocation> {
     /// given back with nothing recording why. `release_for_attempt` is the
     /// only caller, and it runs from every writer of an `operation_attempt`
     /// row rather than from one a caller has to select.
-    /// This stays crate-visible for the composed transaction that the port
-    /// rows keyed on the same number will join.
+    /// This stays crate-visible for the composed transaction that the address
+    /// rows keyed on the same number join.
     ///
     /// # Errors
     ///
@@ -680,18 +686,24 @@ mod tests {
         )
     }
 
-    /// The request an install in these tests was submitted with.
+    /// The request an install of `component` on `host` was submitted with.
     ///
-    /// Its digest is what the row carries; nothing here compares it against
-    /// the attempt's own fields, so one request stands for every install.
-    fn intent() -> InstallIntent {
+    /// Its digest is what the row carries, and the allocator takes no number
+    /// for an attempt presented with any other request, so a test on another
+    /// pair asks for that pair's request here.
+    fn intent_for(host: &str, component: &str) -> InstallIntent {
         InstallIntent {
-            host: HOST.to_string(),
-            target: COMPONENT.to_string(),
+            host: host.to_string(),
+            target: component.to_string(),
             selector: BuildSelector::Version("1.2.3".to_string()),
             on_failure: OperationOnFailure::Rollback,
             bind_addrs: None,
         }
+    }
+
+    /// [`intent_for`] on the pair the tests below are about.
+    fn intent() -> InstallIntent {
+        intent_for(HOST, COMPONENT)
     }
 
     /// The digest [`intent`] hashes to.
@@ -772,10 +784,12 @@ mod tests {
         component: &str,
         idempotency_key: &str,
     ) -> Result<u32, InstanceAllocationError> {
+        let request = intent_for(host, component);
         let mut attempt = install(idempotency_key, None);
         attempt.host = host.to_string();
         attempt.target = component.to_string();
-        let stored = test_db.attempts().allocate_instance(&attempt)?;
+        attempt.install_intent = Some(request.digest().unwrap());
+        let stored = test_db.attempts().allocate_instance(&attempt, &request)?;
         Ok(stored
             .instance
             .expect("the allocator sets the number it picked"))
@@ -995,7 +1009,7 @@ mod tests {
         assert_eq!(allocate(&test_db, "attempt-2").unwrap(), 1);
 
         let stored = attempts
-            .allocate_instance(&install("attempt-1", None))
+            .allocate_instance(&install("attempt-1", None), &intent())
             .unwrap();
         assert_eq!(stored, failed);
         assert_eq!(held(&table), vec![1]);
@@ -1033,7 +1047,7 @@ mod tests {
         unnamed.target = String::new();
 
         for presented in [updating, core, unnamed] {
-            let returned = attempts.allocate_instance(&presented).unwrap();
+            let returned = attempts.allocate_instance(&presented, &intent()).unwrap();
             assert_eq!(returned, recorded);
             assert_eq!(attempts.get(&key("attempt-1")).unwrap().unwrap(), recorded);
             assert_eq!(held(&table), vec![1]);
@@ -1099,7 +1113,7 @@ mod tests {
         // The re-run, which is what the caller does with the conflict: the
         // committed row is returned untouched and no number is taken for it.
         let stored = attempts
-            .allocate_instance(&install("attempt-1", None))
+            .allocate_instance(&install("attempt-1", None), &intent())
             .unwrap();
         assert_eq!(stored, failed);
         assert!(held(&table).is_empty());
@@ -1269,7 +1283,7 @@ mod tests {
                 move || {
                     Table::<OperationAttempt>::open(db)
                         .unwrap()
-                        .allocate_instance(&install(idempotency_key, None))
+                        .allocate_instance(&install(idempotency_key, None), &intent())
                         .unwrap()
                         .instance
                         .unwrap()
@@ -1316,7 +1330,7 @@ mod tests {
             let drive = move || {
                 Table::<OperationAttempt>::open(db)
                     .unwrap()
-                    .allocate_instance(&install("attempt-1", None))
+                    .allocate_instance(&install("attempt-1", None), &intent())
                     .unwrap()
                     .instance
                     .unwrap()
@@ -1489,7 +1503,12 @@ mod tests {
 
         let mut unowned = install("attempt-unowned", None);
         unowned.idempotency_key = String::new();
-        assert!(test_db.attempts().allocate_instance(&unowned).is_err());
+        assert!(
+            test_db
+                .attempts()
+                .allocate_instance(&unowned, &intent())
+                .is_err()
+        );
         assert_eq!(held(&table), Vec::<u32>::new());
 
         table
@@ -1686,7 +1705,7 @@ mod tests {
             let mut attempt = install(name, None);
             attempt.action = action;
             attempt.install_intent = None;
-            let refused = attempts.allocate_instance(&attempt);
+            let refused = attempts.allocate_instance(&attempt, &intent());
             assert!(matches!(refused, Err(InstanceAllocationError::Database(_))));
             assert!(attempts.get(&key(name)).unwrap().is_none());
         }
@@ -1694,7 +1713,7 @@ mod tests {
         // An install carrying no component would key a row on an unnamed one.
         let mut unnamed = install("attempt-unnamed", None);
         unnamed.target = String::new();
-        let refused = attempts.allocate_instance(&unnamed);
+        let refused = attempts.allocate_instance(&unnamed, &intent());
         assert!(matches!(refused, Err(InstanceAllocationError::Database(_))));
         assert!(attempts.get(&key("attempt-unnamed")).unwrap().is_none());
 
@@ -2057,7 +2076,7 @@ mod tests {
     }
 
     /// The allocation and the `operation_attempt` that owns it are written in
-    /// one transaction, which is what the port rows keyed on the number will
+    /// one transaction, which is what the address rows keyed on the number
     /// join. A transaction that never commits leaves neither half, so no
     /// number is held by an attempt that was never recorded.
     #[test]
@@ -2085,7 +2104,7 @@ mod tests {
         // row names the attempt that owns it — how a re-drive recognizes its
         // own allocation instead of taking a second number.
         let stored = attempts
-            .allocate_instance(&install("attempt-1", None))
+            .allocate_instance(&install("attempt-1", None), &intent())
             .unwrap();
         assert_eq!(stored.instance, Some(1));
         assert_eq!(held(&table), vec![1]);
@@ -2100,7 +2119,7 @@ mod tests {
         );
     }
 
-    /// The transaction the port rows keyed on the number will join: the
+    /// The transaction the address rows keyed on the number join: the
     /// allocation and the attempt write are composed by the caller and
     /// committed once, and both halves land.
     #[test]

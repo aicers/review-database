@@ -26,6 +26,7 @@ mod network;
 mod node;
 mod operation_attempt;
 mod outlier_info;
+mod port_allocation;
 mod qualifier;
 mod retention_config;
 mod sampling_policy;
@@ -84,12 +85,15 @@ pub use self::node::{
     Update as NodeUpdate,
 };
 pub use self::operation_attempt::{
-    Action as OperationAction, BuildSelector, CleanupState as OperationCleanupState, InstallIntent,
-    OnFailure as OperationOnFailure, OperationAttempt, Outcome as OperationOutcome,
-    Phase as OperationPhase, RequestKeyError, RetentionBound as OperationRetentionBound,
-    RetryPolicy as OperationRetryPolicy,
+    Action as OperationAction, AddressAllocationError, BuildSelector,
+    CleanupState as OperationCleanupState, InstallIntent, OnFailure as OperationOnFailure,
+    OperationAttempt, Outcome as OperationOutcome, Phase as OperationPhase, RequestKeyError,
+    RetentionBound as OperationRetentionBound, RetryPolicy as OperationRetryPolicy,
 };
 pub use self::outlier_info::{Key as OutlierInfoKey, OutlierInfo, Value as OutlierInfoValue};
+pub use self::port_allocation::{
+    ListenerBinding, PortAllocation, PortAllocationError, PortOwner, Transport as ListenerTransport,
+};
 pub use self::retention_config::{RetentionConfig, RetentionConfigUpdate};
 pub use self::sampling_policy::{
     Interval as SamplingInterval, Kind as SamplingKind, Period as SamplingPeriod, SamplingPolicy,
@@ -160,6 +164,15 @@ pub(super) const OPERATION_ATTEMPTS: &str = "operation attempts";
 /// rather than writing a pointer nothing can read.
 pub(super) const OPERATION_ATTEMPT_LATEST: &str = "operation attempt latest";
 pub(super) const OUTLIERS: &str = "outliers";
+// The three column families of the port allocation table, deliberately absent
+// from `MAP_NAMES` for the reason `INSTANCE_ALLOCATIONS` is: registering a
+// column family belongs with the database format bump, because
+// `migrate_data_dir` returns early for a data dir already at a compatible
+// version. They are one table and are registered together — a primary without
+// an index would let a row be written that neither of its readers can find.
+pub(super) const PORT_ALLOCATIONS: &str = "port allocations";
+pub(super) const PORT_ALLOCATIONS_BY_ATTEMPT: &str = "port allocations by attempt";
+pub(super) const PORT_ALLOCATIONS_BY_INSTANCE: &str = "port allocations by instance";
 pub(super) const QUALIFIERS: &str = "qualifiers";
 pub(super) const EXTERNAL_SERVICES: &str = "external services";
 pub(super) const SAMPLING_POLICY: &str = "sampling policy";
@@ -625,6 +638,7 @@ mod iteration {
     impl Eligible for tables::ModelIndicator {}
     impl Eligible for tables::Network {}
     impl Eligible for tables::OutlierInfo {}
+    impl Eligible for tables::PortAllocation {}
     impl Eligible for types::Qualifier {}
     impl Eligible for tables::SamplingPolicy {}
     impl Eligible for types::Status {}
