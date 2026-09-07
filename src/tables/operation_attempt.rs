@@ -511,7 +511,9 @@ pub struct OperationAttempt {
     /// is refused. Update, remove and onboard are keyed by a
     /// `REview`-generated value that is unique by construction, so they have
     /// nothing to compare and store none — and a stored `None` presented with
-    /// a digest is a refusal like any other mismatch. An attempt that carries
+    /// a digest is a refusal like any other mismatch. The write path holds
+    /// the two sides together: an [`Action::Install`] without a digest is
+    /// refused, as is a digest under any other action. An attempt that carries
     /// one is keyed by the request key the client supplied, which is a `UUIDv4`
     /// in canonical hyphenated form. See [`InstallIntent::digest`] and
     /// [`Table::resolve_request_key`].
@@ -1053,15 +1055,19 @@ impl<'d> Table<'d, OperationAttempt> {
     ///
     /// A write that leaves the attempt terminal and owing nothing carries
     /// `finalized_at`, and stamps the latest pointer for its triple in the
-    /// same transaction, so the two can never disagree.
+    /// same transaction, so the two can never disagree. A write that moves the
+    /// attempt to another triple drops the pointer it left behind in that same
+    /// transaction, where it still names this attempt, so no triple is left
+    /// pointing at a row that has since moved off it.
     ///
     /// # Errors
     ///
     /// Returns an error if the attempt's idempotency key is empty, if
     /// `finalized_at` is set for an attempt that is not fully discharged or
-    /// unset for one that is, if an `install_intent` is carried by an attempt
-    /// that is not an install or keyed by something other than a `UUIDv4` in
-    /// canonical hyphenated form, if the attempt is non-terminal and a different
+    /// unset for one that is, if an install carries no `install_intent` or an
+    /// `install_intent` is carried by an attempt that is not an install or is
+    /// keyed by something other than a `UUIDv4` in canonical hyphenated form,
+    /// if the attempt is non-terminal and a different
     /// attempt is already live for its `(host, target, instance)` triple, if
     /// the write stamps `finalized_at` and the latest-pointer column family is
     /// not registered, or if the database operation fails.
@@ -1437,13 +1443,21 @@ impl<'d> Table<'d, OperationAttempt> {
                 "an operation attempt carries a finalization instant exactly when it is terminal and owes no cleanup"
             );
         }
+        // An install is the one action submitted with a request the client
+        // holds across retries, so it is the one action that records that
+        // request's digest. Without it the resubmission has nothing to
+        // compare and allocates a second instance instead of returning the
+        // first; with it under any other action there is nothing the digest
+        // could ever be compared against.
+        if (new.action == Action::Install) != new.install_intent.is_some() {
+            bail!(
+                "an install records the digest of the request it was submitted with, and no other action does"
+            );
+        }
         if new.install_intent.is_some() {
-            if new.action != Action::Install {
-                bail!("only an install records the digest of the request it was submitted with");
-            }
-            // An attempt carrying one is keyed by the request key the client
-            // supplied, and that is the only shape `resolve_request_key` can
-            // reach a row under.
+            // An install is keyed by the request key the client supplied, and
+            // that is the only shape `resolve_request_key` can reach a row
+            // under: a key it refuses as malformed leaves the row unfindable.
             if !is_uuid_v4(&new.idempotency_key) {
                 bail!(
                     "the request key {} is not a UUIDv4 in canonical hyphenated form",
@@ -1469,6 +1483,27 @@ impl<'d> Table<'d, OperationAttempt> {
                     continue;
                 }
                 self.map.delete_with_transaction(&key, txn)?;
+            }
+        }
+        // The pointer lives in a column family of its own, so it is not among
+        // the index keys above and nothing there sweeps it up. A row that
+        // moves to another triple leaves the pointer it stamped naming it,
+        // and `latest_attempt` for the triple it left would answer with a row
+        // whose own fields name a different one. Where the family is not
+        // registered there is no pointer to strand, so its absence is not an
+        // error here — unlike a finalization, which would lose the record of
+        // which attempt is current.
+        if let Some(stored) = stored {
+            let vacated = latest_pointer_key(&stored.host, &stored.target, stored.instance)?;
+            if vacated != latest_pointer_key(&new.host, &new.target, new.instance)?
+                && let Some(latest) = Map::open(self.map.db, super::OPERATION_ATTEMPT_LATEST)
+            {
+                let holder = txn
+                    .get_for_update_cf(latest.cf, &vacated, EXCLUSIVE)
+                    .context("cannot read the latest pointer")?;
+                if holder.is_some_and(|holder| holder == new.idempotency_key.as_bytes()) {
+                    latest.delete_with_transaction(&vacated, txn)?;
+                }
             }
         }
         // Read after that removal, so that a row moving to another triple, or
@@ -1732,13 +1767,18 @@ mod tests {
     }
 
     /// A module attempt: the instance dimension applies, so it is recorded.
+    ///
+    /// It is an update rather than an install, because an update is keyed by
+    /// a `REview`-generated value and carries no request digest — which is
+    /// what lets the tests below key one by a readable name. An install is
+    /// built by [`install_attempt`].
     fn module_attempt(idempotency_key: &str) -> OperationAttempt {
         OperationAttempt {
             idempotency_key: idempotency_key.to_string(),
             host: "host-a.example".to_string(),
             target: "sensor".to_string(),
             instance: Some(1),
-            action: Action::Install,
+            action: Action::Update,
             install_intent: None,
             package_digest: "sha256:aaa".to_string(),
             resolved_version: "1.2.3".to_string(),
@@ -1827,6 +1867,21 @@ mod tests {
         attempt.host = host.to_string();
         attempt.target = target.to_string();
         attempt.instance = instance;
+        attempt
+    }
+
+    /// An install on the given triple: keyed by the request key the client
+    /// supplied and carrying the digest of the request it was submitted with,
+    /// which is the only shape the store accepts an install in.
+    fn install_attempt(
+        request_key: &str,
+        host: &str,
+        target: &str,
+        instance: Option<u32>,
+    ) -> OperationAttempt {
+        let mut attempt = live_attempt(request_key, host, target, instance);
+        attempt.action = Action::Install;
+        attempt.install_intent = Some(golden_intent().digest().unwrap());
         attempt
     }
 
@@ -2414,8 +2469,7 @@ mod tests {
         let test_db = TestDb::new();
         let table = test_db.table();
 
-        let mut attempt = live_attempt("op-install", HOST, TARGET, Some(1));
-        attempt.action = Action::Install;
+        let mut attempt = install_attempt(REQUEST_KEY, HOST, TARGET, Some(1));
         attempt.started_at = timestamp(1_700_000_000);
         attempt.expires_at = timestamp(1_700_000_500);
         attempt.cleanup_state = Some(CleanupState::PendingIdentityTeardown);
@@ -2428,7 +2482,7 @@ mod tests {
         );
         assert_eq!(table.sweep_expired(instant).unwrap(), 1);
 
-        let swept = table.get("op-install").unwrap().unwrap();
+        let swept = table.get(REQUEST_KEY).unwrap().unwrap();
         assert_eq!(swept.outcome, Some(Outcome::Failed));
         // The sweep records the outcome and nothing else.
         assert_eq!(swept.phase, attempt.phase);
@@ -2452,7 +2506,7 @@ mod tests {
 
         // Running the sweep again over swept state finalizes nothing.
         assert_eq!(table.sweep_expired(instant).unwrap(), 0);
-        assert_eq!(table.get("op-install").unwrap(), Some(swept));
+        assert_eq!(table.get(REQUEST_KEY).unwrap(), Some(swept));
     }
 
     #[test]
@@ -2489,15 +2543,14 @@ mod tests {
         let table = test_db.table();
 
         let onboard = onboard_attempt("op-onboard");
-        let mut install = live_attempt("op-install", HOST, TARGET, Some(1));
-        install.action = Action::Install;
+        let mut install = install_attempt(REQUEST_KEY, HOST, TARGET, Some(1));
         install.expires_at = onboard.expires_at;
         table.upsert(&onboard).unwrap();
         table.upsert(&install).unwrap();
 
         // The deadline belongs to every action, so one sweep takes both.
         assert_eq!(table.sweep_expired(onboard.expires_at).unwrap(), 2);
-        for key in ["op-onboard", "op-install"] {
+        for key in ["op-onboard", REQUEST_KEY] {
             assert_eq!(
                 table.get(key).unwrap().unwrap().outcome,
                 Some(Outcome::Failed)
@@ -3275,6 +3328,14 @@ mod tests {
         generated_key.instance = Some(5);
         assert!(table.upsert(&generated_key).is_err());
 
+        // And an install without one is refused for the same reason from the
+        // other side: nothing could compare a resubmission against it, so the
+        // retry would allocate a second instance instead of returning this
+        // row.
+        let mut without_intent = install.clone();
+        without_intent.install_intent = None;
+        assert!(table.upsert(&without_intent).is_err());
+
         // Update, remove and onboard are keyed by a value that is unique by
         // construction, so they have nothing to compare and store none.
         for (key, action, instance) in [
@@ -3511,6 +3572,47 @@ mod tests {
     }
 
     #[test]
+    fn moving_a_finalized_attempt_off_a_triple_takes_its_pointer_with_it() {
+        let test_db = TestDb::new();
+        let table = test_db.table();
+
+        // The instance is what the allocating call fills in, so a row can
+        // come to name another triple. The pointer it stamped on the triple
+        // it left would otherwise go on naming it, and a lookup there would
+        // answer with a row whose own fields name a different triple.
+        let finalized = terminal_attempt("op-move", HOST, TARGET, Some(1), 1_000, 9_000);
+        table.upsert(&finalized).unwrap();
+        assert_eq!(
+            table.latest_attempt(HOST, TARGET, Some(1)).unwrap(),
+            Some(finalized.clone())
+        );
+
+        let mut moved = finalized.clone();
+        moved.instance = Some(2);
+        table.upsert(&moved).unwrap();
+
+        assert_eq!(table.latest_attempt(HOST, TARGET, Some(1)).unwrap(), None);
+        assert_eq!(
+            table.latest_attempt(HOST, TARGET, Some(2)).unwrap(),
+            Some(moved)
+        );
+        assert_eq!(test_db.pointed_at_keys(), vec!["op-move".to_string()]);
+
+        // The pointer another attempt has since taken is not this one's to
+        // drop: the entry goes only while it still names the row moving off
+        // the triple, so a later finalization there stays findable.
+        let sibling = terminal_attempt("op-sibling", HOST, TARGET, Some(2), 3_000, 9_000);
+        table.upsert(&sibling).unwrap();
+        let mut away = table.get("op-move").unwrap().unwrap();
+        away.instance = Some(3);
+        table.upsert(&away).unwrap();
+        assert_eq!(
+            table.latest_attempt(HOST, TARGET, Some(2)).unwrap(),
+            Some(sibling)
+        );
+    }
+
+    #[test]
     fn the_dedupe_guarantee_ends_where_retention_does() {
         let test_db = TestDb::new();
         let table = test_db.table();
@@ -3519,6 +3621,7 @@ mod tests {
         // gone gets a new install rather than a refusal.
         let digest = golden_intent().digest().unwrap();
         let mut superseded = terminal_attempt(REQUEST_KEY, HOST, TARGET, Some(1), 1_000, 9_000);
+        superseded.action = Action::Install;
         superseded.install_intent = Some(digest);
         let current = terminal_attempt(OTHER_REQUEST_KEY, HOST, TARGET, Some(1), 2_000, 9_000);
         table.upsert(&superseded).unwrap();
