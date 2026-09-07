@@ -29,7 +29,8 @@
 //! it back, and by nothing else. So both live on the other side, in
 //! `Table<'_, OperationAttempt>`:
 //! [`allocate_instance`](Table::allocate_instance) takes a number and writes
-//! the attempt that owns it in one transaction, and every writer of an
+//! the attempt that owns it in one transaction — with the address rows keyed
+//! on that number, where the install names any — and every writer of an
 //! `operation_attempt` row releases what the row it stores gives back, in that
 //! row's own transaction. No entry point takes a number without recording the
 //! attempt that holds it, and none records a terminal attempt without giving
@@ -158,14 +159,19 @@ impl FromKeyValue for InstanceAllocation {
     }
 }
 
-/// Why a write releases the number an attempt names.
+/// Why a write releases the resources an attempt names.
 ///
 /// The two differ in whose row they delete, and collapsing them would be
 /// wrong in both directions: an update that failed does not tear down the
 /// instance it was updating, and a removal deletes a number the install
 /// attempt — not the removal — allocated.
+///
+/// The instance row and the port rows keyed on it are released together, by
+/// the same write and on the same three occasions, so this decision is taken
+/// once here and read by both: writing it twice is how the two would drift
+/// apart again.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum Release {
+pub(super) enum Release {
     /// The attempt that allocated the number did not reach a running
     /// instance, so it gives its own row back. A row owned by another attempt
     /// is left alone.
@@ -185,7 +191,7 @@ enum Release {
 /// succeeded is owed its number for as long as the instance exists, and
 /// releasing it would hand it to the next install while the instance is still
 /// running.
-fn release_of(attempt: &OperationAttempt) -> Option<Release> {
+pub(super) fn release_of(attempt: &OperationAttempt) -> Option<Release> {
     if attempt.instance.is_none() || !attempt.is_terminal() || attempt.cleanup_state.is_some() {
         return None;
     }
@@ -469,8 +475,8 @@ impl<'d> Table<'d, InstanceAllocation> {
     /// given back with nothing recording why. `release_for_attempt` is the
     /// only caller, and it runs from every writer of an `operation_attempt`
     /// row rather than from one a caller has to select.
-    /// This stays crate-visible for the composed transaction that the port
-    /// rows keyed on the same number will join.
+    /// This stays crate-visible for the composed transaction that the address
+    /// rows keyed on the same number join.
     ///
     /// # Errors
     ///
@@ -2057,7 +2063,7 @@ mod tests {
     }
 
     /// The allocation and the `operation_attempt` that owns it are written in
-    /// one transaction, which is what the port rows keyed on the number will
+    /// one transaction, which is what the address rows keyed on the number
     /// join. A transaction that never commits leaves neither half, so no
     /// number is held by an attempt that was never recorded.
     #[test]
@@ -2100,7 +2106,7 @@ mod tests {
         );
     }
 
-    /// The transaction the port rows keyed on the number will join: the
+    /// The transaction the address rows keyed on the number join: the
     /// allocation and the attempt write are composed by the caller and
     /// committed once, and both halves land.
     #[test]

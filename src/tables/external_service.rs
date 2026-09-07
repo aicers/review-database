@@ -52,9 +52,11 @@ pub struct ExternalService {
     /// The addresses this instance actually bound, as `(config key, host:port)`
     /// pairs reported by the host.
     ///
-    /// Only the host knows where the instance ended up, and its first bind
-    /// precedes its first configuration, so this is recorded rather than derived
-    /// from `draft`. It is observed state, while `draft` carries intent; a later
+    /// Only the host knows where the instance ended up: an address is asked
+    /// for in the install request, but what the listener actually bound is
+    /// what the host reports afterwards, and a request may be adjusted,
+    /// refused or never reached. So this is recorded rather than derived from
+    /// `draft`. It is observed state, while `draft` carries intent; a later
     /// configuration edit must not rewrite what the host reported.
     pub bound_addrs: Vec<(String, String)>,
 }
