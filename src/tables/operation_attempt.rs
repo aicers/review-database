@@ -28,6 +28,27 @@
 //! and `(host = "a", target = "bc")` cannot encode to the same bytes. Every
 //! index entry holds the idempotency key of the row it points at as its value.
 //!
+//! # The latest pointer
+//!
+//! One more structure lives outside this column family: the latest pointer,
+//! `(host, target, instance)` to an idempotency key, in a column family of
+//! its own. It answers "which attempt is the current one for this triple",
+//! which none of the three indexes above can, and it is overwritten by the
+//! same transaction that stamps [`OperationAttempt::finalized_at`] — last
+//! writer in transaction order wins, so nothing compares timestamps and there
+//! is no tie to break.
+//!
+//! It is **not** the whole answer, and [`Table::latest_attempt`] rather than
+//! the pointer is what a reader asks. A terminal attempt that still owes a
+//! cleanup carries no `finalized_at` and therefore no pointer entry, so a
+//! reader consulting finalized rows alone would report a superseded attempt
+//! as current while newer work is still owed.
+//!
+//! Its column family is registered by the migration that bumps the database
+//! format, not by this table, so on a store predating that bump every write
+//! that would stamp `finalized_at` reports the family's absence instead of
+//! silently dropping a pointer nothing could then read.
+//!
 //! Every index entry is written and removed in the same transaction as its
 //! row, so one can never outlive the other. [`Table::upsert`],
 //! [`Table::delete`], [`Table::sweep_expired`] and [`Table::prune`] are
@@ -54,11 +75,14 @@
 
 use std::borrow::Cow;
 use std::collections::HashMap;
+use std::net::SocketAddr;
 
 use anyhow::{Context, Result, bail};
 use chrono::{DateTime, TimeDelta, Utc};
+use ring::digest;
 use rocksdb::{Direction, IteratorMode, OptimisticTransactionDB, ReadOptions, Transaction};
 use serde::{Deserialize, Serialize};
+use thiserror::Error;
 
 use crate::{EXCLUSIVE, Map, Table, types::FromKeyValue};
 
@@ -79,6 +103,40 @@ const EXPIRES_AT: u8 = 0xfa;
 
 /// The width of an encoded timestamp: the seconds, then the nanoseconds.
 const TIMESTAMP_LEN: usize = 12;
+
+/// The width of a SHA-256 digest.
+const DIGEST_LEN: usize = 32;
+
+/// The length of a UUID in its canonical hyphenated form.
+const UUID_LEN: usize = 36;
+
+/// The domain and version separation the install-intent transcript opens
+/// with.
+const INSTALL_INTENT_DOMAIN: &[u8; 24] = b"clumit-install-intent-v1";
+
+/// The transcript tag of a [`BuildSelector::Version`].
+///
+/// The selector tags are pinned here, beside the transcript they belong to,
+/// rather than derived from the declaration order of [`BuildSelector`]: a
+/// table beside the type would let two implementations number them
+/// differently and disagree on every digest.
+const SELECTOR_VERSION_TAG: u8 = 0;
+
+/// The transcript tag of a [`BuildSelector::Commit`].
+const SELECTOR_COMMIT_TAG: u8 = 1;
+
+/// The transcript tag of [`OnFailure::Rollback`].
+const ON_FAILURE_ROLLBACK_TAG: u8 = 0;
+
+/// The transcript tag of [`OnFailure::Hold`].
+const ON_FAILURE_HOLD_TAG: u8 = 1;
+
+/// The bind-address count that encodes an absent list.
+///
+/// `None` and an empty list are different requests, so they cannot share the
+/// count `0`. A list this long cannot be encoded, and is refused rather than
+/// allowed to read back as `None`.
+const ABSENT_BIND_ADDRS: u32 = u32::MAX;
 
 /// The operator's intent for an attempt.
 ///
@@ -149,6 +207,195 @@ pub struct RetryPolicy {
     pub backoff_seconds: u32,
 }
 
+/// The build an operator asked for, as submitted.
+///
+/// A selector names a version or a commit, never both, and it is the request
+/// rather than its resolution: a selector that resolves to a different commit
+/// a week later is still the same request, which is why the install-intent
+/// transcript carries the selector and not the resolved build.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum BuildSelector {
+    /// A version, which the resolver turns into a build.
+    Version(String),
+    /// An exact commit.
+    Commit(String),
+}
+
+/// What an apply does with a host it could not finish.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum OnFailure {
+    /// Put the build that was there back.
+    Rollback,
+    /// Leave the failure standing for an operator to look at.
+    Hold,
+}
+
+/// The request an allocating install was submitted with.
+///
+/// An allocating install forms a fresh `(host, target, instance)` on every
+/// attempt, so only the client-supplied request key can dedupe the operator's
+/// intent across a retry — and the row cannot compare the request itself,
+/// since it records the build the selector resolved to rather than the
+/// selector. So it holds [`InstallIntent::digest`] of this, and the only
+/// question ever asked of the digest is equality.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct InstallIntent {
+    /// The host the package is to be installed on.
+    pub host: String,
+    /// The host-agnostic package id.
+    pub target: String,
+    /// The build the operator asked for.
+    pub selector: BuildSelector,
+    /// What to do if the apply fails.
+    pub on_failure: OnFailure,
+    /// The addresses the instance is to bind, by listener key.
+    ///
+    /// `None` and an empty list are distinct requests and hash to distinct
+    /// digests: the first leaves the addresses to the component, the second
+    /// asks for none at all.
+    pub bind_addrs: Option<Vec<(String, SocketAddr)>>,
+}
+
+impl InstallIntent {
+    /// Returns the SHA-256 digest of this request.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a segment is longer than `u32::MAX` bytes, or if
+    /// the request carries `u32::MAX` bind addresses or more, which is the
+    /// count reserved for an absent list.
+    pub fn digest(&self) -> Result<[u8; DIGEST_LEN]> {
+        let transcript = self.transcript()?;
+        digest::digest(&digest::SHA256, &transcript)
+            .as_ref()
+            .try_into()
+            .context("a SHA-256 digest is 32 bytes wide")
+    }
+
+    /// Returns the byte-exact transcript the digest is taken over.
+    ///
+    /// The encoding is fixed here rather than left to each caller. "Length
+    /// prefixed" is not a specification, and a digest two `REview` builds
+    /// computed differently would turn every retry that crossed an update
+    /// into a reused-request-key refusal, so a golden vector holds this
+    /// still: every length and count is a fixed-width big-endian `u32`, so no
+    /// field boundary can shift, and nothing but the fields below enters it —
+    /// not the instance number, which the call allocates, and no timestamp.
+    fn transcript(&self) -> Result<Vec<u8>> {
+        let mut transcript = INSTALL_INTENT_DOMAIN.to_vec();
+        push_segment(&mut transcript, &self.host)?;
+        push_segment(&mut transcript, &self.target)?;
+        let (tag, value) = match &self.selector {
+            BuildSelector::Version(version) => (SELECTOR_VERSION_TAG, version),
+            BuildSelector::Commit(commit) => (SELECTOR_COMMIT_TAG, commit),
+        };
+        transcript.push(tag);
+        push_segment(&mut transcript, value)?;
+        transcript.push(match self.on_failure {
+            OnFailure::Rollback => ON_FAILURE_ROLLBACK_TAG,
+            OnFailure::Hold => ON_FAILURE_HOLD_TAG,
+        });
+        let Some(bind_addrs) = &self.bind_addrs else {
+            transcript.extend_from_slice(&ABSENT_BIND_ADDRS.to_be_bytes());
+            return Ok(transcript);
+        };
+        let count = u32::try_from(bind_addrs.len())
+            .ok()
+            .filter(|count| *count != ABSENT_BIND_ADDRS);
+        let count = count.context("too many bind addresses to encode")?;
+        transcript.extend_from_slice(&count.to_be_bytes());
+        // The caller's order is not the transcript's: two requests that name
+        // the same listeners in a different order are the same request. The
+        // address breaks a tie between two entries under one listener key,
+        // which the key alone leaves to the caller's order and so to chance.
+        let mut sorted: Vec<&(String, SocketAddr)> = bind_addrs.iter().collect();
+        sorted.sort_unstable_by(|left, right| {
+            left.0.cmp(&right.0).then_with(|| left.1.cmp(&right.1))
+        });
+        for (listener_key, addr) in sorted {
+            push_segment(&mut transcript, listener_key)?;
+            // `SocketAddr`'s own `Display`, named rather than re-derived: an
+            // IPv6 address in square brackets, lowercase and compressed as
+            // RFC 5952 says.
+            push_segment(&mut transcript, &addr.to_string())?;
+        }
+        Ok(transcript)
+    }
+}
+
+/// Why a request key could not be resolved to an attempt.
+#[derive(Debug, Error)]
+pub enum RequestKeyError {
+    /// The request key is not a `UUIDv4` in its canonical hyphenated form.
+    ///
+    /// Canonical is lowercase, so an otherwise well-formed key spelled with
+    /// uppercase hex digits lands here rather than becoming a second key for
+    /// the same UUID.
+    #[error(
+        "the request key {request_key} is not a UUIDv4 in canonical hyphenated form, which is lowercase"
+    )]
+    MalformedRequestKey {
+        /// The key as submitted.
+        request_key: String,
+    },
+    /// The request key already names an attempt submitted with a different
+    /// request.
+    ///
+    /// The refusal names the key rather than the difference, for the same
+    /// reason the row stores a digest rather than the fields: the difference
+    /// is not recoverable from what is held, and a client that reused a key
+    /// has a bug rather than a question.
+    #[error("the request key {request_key} was already used for a different request")]
+    RequestKeyReused {
+        /// The key as submitted.
+        request_key: String,
+    },
+    /// The lookup itself failed.
+    #[error("cannot resolve the request key")]
+    Read(#[source] anyhow::Error),
+}
+
+impl RequestKeyError {
+    /// Returns whether resubmitting the same request could still succeed.
+    ///
+    /// Only a failed read can: a malformed or reused key is a client bug, and
+    /// sending it again produces the same refusal.
+    #[must_use]
+    pub fn is_retryable(&self) -> bool {
+        matches!(self, Self::Read(_))
+    }
+}
+
+/// Returns whether `key` is a `UUIDv4` in its canonical hyphenated form.
+///
+/// Canonical means lowercase: RFC 9562 renders a UUID with `a`-`f` and
+/// nothing else, and a key is compared here as the byte string it is keyed
+/// by. Accepting uppercase would let one UUID arrive as two distinct request
+/// keys, each finding no row under the other and each starting its own
+/// install — the deduplication the key exists for, defeated by a spelling.
+///
+/// This is a shape check and nothing more. It does not stop a client sending
+/// a constant or replaying a stored value: not re-using a key is a client
+/// obligation, and the server cannot verify it.
+fn is_uuid_v4(key: &str) -> bool {
+    if key.len() != UUID_LEN {
+        return false;
+    }
+    let bytes = key.as_bytes();
+    for (index, byte) in bytes.iter().enumerate() {
+        if matches!(index, 8 | 13 | 18 | 23) {
+            if *byte != b'-' {
+                return false;
+            }
+        } else if !matches!(byte, b'0'..=b'9' | b'a'..=b'f') {
+            return false;
+        }
+    }
+    // The version nibble is `4`, and the variant nibble is one of `8`, `9`,
+    // `a` or `b`.
+    bytes.get(14) == Some(&b'4') && matches!(bytes.get(19), Some(b'8' | b'9' | b'a' | b'b'))
+}
+
 /// A package operation `REview` is executing on a host, or a pending host
 /// onboarding.
 ///
@@ -173,7 +420,10 @@ pub struct RetryPolicy {
 /// exactly when `action` is [`Action::Onboard`], so a reader never has to
 /// guess which absent encoding a given field uses. `backup_id` and
 /// `pre_update_version` are core-update-scoped rather than package-scoped, and
-/// use `Option` as each other does.
+/// use `Option` as each other does. `install_intent` and `finalized_at` are
+/// neither: each is absent for a state the row is genuinely in — an operation
+/// that dedupes on something other than a request digest, and an attempt that
+/// is not finished with — so each is an `Option` too.
 ///
 /// # Identity
 ///
@@ -188,8 +438,9 @@ pub struct RetryPolicy {
 ///
 /// # Writing
 ///
-/// Every write to this table has to maintain the three secondary indexes in
-/// the same transaction as the row, so the record is written only through the
+/// Every write to this table has to maintain the three secondary indexes, and
+/// the latest pointer where it finalizes the row, in the same transaction as
+/// the row, so the record is written only through the
 /// index-aware `upsert`, `delete`, `sweep_expired` and `prune` on
 /// `Table<'_, OperationAttempt>`. Nothing else can write it: the generic write
 /// API on [`Table`] — `put`, `insert`,
@@ -263,6 +514,21 @@ pub struct OperationAttempt {
     pub instance: Option<u32>,
     /// The operator's intent.
     pub action: Action,
+    /// The digest of the request an allocating install was submitted with, or
+    /// `None` for every other operation.
+    ///
+    /// It is what resolves a resubmitted request key: an equal digest returns
+    /// this row, which is what makes a retry idempotent, and a different one
+    /// is refused. Update, remove and onboard are keyed by a
+    /// `REview`-generated value that is unique by construction, so they have
+    /// nothing to compare and store none — and a stored `None` presented with
+    /// a digest is a refusal like any other mismatch. The write path holds
+    /// the two sides together: an [`Action::Install`] without a digest is
+    /// refused, as is a digest under any other action. An attempt that carries
+    /// one is keyed by the request key the client supplied, which is a `UUIDv4`
+    /// in canonical hyphenated form. See [`InstallIntent::digest`] and
+    /// [`Table::resolve_request_key`].
+    pub install_intent: Option<[u8; DIGEST_LEN]>,
     /// The digest of the package being applied. Empty for [`Action::Onboard`].
     pub package_digest: String,
     /// The version the selector resolved to. Empty for [`Action::Onboard`].
@@ -286,6 +552,21 @@ pub struct OperationAttempt {
     pub retry_policy: RetryPolicy,
     /// The terminal result, or `None` while the attempt is non-terminal.
     pub outcome: Option<Outcome>,
+    /// When the attempt was finished with, or `None` while it still has work
+    /// to do.
+    ///
+    /// It is `Some` **if and only if** `outcome` is terminal and
+    /// `cleanup_state` is empty — the fully discharged state, not merely the
+    /// terminal one — and [`Table::upsert`] refuses a row that says otherwise.
+    /// An apply that terminated `Failed` with a teardown still owed is
+    /// terminal and not finished, so it carries `None` and the retention
+    /// sweep cannot reach it; the later transaction that discharges the last
+    /// of its `cleanup_state` is what stamps this, together with the latest
+    /// pointer.
+    ///
+    /// `started_at` and `expires_at` cannot stand in for it: the first is
+    /// when the attempt began, and the second a deadline it may never reach.
+    pub finalized_at: Option<DateTime<Utc>>,
     /// The durable absolute deadline, set for every action.
     ///
     /// For an [`Action::Onboard`] it is the join-token wrap TTL at mint, so
@@ -340,6 +621,7 @@ impl OperationAttempt {
             target: Cow::Borrowed(&self.target),
             instance: self.instance,
             action: self.action,
+            install_intent: self.install_intent,
             package_digest: Cow::Borrowed(&self.package_digest),
             resolved_version: Cow::Borrowed(&self.resolved_version),
             resolved_commit: Cow::Borrowed(&self.resolved_commit),
@@ -348,6 +630,7 @@ impl OperationAttempt {
             started_at: self.started_at,
             retry_policy: self.retry_policy,
             outcome: self.outcome,
+            finalized_at: self.finalized_at,
             expires_at: self.expires_at,
             backup_id: self.backup_id,
             pre_update_version: self.pre_update_version.as_deref().map(Cow::Borrowed),
@@ -370,6 +653,7 @@ impl FromKeyValue for OperationAttempt {
             target: value.target.into_owned(),
             instance: value.instance,
             action: value.action,
+            install_intent: value.install_intent,
             package_digest: value.package_digest.into_owned(),
             resolved_version: value.resolved_version.into_owned(),
             resolved_commit: value.resolved_commit.into_owned(),
@@ -378,6 +662,7 @@ impl FromKeyValue for OperationAttempt {
             started_at: value.started_at,
             retry_policy: value.retry_policy,
             outcome: value.outcome,
+            finalized_at: value.finalized_at,
             expires_at: value.expires_at,
             backup_id: value.backup_id,
             pre_update_version: value.pre_update_version.map(Cow::into_owned),
@@ -398,6 +683,7 @@ struct Value<'a> {
     target: Cow<'a, str>,
     instance: Option<u32>,
     action: Action,
+    install_intent: Option<[u8; DIGEST_LEN]>,
     package_digest: Cow<'a, str>,
     resolved_version: Cow<'a, str>,
     resolved_commit: Cow<'a, str>,
@@ -406,6 +692,7 @@ struct Value<'a> {
     started_at: DateTime<Utc>,
     retry_policy: RetryPolicy,
     outcome: Option<Outcome>,
+    finalized_at: Option<DateTime<Utc>>,
     expires_at: DateTime<Utc>,
     backup_id: Option<u32>,
     pre_update_version: Option<Cow<'a, str>>,
@@ -419,20 +706,24 @@ struct Value<'a> {
 /// which keeps every call total.
 ///
 /// Neither bound reaches the attempts the prune keeps unconditionally — the
-/// most recent terminal attempt of each `(host, target, instance)` triple, and
-/// every attempt that is still non-terminal or still owes a cleanup.
+/// attempt the latest pointer names for each `(host, target, instance)`
+/// triple, and every attempt that is still non-terminal or still owes a
+/// cleanup.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct RetentionBound {
     /// The greatest age a prunable attempt may reach, measured from its
-    /// `started_at` against the instant handed to [`Table::prune`].
+    /// `finalized_at` against the instant handed to [`Table::prune`]. The
+    /// design this table implements puts it at 30 days.
     ///
     /// An attempt exactly this old is kept: the bound removes one only once
-    /// its age is greater. The measurement is from `started_at` and never from
-    /// `expires_at`, which is a per-action deadline and would order attempts
-    /// by the policy that set it rather than by when the work happened.
+    /// its age is greater. The measurement is from `finalized_at`, which is
+    /// when the attempt was finished with, and never from `started_at`, which
+    /// is when it began, or from `expires_at`, which is a per-action deadline
+    /// and would order attempts by the policy that set it rather than by when
+    /// the work happened.
     pub max_age: TimeDelta,
     /// How many terminal attempts one `(host, target, instance)` triple keeps,
-    /// counting down from the most recent.
+    /// counting down from the one the latest pointer names.
     ///
     /// A triple holding exactly this many terminal attempts loses none of
     /// them: the bound removes only the ones past the count. Every terminal
@@ -441,10 +732,14 @@ pub struct RetentionBound {
     pub max_terminal_per_triple: usize,
 }
 
-/// Appends a length-prefixed segment to an index key.
+/// Appends a length-prefixed segment to an index key or an install-intent
+/// transcript.
 ///
 /// The length prefix is what makes a composite key unambiguous: without it
-/// `("ab", "c")` and `("a", "bc")` would encode to the same bytes.
+/// `("ab", "c")` and `("a", "bc")` would encode to the same bytes. The
+/// transcript shares this function rather than restating the encoding beside
+/// itself, so the two cannot drift apart; the golden vector is what pins the
+/// bytes either of them produce.
 fn push_segment(key: &mut Vec<u8>, segment: &str) -> Result<()> {
     let len = u32::try_from(segment.len()).context("index key segment is too long")?;
     key.extend_from_slice(&len.to_be_bytes());
@@ -485,8 +780,17 @@ fn non_terminal_key(host: &str, target: &str, instance: Option<u32>) -> Result<V
     Ok(key)
 }
 
-/// The owed-cleanup key space of a `(target, host, instance)` triple.
-fn owed_cleanup_prefix(target: &str, host: &str, instance: Option<u32>) -> Result<Vec<u8>> {
+/// The owed-cleanup key of a `(target, host, instance)` triple.
+///
+/// The triple alone: the key carries no idempotency key to tell two attempts
+/// of one triple apart, so a second attempt owing a cleanup for it overwrites
+/// the entry rather than queueing beside it. That is the storage half of the
+/// invariant that at most one attempt owes a cleanup per triple, which is
+/// what lets [`Table::latest_attempt`] have a single row to return. That a
+/// second one never arises is not this crate's to enforce: the guard that
+/// refuses the update, remove or re-onboard which would create one lives in
+/// the repository driving that path.
+fn owed_cleanup_key(target: &str, host: &str, instance: Option<u32>) -> Result<Vec<u8>> {
     let mut key = vec![OWED_CLEANUP];
     push_segment(&mut key, target)?;
     push_segment(&mut key, host)?;
@@ -494,13 +798,15 @@ fn owed_cleanup_prefix(target: &str, host: &str, instance: Option<u32>) -> Resul
     Ok(key)
 }
 
-/// The owed-cleanup key of one attempt.
+/// The latest-pointer key of a `(host, target, instance)` triple.
 ///
-/// Several attempts may owe a cleanup for one triple, so the idempotency key
-/// is part of the key rather than the value alone.
-fn owed_cleanup_key(attempt: &OperationAttempt) -> Result<Vec<u8>> {
-    let mut key = owed_cleanup_prefix(&attempt.target, &attempt.host, attempt.instance)?;
-    push_segment(&mut key, &attempt.idempotency_key)?;
+/// It carries no lead byte, because it lives in a column family of its own:
+/// there is no record space beside it to stay clear of.
+fn latest_pointer_key(host: &str, target: &str, instance: Option<u32>) -> Result<Vec<u8>> {
+    let mut key = Vec::new();
+    push_segment(&mut key, host)?;
+    push_segment(&mut key, target)?;
+    push_instance(&mut key, instance);
     Ok(key)
 }
 
@@ -527,7 +833,11 @@ fn index_keys(attempt: &OperationAttempt) -> Result<Vec<Vec<u8>>> {
         )?);
     }
     if attempt.cleanup_state.is_some() {
-        keys.push(owed_cleanup_key(attempt)?);
+        keys.push(owed_cleanup_key(
+            &attempt.target,
+            &attempt.host,
+            attempt.instance,
+        )?);
     }
     Ok(keys)
 }
@@ -610,27 +920,129 @@ impl<'d> Table<'d, OperationAttempt> {
         self.get(idempotency_key)
     }
 
-    /// Returns every attempt that owes a cleanup for `(target, host,
-    /// instance)`, in idempotency-key order.
+    /// Returns the attempt that owes a cleanup for `(target, host, instance)`,
+    /// or `None` if the triple owes none.
     ///
-    /// A terminal attempt is included: the obligation outlives the outcome,
-    /// and this is what "a re-onboard is blocked while a teardown is owed"
-    /// reads.
+    /// At most one attempt can: the owed-cleanup key is the triple alone, so
+    /// a second write for it overwrites the first rather than queueing beside
+    /// it. A terminal attempt is included, because the obligation outlives
+    /// the outcome, and this is what "a re-onboard is blocked while a
+    /// teardown is owed" reads.
     ///
     /// # Errors
     ///
-    /// Returns an error if a stored value is invalid or the database operation
-    /// fails.
-    pub fn attempts_owing_cleanup(
+    /// Returns an error if the stored value is invalid or the database
+    /// operation fails.
+    pub fn attempt_owing_cleanup(
         &self,
         target: &str,
         host: &str,
         instance: Option<u32>,
-    ) -> Result<Vec<OperationAttempt>> {
-        let prefix = owed_cleanup_prefix(target, host, instance)?;
-        let mut attempts = self.attempts_in_index(&prefix, None)?;
-        attempts.sort_unstable_by(|a, b| a.idempotency_key.cmp(&b.idempotency_key));
-        Ok(attempts)
+    ) -> Result<Option<OperationAttempt>> {
+        let key = owed_cleanup_key(target, host, instance)?;
+        let Some(idempotency_key) = self.map.get(&key)? else {
+            return Ok(None);
+        };
+        let idempotency_key = std::str::from_utf8(idempotency_key.as_ref())
+            .context("the owed-cleanup index holds an invalid idempotency key")?;
+        self.get(idempotency_key)
+    }
+
+    /// Returns the current attempt for `(host, target, instance)`, or `None`
+    /// if the triple has none.
+    ///
+    /// This is one ordered lookup rather than three, and the order is the
+    /// rule:
+    ///
+    /// 1. a non-terminal row for the triple, if there is one. At most one
+    ///    can be, since the non-terminal index admits a single live attempt
+    ///    per triple — and an allocating install forms a fresh triple, so it
+    ///    never contends for the slot;
+    /// 2. otherwise the row that still owes a cleanup, if there is one. It
+    ///    carries no `finalized_at` and so no pointer entry, and consulting
+    ///    the pointer first would report a superseded attempt as current
+    ///    while newer work is still owed;
+    /// 3. otherwise the row the latest pointer names.
+    ///
+    /// What the three can overlap on is one row, not two: a single in-flight
+    /// attempt that is non-terminal and already carries the `cleanup_state`
+    /// armed before its mint appears under both indexes, and both steps name
+    /// it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a stored value is invalid, if the latest-pointer
+    /// column family is not registered, or if the database operation fails.
+    pub fn latest_attempt(
+        &self,
+        host: &str,
+        target: &str,
+        instance: Option<u32>,
+    ) -> Result<Option<OperationAttempt>> {
+        if let Some(live) = self.live_attempt(host, target, instance)? {
+            return Ok(Some(live));
+        }
+        if let Some(owing) = self.attempt_owing_cleanup(target, host, instance)? {
+            return Ok(Some(owing));
+        }
+        self.pointed_at_attempt(host, target, instance)
+    }
+
+    /// Returns the attempt a resubmitted request key names, or `None` if no
+    /// attempt is held under it.
+    ///
+    /// A key whose stored digest equals `install_intent` returns that row,
+    /// which is what makes a retry idempotent. A key whose stored digest
+    /// differs — a stored `None` included, since an operation that dedupes on
+    /// something else stores none — is refused with
+    /// [`RequestKeyError::RequestKeyReused`], because overwriting the first
+    /// row would destroy a live attempt's record along with the allocations
+    /// that hang off it.
+    ///
+    /// A `None` here is not a reservation, and it is not the decision to
+    /// create. Two requests sharing one key can both be told it is free, so
+    /// the install itself is written with [`Table::create_or_resolve`], which
+    /// makes that decision again under the key's own lock and in the
+    /// transaction that writes: the request that gets there second is
+    /// answered with the attempt the first created, or refused where the
+    /// request differs, rather than writing over it.
+    ///
+    /// The guarantee is bounded by retention: a client that replays a request
+    /// after the row is gone gets a new install, and there is no tombstone.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RequestKeyError::MalformedRequestKey`] if `request_key` is
+    /// not a `UUIDv4` in canonical hyphenated form,
+    /// [`RequestKeyError::RequestKeyReused`] if it names an attempt submitted
+    /// with a different request, and [`RequestKeyError::Read`] if the lookup
+    /// itself fails. Only the last is retryable.
+    pub fn resolve_request_key(
+        &self,
+        request_key: &str,
+        install_intent: &[u8; DIGEST_LEN],
+    ) -> Result<Option<OperationAttempt>, RequestKeyError> {
+        if !is_uuid_v4(request_key) {
+            return Err(RequestKeyError::MalformedRequestKey {
+                request_key: request_key.to_string(),
+            });
+        }
+        let Some(attempt) = self.get(request_key).map_err(RequestKeyError::Read)? else {
+            return Ok(None);
+        };
+        let reused = || RequestKeyError::RequestKeyReused {
+            request_key: request_key.to_string(),
+        };
+        let Some(stored) = attempt.install_intent else {
+            return Err(reused());
+        };
+        // A plain comparison: this digest is not a secret. It is taken over a
+        // request the client composed and still holds, so what its timing
+        // could leak is what the client sent in the same call.
+        if stored != *install_intent {
+            return Err(reused());
+        }
+        Ok(Some(attempt))
     }
 
     /// Returns every attempt whose deadline had passed at `instant`, the
@@ -650,8 +1062,85 @@ impl<'d> Table<'d, OperationAttempt> {
         self.attempts_in_index(&[EXPIRES_AT], Some(&cutoff))
     }
 
-    /// Stores an attempt, replacing any attempt already held under the same
-    /// idempotency key, and brings every index in line with it.
+    /// Creates the attempt under the request key it carries, or returns the
+    /// attempt already held under that key where the request is the same.
+    ///
+    /// This is how an install comes into existence. The three answers the
+    /// request key allows — create it, return the attempt already running
+    /// under it, refuse it as a reuse — are decided under that key's own lock
+    /// and in the transaction that writes, so the decision cannot be
+    /// overtaken between being made and being acted on. Two requests carrying
+    /// one key are both told it is free by
+    /// [`Table::resolve_request_key`], which answers outside any transaction;
+    /// here the one that reads second, or whose commit conflicts and re-runs,
+    /// finds the row the first wrote and is answered with it.
+    ///
+    /// The attempt returned is the one the store holds: this call's own row
+    /// where it created it, and the first request's row where it did not. A
+    /// caller told it did not create the row allocated an instance nothing
+    /// now refers to, and releases it.
+    ///
+    /// [`Table::upsert`] carries an attempt already held under its key
+    /// forward. It does not create one carrying an `install_intent`, so this
+    /// decision has no way around it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the attempt carries no `install_intent`, since
+    /// every other action is keyed by a value unique by construction and is
+    /// written with [`Table::upsert`], or if the database operation fails.
+    ///
+    /// A refusal that concerns the request key carries a [`RequestKeyError`]
+    /// a caller can downcast to: [`RequestKeyError::MalformedRequestKey`]
+    /// where the key is not a `UUIDv4` in canonical hyphenated form, and
+    /// [`RequestKeyError::RequestKeyReused`] where the key already names an
+    /// attempt submitted with a different request.
+    pub fn create_or_resolve(&self, attempt: &OperationAttempt) -> Result<OperationAttempt> {
+        let Some(install_intent) = attempt.install_intent else {
+            bail!(
+                "only an attempt carrying an install intent is created under a request key; every other action is written with `upsert`"
+            );
+        };
+        if !is_uuid_v4(&attempt.idempotency_key) {
+            return Err(RequestKeyError::MalformedRequestKey {
+                request_key: attempt.idempotency_key.clone(),
+            }
+            .into());
+        }
+        loop {
+            let txn = self.transaction();
+            if let Some(stored) = self.get_for_update(&attempt.idempotency_key, &txn)? {
+                // The key is taken, and nothing is written either way. An
+                // equal digest is this request resubmitted, and is answered
+                // with the attempt already held under it — the row keeps its
+                // record and the allocations that hang off it, and the
+                // instance this caller allocated is the one released.
+                // Anything else is a key used for a second request.
+                if stored.install_intent == Some(install_intent) {
+                    return Ok(stored);
+                }
+                return Err(RequestKeyError::RequestKeyReused {
+                    request_key: attempt.idempotency_key.clone(),
+                }
+                .into());
+            }
+            self.write_with_transaction(None, attempt, &txn)?;
+            match txn.commit() {
+                Ok(()) => return Ok(attempt.clone()),
+                Err(e) => {
+                    // The retry re-reads the key before anything else, so a
+                    // loser that conflicted on a create finds the winner's
+                    // row above rather than composing its write again.
+                    if !e.as_ref().starts_with("Resource busy:") {
+                        return Err(e).context("failed to store the operation attempt");
+                    }
+                }
+            }
+        }
+    }
+
+    /// Stores an attempt already held under its idempotency key, replacing it
+    /// and bringing every index in line with the new row.
     ///
     /// A re-drive or a resume therefore finalizes the existing row in place
     /// instead of adding a second row for the same logical operation. The row
@@ -660,11 +1149,45 @@ impl<'d> Table<'d, OperationAttempt> {
     /// leaves the owed-cleanup index in the same write that clears its
     /// `cleanup_state`.
     ///
+    /// A write that leaves the attempt terminal and owing nothing carries
+    /// `finalized_at`, and the write that first stamps it moves the latest
+    /// pointer for its triple in the same transaction, so the two can never
+    /// disagree. A later re-write of a row finalized earlier leaves the
+    /// pointer alone, so an idempotent replay cannot name a superseded
+    /// attempt current again. A write that moves the attempt to another
+    /// triple takes the pointer with it, dropping the entry it left behind in
+    /// that same transaction where it still names this attempt, so no triple
+    /// is left pointing at a row that has since moved off it.
+    ///
+    /// An attempt carrying an `install_intent` is not created here: a write
+    /// that finds no row under its key is refused, because deciding whether a
+    /// request key is free is [`Table::create_or_resolve`]'s to make under
+    /// that key's lock. Two requests sharing one key can both find it free in
+    /// [`Table::resolve_request_key`], and a create through this path would
+    /// let the second write over the attempt the first created. The row being
+    /// replaced is read under an exclusive lock and its `install_intent` must
+    /// match the one being written, so a write carrying a different request
+    /// is refused here too.
+    ///
     /// # Errors
     ///
-    /// Returns an error if the attempt's idempotency key is empty, if the
-    /// attempt is non-terminal and a different attempt is already live for its
-    /// `(host, target, instance)` triple, or if the database operation fails.
+    /// Returns an error if the attempt's idempotency key is empty, if
+    /// `finalized_at` is set for an attempt that is not fully discharged or
+    /// unset for one that is, if an install carries no `install_intent` or an
+    /// `install_intent` is carried by an attempt that is not an install, if
+    /// the attempt carries an `install_intent` and no row is held under its
+    /// key, which is [`Table::create_or_resolve`]'s decision to make, if
+    /// the attempt is non-terminal and a different
+    /// attempt is already live for its `(host, target, instance)` triple, if
+    /// the write moves the latest pointer and that column family is not
+    /// registered, or if the database operation fails.
+    ///
+    /// A refusal that concerns the request key carries a [`RequestKeyError`] a
+    /// caller can downcast to: [`RequestKeyError::MalformedRequestKey`] where
+    /// an `install_intent` is keyed by something other than a `UUIDv4` in
+    /// canonical hyphenated form, and [`RequestKeyError::RequestKeyReused`]
+    /// where the row already held under the key was submitted with a different
+    /// request.
     ///
     /// An empty key is rejected rather than stored because the shared table
     /// iterator skips one as indexed-table metadata, which would leave an
@@ -676,6 +1199,16 @@ impl<'d> Table<'d, OperationAttempt> {
         loop {
             let txn = self.transaction();
             let stored = self.get_for_update(&attempt.idempotency_key, &txn)?;
+            // Read under the key's lock, so this is the same reading the
+            // write below is composed against: an install the store holds no
+            // row for is a create, and a create is decided in
+            // `create_or_resolve` rather than here, where two requests
+            // carrying one key would each write their own allocation.
+            if stored.is_none() && attempt.install_intent.is_some() {
+                bail!(
+                    "an install attempt is created with `create_or_resolve`, which decides under the request key's lock whether it is free; `upsert` carries forward an attempt already held under its key"
+                );
+            }
             self.write_with_transaction(stored.as_ref(), attempt, &txn)?;
             match txn.commit() {
                 Ok(()) => return Ok(()),
@@ -689,7 +1222,7 @@ impl<'d> Table<'d, OperationAttempt> {
     }
 
     /// Deletes the attempt with the given idempotency key, along with its
-    /// index entries.
+    /// index entries and the latest pointer, where one names it.
     ///
     /// This is for a row that should never have existed; a completed attempt
     /// is finalized in place and retained until [`Table::prune`] decides
@@ -699,7 +1232,8 @@ impl<'d> Table<'d, OperationAttempt> {
     ///
     /// # Errors
     ///
-    /// Returns an error if the database operation fails.
+    /// Returns an error if the latest-pointer column family is not
+    /// registered, or if the database operation fails.
     pub fn delete(&self, idempotency_key: &str) -> Result<()> {
         loop {
             let txn = self.transaction();
@@ -716,12 +1250,27 @@ impl<'d> Table<'d, OperationAttempt> {
             // Reading them back out of the index space costs a scan of it,
             // which is the right trade on a repair path a sound row never
             // reaches.
-            let index_keys = match OperationAttempt::from_key_value(key, &value) {
-                Ok(attempt) => index_keys(&attempt)?,
-                Err(_) => self.index_keys_naming(key)?,
+            let (index_keys, pointer_keys) = match OperationAttempt::from_key_value(key, &value) {
+                Ok(attempt) => (index_keys(&attempt)?, self.pointer_keys_held_by(&attempt)?),
+                Err(_) => (self.index_keys_naming(key)?, self.pointer_keys_naming(key)?),
             };
             for index_key in index_keys {
+                // The owed-cleanup key carries no idempotency key, so the
+                // entry this row wrote may since have come to name another
+                // attempt of the same triple. Dropping it then would lose
+                // that attempt's obligation silently, so an entry goes only
+                // while it still names this row.
+                let holder = txn
+                    .get_for_update_cf(self.map.cf, &index_key, EXCLUSIVE)
+                    .context("cannot read the index")?;
+                if holder.is_some_and(|holder| holder != key) {
+                    continue;
+                }
                 self.map.delete_with_transaction(&index_key, &txn)?;
+            }
+            let latest = self.latest_pointer()?;
+            for pointer_key in pointer_keys {
+                latest.delete_with_transaction(&pointer_key, &txn)?;
             }
             self.map.delete_with_transaction(key, &txn)?;
             match txn.commit() {
@@ -738,9 +1287,10 @@ impl<'d> Table<'d, OperationAttempt> {
     /// Finalizes every non-terminal attempt whose deadline had passed at
     /// `instant`, and returns how many it finalized.
     ///
-    /// A finalized attempt gets `outcome = Some(Outcome::Failed)` and nothing
-    /// else: `phase`, `retry_policy` and above all `cleanup_state` are left as
-    /// they were. Clearing an owed cleanup here is what would orphan a minted
+    /// A finalized attempt gets `outcome = Some(Outcome::Failed)`, and
+    /// `finalized_at` together with the latest pointer where it owes no
+    /// cleanup: `phase`, `retry_policy` and above all `cleanup_state` are left
+    /// as they were. Clearing an owed cleanup here is what would orphan a minted
     /// bootroot identity, so the sweep never does it. The attempt leaves the
     /// non-terminal index, which frees the single-flight slot, and stays in
     /// the owed-cleanup index for `review` to discharge once the registrar is
@@ -752,8 +1302,9 @@ impl<'d> Table<'d, OperationAttempt> {
     ///
     /// # Errors
     ///
-    /// Returns an error if a stored value is invalid or the database operation
-    /// fails.
+    /// Returns an error if a stored value is invalid, if the sweep stamps
+    /// `finalized_at` and the latest-pointer column family is not registered,
+    /// or if the database operation fails.
     pub fn sweep_expired(&self, instant: DateTime<Utc>) -> Result<usize> {
         loop {
             let txn = self.transaction();
@@ -775,6 +1326,13 @@ impl<'d> Table<'d, OperationAttempt> {
                 }
                 let mut failed = stored.clone();
                 failed.outcome = Some(Outcome::Failed);
+                // Nothing owed means the attempt is finished with, so the
+                // same write stamps it and moves the pointer. One that still
+                // owes a cleanup is terminal and not finished, and stays out
+                // of reach of the retention sweep until the discharge.
+                if failed.cleanup_state.is_none() {
+                    failed.finalized_at = Some(instant);
+                }
                 self.write_with_transaction(Some(&stored), &failed, &txn)?;
                 finalized += 1;
             }
@@ -793,18 +1351,24 @@ impl<'d> Table<'d, OperationAttempt> {
     /// how many it removed.
     ///
     /// Two keep-rules come first, and they are a floor rather than a
-    /// preference: the most recent terminal attempt of each `(host, target,
-    /// instance)` triple is kept however far it is past either bound, and an
-    /// attempt that is still non-terminal or still owes a `cleanup_state` is
-    /// never removed at all. Only a terminal attempt that is not the most
-    /// recent of its triple is ever eligible, and it goes once it exceeds
+    /// preference: the attempt the latest pointer names for each `(host,
+    /// target, instance)` triple is kept however far it is past either bound,
+    /// and an attempt that is still non-terminal or still owes a
+    /// `cleanup_state` is never removed at all. Only a terminal attempt that
+    /// the pointer does not name is ever eligible, and it goes once it exceeds
     /// [`RetentionBound::max_age`] or [`RetentionBound::max_terminal_per_triple`].
     /// An attempt exactly at either bound is kept.
     ///
-    /// "Most recent" is the greatest `(started_at, idempotency_key)` pair: the
-    /// greatest `started_at`, and on a tie the greater idempotency key, which
-    /// is unique and therefore makes the order total. Age is measured from
-    /// `started_at` too, never from `expires_at`.
+    /// "The current attempt" is the pointer's answer and nothing else, which
+    /// is the finalization that committed last. Nothing here compares
+    /// timestamps to find it, so two attempts finalized in the same nanosecond
+    /// need no tie-break. Where the pointer names nothing — no attempt of the
+    /// triple has been finalized — the rule falls back to the greatest
+    /// `(finalized_at, idempotency_key)` pair, which is also the order the
+    /// count bound counts down from.
+    ///
+    /// Because it never removes the row the pointer names, the delete is a
+    /// single row and needs no pairing with a pointer write.
     ///
     /// Every input the outcome depends on is a parameter of the call: the
     /// prune reads no wall clock and no configuration, so running it twice
@@ -812,8 +1376,8 @@ impl<'d> Table<'d, OperationAttempt> {
     ///
     /// # Errors
     ///
-    /// Returns an error if a stored value is invalid or the database operation
-    /// fails.
+    /// Returns an error if a stored value is invalid, if the latest-pointer
+    /// column family is not registered, or if the database operation fails.
     pub fn prune(&self, bound: RetentionBound, instant: DateTime<Utc>) -> Result<usize> {
         loop {
             let txn = self.transaction();
@@ -823,6 +1387,15 @@ impl<'d> Table<'d, OperationAttempt> {
                     continue;
                 };
                 if stored != attempt {
+                    continue;
+                }
+                // The ranking above read the pointer outside this
+                // transaction. Reading it again here locks it, so a
+                // finalization that has moved it onto this attempt since is
+                // seen, and one that moves it during the commit fails the
+                // commit rather than leaving the pointer naming a row this
+                // delete took.
+                if self.pointer_names(&stored, &txn)? {
                     continue;
                 }
                 self.remove_with_transaction(&stored, &txn)?;
@@ -865,20 +1438,37 @@ impl<'d> Table<'d, OperationAttempt> {
         }
 
         let mut prunable = Vec::new();
-        for mut attempts in by_triple.into_values() {
-            // Greatest `(started_at, idempotency_key)` first, so the attempt
-            // the first keep-rule holds on to is the one at rank 1.
+        for ((host, target, instance), mut attempts) in by_triple {
+            // Greatest `(finalized_at, idempotency_key)` first, which is the
+            // order the count bound counts down from.
             attempts.sort_unstable_by(|a, b| {
-                b.started_at
-                    .cmp(&a.started_at)
+                b.finalized_at
+                    .cmp(&a.finalized_at)
                     .then_with(|| b.idempotency_key.cmp(&a.idempotency_key))
             });
+            // The current attempt is whichever the pointer names, whatever
+            // its timestamps say, so it takes rank 1 from whoever sorted
+            // there. Only where the pointer names nothing does the order
+            // above decide which attempt the first keep-rule holds on to.
+            if let Some(pointed_at) = self.pointed_at_key(&host, &target, instance)?
+                && let Some(index) = attempts
+                    .iter()
+                    .position(|attempt| attempt.idempotency_key == pointed_at)
+            {
+                let current = attempts.remove(index);
+                attempts.insert(0, current);
+            }
             for (index, attempt) in attempts.into_iter().enumerate() {
                 let rank = index + 1;
                 if rank == 1 || attempt.cleanup_state.is_some() {
                     continue;
                 }
-                let too_old = instant.signed_duration_since(attempt.started_at) > bound.max_age;
+                // Every attempt past this point is terminal and owes nothing,
+                // so it carries a finalization instant.
+                let Some(finalized_at) = attempt.finalized_at else {
+                    continue;
+                };
+                let too_old = instant.signed_duration_since(finalized_at) > bound.max_age;
                 let too_many = rank > bound.max_terminal_per_triple;
                 if too_old || too_many {
                     prunable.push(attempt);
@@ -975,12 +1565,93 @@ impl<'d> Table<'d, OperationAttempt> {
         new: &OperationAttempt,
         txn: &Transaction<'_, OptimisticTransactionDB>,
     ) -> Result<()> {
+        if new.finalized_at.is_some() != new.is_fully_discharged() {
+            bail!(
+                "an operation attempt carries a finalization instant exactly when it is terminal and owes no cleanup"
+            );
+        }
+        // An install is the one action submitted with a request the client
+        // holds across retries, so it is the one action that records that
+        // request's digest. Without it the resubmission has nothing to
+        // compare and allocates a second instance instead of returning the
+        // first; with it under any other action there is nothing the digest
+        // could ever be compared against.
+        if (new.action == Action::Install) != new.install_intent.is_some() {
+            bail!(
+                "an install records the digest of the request it was submitted with, and no other action does"
+            );
+        }
+        // An install is keyed by the request key the client supplied, and that
+        // is the only shape `resolve_request_key` can reach a row under: a key
+        // it refuses as malformed leaves the row unfindable.
+        if new.install_intent.is_some() && !is_uuid_v4(&new.idempotency_key) {
+            return Err(RequestKeyError::MalformedRequestKey {
+                request_key: new.idempotency_key.clone(),
+            }
+            .into());
+        }
+        // `resolve_request_key` answers before the write and outside it, so
+        // two requests carrying one key can both find it free. The row this
+        // write replaces is read under an exclusive lock, and the loser of
+        // that race re-reads the winner's row instead of committing over it,
+        // so comparing the digests here is what makes the create-or-resolve
+        // decision atomic with the write: the second request is refused as a
+        // reuse rather than replacing the first attempt's record and stranding
+        // the allocations that hang off it. An attempt's own re-writes carry
+        // the digest unchanged, and a change in whether one is carried at all
+        // is a change of action, which is a different request too.
+        if let Some(stored) = stored
+            && stored.install_intent != new.install_intent
+        {
+            return Err(RequestKeyError::RequestKeyReused {
+                request_key: new.idempotency_key.clone(),
+            }
+            .into());
+        }
         let keys = index_keys(new)?;
         if let Some(stored) = stored {
             for key in index_keys(stored)? {
-                if !keys.contains(&key) {
-                    self.map.delete_with_transaction(&key, txn)?;
+                if keys.contains(&key) {
+                    continue;
                 }
+                // The owed-cleanup key carries no idempotency key, so a
+                // second attempt owing a cleanup for one triple overwrites
+                // the entry. Dropping an entry that has come to name another
+                // row would lose that row's obligation silently, so a stale
+                // key goes only while it still names this attempt.
+                let holder = txn
+                    .get_for_update_cf(self.map.cf, &key, EXCLUSIVE)
+                    .context("cannot read the index")?;
+                if holder.is_some_and(|holder| holder != new.idempotency_key.as_bytes()) {
+                    continue;
+                }
+                self.map.delete_with_transaction(&key, txn)?;
+            }
+        }
+        // The pointer lives in a column family of its own, so it is not among
+        // the index keys above and nothing there sweeps it up. A row that
+        // moves to another triple leaves the pointer it stamped naming it,
+        // and `latest_attempt` for the triple it left would answer with a row
+        // whose own fields name a different one. Where the family is not
+        // registered there is no pointer to strand, so its absence is not an
+        // error here — unlike a finalization, which would lose the record of
+        // which attempt is current.
+        let pointer_key = latest_pointer_key(&new.host, &new.target, new.instance)?;
+        let vacated = match stored {
+            Some(stored) => {
+                let vacated = latest_pointer_key(&stored.host, &stored.target, stored.instance)?;
+                (vacated != pointer_key).then_some(vacated)
+            }
+            None => None,
+        };
+        if let Some(vacated) = &vacated
+            && let Some(latest) = Map::open(self.map.db, super::OPERATION_ATTEMPT_LATEST)
+        {
+            let holder = txn
+                .get_for_update_cf(latest.cf, vacated, EXCLUSIVE)
+                .context("cannot read the latest pointer")?;
+            if holder.is_some_and(|holder| holder == new.idempotency_key.as_bytes()) {
+                latest.delete_with_transaction(vacated, txn)?;
             }
         }
         // Read after that removal, so that a row moving to another triple, or
@@ -1006,7 +1677,135 @@ impl<'d> Table<'d, OperationAttempt> {
             self.map
                 .put_with_transaction(&key, new.idempotency_key.as_bytes(), txn)?;
         }
+        // The row and the pointer are two column families and one
+        // transaction. A crash between them would leave a pointer naming an
+        // attempt that is no longer current, silently, because nothing else
+        // records which attempt is latest.
+        //
+        // The write that stamps the finalization is what moves the pointer,
+        // along with one that carries an already-finalized row to another
+        // triple, which is the one other way a triple's latest attempt
+        // changes. A re-write of a row finalized earlier is neither: it
+        // finalizes nothing, and stamping the pointer again would name it
+        // current over an attempt that finalized after it.
+        let newly_finalized = stored.is_none_or(|stored| stored.finalized_at.is_none());
+        if new.finalized_at.is_some() && (newly_finalized || vacated.is_some()) {
+            self.latest_pointer()?.put_with_transaction(
+                &pointer_key,
+                new.idempotency_key.as_bytes(),
+                txn,
+            )?;
+        }
         Ok(())
+    }
+
+    /// Returns the column family holding the latest pointers.
+    ///
+    /// It is registered by the migration that bumps the database format, not
+    /// by this table, so a store predating that bump has none. Reporting its
+    /// absence is the whole point: a finalization that quietly skipped the
+    /// pointer would leave the triple with no record of which attempt is
+    /// current, which is exactly what the pointer exists to hold.
+    fn latest_pointer(&self) -> Result<Map<'_>> {
+        Map::open(self.map.db, super::OPERATION_ATTEMPT_LATEST)
+            .context("the latest operation attempt column family is not registered")
+    }
+
+    /// Returns the idempotency key the latest pointer holds for the triple.
+    fn pointed_at_key(
+        &self,
+        host: &str,
+        target: &str,
+        instance: Option<u32>,
+    ) -> Result<Option<String>> {
+        let key = latest_pointer_key(host, target, instance)?;
+        let latest = self.latest_pointer()?;
+        let Some(idempotency_key) = latest.get(&key)? else {
+            return Ok(None);
+        };
+        Ok(Some(
+            std::str::from_utf8(idempotency_key.as_ref())
+                .context("the latest pointer holds an invalid idempotency key")?
+                .to_string(),
+        ))
+    }
+
+    /// Returns the attempt the latest pointer names for the triple.
+    ///
+    /// Private, because the pointer is the last of the three steps
+    /// [`Table::latest_attempt`] takes and not an answer on its own: a
+    /// terminal attempt still owing a cleanup has no pointer entry, so a
+    /// reader that came here directly would be told about a superseded
+    /// attempt while newer work is still owed.
+    fn pointed_at_attempt(
+        &self,
+        host: &str,
+        target: &str,
+        instance: Option<u32>,
+    ) -> Result<Option<OperationAttempt>> {
+        let Some(idempotency_key) = self.pointed_at_key(host, target, instance)? else {
+            return Ok(None);
+        };
+        self.get(&idempotency_key)
+    }
+
+    /// Returns the latest-pointer key of the attempt's triple, if the pointer
+    /// there names this attempt, and nothing otherwise.
+    ///
+    /// At most one pointer can name a row: the pointer is keyed by the
+    /// triple, and a row names one triple.
+    fn pointer_keys_held_by(&self, attempt: &OperationAttempt) -> Result<Vec<Vec<u8>>> {
+        let pointed_at = self.pointed_at_key(&attempt.host, &attempt.target, attempt.instance)?;
+        if pointed_at.as_deref() != Some(attempt.idempotency_key.as_str()) {
+            return Ok(Vec::new());
+        }
+        Ok(vec![latest_pointer_key(
+            &attempt.host,
+            &attempt.target,
+            attempt.instance,
+        )?])
+    }
+
+    /// Returns whether the latest pointer names this attempt, locking the
+    /// pointer entry for the duration of `txn`.
+    ///
+    /// This is the transactional form of the rank-1 keep-rule that
+    /// [`Table::prunable`] applies, and it is what makes "the prune never
+    /// removes the row the pointer names" hold against a concurrent
+    /// finalization rather than only against the snapshot the ranking read.
+    fn pointer_names(
+        &self,
+        attempt: &OperationAttempt,
+        txn: &Transaction<'_, OptimisticTransactionDB>,
+    ) -> Result<bool> {
+        let key = latest_pointer_key(&attempt.host, &attempt.target, attempt.instance)?;
+        let latest = self.latest_pointer()?;
+        let Some(named) = txn
+            .get_for_update_cf(latest.cf, &key, EXCLUSIVE)
+            .context("cannot read the latest pointer")?
+        else {
+            return Ok(false);
+        };
+        Ok(named == attempt.idempotency_key.as_bytes())
+    }
+
+    /// Returns every latest-pointer key naming `idempotency_key`.
+    ///
+    /// This scans the pointer family, so it is only for the repair path in
+    /// [`Table::delete`], where the row is unreadable and there is nothing
+    /// left to derive its triple from.
+    fn pointer_keys_naming(&self, idempotency_key: &[u8]) -> Result<Vec<Vec<u8>>> {
+        let latest = self.latest_pointer()?;
+        let iter = latest.db.iterator_cf(latest.cf, IteratorMode::Start);
+
+        let mut keys = Vec::new();
+        for entry in iter {
+            let (key, value) = entry.context("cannot read the latest pointer")?;
+            if value.as_ref() == idempotency_key {
+                keys.push(key.to_vec());
+            }
+        }
+        Ok(keys)
     }
 
     /// Deletes an attempt and every index entry it owns.
@@ -1030,6 +1829,14 @@ mod tests {
 
     const HOST: &str = "host-a.example";
     const TARGET: &str = "piglet";
+
+    /// A request key in the form the client-supplied one takes: a `UUIDv4`,
+    /// canonical and hyphenated, and so lowercase.
+    const REQUEST_KEY: &str = "9d5cb6e0-0a3f-41de-9f0a-6b0f4e5c1a27";
+    const OTHER_REQUEST_KEY: &str = "3f2c8b41-5e6d-4a7b-b8c9-0d1e2f3a4b5c";
+
+    /// The digest of [`golden_intent`], which pins the transcript.
+    const GOLDEN_DIGEST: &str = "4b3062211c665de1d18371cdc00bd92ee3ca139c40bd8e9c0c8cbe138295b6d1";
 
     const ACTIONS: [Action; 4] = [
         Action::Install,
@@ -1068,12 +1875,15 @@ mod tests {
             let mut opts = rocksdb::Options::default();
             opts.create_if_missing(true);
             opts.create_missing_column_families(true);
-            let db = OptimisticTransactionDB::open_cf(
-                &opts,
-                dir.path().join("states.db"),
-                super::super::MAP_NAMES,
-            )
-            .unwrap();
+            // The latest-pointer family is not in `MAP_NAMES`: the migration
+            // that bumps the database format registers it, so a test opens it
+            // beside the rest here rather than waiting for that.
+            let names: Vec<&str> = super::super::MAP_NAMES
+                .into_iter()
+                .chain([super::super::OPERATION_ATTEMPT_LATEST])
+                .collect();
+            let db = OptimisticTransactionDB::open_cf(&opts, dir.path().join("states.db"), names)
+                .unwrap();
             Self {
                 db,
                 _dir: dir,
@@ -1093,6 +1903,18 @@ mod tests {
                 .map(|entry| entry.unwrap().0.to_vec())
                 .collect()
         }
+
+        /// Every idempotency key the latest pointers name.
+        fn pointed_at_keys(&self) -> Vec<String> {
+            let cf = self
+                .db
+                .cf_handle(super::super::OPERATION_ATTEMPT_LATEST)
+                .unwrap();
+            self.db
+                .iterator_cf(cf, IteratorMode::Start)
+                .map(|entry| String::from_utf8(entry.unwrap().1.to_vec()).unwrap())
+                .collect()
+        }
     }
 
     fn timestamp(secs: i64) -> DateTime<Utc> {
@@ -1100,13 +1922,19 @@ mod tests {
     }
 
     /// A module attempt: the instance dimension applies, so it is recorded.
+    ///
+    /// It is an update rather than an install, because an update is keyed by
+    /// a `REview`-generated value and carries no request digest — which is
+    /// what lets the tests below key one by a readable name. An install is
+    /// built by [`install_attempt`].
     fn module_attempt(idempotency_key: &str) -> OperationAttempt {
         OperationAttempt {
             idempotency_key: idempotency_key.to_string(),
             host: "host-a.example".to_string(),
             target: "sensor".to_string(),
             instance: Some(1),
-            action: Action::Install,
+            action: Action::Update,
+            install_intent: None,
             package_digest: "sha256:aaa".to_string(),
             resolved_version: "1.2.3".to_string(),
             resolved_commit: "c0ffee".to_string(),
@@ -1119,6 +1947,7 @@ mod tests {
                 backoff_seconds: 30,
             },
             outcome: None,
+            finalized_at: None,
             expires_at: timestamp(1_700_086_400),
             backup_id: None,
             pre_update_version: None,
@@ -1133,6 +1962,7 @@ mod tests {
             target: "review".to_string(),
             instance: None,
             action: Action::Update,
+            install_intent: None,
             package_digest: "sha256:bbb".to_string(),
             resolved_version: "0.47.0".to_string(),
             resolved_commit: "deadbeef".to_string(),
@@ -1145,6 +1975,7 @@ mod tests {
                 backoff_seconds: 60,
             },
             outcome: None,
+            finalized_at: None,
             expires_at: timestamp(1_700_100_000),
             backup_id: None,
             pre_update_version: None,
@@ -1160,6 +1991,7 @@ mod tests {
             target: String::new(),
             instance: None,
             action: Action::Onboard,
+            install_intent: None,
             package_digest: String::new(),
             resolved_version: String::new(),
             resolved_commit: String::new(),
@@ -1172,6 +2004,7 @@ mod tests {
                 backoff_seconds: 0,
             },
             outcome: None,
+            finalized_at: None,
             expires_at: timestamp(1_700_003_800),
             backup_id: None,
             pre_update_version: None,
@@ -1192,9 +2025,27 @@ mod tests {
         attempt
     }
 
-    /// A terminal attempt on the given triple, with `started_at` and
-    /// `expires_at` set apart so that a test can tell which of the two an
-    /// implementation ordered by.
+    /// An install on the given triple: keyed by the request key the client
+    /// supplied and carrying the digest of the request it was submitted with,
+    /// which is the only shape the store accepts an install in.
+    fn install_attempt(
+        request_key: &str,
+        host: &str,
+        target: &str,
+        instance: Option<u32>,
+    ) -> OperationAttempt {
+        let mut attempt = live_attempt(request_key, host, target, instance);
+        attempt.action = Action::Install;
+        attempt.install_intent = Some(golden_intent().digest().unwrap());
+        attempt
+    }
+
+    /// A terminal attempt on the given triple, owing nothing, with
+    /// `started_at` and `expires_at` set apart so that a test can tell which
+    /// of the two an implementation ordered by.
+    ///
+    /// It is finalized at its `started_at`, so a test that cares about the
+    /// two separately moves `finalized_at` itself.
     fn terminal_attempt(
         idempotency_key: &str,
         host: &str,
@@ -1207,7 +2058,16 @@ mod tests {
         attempt.phase = Phase::Completed;
         attempt.outcome = Some(Outcome::Succeeded);
         attempt.started_at = timestamp(started_at);
+        attempt.finalized_at = Some(timestamp(started_at));
         attempt.expires_at = timestamp(expires_at);
+        attempt
+    }
+
+    /// The same attempt, owing a cleanup: the obligation is what takes the
+    /// finalization instant back off it.
+    fn owing(mut attempt: OperationAttempt, cleanup_state: CleanupState) -> OperationAttempt {
+        attempt.cleanup_state = Some(cleanup_state);
+        attempt.finalized_at = None;
         attempt
     }
 
@@ -1220,6 +2080,36 @@ mod tests {
 
     fn round_trip(attempt: &OperationAttempt) -> OperationAttempt {
         OperationAttempt::from_key_value(attempt.record_key(), &attempt.record_value()).unwrap()
+    }
+
+    /// How many entries the owed-cleanup key space holds.
+    fn owed_cleanup_entries(test_db: &TestDb) -> usize {
+        test_db
+            .raw_keys()
+            .into_iter()
+            .filter(|key| key.first() == Some(&OWED_CLEANUP))
+            .count()
+    }
+
+    /// The request the golden vector is taken over.
+    ///
+    /// The listener keys are deliberately out of order and the addresses of
+    /// both families, so the vector pins the sort and the rendering as well
+    /// as the field order.
+    fn golden_intent() -> InstallIntent {
+        InstallIntent {
+            host: "host-a.example".to_string(),
+            target: "giganto".to_string(),
+            selector: BuildSelector::Version("1.2.3".to_string()),
+            on_failure: OnFailure::Rollback,
+            bind_addrs: Some(vec![
+                (
+                    "ingest".to_string(),
+                    "[2001:DB8:0:0:0:0:0:1]:38370".parse().unwrap(),
+                ),
+                ("graphql".to_string(), "192.168.0.1:8443".parse().unwrap()),
+            ]),
+        }
     }
 
     fn keys(
@@ -1247,6 +2137,7 @@ mod tests {
         second.host = "host-z.example".to_string();
         second.phase = Phase::Completed;
         second.outcome = Some(Outcome::Succeeded);
+        second.finalized_at = Some(timestamp(1_700_000_100));
         second.retry_policy.attempts_made = 2;
         table.upsert(&second).unwrap();
 
@@ -1260,8 +2151,10 @@ mod tests {
         assert_eq!(table.get("op-missing").unwrap(), None);
         table.delete("op-1").unwrap();
         assert_eq!(table.get("op-1").unwrap(), None);
-        // The row's index entries go with it, leaving nothing behind.
+        // The row's index entries and the pointer that named it go with it,
+        // leaving nothing behind.
         assert!(test_db.raw_keys().is_empty());
+        assert!(test_db.pointed_at_keys().is_empty());
     }
 
     #[test]
@@ -1338,9 +2231,11 @@ mod tests {
         let mut first_commit = module_attempt("op-commit-1");
         first_commit.resolved_commit = "1111111".to_string();
         first_commit.outcome = Some(Outcome::Succeeded);
+        first_commit.finalized_at = Some(timestamp(1_700_000_300));
         let mut second_commit = module_attempt("op-commit-2");
         second_commit.resolved_commit = "2222222".to_string();
         second_commit.outcome = Some(Outcome::Succeeded);
+        second_commit.finalized_at = Some(timestamp(1_700_000_400));
 
         for attempt in [&on_host_a, &on_host_b, &first_commit, &second_commit] {
             table.upsert(attempt).unwrap();
@@ -1465,6 +2360,16 @@ mod tests {
         table
             .upsert(&live_attempt("op-2", HOST, TARGET, Some(1)))
             .unwrap();
+
+        // The same holds for the pointer, which a corrupt row cannot name
+        // either: it is found by scanning for the key it holds.
+        let finalized = terminal_attempt("op-3", HOST, TARGET, Some(2), 1_000, 9_000);
+        table.upsert(&finalized).unwrap();
+        assert_eq!(test_db.pointed_at_keys(), ["op-3"]);
+        table.map.put(b"op-3", b"not a stored value").unwrap();
+        table.delete("op-3").unwrap();
+        assert!(test_db.pointed_at_keys().is_empty());
+        assert_eq!(table.latest_attempt(HOST, TARGET, Some(2)).unwrap(), None);
     }
 
     #[test]
@@ -1581,6 +2486,7 @@ mod tests {
         let mut finalized = table.get("op-finalize").unwrap().unwrap();
         finalized.phase = Phase::Completed;
         finalized.outcome = Some(Outcome::Succeeded);
+        finalized.finalized_at = Some(timestamp(1_700_000_900));
         finalized.retry_policy.attempts_made = 1;
         table.upsert(&finalized).unwrap();
 
@@ -1618,6 +2524,7 @@ mod tests {
         // The slot is free the moment its holder becomes terminal.
         let mut finished = redriven;
         finished.outcome = Some(Outcome::Succeeded);
+        finished.finalized_at = Some(timestamp(1_700_000_900));
         table.upsert(&finished).unwrap();
         assert_eq!(table.live_attempt(HOST, TARGET, Some(1)).unwrap(), None);
 
@@ -1717,12 +2624,11 @@ mod tests {
         let test_db = TestDb::new();
         let table = test_db.table();
 
-        let mut attempt = live_attempt("op-install", HOST, TARGET, Some(1));
-        attempt.action = Action::Install;
+        let mut attempt = install_attempt(REQUEST_KEY, HOST, TARGET, Some(1));
         attempt.started_at = timestamp(1_700_000_000);
         attempt.expires_at = timestamp(1_700_000_500);
         attempt.cleanup_state = Some(CleanupState::PendingIdentityTeardown);
-        table.upsert(&attempt).unwrap();
+        table.create_or_resolve(&attempt).unwrap();
 
         let instant = timestamp(1_700_000_501);
         assert_eq!(
@@ -1731,7 +2637,7 @@ mod tests {
         );
         assert_eq!(table.sweep_expired(instant).unwrap(), 1);
 
-        let swept = table.get("op-install").unwrap().unwrap();
+        let swept = table.get(REQUEST_KEY).unwrap().unwrap();
         assert_eq!(swept.outcome, Some(Outcome::Failed));
         // The sweep records the outcome and nothing else.
         assert_eq!(swept.phase, attempt.phase);
@@ -1746,13 +2652,16 @@ mod tests {
             Some(CleanupState::PendingIdentityTeardown)
         );
         assert_eq!(
-            table.attempts_owing_cleanup(TARGET, HOST, Some(1)).unwrap(),
-            vec![swept.clone()]
+            table.attempt_owing_cleanup(TARGET, HOST, Some(1)).unwrap(),
+            Some(swept.clone())
         );
+        // It is terminal and not finished with, so nothing stamped it and the
+        // retention sweep cannot reach it.
+        assert_eq!(swept.finalized_at, None);
 
         // Running the sweep again over swept state finalizes nothing.
         assert_eq!(table.sweep_expired(instant).unwrap(), 0);
-        assert_eq!(table.get("op-install").unwrap(), Some(swept));
+        assert_eq!(table.get(REQUEST_KEY).unwrap(), Some(swept));
     }
 
     #[test]
@@ -1789,15 +2698,14 @@ mod tests {
         let table = test_db.table();
 
         let onboard = onboard_attempt("op-onboard");
-        let mut install = live_attempt("op-install", HOST, TARGET, Some(1));
-        install.action = Action::Install;
+        let mut install = install_attempt(REQUEST_KEY, HOST, TARGET, Some(1));
         install.expires_at = onboard.expires_at;
         table.upsert(&onboard).unwrap();
-        table.upsert(&install).unwrap();
+        table.create_or_resolve(&install).unwrap();
 
         // The deadline belongs to every action, so one sweep takes both.
         assert_eq!(table.sweep_expired(onboard.expires_at).unwrap(), 2);
-        for key in ["op-onboard", "op-install"] {
+        for key in ["op-onboard", REQUEST_KEY] {
             assert_eq!(
                 table.get(key).unwrap().unwrap().outcome,
                 Some(Outcome::Failed)
@@ -1814,40 +2722,39 @@ mod tests {
         let test_db = TestDb::new();
         let table = test_db.table();
 
-        let mut owing = live_attempt("op-owing", HOST, TARGET, Some(1));
-        owing.cleanup_state = Some(CleanupState::PendingDeregister);
+        let mut owing_attempt = owing(
+            live_attempt("op-owing", HOST, TARGET, Some(1)),
+            CleanupState::PendingDeregister,
+        );
         let owes_nothing = live_attempt("op-clear", HOST, TARGET, Some(2));
-        let mut terminal_owing =
-            terminal_attempt("op-terminal", HOST, TARGET, Some(3), 1_000, 9_000);
-        terminal_owing.cleanup_state = Some(CleanupState::PendingIdentityTeardown);
-        for attempt in [&owing, &owes_nothing, &terminal_owing] {
+        let terminal_owing = owing(
+            terminal_attempt("op-terminal", HOST, TARGET, Some(3), 1_000, 9_000),
+            CleanupState::PendingIdentityTeardown,
+        );
+        for attempt in [&owing_attempt, &owes_nothing, &terminal_owing] {
             table.upsert(attempt).unwrap();
         }
 
         assert_eq!(
-            table.attempts_owing_cleanup(TARGET, HOST, Some(1)).unwrap(),
-            vec![owing.clone()]
+            table.attempt_owing_cleanup(TARGET, HOST, Some(1)).unwrap(),
+            Some(owing_attempt.clone())
         );
-        assert!(
-            table
-                .attempts_owing_cleanup(TARGET, HOST, Some(2))
-                .unwrap()
-                .is_empty()
-        );
-        // The obligation outlives the outcome, so a terminal row is listed.
         assert_eq!(
-            table.attempts_owing_cleanup(TARGET, HOST, Some(3)).unwrap(),
-            vec![terminal_owing]
+            table.attempt_owing_cleanup(TARGET, HOST, Some(2)).unwrap(),
+            None
+        );
+        // The obligation outlives the outcome, so a terminal row answers.
+        assert_eq!(
+            table.attempt_owing_cleanup(TARGET, HOST, Some(3)).unwrap(),
+            Some(terminal_owing)
         );
 
         // Clearing the cleanup drops the row from the index.
-        owing.cleanup_state = None;
-        table.upsert(&owing).unwrap();
-        assert!(
-            table
-                .attempts_owing_cleanup(TARGET, HOST, Some(1))
-                .unwrap()
-                .is_empty()
+        owing_attempt.cleanup_state = None;
+        table.upsert(&owing_attempt).unwrap();
+        assert_eq!(
+            table.attempt_owing_cleanup(TARGET, HOST, Some(1)).unwrap(),
+            None
         );
     }
 
@@ -1860,17 +2767,25 @@ mod tests {
             non_terminal_key("a", "bc", Some(1)).unwrap()
         );
         assert_ne!(
-            owed_cleanup_prefix("ab", "c", Some(1)).unwrap(),
-            owed_cleanup_prefix("a", "bc", Some(1)).unwrap()
+            owed_cleanup_key("ab", "c", Some(1)).unwrap(),
+            owed_cleanup_key("a", "bc", Some(1)).unwrap()
+        );
+        assert_ne!(
+            latest_pointer_key("ab", "c", Some(1)).unwrap(),
+            latest_pointer_key("a", "bc", Some(1)).unwrap()
         );
 
         let test_db = TestDb::new();
         let table = test_db.table();
 
-        let mut first = live_attempt("op-ab-c", "ab", "c", Some(1));
-        first.cleanup_state = Some(CleanupState::PendingDeregister);
-        let mut second = live_attempt("op-a-bc", "a", "bc", Some(1));
-        second.cleanup_state = Some(CleanupState::PendingDeregister);
+        let first = owing(
+            live_attempt("op-ab-c", "ab", "c", Some(1)),
+            CleanupState::PendingDeregister,
+        );
+        let second = owing(
+            live_attempt("op-a-bc", "a", "bc", Some(1)),
+            CleanupState::PendingDeregister,
+        );
         table.upsert(&first).unwrap();
         table.upsert(&second).unwrap();
 
@@ -1883,12 +2798,12 @@ mod tests {
             Some(second.clone())
         );
         assert_eq!(
-            table.attempts_owing_cleanup("c", "ab", Some(1)).unwrap(),
-            vec![first]
+            table.attempt_owing_cleanup("c", "ab", Some(1)).unwrap(),
+            Some(first)
         );
         assert_eq!(
-            table.attempts_owing_cleanup("bc", "a", Some(1)).unwrap(),
-            vec![second]
+            table.attempt_owing_cleanup("bc", "a", Some(1)).unwrap(),
+            Some(second)
         );
 
         // The column family holds four keys for each attempt — the row, and
@@ -1909,40 +2824,130 @@ mod tests {
     }
 
     #[test]
-    fn retention_keeps_the_greatest_started_at_not_the_greatest_deadline() {
+    fn retention_keeps_the_attempt_the_pointer_names() {
         let test_db = TestDb::new();
         let table = test_db.table();
 
-        // `started_at` ascending, `expires_at` deliberately the other way
-        // round, so an implementation ordering by the deadline keeps the wrong
-        // attempt.
-        let oldest = terminal_attempt("op-1", HOST, TARGET, Some(1), 1_000, 9_000);
-        let middle = terminal_attempt("op-2", HOST, TARGET, Some(1), 2_000, 8_000);
-        let newest = terminal_attempt("op-3", HOST, TARGET, Some(1), 3_000, 7_000);
-        for attempt in [&oldest, &middle, &newest] {
-            table.upsert(attempt).unwrap();
-        }
+        // The attempt that finalized last has the lesser `started_at`, the
+        // lesser `finalized_at` and the lesser idempotency key, so every
+        // ordering an implementation could derive "latest" from picks the
+        // other one.
+        let superseded = terminal_attempt("op-z", HOST, TARGET, Some(1), 3_000, 7_000);
+        let current = terminal_attempt("op-a", HOST, TARGET, Some(1), 1_000, 9_000);
+        table.upsert(&superseded).unwrap();
+        table.upsert(&current).unwrap();
 
         // A bound no attempt is within, so only the keep-rule decides.
-        assert_eq!(table.prune(bound(0, 0), timestamp(10_000)).unwrap(), 2);
-        assert_eq!(keys(&table, Direction::Forward, None), ["op-3"]);
-        // The pruned rows take their index entries with them, leaving the
+        assert_eq!(table.prune(bound(0, 0), timestamp(10_000)).unwrap(), 1);
+        assert_eq!(keys(&table, Direction::Forward, None), ["op-a"]);
+        // The pruned row takes its index entries with it, leaving the
         // survivor's row and its `expires_at` entry.
         assert_eq!(test_db.raw_keys().len(), 2);
+        assert_eq!(test_db.pointed_at_keys(), ["op-a"]);
     }
 
     #[test]
-    fn retention_breaks_a_started_at_tie_on_the_greater_key() {
+    fn the_pointer_names_the_attempt_that_committed_second() {
         let test_db = TestDb::new();
         let table = test_db.table();
 
-        let lesser = terminal_attempt("op-a", HOST, TARGET, Some(1), 1_000, 9_000);
-        let greater = terminal_attempt("op-b", HOST, TARGET, Some(1), 1_000, 5_000);
-        table.upsert(&lesser).unwrap();
-        table.upsert(&greater).unwrap();
+        // Both triples finalize the same pair of keys in the same nanosecond,
+        // and take them in opposite orders. Nothing but the commit order
+        // tells the two apart, so a pointer derived from a timestamp or from
+        // key order would answer the same on both.
+        let at = DateTime::from_timestamp(1_000, 123_456_789).unwrap();
+        let mut attempts = Vec::new();
+        for (instance, keys) in [(1, ["op-a1", "op-b1"]), (2, ["op-b2", "op-a2"])] {
+            for key in keys {
+                let mut attempt = terminal_attempt(key, HOST, TARGET, Some(instance), 1_000, 9_000);
+                attempt.finalized_at = Some(at);
+                table.upsert(&attempt).unwrap();
+                attempts.push(attempt);
+            }
+        }
 
-        assert_eq!(table.prune(bound(0, 0), timestamp(10_000)).unwrap(), 1);
-        assert_eq!(keys(&table, Direction::Forward, None), ["op-b"]);
+        assert_eq!(
+            table
+                .latest_attempt(HOST, TARGET, Some(1))
+                .unwrap()
+                .map(|attempt| attempt.idempotency_key),
+            Some("op-b1".to_string())
+        );
+        assert_eq!(
+            table
+                .latest_attempt(HOST, TARGET, Some(2))
+                .unwrap()
+                .map(|attempt| attempt.idempotency_key),
+            Some("op-a2".to_string())
+        );
+
+        // And the keep-rule follows the pointer rather than the tie: what
+        // survives a bound nothing is within is what committed second.
+        assert_eq!(table.prune(bound(0, 0), timestamp(10_000)).unwrap(), 2);
+        assert_eq!(keys(&table, Direction::Forward, None), ["op-a2", "op-b1"]);
+    }
+
+    #[test]
+    fn retention_measures_age_from_the_finalization_and_not_the_start() {
+        let test_db = TestDb::new();
+        let table = test_db.table();
+
+        // The two candidates' `started_at` order is the reverse of their
+        // `finalized_at` order, so an age measured from the start prunes
+        // exactly the other one.
+        let mut late_finish = terminal_attempt("op-late", HOST, TARGET, Some(1), 1_000, 9_000);
+        late_finish.finalized_at = Some(timestamp(5_000));
+        let mut early_finish = terminal_attempt("op-early", HOST, TARGET, Some(1), 4_000, 9_000);
+        early_finish.finalized_at = Some(timestamp(2_000));
+        let mut current = terminal_attempt("op-current", HOST, TARGET, Some(1), 4_500, 9_000);
+        current.finalized_at = Some(timestamp(5_400));
+        for attempt in [&late_finish, &early_finish, &current] {
+            table.upsert(attempt).unwrap();
+        }
+
+        // The count bound never fires, so the age bound alone decides.
+        assert_eq!(table.prune(bound(2_000, 10), timestamp(5_500)).unwrap(), 1);
+        assert_eq!(
+            keys(&table, Direction::Forward, None),
+            ["op-current", "op-late"]
+        );
+    }
+
+    #[test]
+    fn retention_keeps_the_current_attempt_well_past_thirty_days() {
+        let test_db = TestDb::new();
+        let table = test_db.table();
+
+        // The rule this table is built to: an older terminal attempt goes 30
+        // days past its finalization, and the current one never does.
+        let thirty_days = RetentionBound {
+            max_age: TimeDelta::days(30),
+            max_terminal_per_triple: usize::MAX,
+        };
+        let superseded = terminal_attempt("op-1-old", HOST, TARGET, Some(1), 1_000, 9_000);
+        let current = terminal_attempt("op-1-current", HOST, TARGET, Some(1), 2_000, 9_000);
+        // A second instance of the same module on the same host is a triple
+        // of its own, and a newer attempt on `(host, target)` does not
+        // collapse it away.
+        let sibling = terminal_attempt("op-2-only", HOST, TARGET, Some(2), 1_000, 9_000);
+        for attempt in [&superseded, &current, &sibling] {
+            table.upsert(attempt).unwrap();
+        }
+
+        let a_year_on = timestamp(1_000) + TimeDelta::days(365);
+        assert_eq!(table.prune(thirty_days, a_year_on).unwrap(), 1);
+        assert_eq!(
+            keys(&table, Direction::Forward, None),
+            ["op-1-current", "op-2-only"]
+        );
+        assert_eq!(
+            table.latest_attempt(HOST, TARGET, Some(1)).unwrap(),
+            Some(current)
+        );
+        assert_eq!(
+            table.latest_attempt(HOST, TARGET, Some(2)).unwrap(),
+            Some(sibling)
+        );
     }
 
     #[test]
@@ -1950,8 +2955,10 @@ mod tests {
         let test_db = TestDb::new();
         let table = test_db.table();
 
-        let mut owing = terminal_attempt("op-owing", HOST, TARGET, Some(8), 1_000, 9_000);
-        owing.cleanup_state = Some(CleanupState::PendingDeregister);
+        let owes_cleanup = owing(
+            terminal_attempt("op-owing", HOST, TARGET, Some(8), 1_000, 9_000),
+            CleanupState::PendingDeregister,
+        );
         let attempts = [
             terminal_attempt("op-1-old", HOST, TARGET, Some(1), 1_000, 9_000),
             terminal_attempt("op-1-new", HOST, TARGET, Some(1), 2_000, 9_000),
@@ -1962,7 +2969,7 @@ mod tests {
             terminal_attempt("op-h2-old", "host-b.example", TARGET, Some(1), 1_000, 9_000),
             terminal_attempt("op-h2-new", "host-b.example", TARGET, Some(1), 2_000, 9_000),
             live_attempt("op-live", HOST, TARGET, Some(9)),
-            owing,
+            owes_cleanup,
             terminal_attempt("op-owing-newer", HOST, TARGET, Some(8), 2_000, 9_000),
         ];
         for attempt in &attempts {
@@ -2086,12 +3093,14 @@ mod tests {
         let test_db = TestDb::new();
         let table = test_db.table();
 
-        let mut owing = terminal_attempt("op-owing", HOST, TARGET, Some(3), 1_000, 9_000);
-        owing.cleanup_state = Some(CleanupState::PendingIdentityTeardown);
+        let owes_cleanup = owing(
+            terminal_attempt("op-owing", HOST, TARGET, Some(3), 1_000, 9_000),
+            CleanupState::PendingIdentityTeardown,
+        );
         let attempts = [
             terminal_attempt("op-newest", HOST, TARGET, Some(1), 1_000, 9_000),
             live_attempt("op-live", HOST, TARGET, Some(2)),
-            owing,
+            owes_cleanup,
             terminal_attempt("op-owing-newer", HOST, TARGET, Some(3), 2_000, 9_000),
         ];
         for attempt in &attempts {
@@ -2144,36 +3153,53 @@ mod tests {
     }
 
     #[test]
-    fn owed_cleanup_lists_every_attempt_of_one_triple() {
+    fn the_owed_cleanup_index_holds_one_entry_for_each_triple() {
         let test_db = TestDb::new();
         let table = test_db.table();
 
-        // One triple owes several cleanups at once: a re-drive leaves the
-        // earlier attempt's obligation standing, so the index key carries the
-        // idempotency key and the lookup answers with all of them.
-        let mut live = live_attempt("op-c", HOST, TARGET, Some(1));
-        live.cleanup_state = Some(CleanupState::PendingDeregister);
-        let mut first = terminal_attempt("op-a", HOST, TARGET, Some(1), 1_000, 9_000);
-        first.cleanup_state = Some(CleanupState::PendingIdentityTeardown);
-        let mut second = terminal_attempt("op-b", HOST, TARGET, Some(1), 2_000, 9_000);
-        second.cleanup_state = Some(CleanupState::PendingDeregister);
-        for attempt in [&first, &second, &live] {
-            table.upsert(attempt).unwrap();
-        }
+        // What this crate asserts is what the store does when a second row
+        // for one triple is written: the entry is overwritten rather than
+        // queued beside the first, so the lookup always has a single row to
+        // return. That a second row never arises in the first place is the
+        // owed-teardown guard, and it is asserted in the repository whose
+        // orchestration drives that path.
+        let mut first = owing(
+            terminal_attempt("op-a", HOST, TARGET, Some(1), 1_000, 9_000),
+            CleanupState::PendingIdentityTeardown,
+        );
+        let mut second = owing(
+            terminal_attempt("op-b", HOST, TARGET, Some(1), 2_000, 9_000),
+            CleanupState::PendingDeregister,
+        );
+        table.upsert(&first).unwrap();
+        table.upsert(&second).unwrap();
 
         assert_eq!(
-            table.attempts_owing_cleanup(TARGET, HOST, Some(1)).unwrap(),
-            vec![first.clone(), second.clone(), live.clone()],
-            "the lookup answers in idempotency-key order"
+            table.attempt_owing_cleanup(TARGET, HOST, Some(1)).unwrap(),
+            Some(second.clone())
         );
+        assert_eq!(owed_cleanup_entries(&test_db), 1);
 
-        // Discharging one leaves the other two owed.
+        // Discharging the row the entry no longer names leaves it standing:
+        // dropping it there would lose an obligation that is still owed.
+        first.cleanup_state = None;
+        first.finalized_at = Some(timestamp(3_000));
+        table.upsert(&first).unwrap();
+        assert_eq!(
+            table.attempt_owing_cleanup(TARGET, HOST, Some(1)).unwrap(),
+            Some(second.clone())
+        );
+        assert_eq!(owed_cleanup_entries(&test_db), 1);
+
+        // Discharging the row it does name clears it.
         second.cleanup_state = None;
+        second.finalized_at = Some(timestamp(4_000));
         table.upsert(&second).unwrap();
         assert_eq!(
-            table.attempts_owing_cleanup(TARGET, HOST, Some(1)).unwrap(),
-            vec![first, live]
+            table.attempt_owing_cleanup(TARGET, HOST, Some(1)).unwrap(),
+            None
         );
+        assert_eq!(owed_cleanup_entries(&test_db), 0);
     }
 
     #[test]
@@ -2191,12 +3217,12 @@ mod tests {
         table.upsert(&there).unwrap();
 
         assert_eq!(
-            table.attempts_owing_cleanup("", &here.host, None).unwrap(),
-            vec![here.clone()]
+            table.attempt_owing_cleanup("", &here.host, None).unwrap(),
+            Some(here.clone())
         );
         assert_eq!(
-            table.attempts_owing_cleanup("", &there.host, None).unwrap(),
-            vec![there]
+            table.attempt_owing_cleanup("", &there.host, None).unwrap(),
+            Some(there)
         );
 
         // Per-hostname onboard idempotency falls out of the same index: a
@@ -2217,8 +3243,8 @@ mod tests {
         let mut owed = here;
         owed.outcome = Some(Outcome::Failed);
         assert_eq!(
-            table.attempts_owing_cleanup("", &owed.host, None).unwrap(),
-            vec![owed]
+            table.attempt_owing_cleanup("", &owed.host, None).unwrap(),
+            Some(owed)
         );
     }
 
@@ -2257,5 +3283,740 @@ mod tests {
             ["op-3", "op-2"]
         );
         assert!(table.expired_attempts(timestamp(-61)).unwrap().is_empty());
+    }
+
+    #[test]
+    fn the_latest_attempt_is_one_ordered_lookup_over_three_branches() {
+        let test_db = TestDb::new();
+        let table = test_db.table();
+
+        // One triple walked through the states the three branches answer in,
+        // rather than three lookups set up apart: the order is the rule, and
+        // a branch tested on its own would not exercise it.
+        //
+        // An earlier attempt, finished with, so the pointer names it.
+        let older = terminal_attempt("op-older", HOST, TARGET, Some(1), 1_000, 9_000);
+        table.upsert(&older).unwrap();
+        assert_eq!(
+            table.latest_attempt(HOST, TARGET, Some(1)).unwrap(),
+            Some(older)
+        );
+
+        // A new attempt starts with the teardown of its minted identity armed
+        // before it, so it is non-terminal and owes a cleanup at once and
+        // stands under both indexes while the pointer still names the older
+        // row. The first branch answers.
+        let running = owing(
+            live_attempt("op-newer", HOST, TARGET, Some(1)),
+            CleanupState::PendingIdentityTeardown,
+        );
+        table.upsert(&running).unwrap();
+        assert_eq!(
+            table.pointed_at_key(HOST, TARGET, Some(1)).unwrap(),
+            Some("op-older".to_string())
+        );
+        assert_eq!(
+            table.latest_attempt(HOST, TARGET, Some(1)).unwrap(),
+            Some(running.clone())
+        );
+
+        // It fails with the teardown still owed. The first branch is empty,
+        // it carries no finalization instant so the pointer still names the
+        // older row, and the second branch is what answers — the newer work
+        // rather than the row the pointer names.
+        let mut failed = running;
+        failed.outcome = Some(Outcome::Failed);
+        table.upsert(&failed).unwrap();
+        assert_eq!(table.live_attempt(HOST, TARGET, Some(1)).unwrap(), None);
+        assert_eq!(
+            table.pointed_at_key(HOST, TARGET, Some(1)).unwrap(),
+            Some("op-older".to_string())
+        );
+        assert_eq!(
+            table.latest_attempt(HOST, TARGET, Some(1)).unwrap(),
+            Some(failed.clone())
+        );
+
+        // The teardown is discharged, which stamps the row and moves the
+        // pointer in the same transaction. The first two branches are empty
+        // and the pointer answers.
+        let mut discharged = failed;
+        discharged.cleanup_state = None;
+        discharged.finalized_at = Some(timestamp(4_000));
+        table.upsert(&discharged).unwrap();
+        assert_eq!(
+            table.attempt_owing_cleanup(TARGET, HOST, Some(1)).unwrap(),
+            None
+        );
+        assert_eq!(
+            table.pointed_at_key(HOST, TARGET, Some(1)).unwrap(),
+            Some("op-newer".to_string())
+        );
+        assert_eq!(
+            table.latest_attempt(HOST, TARGET, Some(1)).unwrap(),
+            Some(discharged)
+        );
+
+        // A triple nothing was ever written for has no answer at all.
+        assert_eq!(table.latest_attempt(HOST, TARGET, Some(2)).unwrap(), None);
+    }
+
+    #[test]
+    fn finalization_is_stamped_exactly_when_the_attempt_is_finished_with() {
+        let test_db = TestDb::new();
+        let table = test_db.table();
+
+        // Terminal and owing nothing, but unstamped: the row would be
+        // finished with and no retention clock would ever start on it.
+        let mut unstamped = terminal_attempt("op-1", HOST, TARGET, Some(1), 1_000, 9_000);
+        unstamped.finalized_at = None;
+        assert!(table.upsert(&unstamped).is_err());
+
+        // Stamped while still running.
+        let mut running = live_attempt("op-1", HOST, TARGET, Some(1));
+        running.finalized_at = Some(timestamp(1_000));
+        assert!(table.upsert(&running).is_err());
+
+        // Stamped while a teardown is still owed, which is the case the
+        // distinction exists for: an apply that terminated `Failed` with work
+        // outstanding is terminal and not finished with.
+        let mut owing_and_stamped = owing(
+            terminal_attempt("op-1", HOST, TARGET, Some(1), 1_000, 9_000),
+            CleanupState::PendingIdentityTeardown,
+        );
+        owing_and_stamped.finalized_at = Some(timestamp(1_000));
+        assert!(table.upsert(&owing_and_stamped).is_err());
+        assert_eq!(table.get("op-1").unwrap(), None);
+
+        // The same row without the stamp is accepted, is not reachable by the
+        // retention sweep, and names no pointer.
+        let terminal_owing = owing(
+            terminal_attempt("op-1", HOST, TARGET, Some(1), 1_000, 9_000),
+            CleanupState::PendingIdentityTeardown,
+        );
+        table.upsert(&terminal_owing).unwrap();
+        assert_eq!(
+            table.prune(bound(0, 0), timestamp(1_000_000)).unwrap(),
+            0,
+            "a terminal attempt that still owes a cleanup is out of the sweep's reach"
+        );
+        assert!(test_db.pointed_at_keys().is_empty());
+
+        // Discharging the last owed item stamps it and moves the pointer, in
+        // the transaction that discharges it.
+        let mut discharged = terminal_owing;
+        discharged.cleanup_state = None;
+        discharged.finalized_at = Some(timestamp(2_000));
+        table.upsert(&discharged).unwrap();
+        assert_eq!(
+            table.get("op-1").unwrap().unwrap().finalized_at,
+            Some(timestamp(2_000))
+        );
+        assert_eq!(test_db.pointed_at_keys(), ["op-1"]);
+    }
+
+    #[test]
+    fn a_finalization_that_does_not_commit_leaves_neither_the_row_nor_the_pointer() {
+        let test_db = TestDb::new();
+        let table = test_db.table();
+
+        let running = live_attempt("op-1", HOST, TARGET, Some(1));
+        table.upsert(&running).unwrap();
+
+        let mut finalized = running.clone();
+        finalized.outcome = Some(Outcome::Succeeded);
+        finalized.finalized_at = Some(timestamp(2_000));
+
+        // The fault, injected between the two writes the pair is made of: the
+        // transaction carries both and commits neither.
+        let txn = table.transaction();
+        table
+            .write_with_transaction(Some(&running), &finalized, &txn)
+            .unwrap();
+        drop(txn);
+
+        assert_eq!(table.get("op-1").unwrap(), Some(running.clone()));
+        assert!(
+            test_db.pointed_at_keys().is_empty(),
+            "no pointer may name an attempt whose finalization did not land"
+        );
+        assert_eq!(
+            table.latest_attempt(HOST, TARGET, Some(1)).unwrap(),
+            Some(running.clone())
+        );
+
+        // The same pair, committed, lands whole.
+        let txn = table.transaction();
+        table
+            .write_with_transaction(Some(&running), &finalized, &txn)
+            .unwrap();
+        txn.commit().unwrap();
+        assert_eq!(table.get("op-1").unwrap(), Some(finalized.clone()));
+        assert_eq!(test_db.pointed_at_keys(), ["op-1"]);
+        assert_eq!(
+            table.latest_attempt(HOST, TARGET, Some(1)).unwrap(),
+            Some(finalized)
+        );
+    }
+
+    #[test]
+    fn the_install_intent_is_stored_for_an_install_alone() {
+        let test_db = TestDb::new();
+        let table = test_db.table();
+
+        let digest = golden_intent().digest().unwrap();
+        let mut install = module_attempt(REQUEST_KEY);
+        install.action = Action::Install;
+        install.install_intent = Some(digest);
+        table.create_or_resolve(&install).unwrap();
+        assert_eq!(
+            table.get(REQUEST_KEY).unwrap().unwrap().install_intent,
+            Some(digest)
+        );
+        assert_eq!(round_trip(&install), install);
+
+        // An attempt carrying one is keyed by the request key the client
+        // supplied, so a key that is not one of those is refused: nothing
+        // could ever resolve the row again.
+        let mut generated_key = install.clone();
+        generated_key.idempotency_key = "op-install".to_string();
+        generated_key.instance = Some(5);
+        assert!(matches!(
+            table
+                .create_or_resolve(&generated_key)
+                .unwrap_err()
+                .downcast_ref::<RequestKeyError>(),
+            Some(RequestKeyError::MalformedRequestKey { .. })
+        ));
+
+        // And an install without one is refused for the same reason from the
+        // other side: nothing could compare a resubmission against it, so the
+        // retry would allocate a second instance instead of returning this
+        // row.
+        let mut without_intent = install.clone();
+        without_intent.install_intent = None;
+        assert!(table.upsert(&without_intent).is_err());
+
+        // Update, remove and onboard are keyed by a value that is unique by
+        // construction, so they have nothing to compare and store none.
+        for (key, action, instance) in [
+            ("op-update", Action::Update, 2),
+            ("op-remove", Action::Remove, 3),
+            ("op-onboard", Action::Onboard, 4),
+        ] {
+            let mut attempt = module_attempt(key);
+            attempt.action = action;
+            attempt.instance = Some(instance);
+            table.upsert(&attempt).unwrap();
+            assert_eq!(table.get(key).unwrap().unwrap().install_intent, None);
+
+            attempt.install_intent = Some(digest);
+            assert!(table.upsert(&attempt).is_err());
+        }
+    }
+
+    #[test]
+    fn the_install_intent_digest_matches_its_golden_vector() {
+        // Written out byte by byte rather than derived, so a change to the
+        // transcript fails here rather than in a deployment, where it would
+        // turn every retry that crossed an update into a refusal.
+        let mut expected = Vec::new();
+        expected.extend_from_slice(b"clumit-install-intent-v1");
+        expected.extend_from_slice(&[0, 0, 0, 14]);
+        expected.extend_from_slice(b"host-a.example");
+        expected.extend_from_slice(&[0, 0, 0, 7]);
+        expected.extend_from_slice(b"giganto");
+        // The selector kind, then its value as submitted.
+        expected.push(0);
+        expected.extend_from_slice(&[0, 0, 0, 5]);
+        expected.extend_from_slice(b"1.2.3");
+        // `on_failure`.
+        expected.push(0);
+        // Two bind addresses, in ascending listener-key order rather than the
+        // order they were handed over in, each rendered by `SocketAddr`'s own
+        // `Display`: lowercase, compressed, and in brackets for IPv6.
+        expected.extend_from_slice(&[0, 0, 0, 2]);
+        expected.extend_from_slice(&[0, 0, 0, 7]);
+        expected.extend_from_slice(b"graphql");
+        expected.extend_from_slice(&[0, 0, 0, 16]);
+        expected.extend_from_slice(b"192.168.0.1:8443");
+        expected.extend_from_slice(&[0, 0, 0, 6]);
+        expected.extend_from_slice(b"ingest");
+        expected.extend_from_slice(&[0, 0, 0, 19]);
+        expected.extend_from_slice(b"[2001:db8::1]:38370");
+
+        let intent = golden_intent();
+        assert_eq!(intent.transcript().unwrap(), expected);
+        assert_eq!(
+            data_encoding::HEXLOWER.encode(&intent.digest().unwrap()),
+            GOLDEN_DIGEST
+        );
+
+        // The listener order the caller used is not the transcript's, so two
+        // requests naming the same listeners hash alike.
+        let mut reordered = intent.clone();
+        reordered.bind_addrs.as_mut().unwrap().reverse();
+        assert_eq!(reordered.digest().unwrap(), intent.digest().unwrap());
+    }
+
+    #[test]
+    fn no_two_requests_share_an_install_intent_digest() {
+        let intent = golden_intent();
+        let digest = intent.digest().unwrap();
+
+        // `None` leaves the addresses to the component and an empty list asks
+        // for none at all, so the two are different requests.
+        let mut absent = intent.clone();
+        absent.bind_addrs = None;
+        let mut empty = intent.clone();
+        empty.bind_addrs = Some(Vec::new());
+        assert_ne!(absent.digest().unwrap(), empty.digest().unwrap());
+
+        let mut other_host = intent.clone();
+        other_host.host = "host-b.example".to_string();
+        let mut other_target = intent.clone();
+        other_target.target = "piglet".to_string();
+        // The kind tag is what tells a version from a commit that reads alike.
+        let mut as_commit = intent.clone();
+        as_commit.selector = BuildSelector::Commit("1.2.3".to_string());
+        let mut on_hold = intent.clone();
+        on_hold.on_failure = OnFailure::Hold;
+        let mut other_listener = intent.clone();
+        other_listener.bind_addrs.as_mut().unwrap()[0].0 = "ingestion".to_string();
+        let mut other_addr = intent.clone();
+        other_addr.bind_addrs.as_mut().unwrap()[1].1 = "192.168.0.1:8444".parse().unwrap();
+        // The length prefixes are what stop a field boundary from shifting.
+        let mut shifted = intent.clone();
+        shifted.host = "host-a.exampl".to_string();
+        shifted.target = "egiganto".to_string();
+
+        for other in [
+            absent,
+            empty,
+            other_host,
+            other_target,
+            as_commit,
+            on_hold,
+            other_listener,
+            other_addr,
+            shifted,
+        ] {
+            assert_ne!(other.digest().unwrap(), digest);
+        }
+    }
+
+    #[test]
+    fn a_resubmitted_request_key_returns_its_attempt_or_is_refused() {
+        let test_db = TestDb::new();
+        let table = test_db.table();
+
+        let intent = golden_intent();
+        let digest = intent.digest().unwrap();
+        let mut other = intent.clone();
+        other.selector = BuildSelector::Version("1.2.4".to_string());
+        let other_digest = other.digest().unwrap();
+
+        // A key that is not a UUIDv4 in canonical hyphenated form is refused
+        // on its shape, before anything is read.
+        for malformed in [
+            "",
+            "op-1",
+            REQUEST_KEY.trim_end_matches('7'),
+            &REQUEST_KEY.replace('-', ""),
+            // The version nibble is not `4`.
+            "9d5cb6e0-0a3f-31de-9f0a-6b0f4e5c1a27",
+            // The variant nibble is none of `8`, `9`, `a` or `b`.
+            "9d5cb6e0-0a3f-41de-7f0a-6b0f4e5c1a27",
+            // A hyphen out of place.
+            "9d5cb6e00-a3f-41de-9f0a-6b0f4e5c1a27",
+            // Not a hex digit.
+            "9d5cb6e0-0a3f-41de-9f0a-6b0f4e5c1a2g",
+        ] {
+            let error = table.resolve_request_key(malformed, &digest).unwrap_err();
+            assert!(matches!(error, RequestKeyError::MalformedRequestKey { .. }));
+            assert!(!error.is_retryable());
+        }
+
+        // A key nothing is held under is free, and the install proceeds.
+        assert_eq!(
+            table.resolve_request_key(REQUEST_KEY, &digest).unwrap(),
+            None
+        );
+
+        let mut install = module_attempt(REQUEST_KEY);
+        install.action = Action::Install;
+        install.install_intent = Some(digest);
+        table.create_or_resolve(&install).unwrap();
+
+        // The same request returns the first attempt, which is what makes a
+        // retry idempotent.
+        assert_eq!(
+            table.resolve_request_key(REQUEST_KEY, &digest).unwrap(),
+            Some(install)
+        );
+
+        // A different one is a client bug, and sending it again would refuse
+        // it again.
+        let error = table
+            .resolve_request_key(REQUEST_KEY, &other_digest)
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            RequestKeyError::RequestKeyReused { request_key } if request_key == REQUEST_KEY
+        ));
+        assert!(
+            !table
+                .resolve_request_key(REQUEST_KEY, &other_digest)
+                .unwrap_err()
+                .is_retryable()
+        );
+
+        // A stored `None` presented with a digest is refused in the same way:
+        // an operation that dedupes on something else has nothing to compare.
+        let mut update = module_attempt(OTHER_REQUEST_KEY);
+        update.action = Action::Update;
+        update.instance = Some(2);
+        table.upsert(&update).unwrap();
+        let error = table
+            .resolve_request_key(OTHER_REQUEST_KEY, &digest)
+            .unwrap_err();
+        assert!(matches!(error, RequestKeyError::RequestKeyReused { .. }));
+        assert!(!error.is_retryable());
+    }
+
+    #[test]
+    fn an_uppercase_request_key_is_refused_on_both_paths() {
+        let test_db = TestDb::new();
+        let table = test_db.table();
+
+        let digest = golden_intent().digest().unwrap();
+
+        // Canonical is lowercase, so an uppercase spelling of an otherwise
+        // well-formed key is refused rather than admitted as a second key for
+        // the one UUID.
+        for uppercase in [
+            REQUEST_KEY.to_uppercase(),
+            // A single uppercase hex digit is enough.
+            REQUEST_KEY.replace("de", "De"),
+            // The variant nibble included, which this key spells `b`.
+            OTHER_REQUEST_KEY.replace("-b8c9-", "-B8c9-"),
+        ] {
+            assert!(!is_uuid_v4(&uppercase));
+
+            let error = table.resolve_request_key(&uppercase, &digest).unwrap_err();
+            assert!(matches!(error, RequestKeyError::MalformedRequestKey { .. }));
+            assert!(!error.is_retryable());
+
+            // The write path refuses it too: a row keyed by a spelling
+            // `resolve_request_key` will not take is a row no retry can find.
+            let install = install_attempt(&uppercase, HOST, TARGET, Some(1));
+            assert!(matches!(
+                table
+                    .create_or_resolve(&install)
+                    .unwrap_err()
+                    .downcast_ref::<RequestKeyError>(),
+                Some(RequestKeyError::MalformedRequestKey { .. })
+            ));
+            assert_eq!(table.get(&uppercase).unwrap(), None);
+        }
+
+        // The lowercase key holds the row, and the uppercase spelling of that
+        // same UUID does not reach it.
+        let install = install_attempt(REQUEST_KEY, HOST, TARGET, Some(1));
+        table.create_or_resolve(&install).unwrap();
+        assert_eq!(
+            table.resolve_request_key(REQUEST_KEY, &digest).unwrap(),
+            Some(install)
+        );
+        assert!(matches!(
+            table
+                .resolve_request_key(&REQUEST_KEY.to_uppercase(), &digest)
+                .unwrap_err(),
+            RequestKeyError::MalformedRequestKey { .. }
+        ));
+    }
+
+    #[test]
+    fn a_second_request_under_one_key_cannot_overwrite_the_first_attempt() {
+        let test_db = TestDb::new();
+        let table = test_db.table();
+
+        let intent = golden_intent();
+        let digest = intent.digest().unwrap();
+        let mut other = intent.clone();
+        other.selector = BuildSelector::Version("1.2.4".to_string());
+        let other_digest = other.digest().unwrap();
+
+        let first = install_attempt(REQUEST_KEY, HOST, TARGET, Some(1));
+        let mut second = install_attempt(REQUEST_KEY, HOST, TARGET, Some(2));
+        second.install_intent = Some(other_digest);
+
+        // The race `resolve_request_key` cannot close on its own: it answers
+        // before the write and outside it, so both requests read the key while
+        // nothing is held under it and both believe they are creating the row.
+        assert_eq!(
+            table.resolve_request_key(REQUEST_KEY, &digest).unwrap(),
+            None
+        );
+        assert_eq!(
+            table
+                .resolve_request_key(REQUEST_KEY, &other_digest)
+                .unwrap(),
+            None
+        );
+
+        let losing = table.transaction();
+        assert_eq!(table.get_for_update(REQUEST_KEY, &losing).unwrap(), None);
+        assert_eq!(table.create_or_resolve(&first).unwrap(), first);
+
+        // The write composed against that reading does not land: it read the
+        // key as free and the winner has since taken it.
+        table
+            .write_with_transaction(None, &second, &losing)
+            .unwrap();
+        assert!(losing.commit().is_err());
+        assert_eq!(table.get(REQUEST_KEY).unwrap(), Some(first.clone()));
+
+        // And the retry that conflict drives — which is what
+        // `create_or_resolve` does on its own — refuses the second request
+        // rather than replacing the row the first created, so the first
+        // attempt keeps its record and the allocations that hang off it.
+        let error = table.create_or_resolve(&second).unwrap_err();
+        let error = error.downcast::<RequestKeyError>().unwrap();
+        assert!(matches!(
+            &error,
+            RequestKeyError::RequestKeyReused { request_key } if request_key == REQUEST_KEY
+        ));
+        assert!(!error.is_retryable());
+        assert_eq!(table.get(REQUEST_KEY).unwrap(), Some(first.clone()));
+        assert_eq!(
+            table.resolve_request_key(REQUEST_KEY, &digest).unwrap(),
+            Some(first.clone())
+        );
+
+        // The attempt's own re-writes carry the digest unchanged and are not
+        // refused: this is the same request, still running.
+        let mut progressed = first.clone();
+        progressed.phase = Phase::Dispatched;
+        table.upsert(&progressed).unwrap();
+        assert_eq!(table.get(REQUEST_KEY).unwrap(), Some(progressed));
+
+        // A change in whether a digest is carried at all is a change of
+        // action, which is a different request too.
+        let mut update = module_attempt(REQUEST_KEY);
+        update.instance = Some(3);
+        let error = table.upsert(&update).unwrap_err();
+        assert!(matches!(
+            error.downcast_ref::<RequestKeyError>(),
+            Some(RequestKeyError::RequestKeyReused { .. })
+        ));
+    }
+
+    #[test]
+    fn a_same_intent_retry_returns_the_first_attempt_rather_than_replacing_it() {
+        let test_db = TestDb::new();
+        let table = test_db.table();
+
+        let digest = golden_intent().digest().unwrap();
+
+        // One request submitted twice: the same digest, and two rows composed
+        // against two independent allocations of the instance number, because
+        // each caller believed it was the one creating the attempt.
+        let first = install_attempt(REQUEST_KEY, HOST, TARGET, Some(1));
+        let mut second = install_attempt(REQUEST_KEY, HOST, TARGET, Some(2));
+        second.started_at = timestamp(2_000);
+
+        // Neither learns of the other from the lookup: it answers before the
+        // write and outside it, so both are told the key is free.
+        for _ in 0..2 {
+            assert_eq!(
+                table.resolve_request_key(REQUEST_KEY, &digest).unwrap(),
+                None
+            );
+        }
+
+        let losing = table.transaction();
+        assert_eq!(table.get_for_update(REQUEST_KEY, &losing).unwrap(), None);
+        assert_eq!(table.create_or_resolve(&first).unwrap(), first);
+
+        // The write composed against that reading does not land: it read the
+        // key as free and the winner has since taken it.
+        table
+            .write_with_transaction(None, &second, &losing)
+            .unwrap();
+        assert!(losing.commit().is_err());
+
+        // The retry that conflict drives re-reads the key before anything
+        // else, so the second request is answered with the attempt the first
+        // created rather than overwriting it with its own allocation. An
+        // equal digest returns the first attempt, which is the whole of the
+        // retry guarantee — and the row, its single-flight slot and the
+        // lookup all go on naming that attempt.
+        assert_eq!(table.create_or_resolve(&second).unwrap(), first);
+        assert_eq!(table.get(REQUEST_KEY).unwrap(), Some(first.clone()));
+        assert_eq!(
+            table.live_attempt(HOST, TARGET, Some(1)).unwrap(),
+            Some(first.clone())
+        );
+        assert_eq!(table.live_attempt(HOST, TARGET, Some(2)).unwrap(), None);
+        assert_eq!(
+            table.resolve_request_key(REQUEST_KEY, &digest).unwrap(),
+            Some(first.clone())
+        );
+
+        // `upsert` carries an attempt forward and does not create one: an
+        // install it finds no row under is refused, so the decision above
+        // cannot be reached around by writing the row directly.
+        table.delete(REQUEST_KEY).unwrap();
+        assert!(table.upsert(&first).is_err());
+        assert_eq!(table.get(REQUEST_KEY).unwrap(), None);
+    }
+
+    #[test]
+    fn deleting_an_attempt_leaves_the_owed_cleanup_entry_another_row_has_taken() {
+        let test_db = TestDb::new();
+        let table = test_db.table();
+
+        // The owed-cleanup key is the triple alone, so the second attempt's
+        // entry replaces the first's. Deleting the first must not take the
+        // entry the second now holds with it: the row would still record the
+        // obligation while nothing could find it.
+        let first = owing(
+            terminal_attempt("op-first", HOST, TARGET, Some(1), 1_000, 9_000),
+            CleanupState::PendingIdentityTeardown,
+        );
+        let second = owing(
+            terminal_attempt("op-second", HOST, TARGET, Some(1), 2_000, 9_000),
+            CleanupState::PendingDeregister,
+        );
+        table.upsert(&first).unwrap();
+        table.upsert(&second).unwrap();
+        assert_eq!(
+            table.attempt_owing_cleanup(TARGET, HOST, Some(1)).unwrap(),
+            Some(second.clone())
+        );
+
+        table.delete("op-first").unwrap();
+        assert_eq!(table.get("op-first").unwrap(), None);
+        assert_eq!(
+            table.attempt_owing_cleanup(TARGET, HOST, Some(1)).unwrap(),
+            Some(second)
+        );
+        assert_eq!(owed_cleanup_entries(&test_db), 1);
+    }
+
+    #[test]
+    fn two_addresses_under_one_listener_key_are_ordered_by_the_address_too() {
+        // The listener keys tie, so an order taken from them alone would
+        // leave the transcript in the caller's order, and the same request
+        // sent twice would be free to hash differently.
+        let mut intent = golden_intent();
+        intent.bind_addrs = Some(vec![
+            ("ingest".to_string(), "192.168.0.2:38370".parse().unwrap()),
+            ("ingest".to_string(), "192.168.0.1:38370".parse().unwrap()),
+        ]);
+        let mut reordered = intent.clone();
+        reordered.bind_addrs.as_mut().unwrap().reverse();
+        assert_eq!(intent.digest().unwrap(), reordered.digest().unwrap());
+    }
+
+    #[test]
+    fn moving_a_finalized_attempt_off_a_triple_takes_its_pointer_with_it() {
+        let test_db = TestDb::new();
+        let table = test_db.table();
+
+        // The instance is what the allocating call fills in, so a row can
+        // come to name another triple. The pointer it stamped on the triple
+        // it left would otherwise go on naming it, and a lookup there would
+        // answer with a row whose own fields name a different triple.
+        let finalized = terminal_attempt("op-move", HOST, TARGET, Some(1), 1_000, 9_000);
+        table.upsert(&finalized).unwrap();
+        assert_eq!(
+            table.latest_attempt(HOST, TARGET, Some(1)).unwrap(),
+            Some(finalized.clone())
+        );
+
+        let mut moved = finalized.clone();
+        moved.instance = Some(2);
+        table.upsert(&moved).unwrap();
+
+        assert_eq!(table.latest_attempt(HOST, TARGET, Some(1)).unwrap(), None);
+        assert_eq!(
+            table.latest_attempt(HOST, TARGET, Some(2)).unwrap(),
+            Some(moved)
+        );
+        assert_eq!(test_db.pointed_at_keys(), vec!["op-move".to_string()]);
+
+        // The pointer another attempt has since taken is not this one's to
+        // drop: the entry goes only while it still names the row moving off
+        // the triple, so a later finalization there stays findable.
+        let sibling = terminal_attempt("op-sibling", HOST, TARGET, Some(2), 3_000, 9_000);
+        table.upsert(&sibling).unwrap();
+        let mut away = table.get("op-move").unwrap().unwrap();
+        away.instance = Some(3);
+        table.upsert(&away).unwrap();
+        assert_eq!(
+            table.latest_attempt(HOST, TARGET, Some(2)).unwrap(),
+            Some(sibling)
+        );
+    }
+
+    #[test]
+    fn re_writing_an_older_finalized_attempt_leaves_the_pointer_where_it_is() {
+        let test_db = TestDb::new();
+        let table = test_db.table();
+
+        // The pointer moves on the write that finalizes, and a row finalized
+        // earlier can be written again — a replayed upsert, a field corrected
+        // after the fact. Neither finalizes anything, so neither may take the
+        // triple back from the attempt that finalized after it.
+        let superseded = terminal_attempt("op-a", HOST, TARGET, Some(1), 1_000, 9_000);
+        let current = terminal_attempt("op-b", HOST, TARGET, Some(1), 2_000, 9_000);
+        table.upsert(&superseded).unwrap();
+        table.upsert(&current).unwrap();
+        assert_eq!(test_db.pointed_at_keys(), ["op-b"]);
+
+        table.upsert(&superseded).unwrap();
+        let mut amended = superseded.clone();
+        amended.expires_at = timestamp(11_000);
+        table.upsert(&amended).unwrap();
+
+        assert_eq!(test_db.pointed_at_keys(), ["op-b"]);
+        assert_eq!(
+            table.latest_attempt(HOST, TARGET, Some(1)).unwrap(),
+            Some(current)
+        );
+        // And retention keeps what the pointer names, not what was written
+        // last: a bound nothing is within leaves the later finalization.
+        assert_eq!(table.prune(bound(0, 0), timestamp(12_000)).unwrap(), 1);
+        assert_eq!(keys(&table, Direction::Forward, None), ["op-b"]);
+    }
+
+    #[test]
+    fn the_dedupe_guarantee_ends_where_retention_does() {
+        let test_db = TestDb::new();
+        let table = test_db.table();
+
+        // There is no tombstone: a client replaying a request after its row is
+        // gone gets a new install rather than a refusal.
+        let digest = golden_intent().digest().unwrap();
+        let mut superseded = terminal_attempt(REQUEST_KEY, HOST, TARGET, Some(1), 1_000, 9_000);
+        superseded.action = Action::Install;
+        superseded.install_intent = Some(digest);
+        let current = terminal_attempt(OTHER_REQUEST_KEY, HOST, TARGET, Some(1), 2_000, 9_000);
+        table.create_or_resolve(&superseded).unwrap();
+        table.upsert(&current).unwrap();
+
+        assert!(
+            table
+                .resolve_request_key(REQUEST_KEY, &digest)
+                .unwrap()
+                .is_some()
+        );
+        assert_eq!(table.prune(bound(0, 0), timestamp(10_000)).unwrap(), 1);
+        assert_eq!(
+            table.resolve_request_key(REQUEST_KEY, &digest).unwrap(),
+            None
+        );
     }
 }

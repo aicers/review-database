@@ -40,22 +40,46 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   empty, so resuming an interrupted operation finalizes the same row instead of
   adding another, and it records the host, the instance, the
   resolved version and commit, the coarse phase, the retry budget, an absolute
-  expiry deadline, and any compensation still owed. `is_terminal` reports
-  whether the operation reached a result, and `is_fully_discharged` whether it
-  also owes no compensation. The table answers three further questions about
-  the attempts it holds: whether a host, target, and instance already has a
-  live attempt, which attempts still owe a compensation for one, and which
-  deadlines have passed. At most one live attempt is accepted per host, target,
-  and instance, so a double-click cannot drive one operation twice, while a
-  second instance of the same module may install alongside the first.
-  `sweep_expired` finalizes every attempt whose deadline has passed as failed,
-  which frees that slot but leaves any compensation still recorded as owed, and
-  `prune` bounds the table by age and by count per host, target, and instance,
-  keeping the most recent finished attempt of each along with every attempt
-  that is unfinished or still owes something. Both take the instant to measure
+  expiry deadline, when it was finished with, and any compensation still owed.
+  `is_terminal` reports whether the operation reached a result, and
+  `is_fully_discharged` whether it also owes no compensation; the finalization
+  instant is set exactly when both hold, so an operation that failed with a
+  teardown still owed starts no retention clock until that teardown is
+  discharged. The table answers three further questions about the attempts it
+  holds: whether a host, target, and instance already has a live attempt,
+  which attempt still owes a compensation for one, and which deadlines have
+  passed. At most one live attempt is accepted per host, target, and instance,
+  so a double-click cannot drive one operation twice, while a second instance
+  of the same module may install alongside the first, and the record of which
+  attempt owes a compensation holds one entry per host, target, and instance,
+  so a second attempt owing one for the same three replaces the first in it
+  rather than queueing beside it. `latest_attempt` reports the current
+  attempt for a host, target, and instance as one ordered lookup: a running
+  attempt, else one that is finished but still owes a compensation, else the
+  one that finalized last. `sweep_expired` finalizes every attempt whose
+  deadline has passed as failed, which frees that slot but leaves any
+  compensation still recorded as owed, and `prune` bounds the table by age
+  measured from the finalization and by count per host, target, and instance,
+  keeping the current attempt of each along with every attempt that is
+  unfinished or still owes something. Both take the instant to measure
   against and neither reads the clock, so a caller decides what "now" means.
-  These records live in a table reachable through
-  `Store::operation_attempt_map`.
+  An install also carries the digest of the request it was submitted with,
+  taken over the byte-exact transcript that `InstallIntent`, `BuildSelector`,
+  and `OperationOnFailure` describe; the table requires one of an install, of
+  no other action, and only under a request key that is a UUIDv4 in canonical
+  hyphenated form, which is lowercase. `resolve_request_key` uses it to answer
+  a resubmitted request key: the same request returns the attempt already held
+  under it, and a different one is refused with a non-retryable
+  `RequestKeyError` naming the key. That answer is not a reservation, so an
+  install is written with `create_or_resolve`, which decides under the request
+  key's own lock whether to create the attempt, return the one already held
+  under that key, or refuse the key as used for a different request, while
+  `upsert` carries an attempt already held under its key forward and creates
+  none that carries a digest. Two requests carrying one key therefore cannot
+  both create an attempt under it: the one that gets there second is handed
+  the attempt the first created, or refused where the request differs. These
+  records live in a table reachable
+  through `Store::operation_attempt_map`.
 - Added `write_version_markers`, which records a caller-supplied database
   format version in the `VERSION` files of a data directory and a backup
   directory. It is the metadata companion to restoring a rollback snapshot:

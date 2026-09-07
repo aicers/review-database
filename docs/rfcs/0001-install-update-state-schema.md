@@ -275,9 +275,14 @@ The manager (review) and the API (review-web) consume these types:
     in memory would let a resubmit after a REView restart allocate a second
     instance. For **every other operation** REView generates it, as before.
     **The format is a UUIDv4 in its canonical hyphenated form** and a value
-    that does not parse as one is **refused**. That is a shape check and
-    nothing more: it does not stop a client sending a constant or replaying a
-    stored value, and this document does not pretend otherwise — **not
+    that does not parse as one is **refused**. Canonical is **lowercase**:
+    the key is the row's identity, compared as the bytes it arrived as, so
+    accepting `A`-`F` too would let one UUID arrive as two request keys,
+    each finding nothing under the other and each allocating an instance.
+    A client that holds a UUID uppercase renders it lowercase before
+    submitting; nothing downstream normalizes it for them. That is a shape
+    check and nothing more: it does not stop a client sending a constant or
+    replaying a stored value, and this document does not pretend otherwise — **not
     re-using a key is a client obligation** (RFC-E §4), and the server cannot
     verify it.
     **A key that matches an existing row is resolved by comparing a stored
@@ -324,6 +329,22 @@ The manager (review) and the API (review-web) consume these types:
     hang off it. The digest is stored rather than the fields because the only
     question ever asked of it is equality; the refusal names the key rather
     than the difference for the same reason.
+    **The comparison is repeated at the write**, against the row the write
+    would replace and under that row's lock, because the lookup on its own
+    reserves nothing: two requests carrying one key can both be told it is
+    free, and without the second comparison the one that commits second
+    replaces the attempt the first created instead of being refused.
+    **And the lookup is not the decision to create.** Repeating the
+    comparison catches the second request whose digest *differs*; the one
+    carrying the *same* digest passes it and would go on to write its own
+    allocation over the first attempt's row — which is the retry the
+    idempotence above is about, so it is the one case that must not be
+    handled by a write at all. So the store makes all three answers — create
+    it, return the attempt already held, refuse the key — as **one decision
+    under that key's own lock, in the transaction that writes**, and refuses
+    to create a row carrying an `install_intent` by any other path. The
+    request that gets there second is handed the attempt the first created,
+    and releases the instance it had allocated for a row it did not write.
     **`install_intent` is `None` for every non-allocating operation.** Update,
     remove and onboard are keyed by a REView-generated value that is unique by
     construction, so there is nothing to compare — and a stored `None`
@@ -522,18 +543,20 @@ The manager (review) and the API (review-web) consume these types:
   reading half: `started_at` does not order attempts, since two can share an
   instant and a clock can go backwards, so "the latest owed row" is not a
   question the store can answer.
-  **The storage half is a CODE CHANGE, not an existing property, and an
+  **The storage half was a CODE CHANGE, not an existing property, and an
   earlier revision of this section had it backwards.** It argued the invariant
   was already enforced because the owed-teardown index carries no
-  discriminator and a second row would overwrite the first. The shipped index
-  does the opposite: `owed_cleanup_key` **appends the `idempotency_key`**
-  after `(target, host, instance)`, its own doc comment says "several attempts
-  may owe a cleanup for one triple", and `attempts_owing_cleanup` returns a
-  **`Vec<OperationAttempt>`**. So today a second row **queues** rather than
-  overwriting, and nothing refuses it. Making the invariant real therefore
-  means **dropping the discriminator from the key and narrowing the read to at
-  most one row**, and retiring the tests that assert several. Until that lands,
-  the three-step lookup's second step has no single row to return.
+  discriminator and a second row would overwrite the first. The index as
+  shipped did the opposite: `owed_cleanup_key` **appended the
+  `idempotency_key`** after `(target, host, instance)`, its own doc comment
+  said "several attempts may owe a cleanup for one triple", and the read
+  returned a **`Vec<OperationAttempt>`**, so a second row **queued** rather
+  than overwriting and the three-step lookup's second step had no single row
+  to return. Making the invariant real therefore meant **dropping the
+  discriminator from the key and narrowing the read to at most one row**, and
+  retiring the tests that asserted several. That has landed: the owed-cleanup
+  key is the triple alone, and the read is `attempt_owing_cleanup`, returning
+  at most one row.
   **The invariant needs RFC-D2's guard to be WIDER than it was, and §4f
   widens it**: while a triple has an owed teardown, **no new
   `operation_attempt` may be created THAT NAMES THAT TRIPLE** — no update, no
