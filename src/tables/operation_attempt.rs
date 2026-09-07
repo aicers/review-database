@@ -305,9 +305,13 @@ impl InstallIntent {
         let count = count.context("too many bind addresses to encode")?;
         transcript.extend_from_slice(&count.to_be_bytes());
         // The caller's order is not the transcript's: two requests that name
-        // the same listeners in a different order are the same request.
+        // the same listeners in a different order are the same request. The
+        // address breaks a tie between two entries under one listener key,
+        // which the key alone leaves to the caller's order and so to chance.
         let mut sorted: Vec<&(String, SocketAddr)> = bind_addrs.iter().collect();
-        sorted.sort_unstable_by(|left, right| left.0.cmp(&right.0));
+        sorted.sort_unstable_by(|left, right| {
+            left.0.cmp(&right.0).then_with(|| left.1.cmp(&right.1))
+        });
         for (listener_key, addr) in sorted {
             push_segment(&mut transcript, listener_key)?;
             // `SocketAddr`'s own `Display`, named rather than re-derived: an
@@ -3411,6 +3415,21 @@ mod tests {
             .unwrap_err();
         assert!(matches!(error, RequestKeyError::RequestKeyReused { .. }));
         assert!(!error.is_retryable());
+    }
+
+    #[test]
+    fn two_addresses_under_one_listener_key_are_ordered_by_the_address_too() {
+        // The listener keys tie, so an order taken from them alone would
+        // leave the transcript in the caller's order, and the same request
+        // sent twice would be free to hash differently.
+        let mut intent = golden_intent();
+        intent.bind_addrs = Some(vec![
+            ("ingest".to_string(), "192.168.0.2:38370".parse().unwrap()),
+            ("ingest".to_string(), "192.168.0.1:38370".parse().unwrap()),
+        ]);
+        let mut reordered = intent.clone();
+        reordered.bind_addrs.as_mut().unwrap().reverse();
+        assert_eq!(intent.digest().unwrap(), reordered.digest().unwrap());
     }
 
     #[test]
