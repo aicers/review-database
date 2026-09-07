@@ -334,6 +334,17 @@ The manager (review) and the API (review-web) consume these types:
     reserves nothing: two requests carrying one key can both be told it is
     free, and without the second comparison the one that commits second
     replaces the attempt the first created instead of being refused.
+    **And the lookup is not the decision to create.** Repeating the
+    comparison catches the second request whose digest *differs*; the one
+    carrying the *same* digest passes it and would go on to write its own
+    allocation over the first attempt's row — which is the retry the
+    idempotence above is about, so it is the one case that must not be
+    handled by a write at all. So the store makes all three answers — create
+    it, return the attempt already held, refuse the key — as **one decision
+    under that key's own lock, in the transaction that writes**, and refuses
+    to create a row carrying an `install_intent` by any other path. The
+    request that gets there second is handed the attempt the first created,
+    and releases the instance it had allocated for a row it did not write.
     **`install_intent` is `None` for every non-allocating operation.** Update,
     remove and onboard are keyed by a REView-generated value that is unique by
     construction, so there is nothing to compare — and a stored `None`

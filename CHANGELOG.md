@@ -64,10 +64,14 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   hyphenated form, which is lowercase. `resolve_request_key` uses it to answer
   a resubmitted request key: the same request returns the attempt already held
   under it, and a different one is refused with a non-retryable
-  `RequestKeyError` naming the key. That answer is not a reservation, so the
-  same comparison is made again against the row a write would replace: two
-  requests carrying one key cannot both create an attempt under it, and the
-  one that commits second is refused rather than replacing the first. These
+  `RequestKeyError` naming the key. That answer is not a reservation, so an
+  install is written with `create_or_resolve`, which decides under the request
+  key's own lock whether to create the attempt, return the one already held
+  under that key, or refuse the key as used for a different request, while
+  `upsert` carries an attempt already held under its key forward and creates
+  none that carries a digest. Two requests carrying one key therefore cannot
+  both create an attempt under it: the one that gets there second is handed
+  the attempt the first created, or refused where the request differs. These
   records live in a table reachable
   through `Store::operation_attempt_map`.
 - Added `write_version_markers`, which records a caller-supplied database

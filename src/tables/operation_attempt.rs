@@ -999,10 +999,13 @@ impl<'d> Table<'d, OperationAttempt> {
     /// row would destroy a live attempt's record along with the allocations
     /// that hang off it.
     ///
-    /// A `None` here is not a reservation. Two requests sharing one key can
-    /// both be told it is free, so [`Table::upsert`] repeats the comparison
-    /// against the row it is replacing, under that row's lock: the one that
-    /// commits second is refused there rather than overwriting the first.
+    /// A `None` here is not a reservation, and it is not the decision to
+    /// create. Two requests sharing one key can both be told it is free, so
+    /// the install itself is written with [`Table::create_or_resolve`], which
+    /// makes that decision again under the key's own lock and in the
+    /// transaction that writes: the request that gets there second is
+    /// answered with the attempt the first created, or refused where the
+    /// request differs, rather than writing over it.
     ///
     /// The guarantee is bounded by retention: a client that replays a request
     /// after the row is gone gets a new install, and there is no tombstone.
@@ -1059,8 +1062,85 @@ impl<'d> Table<'d, OperationAttempt> {
         self.attempts_in_index(&[EXPIRES_AT], Some(&cutoff))
     }
 
-    /// Stores an attempt, replacing any attempt already held under the same
-    /// idempotency key, and brings every index in line with it.
+    /// Creates the attempt under the request key it carries, or returns the
+    /// attempt already held under that key where the request is the same.
+    ///
+    /// This is how an install comes into existence. The three answers the
+    /// request key allows — create it, return the attempt already running
+    /// under it, refuse it as a reuse — are decided under that key's own lock
+    /// and in the transaction that writes, so the decision cannot be
+    /// overtaken between being made and being acted on. Two requests carrying
+    /// one key are both told it is free by
+    /// [`Table::resolve_request_key`], which answers outside any transaction;
+    /// here the one that reads second, or whose commit conflicts and re-runs,
+    /// finds the row the first wrote and is answered with it.
+    ///
+    /// The attempt returned is the one the store holds: this call's own row
+    /// where it created it, and the first request's row where it did not. A
+    /// caller told it did not create the row allocated an instance nothing
+    /// now refers to, and releases it.
+    ///
+    /// [`Table::upsert`] carries an attempt already held under its key
+    /// forward. It does not create one carrying an `install_intent`, so this
+    /// decision has no way around it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the attempt carries no `install_intent`, since
+    /// every other action is keyed by a value unique by construction and is
+    /// written with [`Table::upsert`], or if the database operation fails.
+    ///
+    /// A refusal that concerns the request key carries a [`RequestKeyError`]
+    /// a caller can downcast to: [`RequestKeyError::MalformedRequestKey`]
+    /// where the key is not a `UUIDv4` in canonical hyphenated form, and
+    /// [`RequestKeyError::RequestKeyReused`] where the key already names an
+    /// attempt submitted with a different request.
+    pub fn create_or_resolve(&self, attempt: &OperationAttempt) -> Result<OperationAttempt> {
+        let Some(install_intent) = attempt.install_intent else {
+            bail!(
+                "only an attempt carrying an install intent is created under a request key; every other action is written with `upsert`"
+            );
+        };
+        if !is_uuid_v4(&attempt.idempotency_key) {
+            return Err(RequestKeyError::MalformedRequestKey {
+                request_key: attempt.idempotency_key.clone(),
+            }
+            .into());
+        }
+        loop {
+            let txn = self.transaction();
+            if let Some(stored) = self.get_for_update(&attempt.idempotency_key, &txn)? {
+                // The key is taken, and nothing is written either way. An
+                // equal digest is this request resubmitted, and is answered
+                // with the attempt already held under it — the row keeps its
+                // record and the allocations that hang off it, and the
+                // instance this caller allocated is the one released.
+                // Anything else is a key used for a second request.
+                if stored.install_intent == Some(install_intent) {
+                    return Ok(stored);
+                }
+                return Err(RequestKeyError::RequestKeyReused {
+                    request_key: attempt.idempotency_key.clone(),
+                }
+                .into());
+            }
+            self.write_with_transaction(None, attempt, &txn)?;
+            match txn.commit() {
+                Ok(()) => return Ok(attempt.clone()),
+                Err(e) => {
+                    // The retry re-reads the key before anything else, so a
+                    // loser that conflicted on a create finds the winner's
+                    // row above rather than composing its write again.
+                    if !e.as_ref().starts_with("Resource busy:") {
+                        return Err(e).context("failed to store the operation attempt");
+                    }
+                }
+            }
+        }
+    }
+
+    /// Stores an attempt already held under its idempotency key, replacing it
+    /// and bringing every index in line with the new row.
     ///
     /// A re-drive or a resume therefore finalizes the existing row in place
     /// instead of adding a second row for the same logical operation. The row
@@ -1079,12 +1159,15 @@ impl<'d> Table<'d, OperationAttempt> {
     /// that same transaction where it still names this attempt, so no triple
     /// is left pointing at a row that has since moved off it.
     ///
-    /// The row being replaced is read under an exclusive lock and its
-    /// `install_intent` must match the one being written, which is what makes
-    /// the decision [`Table::resolve_request_key`] returns atomic with the
-    /// write: two requests sharing one key can both find it free, and the one
-    /// that commits second is refused rather than overwriting the attempt the
-    /// first created.
+    /// An attempt carrying an `install_intent` is not created here: a write
+    /// that finds no row under its key is refused, because deciding whether a
+    /// request key is free is [`Table::create_or_resolve`]'s to make under
+    /// that key's lock. Two requests sharing one key can both find it free in
+    /// [`Table::resolve_request_key`], and a create through this path would
+    /// let the second write over the attempt the first created. The row being
+    /// replaced is read under an exclusive lock and its `install_intent` must
+    /// match the one being written, so a write carrying a different request
+    /// is refused here too.
     ///
     /// # Errors
     ///
@@ -1092,6 +1175,8 @@ impl<'d> Table<'d, OperationAttempt> {
     /// `finalized_at` is set for an attempt that is not fully discharged or
     /// unset for one that is, if an install carries no `install_intent` or an
     /// `install_intent` is carried by an attempt that is not an install, if
+    /// the attempt carries an `install_intent` and no row is held under its
+    /// key, which is [`Table::create_or_resolve`]'s decision to make, if
     /// the attempt is non-terminal and a different
     /// attempt is already live for its `(host, target, instance)` triple, if
     /// the write moves the latest pointer and that column family is not
@@ -1114,6 +1199,16 @@ impl<'d> Table<'d, OperationAttempt> {
         loop {
             let txn = self.transaction();
             let stored = self.get_for_update(&attempt.idempotency_key, &txn)?;
+            // Read under the key's lock, so this is the same reading the
+            // write below is composed against: an install the store holds no
+            // row for is a create, and a create is decided in
+            // `create_or_resolve` rather than here, where two requests
+            // carrying one key would each write their own allocation.
+            if stored.is_none() && attempt.install_intent.is_some() {
+                bail!(
+                    "an install attempt is created with `create_or_resolve`, which decides under the request key's lock whether it is free; `upsert` carries forward an attempt already held under its key"
+                );
+            }
             self.write_with_transaction(stored.as_ref(), attempt, &txn)?;
             match txn.commit() {
                 Ok(()) => return Ok(()),
@@ -2533,7 +2628,7 @@ mod tests {
         attempt.started_at = timestamp(1_700_000_000);
         attempt.expires_at = timestamp(1_700_000_500);
         attempt.cleanup_state = Some(CleanupState::PendingIdentityTeardown);
-        table.upsert(&attempt).unwrap();
+        table.create_or_resolve(&attempt).unwrap();
 
         let instant = timestamp(1_700_000_501);
         assert_eq!(
@@ -2606,7 +2701,7 @@ mod tests {
         let mut install = install_attempt(REQUEST_KEY, HOST, TARGET, Some(1));
         install.expires_at = onboard.expires_at;
         table.upsert(&onboard).unwrap();
-        table.upsert(&install).unwrap();
+        table.create_or_resolve(&install).unwrap();
 
         // The deadline belongs to every action, so one sweep takes both.
         assert_eq!(table.sweep_expired(onboard.expires_at).unwrap(), 2);
@@ -3373,7 +3468,7 @@ mod tests {
         let mut install = module_attempt(REQUEST_KEY);
         install.action = Action::Install;
         install.install_intent = Some(digest);
-        table.upsert(&install).unwrap();
+        table.create_or_resolve(&install).unwrap();
         assert_eq!(
             table.get(REQUEST_KEY).unwrap().unwrap().install_intent,
             Some(digest)
@@ -3386,7 +3481,13 @@ mod tests {
         let mut generated_key = install.clone();
         generated_key.idempotency_key = "op-install".to_string();
         generated_key.instance = Some(5);
-        assert!(table.upsert(&generated_key).is_err());
+        assert!(matches!(
+            table
+                .create_or_resolve(&generated_key)
+                .unwrap_err()
+                .downcast_ref::<RequestKeyError>(),
+            Some(RequestKeyError::MalformedRequestKey { .. })
+        ));
 
         // And an install without one is refused for the same reason from the
         // other side: nothing could compare a resubmission against it, so the
@@ -3545,7 +3646,7 @@ mod tests {
         let mut install = module_attempt(REQUEST_KEY);
         install.action = Action::Install;
         install.install_intent = Some(digest);
-        table.upsert(&install).unwrap();
+        table.create_or_resolve(&install).unwrap();
 
         // The same request returns the first attempt, which is what makes a
         // retry idempotent.
@@ -3609,14 +3710,20 @@ mod tests {
             // The write path refuses it too: a row keyed by a spelling
             // `resolve_request_key` will not take is a row no retry can find.
             let install = install_attempt(&uppercase, HOST, TARGET, Some(1));
-            assert!(table.upsert(&install).is_err());
+            assert!(matches!(
+                table
+                    .create_or_resolve(&install)
+                    .unwrap_err()
+                    .downcast_ref::<RequestKeyError>(),
+                Some(RequestKeyError::MalformedRequestKey { .. })
+            ));
             assert_eq!(table.get(&uppercase).unwrap(), None);
         }
 
         // The lowercase key holds the row, and the uppercase spelling of that
         // same UUID does not reach it.
         let install = install_attempt(REQUEST_KEY, HOST, TARGET, Some(1));
-        table.upsert(&install).unwrap();
+        table.create_or_resolve(&install).unwrap();
         assert_eq!(
             table.resolve_request_key(REQUEST_KEY, &digest).unwrap(),
             Some(install)
@@ -3660,7 +3767,7 @@ mod tests {
 
         let losing = table.transaction();
         assert_eq!(table.get_for_update(REQUEST_KEY, &losing).unwrap(), None);
-        table.upsert(&first).unwrap();
+        assert_eq!(table.create_or_resolve(&first).unwrap(), first);
 
         // The write composed against that reading does not land: it read the
         // key as free and the winner has since taken it.
@@ -3670,11 +3777,11 @@ mod tests {
         assert!(losing.commit().is_err());
         assert_eq!(table.get(REQUEST_KEY).unwrap(), Some(first.clone()));
 
-        // And the retry that conflict drives — which is what `upsert` does on
-        // its own — refuses the second request rather than replacing the row
-        // the first created, so the first attempt keeps its record and the
-        // allocations that hang off it.
-        let error = table.upsert(&second).unwrap_err();
+        // And the retry that conflict drives — which is what
+        // `create_or_resolve` does on its own — refuses the second request
+        // rather than replacing the row the first created, so the first
+        // attempt keeps its record and the allocations that hang off it.
+        let error = table.create_or_resolve(&second).unwrap_err();
         let error = error.downcast::<RequestKeyError>().unwrap();
         assert!(matches!(
             &error,
@@ -3703,6 +3810,66 @@ mod tests {
             error.downcast_ref::<RequestKeyError>(),
             Some(RequestKeyError::RequestKeyReused { .. })
         ));
+    }
+
+    #[test]
+    fn a_same_intent_retry_returns_the_first_attempt_rather_than_replacing_it() {
+        let test_db = TestDb::new();
+        let table = test_db.table();
+
+        let digest = golden_intent().digest().unwrap();
+
+        // One request submitted twice: the same digest, and two rows composed
+        // against two independent allocations of the instance number, because
+        // each caller believed it was the one creating the attempt.
+        let first = install_attempt(REQUEST_KEY, HOST, TARGET, Some(1));
+        let mut second = install_attempt(REQUEST_KEY, HOST, TARGET, Some(2));
+        second.started_at = timestamp(2_000);
+
+        // Neither learns of the other from the lookup: it answers before the
+        // write and outside it, so both are told the key is free.
+        for _ in 0..2 {
+            assert_eq!(
+                table.resolve_request_key(REQUEST_KEY, &digest).unwrap(),
+                None
+            );
+        }
+
+        let losing = table.transaction();
+        assert_eq!(table.get_for_update(REQUEST_KEY, &losing).unwrap(), None);
+        assert_eq!(table.create_or_resolve(&first).unwrap(), first);
+
+        // The write composed against that reading does not land: it read the
+        // key as free and the winner has since taken it.
+        table
+            .write_with_transaction(None, &second, &losing)
+            .unwrap();
+        assert!(losing.commit().is_err());
+
+        // The retry that conflict drives re-reads the key before anything
+        // else, so the second request is answered with the attempt the first
+        // created rather than overwriting it with its own allocation. An
+        // equal digest returns the first attempt, which is the whole of the
+        // retry guarantee — and the row, its single-flight slot and the
+        // lookup all go on naming that attempt.
+        assert_eq!(table.create_or_resolve(&second).unwrap(), first);
+        assert_eq!(table.get(REQUEST_KEY).unwrap(), Some(first.clone()));
+        assert_eq!(
+            table.live_attempt(HOST, TARGET, Some(1)).unwrap(),
+            Some(first.clone())
+        );
+        assert_eq!(table.live_attempt(HOST, TARGET, Some(2)).unwrap(), None);
+        assert_eq!(
+            table.resolve_request_key(REQUEST_KEY, &digest).unwrap(),
+            Some(first.clone())
+        );
+
+        // `upsert` carries an attempt forward and does not create one: an
+        // install it finds no row under is refused, so the decision above
+        // cannot be reached around by writing the row directly.
+        table.delete(REQUEST_KEY).unwrap();
+        assert!(table.upsert(&first).is_err());
+        assert_eq!(table.get(REQUEST_KEY).unwrap(), None);
     }
 
     #[test]
@@ -3837,7 +4004,7 @@ mod tests {
         superseded.action = Action::Install;
         superseded.install_intent = Some(digest);
         let current = terminal_attempt(OTHER_REQUEST_KEY, HOST, TARGET, Some(1), 2_000, 9_000);
-        table.upsert(&superseded).unwrap();
+        table.create_or_resolve(&superseded).unwrap();
         table.upsert(&current).unwrap();
 
         assert!(
