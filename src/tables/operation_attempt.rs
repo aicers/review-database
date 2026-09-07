@@ -1099,7 +1099,8 @@ impl<'d> Table<'d, OperationAttempt> {
     ///
     /// # Errors
     ///
-    /// Returns an error if the database operation fails.
+    /// Returns an error if the latest-pointer column family is not
+    /// registered, or if the database operation fails.
     pub fn delete(&self, idempotency_key: &str) -> Result<()> {
         loop {
             let txn = self.transaction();
@@ -1241,8 +1242,8 @@ impl<'d> Table<'d, OperationAttempt> {
     ///
     /// # Errors
     ///
-    /// Returns an error if a stored value is invalid or the database operation
-    /// fails.
+    /// Returns an error if a stored value is invalid, if the latest-pointer
+    /// column family is not registered, or if the database operation fails.
     pub fn prune(&self, bound: RetentionBound, instant: DateTime<Utc>) -> Result<usize> {
         loop {
             let txn = self.transaction();
