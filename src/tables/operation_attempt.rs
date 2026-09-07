@@ -51,7 +51,8 @@
 //!
 //! Every index entry is written and removed in the same transaction as its
 //! row, so one can never outlive the other. [`Table::upsert`],
-//! [`Table::delete`], [`Table::sweep_expired`] and [`Table::prune`] are
+//! [`Table::allocate_instance`], [`Table::delete`], [`Table::sweep_expired`]
+//! and [`Table::prune`] are
 //! therefore this table's only writers, and that is enforced by the compiler
 //! rather than by convention: the generic write API on [`Table`] is bounded by
 //! [`UniqueKey`](crate::UniqueKey) and [`Value`](super::Value), and
@@ -77,13 +78,15 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use chrono::{DateTime, TimeDelta, Utc};
 use ring::digest;
 use rocksdb::{Direction, IteratorMode, OptimisticTransactionDB, ReadOptions, Transaction};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+use super::core_component::is_core_component;
+use super::{CoreComponent, InstanceAllocation, InstanceAllocationError};
 use crate::{EXCLUSIVE, Map, Table, types::FromKeyValue};
 
 /// The first byte reserved for the index key spaces.
@@ -509,8 +512,11 @@ pub struct OperationAttempt {
     /// This is the number, not a composed name, and it is the same type the
     /// wire carries, so nothing has to convert or compare string forms; the
     /// three-digit zero-padded rendering belongs to the certificate SAN and
-    /// the registration id. In v1 it is `Some(1)` for a module and `None` for
-    /// a core component.
+    /// the registration id. For a module it is the number
+    /// [`InstanceAllocation`] holds for the attempt — the smallest free one in
+    /// `1..=999` for the `(host, target)` pair when
+    /// [`Table::allocate_instance`] picked it. A core component's class has no
+    /// instance dimension at all, so it is `None` and no number is taken.
     pub instance: Option<u32>,
     /// The operator's intent.
     pub action: Action,
@@ -1169,6 +1175,18 @@ impl<'d> Table<'d, OperationAttempt> {
     /// match the one being written, so a write carrying a different request
     /// is refused here too.
     ///
+    /// The same transaction releases the instance number the attempt holds,
+    /// when the state it records is one that releases it. That is not
+    /// something the caller opts into: an attempt that is terminal and owes no
+    /// cleanup has nothing left that would revisit it, so a release left to a
+    /// second write is a permanent leak if it never happens.
+    ///
+    /// The one field group a re-drive may not restate is the
+    /// `(host, target, instance)` triple, and only while the key still holds
+    /// an instance number for it. That number is released through the attempt
+    /// that names it, so a row that moved off the triple would leave it held
+    /// by a record that no longer mentions it and can no longer give it back.
+    ///
     /// # Errors
     ///
     /// Returns an error if the attempt's idempotency key is empty, if
@@ -1179,8 +1197,10 @@ impl<'d> Table<'d, OperationAttempt> {
     /// key, which is [`Table::create_or_resolve`]'s decision to make, if
     /// the attempt is non-terminal and a different
     /// attempt is already live for its `(host, target, instance)` triple, if
-    /// the write moves the latest pointer and that column family is not
-    /// registered, or if the database operation fails.
+    /// it moves the row off a `(host, target, instance)` triple whose
+    /// instance number the key still holds, if the write moves the latest
+    /// pointer and that column family is not registered, or if the database
+    /// operation fails.
     ///
     /// A refusal that concerns the request key carries a [`RequestKeyError`] a
     /// caller can downcast to: [`RequestKeyError::MalformedRequestKey`] where
@@ -1198,18 +1218,24 @@ impl<'d> Table<'d, OperationAttempt> {
         }
         loop {
             let txn = self.transaction();
-            let stored = self.get_for_update(&attempt.idempotency_key, &txn)?;
             // Read under the key's lock, so this is the same reading the
             // write below is composed against: an install the store holds no
             // row for is a create, and a create is decided in
             // `create_or_resolve` rather than here, where two requests
-            // carrying one key would each write their own allocation.
-            if stored.is_none() && attempt.install_intent.is_some() {
+            // carrying one key would each write their own allocation. The
+            // check lives here rather than in `upsert_with_transaction`,
+            // which `allocate_instance` uses to create exactly such a row
+            // once it has decided the key is free.
+            if attempt.install_intent.is_some()
+                && self
+                    .get_for_update(&attempt.idempotency_key, &txn)?
+                    .is_none()
+            {
                 bail!(
                     "an install attempt is created with `create_or_resolve`, which decides under the request key's lock whether it is free; `upsert` carries forward an attempt already held under its key"
                 );
             }
-            self.write_with_transaction(stored.as_ref(), attempt, &txn)?;
+            self.upsert_with_transaction(attempt, &txn)?;
             match txn.commit() {
                 Ok(()) => return Ok(()),
                 Err(e) => {
@@ -1219,6 +1245,318 @@ impl<'d> Table<'d, OperationAttempt> {
                 }
             }
         }
+    }
+
+    /// Takes an instance number for the attempt's `(host, target)` pair and
+    /// stores the attempt carrying it, and returns the stored attempt.
+    ///
+    /// This is how an attempt that installs a new instance of a module is
+    /// first recorded. The number is the smallest free one in `1..=999` for
+    /// the pair, and `attempt.instance` is whatever the allocator picked, not
+    /// whatever was passed in, so passing a number in is neither required nor
+    /// harmful.
+    ///
+    /// The returned attempt is whatever the key names once the call is done:
+    /// the row just written, or — when the key already named one — that row
+    /// exactly as it stands, which the call did not touch.
+    ///
+    /// The allocation and the attempt row are one transaction, which is not a
+    /// convenience: a number taken by a transaction of its own is held by
+    /// nothing if the process stops before the attempt is recorded, and
+    /// nothing would ever give it back, because every release is justified by
+    /// a record that in that case was never written. Either both land or
+    /// neither does, and there is no entry point that takes a number without
+    /// the attempt that owns it. The port rows keyed on the number will join
+    /// this same transaction.
+    ///
+    /// Storing the attempt releases what it gives back, exactly as
+    /// [`Table::upsert`] does, so a terminal attempt that gives its number
+    /// back gives back the one it has just been handed. Only the write that
+    /// starts an operation belongs here.
+    ///
+    /// # What may take a number
+    ///
+    /// Every condition below governs a *fresh* allocation, and is read only
+    /// after the key lookup has found nothing. A key that already names an
+    /// attempt takes no number, so none of them can refuse it: the row is
+    /// returned whatever the payload presented alongside the key now says.
+    ///
+    /// Only an [`Action::Install`] naming a component. An update and a
+    /// removal concern an instance that already has its number, and taking a
+    /// second one for either would hand out a number nothing releases; an
+    /// [`Action::Onboard`] carries no package at all, and its empty `target`
+    /// would key a row on an unnamed component. All three are refused here
+    /// rather than left to a caller to avoid, and so is an install whose
+    /// `target` is empty.
+    ///
+    /// A core component has no instance dimension at all and takes no number:
+    /// its attempts are recorded with [`Table::upsert`] and `instance = None`,
+    /// and a second install of one is refused by the single row per
+    /// `(component, host)` in [`CoreComponent`](super::CoreComponent). Two
+    /// checks refuse one a number here, and the first does not need a row to
+    /// exist: a `target` naming a canonical core-component package-id —
+    /// `review`, `aice-web-next`, `roxyd` or `bootroot` — is refused outright,
+    /// on a fresh store as much as a populated one, which is when the first
+    /// install of one arrives. The registry read then catches a pair this
+    /// build was told about under some other package-id.
+    ///
+    /// Classifying the four ids is not a fork of the packaging layer's
+    /// registry into this crate's schema: no row stores it, nothing migrates
+    /// when it changes, and `component` stays a `String` for the reasons under
+    /// *Why `component` is a `String`* on
+    /// [`CoreComponent`](super::CoreComponent). What is left to the caller is
+    /// only a package-id neither check knows, which is not a core component
+    /// this platform ships.
+    ///
+    /// Every pass reads the idempotency key **first**, the first pass as much
+    /// as a re-run after a commit conflict, and a row under that key is the
+    /// answer: it is returned as it stands and nothing is allocated. One key
+    /// is one operator action, whether the second request for it arrives while
+    /// the first is still committing or long after it finished, and selecting
+    /// a number without that check is exactly how one action becomes two
+    /// instances — and, for an action that already ended, how the record of
+    /// how it ended is overwritten by a fresh attempt. Only when no such row
+    /// exists is a number selected, and only then is anything about the
+    /// presented attempt examined at all: an operator re-driving a recorded
+    /// key gets the recorded answer, not a refusal earned by a payload the
+    /// call was never going to act on.
+    ///
+    /// That read is the transaction's first, and it is a `get_for_update`, so
+    /// there is no instant between deciding the key is free and writing it in
+    /// which another drive can commit the row unseen. A competing commit
+    /// either precedes the locked read, and is returned untouched, or follows
+    /// it, and fails this commit — whereupon the re-run reads it and returns
+    /// it. Reading the key before opening the transaction would leave exactly
+    /// that gap: a row committed inside it is read by the write path as the
+    /// row being replaced, with no conflict to stop the overwrite, because the
+    /// transaction began after the commit it would have had to conflict with.
+    ///
+    /// # Errors
+    ///
+    /// None of these are reached when the idempotency key already names an
+    /// attempt; that row is returned instead.
+    ///
+    /// Returns [`InstanceAllocationError::InstanceNumbersExhausted`] if every
+    /// number in `1..=999` is taken for the pair, or
+    /// [`InstanceAllocationError::Database`] if the attempt's action is not
+    /// [`Action::Install`], if its `target` is empty, if that `target` names a
+    /// core component or is registered as one on its `host`, if the database has no
+    /// `instance_allocation` column family, if the attempt's idempotency key
+    /// is empty, if the attempt is non-terminal and a different attempt is
+    /// already live for its `(host, target, instance)` triple, or if the
+    /// database operation fails.
+    pub fn allocate_instance(
+        &self,
+        attempt: &OperationAttempt,
+    ) -> Result<OperationAttempt, InstanceAllocationError> {
+        let allocations = Table::<InstanceAllocation>::open(self.map.db);
+        let core_components = Table::<CoreComponent>::open(self.map.db);
+        loop {
+            let txn = self.transaction();
+            // The key check every pass begins with, and the first thing the
+            // transaction does. A row under this key is the operator action
+            // already recorded — by a drive that has just committed, or by one
+            // that finished long ago — so it is the answer, and selecting a
+            // number would make one action two instances. The read locks the
+            // key, so a drive committing it after this point cannot slip in
+            // between the check and the write: the commit below fails and the
+            // re-run reads the row.
+            //
+            // It precedes every check below because those decide what may
+            // take a *fresh* number, and a key that already names an attempt
+            // takes none: the row is returned whatever the payload presented
+            // alongside the key now says, which is what makes a re-drive
+            // idempotent rather than a second chance to fail validation.
+            if let Some(stored) = self.get_for_update(&attempt.idempotency_key, &txn)? {
+                return Ok(stored);
+            }
+            if attempt.action != Action::Install {
+                return Err(anyhow!(
+                    "an instance number is taken by the install that creates the instance, and operation attempt {} is a {:?}",
+                    attempt.idempotency_key,
+                    attempt.action
+                )
+                .into());
+            }
+            if attempt.target.is_empty() {
+                return Err(anyhow!(
+                    "operation attempt {} names no component to take an instance number for",
+                    attempt.idempotency_key
+                )
+                .into());
+            }
+            // A core component is host-fixed infrastructure with no instance
+            // dimension, so it takes no number. Refused from the package-id
+            // alone, before any registry read, because the first install of
+            // one meets a store with no row for it yet — which is exactly when
+            // a number would be handed out that nothing ever asked for.
+            if is_core_component(&attempt.target) {
+                return Err(anyhow!(
+                    "component {} is a core component, and a core component has no instance dimension",
+                    attempt.target
+                )
+                .into());
+            }
+            let Some(allocations) = allocations.as_ref() else {
+                return Err(anyhow!(
+                    "the database has no instance allocation table to take a number from"
+                )
+                .into());
+            };
+            // A component the registry holds is host-fixed infrastructure and
+            // has no instance dimension, so there is no number to take for it
+            // and its second install is refused by that registry's own single
+            // row per pair rather than given one. Read inside the transaction,
+            // and read for update, so a registration committing while this one
+            // is open fails this commit instead of going unseen.
+            if let Some(core_components) = core_components.as_ref()
+                && core_components.is_registered(&attempt.target, &attempt.host, &txn)?
+            {
+                return Err(anyhow!(
+                    "component {} is registered as a core component on host {}, and a core component has no instance dimension",
+                    attempt.target,
+                    attempt.host
+                )
+                .into());
+            }
+            let instance = allocations.allocate_with_transaction(
+                &attempt.host,
+                &attempt.target,
+                &attempt.idempotency_key,
+                &txn,
+            )?;
+            let mut allocated = attempt.clone();
+            allocated.instance = Some(instance);
+            self.upsert_with_transaction(&allocated, &txn)?;
+            match txn.commit() {
+                Ok(()) => return Ok(allocated),
+                Err(e) => {
+                    if !e.as_ref().starts_with("Resource busy:") {
+                        return Err(anyhow::Error::new(e)
+                            .context("failed to store the operation attempt")
+                            .into());
+                    }
+                }
+            }
+        }
+    }
+
+    /// Stores an attempt within `txn`, releasing what it gives back, exactly
+    /// as [`Table::upsert`] does, so that the write can be paired with another
+    /// the caller has to land or lose together with it.
+    ///
+    /// The caller owns the commit, and with it the conflict retry: a commit
+    /// that fails with `Resource busy:` means the whole transaction has to run
+    /// again.
+    ///
+    /// Deliberately not public: a caller that owns the commit can abandon the
+    /// transaction, and the public entry points are the ones that do not let
+    /// half of it land. This exists for the composed transaction an allocation
+    /// joins — the instance number the attempt takes, and the ports keyed on
+    /// it — which has to be one transaction with the attempt write.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the attempt's idempotency key is empty, if the
+    /// attempt is non-terminal and a different attempt is already live for its
+    /// `(host, target, instance)` triple, if it moves the row off a
+    /// `(host, target, instance)` triple whose instance number the key still
+    /// holds, or if the database operation fails.
+    pub(super) fn upsert_with_transaction(
+        &self,
+        attempt: &OperationAttempt,
+        txn: &Transaction<'_, OptimisticTransactionDB>,
+    ) -> Result<()> {
+        if attempt.idempotency_key.is_empty() {
+            bail!("an operation attempt key must not be empty");
+        }
+        let stored = self.get_for_update(&attempt.idempotency_key, txn)?;
+        if let Some(stored) = stored.as_ref() {
+            self.refuse_moving_off_an_allocation(stored, attempt, txn)?;
+        }
+        self.write_with_transaction(stored.as_ref(), attempt, txn)?;
+        self.release_resources(attempt, txn)
+    }
+
+    /// Refuses a write that would move the row off the triple whose instance
+    /// number its own key still holds.
+    ///
+    /// A re-drive is otherwise free to restate any field, which is what lets
+    /// one row be finalized in place instead of a second being added. The
+    /// instance number is the exception, because it is released through the
+    /// attempt that names it and by `(host, target, instance)`: a row that
+    /// walks to another triple while its number is still allocated carries
+    /// that number's only release away with it, and nothing left can name the
+    /// row again. Neither half of the alternative is better — releasing the
+    /// number the stored row named would give it back on the strength of a
+    /// record that no longer mentions it, and following the move with it would
+    /// hand out a number for a pair that was never scanned. So the write is
+    /// refused, and the caller either finishes the operation on the triple it
+    /// took a number for, or drives the other triple under a key of its own.
+    ///
+    /// A store whose `instance_allocation` column family does not exist yet
+    /// can hold no allocation, so it has nothing to strand and nothing is
+    /// refused there.
+    fn refuse_moving_off_an_allocation(
+        &self,
+        stored: &OperationAttempt,
+        new: &OperationAttempt,
+        txn: &Transaction<'_, OptimisticTransactionDB>,
+    ) -> Result<()> {
+        if (
+            stored.host.as_str(),
+            stored.target.as_str(),
+            stored.instance,
+        ) == (new.host.as_str(), new.target.as_str(), new.instance)
+        {
+            return Ok(());
+        }
+        let Some(allocations) = Table::<InstanceAllocation>::open(self.map.db) else {
+            return Ok(());
+        };
+        if allocations.holds_number_for(stored, txn)? {
+            bail!(
+                "operation attempt {} holds instance number {:?} for host {}, target {}, and cannot be re-driven onto host {}, target {}, instance {:?}",
+                stored.idempotency_key,
+                stored.instance,
+                stored.host,
+                stored.target,
+                new.host,
+                new.target,
+                new.instance
+            );
+        }
+        Ok(())
+    }
+
+    /// Releases within `txn` the resources `attempt` gives back, if the state
+    /// it records gives any back.
+    ///
+    /// Every writer of a row goes through here, so the release is not a step a
+    /// caller can skip: recording an attempt that ended owing nothing,
+    /// discharging its `cleanup_state`, and confirming a removal each delete
+    /// the instance allocation in the very transaction that records why. The
+    /// alternative is a half state the schema forbids — a number held by an
+    /// attempt that nothing will revisit, or given back with no record saying
+    /// so.
+    ///
+    /// A store whose `instance_allocation` column family does not exist yet
+    /// can hold no allocation, so there is nothing to release and the call is
+    /// a no-op. That is the state of a database at format `0.46.0`, which the
+    /// column family reaches only with the format bump that registers it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database operation fails.
+    fn release_resources(
+        &self,
+        attempt: &OperationAttempt,
+        txn: &Transaction<'_, OptimisticTransactionDB>,
+    ) -> Result<()> {
+        let Some(allocations) = Table::<InstanceAllocation>::open(self.map.db) else {
+            return Ok(());
+        };
+        allocations.release_for_attempt(attempt, txn)
     }
 
     /// Deletes the attempt with the given idempotency key, along with its
@@ -1297,6 +1635,12 @@ impl<'d> Table<'d, OperationAttempt> {
     /// reachable. A host that never returns therefore leaks neither the slot
     /// nor the record of what is still owed.
     ///
+    /// An expired attempt that owes no cleanup is one of the three writes that
+    /// release an instance number, so the sweep gives back what each attempt
+    /// it finalizes holds, in the transaction that finalizes it. One still
+    /// owing a cleanup keeps its number until the discharge, exactly as it
+    /// keeps the record of what is owed.
+    ///
     /// `instant` is the caller's, and the sweep reads no clock of its own, so
     /// a second run over already-swept state finalizes nothing.
     ///
@@ -1334,6 +1678,7 @@ impl<'d> Table<'d, OperationAttempt> {
                     failed.finalized_at = Some(instant);
                 }
                 self.write_with_transaction(Some(&stored), &failed, &txn)?;
+                self.release_resources(&failed, &txn)?;
                 finalized += 1;
             }
             match txn.commit() {
@@ -2617,6 +2962,57 @@ mod tests {
                 .unwrap(),
             Some(there)
         );
+    }
+
+    /// Every writer releases the instance number the row it stores gives
+    /// back, and reaches for the `instance_allocation` column family to do it.
+    /// A store that predates the format bump registering that column family
+    /// has none, and can hold no allocation either, so the release is a no-op
+    /// rather than a failure: the writes go through exactly as they did. This
+    /// `TestDb` is such a store — it opens `MAP_NAMES`, which the column
+    /// family is deliberately absent from — so every other test here covers
+    /// the same ground; this one says so.
+    #[test]
+    fn a_store_without_the_allocation_table_writes_as_it_always_did() {
+        let test_db = TestDb::new();
+        let table = test_db.table();
+
+        // A failed install of a numbered instance: the one write that would
+        // release a number if there were a column family holding one.
+        let mut failed = module_attempt("attempt-1");
+        failed.phase = Phase::Completed;
+        failed.outcome = Some(Outcome::Failed);
+        failed.finalized_at = Some(timestamp(1_700_000_500));
+        table.upsert(&failed).unwrap();
+        assert_eq!(table.get("attempt-1").unwrap().unwrap(), failed);
+
+        let live = live_attempt("attempt-2", "host-b.example", "sensor", Some(1));
+        table.upsert(&live).unwrap();
+        assert_eq!(table.sweep_expired(timestamp(1_700_086_400)).unwrap(), 1);
+        assert_eq!(
+            table.get("attempt-2").unwrap().unwrap().outcome,
+            Some(Outcome::Failed)
+        );
+    }
+
+    /// Taking a number is the other direction, and there the absent column
+    /// family is a refusal rather than a no-op: there is nowhere to record
+    /// that the number is taken, so handing one out would number an instance
+    /// against nothing. Nothing is written at all.
+    #[test]
+    fn a_store_without_the_allocation_table_cannot_hand_out_a_number() {
+        let test_db = TestDb::new();
+        let table = test_db.table();
+
+        let attempt = module_attempt("attempt-1");
+        let error = table
+            .allocate_instance(&attempt)
+            .expect_err("there is no column family to take a number from");
+        assert!(
+            matches!(error, InstanceAllocationError::Database(_)),
+            "expected a database refusal, got {error:?}"
+        );
+        assert_eq!(table.get("attempt-1").unwrap(), None);
     }
 
     #[test]

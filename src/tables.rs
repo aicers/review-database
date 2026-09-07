@@ -17,6 +17,7 @@ mod data_source;
 mod external_service;
 mod filter;
 mod hosts;
+mod instance_allocation;
 mod label_db;
 mod lifecycle;
 mod model;
@@ -68,6 +69,7 @@ pub use self::data_source::{DataSource, DataType, Update as DataSourceUpdate};
 pub use self::external_service::{ExternalService, ExternalServiceKind};
 pub use self::filter::{Filter, PeriodForSearch, Value as FilterValue};
 pub use self::hosts::{Host, UserAgent};
+pub use self::instance_allocation::{InstanceAllocation, InstanceAllocationError};
 pub use self::label_db::{
     Kind as LabelDbKind, LabelDb, Rule as LabelDbRule, RuleKind as LabelDbRuleKind,
 };
@@ -136,6 +138,11 @@ pub(super) const CUSTOMER_DELETION_JOBS: &str = "customer deletion jobs";
 pub(super) const DATA_SOURCES: &str = "data sources";
 pub(super) const FILTERS: &str = "filters";
 pub(super) const HOSTS: &str = "hosts";
+// Deliberately absent from `MAP_NAMES`: registering this column family belongs
+// with the database format bump, because `migrate_data_dir` returns early for a
+// data dir already at a compatible version and would otherwise gain a column
+// family with no version change.
+pub(super) const INSTANCE_ALLOCATIONS: &str = "instance allocations";
 pub(super) const MODELS: &str = "models";
 pub(super) const MODEL_INDICATORS: &str = "model indicators";
 pub(crate) const META: &str = "meta";
@@ -611,6 +618,7 @@ mod iteration {
     impl Eligible for tables::ExternalService {}
     impl Eligible for tables::Filter {}
     impl Eligible for tables::Host {}
+    impl Eligible for tables::InstanceAllocation {}
     impl Eligible for tables::InnerNode {}
     impl Eligible for tables::LabelDb {}
     impl Eligible for tables::Model {}

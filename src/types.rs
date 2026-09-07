@@ -42,6 +42,7 @@ mod private {
     impl Sealed for tables::Filter {}
     impl Sealed for tables::Host {}
     impl Sealed for tables::InnerNode {}
+    impl Sealed for tables::InstanceAllocation {}
     impl Sealed for tables::Model {}
     impl Sealed for tables::ModelIndicator {}
     impl Sealed for tables::Network {}
