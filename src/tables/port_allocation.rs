@@ -1998,6 +1998,59 @@ mod tests {
         assert_eq!(test_db.rows(), Vec::new());
     }
 
+    /// A request whose second address is taken leaves none of the first: the
+    /// refusal comes after the free one is already written into the
+    /// transaction, so the guarantee is the transaction's rather than the
+    /// order the bindings happen to be in. An install that cannot bind all of
+    /// its listeners holds none of the addresses it asked for, and takes no
+    /// instance number either.
+    #[test]
+    fn a_conflict_part_way_through_takes_none_of_the_addresses() {
+        let test_db = TestDb::new();
+        let table = test_db.table();
+
+        allocate(
+            &test_db,
+            "attempt-a",
+            &[binding(INGEST, Transport::Tcp, 38_370)],
+        )
+        .unwrap();
+
+        let refusal = allocate(
+            &test_db,
+            "attempt-b",
+            &[
+                binding(PUBLISH, Transport::Udp, 38_371),
+                binding(INGEST, Transport::Tcp, 38_370),
+            ],
+        )
+        .unwrap_err();
+        assert!(matches!(
+            refusal,
+            AddressAllocationError::PortAllocationConflict { .. }
+        ));
+
+        // The free address the request named first is not held, and the
+        // winner's row stands alone in the table and in both indexes.
+        assert_eq!(table.get(HOST, Transport::Udp, 38_371).unwrap(), None);
+        assert_eq!(test_db.rows().len(), 1);
+        assert_eq!(test_db.attempt_index().len(), 1);
+        assert_eq!(test_db.instance_index().len(), 1);
+        assert_eq!(table.allocated_by(&key("attempt-b")).unwrap(), Vec::new());
+
+        // And the drive that took no address recorded no attempt and holds no
+        // number, because all of it was the one transaction.
+        assert_eq!(test_db.attempts().get(&key("attempt-b")).unwrap(), None);
+        assert_eq!(
+            test_db
+                .instances()
+                .allocated(HOST, COMPONENT)
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
     /// A store the format bump has not reached has no port allocation table,
     /// so an install naming an address is refused rather than recorded with
     /// its addresses silently dropped — while one naming none writes exactly
@@ -2022,6 +2075,28 @@ mod tests {
             .allocate_instance_and_addrs(&install("attempt-2", None), &[])
             .unwrap();
         assert_eq!(stored.instance, Some(1));
+    }
+
+    /// None of the three names is in `MAP_NAMES`, because `StateDb::open`
+    /// creates every family named there while `migrate_data_dir` returns
+    /// early for a data dir already at a compatible version: registering them
+    /// before the format bump would add the families to a `0.46.0` store with
+    /// no migration record. The tests above open a store that would fail on a
+    /// duplicate family name, so this is already load-bearing; it is asserted
+    /// here so that the reason is stated rather than inferred from a
+    /// `rocksdb` error.
+    #[test]
+    fn the_column_families_are_not_registered_before_the_format_bump() {
+        for name in [
+            super::super::PORT_ALLOCATIONS,
+            super::super::PORT_ALLOCATIONS_BY_ATTEMPT,
+            super::super::PORT_ALLOCATIONS_BY_INSTANCE,
+        ] {
+            assert!(
+                !super::super::MAP_NAMES.contains(&name),
+                "{name} is registered before the format bump that creates it"
+            );
+        }
     }
 
     /// A store carrying the primary family alone is not this table: a row
