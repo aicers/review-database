@@ -82,9 +82,10 @@ pub use self::node::{
     Update as NodeUpdate,
 };
 pub use self::operation_attempt::{
-    Action as OperationAction, CleanupState as OperationCleanupState, OperationAttempt,
-    Outcome as OperationOutcome, Phase as OperationPhase,
-    RetentionBound as OperationRetentionBound, RetryPolicy as OperationRetryPolicy,
+    Action as OperationAction, BuildSelector, CleanupState as OperationCleanupState, InstallIntent,
+    OnFailure as OperationOnFailure, OperationAttempt, Outcome as OperationOutcome,
+    Phase as OperationPhase, RequestKeyError, RetentionBound as OperationRetentionBound,
+    RetryPolicy as OperationRetryPolicy,
 };
 pub use self::outlier_info::{Key as OutlierInfoKey, OutlierInfo, Value as OutlierInfoValue};
 pub use self::retention_config::{RetentionConfig, RetentionConfigUpdate};
@@ -141,6 +142,16 @@ pub(crate) const META: &str = "meta";
 pub(super) const NETWORKS: &str = "networks";
 pub(super) const NODES: &str = "nodes";
 pub(super) const OPERATION_ATTEMPTS: &str = "operation attempts";
+/// The column family holding the `operation_attempt` latest pointer.
+///
+/// It is deliberately absent from [`MAP_NAMES`]: [`StateDb::open`] creates
+/// every family named there, while `migrate_data_dir` returns early for a
+/// data directory it already considers compatible, so listing it before the
+/// format version is bumped would add a column family to an older store with
+/// no migration record of it. The family is registered together with that
+/// bump, and until then [`Table<OperationAttempt>`] reports its absence
+/// rather than writing a pointer nothing can read.
+pub(super) const OPERATION_ATTEMPT_LATEST: &str = "operation attempt latest";
 pub(super) const OUTLIERS: &str = "outliers";
 pub(super) const QUALIFIERS: &str = "qualifiers";
 pub(super) const EXTERNAL_SERVICES: &str = "external services";
