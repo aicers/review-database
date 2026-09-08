@@ -114,8 +114,10 @@ impl From<TriagePolicyV0_44> for crate::TriagePolicy {
 /// install-state fields were added.
 ///
 /// The field order is the wire order: an encoded value of this layout is a
-/// strict prefix of an [`AgentValueV0_47Alpha2`] one, so the current layout is
-/// probed first and only a value that fails it is read back through this one.
+/// strict prefix of an [`AgentValueV0_47Alpha2`] one, which is in turn a
+/// strict prefix of an [`AgentValueV0_47Alpha5`] one. Reading a row is
+/// therefore a matter of trying each layout, because `bincode` rejects both a
+/// short read and bytes left over, so no layout decodes another's rows.
 #[derive(Deserialize, Serialize)]
 pub(crate) struct AgentValueV0_47Alpha1 {
     pub kind: AgentKind,
@@ -124,14 +126,18 @@ pub(crate) struct AgentValueV0_47Alpha1 {
     pub draft: Option<AgentConfig>,
 }
 
-/// The stored `Agent` value as of database format 0.47.0-alpha.2.
+/// The stored `Agent` value from database format 0.47.0-alpha.2 through
+/// 0.47.0-alpha.4, after the install-state fields were added and before
+/// `instance` was.
 ///
-/// This mirrors the private `Value` of the live agents table, whose component
-/// types it deliberately reuses, and the drift test in
-/// [`super`](crate::migration) holds the two together. `lifecycle` is the
-/// stored variant index rather than the `Lifecycle` enum, because a row written
-/// by a newer build may carry an index this build does not recognize and must
-/// still read back.
+/// `lifecycle` is the stored variant index rather than the `Lifecycle` enum,
+/// because a row written by a newer build may carry an index this build does
+/// not recognize and must still read back.
+///
+/// An encoded value of this layout is in turn a strict prefix of an
+/// [`AgentValueV0_47Alpha5`] one, and it is both the target of one conversion
+/// step and the source of the next: a 0.47.0-alpha.1 row reaches the current
+/// layout through this one.
 #[derive(Deserialize, Serialize)]
 pub(crate) struct AgentValueV0_47Alpha2 {
     pub kind: AgentKind,
@@ -164,11 +170,51 @@ impl From<AgentValueV0_47Alpha1> for AgentValueV0_47Alpha2 {
     }
 }
 
+/// The stored `Agent` value as of database format 0.47.0-alpha.5.
+///
+/// This mirrors the private `Value` of the live agents table, whose component
+/// types it deliberately reuses, and the drift test in
+/// [`super`](crate::migration) holds the two together.
+#[derive(Deserialize, Serialize)]
+pub(crate) struct AgentValueV0_47Alpha5 {
+    pub kind: AgentKind,
+    pub status: AgentStatus,
+    pub config: Option<AgentConfig>,
+    pub draft: Option<AgentConfig>,
+    pub installed_version: Option<String>,
+    pub installed_commit: Option<String>,
+    pub lifecycle: u8,
+    pub bound_addrs: Vec<(String, String)>,
+    pub instance: Option<u32>,
+}
+
+impl From<AgentValueV0_47Alpha2> for AgentValueV0_47Alpha5 {
+    /// Leaves the instance number unrecorded.
+    ///
+    /// A row written before this field existed describes an instance whose
+    /// number was never stored, and `None` is the honest value for it. Any
+    /// number chosen here would assert an allocation nothing made.
+    fn from(old: AgentValueV0_47Alpha2) -> Self {
+        Self {
+            kind: old.kind,
+            status: old.status,
+            config: old.config,
+            draft: old.draft,
+            installed_version: old.installed_version,
+            installed_commit: old.installed_commit,
+            lifecycle: old.lifecycle,
+            bound_addrs: old.bound_addrs,
+            instance: None,
+        }
+    }
+}
+
 /// The stored `ExternalService` value up to database format 0.47.0-alpha.1,
 /// before the install-state fields were added.
 ///
 /// As with [`AgentValueV0_47Alpha1`], an encoded value of this layout is a
-/// strict prefix of an [`ExternalServiceValueV0_47Alpha2`] one.
+/// strict prefix of an [`ExternalServiceValueV0_47Alpha2`] one, which is in
+/// turn a strict prefix of an [`ExternalServiceValueV0_47Alpha5`] one.
 #[derive(Deserialize, Serialize)]
 pub(crate) struct ExternalServiceValueV0_47Alpha1 {
     pub kind: ExternalServiceKind,
@@ -176,10 +222,8 @@ pub(crate) struct ExternalServiceValueV0_47Alpha1 {
     pub draft: Option<ExternalServiceConfig>,
 }
 
-/// The stored `ExternalService` value as of database format 0.47.0-alpha.2.
-///
-/// This mirrors the private `Value` of the live external services table, on the
-/// same terms as [`AgentValueV0_47Alpha2`].
+/// The stored `ExternalService` value from database format 0.47.0-alpha.2
+/// through 0.47.0-alpha.4, on the same terms as [`AgentValueV0_47Alpha2`].
 #[derive(Deserialize, Serialize)]
 pub(crate) struct ExternalServiceValueV0_47Alpha2 {
     pub kind: ExternalServiceKind,
@@ -203,6 +247,38 @@ impl From<ExternalServiceValueV0_47Alpha1> for ExternalServiceValueV0_47Alpha2 {
             installed_commit: None,
             lifecycle: 0,
             bound_addrs: Vec::new(),
+        }
+    }
+}
+
+/// The stored `ExternalService` value as of database format 0.47.0-alpha.5,
+/// mirroring the live external services table on the same terms as
+/// [`AgentValueV0_47Alpha5`].
+#[derive(Deserialize, Serialize)]
+pub(crate) struct ExternalServiceValueV0_47Alpha5 {
+    pub kind: ExternalServiceKind,
+    pub status: ExternalServiceStatus,
+    pub draft: Option<ExternalServiceConfig>,
+    pub installed_version: Option<String>,
+    pub installed_commit: Option<String>,
+    pub lifecycle: u8,
+    pub bound_addrs: Vec<(String, String)>,
+    pub instance: Option<u32>,
+}
+
+impl From<ExternalServiceValueV0_47Alpha2> for ExternalServiceValueV0_47Alpha5 {
+    /// Leaves the instance number unrecorded, on the same terms as
+    /// [`AgentValueV0_47Alpha5::from`].
+    fn from(old: ExternalServiceValueV0_47Alpha2) -> Self {
+        Self {
+            kind: old.kind,
+            status: old.status,
+            draft: old.draft,
+            installed_version: old.installed_version,
+            installed_commit: old.installed_commit,
+            lifecycle: old.lifecycle,
+            bound_addrs: old.bound_addrs,
+            instance: None,
         }
     }
 }

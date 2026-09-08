@@ -991,6 +991,7 @@ mod test {
                 installed_commit: None,
                 lifecycle: Lifecycle::NotInstalled,
                 bound_addrs: Vec::new(),
+                instance: None,
             })
             .collect()
     }
@@ -1013,6 +1014,7 @@ mod test {
                 installed_commit: None,
                 lifecycle: Lifecycle::NotInstalled,
                 bound_addrs: Vec::new(),
+                instance: None,
             })
             .collect()
     }

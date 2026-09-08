@@ -62,6 +62,20 @@ pub struct ExternalService {
     /// intent; a later configuration edit must not rewrite what the host
     /// reported.
     pub bound_addrs: Vec<(String, String)>,
+    /// The instance number this row is, or `None` for a record with no
+    /// instance dimension.
+    ///
+    /// It is the number [`InstanceAllocation`](crate::InstanceAllocation) holds
+    /// for the instance this row was created for, never a value parsed out of
+    /// `key`, which has no documented format. A core component's class has no
+    /// instance dimension, so a row for one carries `None`, on the same terms
+    /// as [`OperationAttempt::instance`](crate::OperationAttempt::instance);
+    /// so does a row written before any number was recorded.
+    ///
+    /// Like the install-state fields beside it, this is observed state: it is
+    /// written when the row is created for an allocated instance, and an edit
+    /// to `draft` never changes it.
+    pub instance: Option<u32>,
 }
 
 impl ExternalService {
@@ -71,7 +85,8 @@ impl ExternalService {
     /// describe what a host reports, and registration precedes any report, so
     /// they start empty and [`Lifecycle::NotInstalled`] respectively. Install
     /// state is written afterwards by assigning to the fields of a record read
-    /// back from the database.
+    /// back from the database, and `instance` on the same terms: it starts
+    /// `None` and is set by whoever creates the row for an allocated instance.
     ///
     /// # Errors
     ///
@@ -94,6 +109,7 @@ impl ExternalService {
             installed_commit: None,
             lifecycle: Lifecycle::NotInstalled,
             bound_addrs: Vec::new(),
+            instance: None,
         })
     }
 }
@@ -118,6 +134,7 @@ impl FromKeyValue for ExternalService {
             installed_commit: value.installed_commit,
             lifecycle: Lifecycle::from_stored_index(value.lifecycle),
             bound_addrs: value.bound_addrs,
+            instance: value.instance,
         })
     }
 }
@@ -144,6 +161,7 @@ impl ValueTrait for ExternalService {
             installed_commit: self.installed_commit.clone(),
             lifecycle: self.lifecycle.to_stored_index(),
             bound_addrs: self.bound_addrs.clone(),
+            instance: self.instance,
         };
         super::serialize(&value).expect("serializable")
     }
@@ -164,6 +182,7 @@ struct Value {
     installed_commit: Option<String>,
     lifecycle: u8,
     bound_addrs: Vec<(String, String)>,
+    instance: Option<u32>,
 }
 
 /// Functions for the external services table.
@@ -383,6 +402,63 @@ mod test {
     }
 
     #[test]
+    fn new_external_service_records_no_instance_number() {
+        let external_service = create_external_service(
+            1,
+            "001.giganto",
+            ExternalServiceKind::DataStore,
+            Some(VALID_TOML),
+        );
+        assert_eq!(external_service.instance, None);
+    }
+
+    /// The instance a row is survives a round trip, `None` included, and a
+    /// number is stored as itself rather than being read back out of `key`.
+    #[test]
+    fn instance_number_round_trips() {
+        let (_permit, store) = setup_store();
+        let table = store.external_service_map();
+
+        let mut external_service = create_external_service(
+            1,
+            "002.giganto",
+            ExternalServiceKind::DataStore,
+            Some(VALID_TOML),
+        );
+        external_service.instance = Some(2);
+        table.insert(&external_service).unwrap();
+        let stored = table.get(1, "002.giganto").unwrap().unwrap();
+        assert_eq!(stored, external_service);
+        assert_eq!(stored.instance, Some(2));
+
+        // A draft edit carries the recorded number forward untouched.
+        let mut edited = stored.clone();
+        edited.draft = Some(r#"edited = "true""#.to_string().try_into().unwrap());
+        table.update(&stored, &edited).unwrap();
+        assert_eq!(
+            table.get(1, "002.giganto").unwrap().unwrap().instance,
+            Some(2)
+        );
+
+        let core =
+            create_external_service(1, "core", ExternalServiceKind::DataStore, Some(VALID_TOML));
+        table.insert(&core).unwrap();
+        assert_eq!(table.get(1, "core").unwrap().unwrap().instance, None);
+        assert_ne!(core.value(), external_service.value());
+
+        for instance in [Some(1), Some(999), Some(u32::MAX), None] {
+            let mut external_service = core.clone();
+            external_service.instance = instance;
+            let restored = ExternalService::from_key_value(
+                &external_service.unique_key(),
+                &external_service.value(),
+            )
+            .unwrap();
+            assert_eq!(restored.instance, instance);
+        }
+    }
+
+    #[test]
     fn install_state_round_trips() {
         let empty = create_external_service(
             1,
@@ -467,6 +543,7 @@ mod test {
             installed_commit: Some("cafebabe".to_string()),
             lifecycle: 9,
             bound_addrs: vec![("addr".to_string(), "127.0.0.1:1111".to_string())],
+            instance: Some(2),
         };
         let serialized = super::super::serialize(&forged).unwrap();
 
@@ -491,6 +568,7 @@ mod test {
             external_service.bound_addrs,
             vec![("addr".to_string(), "127.0.0.1:1111".to_string())]
         );
+        assert_eq!(external_service.instance, Some(2));
     }
 
     /// Storing the variant index in a `u8` is a representation choice, not a
@@ -506,6 +584,7 @@ mod test {
             installed_commit: Option<String>,
             lifecycle: Lifecycle,
             bound_addrs: Vec<(String, String)>,
+            instance: Option<u32>,
         }
 
         for lifecycle in [
@@ -525,6 +604,7 @@ mod test {
                 installed_commit: None,
                 lifecycle: lifecycle.to_stored_index(),
                 bound_addrs: vec![("addr".to_string(), "127.0.0.1:1111".to_string())],
+                instance: Some(3),
             };
             let with_enum = ValueWithEnum {
                 kind: raw.kind,
@@ -534,6 +614,7 @@ mod test {
                 installed_commit: raw.installed_commit.clone(),
                 lifecycle,
                 bound_addrs: raw.bound_addrs.clone(),
+                instance: raw.instance,
             };
             assert_eq!(
                 super::super::serialize(&raw).unwrap(),
