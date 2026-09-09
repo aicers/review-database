@@ -4470,7 +4470,16 @@ mod tests {
             "{message}"
         );
         assert!(message.contains("current schema error"), "{message}");
-        assert!(message.contains("previous schema error"), "{message}");
+        // Every layout that was tried is named, so the report says which
+        // shapes were ruled out rather than that one unnamed one was.
+        assert!(
+            message.contains("previous schema error (0.47.0-alpha.2)"),
+            "{message}"
+        );
+        assert!(
+            message.contains("previous schema error (0.47.0-alpha.1)"),
+            "{message}"
+        );
 
         assert_eq!(
             raw_value(&db_path, crate::tables::MAP_NAMES, cf_name, &key),

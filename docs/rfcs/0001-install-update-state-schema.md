@@ -64,8 +64,8 @@ stored, for display.
 - **`Status`** (`src/tables/node.rs:35`): `Disabled=0`, `Enabled=1`,
   `ReloadFailed=2`, `Unknown=u8::MAX` — a **config-reload** state. Keep it
   as-is; the new lifecycle is a **separate** field.
-- **`Agent.key` already carries the instance, so multi-instance needs no
-  new field.** review resolves an agent from its certificate as
+- **`Agent.key` is composed per instance, but it is not where the instance
+  number is read from.** review resolves an agent from its certificate as
   `agent_id = <instance>.<service>` and `host_id = <host>.<domain>`
   (`review/src/tls/certificate.rs`), then finds the node by `host_id` and
   the agent **within that node** by `a.key == agent_id`
@@ -75,8 +75,15 @@ stored, for display.
   hierarchical identity (RFC-A §4) where an instance number is scoped by
   `{service_name}.{hostname}`. Two `piglet` instances on one node are two
   rows, `001.piglet` and `002.piglet`, under the same `node_id` and the
-  same `kind` — **no schema change, no new key**. What this does invalidate
-  is any assumption that a node holds at most one row per `AgentKind`.
+  same `kind` — **no new key**. What this does invalidate is any assumption
+  that a node holds at most one row per `AgentKind`.
+  **An earlier revision concluded from this that multi-instance needs no new
+  field, and that half is wrong.** `key` is a `String` with no documented
+  format, so recovering the number from it would make a contract of a value
+  that has none, and the failure would be **silent**: the day a key is minted
+  differently every reader shows a wrong number rather than an error. The
+  number is therefore recorded in its own field, `instance` (§4b), and `key`
+  gains no format in exchange.
 - **`Agent`** (`src/tables/agent.rs:38`): `node_id`, `key`, `kind: AgentKind`,
   `status: AgentStatus`, `config: Option<AgentConfig>`,
   `draft: Option<AgentConfig>`. `AgentKind` (`agent.rs:30`): `Unsupervised=1`,
@@ -210,6 +217,14 @@ The manager (review) and the API (review-web) consume these types:
     to read it back — and a reported value is empty exactly when the instance
     is down, which is when a destination is most needed. The UI reads it to
     show whether an instance is bound where it was placed (RFC-E §4).
+  - `instance: Option<u32>` — the number of the instance this row **is**, the
+    same option an `operation_attempt` carries (§4d) and the number the
+    allocation table holds (§4g). It is `None` for a row with no instance
+    dimension, and for a row written before the field existed. It is
+    **recorded, never parsed out of `key`** (§2). It is the one field here
+    the host does not report — the allocator assigns it and the row is
+    created carrying it — but it is state rather than intent on the same
+    terms as the rest: a later configuration edit never changes it.
 - These are **actual** state (what roxyd reports). No `desired_*`. In
   particular `bound_addrs` is **observed, not intent**: it records where the
   instance *is*, while `draft`/`config` carry what the operator *wants*, and
@@ -708,7 +723,10 @@ The manager (review) and the API (review-web) consume these types:
   value** with `installed_version = None`, `installed_commit = None`,
   `lifecycle = NotInstalled`, `bound_addrs = []` (an existing deployment's
   Giganto is already bound and configured; the empty vector simply means
-  "nothing reported yet", and the next status report fills it). Add
+  "nothing reported yet", and the next status report fills it) and
+  `instance = None` (a row written before the field existed describes an
+  instance whose number was never recorded, and any number chosen here would
+  assert an allocation nothing made). Add
   old-shape structs **`AgentV0_46`** and
   **`ExternalServiceV0_46`** to `migration_structures.rs` to deserialize the
   pre-migration value, then write the new shape. (`Node` itself gains no new
