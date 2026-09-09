@@ -1287,191 +1287,132 @@ impl Event {
         kind.categories()
     }
 
-    // TODO: Need to implement country counting for `WindowsThreat`.
-    // 1. for Network Connection: count country via ip
-    // 2. for other Sysmon events: count the country by KR because the event does not have ip address.
-    fn representative_stored_country_code(codes: &[[u8; 2]]) -> [u8; 2] {
-        codes
-            .first()
-            .copied()
-            .unwrap_or(crate::util::COUNTRY_CODE_UNRESOLVED)
-    }
-
-    /// Returns representative stored country codes for country aggregation.
+    /// Returns the full stored country-code slices for both endpoint sides.
     ///
-    /// `address_pair` determines which endpoints contribute to the aggregation.
-    fn stored_country_code_pair(&self) -> ([u8; 2], [u8; 2]) {
+    /// The slices correspond to the stored origin and response endpoint vectors
+    /// and are the basis for [`Event::count_country`].
+    fn stored_country_code_pair(&self) -> (&[[u8; 2]], &[[u8; 2]]) {
         match self {
-            Event::DnsCovertChannel(event) => (
-                Self::representative_stored_country_code(event.orig_country_codes()),
-                Self::representative_stored_country_code(event.resp_country_codes()),
-            ),
-            Event::HttpThreat(event) => (
-                Self::representative_stored_country_code(event.orig_country_codes()),
-                Self::representative_stored_country_code(event.resp_country_codes()),
-            ),
-            Event::RdpBruteForce(event) => (
-                Self::representative_stored_country_code(event.orig_country_codes()),
-                Self::representative_stored_country_code(event.resp_country_codes()),
-            ),
-            Event::RepeatedHttpSessions(event) => (
-                Self::representative_stored_country_code(event.orig_country_codes()),
-                Self::representative_stored_country_code(event.resp_country_codes()),
-            ),
-            Event::TorConnection(event) => (
-                Self::representative_stored_country_code(event.orig_country_codes()),
-                Self::representative_stored_country_code(event.resp_country_codes()),
-            ),
-            Event::TorConnectionConn(event) => (
-                Self::representative_stored_country_code(event.orig_country_codes()),
-                Self::representative_stored_country_code(event.resp_country_codes()),
-            ),
-            Event::DomainGenerationAlgorithm(event) => (
-                Self::representative_stored_country_code(event.orig_country_codes()),
-                Self::representative_stored_country_code(event.resp_country_codes()),
-            ),
-            Event::FtpBruteForce(event) => (
-                Self::representative_stored_country_code(event.orig_country_codes()),
-                Self::representative_stored_country_code(event.resp_country_codes()),
-            ),
-            Event::FtpPlainText(event) => (
-                Self::representative_stored_country_code(event.orig_country_codes()),
-                Self::representative_stored_country_code(event.resp_country_codes()),
-            ),
-            Event::PortScan(event) => (
-                Self::representative_stored_country_code(event.orig_country_codes()),
-                Self::representative_stored_country_code(event.resp_country_codes()),
-            ),
-            Event::MultiHostPortScan(event) => (
-                Self::representative_stored_country_code(event.orig_country_codes()),
-                Self::representative_stored_country_code(event.resp_country_codes()),
-            ),
-            Event::ExternalDdos(event) => (
-                Self::representative_stored_country_code(event.orig_country_codes()),
-                Self::representative_stored_country_code(event.resp_country_codes()),
-            ),
-            Event::NonBrowser(event) => (
-                Self::representative_stored_country_code(event.orig_country_codes()),
-                Self::representative_stored_country_code(event.resp_country_codes()),
-            ),
-            Event::LdapBruteForce(event) => (
-                Self::representative_stored_country_code(event.orig_country_codes()),
-                Self::representative_stored_country_code(event.resp_country_codes()),
-            ),
-            Event::LdapPlainText(event) => (
-                Self::representative_stored_country_code(event.orig_country_codes()),
-                Self::representative_stored_country_code(event.resp_country_codes()),
-            ),
-            Event::CryptocurrencyMiningPool(event) => (
-                Self::representative_stored_country_code(event.orig_country_codes()),
-                Self::representative_stored_country_code(event.resp_country_codes()),
-            ),
+            Event::DnsCovertChannel(event) => {
+                (event.orig_country_codes(), event.resp_country_codes())
+            }
+            Event::HttpThreat(event) => (event.orig_country_codes(), event.resp_country_codes()),
+            Event::RdpBruteForce(event) => (event.orig_country_codes(), event.resp_country_codes()),
+            Event::RepeatedHttpSessions(event) => {
+                (event.orig_country_codes(), event.resp_country_codes())
+            }
+            Event::TorConnection(event) => (event.orig_country_codes(), event.resp_country_codes()),
+            Event::TorConnectionConn(event) => {
+                (event.orig_country_codes(), event.resp_country_codes())
+            }
+            Event::DomainGenerationAlgorithm(event) => {
+                (event.orig_country_codes(), event.resp_country_codes())
+            }
+            Event::FtpBruteForce(event) => (event.orig_country_codes(), event.resp_country_codes()),
+            Event::FtpPlainText(event) => (event.orig_country_codes(), event.resp_country_codes()),
+            Event::PortScan(event) => (event.orig_country_codes(), event.resp_country_codes()),
+            Event::MultiHostPortScan(event) => {
+                (event.orig_country_codes(), event.resp_country_codes())
+            }
+            Event::ExternalDdos(event) => (event.orig_country_codes(), event.resp_country_codes()),
+            Event::NonBrowser(event) => (event.orig_country_codes(), event.resp_country_codes()),
+            Event::LdapBruteForce(event) => {
+                (event.orig_country_codes(), event.resp_country_codes())
+            }
+            Event::LdapPlainText(event) => (event.orig_country_codes(), event.resp_country_codes()),
+            Event::CryptocurrencyMiningPool(event) => {
+                (event.orig_country_codes(), event.resp_country_codes())
+            }
             Event::Blocklist(record_type) => match record_type {
                 RecordType::Bootp(bootp_event) => (
-                    Self::representative_stored_country_code(bootp_event.orig_country_codes()),
-                    Self::representative_stored_country_code(bootp_event.resp_country_codes()),
+                    bootp_event.orig_country_codes(),
+                    bootp_event.resp_country_codes(),
                 ),
                 RecordType::Conn(conn_event) => (
-                    Self::representative_stored_country_code(conn_event.orig_country_codes()),
-                    Self::representative_stored_country_code(conn_event.resp_country_codes()),
+                    conn_event.orig_country_codes(),
+                    conn_event.resp_country_codes(),
                 ),
                 RecordType::DceRpc(dcerpc_event) => (
-                    Self::representative_stored_country_code(dcerpc_event.orig_country_codes()),
-                    Self::representative_stored_country_code(dcerpc_event.resp_country_codes()),
+                    dcerpc_event.orig_country_codes(),
+                    dcerpc_event.resp_country_codes(),
                 ),
                 RecordType::Dhcp(dhcp_event) => (
-                    Self::representative_stored_country_code(dhcp_event.orig_country_codes()),
-                    Self::representative_stored_country_code(dhcp_event.resp_country_codes()),
+                    dhcp_event.orig_country_codes(),
+                    dhcp_event.resp_country_codes(),
                 ),
                 RecordType::Dns(dns_event) => (
-                    Self::representative_stored_country_code(dns_event.orig_country_codes()),
-                    Self::representative_stored_country_code(dns_event.resp_country_codes()),
+                    dns_event.orig_country_codes(),
+                    dns_event.resp_country_codes(),
                 ),
                 RecordType::Ftp(ftp_event) => (
-                    Self::representative_stored_country_code(ftp_event.orig_country_codes()),
-                    Self::representative_stored_country_code(ftp_event.resp_country_codes()),
+                    ftp_event.orig_country_codes(),
+                    ftp_event.resp_country_codes(),
                 ),
                 RecordType::Http(http_event) => (
-                    Self::representative_stored_country_code(http_event.orig_country_codes()),
-                    Self::representative_stored_country_code(http_event.resp_country_codes()),
+                    http_event.orig_country_codes(),
+                    http_event.resp_country_codes(),
                 ),
                 RecordType::Kerberos(kerberos_event) => (
-                    Self::representative_stored_country_code(kerberos_event.orig_country_codes()),
-                    Self::representative_stored_country_code(kerberos_event.resp_country_codes()),
+                    kerberos_event.orig_country_codes(),
+                    kerberos_event.resp_country_codes(),
                 ),
                 RecordType::Ldap(ldap_event) => (
-                    Self::representative_stored_country_code(ldap_event.orig_country_codes()),
-                    Self::representative_stored_country_code(ldap_event.resp_country_codes()),
+                    ldap_event.orig_country_codes(),
+                    ldap_event.resp_country_codes(),
                 ),
                 RecordType::MalformedDns(malformed_dns_event) => (
-                    Self::representative_stored_country_code(
-                        malformed_dns_event.orig_country_codes(),
-                    ),
-                    Self::representative_stored_country_code(
-                        malformed_dns_event.resp_country_codes(),
-                    ),
+                    malformed_dns_event.orig_country_codes(),
+                    malformed_dns_event.resp_country_codes(),
                 ),
                 RecordType::Mqtt(mqtt_event) => (
-                    Self::representative_stored_country_code(mqtt_event.orig_country_codes()),
-                    Self::representative_stored_country_code(mqtt_event.resp_country_codes()),
+                    mqtt_event.orig_country_codes(),
+                    mqtt_event.resp_country_codes(),
                 ),
                 RecordType::Nfs(nfs_event) => (
-                    Self::representative_stored_country_code(nfs_event.orig_country_codes()),
-                    Self::representative_stored_country_code(nfs_event.resp_country_codes()),
+                    nfs_event.orig_country_codes(),
+                    nfs_event.resp_country_codes(),
                 ),
                 RecordType::Ntlm(ntlm_event) => (
-                    Self::representative_stored_country_code(ntlm_event.orig_country_codes()),
-                    Self::representative_stored_country_code(ntlm_event.resp_country_codes()),
+                    ntlm_event.orig_country_codes(),
+                    ntlm_event.resp_country_codes(),
                 ),
                 RecordType::Radius(radius_event) => (
-                    Self::representative_stored_country_code(radius_event.orig_country_codes()),
-                    Self::representative_stored_country_code(radius_event.resp_country_codes()),
+                    radius_event.orig_country_codes(),
+                    radius_event.resp_country_codes(),
                 ),
                 RecordType::Rdp(rdp_event) => (
-                    Self::representative_stored_country_code(rdp_event.orig_country_codes()),
-                    Self::representative_stored_country_code(rdp_event.resp_country_codes()),
+                    rdp_event.orig_country_codes(),
+                    rdp_event.resp_country_codes(),
                 ),
                 RecordType::Smb(smb_event) => (
-                    Self::representative_stored_country_code(smb_event.orig_country_codes()),
-                    Self::representative_stored_country_code(smb_event.resp_country_codes()),
+                    smb_event.orig_country_codes(),
+                    smb_event.resp_country_codes(),
                 ),
                 RecordType::Smtp(smtp_event) => (
-                    Self::representative_stored_country_code(smtp_event.orig_country_codes()),
-                    Self::representative_stored_country_code(smtp_event.resp_country_codes()),
+                    smtp_event.orig_country_codes(),
+                    smtp_event.resp_country_codes(),
                 ),
                 RecordType::Ssh(ssh_event) => (
-                    Self::representative_stored_country_code(ssh_event.orig_country_codes()),
-                    Self::representative_stored_country_code(ssh_event.resp_country_codes()),
+                    ssh_event.orig_country_codes(),
+                    ssh_event.resp_country_codes(),
                 ),
                 RecordType::Tls(tls_event) => (
-                    Self::representative_stored_country_code(tls_event.orig_country_codes()),
-                    Self::representative_stored_country_code(tls_event.resp_country_codes()),
+                    tls_event.orig_country_codes(),
+                    tls_event.resp_country_codes(),
                 ),
-                RecordType::UnusualDestinationPattern(event) => (
-                    Self::representative_stored_country_code(event.orig_country_codes()),
-                    Self::representative_stored_country_code(event.resp_country_codes()),
-                ),
+                RecordType::UnusualDestinationPattern(event) => {
+                    (event.orig_country_codes(), event.resp_country_codes())
+                }
             },
-            Event::WindowsThreat(event) => (
-                Self::representative_stored_country_code(event.orig_country_codes()),
-                Self::representative_stored_country_code(event.resp_country_codes()),
-            ),
-            Event::NetworkThreat(event) => (
-                Self::representative_stored_country_code(event.orig_country_codes()),
-                Self::representative_stored_country_code(event.resp_country_codes()),
-            ),
-            Event::ExtraThreat(event) => (
-                Self::representative_stored_country_code(event.orig_country_codes()),
-                Self::representative_stored_country_code(event.resp_country_codes()),
-            ),
-            Event::LockyRansomware(event) => (
-                Self::representative_stored_country_code(event.orig_country_codes()),
-                Self::representative_stored_country_code(event.resp_country_codes()),
-            ),
-            Event::SuspiciousTlsTraffic(event) => (
-                Self::representative_stored_country_code(event.orig_country_codes()),
-                Self::representative_stored_country_code(event.resp_country_codes()),
-            ),
+            Event::WindowsThreat(event) => (event.orig_country_codes(), event.resp_country_codes()),
+            Event::NetworkThreat(event) => (event.orig_country_codes(), event.resp_country_codes()),
+            Event::ExtraThreat(event) => (event.orig_country_codes(), event.resp_country_codes()),
+            Event::LockyRansomware(event) => {
+                (event.orig_country_codes(), event.resp_country_codes())
+            }
+            Event::SuspiciousTlsTraffic(event) => {
+                (event.orig_country_codes(), event.resp_country_codes())
+            }
         }
     }
 
@@ -1483,7 +1424,10 @@ impl Event {
         }
     }
 
-    /// Counts the number of events per country.
+    /// Counts each matching event once per distinct stored country bucket it carries.
+    ///
+    /// This aggregation matches country filtering: bucket keys use the same string
+    /// representation for every stored origin and response country code.
     ///
     /// # Errors
     ///
@@ -1493,21 +1437,20 @@ impl Event {
         counter: &mut HashMap<String, usize>,
         filter: &EventFilter,
     ) -> Result<()> {
-        let addr_pair = self.address_pair(filter)?;
-        let (orig_code, resp_code) = self.stored_country_code_pair();
+        // TODO: Need to implement country counting for `WindowsThreat`.
+        // 1. for Network Connection: count country via ip
+        // 2. for other Sysmon events: count the country by KR because the event does not have ip address.
+        if self.kind(filter)?.is_none() {
+            return Ok(());
+        }
 
-        if addr_pair.1.is_some() {
-            let resp_country = crate::util::country_code_as_str(&resp_code);
-            if addr_pair.0.is_some() {
-                let orig_country = crate::util::country_code_as_str(&orig_code);
-                if orig_country != resp_country {
-                    Self::increment_country_count(counter, orig_country);
-                }
+        let (orig_codes, resp_codes) = self.stored_country_code_pair();
+        let mut seen: HashSet<&str> = HashSet::new();
+        for code in orig_codes.iter().chain(resp_codes) {
+            let country = crate::util::country_code_as_str(code);
+            if seen.insert(country) {
+                Self::increment_country_count(counter, country);
             }
-            Self::increment_country_count(counter, resp_country);
-        } else if addr_pair.0.is_some() {
-            let orig_country = crate::util::country_code_as_str(&orig_code);
-            Self::increment_country_count(counter, orig_country);
         }
 
         Ok(())
@@ -4229,7 +4172,8 @@ mod tests {
             MultiHostPortScanFields, NetworkThreat, NetworkThreatFields, NonBrowser, PortScan,
             PortScanFields, RdpBruteForce, RdpBruteForceFields, RecordType, RepeatedHttpSessions,
             RepeatedHttpSessionsFields, SuspiciousTlsTraffic, TorConnection, TriageScore,
-            UnusualDestinationPatternFields, WindowsThreat, WindowsThreatFields,
+            UnusualDestinationPattern, UnusualDestinationPatternFields, WindowsThreat,
+            WindowsThreatFields,
         },
         types::EventCategory,
     };
@@ -4262,6 +4206,36 @@ mod tests {
         let backup_dir = tempfile::tempdir().unwrap();
         let store = Arc::new(Store::new(db_dir.path(), backup_dir.path(), None).unwrap());
         (permit, store)
+    }
+
+    fn country_filter(countries: Option<Vec<[u8; 2]>>) -> EventFilter {
+        EventFilter {
+            customers: None,
+            endpoints: None,
+            directions: None,
+            originator: None,
+            responder: None,
+            countries,
+            categories: None,
+            levels: None,
+            kinds: None,
+            learning_methods: None,
+            sensors: None,
+            confidence_min: None,
+            confidence_max: None,
+            triage_policies: None,
+        }
+    }
+
+    fn assert_country_counts(event: &Event, expected: &[(&str, usize)]) {
+        let mut counter = HashMap::new();
+        event
+            .count_country(&mut counter, &country_filter(None))
+            .unwrap();
+        assert_eq!(counter.len(), expected.len());
+        for (country, count) in expected {
+            assert_eq!(counter.get(*country), Some(count));
+        }
     }
 
     fn setup_store_with_lookup(lookup: FakeCountryLookup) -> (DbGuard<'static>, Arc<Store>) {
@@ -8252,7 +8226,7 @@ mod tests {
     }
 
     #[test]
-    fn count_country_rdp_brute_force_counts_origin_only() {
+    fn count_country_rdp_brute_force_counts_all_countries_and_round_trips_filters() {
         let time = msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap());
         let event = Event::RdpBruteForce(RdpBruteForce {
             sensor: String::new(),
@@ -8271,41 +8245,108 @@ mod tests {
             category: Some(EventCategory::Discovery),
             triage_scores: None,
         });
-        let filter = EventFilter {
-            customers: None,
-            endpoints: None,
-            directions: None,
-            originator: None,
-            responder: None,
-            countries: None,
-            categories: None,
-            levels: None,
-            kinds: None,
-            learning_methods: None,
-            sensors: None,
-            confidence_min: None,
-            confidence_max: None,
-            triage_policies: None,
-        };
+        assert_country_counts(&event, &[("US", 1), ("KR", 1), ("JP", 1)]);
+        for country in [*b"US", *b"KR", *b"JP"] {
+            let filter = country_filter(Some(vec![country]));
+            assert!(event.matches(&filter).unwrap().0);
+            let mut filtered_counter = HashMap::new();
+            event.count_country(&mut filtered_counter, &filter).unwrap();
+            assert_eq!(filtered_counter.len(), 3);
+        }
 
         let mut counter = HashMap::new();
-        event.count_country(&mut counter, &filter).unwrap();
-        assert_eq!(counter.get("US"), Some(&1));
-        assert!(!counter.contains_key("KR"));
-        assert!(!counter.contains_key("JP"));
-        assert_eq!(counter.len(), 1);
+        event
+            .count_country(&mut counter, &country_filter(Some(vec![*b"DE"])))
+            .unwrap();
+        assert!(counter.is_empty());
     }
 
     #[test]
-    fn aggregated_placeholder_bucket_can_be_used_as_a_country_filter() {
+    fn count_country_external_ddos_counts_all_countries() {
+        let time = msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap());
+        let event = Event::ExternalDdos(ExternalDdos {
+            sensor: String::new(),
+            time,
+            orig_addrs: vec![
+                IpAddr::V4(Ipv4Addr::LOCALHOST),
+                IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
+            ],
+            orig_country_codes: vec![*b"CN", *b"RU"],
+            resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 3)),
+            resp_country_code: *b"KR",
+            proto: 17,
+            first_event_start_time: time,
+            last_event_start_time: time,
+            confidence: 0.3,
+            category: Some(EventCategory::Impact),
+            triage_scores: None,
+        });
+
+        assert_country_counts(&event, &[("CN", 1), ("RU", 1), ("KR", 1)]);
+    }
+
+    #[test]
+    fn count_country_unusual_destination_pattern_counts_all_response_countries() {
+        let time = msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap());
+        let event = Event::Blocklist(RecordType::UnusualDestinationPattern(
+            UnusualDestinationPattern {
+                time,
+                sensor: String::new(),
+                sampling_window_start_time: time,
+                sampling_window_end_time: time,
+                destination_ips: vec![
+                    IpAddr::V4(Ipv4Addr::LOCALHOST),
+                    IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
+                    IpAddr::V4(Ipv4Addr::new(127, 0, 0, 3)),
+                ],
+                resp_country_codes: vec![*b"KR", *b"JP", *b"US"],
+                count: 3,
+                expected_mean: 1.0,
+                std_deviation: 0.1,
+                z_score: 2.0,
+                confidence: 0.3,
+                category: Some(EventCategory::Reconnaissance),
+                triage_scores: None,
+            },
+        ));
+
+        assert_country_counts(&event, &[("KR", 1), ("JP", 1), ("US", 1)]);
+    }
+
+    #[test]
+    fn count_country_deduplicates_repeated_codes_across_endpoints() {
+        let time = msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap());
+        let event = Event::ExternalDdos(ExternalDdos {
+            sensor: String::new(),
+            time,
+            orig_addrs: vec![
+                IpAddr::V4(Ipv4Addr::LOCALHOST),
+                IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
+            ],
+            orig_country_codes: vec![*b"KR", *b"KR"],
+            resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 3)),
+            resp_country_code: *b"KR",
+            proto: 17,
+            first_event_start_time: time,
+            last_event_start_time: time,
+            confidence: 0.3,
+            category: Some(EventCategory::Impact),
+            triage_scores: None,
+        });
+
+        assert_country_counts(&event, &[("KR", 1)]);
+    }
+
+    #[test]
+    fn count_country_deduplicates_non_utf8_fallback_bucket() {
         let time = msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap());
         let event = Event::RdpBruteForce(RdpBruteForce {
             sensor: String::new(),
             time,
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
-            orig_country_code: crate::COUNTRY_CODE_UNRESOLVED,
+            orig_country_code: [0xff, 0xfe],
             resp_addrs: vec![IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2))],
-            resp_country_codes: vec![crate::COUNTRY_CODE_UNKNOWN],
+            resp_country_codes: vec![[0xfe, 0xff]],
             first_event_start_time: time,
             last_event_start_time: time,
             proto: 6,
@@ -8313,30 +8354,113 @@ mod tests {
             category: Some(EventCategory::Discovery),
             triage_scores: None,
         });
-        let mut filter = EventFilter {
-            customers: None,
-            endpoints: None,
-            directions: None,
-            originator: None,
-            responder: None,
-            countries: None,
-            categories: None,
-            levels: None,
-            kinds: None,
-            learning_methods: None,
-            sensors: None,
-            confidence_min: None,
-            confidence_max: None,
-            triage_policies: None,
-        };
 
+        assert_country_counts(&event, &[("ZZ", 1)]);
+    }
+
+    #[test]
+    fn aggregated_placeholder_buckets_can_all_be_used_as_country_filters() {
+        let time = msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap());
+        let event = Event::RdpBruteForce(RdpBruteForce {
+            sensor: String::new(),
+            time,
+            orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
+            orig_country_code: crate::COUNTRY_CODE_UNRESOLVED,
+            resp_addrs: vec![
+                IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
+                IpAddr::V4(Ipv4Addr::new(127, 0, 0, 3)),
+            ],
+            resp_country_codes: vec![crate::COUNTRY_CODE_UNKNOWN, crate::COUNTRY_CODE_UNRESOLVED],
+            first_event_start_time: time,
+            last_event_start_time: time,
+            proto: 6,
+            confidence: 0.3,
+            category: Some(EventCategory::Discovery),
+            triage_scores: None,
+        });
         let mut counter = HashMap::new();
-        event.count_country(&mut counter, &filter).unwrap();
-        let bucket = counter.keys().next().expect("one country bucket");
-        let country: [u8; 2] = bucket.as_bytes().try_into().expect("two-byte country code");
-        filter.countries = Some(vec![country]);
+        event
+            .count_country(&mut counter, &country_filter(None))
+            .unwrap();
+        assert_eq!(
+            counter,
+            HashMap::from([("XX".to_string(), 1), ("ZZ".to_string(), 1)])
+        );
 
-        assert!(event.matches(&filter).unwrap().0);
+        for bucket in counter.keys() {
+            let country: [u8; 2] = bucket.as_bytes().try_into().expect("two-byte country code");
+            assert!(
+                event
+                    .matches(&country_filter(Some(vec![country])))
+                    .unwrap()
+                    .0
+            );
+        }
+    }
+
+    #[test]
+    fn count_country_events_without_stored_codes_produce_no_buckets() {
+        let time = msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap());
+        let windows = Event::WindowsThreat(WindowsThreat {
+            time,
+            sensor: String::new(),
+            service: String::new(),
+            agent_name: String::new(),
+            agent_id: String::new(),
+            process_guid: String::new(),
+            process_id: 0,
+            image: String::new(),
+            user: String::new(),
+            content: String::new(),
+            db_name: String::new(),
+            rule_id: 0,
+            matched_to: String::new(),
+            cluster_id: None,
+            attack_kind: String::new(),
+            confidence: 0.3,
+            category: None,
+            triage_scores: None,
+        });
+        let extra = Event::ExtraThreat(ExtraThreat {
+            time,
+            sensor: String::new(),
+            service: String::new(),
+            content: String::new(),
+            db_name: String::new(),
+            rule_id: 0,
+            matched_to: String::new(),
+            cluster_id: None,
+            attack_kind: String::new(),
+            confidence: 0.3,
+            category: None,
+            triage_scores: None,
+        });
+
+        assert_country_counts(&windows, &[]);
+        assert_country_counts(&extra, &[]);
+    }
+
+    #[test]
+    fn count_country_single_endpoint_per_side_is_unchanged() {
+        let time = msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap());
+        let event = Event::RepeatedHttpSessions(RepeatedHttpSessions {
+            time,
+            sensor: String::new(),
+            orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
+            orig_port: 10000,
+            orig_country_code: *b"US",
+            resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
+            resp_port: 80,
+            resp_country_code: *b"KR",
+            proto: 6,
+            first_event_start_time: time,
+            last_event_start_time: time,
+            confidence: 0.3,
+            category: Some(EventCategory::Exfiltration),
+            triage_scores: None,
+        });
+
+        assert_country_counts(&event, &[("US", 1), ("KR", 1)]);
     }
 
     #[test]
