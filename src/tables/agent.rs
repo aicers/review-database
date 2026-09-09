@@ -59,6 +59,20 @@ pub struct Agent {
     /// stays empty for them; it is `ExternalService` that carries entries. It is
     /// observed state and is never derived from `config` or `draft`.
     pub bound_addrs: Vec<(String, String)>,
+    /// The instance number this row is, or `None` for a record with no
+    /// instance dimension.
+    ///
+    /// It is the number [`InstanceAllocation`](crate::InstanceAllocation) holds
+    /// for the instance this row was created for, never a value parsed out of
+    /// `key`, which has no documented format. A core component's class has no
+    /// instance dimension, so a row for one carries `None`, on the same terms
+    /// as [`OperationAttempt::instance`](crate::OperationAttempt::instance);
+    /// so does a row written before any number was recorded.
+    ///
+    /// Like the install-state fields beside it, this is observed state: it is
+    /// written when the row is created for an allocated instance, and a
+    /// configuration edit never changes it.
+    pub instance: Option<u32>,
 }
 
 impl Agent {
@@ -68,7 +82,8 @@ impl Agent {
     /// describe what a host reports, and registration precedes any report, so
     /// they start empty and [`Lifecycle::NotInstalled`] respectively. Install
     /// state is written afterwards by assigning to the fields of a record read
-    /// back from the database.
+    /// back from the database, and `instance` on the same terms: it starts
+    /// `None` and is set by whoever creates the row for an allocated instance.
     ///
     /// # Errors
     ///
@@ -94,6 +109,7 @@ impl Agent {
             installed_commit: None,
             lifecycle: Lifecycle::NotInstalled,
             bound_addrs: Vec::new(),
+            instance: None,
         })
     }
 }
@@ -119,6 +135,7 @@ impl FromKeyValue for Agent {
             installed_commit: value.installed_commit,
             lifecycle: Lifecycle::from_stored_index(value.lifecycle),
             bound_addrs: value.bound_addrs,
+            instance: value.instance,
         })
     }
 }
@@ -146,6 +163,7 @@ impl ValueTrait for Agent {
             installed_commit: self.installed_commit.clone(),
             lifecycle: self.lifecycle.to_stored_index(),
             bound_addrs: self.bound_addrs.clone(),
+            instance: self.instance,
         };
         super::serialize(&value).expect("serializable")
     }
@@ -167,6 +185,7 @@ struct Value {
     installed_commit: Option<String>,
     lifecycle: u8,
     bound_addrs: Vec<(String, String)>,
+    instance: Option<u32>,
 }
 
 /// Functions for the agents table.
@@ -383,6 +402,51 @@ mod test {
     }
 
     #[test]
+    fn new_agent_records_no_instance_number() {
+        let agent = create_agent(1, "001.piglet", AgentKind::Sensor, Some(VALID_TOML), None);
+        assert_eq!(agent.instance, None);
+    }
+
+    /// The instance a row is survives a round trip, `None` included, and a
+    /// number is stored as itself rather than being read back out of `key`.
+    #[test]
+    fn instance_number_round_trips() {
+        let (_permit, store) = setup_store();
+        let table = store.agents_map();
+
+        let mut agent = create_agent(1, "002.piglet", AgentKind::Sensor, Some(VALID_TOML), None);
+        agent.instance = Some(2);
+        table.insert(&agent).unwrap();
+        let stored = table.get(1, "002.piglet").unwrap().unwrap();
+        assert_eq!(stored, agent);
+        assert_eq!(stored.instance, Some(2));
+
+        // A configuration edit carries the recorded number forward untouched.
+        let mut edited = stored.clone();
+        edited.config = Some(r#"edited = "true""#.to_string().try_into().unwrap());
+        table.update(&stored, &edited).unwrap();
+        assert_eq!(
+            table.get(1, "002.piglet").unwrap().unwrap().instance,
+            Some(2)
+        );
+
+        // A row with no instance dimension keeps `None`, which is a different
+        // stored value from any number.
+        let core = create_agent(1, "core", AgentKind::Sensor, Some(VALID_TOML), None);
+        table.insert(&core).unwrap();
+        let stored_core = table.get(1, "core").unwrap().unwrap();
+        assert_eq!(stored_core.instance, None);
+        assert_ne!(core.value(), agent.value());
+
+        for instance in [Some(1), Some(999), Some(u32::MAX), None] {
+            let mut agent = core.clone();
+            agent.instance = instance;
+            let restored = Agent::from_key_value(&agent.unique_key(), &agent.value()).unwrap();
+            assert_eq!(restored.instance, instance);
+        }
+    }
+
+    #[test]
     fn install_state_round_trips() {
         let empty = create_agent(1, "test_key", AgentKind::Sensor, Some(VALID_TOML), None);
         let restored = Agent::from_key_value(&empty.unique_key(), &empty.value()).unwrap();
@@ -473,6 +537,7 @@ mod test {
             installed_commit: Some("cafebabe".to_string()),
             lifecycle: 9,
             bound_addrs: vec![("addr".to_string(), "127.0.0.1:1111".to_string())],
+            instance: Some(2),
         };
         let serialized = super::super::serialize(&forged).unwrap();
 
@@ -492,6 +557,7 @@ mod test {
             agent.bound_addrs,
             vec![("addr".to_string(), "127.0.0.1:1111".to_string())]
         );
+        assert_eq!(agent.instance, Some(2));
     }
 
     /// Storing the variant index in a `u8` is a representation choice, not a
@@ -508,6 +574,7 @@ mod test {
             installed_commit: Option<String>,
             lifecycle: Lifecycle,
             bound_addrs: Vec<(String, String)>,
+            instance: Option<u32>,
         }
 
         for lifecycle in [
@@ -528,6 +595,7 @@ mod test {
                 installed_commit: None,
                 lifecycle: lifecycle.to_stored_index(),
                 bound_addrs: vec![("addr".to_string(), "127.0.0.1:1111".to_string())],
+                instance: Some(3),
             };
             let with_enum = ValueWithEnum {
                 kind: raw.kind,
@@ -538,6 +606,7 @@ mod test {
                 installed_commit: raw.installed_commit.clone(),
                 lifecycle,
                 bound_addrs: raw.bound_addrs.clone(),
+                instance: raw.instance,
             };
             assert_eq!(
                 super::super::serialize(&raw).unwrap(),

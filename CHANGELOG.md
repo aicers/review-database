@@ -121,37 +121,45 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   CLDR's Unknown or Invalid Territory code, while `XX` means no lookup was
   performed. `find_ip_country` now returns `ZZ` on lookup failure, and event
   country filters can match either placeholder explicitly. The database format
-  is now `0.47.0-alpha.4`; migration swaps both scalar and vector placeholders
+  is now `0.47.0-alpha.5`; migration swaps both scalar and vector placeholders
   from the 0.46/earlier-alpha representation with durable retry checkpoints.
 - **BREAKING**: `Agent` and `ExternalService` now record the build installed on
-  the host, through four new public fields: `installed_version` and
-  `installed_commit` (the build's identity, both `None` until a host reports
-  one), `lifecycle`, and `bound_addrs` (the `(config key, host:port)` pairs the
-  instance actually bound, which stay empty for agents). `lifecycle` is a new
-  public `Lifecycle` type — `NotInstalled`, `Installing`, `Running`, `Stopped`,
-  `Failed`, `Removing`, `Unknown` — describing the install and run state a host
-  reports. It is distinct from `AgentStatus` / `ExternalServiceStatus`, which
-  still report the outcome of a configuration reload, and nothing converts
-  between the two. `Agent::new` and `ExternalService::new` keep their parameter
-  lists and start the new fields empty, at `NotInstalled`; install state is
-  assigned to a record afterwards. Records written by earlier versions are
-  migrated rather than left unreadable: each keeps its key and every field it
-  already had, and gains no installed version or commit, `NotInstalled`, and no
-  bound addresses, until a host reports otherwise.
+  the host and which instance the row is, through five new public fields:
+  `installed_version` and `installed_commit` (the build's identity, both `None`
+  until a host reports one), `lifecycle`, `bound_addrs` (the
+  `(config key, host:port)` pairs the instance actually bound, which stay empty
+  for agents), and `instance`. `lifecycle` is a new public `Lifecycle` type —
+  `NotInstalled`, `Installing`, `Running`, `Stopped`, `Failed`, `Removing`,
+  `Unknown` — describing the install and run state a host reports. It is
+  distinct from `AgentStatus` / `ExternalServiceStatus`, which still report the
+  outcome of a configuration reload, and nothing converts between the two.
+  `instance` is the number allocated to the instance the row was created for,
+  the same `Option<u32>` an `OperationAttempt` carries: a row with no instance
+  dimension holds `None`, and the number is never parsed out of `key`, which
+  has no documented format. Like the install-state fields it is observed state,
+  so a configuration edit does not change it. `Agent::new` and
+  `ExternalService::new` keep their parameter lists and start the new fields
+  empty, at `NotInstalled`; install state and the instance number are assigned
+  to a record afterwards. Records written by earlier versions are migrated
+  rather than left unreadable: each keeps its key and every field it already
+  had, and gains no installed version or commit, `NotInstalled`, and no bound
+  addresses until a host reports otherwise, along with no instance number,
+  which is the honest value for a row whose number was never recorded.
 - Classifier files are now created requesting owner-only permissions (`0o600`)
   instead of the previous `0o666` reduced by the umask. The umask still applies,
   so the resulting mode is not fixed, but no group or other bit is ever granted.
   Under the common `umask 022`, for example, a stored classifier that used to be
   `0o644` is now `0o600`, so anything reading these files as another account
   stops working.
-- **BREAKING**: Bumped the database format to `0.47.0-alpha.4`. The migration
+- **BREAKING**: Bumped the database format to `0.47.0-alpha.5`. The migration
   from `0.46.x` creates the eight column families such a store lacks — customer
   data deletion jobs, core components, operation attempts, the latest operation
   attempt pointer, instance allocations, and the port allocation table with its
   two indexes — and converts every stored agent and external-service value to
-  the layout carrying install state. Migrations from older supported formats
-  apply their intermediate steps over the column families the database
-  physically holds, so an update interrupted part-way can simply be retried.
+  the layout carrying install state and the instance number. Migrations from
+  older supported formats apply their intermediate steps over the column
+  families the database physically holds, so an update interrupted part-way can
+  simply be retried.
 - **BREAKING**: Event timestamps now use `jiff::Timestamp` instead of chrono's
   `DateTime<Utc>`. Existing databases need no migration, because timestamps are
   still stored as `i64` epoch nanoseconds.
