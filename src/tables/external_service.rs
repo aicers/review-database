@@ -302,6 +302,12 @@ mod test {
     fn external_service_kind_package_id() {
         assert_eq!(ExternalServiceKind::DataStore.package_id(), Some("giganto"));
         assert_eq!(ExternalServiceKind::TiContainer.package_id(), None);
+
+        // A variant added later must fail this match too, so the assertions
+        // above cannot fall behind the enum once its arm is written.
+        match ExternalServiceKind::DataStore {
+            ExternalServiceKind::DataStore | ExternalServiceKind::TiContainer => {}
+        }
     }
 
     #[test]

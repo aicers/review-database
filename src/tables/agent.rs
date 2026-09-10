@@ -304,6 +304,15 @@ mod test {
         assert_eq!(AgentKind::Unsupervised.package_id(), Some("reconverge"));
         assert_eq!(AgentKind::SemiSupervised.package_id(), Some("hog"));
         assert_eq!(AgentKind::TimeSeriesGenerator.package_id(), Some("crusher"));
+
+        // A variant added later must fail this match too, so the assertions
+        // above cannot fall behind the enum once its arm is written.
+        match AgentKind::Sensor {
+            AgentKind::Sensor
+            | AgentKind::Unsupervised
+            | AgentKind::SemiSupervised
+            | AgentKind::TimeSeriesGenerator => {}
+        }
     }
 
     #[test]
