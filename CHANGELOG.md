@@ -113,6 +113,16 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   path a migration uses. The two files can live on different filesystems, so a
   failure on the second reports which directory it was and the call can simply
   be repeated once the failure is corrected.
+- Added `AgentKind::package_id` and `ExternalServiceKind::package_id`, each
+  returning the package-id the kind is deployed from as an
+  `Option<&'static str>` — `piglet`, `reconverge`, `hog`, `crusher`, and
+  `giganto`. They give a consumer that keys operation history or
+  available-update state on a package-id one conversion it does not have to
+  write itself. `None` means no package deploys the kind, which is the answer
+  for `ExternalServiceKind::TiContainer`, and is a state to render as nothing
+  to update rather than an error. The strings are the canonical package-id
+  registry's, for which `aicers/bootler` `core/src/product.rs` is the
+  authority.
 
 ### Changed
 

@@ -34,6 +34,29 @@ pub enum AgentKind {
     TimeSeriesGenerator = 4,
 }
 
+impl AgentKind {
+    /// Returns the package-id this kind is deployed from, or `None` if no
+    /// package deploys it.
+    ///
+    /// The strings are the canonical package-id registry's literals, which
+    /// `aicers/bootler` `core/src/product.rs` is the authority for; each is
+    /// paired here with the variant naming the module that package is. A
+    /// value changed here without changing it there is a contradiction of
+    /// that table, not a local decision.
+    ///
+    /// The match is exhaustive with no wildcard arm on purpose: a variant
+    /// added later fails to compile until someone decides what deploys it.
+    #[must_use]
+    pub fn package_id(&self) -> Option<&'static str> {
+        match self {
+            Self::Unsupervised => Some("reconverge"),
+            Self::Sensor => Some("piglet"),
+            Self::SemiSupervised => Some("hog"),
+            Self::TimeSeriesGenerator => Some("crusher"),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct Agent {
     pub node_id: u32,
@@ -273,6 +296,23 @@ mod test {
             draft.map(ToString::to_string),
         )
         .unwrap()
+    }
+
+    #[test]
+    fn agent_kind_package_id() {
+        assert_eq!(AgentKind::Sensor.package_id(), Some("piglet"));
+        assert_eq!(AgentKind::Unsupervised.package_id(), Some("reconverge"));
+        assert_eq!(AgentKind::SemiSupervised.package_id(), Some("hog"));
+        assert_eq!(AgentKind::TimeSeriesGenerator.package_id(), Some("crusher"));
+
+        // A variant added later must fail this match too, so the assertions
+        // above cannot fall behind the enum once its arm is written.
+        match AgentKind::Sensor {
+            AgentKind::Sensor
+            | AgentKind::Unsupervised
+            | AgentKind::SemiSupervised
+            | AgentKind::TimeSeriesGenerator => {}
+        }
     }
 
     #[test]

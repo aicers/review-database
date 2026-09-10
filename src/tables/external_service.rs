@@ -32,6 +32,31 @@ pub enum ExternalServiceKind {
     TiContainer = 2,
 }
 
+impl ExternalServiceKind {
+    /// Returns the package-id this kind is deployed from, or `None` if no
+    /// package deploys it.
+    ///
+    /// The strings are the canonical package-id registry's literals, which
+    /// `aicers/bootler` `core/src/product.rs` is the authority for; each is
+    /// paired here with the variant naming the module that package is. A
+    /// value changed here without changing it there is a contradiction of
+    /// that table, not a local decision.
+    ///
+    /// [`TiContainer`](Self::TiContainer) is `None` because the registry has
+    /// no entry for it: it is a threat-intelligence container that no package
+    /// deploys, so the answer is the absence of one rather than a guess.
+    ///
+    /// The match is exhaustive with no wildcard arm on purpose: a variant
+    /// added later fails to compile until someone decides what deploys it.
+    #[must_use]
+    pub fn package_id(&self) -> Option<&'static str> {
+        match self {
+            Self::DataStore => Some("giganto"),
+            Self::TiContainer => None,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct ExternalService {
     pub node_id: u32,
@@ -271,6 +296,18 @@ mod test {
             draft.map(ToString::to_string),
         )
         .unwrap()
+    }
+
+    #[test]
+    fn external_service_kind_package_id() {
+        assert_eq!(ExternalServiceKind::DataStore.package_id(), Some("giganto"));
+        assert_eq!(ExternalServiceKind::TiContainer.package_id(), None);
+
+        // A variant added later must fail this match too, so the assertions
+        // above cannot fall behind the enum once its arm is written.
+        match ExternalServiceKind::DataStore {
+            ExternalServiceKind::DataStore | ExternalServiceKind::TiContainer => {}
+        }
     }
 
     #[test]
