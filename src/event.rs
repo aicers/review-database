@@ -78,6 +78,10 @@ use self::{
     tls::BlocklistTlsFieldsStored,
     unusual_destination_pattern::UnusualDestinationPatternFieldsStored,
 };
+
+/// Caps the quadratic, allocation-free deduplication path at a size where it
+/// remains cheaper than allocating a hash set; retune only with benchmarks.
+const COUNTRY_COUNT_STACK_DEDUP_LIMIT: usize = 8;
 pub(crate) use self::{
     bootp::BlocklistBootpFieldsStoredV0_46,
     conn::{
@@ -1426,8 +1430,9 @@ impl Event {
 
     /// Counts each matching event once per distinct stored country bucket it carries.
     ///
-    /// This aggregation matches country filtering: bucket keys use the same string
-    /// representation for every stored origin and response country code.
+    /// Both sides' stored codes contribute, so for codes that are two-byte ASCII the
+    /// bucket keys are exactly the country codes that make `EventFilter::countries`
+    /// select the event.
     ///
     /// # Errors
     ///
@@ -1445,11 +1450,27 @@ impl Event {
         }
 
         let (orig_codes, resp_codes) = self.stored_country_code_pair();
-        let mut seen: HashSet<&str> = HashSet::new();
-        for code in orig_codes.iter().chain(resp_codes) {
-            let country = crate::util::country_code_as_str(code);
-            if seen.insert(country) {
-                Self::increment_country_count(counter, country);
+        let code_count = orig_codes.len().saturating_add(resp_codes.len());
+        if code_count <= COUNTRY_COUNT_STACK_DEDUP_LIMIT {
+            let mut seen = [""; COUNTRY_COUNT_STACK_DEDUP_LIMIT];
+            let mut seen_len = 0;
+            for code in orig_codes.iter().chain(resp_codes) {
+                let country = crate::util::country_code_as_str(code);
+                if !seen[..seen_len].contains(&country)
+                    && let Some(slot) = seen.get_mut(seen_len)
+                {
+                    *slot = country;
+                    seen_len += 1;
+                    Self::increment_country_count(counter, country);
+                }
+            }
+        } else {
+            let mut seen = HashSet::with_capacity(code_count);
+            for code in orig_codes.iter().chain(resp_codes) {
+                let country = crate::util::country_code_as_str(code);
+                if seen.insert(country) {
+                    Self::increment_country_count(counter, country);
+                }
             }
         }
 
@@ -4149,7 +4170,7 @@ mod tests {
     use chrono::{DateTime, TimeZone, Utc};
     use jiff::Timestamp;
 
-    use super::timestamp;
+    use super::{COUNTRY_COUNT_STACK_DEDUP_LIMIT, timestamp};
     use crate::test::{DbGuard, acquire_db_permit};
     use crate::{
         Store,
@@ -8251,7 +8272,14 @@ mod tests {
             assert!(event.matches(&filter).unwrap().0);
             let mut filtered_counter = HashMap::new();
             event.count_country(&mut filtered_counter, &filter).unwrap();
-            assert_eq!(filtered_counter.len(), 3);
+            assert_eq!(
+                filtered_counter,
+                HashMap::from([
+                    ("US".to_string(), 1),
+                    ("KR".to_string(), 1),
+                    ("JP".to_string(), 1),
+                ])
+            );
         }
 
         let mut counter = HashMap::new();
@@ -8259,6 +8287,43 @@ mod tests {
             .count_country(&mut counter, &country_filter(Some(vec![*b"DE"])))
             .unwrap();
         assert!(counter.is_empty());
+    }
+
+    #[test]
+    fn count_country_multi_host_port_scan_counts_all_countries_and_round_trips_filters() {
+        let time = msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap());
+        let event = Event::MultiHostPortScan(MultiHostPortScan {
+            sensor: String::new(),
+            time,
+            orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
+            orig_country_code: *b"US",
+            resp_addrs: vec![
+                IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
+                IpAddr::V4(Ipv4Addr::new(127, 0, 0, 3)),
+            ],
+            resp_port: 80,
+            resp_country_codes: vec![*b"KR", *b"JP"],
+            proto: 6,
+            first_event_start_time: time,
+            last_event_start_time: time,
+            confidence: 0.3,
+            category: Some(EventCategory::Reconnaissance),
+            triage_scores: None,
+        });
+
+        let expected = HashMap::from([
+            ("US".to_string(), 1),
+            ("KR".to_string(), 1),
+            ("JP".to_string(), 1),
+        ]);
+        assert_country_counts(&event, &[("US", 1), ("KR", 1), ("JP", 1)]);
+        for country in [*b"US", *b"KR", *b"JP"] {
+            let filter = country_filter(Some(vec![country]));
+            assert!(event.matches(&filter).unwrap().0);
+            let mut filtered_counter = HashMap::new();
+            event.count_country(&mut filtered_counter, &filter).unwrap();
+            assert_eq!(filtered_counter, expected);
+        }
     }
 
     #[test]
@@ -8347,6 +8412,27 @@ mod tests {
             orig_country_code: [0xff, 0xfe],
             resp_addrs: vec![IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2))],
             resp_country_codes: vec![[0xfe, 0xff]],
+            first_event_start_time: time,
+            last_event_start_time: time,
+            proto: 6,
+            confidence: 0.3,
+            category: Some(EventCategory::Discovery),
+            triage_scores: None,
+        });
+
+        assert_country_counts(&event, &[("ZZ", 1)]);
+    }
+
+    #[test]
+    fn count_country_hash_dedup_path_uses_rendered_bucket_keys() {
+        let time = msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap());
+        let event = Event::RdpBruteForce(RdpBruteForce {
+            sensor: String::new(),
+            time,
+            orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
+            orig_country_code: [0xff, 0xfe],
+            resp_addrs: vec![IpAddr::V4(Ipv4Addr::LOCALHOST); COUNTRY_COUNT_STACK_DEDUP_LIMIT],
+            resp_country_codes: vec![[0xfe, 0xff]; COUNTRY_COUNT_STACK_DEDUP_LIMIT],
             first_event_start_time: time,
             last_event_start_time: time,
             proto: 6,
