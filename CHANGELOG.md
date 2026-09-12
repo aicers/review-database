@@ -9,6 +9,11 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- Country aggregation no longer drops every responder country from RDP
+  brute-force and multi-host port-scan events, every originator country from
+  external DDoS events, or all but one responder country from unusual
+  destination-pattern events. Each event is now counted once per distinct
+  country it carries, so aggregation agrees with country filtering.
 - Corrected `EventDb` iteration to use signed chronological key order across
   the Unix epoch, and made `remove_before` consistently retain events exactly
   at its cutoff while deleting all earlier events.
