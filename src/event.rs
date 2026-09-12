@@ -78,10 +78,6 @@ use self::{
     tls::BlocklistTlsFieldsStored,
     unusual_destination_pattern::UnusualDestinationPatternFieldsStored,
 };
-
-/// Caps the quadratic, allocation-free deduplication path at a size where it
-/// remains cheaper than allocating a hash set; retune only with benchmarks.
-const COUNTRY_COUNT_STACK_DEDUP_LIMIT: usize = 8;
 pub(crate) use self::{
     bootp::BlocklistBootpFieldsStoredV0_46,
     conn::{
@@ -162,6 +158,9 @@ use super::{
     types::{Endpoint, HostNetworkGroup},
 };
 
+/// Caps the quadratic, allocation-free deduplication path at a size where it
+/// remains cheaper than allocating a hash set; retune only with benchmarks.
+const COUNTRY_COUNT_STACK_DEDUP_LIMIT: usize = 8;
 const EVENT_DELETION_BATCH_SIZE: usize = 1000;
 const FIRST_NON_NEGATIVE_EVENT_KEY: [u8; 16] = 0_i128.to_be_bytes();
 const FIRST_NEGATIVE_EVENT_KEY: [u8; 16] = i128::MIN.to_be_bytes();
@@ -1465,7 +1464,7 @@ impl Event {
                 }
             }
         } else {
-            let mut seen = HashSet::with_capacity(code_count);
+            let mut seen = HashSet::new();
             for code in orig_codes.iter().chain(resp_codes) {
                 let country = crate::util::country_code_as_str(code);
                 if seen.insert(country) {
@@ -4170,7 +4169,7 @@ mod tests {
     use chrono::{DateTime, TimeZone, Utc};
     use jiff::Timestamp;
 
-    use super::{COUNTRY_COUNT_STACK_DEDUP_LIMIT, timestamp};
+    use super::{COUNTRY_COUNT_STACK_DEDUP_LIMIT, EXTERNAL_DDOS, timestamp};
     use crate::test::{DbGuard, acquire_db_permit};
     use crate::{
         Store,
@@ -4253,10 +4252,41 @@ mod tests {
         event
             .count_country(&mut counter, &country_filter(None))
             .unwrap();
-        assert_eq!(counter.len(), expected.len());
-        for (country, count) in expected {
-            assert_eq!(counter.get(*country), Some(count));
+        let expected = expected
+            .iter()
+            .map(|(country, count)| ((*country).to_string(), *count))
+            .collect();
+        assert_eq!(counter, expected);
+    }
+
+    fn assert_country_round_trip(event: &Event, expected: &[(&str, usize)]) {
+        let expected = expected
+            .iter()
+            .map(|(country, count)| ((*country).to_string(), *count))
+            .collect::<HashMap<_, _>>();
+        let mut counter = HashMap::new();
+        event
+            .count_country(&mut counter, &country_filter(None))
+            .unwrap();
+        assert_eq!(counter, expected);
+
+        for country in expected.keys() {
+            let country: [u8; 2] = country
+                .as_bytes()
+                .try_into()
+                .expect("test country bucket must contain two bytes");
+            let filter = country_filter(Some(vec![country]));
+            assert!(event.matches(&filter).unwrap().0);
+            let mut filtered_counter = HashMap::new();
+            event.count_country(&mut filtered_counter, &filter).unwrap();
+            assert_eq!(filtered_counter, expected);
         }
+
+        let filter = country_filter(Some(vec![*b"DE"]));
+        assert!(!event.matches(&filter).unwrap().0);
+        let mut filtered_counter = HashMap::new();
+        event.count_country(&mut filtered_counter, &filter).unwrap();
+        assert!(filtered_counter.is_empty());
     }
 
     fn setup_store_with_lookup(lookup: FakeCountryLookup) -> (DbGuard<'static>, Arc<Store>) {
@@ -8266,26 +8296,12 @@ mod tests {
             category: Some(EventCategory::Discovery),
             triage_scores: None,
         });
-        assert_country_counts(&event, &[("US", 1), ("KR", 1), ("JP", 1)]);
-        for country in [*b"US", *b"KR", *b"JP"] {
-            let filter = country_filter(Some(vec![country]));
-            assert!(event.matches(&filter).unwrap().0);
-            let mut filtered_counter = HashMap::new();
-            event.count_country(&mut filtered_counter, &filter).unwrap();
-            assert_eq!(
-                filtered_counter,
-                HashMap::from([
-                    ("US".to_string(), 1),
-                    ("KR".to_string(), 1),
-                    ("JP".to_string(), 1),
-                ])
-            );
-        }
+        assert_country_round_trip(&event, &[("US", 1), ("KR", 1), ("JP", 1)]);
 
+        let mut filter = country_filter(None);
+        filter.kinds = Some(vec![EXTERNAL_DDOS.to_string()]);
         let mut counter = HashMap::new();
-        event
-            .count_country(&mut counter, &country_filter(Some(vec![*b"DE"])))
-            .unwrap();
+        event.count_country(&mut counter, &filter).unwrap();
         assert!(counter.is_empty());
     }
 
@@ -8311,23 +8327,11 @@ mod tests {
             triage_scores: None,
         });
 
-        let expected = HashMap::from([
-            ("US".to_string(), 1),
-            ("KR".to_string(), 1),
-            ("JP".to_string(), 1),
-        ]);
-        assert_country_counts(&event, &[("US", 1), ("KR", 1), ("JP", 1)]);
-        for country in [*b"US", *b"KR", *b"JP"] {
-            let filter = country_filter(Some(vec![country]));
-            assert!(event.matches(&filter).unwrap().0);
-            let mut filtered_counter = HashMap::new();
-            event.count_country(&mut filtered_counter, &filter).unwrap();
-            assert_eq!(filtered_counter, expected);
-        }
+        assert_country_round_trip(&event, &[("US", 1), ("KR", 1), ("JP", 1)]);
     }
 
     #[test]
-    fn count_country_external_ddos_counts_all_countries() {
+    fn count_country_external_ddos_counts_all_countries_and_round_trips_filters() {
         let time = msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap());
         let event = Event::ExternalDdos(ExternalDdos {
             sensor: String::new(),
@@ -8347,11 +8351,11 @@ mod tests {
             triage_scores: None,
         });
 
-        assert_country_counts(&event, &[("CN", 1), ("RU", 1), ("KR", 1)]);
+        assert_country_round_trip(&event, &[("CN", 1), ("RU", 1), ("KR", 1)]);
     }
 
     #[test]
-    fn count_country_unusual_destination_pattern_counts_all_response_countries() {
+    fn count_country_unusual_destination_pattern_counts_all_countries_and_round_trips_filters() {
         let time = msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap());
         let event = Event::Blocklist(RecordType::UnusualDestinationPattern(
             UnusualDestinationPattern {
@@ -8375,7 +8379,7 @@ mod tests {
             },
         ));
 
-        assert_country_counts(&event, &[("KR", 1), ("JP", 1), ("US", 1)]);
+        assert_country_round_trip(&event, &[("KR", 1), ("JP", 1), ("US", 1)]);
     }
 
     #[test]
@@ -8445,6 +8449,33 @@ mod tests {
     }
 
     #[test]
+    fn count_country_hash_dedup_path_keeps_distinct_ascii_countries() {
+        let time = msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap());
+        let countries = [*b"KR", *b"JP", *b"CN"];
+        let event = Event::RdpBruteForce(RdpBruteForce {
+            sensor: String::new(),
+            time,
+            orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
+            orig_country_code: *b"US",
+            resp_addrs: vec![IpAddr::V4(Ipv4Addr::LOCALHOST); COUNTRY_COUNT_STACK_DEDUP_LIMIT],
+            resp_country_codes: countries
+                .iter()
+                .copied()
+                .cycle()
+                .take(COUNTRY_COUNT_STACK_DEDUP_LIMIT)
+                .collect(),
+            first_event_start_time: time,
+            last_event_start_time: time,
+            proto: 6,
+            confidence: 0.3,
+            category: Some(EventCategory::Discovery),
+            triage_scores: None,
+        });
+
+        assert_country_round_trip(&event, &[("US", 1), ("KR", 1), ("JP", 1), ("CN", 1)]);
+    }
+
+    #[test]
     fn aggregated_placeholder_buckets_can_all_be_used_as_country_filters() {
         let time = msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap());
         let event = Event::RdpBruteForce(RdpBruteForce {
@@ -8455,8 +8486,13 @@ mod tests {
             resp_addrs: vec![
                 IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
                 IpAddr::V4(Ipv4Addr::new(127, 0, 0, 3)),
+                IpAddr::V4(Ipv4Addr::new(127, 0, 0, 4)),
             ],
-            resp_country_codes: vec![crate::COUNTRY_CODE_UNKNOWN, crate::COUNTRY_CODE_UNRESOLVED],
+            resp_country_codes: vec![
+                *b"KR",
+                crate::COUNTRY_CODE_UNKNOWN,
+                crate::COUNTRY_CODE_UNRESOLVED,
+            ],
             first_event_start_time: time,
             last_event_start_time: time,
             proto: 6,
@@ -8470,7 +8506,11 @@ mod tests {
             .unwrap();
         assert_eq!(
             counter,
-            HashMap::from([("XX".to_string(), 1), ("ZZ".to_string(), 1)])
+            HashMap::from([
+                ("KR".to_string(), 1),
+                ("XX".to_string(), 1),
+                ("ZZ".to_string(), 1),
+            ])
         );
 
         for bucket in counter.keys() {
@@ -8529,7 +8569,7 @@ mod tests {
     #[test]
     fn count_country_single_endpoint_per_side_is_unchanged() {
         let time = msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap());
-        let event = Event::RepeatedHttpSessions(RepeatedHttpSessions {
+        let mut event = Event::RepeatedHttpSessions(RepeatedHttpSessions {
             time,
             sensor: String::new(),
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
@@ -8547,6 +8587,12 @@ mod tests {
         });
 
         assert_country_counts(&event, &[("US", 1), ("KR", 1)]);
+
+        let Event::RepeatedHttpSessions(repeated) = &mut event else {
+            panic!("test event must remain a repeated HTTP sessions event");
+        };
+        repeated.resp_country_code = *b"US";
+        assert_country_counts(&event, &[("US", 1)]);
     }
 
     #[test]
