@@ -8428,6 +8428,44 @@ mod tests {
     }
 
     #[test]
+    fn count_country_stack_dedup_path_fills_inline_array() {
+        let time = msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap());
+        let resp_country_codes = [*b"JP", *b"KR", *b"CN", *b"RU", *b"IT", *b"FR", *b"GB"];
+        assert_eq!(
+            resp_country_codes.len() + 1,
+            COUNTRY_COUNT_STACK_DEDUP_LIMIT
+        );
+        let event = Event::RdpBruteForce(RdpBruteForce {
+            sensor: String::new(),
+            time,
+            orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
+            orig_country_code: *b"US",
+            resp_addrs: vec![IpAddr::V4(Ipv4Addr::LOCALHOST); resp_country_codes.len()],
+            resp_country_codes: resp_country_codes.to_vec(),
+            first_event_start_time: time,
+            last_event_start_time: time,
+            proto: 6,
+            confidence: 0.3,
+            category: Some(EventCategory::Discovery),
+            triage_scores: None,
+        });
+
+        assert_country_round_trip(
+            &event,
+            &[
+                ("US", 1),
+                ("JP", 1),
+                ("KR", 1),
+                ("CN", 1),
+                ("RU", 1),
+                ("IT", 1),
+                ("FR", 1),
+                ("GB", 1),
+            ],
+        );
+    }
+
+    #[test]
     fn count_country_hash_dedup_path_uses_rendered_bucket_keys() {
         let time = msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap());
         let event = Event::RdpBruteForce(RdpBruteForce {
