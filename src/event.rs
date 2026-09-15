@@ -1476,228 +1476,275 @@ impl Event {
         Ok(())
     }
 
-    /// Counts the number of events per category.
+    /// Counts matching events by their optional category.
+    ///
+    /// Keys use the same representation as the `categories` argument to
+    /// [`EventFilter::new`]: `Some(category)` counts matching events that carry
+    /// that category, while `None` counts matching events that carry no category.
+    /// Events not selected by the filter do not produce a bucket.
     ///
     /// # Errors
     ///
     /// Returns an error if matching the event against the filter fails.
     pub fn count_category(
         &self,
-        counter: &mut HashMap<EventCategory, usize>,
+        counter: &mut HashMap<Option<EventCategory>, usize>,
         filter: &EventFilter,
     ) -> Result<()> {
+        let mut matched = false;
         let mut category = None;
         match self {
             Event::DnsCovertChannel(event) => {
                 if event.matches(filter)?.0 {
+                    matched = true;
                     category = event.category();
                 }
             }
             Event::HttpThreat(event) => {
                 if event.matches(filter)?.0 {
+                    matched = true;
                     category = event.category();
                 }
             }
             Event::RdpBruteForce(event) => {
                 if event.matches(filter)?.0 {
+                    matched = true;
                     category = event.category();
                 }
             }
             Event::RepeatedHttpSessions(event) => {
                 if event.matches(filter)?.0 {
+                    matched = true;
                     category = event.category();
                 }
             }
             Event::TorConnection(event) => {
                 if event.matches(filter)?.0 {
+                    matched = true;
                     category = event.category();
                 }
             }
             Event::TorConnectionConn(event) => {
                 if event.matches(filter)?.0 {
+                    matched = true;
                     category = event.category();
                 }
             }
             Event::DomainGenerationAlgorithm(event) => {
                 if event.matches(filter)?.0 {
+                    matched = true;
                     category = event.category();
                 }
             }
             Event::FtpBruteForce(event) => {
                 if event.matches(filter)?.0 {
+                    matched = true;
                     category = event.category();
                 }
             }
             Event::FtpPlainText(event) => {
                 if event.matches(filter)?.0 {
+                    matched = true;
                     category = event.category();
                 }
             }
             Event::PortScan(event) => {
                 if event.matches(filter)?.0 {
+                    matched = true;
                     category = event.category();
                 }
             }
             Event::MultiHostPortScan(event) => {
                 if event.matches(filter)?.0 {
+                    matched = true;
                     category = event.category();
                 }
             }
             Event::ExternalDdos(event) => {
                 if event.matches(filter)?.0 {
+                    matched = true;
                     category = event.category();
                 }
             }
             Event::NonBrowser(event) => {
                 if event.matches(filter)?.0 {
+                    matched = true;
                     category = event.category();
                 }
             }
             Event::LdapBruteForce(event) => {
                 if event.matches(filter)?.0 {
+                    matched = true;
                     category = event.category();
                 }
             }
             Event::LdapPlainText(event) => {
                 if event.matches(filter)?.0 {
+                    matched = true;
                     category = event.category();
                 }
             }
             Event::CryptocurrencyMiningPool(event) => {
                 if event.matches(filter)?.0 {
+                    matched = true;
                     category = event.category();
                 }
             }
             Event::Blocklist(record_type) => match record_type {
                 RecordType::Bootp(bootp_event) => {
                     if bootp_event.matches(filter)?.0 {
+                        matched = true;
                         category = bootp_event.category();
                     }
                 }
                 RecordType::Conn(conn_event) => {
                     if conn_event.matches(filter)?.0 {
+                        matched = true;
                         category = conn_event.category();
                     }
                 }
                 RecordType::DceRpc(dcerpc_event) => {
                     if dcerpc_event.matches(filter)?.0 {
+                        matched = true;
                         category = dcerpc_event.category();
                     }
                 }
                 RecordType::Dhcp(dhcp_event) => {
                     if dhcp_event.matches(filter)?.0 {
+                        matched = true;
                         category = dhcp_event.category();
                     }
                 }
                 RecordType::Dns(dns_event) => {
                     if dns_event.matches(filter)?.0 {
+                        matched = true;
                         category = dns_event.category();
                     }
                 }
                 RecordType::Ftp(ftp_event) => {
                     if ftp_event.matches(filter)?.0 {
+                        matched = true;
                         category = ftp_event.category();
                     }
                 }
                 RecordType::Http(http_event) => {
                     if http_event.matches(filter)?.0 {
+                        matched = true;
                         category = http_event.category();
                     }
                 }
                 RecordType::Kerberos(kerberos_event) => {
                     if kerberos_event.matches(filter)?.0 {
+                        matched = true;
                         category = kerberos_event.category();
                     }
                 }
                 RecordType::Ldap(ldap_event) => {
                     if ldap_event.matches(filter)?.0 {
+                        matched = true;
                         category = ldap_event.category();
                     }
                 }
                 RecordType::MalformedDns(malformed_dns_event) => {
                     if malformed_dns_event.matches(filter)?.0 {
+                        matched = true;
                         category = malformed_dns_event.category();
                     }
                 }
                 RecordType::Mqtt(mqtt_event) => {
                     if mqtt_event.matches(filter)?.0 {
+                        matched = true;
                         category = mqtt_event.category();
                     }
                 }
                 RecordType::Nfs(nfs_event) => {
                     if nfs_event.matches(filter)?.0 {
+                        matched = true;
                         category = nfs_event.category();
                     }
                 }
                 RecordType::Ntlm(ntlm_event) => {
                     if ntlm_event.matches(filter)?.0 {
+                        matched = true;
                         category = ntlm_event.category();
                     }
                 }
                 RecordType::Radius(radius_event) => {
                     if radius_event.matches(filter)?.0 {
+                        matched = true;
                         category = radius_event.category();
                     }
                 }
                 RecordType::Rdp(rdp_event) => {
                     if rdp_event.matches(filter)?.0 {
+                        matched = true;
                         category = rdp_event.category();
                     }
                 }
                 RecordType::Smb(smb_event) => {
                     if smb_event.matches(filter)?.0 {
+                        matched = true;
                         category = smb_event.category();
                     }
                 }
                 RecordType::Smtp(smtp_event) => {
                     if smtp_event.matches(filter)?.0 {
+                        matched = true;
                         category = smtp_event.category();
                     }
                 }
                 RecordType::Ssh(ssh_event) => {
                     if ssh_event.matches(filter)?.0 {
+                        matched = true;
                         category = ssh_event.category();
                     }
                 }
                 RecordType::Tls(tls_event) => {
                     if tls_event.matches(filter)?.0 {
+                        matched = true;
                         category = tls_event.category();
                     }
                 }
                 RecordType::UnusualDestinationPattern(event) => {
                     if event.matches(filter)?.0 {
+                        matched = true;
                         category = event.category();
                     }
                 }
             },
             Event::WindowsThreat(event) => {
                 if event.matches(filter)?.0 {
+                    matched = true;
                     category = event.category();
                 }
             }
             Event::NetworkThreat(event) => {
                 if event.matches(filter)?.0 {
+                    matched = true;
                     category = event.category();
                 }
             }
             Event::ExtraThreat(event) => {
                 if event.matches(filter)?.0 {
+                    matched = true;
                     category = event.category();
                 }
             }
             Event::LockyRansomware(event) => {
                 if event.matches(filter)?.0 {
+                    matched = true;
                     category = event.category();
                 }
             }
             Event::SuspiciousTlsTraffic(event) => {
                 if event.matches(filter)?.0 {
+                    matched = true;
                     category = event.category();
                 }
             }
         }
 
-        if let Some(category) = category {
+        if matched {
             counter.entry(category).and_modify(|e| *e += 1).or_insert(1);
         }
 
@@ -4247,6 +4294,25 @@ mod tests {
         }
     }
 
+    fn category_filter(categories: Option<Vec<Option<EventCategory>>>) -> EventFilter {
+        EventFilter {
+            customers: None,
+            endpoints: None,
+            directions: None,
+            originator: None,
+            responder: None,
+            countries: None,
+            categories,
+            levels: None,
+            kinds: None,
+            learning_methods: None,
+            sensors: None,
+            confidence_min: None,
+            confidence_max: None,
+            triage_policies: None,
+        }
+    }
+
     fn assert_country_counts(event: &Event, expected: &[(&str, usize)]) {
         let mut counter = HashMap::new();
         event
@@ -5260,7 +5326,7 @@ mod tests {
 
         let mut counter = HashMap::new();
         event.count_category(&mut counter, &filter).unwrap();
-        assert_eq!(counter.get(&EventCategory::Impact), Some(&1));
+        assert_eq!(counter, HashMap::from([(Some(EventCategory::Impact), 1)]));
 
         let mut counter = HashMap::new();
         event.count_ip_address_pair(&mut counter, &filter).unwrap();
@@ -5952,7 +6018,7 @@ mod tests {
 
         let mut counter = HashMap::new();
         event.count_category(&mut counter, &filter).unwrap();
-        assert_eq!(counter.get(&EventCategory::InitialAccess), Some(&1));
+        assert_eq!(counter.get(&Some(EventCategory::InitialAccess)), Some(&1));
 
         let mut counter = HashMap::new();
         event.count_ip_address_pair(&mut counter, &filter).unwrap();
@@ -6244,7 +6310,7 @@ mod tests {
 
         let mut counter = HashMap::new();
         event.count_category(&mut counter, &filter).unwrap();
-        assert_eq!(counter.get(&EventCategory::InitialAccess), Some(&1));
+        assert_eq!(counter.get(&Some(EventCategory::InitialAccess)), Some(&1));
 
         let mut counter = HashMap::new();
         event.count_ip_address_pair(&mut counter, &filter).unwrap();
@@ -6683,7 +6749,7 @@ mod tests {
 
         let mut counter = HashMap::new();
         event.count_category(&mut counter, &filter).unwrap();
-        assert_eq!(counter.get(&EventCategory::InitialAccess), Some(&1));
+        assert_eq!(counter.get(&Some(EventCategory::InitialAccess)), Some(&1));
 
         let mut counter = HashMap::new();
         event.count_ip_address_pair(&mut counter, &filter).unwrap();
@@ -7018,7 +7084,7 @@ mod tests {
 
         let mut counter = HashMap::new();
         event.count_category(&mut counter, &filter).unwrap();
-        assert_eq!(counter.get(&EventCategory::InitialAccess), Some(&1));
+        assert_eq!(counter.get(&Some(EventCategory::InitialAccess)), Some(&1));
 
         let mut counter = HashMap::new();
         event.count_ip_address_pair(&mut counter, &filter).unwrap();
@@ -7116,7 +7182,7 @@ mod tests {
 
         let mut counter = HashMap::new();
         event.count_category(&mut counter, &filter).unwrap();
-        assert_eq!(counter.get(&EventCategory::InitialAccess), Some(&1));
+        assert_eq!(counter.get(&Some(EventCategory::InitialAccess)), Some(&1));
 
         let mut counter = HashMap::new();
         event.count_ip_address_pair(&mut counter, &filter).unwrap();
@@ -7485,7 +7551,7 @@ mod tests {
 
         let mut counter = HashMap::new();
         event.count_category(&mut counter, &filter).unwrap();
-        assert_eq!(counter.get(&EventCategory::InitialAccess), Some(&1));
+        assert_eq!(counter.get(&Some(EventCategory::InitialAccess)), Some(&1));
 
         let mut counter = HashMap::new();
         event.count_ip_address_pair(&mut counter, &filter).unwrap();
@@ -8060,7 +8126,10 @@ mod tests {
 
         let mut counter = HashMap::new();
         event.count_category(&mut counter, &filter).unwrap();
-        assert_eq!(counter.get(&EventCategory::CommandAndControl), Some(&1));
+        assert_eq!(
+            counter.get(&Some(EventCategory::CommandAndControl)),
+            Some(&1)
+        );
 
         let mut counter = HashMap::new();
         event.count_ip_address_pair(&mut counter, &filter).unwrap();
@@ -8115,6 +8184,80 @@ mod tests {
             confidence: 0.9,
             category: Some(EventCategory::InitialAccess),
         }
+    }
+
+    fn suspicious_tls_event(category: Option<EventCategory>) -> Event {
+        let mut fields = blocklist_tls_fields();
+        fields.category = category;
+        Event::SuspiciousTlsTraffic(SuspiciousTlsTraffic::new(
+            msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap()),
+            fields.into(),
+        ))
+    }
+
+    #[test]
+    fn event_category_count_round_trips_and_excludes_non_matches() {
+        for category in [Some(EventCategory::InitialAccess), None] {
+            let event = suspicious_tls_event(category);
+            let expected = HashMap::from([(category, 1)]);
+
+            let mut counter = HashMap::new();
+            event
+                .count_category(&mut counter, &category_filter(None))
+                .unwrap();
+            assert_eq!(counter, expected);
+
+            let filter = category_filter(Some(vec![category]));
+            assert!(event.matches(&filter).unwrap().0);
+            let mut filtered_counter = HashMap::new();
+            event
+                .count_category(&mut filtered_counter, &filter)
+                .unwrap();
+            assert_eq!(filtered_counter, expected);
+
+            let other_category = if category.is_some() {
+                None
+            } else {
+                Some(EventCategory::Impact)
+            };
+            let filter = category_filter(Some(vec![other_category]));
+            assert!(!event.matches(&filter).unwrap().0);
+            let mut filtered_counter = HashMap::new();
+            event
+                .count_category(&mut filtered_counter, &filter)
+                .unwrap();
+            assert!(filtered_counter.is_empty());
+
+            let mut filter = category_filter(None);
+            filter.kinds = Some(vec!["locky ransomware".to_string()]);
+            assert!(!event.matches(&filter).unwrap().0);
+            let mut filtered_counter = HashMap::new();
+            event
+                .count_category(&mut filtered_counter, &filter)
+                .unwrap();
+            assert!(filtered_counter.is_empty());
+        }
+    }
+
+    #[test]
+    fn event_category_count_accumulates_optional_buckets() {
+        let events = [
+            suspicious_tls_event(Some(EventCategory::InitialAccess)),
+            suspicious_tls_event(Some(EventCategory::InitialAccess)),
+            suspicious_tls_event(None),
+        ];
+        let filter = category_filter(None);
+        let mut counter = HashMap::new();
+
+        for event in &events {
+            event.count_category(&mut counter, &filter).unwrap();
+        }
+
+        assert_eq!(
+            counter,
+            HashMap::from([(Some(EventCategory::InitialAccess), 2), (None, 1)])
+        );
+        assert_eq!(counter.values().sum::<usize>(), events.len());
     }
 
     #[test]
@@ -8217,7 +8360,7 @@ mod tests {
 
         let mut counter = HashMap::new();
         event.count_category(&mut counter, &filter).unwrap();
-        assert_eq!(counter.len(), 0);
+        assert_eq!(counter, HashMap::from([(None, 1)]));
 
         let mut counter = HashMap::new();
         event.count_ip_address_pair(&mut counter, &filter).unwrap();
