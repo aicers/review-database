@@ -131,6 +131,10 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **BREAKING**: `Event::count_category` now takes a
+  `HashMap<Option<EventCategory>, usize>` and includes matching events without a
+  category in the `None` bucket. Callers must update their counter key type and
+  wrap category keys in `Some(...)`.
 - **BREAKING**: Swapped the stored event country-code placeholder meanings:
   `ZZ` now means a lookup was attempted but returned no valid country, following
   CLDR's Unknown or Invalid Territory code, while `XX` means no lookup was
