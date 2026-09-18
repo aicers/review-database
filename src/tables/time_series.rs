@@ -144,13 +144,13 @@ impl<'d> Table<'d, TimeSeries> {
             .map(|(column, top_n)| {
                 let mut top_n = top_n.into_iter().collect::<Vec<_>>();
                 top_n.sort_by_key(|t| t.0);
-                let top_n = fill_vacant_time_slots(&top_n);
-                Column {
+                let top_n = fill_vacant_time_slots(&top_n)?;
+                Ok(Column {
                     index: column,
                     time_counts: top_n,
-                }
+                })
             })
-            .collect::<Vec<_>>();
+            .collect::<Result<Vec<_>>>()?;
         columns.sort_by_key(|c| c.index);
 
         Ok((earliest, latest, columns))
@@ -249,29 +249,56 @@ impl<'d> Table<'d, TimeSeries> {
 
 type TimeRange = (Option<i64>, Option<i64>);
 
-fn fill_vacant_time_slots(series: &[(i64, usize)]) -> Vec<(i64, usize)> {
+fn fill_vacant_time_slots(series: &[(i64, usize)]) -> Result<Vec<(i64, usize)>> {
     if series.len() <= 2 {
-        return series.to_vec();
+        return Ok(series.to_vec());
     }
-    let mut min_diff = series[1].0 - series[0].0;
-    for index in 2..series.len() {
-        let diff = series[index].0 - series[index - 1].0;
+    let mut values = series.iter();
+    let mut previous = values
+        .next()
+        .ok_or_else(|| anyhow!("time series must not be empty"))?;
+    let mut min_diff = i64::MAX;
+    for current in values {
+        let diff = current
+            .0
+            .checked_sub(previous.0)
+            .ok_or_else(|| anyhow!("time-series interval exceeds the supported range"))?;
         if diff < min_diff {
             min_diff = diff;
         }
+        previous = current;
     }
-    let mut filled_series = vec![series[0]];
-    for (cur, prev) in series[1..].iter().zip(series[..series.len() - 1].iter()) {
-        let diff = (cur.0 - prev.0) / min_diff;
+    if min_diff <= 0 {
+        return Err(anyhow!("time-series values must be strictly increasing"));
+    }
+    let mut values = series.iter();
+    let mut previous = values
+        .next()
+        .ok_or_else(|| anyhow!("time series must not be empty"))?;
+    let mut filled_series = vec![*previous];
+    for current in values {
+        let diff = current
+            .0
+            .checked_sub(previous.0)
+            .ok_or_else(|| anyhow!("time-series interval exceeds the supported range"))?
+            / min_diff;
         if diff > 1 {
             for d in 1..diff {
-                filled_series.push((prev.0 + d * min_diff, 0));
+                let offset = d
+                    .checked_mul(min_diff)
+                    .ok_or_else(|| anyhow!("time-series interval exceeds the supported range"))?;
+                let value = previous
+                    .0
+                    .checked_add(offset)
+                    .ok_or_else(|| anyhow!("time-series interval exceeds the supported range"))?;
+                filled_series.push((value, 0));
             }
         }
-        filled_series.push(*cur);
+        filled_series.push(*current);
+        previous = current;
     }
 
-    filled_series
+    Ok(filled_series)
 }
 
 pub type TimeCount = (i64, usize); // (utc_timestamp_nano, count)
@@ -659,7 +686,7 @@ mod tests {
     #[test]
     fn test_fill_vacant_time_slots() {
         let series = vec![(1000, 10), (2000, 15), (4000, 20)];
-        let filled = fill_vacant_time_slots(&series);
+        let filled = fill_vacant_time_slots(&series).unwrap();
 
         assert_eq!(filled.len(), 4);
         assert_eq!(filled[0], (1000, 10));
@@ -671,12 +698,26 @@ mod tests {
     #[test]
     fn test_fill_vacant_time_slots_short_series() {
         let series = vec![(1000, 10)];
-        let filled = fill_vacant_time_slots(&series);
+        let filled = fill_vacant_time_slots(&series).unwrap();
         assert_eq!(filled, series);
 
         let series = vec![(1000, 10), (2000, 15)];
-        let filled = fill_vacant_time_slots(&series);
+        let filled = fill_vacant_time_slots(&series).unwrap();
         assert_eq!(filled, series);
+    }
+
+    #[test]
+    fn fill_vacant_time_slots_rejects_overflowing_intervals() {
+        let series = vec![(i64::MIN, 10), (0, 15), (i64::MAX, 20)];
+
+        assert!(fill_vacant_time_slots(&series).is_err());
+    }
+
+    #[test]
+    fn fill_vacant_time_slots_rejects_non_increasing_values() {
+        let series = vec![(1000, 10), (1000, 15), (2000, 20)];
+
+        assert!(fill_vacant_time_slots(&series).is_err());
     }
 
     #[test]

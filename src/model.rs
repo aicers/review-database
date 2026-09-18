@@ -44,7 +44,10 @@ impl Model {
     pub fn from_serialized(serialized: &[u8]) -> Result<Self> {
         use anyhow::anyhow;
 
-        let header = MagicHeader::try_from(&serialized[..MagicHeader::MAGIC_SIZE])?;
+        let header_bytes = serialized
+            .get(..MagicHeader::MAGIC_SIZE)
+            .ok_or_else(|| anyhow!("model data is shorter than the magic header"))?;
+        let header = MagicHeader::try_from(header_bytes)?;
         if header.format != MagicHeader::FORMAT_VERSION {
             return Err(anyhow!(
                 "Model format mismatch: {:?} (Expecting: {:?})",
@@ -248,5 +251,12 @@ mod tests {
         let d_model = super::Model::from_serialized(&serialized).unwrap();
         let (model, _body) = example();
         assert_eq!(d_model.id, model.id);
+    }
+
+    #[test]
+    fn short_serialized_model_returns_error() {
+        let result = super::Model::from_serialized(&[0; super::MagicHeader::MAGIC_SIZE - 1]);
+
+        assert!(result.is_err());
     }
 }

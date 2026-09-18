@@ -104,9 +104,10 @@ impl KeyIndex {
             Ordering::Greater => {
                 let i = usize::try_from(id).context("too many keys")?;
                 self.available = match self.keys.get(i) {
-                    Some(KeyIndexEntry::Key(_)) => bail!("corrupt index"),
                     Some(KeyIndexEntry::Index(i)) => *i,
-                    _ => unreachable!(),
+                    Some(KeyIndexEntry::Key(_) | KeyIndexEntry::Inactive(_)) | None => {
+                        bail!("corrupt index");
+                    }
                 };
                 self.keys[i] = KeyIndexEntry::Key(key.to_vec());
             }
@@ -692,5 +693,16 @@ mod tests {
 
         index.clear_inactive().unwrap();
         assert_eq!(index.count(), 0);
+    }
+
+    #[test]
+    fn index_insert_rejects_inactive_available_entry() {
+        let mut index = super::KeyIndex {
+            keys: vec![super::KeyIndexEntry::Inactive(None)],
+            available: 0,
+            inactive: None,
+        };
+
+        assert_eq!(index.insert(b"a").unwrap_err().to_string(), "corrupt index");
     }
 }

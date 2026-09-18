@@ -605,7 +605,7 @@ impl<'d> Table<'d, ColumnStats> {
         let from = seek_key.as_deref();
         let iter = self.prefix_iter(direction, from, &prefix);
 
-        let mut rounds = Vec::with_capacity(limit);
+        let mut rounds = Vec::new();
         let mut last_batch_ts = None;
         for result in iter {
             let column_stats = result?;
@@ -1159,6 +1159,18 @@ mod tests {
         let (_, rounds) = table
             .load_rounds_by_cluster(model_id, cluster_id, &None, &Some(batches[0]), false, 2)
             .unwrap();
+        assert!(rounds.is_empty());
+    }
+
+    #[test]
+    fn load_rounds_does_not_preallocate_the_requested_limit() {
+        let (_permit, store) = setup_store();
+        let table = store.column_stats_map();
+
+        let (_, rounds) = table
+            .load_rounds_by_cluster(42, 123, &None, &None, true, usize::MAX)
+            .unwrap();
+
         assert!(rounds.is_empty());
     }
 
