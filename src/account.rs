@@ -3,7 +3,7 @@ use std::{net::IpAddr, num::NonZeroU32};
 use anyhow::Result;
 use argon2::{
     Argon2,
-    password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString, rand_core::OsRng},
+    password_hash::{PasswordHasher, PasswordVerifier, phc::PasswordHash},
 };
 use chrono::{DateTime, Utc};
 use ring::{
@@ -285,18 +285,16 @@ impl SaltedPassword {
     /// # Errors
     ///
     /// Returns an error if it fails to compute a password hash from the given
-    /// password and salt value.
+    /// password.
     fn with_argon2id(password: &str) -> Result<Self> {
-        let salt: SaltString = SaltString::generate(&mut OsRng);
-
         // The default values of the `Argon2` struct are the followings:
         // algorithm: argon2id, version number = 19, memory size = 19456, number of iterations = 2, degree of parallelism = 1
         // This is one of the recommended configuration settings in the OWASP guidelines.
         // https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html#argon2id
+        // `hash_password` draws a random salt from the OS RNG (the default
+        // `getrandom` feature) and embeds it in the returned PHC string.
         let argon2 = Argon2::default();
-        let password_hash = argon2
-            .hash_password(password.as_bytes(), &salt)?
-            .to_string();
+        let password_hash = argon2.hash_password(password.as_bytes())?.to_string();
 
         Ok(Self {
             salt: vec![], // not used in argon2
