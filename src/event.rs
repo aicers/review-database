@@ -41,7 +41,7 @@ use anyhow::{Context, Result, bail};
 use jiff::Timestamp;
 use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive, ToPrimitive};
-use rand::{RngCore, rng};
+use rand::{Rng, rng};
 pub use review_protocol::types::ThreatLevel;
 pub use rocksdb::Direction;
 use rocksdb::IteratorMode;

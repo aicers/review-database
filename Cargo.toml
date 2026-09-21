@@ -19,7 +19,7 @@ jiff = "0.2"
 memchr = "2"
 num-derive = "0.5"
 num-traits = "0.2"
-rand = "0.9"
+rand = "0.10"
 regex = "1"
 review-protocol = { git = "https://github.com/aicers/review-protocol.git", rev = "32ed9b0" }
 ring = { version = "0.17", features = ["std"] }
