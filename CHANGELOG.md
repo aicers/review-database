@@ -27,7 +27,19 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   status types and atomic APIs for adding and updating results reported by
   REview, Sensor, and SemiSupervised services. REview results retain every
   target host FQDN for reliable deletion retries, while Sensor and
-  SemiSupervised results retain exactly one host FQDN.
+  SemiSupervised results retain exactly one host FQDN. The table's conditional
+  `update` API replaces all service results only if the stored results still
+  exactly match the caller's old copy, preventing stale jobs from overwriting
+  newer service results:
+
+  ```rust
+  if let Some(old) = table.get(customer_id)? {
+      let mut new = old.clone();
+      new.service_results = updated_results;
+      table.update(&old, &new)?;
+  }
+  ```
+
 - Added the `CoreComponent` record, the registry of the platform's own
   host-fixed infrastructure — `review`, `aice-web-next`, `roxyd` and `bootroot`
   — which is neither an agent nor an external service. A row is keyed by its

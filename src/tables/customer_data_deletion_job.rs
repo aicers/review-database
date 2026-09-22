@@ -133,6 +133,59 @@ impl<'d> Table<'d, CustomerDataDeletionJob> {
         )?))
     }
 
+    /// Replaces a deletion job if its service results have not changed.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the customer IDs differ, a new service result is invalid, the job does
+    /// not exist, the stored service results do not exactly match `old`, the stored value is
+    /// invalid, or a database operation fails.
+    pub fn update(
+        &self,
+        old: &CustomerDataDeletionJob,
+        new: &CustomerDataDeletionJob,
+    ) -> Result<()> {
+        if old.customer_id != new.customer_id {
+            bail!(
+                "customer ID mismatch: old customer ID {} does not match new customer ID {}",
+                old.customer_id,
+                new.customer_id
+            );
+        }
+        for (index, result) in new.service_results.iter().enumerate() {
+            result.validate().with_context(|| {
+                format!("invalid customer deletion service result at index {index}")
+            })?;
+        }
+
+        let key = old.customer_id.to_be_bytes();
+        loop {
+            let txn = self.map.db.transaction();
+            let Some(value) = txn
+                .get_for_update_cf(self.map.cf, key, EXCLUSIVE)
+                .context("cannot read customer deletion job")?
+            else {
+                bail!("customer deletion job does not exist");
+            };
+            let current_service_results: Vec<CustomerDataDeletionServiceResult> =
+                super::deserialize(value.as_ref())?;
+            if current_service_results != old.service_results {
+                bail!("customer deletion service results mismatch");
+            }
+
+            let value = super::serialize(&new.service_results)?;
+            txn.put_cf(self.map.cf, key, value)
+                .context("failed to write customer deletion job")?;
+            match txn.commit() {
+                Ok(()) => return Ok(()),
+                Err(error) if error.as_ref().starts_with(RESOURCE_BUSY_PREFIX) => {}
+                Err(error) => {
+                    return Err(error).context("failed to update customer deletion job");
+                }
+            }
+        }
+    }
+
     /// Adds a service result to an existing customer deletion job.
     ///
     /// # Errors
@@ -521,6 +574,307 @@ mod tests {
         assert!(stored.service_results.contains(&review));
         assert!(stored.service_results.contains(&semi_supervised));
         assert!(stored.service_results.contains(&update));
+    }
+
+    #[test]
+    fn conditionally_updates_matching_job() {
+        let (_permit, _db_dir, _backup_dir, store) = setup_store();
+        let table = store.customer_data_deletion_map();
+        let old = CustomerDataDeletionJob {
+            customer_id: 6,
+            service_results: vec![
+                service_result(
+                    CustomerDataDeletionService::Review,
+                    &["review.example", "review-2.example"],
+                    CustomerDataDeletionStatus::InProgress,
+                    10,
+                ),
+                service_result(
+                    CustomerDataDeletionService::Sensor,
+                    &["sensor.example"],
+                    CustomerDataDeletionStatus::InProgress,
+                    20,
+                ),
+            ],
+        };
+        let mut new = old.clone();
+        new.service_results = vec![
+            CustomerDataDeletionServiceResult {
+                service: CustomerDataDeletionService::Sensor,
+                host_fqdns: vec!["sensor-new.example".to_owned()],
+                status: CustomerDataDeletionStatus::Succeeded,
+                requested_at: 30,
+                completed_at: Some(40),
+                error: None,
+            },
+            CustomerDataDeletionServiceResult {
+                service: CustomerDataDeletionService::Review,
+                host_fqdns: vec!["review-new.example".to_owned()],
+                status: CustomerDataDeletionStatus::Failed,
+                requested_at: 50,
+                completed_at: Some(60),
+                error: Some("deletion failed".to_owned()),
+            },
+        ];
+        table.insert(&old).unwrap();
+
+        table.update(&old, &new).unwrap();
+
+        assert_eq!(table.get(old.customer_id).unwrap(), Some(new));
+    }
+
+    #[test]
+    fn rejects_stale_job_after_single_service_update() {
+        let (_permit, _db_dir, _backup_dir, store) = setup_store();
+        let table = store.customer_data_deletion_map();
+        let old = CustomerDataDeletionJob {
+            customer_id: 7,
+            service_results: vec![service_result(
+                CustomerDataDeletionService::Sensor,
+                &["sensor.example"],
+                CustomerDataDeletionStatus::InProgress,
+                10,
+            )],
+        };
+        table.insert(&old).unwrap();
+        let saved_result = CustomerDataDeletionServiceResult {
+            service: CustomerDataDeletionService::Sensor,
+            host_fqdns: vec!["sensor.example".to_owned()],
+            status: CustomerDataDeletionStatus::Succeeded,
+            requested_at: 20,
+            completed_at: Some(30),
+            error: None,
+        };
+        table
+            .update_service(old.customer_id, &saved_result)
+            .unwrap();
+        let mut new = old.clone();
+        new.service_results = vec![CustomerDataDeletionServiceResult {
+            status: CustomerDataDeletionStatus::Failed,
+            requested_at: 40,
+            completed_at: Some(50),
+            error: Some("stale failure".to_owned()),
+            ..old.service_results.first().unwrap().clone()
+        }];
+
+        let error = table.update(&old, &new).unwrap_err();
+
+        assert_eq!(
+            error.to_string(),
+            "customer deletion service results mismatch"
+        );
+        assert_eq!(
+            table.get(old.customer_id).unwrap().unwrap().service_results,
+            vec![saved_result]
+        );
+    }
+
+    #[test]
+    fn compares_every_service_result_field_and_order() {
+        let (_permit, _db_dir, _backup_dir, store) = setup_store();
+        let table = store.customer_data_deletion_map();
+        let expected = vec![
+            CustomerDataDeletionServiceResult {
+                service: CustomerDataDeletionService::Review,
+                host_fqdns: vec!["review.example".to_owned()],
+                status: CustomerDataDeletionStatus::Failed,
+                requested_at: 10,
+                completed_at: Some(20),
+                error: Some("original error".to_owned()),
+            },
+            service_result(
+                CustomerDataDeletionService::Sensor,
+                &["sensor.example"],
+                CustomerDataDeletionStatus::InProgress,
+                30,
+            ),
+        ];
+
+        let mut requested_at = expected.clone();
+        requested_at.first_mut().unwrap().requested_at = 11;
+        let mut completed_at = expected.clone();
+        completed_at.first_mut().unwrap().completed_at = Some(21);
+        let mut error_detail = expected.clone();
+        error_detail.first_mut().unwrap().error = Some("different error".to_owned());
+        let mut status = expected.clone();
+        status.first_mut().unwrap().status = CustomerDataDeletionStatus::Succeeded;
+        let mut host_fqdns = expected.clone();
+        host_fqdns.last_mut().unwrap().host_fqdns = vec!["sensor-2.example".to_owned()];
+        let mut service = expected.clone();
+        service.last_mut().unwrap().service = CustomerDataDeletionService::SemiSupervised;
+        let mut order = expected.clone();
+        order.reverse();
+
+        for (offset, (field, current_service_results)) in [
+            ("requested_at", requested_at),
+            ("completed_at", completed_at),
+            ("error", error_detail),
+            ("status", status),
+            ("host_fqdns", host_fqdns),
+            ("service", service),
+            ("order", order),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let customer_id = 100 + u32::try_from(offset).unwrap();
+            let old = CustomerDataDeletionJob {
+                customer_id,
+                service_results: expected.clone(),
+            };
+            let current = CustomerDataDeletionJob {
+                customer_id,
+                service_results: current_service_results,
+            };
+            let mut new = old.clone();
+            new.service_results.first_mut().unwrap().requested_at = 99;
+            table.insert(&current).unwrap();
+
+            let error = table.update(&old, &new).unwrap_err();
+
+            assert_eq!(
+                error.to_string(),
+                "customer deletion service results mismatch",
+                "failed to detect mismatch in {field}"
+            );
+            assert_eq!(table.get(customer_id).unwrap(), Some(current));
+        }
+    }
+
+    #[test]
+    fn concurrent_conditional_updates_allow_only_one_winner() {
+        let (_permit, _db_dir, _backup_dir, store) = setup_store();
+        let store = Arc::new(store);
+        let old = CustomerDataDeletionJob {
+            customer_id: 8,
+            service_results: vec![service_result(
+                CustomerDataDeletionService::Review,
+                &["review.example"],
+                CustomerDataDeletionStatus::InProgress,
+                10,
+            )],
+        };
+        store.customer_data_deletion_map().insert(&old).unwrap();
+        let candidates = [
+            CustomerDataDeletionJob {
+                customer_id: old.customer_id,
+                service_results: vec![CustomerDataDeletionServiceResult {
+                    status: CustomerDataDeletionStatus::Succeeded,
+                    requested_at: 20,
+                    completed_at: Some(30),
+                    ..old.service_results.first().unwrap().clone()
+                }],
+            },
+            CustomerDataDeletionJob {
+                customer_id: old.customer_id,
+                service_results: vec![CustomerDataDeletionServiceResult {
+                    status: CustomerDataDeletionStatus::Failed,
+                    requested_at: 40,
+                    completed_at: Some(50),
+                    error: Some("competing failure".to_owned()),
+                    ..old.service_results.first().unwrap().clone()
+                }],
+            },
+        ];
+        let barrier = Arc::new(Barrier::new(3));
+        let handles = candidates
+            .into_iter()
+            .map(|new| {
+                let store = Arc::clone(&store);
+                let old = old.clone();
+                let barrier = Arc::clone(&barrier);
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    let result = store.customer_data_deletion_map().update(&old, &new);
+                    (new, result)
+                })
+            })
+            .collect::<Vec<_>>();
+
+        barrier.wait();
+        let outcomes = handles
+            .into_iter()
+            .map(|handle| handle.join().unwrap())
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            outcomes.iter().filter(|(_, result)| result.is_ok()).count(),
+            1
+        );
+        let winner = outcomes
+            .iter()
+            .find_map(|(job, result)| result.is_ok().then_some(job))
+            .unwrap();
+        let loser_error = outcomes
+            .iter()
+            .find_map(|(_, result)| result.as_ref().err())
+            .unwrap();
+        assert_eq!(
+            loser_error.to_string(),
+            "customer deletion service results mismatch"
+        );
+        assert_eq!(
+            store
+                .customer_data_deletion_map()
+                .get(old.customer_id)
+                .unwrap()
+                .as_ref(),
+            Some(winner)
+        );
+    }
+
+    #[test]
+    fn validates_conditional_update_inputs_without_modifying_database() {
+        let (_permit, _db_dir, _backup_dir, store) = setup_store();
+        let table = store.customer_data_deletion_map();
+        let stored = CustomerDataDeletionJob {
+            customer_id: 9,
+            service_results: vec![service_result(
+                CustomerDataDeletionService::Review,
+                &["review.example"],
+                CustomerDataDeletionStatus::InProgress,
+                10,
+            )],
+        };
+        table.insert(&stored).unwrap();
+
+        let mut wrong_customer = stored.clone();
+        wrong_customer.customer_id += 1;
+        assert_eq!(
+            table
+                .update(&stored, &wrong_customer)
+                .unwrap_err()
+                .to_string(),
+            "customer ID mismatch: old customer ID 9 does not match new customer ID 10"
+        );
+        assert_eq!(table.get(wrong_customer.customer_id).unwrap(), None);
+        assert_eq!(table.get(stored.customer_id).unwrap(), Some(stored.clone()));
+
+        let missing = CustomerDataDeletionJob {
+            customer_id: 11,
+            service_results: Vec::new(),
+        };
+        assert_eq!(
+            table.update(&missing, &missing).unwrap_err().to_string(),
+            "customer deletion job does not exist"
+        );
+        assert_eq!(table.get(stored.customer_id).unwrap(), Some(stored.clone()));
+
+        let mut invalid = stored.clone();
+        invalid.service_results.push(service_result(
+            CustomerDataDeletionService::Sensor,
+            &[],
+            CustomerDataDeletionStatus::InProgress,
+            20,
+        ));
+        assert!(
+            table
+                .update(&stored, &invalid)
+                .unwrap_err()
+                .to_string()
+                .starts_with("invalid customer deletion service result at index 1")
+        );
+        assert_eq!(table.get(stored.customer_id).unwrap(), Some(stored));
     }
 
     #[test]
