@@ -24,10 +24,16 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   matches one of the specified service FQDNs, with batched database writes.
 - Added persistent customer data deletion jobs through
   `Store::customer_data_deletion_map`, with public job, service, result, and
-  status types and atomic APIs for adding and updating results reported by
-  REview, Sensor, and SemiSupervised services. REview results retain every
-  target host FQDN for reliable deletion retries, while Sensor and
-  SemiSupervised results retain exactly one host FQDN.
+  status types for REview, Sensor, and SemiSupervised services. The table
+  provides atomic APIs for managing results: `add_service` adds a result to
+  an existing job while rejecting duplicates; `update_service` updates one
+  existing result's status, timestamps, and error while preserving other
+  results; and `update` replaces the entire result list only when the stored
+  results exactly match the caller's original copy, preventing stale updates
+  from overwriting newer service results. REview results retain all target
+  host FQDNs for reliable deletion retries, while Sensor and SemiSupervised
+  results retain exactly one host FQDN per result.
+
 - Added the `CoreComponent` record, the registry of the platform's own
   host-fixed infrastructure — `review`, `aice-web-next`, `roxyd` and `bootroot`
   — which is neither an agent nor an external service. A row is keyed by its
