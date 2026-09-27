@@ -972,8 +972,12 @@ number is pinned, and that is the case the bind-address work exists for.
   **supersedes** any statement that a conflict re-runs only the port
   classification: that narrower rule belongs to the port scan considered
   alone, and applying it here would skip the key check that makes concurrent
-  same-key requests safe. The three-attempt bound and
-  `AllocationContended` are unchanged.
+  same-key requests safe.
+  **The re-run is not bounded.** A commit that fails as busy starts a new
+  pass, with no attempt limit and no contention error. A busy commit
+  means another transaction committed, so contention always makes progress,
+  and allocating installs are operator actions on one `(host, component)`.
+  RFC-D2 §4f relies on this and adds no bound of its own.
 - **[DECISION] The instance row and the port rows are written in ONE
   transaction, instance first.** The port rows' owner names the instance, so
   it must be chosen before they can be keyed; and if the two were separate
