@@ -1180,6 +1180,41 @@ mod tests {
         );
     }
 
+    /// A number the scan read as free but the locking read finds taken is
+    /// decided by its owner: its own re-drive is given it back, and anyone
+    /// else moves on to the next number. A write not yet committed is the
+    /// deterministic way to open that gap — the scan reads outside the
+    /// transaction and misses it, while the locking read inside sees it.
+    #[test]
+    fn the_locking_read_decides_a_number_the_scan_missed() {
+        let test_db = TestDb::new();
+        let table = test_db.table();
+
+        let txn = table.transaction();
+        let allocate_in_txn = |name: &str| {
+            table
+                .allocate_with_transaction(HOST, COMPONENT, &key(name), &txn)
+                .unwrap()
+        };
+        assert_eq!(allocate_in_txn("attempt-1"), 1);
+        assert!(held(&table).is_empty());
+        assert_eq!(allocate_in_txn("attempt-1"), 1);
+        assert_eq!(allocate_in_txn("attempt-2"), 2);
+        txn.commit().unwrap();
+
+        assert_eq!(held(&table), vec![1, 2]);
+        for (instance, owner) in [(1, "attempt-1"), (2, "attempt-2")] {
+            assert_eq!(
+                table
+                    .get(HOST, COMPONENT, instance)
+                    .unwrap()
+                    .unwrap()
+                    .idempotency_key,
+                key(owner)
+            );
+        }
+    }
+
     /// Two drives of one attempt racing are serialized by the
     /// `operation_attempt` row they both write — one row per idempotency key —
     /// so the loser's commit fails and its re-run is given the allocation the
