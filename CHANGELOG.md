@@ -126,11 +126,11 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   `backup::restore` and never substitutes the latest backup for a missing id.
   The backup is restored into a working directory beside `states.db` and
   swapped in only afterwards, and the call refuses to replace a database that
-  another process has open, checking both before the restore and around the
-  swap. Failures are the new `backup::OfflineRestoreError`, whose
-  `BackupNotFound` and `DatabaseInUse` variants leave the database and the
-  backups untouched. It does not write the `VERSION` markers; call
-  `write_version_markers` afterwards.
+  another process, or another handle in this one, has open, checking both
+  before the restore and around the swap. Failures are the new
+  `backup::OfflineRestoreError`, whose `BackupNotFound` and `DatabaseInUse`
+  variants leave the database and the backups untouched. It does not write the
+  `VERSION` markers; call `write_version_markers` afterwards.
 - Added `AgentKind::package_id` and `ExternalServiceKind::package_id`, each
   returning the package-id the kind is deployed from as an
   `Option<&'static str>` — `piglet`, `reconverge`, `hog`, `crusher`, and

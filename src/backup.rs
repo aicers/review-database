@@ -30,6 +30,8 @@ const REPLACED_DIR: &str = "replaced";
 /// even reaches the lock, which would disturb a live database the check then
 /// refuses to touch.
 const PROBE_LOG_DIR: &str = "probe-log";
+/// The file RocksDB locks inside a database directory.
+const LOCK_FILE: &str = "LOCK";
 
 #[allow(clippy::module_name_repetitions)]
 pub struct BackupInfo {
@@ -212,17 +214,18 @@ pub enum OfflineRestoreError {
 }
 
 /// Restores the states database from the backup with the specified ID
-/// without opening the current database.
+/// without loading or migrating the current database.
 ///
 /// This is the offline counterpart of [`restore`]. It needs no [`Store`] and
-/// never loads or migrates the database it replaces, touching it only to
-/// probe its lock (see below) and to move it aside, so it works when that
+/// never loads or migrates the database it replaces, so it works when that
 /// database was left in a shape the running binary cannot open, such as one a
 /// newer build has already migrated. The database is `data_dir/states.db` and
 /// the backup is `backup_dir/states.db`, the same layout [`Store::new`] opens.
-/// Only the backup engine is opened, and the restore uses the same options as
-/// the online path, so both write the same files. The latest backup is never
-/// substituted for a missing `backup_id`.
+/// The backup engine is the only thing opened in full. The current database
+/// is touched only to move it aside and to probe its lock with open attempts
+/// that stop before reading it (see below). The restore uses the same options
+/// as the online path, so both write the same files. The latest backup is
+/// never substituted for a missing `backup_id`.
 ///
 /// This function does not touch the `VERSION` markers. A rollback runs these
 /// steps in order:
@@ -256,20 +259,25 @@ pub enum OfflineRestoreError {
 ///    database under a name nothing else holds.
 /// 3. The lock is probed again, catching a process that opened the database
 ///    during the restore.
-/// 4. The database is moved into the working directory as `replaced`, and its
-///    lock probed there once more. This catches another process that opened
-///    it between the previous probe and the move; in that case the database
-///    is moved back and the call refused.
+/// 4. The database is moved into the working directory as `replaced`, and the
+///    lock probed twice more, catching a holder that opened the database
+///    between the previous probe and the move. RocksDB recognizes a lock held
+///    by this process only under the path it was taken at, so an empty
+///    directory briefly stands in at `states.db` while that path is probed.
+///    A lock held by another process follows the file, so `replaced` is
+///    probed next. If either lock is held, the database is moved back and the
+///    call refused.
 /// 5. The restored database is moved to `states.db`, the data directory is
 ///    flushed to disk so the version markers the caller writes next cannot
 ///    outlive the swap, and the working directory is removed.
 ///
-/// A process that opens `states.db` in the instant between the two moves of
-/// step 5 finds no database there. The restore needs free space for a full
-/// copy of the backup beside the database until the swap, and the restored
-/// directory takes over the permissions of the one it replaces. If this
-/// process is killed before it finishes, the working directory is left
-/// behind and may hold the original database as `replaced`.
+/// A process that opens `states.db` between moving the database aside in
+/// step 4 and moving the restored one in during step 5 finds no database
+/// there. The restore needs free space for a full copy of the backup beside
+/// the database until the swap, and the restored directory takes over the
+/// permissions of the one it replaces. If this process is killed before it
+/// finishes, the working directory is left behind and may hold the original
+/// database as `replaced`.
 ///
 /// # Errors
 ///
@@ -404,9 +412,7 @@ fn restore_through(
         std::fs::set_permissions(&restored, permissions).map_err(replace_err)?;
         before_swap();
         std::fs::rename(database, &replaced).map_err(replace_err)?;
-        // RocksDB's lock follows the file, so a process that opened the
-        // database since the probe above still holds it here.
-        if let Err(e) = check_not_in_use(database, &replaced, &log_dir) {
+        if let Err(e) = check_moved_aside_not_in_use(database, &replaced, &log_dir) {
             put_back(database, &replaced)?;
             return Err(e);
         }
@@ -432,6 +438,44 @@ fn restore_through(
             data_dir: data_dir.to_path_buf(),
             source,
         })
+}
+
+/// Checks that nothing opened the database between the last probe of it in
+/// place and its move from `database` to `replaced`.
+///
+/// A handle in this process is recognized only under the path it opened, so
+/// an empty directory stands in for the database at `database` while that
+/// path is probed, and is removed again afterwards. Only then is `replaced`
+/// probed for a handle in another process, whose lock follows the file. The
+/// order matters: probing `replaced` opens its `LOCK` file, and closing that
+/// again would release a lock this process held on the same file.
+///
+/// # Errors
+///
+/// Returns [`OfflineRestoreError::DatabaseInUse`] if either probe finds the
+/// lock held, [`OfflineRestoreError::LockCheck`] if either cannot tell, or
+/// [`OfflineRestoreError::Replace`] if the stand-in cannot be created or
+/// removed.
+fn check_moved_aside_not_in_use(
+    database: &Path,
+    replaced: &Path,
+    log_dir: &Path,
+) -> Result<(), OfflineRestoreError> {
+    let replace_err = |source| OfflineRestoreError::Replace {
+        database: database.to_path_buf(),
+        source,
+    };
+    std::fs::create_dir(database).map_err(replace_err)?;
+    let probed = check_not_in_use(database, database, log_dir);
+    // A free lock leaves the probe's `LOCK` file behind in the stand-in.
+    match std::fs::remove_file(database.join(LOCK_FILE)) {
+        Ok(()) => {}
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+        Err(source) => return Err(replace_err(source)),
+    }
+    std::fs::remove_dir(database).map_err(replace_err)?;
+    probed?;
+    check_not_in_use(database, replaced, log_dir)
 }
 
 /// Moves the original database back from `replaced` to `database`.
@@ -980,6 +1024,39 @@ mod tests {
         assert_neighbors_kept(&neighbors);
         holder.expect("the swap was reached").stop();
         assert_eq!(event_count(data_dir.path(), backup_dir.path()), 3);
+    }
+
+    #[test]
+    fn offline_restore_refuses_a_database_opened_in_this_process_just_before_the_swap() {
+        let _permit = acquire_db_permit();
+        let data_dir = tempfile::tempdir().unwrap();
+        let backup_dir = tempfile::tempdir().unwrap();
+        let database = data_dir.path().join(DEFAULT_STATES);
+        store_with_two_backups(data_dir.path(), backup_dir.path());
+        let neighbors = add_neighbors(data_dir.path());
+        let data_before = dir_entries(data_dir.path());
+
+        // Another handle in this process opens the database after every probe
+        // of it in place has passed, and keeps it open through the swap.
+        let mut store = None;
+        let mut database_before = BTreeSet::new();
+        let err = super::restore_states_offline_with(data_dir.path(), backup_dir.path(), 1, || {
+            store = Some(open_store(data_dir.path(), backup_dir.path()));
+            database_before = dir_entries(&database);
+        })
+        .unwrap_err();
+
+        assert!(
+            matches!(err, OfflineRestoreError::DatabaseInUse { .. }),
+            "{err:?}"
+        );
+        assert_eq!(dir_entries(data_dir.path()), data_before);
+        assert_eq!(dir_entries(&database), database_before);
+        assert_neighbors_kept(&neighbors);
+        let store = store.expect("the swap was reached");
+        put_event(&store);
+        drop(store);
+        assert_eq!(event_count(data_dir.path(), backup_dir.path()), 4);
     }
 
     /// Holds the lock of the database named by [`LOCK_HOLDER_DB_ENV`] until
