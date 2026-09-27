@@ -558,11 +558,9 @@ impl StateDb {
     pub fn restore_from_backup(&mut self, id: u32) -> Result<()> {
         let mut engine = open_rocksdb_backup_engine(self.backup.as_path())?;
 
-        let opts = rocksdb::backup::RestoreOptions::default();
-
         self.close();
 
-        engine.restore_from_backup(&self.db, &self.db, &opts, id)?;
+        restore_rocksdb_backup(&mut engine, &self.db, id)?;
 
         self.reboot()
     }
@@ -1186,10 +1184,24 @@ fn deserialize<'de, O: Deserialize<'de>>(input: &'de [u8]) -> anyhow::Result<O> 
 }
 
 /// Opens a RocksDB backup engine using the default options and environment.
-fn open_rocksdb_backup_engine(
+pub(crate) fn open_rocksdb_backup_engine(
     path: &Path,
 ) -> Result<rocksdb::backup::BackupEngine, rocksdb::Error> {
     let opts = rocksdb::backup::BackupEngineOptions::new(path)?;
     let db_env = rocksdb::Env::new()?;
     rocksdb::backup::BackupEngine::open(&opts, &db_env)
+}
+
+/// Restores backup `id` into the closed database at `db`.
+///
+/// Both the online restore through [`StateDb::restore_from_backup`] and the
+/// offline one in [`crate::backup::restore_states_offline`] go through here,
+/// so the two write the same files with the same options.
+pub(crate) fn restore_rocksdb_backup(
+    engine: &mut rocksdb::backup::BackupEngine,
+    db: &Path,
+    id: u32,
+) -> Result<(), rocksdb::Error> {
+    let opts = rocksdb::backup::RestoreOptions::default();
+    engine.restore_from_backup(db, db, &opts, id)
 }
