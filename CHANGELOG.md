@@ -209,6 +209,14 @@ Versioning](https://semver.org/spec/v2.0.0.html).
     `DateTime<Utc>` to `i64` epoch nanoseconds, aligning it with the `i64`
     `start_time` every other event's producer fields already use; it was the
     only caller-set `start_time` still typed as a timestamp.
+- **BREAKING**: Updated the `review-protocol` dependency from
+  `https://github.com/petabi/review-protocol.git` tag `0.19.0` to version 0.20.0
+  at `https://github.com/aicers/review-protocol.git` rev
+  `d5360085c5374057e1aea28a8b242b25eb47db27`. The re-exported
+  `review_database::ThreatLevel` keeps its variants and derives, but it is now
+  the type from that revision, so a crate that also depends on
+  `review-protocol` directly must pin the same Git source and revision for its
+  `ThreatLevel` to be interchangeable with this crate's.
 
 ## [0.46.0] - 2026-07-23
 
