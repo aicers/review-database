@@ -127,7 +127,9 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   The backup is restored into a working directory beside `states.db` and
   swapped in only afterwards, and the call refuses to replace a database that
   another process, or another handle in this one, has open, checking both
-  before the restore and around the swap. Failures are the new
+  before the restore and around the swap. A `Store` in the same process is
+  recognized under any path to the database, including symbolic links, and
+  opening one waits while the swap runs. Failures are the new
   `backup::OfflineRestoreError`, whose `BackupNotFound` and `DatabaseInUse`
   variants leave the database and the backups untouched. It does not write the
   `VERSION` markers; call `write_version_markers` afterwards.

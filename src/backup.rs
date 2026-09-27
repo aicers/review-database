@@ -12,7 +12,7 @@ use rocksdb::backup::BackupEngineInfo;
 
 use crate::{
     DEFAULT_STATES, Store,
-    tables::{open_rocksdb_backup_engine, restore_rocksdb_backup},
+    tables::{DirId, open_rocksdb_backup_engine, open_state_dbs, restore_rocksdb_backup},
 };
 
 /// The number of names [`restore_states_offline`] tries for its working
@@ -132,9 +132,10 @@ pub enum OfflineRestoreError {
     DatabaseInUse {
         /// The states database directory.
         database: PathBuf,
-        /// The lock failure RocksDB reported.
+        /// The lock failure RocksDB reported, or `None` if a [`Store`] in this
+        /// process has the database open, under whatever path.
         #[source]
-        source: rocksdb::Error,
+        source: Option<rocksdb::Error>,
     },
     /// The backup engine could not be opened.
     #[error("cannot open the states backup engine in {}", backup.display())]
@@ -244,7 +245,18 @@ pub enum OfflineRestoreError {
 /// # Protecting a live database
 ///
 /// Should a process still have the database open despite step 1, the call is
-/// refused rather than restoring beneath it. RocksDB's restore deletes the
+/// refused rather than restoring beneath it.
+///
+/// A [`Store`] in this process is recognized by the directory it has open
+/// rather than by the path it was given, so one opened through another path
+/// to the same database, such as `data_dir/.` or a symbolic link, is refused
+/// too. This check comes before any probe of the lock below, because probing
+/// the database under a path the [`Store`] did not use would release its lock.
+/// From that check until the restored database is in place, opening a
+/// [`Store`] in this process waits for this call.
+///
+/// Every other holder is recognized through RocksDB's lock. RocksDB's restore
+/// deletes the
 /// database's `LOCK` file along with everything else in the directory it
 /// restores into, so no lock can exclude other processes from a restore in
 /// place. The backup is therefore restored into a new directory that no other
@@ -258,12 +270,17 @@ pub enum OfflineRestoreError {
 ///    `states.db.restore-<pid>-<n>`, which this call creates beside the
 ///    database under a name nothing else holds.
 /// 3. The lock is probed again, catching a process that opened the database
-///    during the restore.
+///    during the restore. The [`Store`] check above is repeated first, and
+///    held from here until step 5 has moved the restored database in.
 /// 4. The database is moved into the working directory as `replaced`, and the
 ///    lock probed twice more, catching a holder that opened the database
 ///    between the previous probe and the move. RocksDB recognizes a lock held
 ///    by this process only under the path it was taken at, so an empty
 ///    directory briefly stands in at `states.db` while that path is probed.
+///    A handle opened in this process other than through a [`Store`], such as
+///    by [`migrate_data_dir`](crate::migrate_data_dir), is recognized only
+///    if it spelled the path the same way, which is why the caller serializes
+///    the two.
 ///    A lock held by another process follows the file, so `replaced` is
 ///    probed next. If either lock is held, the database is moved back and the
 ///    call refused.
@@ -300,6 +317,9 @@ pub fn restore_states_offline(
 
 /// Runs [`restore_states_offline`], calling `before_swap` after the last
 /// probe of the database in place and before it is moved aside.
+///
+/// `before_swap` runs while opening a [`Store`] in this process waits, so a
+/// [`Store`] it opens on this thread never finishes opening.
 fn restore_states_offline_with(
     data_dir: &Path,
     backup_dir: &Path,
@@ -388,8 +408,12 @@ fn restore_through(
     let replaced = work.join(REPLACED_DIR);
 
     // Refuse a database that is in use before spending a restore on it.
-    if database.is_dir() {
-        check_not_in_use(database, database, &log_dir)?;
+    {
+        let open = open_state_dbs();
+        if let Some(id) = DirId::of_dir(database) {
+            check_not_open_here(&open, id, database)?;
+            check_not_in_use(database, database, &log_dir)?;
+        }
     }
 
     restore_rocksdb_backup(engine, &restored, backup_id).map_err(|source| {
@@ -404,7 +428,11 @@ fn restore_through(
         database: database.to_path_buf(),
         source,
     };
-    let moved_aside = if database.is_dir() {
+    // Held until the restored database is in place, so that no `Store` in
+    // this process opens the database in the meantime.
+    let open = open_state_dbs();
+    let moved_aside = if let Some(id) = DirId::of_dir(database) {
+        check_not_open_here(&open, id, database)?;
         check_not_in_use(database, database, &log_dir)?;
         let permissions = std::fs::metadata(database)
             .map_err(replace_err)?
@@ -428,6 +456,7 @@ fn restore_through(
         }
         return Err(replace_err(source));
     }
+    drop(open);
 
     // The caller writes the version markers next. Without this, a power loss
     // could keep those markers but lose the swap, pairing them with the
@@ -438,6 +467,27 @@ fn restore_through(
             data_dir: data_dir.to_path_buf(),
             source,
         })
+}
+
+/// Checks that no [`Store`] in this process has the database with identity
+/// `id` open, whatever path it was opened under.
+///
+/// # Errors
+///
+/// Returns [`OfflineRestoreError::DatabaseInUse`], naming `database`, if one
+/// does.
+fn check_not_open_here(
+    open: &[DirId],
+    id: DirId,
+    database: &Path,
+) -> Result<(), OfflineRestoreError> {
+    if open.contains(&id) {
+        return Err(OfflineRestoreError::DatabaseInUse {
+            database: database.to_path_buf(),
+            source: None,
+        });
+    }
+    Ok(())
 }
 
 /// Checks that nothing opened the database between the last probe of it in
@@ -525,7 +575,7 @@ fn check_not_in_use(
     if is_lock_conflict(&source) {
         return Err(OfflineRestoreError::DatabaseInUse {
             database: database.to_path_buf(),
-            source,
+            source: Some(source),
         });
     }
     if passed_lock(&source) {
@@ -1027,36 +1077,67 @@ mod tests {
     }
 
     #[test]
-    fn offline_restore_refuses_a_database_opened_in_this_process_just_before_the_swap() {
+    fn offline_restore_refuses_a_database_open_in_this_process_under_another_path() {
         let _permit = acquire_db_permit();
         let data_dir = tempfile::tempdir().unwrap();
         let backup_dir = tempfile::tempdir().unwrap();
+        let links = tempfile::tempdir().unwrap();
         let database = data_dir.path().join(DEFAULT_STATES);
         store_with_two_backups(data_dir.path(), backup_dir.path());
         let neighbors = add_neighbors(data_dir.path());
+        let link = links.path().join("data");
+        std::os::unix::fs::symlink(data_dir.path(), &link).unwrap();
+
+        let store = open_store(data_dir.path(), backup_dir.path());
         let data_before = dir_entries(data_dir.path());
+        let database_before = dir_entries(&database);
+        for alias in [data_dir.path().join("."), link] {
+            let err = restore_states_offline(&alias, backup_dir.path(), 1).unwrap_err();
 
-        // Another handle in this process opens the database after every probe
-        // of it in place has passed, and keeps it open through the swap.
-        let mut store = None;
-        let mut database_before = BTreeSet::new();
-        let err = super::restore_states_offline_with(data_dir.path(), backup_dir.path(), 1, || {
-            store = Some(open_store(data_dir.path(), backup_dir.path()));
-            database_before = dir_entries(&database);
-        })
-        .unwrap_err();
-
-        assert!(
-            matches!(err, OfflineRestoreError::DatabaseInUse { .. }),
-            "{err:?}"
-        );
-        assert_eq!(dir_entries(data_dir.path()), data_before);
-        assert_eq!(dir_entries(&database), database_before);
-        assert_neighbors_kept(&neighbors);
-        let store = store.expect("the swap was reached");
+            assert!(
+                matches!(err, OfflineRestoreError::DatabaseInUse { source: None, .. }),
+                "{alias:?}: {err:?}"
+            );
+            assert_eq!(dir_entries(data_dir.path()), data_before);
+            assert_eq!(dir_entries(&database), database_before);
+            assert_neighbors_kept(&neighbors);
+        }
         put_event(&store);
         drop(store);
         assert_eq!(event_count(data_dir.path(), backup_dir.path()), 4);
+    }
+
+    #[test]
+    fn offline_restore_makes_a_store_opened_in_this_process_during_the_swap_wait() {
+        let _permit = acquire_db_permit();
+        let data_dir = tempfile::tempdir().unwrap();
+        let backup_dir = tempfile::tempdir().unwrap();
+        store_with_two_backups(data_dir.path(), backup_dir.path());
+        let neighbors = add_neighbors(data_dir.path());
+        let data_before = dir_entries(data_dir.path());
+        let alias = data_dir.path().join(".");
+
+        // Another thread opens a store, through another path to the database,
+        // after every probe of it in place has passed. The store must end up
+        // with the restored database rather than the one being replaced.
+        let events_seen = std::thread::scope(|scope| {
+            let mut opener = None;
+            super::restore_states_offline_with(data_dir.path(), backup_dir.path(), 1, || {
+                opener = Some(scope.spawn(|| {
+                    let store = open_store(&alias, backup_dir.path());
+                    let count = store.read().unwrap().events().iter_forward().count();
+                    put_event(&store);
+                    count
+                }));
+            })
+            .unwrap();
+            opener.expect("the swap was reached").join().unwrap()
+        });
+
+        assert_eq!(events_seen, 1);
+        assert_eq!(dir_entries(data_dir.path()), data_before);
+        assert_neighbors_kept(&neighbors);
+        assert_eq!(event_count(data_dir.path(), backup_dir.path()), 2);
     }
 
     /// Holds the lock of the database named by [`LOCK_HOLDER_DB_ENV`] until

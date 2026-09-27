@@ -41,7 +41,12 @@ mod triage_response;
 mod trusted_domain;
 mod trusted_user_agent;
 
-use std::path::{Path, PathBuf};
+use std::{
+    io,
+    os::unix::fs::MetadataExt,
+    path::{Path, PathBuf},
+    sync::{Mutex, MutexGuard, PoisonError},
+};
 
 use anyhow::{Result, anyhow};
 use rocksdb::Direction;
@@ -253,20 +258,91 @@ pub(super) const EVENT_TAGS: &[u8] = b"event tags";
 pub(super) const NETWORK_TAGS: &[u8] = b"network tags";
 pub(super) const WORKFLOW_TAGS: &[u8] = b"workflow tags";
 
+/// The directories of the states databases a [`StateDb`] in this process has
+/// open.
+///
+/// RocksDB recognizes a lock this process holds only under the path string it
+/// was taken with, and probing the same database under another spelling of
+/// its path releases that lock instead of reporting it. Directories are
+/// therefore recorded by file system identity, which every spelling shares,
+/// for [`crate::backup::restore_states_offline`] to refuse them. A [`StateDb`]
+/// is recorded before it opens its database, so a caller that holds this lock
+/// keeps any more from opening one until it lets go.
+static OPEN_STATE_DBS: Mutex<Vec<DirId>> = Mutex::new(Vec::new());
+
+/// Locks the record of the states databases open in this process.
+pub(crate) fn open_state_dbs() -> MutexGuard<'static, Vec<DirId>> {
+    // Nothing panics while holding the lock with the list half-changed.
+    OPEN_STATE_DBS
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+}
+
+/// The file system identity of a directory, shared by every path to it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct DirId {
+    dev: u64,
+    ino: u64,
+}
+
+impl DirId {
+    /// Returns the identity of the directory at `path`, or `None` if `path`
+    /// is not a directory.
+    pub(crate) fn of_dir(path: &Path) -> Option<Self> {
+        let metadata = std::fs::metadata(path).ok()?;
+        metadata.is_dir().then(|| Self {
+            dev: metadata.dev(),
+            ino: metadata.ino(),
+        })
+    }
+}
+
+/// An entry in [`OPEN_STATE_DBS`], removed again when dropped.
+struct OpenStateDb(DirId);
+
+impl Drop for OpenStateDb {
+    fn drop(&mut self) {
+        let mut open = open_state_dbs();
+        if let Some(i) = open.iter().position(|id| *id == self.0) {
+            open.swap_remove(i);
+        }
+    }
+}
+
 #[allow(clippy::module_name_repetitions)]
 pub(crate) struct StateDb {
     inner: Option<rocksdb::OptimisticTransactionDB>,
     backup: PathBuf,
     db: PathBuf,
+    /// Declared after `inner` so that the database is closed by the time the
+    /// entry is removed.
+    _open: OpenStateDb,
 }
 
 impl StateDb {
     pub fn open(path: &Path, backup: PathBuf) -> Result<Self> {
+        let open = Self::record_open(path)?;
         Self::open_db(path).map(|db| Self {
             inner: Some(db),
             backup,
             db: path.to_owned(),
+            _open: open,
         })
+    }
+
+    /// Records the database directory at `path` in [`OPEN_STATE_DBS`],
+    /// creating it as RocksDB would if it is missing.
+    fn record_open(path: &Path) -> Result<OpenStateDb> {
+        let mut open = open_state_dbs();
+        match std::fs::create_dir(path) {
+            Ok(()) => {}
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {}
+            Err(e) => return Err(e.into()),
+        }
+        let id = DirId::of_dir(path)
+            .ok_or_else(|| anyhow!("states database {} is not a directory", path.display()))?;
+        open.push(id);
+        Ok(OpenStateDb(id))
     }
 
     #[must_use]
