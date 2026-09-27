@@ -541,6 +541,20 @@ mod tests {
     }
 
     #[test]
+    fn offline_restore_recreates_a_missing_database() {
+        let _permit = acquire_db_permit();
+        let data_dir = tempfile::tempdir().unwrap();
+        let backup_dir = tempfile::tempdir().unwrap();
+        store_with_two_backups(data_dir.path(), backup_dir.path());
+        std::fs::remove_dir_all(data_dir.path().join(DEFAULT_STATES)).unwrap();
+
+        restore_states_offline(data_dir.path(), backup_dir.path(), 2).unwrap();
+
+        assert_eq!(event_count(data_dir.path(), backup_dir.path()), 2);
+        assert!(!data_dir.path().join(LOCK_PROBE_LOG_DIR).exists());
+    }
+
+    #[test]
     fn offline_restore_refuses_a_missing_backup_id() {
         let _permit = acquire_db_permit();
         let data_dir = tempfile::tempdir().unwrap();
