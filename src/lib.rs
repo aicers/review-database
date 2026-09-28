@@ -213,6 +213,83 @@ impl Store {
         self.states.operation_attempts()
     }
 
+    /// Returns the read-only view of the per-host listening-address
+    /// allocations.
+    ///
+    /// The view reads the row holding an address with `get`, the rows one
+    /// attempt took with `allocated_by`, and the rows one instance holds with
+    /// `allocated_for`:
+    ///
+    /// ```
+    /// use review_database::{ListenerTransport, Store};
+    ///
+    /// fn read(store: &Store, idempotency_key: &str) -> anyhow::Result<()> {
+    ///     let ports = store.port_allocation_map();
+    ///     let _holder = ports.get("host-a.example", ListenerTransport::Tcp, 38_370)?;
+    ///     let _taken = ports.allocated_by(idempotency_key)?;
+    ///     let _held = ports.allocated_for("host-a.example", "giganto", 1)?;
+    ///     Ok(())
+    /// }
+    /// ```
+    ///
+    /// It writes nothing. An address is taken only by
+    /// `allocate_instance_and_addrs` on the table
+    /// [`Store::operation_attempt_map`] returns, and given back only by the
+    /// write of the attempt that owns it, so neither the allocator nor the
+    /// release is reachable through here:
+    ///
+    /// ```compile_fail,E0624
+    /// fn allocate(store: &review_database::Store) {
+    ///     let _ = store.port_allocation_map().allocate_with_transaction(
+    ///         todo!(), todo!(), todo!(), todo!(), todo!(), todo!(),
+    ///     );
+    /// }
+    /// ```
+    ///
+    /// ```compile_fail,E0624
+    /// fn release(store: &review_database::Store) {
+    ///     let _ = store.port_allocation_map().release_for_attempt(todo!(), todo!());
+    /// }
+    /// ```
+    ///
+    /// Nor is the generic write API on [`Table`], which a `PortAllocation` does
+    /// not qualify for:
+    ///
+    /// ```compile_fail,E0599
+    /// fn delete(store: &review_database::Store) {
+    ///     let _ = store
+    ///         .port_allocation_map()
+    ///         .delete_with_transaction(todo!(), todo!());
+    /// }
+    /// ```
+    ///
+    /// Reading goes no further than those three: the generic [`Iterable`]
+    /// scans are not implemented for a `PortAllocation`, so neither `iter` nor
+    /// `prefix_iter` is reachable:
+    ///
+    /// ```compile_fail,E0599
+    /// use review_database::Iterable;
+    ///
+    /// fn scan(store: &review_database::Store) {
+    ///     let _ = store.port_allocation_map().iter(todo!(), None);
+    /// }
+    /// ```
+    ///
+    /// ```compile_fail,E0599
+    /// use review_database::Iterable;
+    ///
+    /// fn prefix_scan(store: &review_database::Store) {
+    ///     let _ = store.port_allocation_map().prefix_iter(todo!(), None, b"");
+    /// }
+    /// ```
+    #[must_use]
+    // `StateDb::open` creates every column family the table opens, so the
+    // getter's `expect` cannot fire on an opened store.
+    #[allow(clippy::missing_panics_doc)]
+    pub fn port_allocation_map(&self) -> Table<'_, PortAllocation> {
+        self.states.port_allocations()
+    }
+
     /// Initializes backup configuration in the config table.
     ///
     /// # Errors
