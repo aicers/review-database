@@ -238,7 +238,7 @@ impl Store {
     /// write of the attempt that owns it, so neither the allocator nor the
     /// release is reachable through here:
     ///
-    /// ```compile_fail
+    /// ```compile_fail,E0624
     /// fn allocate(store: &review_database::Store) {
     ///     let _ = store.port_allocation_map().allocate_with_transaction(
     ///         todo!(), todo!(), todo!(), todo!(), todo!(), todo!(),
@@ -246,9 +246,20 @@ impl Store {
     /// }
     /// ```
     ///
-    /// ```compile_fail
+    /// ```compile_fail,E0624
     /// fn release(store: &review_database::Store) {
     ///     let _ = store.port_allocation_map().release_for_attempt(todo!(), todo!());
+    /// }
+    /// ```
+    ///
+    /// Nor is the generic write API on [`Table`], which a `PortAllocation` does
+    /// not qualify for:
+    ///
+    /// ```compile_fail,E0599
+    /// fn delete(store: &review_database::Store) {
+    ///     let _ = store
+    ///         .port_allocation_map()
+    ///         .delete_with_transaction(todo!(), todo!());
     /// }
     /// ```
     #[must_use]

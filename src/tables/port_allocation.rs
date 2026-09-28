@@ -2488,6 +2488,12 @@ mod tests {
         assert_eq!(request_map(&by_instance), expected);
 
         assert_eq!(ports.get(HOST, Transport::Tcp, 38_372).unwrap(), None);
+        assert_eq!(ports.get(HOST, Transport::Udp, 38_370).unwrap(), None);
+        assert_eq!(ports.allocated_by(&key("unknown")).unwrap(), Vec::new());
+        assert_eq!(
+            ports.allocated_for(HOST, COMPONENT, instance + 1).unwrap(),
+            Vec::new()
+        );
     }
 
     /// An install finalized as failed and owing no cleanup gives its
