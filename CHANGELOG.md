@@ -106,7 +106,9 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   addresses a call names are the new public `ListenerBinding` and
   `ListenerTransport` types, refusals are `InstanceAllocationError` and
   `AddressAllocationError`, and `InstanceAllocation`, `PortAllocation`, and
-  `PortOwner` describe the rows the two new tables hold.
+  `PortOwner` describe the rows the two new tables hold. The allocated
+  addresses can be read through `Store::port_allocation_map`, which exposes
+  `get`, `allocated_by`, and `allocated_for`.
 - Added `write_version_markers`, which records a caller-supplied database
   format version in the `VERSION` files of a data directory and a backup
   directory. It is the metadata companion to restoring a rollback snapshot:

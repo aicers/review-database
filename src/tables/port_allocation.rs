@@ -2446,6 +2446,100 @@ mod tests {
         );
     }
 
+    /// What another crate sees of an install through `Store`'s read-only
+    /// view: both rows by their addresses, both under the attempt's key and
+    /// both under the instance, and nothing at an address no one took.
+    #[test]
+    fn the_store_view_reads_the_rows_an_install_took() {
+        let _permit = acquire_db_permit();
+        let db_dir = tempfile::tempdir().unwrap();
+        let backup_dir = tempfile::tempdir().unwrap();
+        let store = crate::Store::new(db_dir.path(), backup_dir.path(), None).unwrap();
+
+        let bindings = [
+            binding(INGEST, Transport::Tcp, 38_370),
+            binding(PUBLISH, Transport::Udp, 38_371),
+        ];
+        let mut attempt = install("store-view", None);
+        let request = submit(&mut attempt, &bindings);
+        let stored = store
+            .operation_attempt_map()
+            .allocate_instance_and_addrs(&attempt, &request, &bindings)
+            .unwrap();
+        let instance = stored.instance.unwrap();
+
+        let ports = store.port_allocation_map();
+        let ingest = ports.get(HOST, Transport::Tcp, 38_370).unwrap().unwrap();
+        assert_eq!(ingest.listener_key, INGEST);
+        assert_eq!(ingest.addr, addr(38_370));
+        assert_eq!(ingest.instance, instance);
+        assert_eq!(ingest.idempotency_key, key("store-view"));
+        let publish = ports.get(HOST, Transport::Udp, 38_371).unwrap().unwrap();
+        assert_eq!(publish.listener_key, PUBLISH);
+        assert_eq!(publish.addr, addr(38_371));
+
+        let expected = vec![
+            (INGEST.to_string(), addr(38_370)),
+            (PUBLISH.to_string(), addr(38_371)),
+        ];
+        let by_attempt = ports.allocated_by(&key("store-view")).unwrap();
+        assert_eq!(request_map(&by_attempt), expected);
+        let by_instance = ports.allocated_for(HOST, COMPONENT, instance).unwrap();
+        assert_eq!(request_map(&by_instance), expected);
+
+        assert_eq!(ports.get(HOST, Transport::Tcp, 38_372).unwrap(), None);
+    }
+
+    /// An install finalized as failed and owing no cleanup gives its
+    /// addresses back, and the store view then finds none of them by any of
+    /// its three reads.
+    #[test]
+    fn the_store_view_finds_nothing_after_a_failed_install_releases() {
+        let _permit = acquire_db_permit();
+        let db_dir = tempfile::tempdir().unwrap();
+        let backup_dir = tempfile::tempdir().unwrap();
+        let store = crate::Store::new(db_dir.path(), backup_dir.path(), None).unwrap();
+        let attempts = store.operation_attempt_map();
+
+        let bindings = [
+            binding(INGEST, Transport::Tcp, 38_370),
+            binding(PUBLISH, Transport::Udp, 38_371),
+        ];
+        let mut attempt = install("store-view-failed", None);
+        let request = submit(&mut attempt, &bindings);
+        let stored = attempts
+            .allocate_instance_and_addrs(&attempt, &request, &bindings)
+            .unwrap();
+        let instance = stored.instance.unwrap();
+
+        let ports = store.port_allocation_map();
+        assert_eq!(
+            ports.allocated_by(&key("store-view-failed")).unwrap().len(),
+            2
+        );
+
+        let failed = terminal_for(
+            "store-view-failed",
+            instance,
+            OperationAction::Install,
+            OperationOutcome::Failed,
+            &bindings,
+        );
+        assert_eq!(failed.cleanup_state, None);
+        attempts.upsert(&failed).unwrap();
+
+        assert_eq!(ports.get(HOST, Transport::Tcp, 38_370).unwrap(), None);
+        assert_eq!(ports.get(HOST, Transport::Udp, 38_371).unwrap(), None);
+        assert_eq!(
+            ports.allocated_by(&key("store-view-failed")).unwrap(),
+            Vec::new()
+        );
+        assert_eq!(
+            ports.allocated_for(HOST, COMPONENT, instance).unwrap(),
+            Vec::new()
+        );
+    }
+
     /// A store carrying the primary family alone is not this table: a row
     /// written there would be one neither reader could find.
     #[test]

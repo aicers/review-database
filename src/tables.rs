@@ -499,6 +499,16 @@ impl StateDb {
     }
 
     #[must_use]
+    pub(crate) fn port_allocations(&self) -> Table<'_, PortAllocation> {
+        let inner = self
+            .inner
+            .as_ref()
+            .expect("table access requires a successfully opened StateDb");
+        Table::<PortAllocation>::open(inner)
+            .expect("StateDb::open initializes the port allocation column families")
+    }
+
+    #[must_use]
     pub(crate) fn data_sources(&self) -> IndexedTable<'_, DataSource> {
         let inner = self.inner.as_ref().expect("database must be open");
         IndexedTable::<DataSource>::open(inner).expect("{DATA_SOURCES} table must be present")
