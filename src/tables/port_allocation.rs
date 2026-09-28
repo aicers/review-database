@@ -88,9 +88,13 @@
 //! `update_with_transaction` and `delete_with_transaction` do not exist for
 //! this table at all.
 //!
-//! Reading is unrestricted. The primary column family holds these rows and
-//! nothing else — the index entries have families of their own — so the
-//! generic [`Iterable`](crate::Iterable) API stays available.
+//! Reading is limited to the three keyed reads: [`get`](Table::get) by
+//! address, [`allocated_by`](Table::allocated_by) by the attempt that took the
+//! rows and [`allocated_for`](Table::allocated_for) by the instance holding
+//! them. The generic [`Iterable`](crate::Iterable) API is not implemented for
+//! this record, so a caller of
+//! [`Store::port_allocation_map`](crate::Store::port_allocation_map) outside
+//! the crate cannot scan the table either.
 
 use std::borrow::Cow;
 use std::collections::BTreeSet;

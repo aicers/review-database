@@ -703,7 +703,10 @@ impl StateDb {
 /// the column family holds nothing but records. Most tables are of that shape
 /// and are listed below; `operation_attempt` is not, because it reserves the
 /// top of its key space for secondary indexes, and is therefore deliberately
-/// absent.
+/// absent. `port_allocation` is absent too, for a different reason: its rows
+/// are reachable from outside the crate through
+/// [`Store::port_allocation_map`](crate::Store::port_allocation_map), which
+/// promises its three keyed reads and nothing more.
 ///
 /// The trait is not exported, so this list is the only way in: nothing outside
 /// the crate can implement it, and a record type added here gets generic
@@ -739,7 +742,6 @@ mod iteration {
     impl Eligible for tables::ModelIndicator {}
     impl Eligible for tables::Network {}
     impl Eligible for tables::OutlierInfo {}
-    impl Eligible for tables::PortAllocation {}
     impl Eligible for types::Qualifier {}
     impl Eligible for tables::SamplingPolicy {}
     impl Eligible for types::Status {}
@@ -764,7 +766,10 @@ mod iteration {
 /// that reserves part of its key space for secondary index entries — at
 /// present only `operation_attempt`, whose keys are described on
 /// [`OperationAttempt`] — is therefore left out, and offers a bounded
-/// iterator of its own that stops below the reserved range.
+/// iterator of its own that stops below the reserved range. `port_allocation`
+/// is left out as well, so that the view
+/// [`Store::port_allocation_map`](crate::Store::port_allocation_map) returns
+/// reads its rows only by key.
 pub trait Iterable<'i, I>
 where
     I: Iterator,
@@ -933,7 +938,8 @@ impl<R: UniqueKey + Value> Table<'_, R> {
 
 // The `iteration::Eligible` bound is what keeps `Table<OperationAttempt>` out
 // of this implementation, whose scans reach the index key spaces that table
-// reserves. `IndexedTable` below does not carry the bound: no table that
+// reserves, and `Table<PortAllocation>`, whose public view offers only keyed
+// reads. `IndexedTable` below does not carry the bound: no table that
 // reserves part of its key space is indexed, and `NodeTable` iterates through
 // that implementation.
 impl<'i, 'j, 'k, R> Iterable<'i, TableIter<'k, R>> for Table<'j, R>

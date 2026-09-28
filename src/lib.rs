@@ -262,6 +262,26 @@ impl Store {
     ///         .delete_with_transaction(todo!(), todo!());
     /// }
     /// ```
+    ///
+    /// Reading goes no further than those three: the generic [`Iterable`]
+    /// scans are not implemented for a `PortAllocation`, so neither `iter` nor
+    /// `prefix_iter` is reachable:
+    ///
+    /// ```compile_fail,E0599
+    /// use review_database::Iterable;
+    ///
+    /// fn scan(store: &review_database::Store) {
+    ///     let _ = store.port_allocation_map().iter(todo!(), None);
+    /// }
+    /// ```
+    ///
+    /// ```compile_fail,E0599
+    /// use review_database::Iterable;
+    ///
+    /// fn prefix_scan(store: &review_database::Store) {
+    ///     let _ = store.port_allocation_map().prefix_iter(todo!(), None, b"");
+    /// }
+    /// ```
     #[must_use]
     // `StateDb::open` creates every column family the table opens, so the
     // getter's `expect` cannot fire on an opened store.
