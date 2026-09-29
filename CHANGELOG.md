@@ -33,7 +33,6 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   from overwriting newer service results. REview results retain all target
   host FQDNs for reliable deletion retries, while Sensor and SemiSupervised
   results retain exactly one host FQDN per result.
-
 - Added the `CoreComponent` record, the registry of the platform's own
   host-fixed infrastructure — `review`, `aice-web-next`, `roxyd` and `bootroot`
   — which is neither an agent nor an external service. A row is keyed by its
