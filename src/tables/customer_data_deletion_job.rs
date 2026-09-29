@@ -138,8 +138,8 @@ impl<'d> Table<'d, CustomerDataDeletionJob> {
     /// # Errors
     ///
     /// Returns an error if the customer IDs differ, a new service result is invalid, the job does
-    /// not exist, the stored service results do not exactly match `old`, the stored value is
-    /// invalid, or a database operation fails.
+    /// not exist, the stored value does not match the serialized service results of `old`, or a
+    /// database operation fails.
     pub fn update(
         &self,
         old: &CustomerDataDeletionJob,
@@ -158,32 +158,8 @@ impl<'d> Table<'d, CustomerDataDeletionJob> {
             })?;
         }
 
-        let key = old.customer_id.to_be_bytes();
-        loop {
-            let txn = self.map.db.transaction();
-            let Some(value) = txn
-                .get_for_update_cf(self.map.cf, key, EXCLUSIVE)
-                .context("cannot read customer deletion job")?
-            else {
-                bail!("customer deletion job does not exist");
-            };
-            let current_service_results: Vec<CustomerDataDeletionServiceResult> =
-                super::deserialize(value.as_ref())?;
-            if current_service_results != old.service_results {
-                bail!("customer deletion service results mismatch");
-            }
-
-            let value = super::serialize(&new.service_results)?;
-            txn.put_cf(self.map.cf, key, value)
-                .context("failed to write customer deletion job")?;
-            match txn.commit() {
-                Ok(()) => return Ok(()),
-                Err(error) if error.as_ref().starts_with(RESOURCE_BUSY_PREFIX) => {}
-                Err(error) => {
-                    return Err(error).context("failed to update customer deletion job");
-                }
-            }
-        }
+        let key = old.unique_key();
+        self.map.update((&key, &old.value()), (&key, &new.value()))
     }
 
     /// Adds a service result to an existing customer deletion job.
@@ -659,10 +635,7 @@ mod tests {
 
         let error = table.update(&old, &new).unwrap_err();
 
-        assert_eq!(
-            error.to_string(),
-            "customer deletion service results mismatch"
-        );
+        assert_eq!(error.to_string(), "old value mismatch");
         assert_eq!(
             table.get(old.customer_id).unwrap().unwrap().service_results,
             vec![saved_result]
@@ -704,6 +677,14 @@ mod tests {
         service.last_mut().unwrap().service = CustomerDataDeletionService::SemiSupervised;
         let mut order = expected.clone();
         order.reverse();
+        // A stale update must not discard a result added after the caller's read.
+        let mut extra_result = expected.clone();
+        extra_result.push(service_result(
+            CustomerDataDeletionService::SemiSupervised,
+            &["semi-supervised.example"],
+            CustomerDataDeletionStatus::InProgress,
+            40,
+        ));
 
         for (offset, (field, current_service_results)) in [
             ("requested_at", requested_at),
@@ -713,6 +694,7 @@ mod tests {
             ("host_fqdns", host_fqdns),
             ("service", service),
             ("order", order),
+            ("extra_result", extra_result),
         ]
         .into_iter()
         .enumerate()
@@ -734,7 +716,7 @@ mod tests {
 
             assert_eq!(
                 error.to_string(),
-                "customer deletion service results mismatch",
+                "old value mismatch",
                 "failed to detect mismatch in {field}"
             );
             assert_eq!(table.get(customer_id).unwrap(), Some(current));
@@ -809,10 +791,7 @@ mod tests {
             .iter()
             .find_map(|(_, result)| result.as_ref().err())
             .unwrap();
-        assert_eq!(
-            loser_error.to_string(),
-            "customer deletion service results mismatch"
-        );
+        assert_eq!(loser_error.to_string(), "old value mismatch");
         assert_eq!(
             store
                 .customer_data_deletion_map()
@@ -856,7 +835,7 @@ mod tests {
         };
         assert_eq!(
             table.update(&missing, &missing).unwrap_err().to_string(),
-            "customer deletion job does not exist"
+            "no such entry"
         );
         assert_eq!(table.get(stored.customer_id).unwrap(), Some(stored.clone()));
 
