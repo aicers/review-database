@@ -113,7 +113,10 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   `AddressAllocationError`, and `InstanceAllocation`, `PortAllocation`, and
   `PortOwner` describe the rows the two new tables hold. The allocated
   addresses can be read through `Store::port_allocation_map`, which exposes
-  `get`, `allocated_by`, and `allocated_for`.
+  `get`, `allocated_by`, and `allocated_for`. The allocated numbers, and the
+  attempt that allocated each, can be read through
+  `Store::instance_allocation_map`, which exposes `get`, `allocated`,
+  `allocated_by`, and the `Iterable` scans.
 - Added `write_version_markers`, which records a caller-supplied database
   format version in the `VERSION` files of a data directory and a backup
   directory. It is the metadata companion to restoring a rollback snapshot:
