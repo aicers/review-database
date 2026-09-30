@@ -310,7 +310,7 @@ impl Store {
     /// ```
     ///
     /// The generic [`Iterable`] scans, `iter` and `prefix_iter`, are available
-    /// too, and read the same rows:
+    /// too, read-only, over the same rows:
     ///
     /// ```
     /// use review_database::Iterable;
