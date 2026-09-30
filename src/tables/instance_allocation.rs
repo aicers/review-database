@@ -55,7 +55,9 @@
 //! Reading is unrestricted. The column family holds these rows and nothing
 //! else — no index key space is reserved in it — so the generic
 //! [`Iterable`](crate::Iterable) API stays available, and a prefix scan over
-//! `(host, component)` is what the allocator itself reads.
+//! `(host, component)` is what the allocator itself reads. Outside the crate
+//! the rows are reachable, read-only, through
+//! [`Store::instance_allocation_map`](crate::Store::instance_allocation_map).
 
 use std::collections::BTreeSet;
 
@@ -2185,5 +2187,86 @@ mod tests {
                 .instance,
             1
         );
+    }
+
+    /// What another crate sees of an install through `Store`'s read-only
+    /// view: the row by its number, under the pair and under the attempt's
+    /// key, and nothing at a number, a key or a pair no one took.
+    #[test]
+    fn the_store_view_reads_the_row_an_install_took() {
+        let _permit = acquire_db_permit();
+        let db_dir = tempfile::tempdir().unwrap();
+        let backup_dir = tempfile::tempdir().unwrap();
+        let store = crate::Store::new(db_dir.path(), backup_dir.path(), None).unwrap();
+
+        let stored = store
+            .operation_attempt_map()
+            .allocate_instance(&install("store-view", None), &intent())
+            .unwrap();
+        let n = stored.instance.unwrap();
+
+        let instances = store.instance_allocation_map();
+        let row = instances.get(HOST, COMPONENT, n).unwrap().unwrap();
+        assert_eq!(row.idempotency_key, key("store-view"));
+        assert_eq!(row.instance, n);
+        assert_eq!(
+            instances.allocated(HOST, COMPONENT).unwrap(),
+            vec![row.clone()]
+        );
+        assert_eq!(
+            instances
+                .allocated_by(HOST, COMPONENT, &key("store-view"))
+                .unwrap(),
+            Some(row)
+        );
+
+        assert_eq!(instances.get(HOST, COMPONENT, n + 1).unwrap(), None);
+        assert_eq!(
+            instances
+                .allocated_by(HOST, COMPONENT, &key("unknown"))
+                .unwrap(),
+            None
+        );
+        assert_eq!(
+            instances.allocated(HOST, OTHER_COMPONENT).unwrap(),
+            Vec::new()
+        );
+    }
+
+    /// An install finalized as failed and owing no cleanup gives its number
+    /// back, and the store view then finds it by none of its three reads.
+    #[test]
+    fn the_store_view_finds_nothing_after_a_failed_install_releases() {
+        let _permit = acquire_db_permit();
+        let db_dir = tempfile::tempdir().unwrap();
+        let backup_dir = tempfile::tempdir().unwrap();
+        let store = crate::Store::new(db_dir.path(), backup_dir.path(), None).unwrap();
+        let attempts = store.operation_attempt_map();
+
+        let stored = attempts
+            .allocate_instance(&install("store-view-failed", None), &intent())
+            .unwrap();
+        let n = stored.instance.unwrap();
+
+        let instances = store.instance_allocation_map();
+        assert!(instances.get(HOST, COMPONENT, n).unwrap().is_some());
+
+        let failed = terminal(
+            "store-view-failed",
+            n,
+            OperationAction::Install,
+            OperationOutcome::Failed,
+        );
+        assert_eq!(failed.cleanup_state, None);
+        attempts.upsert(&failed).unwrap();
+
+        assert_eq!(instances.get(HOST, COMPONENT, n).unwrap(), None);
+        assert_eq!(
+            instances
+                .allocated_by(HOST, COMPONENT, &key("store-view-failed"))
+                .unwrap(),
+            None
+        );
+        assert_eq!(instances.allocated(HOST, COMPONENT).unwrap(), Vec::new());
     }
 }

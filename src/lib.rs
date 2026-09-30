@@ -290,6 +290,84 @@ impl Store {
         self.states.port_allocations()
     }
 
+    /// Returns the read-only view of the allocated module instance numbers and
+    /// the attempts that allocated them.
+    ///
+    /// The view reads the row holding a number with `get`, every number held
+    /// for a `(host, component)` pair with `allocated`, and the number one
+    /// attempt took for the pair with `allocated_by`:
+    ///
+    /// ```
+    /// use review_database::Store;
+    ///
+    /// fn read(store: &Store, idempotency_key: &str) -> anyhow::Result<()> {
+    ///     let instances = store.instance_allocation_map();
+    ///     let _holder = instances.get("host-a.example", "giganto", 1)?;
+    ///     let _held = instances.allocated("host-a.example", "giganto")?;
+    ///     let _taken = instances.allocated_by("host-a.example", "giganto", idempotency_key)?;
+    ///     Ok(())
+    /// }
+    /// ```
+    ///
+    /// The generic [`Iterable`] scans, `iter` and `prefix_iter`, are available
+    /// too, and read the same rows:
+    ///
+    /// ```
+    /// use review_database::Iterable;
+    ///
+    /// fn prefix_scan(store: &review_database::Store) {
+    ///     let _ = store.instance_allocation_map().prefix_iter(todo!(), None, b"");
+    /// }
+    /// ```
+    ///
+    /// It writes nothing. A number is taken only by `allocate_instance` or
+    /// `allocate_instance_and_addrs` on the table
+    /// [`Store::operation_attempt_map`] returns, and given back only by the
+    /// write of the attempt that owns it, so neither the allocator nor either
+    /// release is reachable through here:
+    ///
+    /// ```compile_fail,E0624
+    /// fn allocate(store: &review_database::Store) {
+    ///     let _ = store
+    ///         .instance_allocation_map()
+    ///         .allocate_with_transaction(todo!(), todo!(), todo!(), todo!());
+    /// }
+    /// ```
+    ///
+    /// ```compile_fail,E0624
+    /// fn release(store: &review_database::Store) {
+    ///     let _ = store
+    ///         .instance_allocation_map()
+    ///         .release_for_attempt(todo!(), todo!());
+    /// }
+    /// ```
+    ///
+    /// ```compile_fail,E0624
+    /// fn release(store: &review_database::Store) {
+    ///     let _ = store
+    ///         .instance_allocation_map()
+    ///         .release_with_transaction(todo!(), todo!(), todo!(), todo!());
+    /// }
+    /// ```
+    ///
+    /// Nor is the generic write API on [`Table`], which an `InstanceAllocation`
+    /// does not qualify for:
+    ///
+    /// ```compile_fail,E0599
+    /// fn delete(store: &review_database::Store) {
+    ///     let _ = store
+    ///         .instance_allocation_map()
+    ///         .delete_with_transaction(todo!(), todo!());
+    /// }
+    /// ```
+    #[must_use]
+    // `StateDb::open` creates every column family the table opens, so the
+    // getter's `expect` cannot fire on an opened store.
+    #[allow(clippy::missing_panics_doc)]
+    pub fn instance_allocation_map(&self) -> Table<'_, InstanceAllocation> {
+        self.states.instance_allocations()
+    }
+
     /// Initializes backup configuration in the config table.
     ///
     /// # Errors
