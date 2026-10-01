@@ -180,8 +180,7 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   `0o644` is now `0o600`, so anything reading these files as another account
   stops working.
 - **BREAKING**: Bumped the database format to `0.47.0-alpha.6`. The migration
-  from `0.46.x` (and from the `0.46.0-alpha.1` prerelease marker, which shares
-  the `0.46.0` layout) does the following:
+  from `0.46.x` does the following:
   - creates the eight column families such a store lacks — customer data
     deletion jobs, core components, operation attempts, the latest operation
     attempt pointer, instance allocations, and the port allocation table with
