@@ -679,8 +679,6 @@ mod tests {
 
     #[test]
     fn test_lockout_expiration() {
-        use std::{thread, time::Duration};
-
         let (_permit, store) = setup_store();
         let table = store.account_map();
 
@@ -699,12 +697,13 @@ mod tests {
         .unwrap();
 
         account.failed_login_attempts = 5;
-        account.locked_out_until = Some(chrono::Utc::now() + chrono::Duration::milliseconds(100));
+        account.locked_out_until = Some(chrono::Utc::now() + chrono::Duration::hours(1));
         table.put(&account).unwrap();
 
         assert!(table.is_account_locked("user1").unwrap());
 
-        thread::sleep(Duration::from_millis(200));
+        account.locked_out_until = Some(chrono::Utc::now() - chrono::Duration::seconds(1));
+        table.put(&account).unwrap();
 
         assert!(!table.is_account_locked("user1").unwrap());
 
