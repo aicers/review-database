@@ -7,20 +7,6 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-### Fixed
-
-- Country aggregation no longer drops every responder country from RDP
-  brute-force and multi-host port-scan events, every originator country from
-  external DDoS events, or all but one responder country from unusual
-  destination-pattern events. Each event is now counted once per distinct
-  country it carries, so aggregation agrees with country filtering.
-- Corrected `EventDb` iteration to use signed chronological key order across
-  the Unix epoch, and made `remove_before` consistently retain events exactly
-  at its cutoff while deleting all earlier events.
-- A data directory whose `VERSION` is `0.46.0-alpha.1` now migrates to the
-  current format instead of failing with "migration from 0.46.0-alpha.1 is not
-  supported".
-
 ### Added
 
 - Added `EventDb::remove_by_sensors` to delete events whose sensor exactly
@@ -37,23 +23,24 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   host FQDNs for reliable deletion retries, while Sensor and SemiSupervised
   results retain exactly one host FQDN per result.
 - Added the `CoreComponent` record, the registry of the platform's own
-  host-fixed infrastructure — `review`, `aice-web-next`, `roxyd` and `bootroot`
-  — which is neither an agent nor an external service. A row is keyed by its
-  component and host, and records the installed version and commit that
-  together identify a build, the install and run lifecycle, and whether the
-  component is installer-managed and so excluded from update through the user
-  interface. Components are single-instance, so a second row for a component
-  and host that already has one is refused rather than given another number.
-  These records live in a table reachable through `Store::core_component_map`.
+  host-fixed infrastructure — `review`, `aice-web-next`, `roxyd` and
+  `bootroot` — which is neither an agent nor an external service. A row is
+  keyed by its component and host, and records the installed version and
+  commit that together identify a build, the install and run lifecycle, and
+  whether the component is installer-managed and so excluded from update
+  through the user interface. Components are single-instance, so a second row
+  for a component and host that already has one is refused rather than given
+  another number. These records live in a table reachable through
+  `Store::core_component_map`.
 - Added the `OperationAttempt` record and its supporting `OperationAction`,
   `OperationPhase`, `OperationCleanupState`, `OperationOutcome`,
   `OperationRetryPolicy`, and `OperationRetentionBound` types, describing a
   package install, update, or removal on a host, or a pending host onboarding.
   An attempt is identified by its idempotency key alone, which must not be
   empty, so resuming an interrupted operation finalizes the same row instead of
-  adding another, and it records the host, the instance, the
-  resolved version and commit, the coarse phase, the retry budget, an absolute
-  expiry deadline, when it was finished with, and any compensation still owed.
+  adding another, and it records the host, the instance, the resolved version
+  and commit, the coarse phase, the retry budget, an absolute expiry deadline,
+  when it was finished with, and any compensation still owed.
   `is_terminal` reports whether the operation reached a result, and
   `is_fully_discharged` whether it also owes no compensation; the finalization
   instant is set exactly when both hold, so an operation that failed with a
@@ -91,8 +78,7 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   none that carries a digest. Two requests carrying one key therefore cannot
   both create an attempt under it: the one that gets there second is handed
   the attempt the first created, or refused where the request differs. These
-  records live in a table reachable
-  through `Store::operation_attempt_map`.
+  records live in a table reachable through `Store::operation_attempt_map`.
 - Added instance-number and bind-address allocation for an install, through
   `allocate_instance` and `allocate_instance_and_addrs` on the table
   `Store::operation_attempt_map` returns. Each takes what the install needs
@@ -167,9 +153,8 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   `ZZ` now means a lookup was attempted but returned no valid country, following
   CLDR's Unknown or Invalid Territory code, while `XX` means no lookup was
   performed. `find_ip_country` now returns `ZZ` on lookup failure, and event
-  country filters can match either placeholder explicitly. The database format
-  is now `0.47.0-alpha.6`; migration swaps both scalar and vector placeholders
-  from the 0.46/earlier-alpha representation with durable retry checkpoints.
+  country filters can match either placeholder explicitly. Stored events are
+  converted by the database migration.
 - **BREAKING**: `Agent` and `ExternalService` now record the build installed on
   the host and which instance the row is, through five new public fields:
   `installed_version` and `installed_commit` (the build's identity, both `None`
@@ -187,11 +172,7 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   so a configuration edit does not change it. `Agent::new` and
   `ExternalService::new` keep their parameter lists and start the new fields
   empty, at `NotInstalled`; install state and the instance number are assigned
-  to a record afterwards. Records written by earlier versions are migrated
-  rather than left unreadable: each keeps its key and every field it already
-  had, and gains no installed version or commit, `NotInstalled`, and no bound
-  addresses until a host reports otherwise, along with no instance number,
-  which is the honest value for a row whose number was never recorded.
+  to a record afterwards.
 - Classifier files are now created requesting owner-only permissions (`0o600`)
   instead of the previous `0o666` reduced by the umask. The umask still applies,
   so the resulting mode is not fixed, but no group or other bit is ever granted.
@@ -199,13 +180,23 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   `0o644` is now `0o600`, so anything reading these files as another account
   stops working.
 - **BREAKING**: Bumped the database format to `0.47.0-alpha.6`. The migration
-  from `0.46.x` creates the eight column families such a store lacks — customer
-  data deletion jobs, core components, operation attempts, the latest operation
-  attempt pointer, instance allocations, and the port allocation table with its
-  two indexes — and converts every stored agent and external-service value to
-  the layout carrying install state and the instance number. It also deletes
-  the `triage policy` and `triage exclusion reason` column families and every
-  row in them; those rows survive only in backups taken before the migration.
+  from `0.46.x` (and from the `0.46.0-alpha.1` prerelease marker, which shares
+  the `0.46.0` layout) does the following:
+  - creates the eight column families such a store lacks — customer data
+    deletion jobs, core components, operation attempts, the latest operation
+    attempt pointer, instance allocations, and the port allocation table with
+    its two indexes;
+  - converts every stored agent and external-service value to the layout
+    carrying install state and the instance number; each record keeps its key
+    and every field it already had, and starts with no installed version or
+    commit, `NotInstalled`, no bound addresses, and no instance number;
+  - swaps the `ZZ` and `XX` country-code placeholders in every stored event,
+    scalar and vector fields alike, committing a resume checkpoint with each
+    batch so that a retry neither skips nor swaps an event twice;
+  - deletes the `triage policy` and `triage exclusion reason` column families
+    and every row in them; those rows survive only in backups taken before the
+    migration.
+
   Migrations from older supported formats apply their intermediate steps over
   the column families the database physically holds, so an update interrupted
   part-way can simply be retried.
@@ -224,13 +215,12 @@ Versioning](https://semver.org/spec/v2.0.0.html).
     `DateTime<Utc>` to `i64` epoch nanoseconds, aligning it with the `i64`
     `start_time` every other event's producer fields already use; it was the
     only caller-set `start_time` still typed as a timestamp.
-- **BREAKING**: Updated the `review-protocol` dependency from
-  `https://github.com/petabi/review-protocol.git` tag `0.19.0` to version 0.20.0
-  at `https://github.com/aicers/review-protocol.git` rev
-  `d5360085c5374057e1aea28a8b242b25eb47db27`. The re-exported
-  `review_database::ThreatLevel` keeps its variants and derives, but it is now
-  the type from that revision, so a crate that also depends on
-  `review-protocol` directly must pin the same Git source and revision for its
+- **BREAKING**: Updated review-protocol to 0.20.0, now taken from
+  `https://github.com/aicers/review-protocol.git` at tag `0.20.0` instead of
+  `https://github.com/petabi/review-protocol.git` at tag `0.19.0`. The
+  re-exported `review_database::ThreatLevel` keeps its variants and derives,
+  but it is now the type from that release, so a crate that also depends on
+  `review-protocol` directly must use the same Git source and tag for its
   `ThreatLevel` to be interchangeable with this crate's.
 
 ### Removed
@@ -238,10 +228,22 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 - **BREAKING**: Removed stored triage policies and exclusion reasons:
   `Store::triage_policy_map`, `Store::triage_exclusion_reason_map`,
   `TriagePolicy`, `TriagePolicyUpdate`, `TriageExclusionReason`,
-  `TriageExclusionReasonUpdate`, and `TriagePolicy::into_input_with_exclusion_reason`
-  no longer exist. Callers pass `TriagePolicyInput` values and
-  `TriageExclusion` values (built from `ExclusionReason`) to
-  `Event::score_against_policies` and `Event::matches_exclusion` instead.
+  `TriageExclusionReasonUpdate`, and
+  `TriagePolicy::into_input_with_exclusion_reason` no longer exist. Callers
+  pass `TriagePolicyInput` values and `TriageExclusion` values (built from
+  `ExclusionReason`) to `Event::score_against_policies` and
+  `Event::matches_exclusion` instead.
+
+### Fixed
+
+- Country aggregation no longer drops every responder country from RDP
+  brute-force and multi-host port-scan events, every originator country from
+  external DDoS events, or all but one responder country from unusual
+  destination-pattern events. Each event is now counted once per distinct
+  country it carries, so aggregation agrees with country filtering.
+- Corrected `EventDb` iteration to use signed chronological key order across
+  the Unix epoch, and made `remove_before` consistently retain events exactly
+  at its cutoff while deleting all earlier events.
 
 ## [0.46.0] - 2026-07-23
 
