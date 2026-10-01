@@ -3032,19 +3032,36 @@ mod tests {
             );
         }
 
-        let migrated = raw_value(
-            &db_path,
-            crate::tables::MAP_NAMES,
-            crate::tables::AGENTS,
-            &record_key(1, "sensor@host1"),
-        )
-        .unwrap();
-        let value: AgentValueV0_47Alpha5 = bincode::DefaultOptions::new()
-            .deserialize(&migrated)
+        for (key, _) in &agents {
+            let migrated = raw_value(
+                &db_path,
+                crate::tables::MAP_NAMES,
+                crate::tables::AGENTS,
+                key,
+            )
             .unwrap();
-        assert_eq!(value.lifecycle, 0);
-        assert!(value.bound_addrs.is_empty());
-        assert_eq!(value.instance, None);
+            let value: AgentValueV0_47Alpha5 = bincode::DefaultOptions::new()
+                .deserialize(&migrated)
+                .unwrap();
+            assert_eq!(value.lifecycle, 0);
+            assert!(value.bound_addrs.is_empty());
+            assert_eq!(value.instance, None);
+        }
+        for (key, _) in &external_services {
+            let migrated = raw_value(
+                &db_path,
+                crate::tables::MAP_NAMES,
+                crate::tables::EXTERNAL_SERVICES,
+                key,
+            )
+            .unwrap();
+            let value: ExternalServiceValueV0_47Alpha5 = bincode::DefaultOptions::new()
+                .deserialize(&migrated)
+                .unwrap();
+            assert_eq!(value.lifecycle, 0);
+            assert!(value.bound_addrs.is_empty());
+            assert_eq!(value.instance, None);
+        }
 
         assert_eq!(
             read_version_file(&data_dir.path().join("VERSION")).unwrap(),
