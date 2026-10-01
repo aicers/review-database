@@ -1,6 +1,6 @@
 [package]
 name = "review-database"
-version = "0.47.0-alpha.6"
+version = "0.47.0"
 edition = "2024"
 
 [dependencies]

@@ -486,12 +486,9 @@ where
 impl<'d> Table<'d, PortAllocation> {
     /// Opens the `port_allocation` table in the database.
     ///
-    /// Returns `None` unless all three column families are present, which is
-    /// the state of a store the format bump registering them has not reached.
-    /// The three are one table and are opened as one — a primary without an
-    /// index would let a row be written that neither reader can find. A store
-    /// without them holds no allocation, which is why the release path can
-    /// treat the `None` as nothing to release.
+    /// Returns `None` unless all three column families are present. The three
+    /// are one table and are opened as one — a primary without an index would
+    /// let a row be written that neither reader can find.
     pub(super) fn open(db: &'d OptimisticTransactionDB) -> Option<Self> {
         let primary = Map::open(db, super::PORT_ALLOCATIONS)?;
         Map::open(db, super::PORT_ALLOCATIONS_BY_ATTEMPT)?;
@@ -831,8 +828,7 @@ mod tests {
     const PUBLISH: &str = "publish";
     const GRAPHQL: &str = "graphql";
 
-    /// A database carrying this table's three column families beside the
-    /// families a store held before the format bump that registers them.
+    /// A database carrying every column family, this table's three among them.
     struct TestDb {
         db: OptimisticTransactionDB,
         _dir: tempfile::TempDir,
@@ -841,29 +837,15 @@ mod tests {
 
     impl TestDb {
         fn new() -> Self {
-            Self::with_column_families(&[
-                super::super::INSTANCE_ALLOCATIONS,
-                super::super::OPERATION_ATTEMPT_LATEST,
-                super::super::PORT_ALLOCATIONS,
-                super::super::PORT_ALLOCATIONS_BY_ATTEMPT,
-                super::super::PORT_ALLOCATIONS_BY_INSTANCE,
-            ])
-        }
-
-        /// A store carrying the column families `MAP_NAMES` held before the
-        /// format bump and the named families and nothing else, so that a
-        /// test can open one that bump has not reached.
-        fn with_column_families(extra: &[&'static str]) -> Self {
             let permit = acquire_db_permit();
             let dir = tempfile::tempdir().unwrap();
             let mut opts = rocksdb::Options::default();
             opts.create_if_missing(true);
             opts.create_missing_column_families(true);
-            let column_families = super::super::map_names_before_v0_47_alpha_4(extra);
             let db = OptimisticTransactionDB::open_cf(
                 &opts,
                 dir.path().join("states.db"),
-                column_families,
+                super::super::MAP_NAMES,
             )
             .unwrap();
             Self {
@@ -2343,39 +2325,6 @@ mod tests {
         );
     }
 
-    /// A store the format bump has not reached has no port allocation table,
-    /// so an install naming an address is refused rather than recorded with
-    /// its addresses silently dropped — while one naming none writes exactly
-    /// as it always did.
-    #[test]
-    fn a_store_without_the_port_tables_refuses_an_address() {
-        let test_db = TestDb::with_column_families(&[
-            super::super::INSTANCE_ALLOCATIONS,
-            super::super::OPERATION_ATTEMPT_LATEST,
-        ]);
-        let attempts = test_db.attempts();
-
-        assert!(Table::<PortAllocation>::open(&test_db.db).is_none());
-
-        let bindings = giganto_bindings();
-        let mut attempt = install("attempt-1", None);
-        let request = submit(&mut attempt, &bindings);
-        let refusal = attempts
-            .allocate_instance_and_addrs(&attempt, &request, &bindings)
-            .unwrap_err();
-        assert!(matches!(refusal, AddressAllocationError::Database(_)));
-        assert_eq!(attempts.get(&key("attempt-1")).unwrap(), None);
-
-        let stored = attempts
-            .allocate_instance_and_addrs(
-                &install("attempt-2", None),
-                &request_for(HOST, COMPONENT, &[]),
-                &[],
-            )
-            .unwrap();
-        assert_eq!(stored.instance, Some(1));
-    }
-
     /// All three names are in `MAP_NAMES`, so `StateDb::open` creates the
     /// whole table. They arrived there with the format bump and not before
     /// it: `StateDb::open` creates every family named there while
@@ -2402,10 +2351,7 @@ mod tests {
     /// table, so an install naming its addresses takes them.
     ///
     /// Every other test in this module builds its column families itself.
-    /// This one goes through `Store::new`, which creates exactly `MAP_NAMES`,
-    /// and is what registering the three names is for: against the list
-    /// `MAP_NAMES` held before the bump, the same call was refused because
-    /// the families were not there.
+    /// This one goes through `Store::new`, which creates exactly `MAP_NAMES`.
     #[test]
     fn a_store_opened_through_map_names_takes_addresses() {
         let _permit = acquire_db_permit();
@@ -2548,19 +2494,5 @@ mod tests {
             ports.allocated_for(HOST, COMPONENT, instance).unwrap(),
             Vec::new()
         );
-    }
-
-    /// A store carrying the primary family alone is not this table: a row
-    /// written there would be one neither reader could find.
-    #[test]
-    fn the_three_column_families_are_opened_as_one() {
-        let test_db = TestDb::with_column_families(&[super::super::PORT_ALLOCATIONS]);
-        assert!(Table::<PortAllocation>::open(&test_db.db).is_none());
-
-        let test_db = TestDb::with_column_families(&[
-            super::super::PORT_ALLOCATIONS,
-            super::super::PORT_ALLOCATIONS_BY_ATTEMPT,
-        ]);
-        assert!(Table::<PortAllocation>::open(&test_db.db).is_none());
     }
 }
