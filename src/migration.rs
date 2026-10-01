@@ -111,7 +111,7 @@ use crate::{
 /// // release that involves database format change) to 3.5.0, including
 /// // all alpha changes finalized in 3.5.0.
 /// ```
-const COMPATIBLE_VERSION_REQ: &str = ">=0.47.0-alpha.6,<0.47.0-alpha.7";
+const COMPATIBLE_VERSION_REQ: &str = ">=0.47.0,<0.48.0";
 
 /// Number of event records applied in each atomic migration write.
 const EVENT_MIGRATION_BATCH_SIZE: usize = 100;
@@ -234,12 +234,9 @@ pub fn migrate_data_dir<P: AsRef<Path>>(
             Version::parse("0.46.0")?,
             |data_dir, _backup_dir, locator| migrate_0_45_to_0_46(data_dir, locator),
         ),
-        // The `-0` lower bound admits `0.46.0-alpha.1`, whose on-disk layout
-        // is the `0.46.0` layout. The earlier entries deliberately have no
-        // prerelease lower bound; see the doc comment of this function.
         (
-            VersionReq::parse(">=0.46.0-0,<0.47.0-alpha.6")?,
-            Version::parse("0.47.0-alpha.6")?,
+            VersionReq::parse(">=0.46.0,<0.47.0")?,
+            Version::parse("0.47.0")?,
             |data_dir, _backup_dir, _locator| migrate_0_46_to_0_47(data_dir),
         ),
     ];
