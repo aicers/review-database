@@ -1,4 +1,4 @@
-//! The `triage_policy` table.
+//! The `triage_response` table.
 
 use std::borrow::Cow;
 

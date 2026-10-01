@@ -27,7 +27,7 @@ use crate::{
         V0_46_COUNTRY_CODE_LOOKUP_FAILED, migrate_event_stored_schema_to_v0_46,
         validate_event_stored_schema_v0_46,
     },
-    tables::{NETWORK_TAGS, TRIAGE_EXCLUSION_REASON},
+    tables::{NETWORK_TAGS, TRIAGE_EXCLUSION_REASON, TRIAGE_POLICY},
 };
 
 /// The range of versions that use the current database format.
@@ -111,7 +111,7 @@ use crate::{
 /// // release that involves database format change) to 3.5.0, including
 /// // all alpha changes finalized in 3.5.0.
 /// ```
-const COMPATIBLE_VERSION_REQ: &str = ">=0.47.0-alpha.5,<0.47.0-alpha.6";
+const COMPATIBLE_VERSION_REQ: &str = ">=0.47.0-alpha.6,<0.47.0-alpha.7";
 
 /// Number of event records applied in each atomic migration write.
 const EVENT_MIGRATION_BATCH_SIZE: usize = 100;
@@ -238,8 +238,8 @@ pub fn migrate_data_dir<P: AsRef<Path>>(
         // is the `0.46.0` layout. The earlier entries deliberately have no
         // prerelease lower bound; see the doc comment of this function.
         (
-            VersionReq::parse(">=0.46.0-0,<0.47.0-alpha.5")?,
-            Version::parse("0.47.0-alpha.5")?,
+            VersionReq::parse(">=0.46.0-0,<0.47.0-alpha.6")?,
+            Version::parse("0.47.0-alpha.6")?,
             |data_dir, _backup_dir, _locator| migrate_0_46_to_0_47(data_dir),
         ),
     ];
@@ -267,7 +267,7 @@ fn migrate_0_45_to_0_46(data_dir: &Path, locator: Option<&dyn CountryLookup>) ->
 }
 
 /// Migrates a database in any supported 0.46.x or earlier 0.47.0 alpha format
-/// to 0.47.0-alpha.5.
+/// to 0.47.0-alpha.6.
 ///
 /// Every alpha format shares this one migration because the format is still
 /// changing during the prerelease: an alpha-to-alpha change extends the
@@ -282,7 +282,12 @@ fn migrate_0_45_to_0_46(data_dir: &Path, locator: Option<&dyn CountryLookup>) ->
 /// 0.47.0-alpha.4 added — and leaves the rest alone, so a retry after an
 /// interrupted run finds nothing to do rather than failing on a family that
 /// already exists. 0.47.0-alpha.5 adds no family, so that same pinned list is
-/// still the whole set.
+/// still the whole set it opens.
+///
+/// 0.47.0-alpha.6 removes the "triage policy" and "triage exclusion reason"
+/// families, so once every other step has finished this drops both, with every
+/// row in them. The pinned list still names them, so a retry recreates them
+/// empty on open and drops them again.
 ///
 /// Agent and external-service values may be in any of three layouts, since
 /// every alpha reaches this migration: a 0.47.0-alpha.1 value carries neither
@@ -302,9 +307,9 @@ fn migrate_0_46_to_0_47(data_dir: &Path) -> Result<()> {
     opts.create_if_missing(false);
     opts.create_missing_column_families(true);
 
-    let db: rocksdb::OptimisticTransactionDB<rocksdb::SingleThreaded> =
+    let mut db: rocksdb::OptimisticTransactionDB<rocksdb::SingleThreaded> =
         rocksdb::OptimisticTransactionDB::open_cf(&opts, &db_path, MAP_NAMES_V0_47_ALPHA_3)
-            .context("failed to open database for the 0.47.0-alpha.5 migration")?;
+            .context("failed to open database for the 0.47.0-alpha.6 migration")?;
 
     migrate_record_layout(
         &db,
@@ -343,6 +348,27 @@ fn migrate_0_46_to_0_47(data_dir: &Path) -> Result<()> {
         ],
     )?;
     migrate_country_code_placeholders(&db)?;
+    migrate_drop_triage_column_families(&mut db)?;
+    Ok(())
+}
+
+/// Drops the "triage policy" and "triage exclusion reason" column families,
+/// and every row in them, from the main database.
+///
+/// Triage policies and exclusion reasons are no longer stored in this
+/// database. Either family may already be gone, so each is dropped only if it
+/// exists.
+fn migrate_drop_triage_column_families(
+    db: &mut rocksdb::OptimisticTransactionDB<rocksdb::SingleThreaded>,
+) -> Result<()> {
+    for name in [TRIAGE_POLICY, TRIAGE_EXCLUSION_REASON] {
+        if db.cf_handle(name).is_none() {
+            continue;
+        }
+        info!("Dropping '{name}' column family");
+        db.drop_cf(name)
+            .with_context(|| format!("failed to drop '{name}' column family"))?;
+    }
     Ok(())
 }
 
@@ -820,13 +846,69 @@ const MAP_NAMES_V0_47_ALPHA_2: [&str; 39] = [
 /// The name counts the pinned lists rather than the formats: 0.47.0-alpha.3
 /// changed stored values only and created no column family, so it has no list
 /// of its own and this is the third. 0.47.0-alpha.5 is the same, so this list
-/// is still what [`migrate_0_46_to_0_47`] opens.
+/// is still what [`migrate_0_46_to_0_47`] opens. 0.47.0-alpha.6 removed the
+/// two triage families, which that migration drops after opening this list.
 ///
 /// The names are written out rather than taken from
 /// [`crate::tables::MAP_NAMES`], as every other list here is: this one is what
 /// [`migrate_0_46_to_0_47`] creates, and a later rename or format bump must
 /// change what a future migration creates, never what this historical one did.
 const MAP_NAMES_V0_47_ALPHA_3: [&str; 44] = [
+    "access_tokens",
+    "accounts",
+    "agents",
+    "allow networks",
+    "batch_info",
+    "block networks",
+    "category",
+    "cluster",
+    "column stats",
+    "configs",
+    "core components",
+    "csv column extras",
+    "customers",
+    "customer deletion jobs",
+    "data sources",
+    "filters",
+    "hosts",
+    "instance allocations",
+    "models",
+    "model indicators",
+    "meta",
+    "networks",
+    "nodes",
+    "operation attempts",
+    "operation attempt latest",
+    "outliers",
+    "port allocations",
+    "port allocations by attempt",
+    "port allocations by instance",
+    "qualifiers",
+    "external services",
+    "sampling policy",
+    "scores",
+    "statuses",
+    "templates",
+    "label database",
+    "time series",
+    "Tor exit nodes",
+    "traffic filter rules",
+    "triage exclusion reason",
+    "triage policy",
+    "triage response",
+    "trusted DNS servers",
+    "trusted user agents",
+];
+
+/// Lists column family names for database formats 0.47.0-alpha.4 and
+/// 0.47.0-alpha.5, the last before 0.47.0-alpha.6 removed "triage exclusion
+/// reason" and "triage policy".
+///
+/// The names are the same as [`MAP_NAMES_V0_47_ALPHA_3`]; they are pinned
+/// separately because that list is what [`migrate_0_46_to_0_47`] opens, while
+/// this one is the layout of a store written by 0.47.0-alpha.5.
+#[cfg(test)]
+const MAP_NAMES_V0_47_ALPHA_5: [&str; 44] = [
     "access_tokens",
     "accounts",
     "agents",
@@ -954,8 +1036,7 @@ fn migrate_0_44_to_0_45(data_dir: &Path) -> Result<()> {
 fn migrate_triage_policy_confidence(dir: &Path) -> Result<()> {
     use bincode::Options;
 
-    use crate::Indexable;
-    use crate::migration::migration_structures::TriagePolicyV0_44;
+    use crate::migration::migration_structures::{TriagePolicyV0_44, TriagePolicyV0_45};
 
     let db_path = dir.join("states.db");
     let mut opts = rocksdb::Options::default();
@@ -967,9 +1048,12 @@ fn migrate_triage_policy_confidence(dir: &Path) -> Result<()> {
         rocksdb::OptimisticTransactionDB::open_cf(&opts, &db_path, column_families)
             .context("Failed to open database for triage policy migration")?;
 
-    let cf = db
-        .cf_handle(crate::tables::TRIAGE_POLICY)
-        .context("triage policy column family not found")?;
+    // `migrate_0_46_to_0_47` drops this family, and `VERSION` is written only
+    // after the whole chain succeeds, so a chain from 0.44 retried after that
+    // drop finds no family here and has nothing to migrate.
+    let Some(cf) = db.cf_handle(crate::tables::TRIAGE_POLICY) else {
+        return Ok(());
+    };
 
     let entries: Vec<(Vec<u8>, Vec<u8>)> = db
         .iterator_cf(&cf, rocksdb::IteratorMode::Start)
@@ -986,8 +1070,11 @@ fn migrate_triage_policy_confidence(dir: &Path) -> Result<()> {
         let old: TriagePolicyV0_44 = bincode::DefaultOptions::new()
             .deserialize(value)
             .context("failed to deserialize old triage policy")?;
-        let new = crate::TriagePolicy::from(old);
-        txn.put_cf(&cf, key, new.value())
+        let new = TriagePolicyV0_45::from(old);
+        let value = bincode::DefaultOptions::new()
+            .serialize(&new)
+            .context("failed to serialize migrated triage policy")?;
+        txn.put_cf(&cf, key, value)
             .context("failed to write migrated triage policy")?;
     }
     txn.commit()
@@ -2957,7 +3044,14 @@ mod tests {
         crate::tables::PORT_ALLOCATIONS_BY_INSTANCE,
     ];
 
-    /// The column families this format bump adds to `MAP_NAMES`.
+    /// The column families the 0.47.0-alpha.6 format bump removes from
+    /// `MAP_NAMES` and drops from every migrated store.
+    const FAMILIES_REMOVED_BY_V0_47_ALPHA_6: [&str; 2] = [
+        crate::tables::TRIAGE_EXCLUSION_REASON,
+        crate::tables::TRIAGE_POLICY,
+    ];
+
+    /// The column families the 0.47.0-alpha.4 format bump adds to `MAP_NAMES`.
     const FAMILIES_ADDED_BY_V0_47_ALPHA_4: [&str; 5] = [
         crate::tables::INSTANCE_ALLOCATIONS,
         crate::tables::OPERATION_ATTEMPT_LATEST,
@@ -3010,7 +3104,7 @@ mod tests {
             assert!(db.cf_handle(name).is_some(), "{name} must exist");
         }
         assert_eq!(
-            FAMILIES_ABSENT_AT_V0_46.len(),
+            FAMILIES_ABSENT_AT_V0_46.len() - FAMILIES_REMOVED_BY_V0_47_ALPHA_6.len(),
             crate::tables::MAP_NAMES.len() - super::MAP_NAMES_V0_43_TO_V0_46.len()
         );
         drop(db);
@@ -3494,7 +3588,7 @@ mod tests {
             assert_eq!(stored.resp_country_code, crate::COUNTRY_CODE_UNRESOLVED);
             assert_eq!(
                 read_version_file(&data_dir.path().join(VERSION_FILE_NAME)).unwrap(),
-                Version::parse("0.47.0-alpha.5").unwrap()
+                Version::parse("0.47.0-alpha.6").unwrap()
             );
         }
     }
@@ -3560,7 +3654,7 @@ mod tests {
             read_version_file(&backup_dir.path().join("VERSION")).unwrap(),
             current_version
         );
-        assert_eq!(current_version.to_string(), "0.47.0-alpha.5");
+        assert_eq!(current_version.to_string(), "0.47.0-alpha.6");
 
         // The migration created every family alpha.1 lacked, and each starts
         // empty.
@@ -3769,8 +3863,9 @@ mod tests {
         let db_path = data_dir.path().join("states.db");
         create_states_db(&db_path, super::MAP_NAMES_V0_43_TO_V0_46);
 
-        // The pre-bump `MAP_NAMES` is exactly the current one without the five.
-        let mut pre_bump: Vec<&str> = crate::tables::MAP_NAMES
+        // The pre-bump `MAP_NAMES` is exactly the 0.47.0-alpha.5 one without
+        // the five.
+        let mut pre_bump: Vec<&str> = super::MAP_NAMES_V0_47_ALPHA_5
             .into_iter()
             .filter(|name| !FAMILIES_ADDED_BY_V0_47_ALPHA_4.contains(name))
             .collect();
@@ -3803,7 +3898,7 @@ mod tests {
     fn earlier_alphas_reach_the_new_target_in_one_step() {
         let permit = acquire_db_permit();
         let current_version = Version::parse(env!("CARGO_PKG_VERSION")).unwrap();
-        assert_eq!(current_version.to_string(), "0.47.0-alpha.5");
+        assert_eq!(current_version.to_string(), "0.47.0-alpha.6");
 
         for (version, families) in [
             ("0.46.0-alpha.1", super::MAP_NAMES_V0_43_TO_V0_46.as_slice()),
@@ -3812,7 +3907,8 @@ mod tests {
             ("0.47.0-alpha.1", super::MAP_NAMES_V0_47_ALPHA_1.as_slice()),
             ("0.47.0-alpha.2", super::MAP_NAMES_V0_47_ALPHA_2.as_slice()),
             ("0.47.0-alpha.3", super::MAP_NAMES_V0_47_ALPHA_2.as_slice()),
-            ("0.47.0-alpha.4", crate::tables::MAP_NAMES.as_slice()),
+            ("0.47.0-alpha.4", super::MAP_NAMES_V0_47_ALPHA_5.as_slice()),
+            ("0.47.0-alpha.5", super::MAP_NAMES_V0_47_ALPHA_5.as_slice()),
         ] {
             let data_dir = tempfile::tempdir().unwrap();
             let backup_dir = tempfile::tempdir().unwrap();
@@ -3840,9 +3936,117 @@ mod tests {
                     "{name} must exist after migrating from {version}"
                 );
             }
+            drop(db);
+            let present =
+                super::existing_map_names(&rocksdb::Options::default(), &db_path).unwrap();
+            for name in FAMILIES_REMOVED_BY_V0_47_ALPHA_6 {
+                assert!(
+                    !present.iter().any(|existing| existing == name),
+                    "{name} must be gone after migrating from {version}"
+                );
+            }
         }
 
         drop(permit);
+    }
+
+    /// Creates a `0.47.0-alpha.5` store holding one row in each of the two
+    /// triage families 0.47.0-alpha.6 removes, and marks both directories
+    /// with that version.
+    fn create_v0_47_alpha_5_store_with_triage_rows(data_dir: &Path, backup_dir: &Path) {
+        let db_path = data_dir.join("states.db");
+        create_states_db(&db_path, super::MAP_NAMES_V0_47_ALPHA_5);
+        for name in FAMILIES_REMOVED_BY_V0_47_ALPHA_6 {
+            put_entries(
+                &db_path,
+                super::MAP_NAMES_V0_47_ALPHA_5,
+                name,
+                &[(b"row".to_vec(), b"value".to_vec())],
+            );
+        }
+        write_version(data_dir, "0.47.0-alpha.5");
+        write_version(backup_dir, "0.47.0-alpha.5");
+    }
+
+    /// Asserts that neither triage family exists in the store at `db_path`.
+    fn assert_triage_families_absent(db_path: &Path) {
+        let present = super::existing_map_names(&rocksdb::Options::default(), db_path).unwrap();
+        for name in FAMILIES_REMOVED_BY_V0_47_ALPHA_6 {
+            assert!(
+                !present.iter().any(|existing| existing == name),
+                "{name} must be dropped"
+            );
+        }
+    }
+
+    /// A `0.47.0-alpha.5` store holding triage rows migrates to the current
+    /// format with both triage families, and every row in them, gone, and
+    /// opens through `Store::new` afterwards.
+    #[test]
+    fn migration_from_v0_47_alpha_5_drops_triage_families() {
+        let _permit = acquire_db_permit();
+        let current_version = Version::parse(env!("CARGO_PKG_VERSION")).unwrap();
+        let data_dir = tempfile::tempdir().unwrap();
+        let backup_dir = tempfile::tempdir().unwrap();
+        let db_path = data_dir.path().join("states.db");
+        create_v0_47_alpha_5_store_with_triage_rows(data_dir.path(), backup_dir.path());
+
+        migrate_data_dir(data_dir.path(), backup_dir.path(), None).unwrap();
+
+        assert_eq!(
+            read_version_file(&data_dir.path().join(VERSION_FILE_NAME)).unwrap(),
+            current_version
+        );
+        assert_eq!(
+            read_version_file(&backup_dir.path().join(VERSION_FILE_NAME)).unwrap(),
+            current_version
+        );
+        assert_triage_families_absent(&db_path);
+
+        let mut present =
+            super::existing_map_names(&rocksdb::Options::default(), &db_path).unwrap();
+        present.sort_unstable();
+        let mut expected: Vec<String> = crate::tables::MAP_NAMES
+            .into_iter()
+            .map(str::to_string)
+            .collect();
+        expected.sort_unstable();
+        assert_eq!(present, expected);
+
+        let store = Store::new(data_dir.path(), backup_dir.path(), None).unwrap();
+        drop(store);
+        assert_triage_families_absent(&db_path);
+    }
+
+    /// `VERSION` is written only after the whole chain succeeds, so a chain
+    /// interrupted after the triage families were dropped retries from its
+    /// original marker. A retry from `0.44.0` reaches the triage policy
+    /// conversion with no "triage policy" family and must still succeed.
+    #[test]
+    fn migration_from_v0_44_retried_after_triage_families_were_dropped() {
+        let _permit = acquire_db_permit();
+        let current_version = Version::parse(env!("CARGO_PKG_VERSION")).unwrap();
+        let data_dir = tempfile::tempdir().unwrap();
+        let backup_dir = tempfile::tempdir().unwrap();
+        let db_path = data_dir.path().join("states.db");
+        create_v0_47_alpha_5_store_with_triage_rows(data_dir.path(), backup_dir.path());
+
+        migrate_data_dir(data_dir.path(), backup_dir.path(), None).unwrap();
+        assert_triage_families_absent(&db_path);
+
+        write_version(data_dir.path(), "0.44.0");
+        write_version(backup_dir.path(), "0.44.0");
+        migrate_data_dir(data_dir.path(), backup_dir.path(), None).unwrap();
+
+        assert_eq!(
+            read_version_file(&data_dir.path().join(VERSION_FILE_NAME)).unwrap(),
+            current_version
+        );
+        assert_eq!(
+            read_version_file(&backup_dir.path().join(VERSION_FILE_NAME)).unwrap(),
+            current_version
+        );
+        assert_triage_families_absent(&db_path);
     }
 
     /// A crash between "column families created" and "version written" leaves
@@ -4550,8 +4754,10 @@ mod tests {
             "{message}"
         );
 
+        // The failed run stopped before dropping the triage families, so the
+        // store holds what the migration opened.
         assert_eq!(
-            raw_value(&db_path, crate::tables::MAP_NAMES, cf_name, &key),
+            raw_value(&db_path, super::MAP_NAMES_V0_47_ALPHA_3, cf_name, &key),
             Some(FOREIGN_VALUE.to_vec()),
             "the unreadable value must be left as it was"
         );
@@ -4952,13 +5158,23 @@ mod tests {
         .unwrap();
         drop(db);
 
-        retry_migration_from_v0_42(data_dir.path(), backup_dir.path());
-        assert_current_cf_value(
-            &db_path,
-            crate::tables::TRIAGE_EXCLUSION_REASON,
-            b"reason-key",
-            b"reason-value",
+        // Retrying the 0.42 step leaves the family the earlier run created,
+        // and the row in it, alone.
+        super::migrate_0_42_to_0_43(data_dir.path()).unwrap();
+        assert_eq!(
+            raw_value(
+                &db_path,
+                super::MAP_NAMES_V0_43_TO_V0_46,
+                crate::tables::TRIAGE_EXCLUSION_REASON,
+                b"reason-key",
+            )
+            .as_deref(),
+            Some(b"reason-value".as_slice())
         );
+
+        // The rest of the chain then drops the family with its rows.
+        retry_migration_from_v0_42(data_dir.path(), backup_dir.path());
+        assert_triage_families_absent(&db_path);
     }
 
     #[test]
@@ -6512,7 +6728,7 @@ mod tests {
     fn migrate_triage_policy_confidence_wraps_category() {
         use bincode::Options;
 
-        use super::migration_structures::{ConfidenceV0_44, TriagePolicyV0_44};
+        use super::migration_structures::{ConfidenceV0_44, TriagePolicyV0_44, TriagePolicyV0_45};
         use crate::EventCategory;
 
         let db_dir = tempfile::tempdir().unwrap();
@@ -6522,10 +6738,15 @@ mod tests {
         opts.create_if_missing(true);
         opts.create_missing_column_families(true);
 
-        // Create database and insert an old-format triage policy
+        // Create a database in the 0.44 layout and insert an old-format
+        // triage policy
         let db: rocksdb::OptimisticTransactionDB<rocksdb::SingleThreaded> =
-            rocksdb::OptimisticTransactionDB::open_cf(&opts, &db_path, crate::tables::MAP_NAMES)
-                .unwrap();
+            rocksdb::OptimisticTransactionDB::open_cf(
+                &opts,
+                &db_path,
+                super::MAP_NAMES_V0_43_TO_V0_46,
+            )
+            .unwrap();
 
         let cf = db.cf_handle(crate::tables::TRIAGE_POLICY).unwrap();
 
@@ -6569,12 +6790,16 @@ mod tests {
 
         // Reopen and verify
         let db: rocksdb::OptimisticTransactionDB<rocksdb::SingleThreaded> =
-            rocksdb::OptimisticTransactionDB::open_cf(&opts, &db_path, crate::tables::MAP_NAMES)
-                .unwrap();
+            rocksdb::OptimisticTransactionDB::open_cf(
+                &opts,
+                &db_path,
+                super::MAP_NAMES_V0_43_TO_V0_46,
+            )
+            .unwrap();
         let cf = db.cf_handle(crate::tables::TRIAGE_POLICY).unwrap();
 
         let migrated_bytes = db.get_cf(&cf, &key).unwrap().unwrap();
-        let migrated: crate::TriagePolicy = bincode::DefaultOptions::new()
+        let migrated: TriagePolicyV0_45 = bincode::DefaultOptions::new()
             .deserialize(&migrated_bytes)
             .unwrap();
 
@@ -6589,5 +6814,82 @@ mod tests {
             Some(EventCategory::Exfiltration)
         );
         assert_eq!(migrated.confidence[1].threat_kind, "dns_tunnel");
+    }
+
+    /// Decodes the committed literal fixture of a stored triage policy as
+    /// [`TriagePolicyV0_45`] and re-encodes it.
+    ///
+    /// The expected bytes come from the committed fixture, not from the
+    /// serializer under test. `migrate_0_44_to_0_45` writes this layout, so
+    /// the fixture pins the bytes that migration produces. The layout is
+    /// frozen and the fixture is never regenerated. `creation_time` is pinned
+    /// to `2024-03-15T10:30:45.123456789Z` so the encoding stays
+    /// deterministic.
+    #[test]
+    fn triage_policy_v0_45_matches_literal_fixture() {
+        use attrievent::attribute::RawEventKind;
+        use chrono::{TimeZone, Utc};
+
+        use super::migration_structures::TriagePolicyV0_45;
+        use crate::{
+            AttrCmpKind, Confidence, EventCategory, PacketAttr, Response, ResponseKind, ValueKind,
+        };
+
+        const FIXTURE_BYTES: &[u8] =
+            include_bytes!("../tests/fixtures/triage_policy_literal_bytes.bin");
+
+        let creation_time = Utc.with_ymd_and_hms(2024, 3, 15, 10, 30, 45).unwrap()
+            + chrono::Duration::nanoseconds(123_456_789);
+        let expected = TriagePolicyV0_45 {
+            id: 42,
+            name: "fixture-policy".to_string(),
+            triage_exclusion_id: vec![1, 2],
+            packet_attr: vec![PacketAttr {
+                raw_event_kind: RawEventKind::Http,
+                attr_name: "host".to_string(),
+                value_kind: ValueKind::String,
+                cmp_kind: AttrCmpKind::Contain,
+                first_value: b"example.com".to_vec(),
+                second_value: None,
+                weight: Some(1.5),
+            }],
+            confidence: vec![
+                Confidence {
+                    threat_category: Some(EventCategory::Reconnaissance),
+                    threat_kind: "port_scan".to_string(),
+                    confidence: 0.85,
+                    weight: Some(2.0),
+                },
+                Confidence {
+                    threat_category: None,
+                    threat_kind: "generic".to_string(),
+                    confidence: 0.3,
+                    weight: None,
+                },
+            ],
+            response: vec![Response {
+                minimum_score: 0.7,
+                kind: ResponseKind::Manual,
+            }],
+            creation_time,
+            customer_id: Some(1001),
+        };
+
+        let decoded: TriagePolicyV0_45 = bincode::DefaultOptions::new()
+            .deserialize(FIXTURE_BYTES)
+            .expect("fixture must decode");
+        assert_eq!(decoded.id, expected.id);
+        assert_eq!(decoded.name, expected.name);
+        assert_eq!(decoded.triage_exclusion_id, expected.triage_exclusion_id);
+        assert!(decoded.packet_attr == expected.packet_attr);
+        assert_eq!(decoded.confidence, expected.confidence);
+        assert!(decoded.response == expected.response);
+        assert_eq!(decoded.creation_time, expected.creation_time);
+        assert_eq!(decoded.customer_id, expected.customer_id);
+
+        let encoded = bincode::DefaultOptions::new()
+            .serialize(&expected)
+            .expect("serializable");
+        assert_eq!(encoded.as_slice(), FIXTURE_BYTES);
     }
 }

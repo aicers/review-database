@@ -113,8 +113,7 @@ pub use self::tor_exit_node::TorExitNode;
 pub use self::traffic_filter::{ProtocolPorts, TrafficFilter};
 pub use self::triage_policy::{
     AttrCmpKind, Confidence, ExclusionReason, NetworkFilter, PacketAttr, Response, ResponseKind,
-    TriageExclusion, TriageExclusionReason, TriageExclusionReasonUpdate, TriagePolicy,
-    TriagePolicyInput, Update as TriagePolicyUpdate, ValueKind,
+    TriageExclusion, TriagePolicyInput, ValueKind,
 };
 pub use self::triage_response::{TriageResponse, Update as TriageResponseUpdate};
 pub use self::trusted_domain::TrustedDomain;
@@ -179,7 +178,7 @@ pub(super) const TRIAGE_RESPONSE: &str = "triage response";
 pub(super) const TRUSTED_DNS_SERVERS: &str = "trusted DNS servers";
 pub(super) const TRUSTED_USER_AGENTS: &str = "trusted user agents";
 
-pub(crate) const MAP_NAMES: [&str; 44] = [
+pub(crate) const MAP_NAMES: [&str; 42] = [
     ACCESS_TOKENS,
     ACCOUNTS,
     AGENTS,
@@ -219,8 +218,6 @@ pub(crate) const MAP_NAMES: [&str; 44] = [
     TIME_SERIES,
     TOR_EXIT_NODES,
     TRAFFIC_FILTER_RULES,
-    TRIAGE_EXCLUSION_REASON,
-    TRIAGE_POLICY,
     TRIAGE_RESPONSE,
     TRUSTED_DNS_SERVERS,
     TRUSTED_USER_AGENTS,
@@ -243,7 +240,9 @@ const MAP_NAMES_ADDED_BY_V0_47_ALPHA_4: [&str; 5] = [
 /// store the bump has not reached, where the family is simply absent. Such a
 /// store is built by taking the current list back to what it was and naming
 /// whichever of the new families the test wants present, so that the physical
-/// set stays what the code under test is being asked about.
+/// set stays what the code under test is being asked about. The two triage
+/// families 0.47.0-alpha.6 removed are left out as well, since no table opens
+/// them any more.
 #[cfg(test)]
 pub(super) fn map_names_before_v0_47_alpha_4(extra: &[&'static str]) -> Vec<&'static str> {
     MAP_NAMES
@@ -530,19 +529,6 @@ impl StateDb {
     }
 
     #[must_use]
-    pub(crate) fn triage_exclusion_reasons(&self) -> IndexedTable<'_, TriageExclusionReason> {
-        let inner = self.inner.as_ref().expect("database must be open");
-        IndexedTable::<TriageExclusionReason>::open(inner)
-            .expect("{TRIAGE_EXCLUSION_REASON} table must be present")
-    }
-
-    #[must_use]
-    pub(crate) fn triage_policies(&self) -> IndexedTable<'_, TriagePolicy> {
-        let inner = self.inner.as_ref().expect("database must be open");
-        IndexedTable::<TriagePolicy>::open(inner).expect("{TRIAGE_POLICY} table must be present")
-    }
-
-    #[must_use]
     pub(crate) fn label_dbs(&self) -> Table<'_, LabelDb> {
         let inner = self.inner.as_ref().expect("database must be open");
         Table::<LabelDb>::open(inner).expect("{LABEL_DB} table must be present")
@@ -759,8 +745,6 @@ mod iteration {
     impl Eligible for tables::TimeSeries {}
     impl Eligible for tables::TorExitNode {}
     impl Eligible for tables::TrafficFilter {}
-    impl Eligible for tables::TriageExclusionReason {}
-    impl Eligible for tables::TriagePolicy {}
     impl Eligible for tables::TriageResponse {}
     impl Eligible for tables::TrustedDomain {}
     impl Eligible for tables::TrustedUserAgent {}
