@@ -168,7 +168,7 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   CLDR's Unknown or Invalid Territory code, while `XX` means no lookup was
   performed. `find_ip_country` now returns `ZZ` on lookup failure, and event
   country filters can match either placeholder explicitly. The database format
-  is now `0.47.0-alpha.5`; migration swaps both scalar and vector placeholders
+  is now `0.47.0-alpha.6`; migration swaps both scalar and vector placeholders
   from the 0.46/earlier-alpha representation with durable retry checkpoints.
 - **BREAKING**: `Agent` and `ExternalService` now record the build installed on
   the host and which instance the row is, through five new public fields:
@@ -198,15 +198,17 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   Under the common `umask 022`, for example, a stored classifier that used to be
   `0o644` is now `0o600`, so anything reading these files as another account
   stops working.
-- **BREAKING**: Bumped the database format to `0.47.0-alpha.5`. The migration
+- **BREAKING**: Bumped the database format to `0.47.0-alpha.6`. The migration
   from `0.46.x` creates the eight column families such a store lacks — customer
   data deletion jobs, core components, operation attempts, the latest operation
   attempt pointer, instance allocations, and the port allocation table with its
   two indexes — and converts every stored agent and external-service value to
-  the layout carrying install state and the instance number. Migrations from
-  older supported formats apply their intermediate steps over the column
-  families the database physically holds, so an update interrupted part-way can
-  simply be retried.
+  the layout carrying install state and the instance number. It also deletes
+  the `triage policy` and `triage exclusion reason` column families and every
+  row in them; those rows survive only in backups taken before the migration.
+  Migrations from older supported formats apply their intermediate steps over
+  the column families the database physically holds, so an update interrupted
+  part-way can simply be retried.
 - **BREAKING**: Event timestamps now use `jiff::Timestamp` instead of chrono's
   `DateTime<Utc>`. Existing databases need no migration, because timestamps are
   still stored as `i64` epoch nanoseconds.
@@ -230,6 +232,16 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   the type from that revision, so a crate that also depends on
   `review-protocol` directly must pin the same Git source and revision for its
   `ThreatLevel` to be interchangeable with this crate's.
+
+### Removed
+
+- **BREAKING**: Removed stored triage policies and exclusion reasons:
+  `Store::triage_policy_map`, `Store::triage_exclusion_reason_map`,
+  `TriagePolicy`, `TriagePolicyUpdate`, `TriageExclusionReason`,
+  `TriageExclusionReasonUpdate`, and `TriagePolicy::into_input_with_exclusion_reason`
+  no longer exist. Callers pass `TriagePolicyInput` values and
+  `TriageExclusion` values (built from `ExclusionReason`) to
+  `Event::score_against_policies` and `Event::matches_exclusion` instead.
 
 ## [0.46.0] - 2026-07-23
 

@@ -86,7 +86,21 @@ pub(crate) struct TriagePolicyV0_44 {
     pub(crate) customer_id: Option<u32>,
 }
 
-impl From<TriagePolicyV0_44> for crate::TriagePolicy {
+/// The stored triage policy layout from version 0.45.0 onward, in which
+/// `Confidence.threat_category` is `Option<EventCategory>`.
+#[derive(Clone, Deserialize, Serialize)]
+pub(crate) struct TriagePolicyV0_45 {
+    pub(crate) id: u32,
+    pub(crate) name: String,
+    pub(crate) triage_exclusion_id: Vec<u32>,
+    pub(crate) packet_attr: Vec<PacketAttr>,
+    pub(crate) confidence: Vec<crate::Confidence>,
+    pub(crate) response: Vec<Response>,
+    pub(crate) creation_time: DateTime<Utc>,
+    pub(crate) customer_id: Option<u32>,
+}
+
+impl From<TriagePolicyV0_44> for TriagePolicyV0_45 {
     fn from(old: TriagePolicyV0_44) -> Self {
         Self {
             id: old.id,

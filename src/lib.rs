@@ -60,8 +60,7 @@ pub use self::tables::{
     RetentionConfig, RetentionConfigUpdate, SamplingInterval, SamplingKind, SamplingPeriod,
     SamplingPolicy, SamplingPolicyUpdate, Structured, StructuredClusteringAlgorithm, Table,
     Template, TimeSeries, TopColumnsOfCluster, TopMultimaps, TorExitNode, TrafficFilter,
-    TriageExclusion, TriageExclusionReason, TriageExclusionReasonUpdate, TriagePolicy,
-    TriagePolicyInput, TriagePolicyUpdate, TriageResponse, TriageResponseUpdate, TrustedDomain,
+    TriageExclusion, TriagePolicyInput, TriageResponse, TriageResponseUpdate, TrustedDomain,
     TrustedUserAgent, UniqueKey, Unstructured, UnstructuredClusteringAlgorithm, UserAgent,
     ValueKind,
 };
@@ -931,18 +930,6 @@ impl Store {
     #[allow(clippy::missing_panics_doc)]
     pub fn tor_exit_node_map(&self) -> Table<'_, TorExitNode> {
         self.states.tor_exit_nodes()
-    }
-
-    #[must_use]
-    #[allow(clippy::missing_panics_doc)]
-    pub fn triage_exclusion_reason_map(&self) -> IndexedTable<'_, TriageExclusionReason> {
-        self.states.triage_exclusion_reasons()
-    }
-
-    #[must_use]
-    #[allow(clippy::missing_panics_doc)]
-    pub fn triage_policy_map(&self) -> IndexedTable<'_, TriagePolicy> {
-        self.states.triage_policies()
     }
 
     #[must_use]
