@@ -2243,12 +2243,9 @@ mod tests {
         assert_eq!(test_db.attempt_index(), Vec::new());
         assert_eq!(test_db.instance_index(), Vec::new());
         assert_eq!(attempts.get(&key("attempt-1")).unwrap(), None);
-        assert!(
-            test_db
-                .instances()
-                .allocated(HOST, COMPONENT)
-                .unwrap()
-                .is_empty()
+        assert_eq!(
+            test_db.instances().allocated(HOST, COMPONENT).unwrap(),
+            Vec::new()
         );
 
         // The request the attempt records, asking for the addresses it takes.

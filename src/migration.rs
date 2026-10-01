@@ -2919,7 +2919,7 @@ mod tests {
                 .deserialize(&migrated)
                 .unwrap();
             assert_eq!(value.lifecycle, 0);
-            assert!(value.bound_addrs.is_empty());
+            assert_eq!(value.bound_addrs, Vec::<(String, String)>::new());
             assert_eq!(value.instance, None);
         }
         for (key, _) in &external_services {
@@ -2934,7 +2934,7 @@ mod tests {
                 .deserialize(&migrated)
                 .unwrap();
             assert_eq!(value.lifecycle, 0);
-            assert!(value.bound_addrs.is_empty());
+            assert_eq!(value.bound_addrs, Vec::<(String, String)>::new());
             assert_eq!(value.instance, None);
         }
 
@@ -3034,7 +3034,7 @@ mod tests {
                 .deserialize(&migrated)
                 .unwrap();
             assert_eq!(value.lifecycle, 0);
-            assert!(value.bound_addrs.is_empty());
+            assert_eq!(value.bound_addrs, Vec::<(String, String)>::new());
             assert_eq!(value.instance, None);
         }
         for (key, _) in &external_services {
@@ -3049,7 +3049,7 @@ mod tests {
                 .deserialize(&migrated)
                 .unwrap();
             assert_eq!(value.lifecycle, 0);
-            assert!(value.bound_addrs.is_empty());
+            assert_eq!(value.bound_addrs, Vec::<(String, String)>::new());
             assert_eq!(value.instance, None);
         }
 
@@ -3456,7 +3456,7 @@ mod tests {
         assert_eq!(sensor.installed_version, None);
         assert_eq!(sensor.installed_commit, None);
         assert_eq!(sensor.lifecycle, Lifecycle::NotInstalled);
-        assert!(sensor.bound_addrs.is_empty());
+        assert_eq!(sensor.bound_addrs, Vec::<(String, String)>::new());
         assert_eq!(sensor.instance, None);
 
         let unsupervised = agent_map.get(2, "unsupervised@host2").unwrap().unwrap();
@@ -3485,7 +3485,7 @@ mod tests {
         assert_eq!(datastore.installed_version, None);
         assert_eq!(datastore.installed_commit, None);
         assert_eq!(datastore.lifecycle, Lifecycle::NotInstalled);
-        assert!(datastore.bound_addrs.is_empty());
+        assert_eq!(datastore.bound_addrs, Vec::<(String, String)>::new());
         assert_eq!(datastore.instance, None);
 
         let ti = external_service_map.get(4, "ti@host4").unwrap().unwrap();
@@ -3951,7 +3951,7 @@ mod tests {
         assert_eq!(agent.installed_version, None);
         assert_eq!(agent.installed_commit, None);
         assert_eq!(agent.lifecycle, Lifecycle::NotInstalled.to_stored_index());
-        assert!(agent.bound_addrs.is_empty());
+        assert_eq!(agent.bound_addrs, Vec::<(String, String)>::new());
 
         let external_service = ExternalServiceValueV0_47::from(ExternalServiceValueV0_46 {
             kind: ExternalServiceKind::DataStore,
@@ -3971,7 +3971,7 @@ mod tests {
             external_service.lifecycle,
             Lifecycle::NotInstalled.to_stored_index()
         );
-        assert!(external_service.bound_addrs.is_empty());
+        assert_eq!(external_service.bound_addrs, Vec::<(String, String)>::new());
     }
 
     /// A value matching neither pinned layout: the leading byte is a variant
@@ -5802,7 +5802,7 @@ mod tests {
         assert_eq!(new_event.orig_port, 12345);
         assert_eq!(new_event.resp_port, 135);
         assert!(new_event.context.is_empty());
-        assert!(new_event.request.is_empty());
+        assert_eq!(new_event.request, Vec::<String>::new());
         assert!((new_event.confidence - 0.95).abs() < f32::EPSILON);
     }
 
@@ -5841,7 +5841,7 @@ mod tests {
         let new_event: BlocklistDceRpcFieldsStoredV0_44 = bincode::deserialize(&new_val).unwrap();
 
         assert!(new_event.context.is_empty());
-        assert!(new_event.request.is_empty());
+        assert_eq!(new_event.request, Vec::<String>::new());
     }
 
     #[test]
@@ -5929,7 +5929,7 @@ mod tests {
         let new_event: BlocklistDhcpFieldsStoredV0_44 = bincode::deserialize(&value).unwrap();
 
         // Verify all fields were correctly migrated
-        assert!(new_event.options.is_empty());
+        assert_eq!(new_event.options, Vec::<(u8, Vec<u8>)>::new());
         assert_eq!(new_event.sensor, "test-sensor");
         assert_eq!(
             new_event.orig_addr,
@@ -5969,10 +5969,10 @@ mod tests {
         assert_eq!(new_event.lease_time, 3600);
         assert_eq!(new_event.server_id, "10.0.0.1".parse::<IpAddr>().unwrap());
         assert_eq!(new_event.param_req_list, vec![1, 3, 6]);
-        assert!(new_event.message.is_empty());
+        assert_eq!(new_event.message, "");
         assert_eq!(new_event.renewal_time, 1800);
         assert_eq!(new_event.rebinding_time, 3150);
-        assert!(new_event.class_id.is_empty());
+        assert_eq!(new_event.class_id, Vec::<u8>::new());
         assert_eq!(new_event.client_id_type, 1);
         assert_eq!(new_event.client_id, vec![0xaa, 0xbb, 0xcc]);
         assert!((new_event.confidence - 0.8).abs() < f32::EPSILON);

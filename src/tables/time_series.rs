@@ -647,13 +647,13 @@ mod tests {
         let result = table
             .time_series_of_model(model_id, Some(batch_ts), None, None)
             .unwrap();
-        assert!(!result.is_empty());
+        assert_ne!(result, Vec::new());
 
         // Test with time range
         let result = table
             .time_series_of_model(model_id, None, Some(1_640_995_200), Some(1_640_995_260))
             .unwrap();
-        assert!(!result.is_empty());
+        assert_ne!(result, Vec::new());
     }
 
     #[test]
@@ -691,7 +691,7 @@ mod tests {
         };
 
         let key = ts.unique_key();
-        assert!(!key.is_empty());
+        assert_ne!(key, Vec::<u8>::new());
 
         // Test that the key can be reconstructed
         let reconstructed = TimeSeries::from_key_value(&key, &ts.value()).unwrap();
