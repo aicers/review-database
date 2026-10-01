@@ -141,8 +141,14 @@ const VERSION_TMP_FILE_NAME: &str = "VERSION.tmp";
 
 /// Migrates the data directory to the up-to-date format if necessary.
 ///
-/// Migration is supported between released versions only. The prelease versions (alpha, beta,
-/// etc.) should be assumed to be incompatible with each other.
+/// Migration is supported from released formats and from the prerelease markers
+/// the migration table admits explicitly: the `0.47.0` alphas, which share the
+/// `0.46 → 0.47` migration, and `0.46.0-alpha.1`, whose on-disk layout is the
+/// `0.46.0` layout. Any other prerelease marker, including `0.43.0-alpha.1` and
+/// `0.44.0-alpha.2`, is refused with "migration from {version} is not
+/// supported", because its layout is not the layout of any release the table
+/// migrates from.
+///
 /// Pass a shared `IP2Location` database handle when available so endpoint
 /// country-code fields can be resolved during the stored event schema
 /// migration. If no locator is provided, endpoint country codes remain at the
@@ -228,8 +234,11 @@ pub fn migrate_data_dir<P: AsRef<Path>>(
             Version::parse("0.46.0")?,
             |data_dir, _backup_dir, locator| migrate_0_45_to_0_46(data_dir, locator),
         ),
+        // The `-0` lower bound admits `0.46.0-alpha.1`, whose on-disk layout
+        // is the `0.46.0` layout. The earlier entries deliberately have no
+        // prerelease lower bound; see the doc comment of this function.
         (
-            VersionReq::parse(">=0.46.0,<0.47.0-alpha.5")?,
+            VersionReq::parse(">=0.46.0-0,<0.47.0-alpha.5")?,
             Version::parse("0.47.0-alpha.5")?,
             |data_dir, _backup_dir, _locator| migrate_0_46_to_0_47(data_dir),
         ),
@@ -2581,6 +2590,40 @@ mod tests {
         assert!(err.contains("migration from 0.30.0 is not supported"));
     }
 
+    /// Test that the `0.43.0-alpha.1` and `0.44.0-alpha.2` markers are refused
+    /// and their `VERSION` files left unchanged.
+    ///
+    /// These markers are refused by the 2026-10-01 decision recorded in the
+    /// `migrate_data_dir` doc comment: neither layout is the layout of the
+    /// release it precedes, so a migration body would run over a shape it does
+    /// not handle. They must not be made reachable by widening a range.
+    #[test]
+    fn migration_refuses_unsupported_prerelease_markers() {
+        for marker in ["0.43.0-alpha.1", "0.44.0-alpha.2"] {
+            let data_dir = tempfile::tempdir().unwrap();
+            let backup_dir = tempfile::tempdir().unwrap();
+            write_version(data_dir.path(), marker);
+            write_version(backup_dir.path(), marker);
+
+            let result = migrate_data_dir(data_dir.path(), backup_dir.path(), None);
+
+            let err = result.unwrap_err().to_string();
+            assert!(
+                err.contains(&format!("migration from {marker} is not supported")),
+                "unexpected error for {marker}: {err}"
+            );
+            let expected = Version::parse(marker).unwrap();
+            assert_eq!(
+                read_version_file(&data_dir.path().join(VERSION_FILE_NAME)).unwrap(),
+                expected
+            );
+            assert_eq!(
+                read_version_file(&backup_dir.path().join(VERSION_FILE_NAME)).unwrap(),
+                expected
+            );
+        }
+    }
+
     /// Test `read_version_file` and `create_version_file` helper functions.
     #[test]
     fn version_file_helpers() {
@@ -2989,19 +3032,36 @@ mod tests {
             );
         }
 
-        let migrated = raw_value(
-            &db_path,
-            crate::tables::MAP_NAMES,
-            crate::tables::AGENTS,
-            &record_key(1, "sensor@host1"),
-        )
-        .unwrap();
-        let value: AgentValueV0_47Alpha5 = bincode::DefaultOptions::new()
-            .deserialize(&migrated)
+        for (key, _) in &agents {
+            let migrated = raw_value(
+                &db_path,
+                crate::tables::MAP_NAMES,
+                crate::tables::AGENTS,
+                key,
+            )
             .unwrap();
-        assert_eq!(value.lifecycle, 0);
-        assert!(value.bound_addrs.is_empty());
-        assert_eq!(value.instance, None);
+            let value: AgentValueV0_47Alpha5 = bincode::DefaultOptions::new()
+                .deserialize(&migrated)
+                .unwrap();
+            assert_eq!(value.lifecycle, 0);
+            assert!(value.bound_addrs.is_empty());
+            assert_eq!(value.instance, None);
+        }
+        for (key, _) in &external_services {
+            let migrated = raw_value(
+                &db_path,
+                crate::tables::MAP_NAMES,
+                crate::tables::EXTERNAL_SERVICES,
+                key,
+            )
+            .unwrap();
+            let value: ExternalServiceValueV0_47Alpha5 = bincode::DefaultOptions::new()
+                .deserialize(&migrated)
+                .unwrap();
+            assert_eq!(value.lifecycle, 0);
+            assert!(value.bound_addrs.is_empty());
+            assert_eq!(value.instance, None);
+        }
 
         assert_eq!(
             read_version_file(&data_dir.path().join("VERSION")).unwrap(),
@@ -3031,6 +3091,11 @@ mod tests {
     #[test]
     fn migration_from_v0_46_schema_creates_new_column_families() {
         assert_migration_creates_new_column_families("0.46.0");
+    }
+
+    #[test]
+    fn migration_from_v0_46_alpha_1_schema_creates_new_column_families() {
+        assert_migration_creates_new_column_families("0.46.0-alpha.1");
     }
 
     /// Test the rollback path end to end: a populated 0.46-format store whose
@@ -3406,6 +3471,7 @@ mod tests {
     fn migration_from_v0_46_and_earlier_alphas_swaps_placeholders() {
         let _permit = acquire_db_permit();
         for version in [
+            "0.46.0-alpha.1",
             "0.46.0",
             "0.47.0-alpha.2",
             "0.47.0-alpha.3",
@@ -3730,7 +3796,9 @@ mod tests {
     /// The single `0.46 → 0.47` entry is the only one whose requirement can
     /// match a `0.47.0` prerelease, so landing on the current version at all
     /// means it matched. A requirement written to exclude prereleases would
-    /// leave an `alpha.2` or `alpha.3` store with no step and fail here.
+    /// leave an `alpha.2` or `alpha.3` store with no step and fail here. The
+    /// same entry is also the one that admits `0.46.0-alpha.1`, through the
+    /// `-0` on its lower bound.
     #[test]
     fn earlier_alphas_reach_the_new_target_in_one_step() {
         let permit = acquire_db_permit();
@@ -3738,6 +3806,7 @@ mod tests {
         assert_eq!(current_version.to_string(), "0.47.0-alpha.5");
 
         for (version, families) in [
+            ("0.46.0-alpha.1", super::MAP_NAMES_V0_43_TO_V0_46.as_slice()),
             ("0.46.0", super::MAP_NAMES_V0_43_TO_V0_46.as_slice()),
             ("0.46.3", super::MAP_NAMES_V0_43_TO_V0_46.as_slice()),
             ("0.47.0-alpha.1", super::MAP_NAMES_V0_47_ALPHA_1.as_slice()),
