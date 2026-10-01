@@ -1,8 +1,5 @@
 #![allow(clippy::module_name_repetitions)]
-use std::{
-    fmt,
-    net::{IpAddr, Ipv4Addr},
-};
+use std::{fmt, net::IpAddr};
 
 use attrievent::attribute::{RawEventAttrKind, WindowAttr};
 use jiff::Timestamp;
@@ -215,7 +212,7 @@ impl fmt::Display for WindowsThreat {
 // TODO: Make new Match trait for Windows threat events
 impl Match for WindowsThreat {
     fn orig_addrs(&self) -> &[IpAddr] {
-        std::slice::from_ref(&IpAddr::V4(Ipv4Addr::UNSPECIFIED))
+        &[]
     }
 
     fn orig_port(&self) -> u16 {
@@ -227,7 +224,7 @@ impl Match for WindowsThreat {
     }
 
     fn resp_addrs(&self) -> &[IpAddr] {
-        std::slice::from_ref(&IpAddr::V4(Ipv4Addr::UNSPECIFIED))
+        &[]
     }
 
     fn resp_port(&self) -> u16 {
