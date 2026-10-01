@@ -285,10 +285,7 @@ pub enum InstanceAllocationError {
 impl<'d> Table<'d, InstanceAllocation> {
     /// Opens the `instance_allocation` table in the database.
     ///
-    /// Returns `None` if the table does not exist, which is the state of a
-    /// store the format bump registering the column family has not reached. A
-    /// store without it holds no allocation, which is why the release path can
-    /// treat the `None` as nothing to release.
+    /// Returns `None` if the table does not exist.
     pub(super) fn open(db: &'d OptimisticTransactionDB) -> Option<Self> {
         Map::open(db, super::INSTANCE_ALLOCATIONS).map(Table::new)
     }
@@ -600,8 +597,7 @@ mod tests {
     const OTHER_HOST: &str = "host-b.example";
     const OTHER_COMPONENT: &str = "sensor";
 
-    /// A database carrying this table's column family beside the families a
-    /// store held before the format bump that registers it.
+    /// A database carrying every column family, this table's among them.
     struct TestDb {
         db: OptimisticTransactionDB,
         _dir: tempfile::TempDir,
@@ -615,18 +611,10 @@ mod tests {
             let mut opts = rocksdb::Options::default();
             opts.create_if_missing(true);
             opts.create_missing_column_families(true);
-            // The pre-bump list plus this table's family and the
-            // latest-pointer family, so that the port allocation families the
-            // same bump registers stay absent: these tests are about a store
-            // that holds no port allocation.
-            let column_families = super::super::map_names_before_v0_47_alpha_4(&[
-                super::super::INSTANCE_ALLOCATIONS,
-                super::super::OPERATION_ATTEMPT_LATEST,
-            ]);
             let db = OptimisticTransactionDB::open_cf(
                 &opts,
                 dir.path().join("states.db"),
-                column_families,
+                super::super::MAP_NAMES,
             )
             .unwrap();
             Self {

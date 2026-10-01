@@ -44,11 +44,6 @@
 //! reader consulting finalized rows alone would report a superseded attempt
 //! as current while newer work is still owed.
 //!
-//! Its column family is registered by the migration that bumps the database
-//! format, not by this table, so on a store predating that bump every write
-//! that would stamp `finalized_at` reports the family's absence instead of
-//! silently dropping a pointer nothing could then read.
-//!
 //! Every index entry is written and removed in the same transaction as its
 //! row, so one can never outlive the other. [`Table::upsert`],
 //! [`Table::allocate_instance`], [`Table::allocate_instance_and_addrs`],
@@ -1570,19 +1565,21 @@ impl<'d> Table<'d, OperationAttempt> {
     /// the loser of a commit race re-runs and reads the winner's row rather
     /// than reporting the bare conflict. A `bindings` naming one listener
     /// twice, or a listener with no key, is refused as a database error, as
-    /// is a store whose port allocation column families are not registered
-    /// while `bindings` is not empty, and so is a `request` that is not the
-    /// one the attempt records or that asks for addresses other than
-    /// `bindings`.
+    /// is a store missing the instance allocation, port allocation or core
+    /// component column families, and so is a `request` that is not the one
+    /// the attempt records or that asks for addresses other than `bindings`.
     pub fn allocate_instance_and_addrs(
         &self,
         attempt: &OperationAttempt,
         request: &InstallIntent,
         bindings: &[ListenerBinding],
     ) -> Result<OperationAttempt, AddressAllocationError> {
-        let allocations = Table::<InstanceAllocation>::open(self.map.db);
-        let ports = Table::<PortAllocation>::open(self.map.db);
-        let core_components = Table::<CoreComponent>::open(self.map.db);
+        let allocations = Table::<InstanceAllocation>::open(self.map.db)
+            .context("the instance allocation column family is not registered")?;
+        let ports = Table::<PortAllocation>::open(self.map.db)
+            .context("the port allocation column families are not registered")?;
+        let core_components = Table::<CoreComponent>::open(self.map.db)
+            .context("the core component column family is not registered")?;
         loop {
             let txn = self.transaction();
             // The key check every pass begins with, and the first thing the
@@ -1634,21 +1631,13 @@ impl<'d> Table<'d, OperationAttempt> {
             // only the request's digest, so this is the one place that can
             // hold the attempt, the request and the addresses together.
             check_request(attempt, request, bindings)?;
-            let Some(allocations) = allocations.as_ref() else {
-                return Err(anyhow!(
-                    "the database has no instance allocation table to take a number from"
-                )
-                .into());
-            };
             // A component the registry holds is host-fixed infrastructure and
             // has no instance dimension, so there is no number to take for it
             // and its second install is refused by that registry's own single
             // row per pair rather than given one. Read inside the transaction,
             // and read for update, so a registration committing while this one
             // is open fails this commit instead of going unseen.
-            if let Some(core_components) = core_components.as_ref()
-                && core_components.is_registered(&attempt.target, &attempt.host, &txn)?
-            {
+            if core_components.is_registered(&attempt.target, &attempt.host, &txn)? {
                 return Err(anyhow!(
                     "component {} is registered as a core component on host {}, and a core component has no instance dimension",
                     attempt.target,
@@ -1663,17 +1652,8 @@ impl<'d> Table<'d, OperationAttempt> {
                 &txn,
             )?;
             // The addresses follow the number their owner is keyed on, in the
-            // transaction that took it. An install naming none does not reach
-            // the port table at all, which is what lets one run against a
-            // store whose port column families the format bump that
-            // registers them has not reached.
+            // transaction that took it.
             if !bindings.is_empty() {
-                let Some(ports) = ports.as_ref() else {
-                    return Err(anyhow!(
-                        "the database has no port allocation table to take an address from"
-                    )
-                    .into());
-                };
                 ports.allocate_with_transaction(
                     &attempt.host,
                     &attempt.target,
@@ -1773,10 +1753,6 @@ impl<'d> Table<'d, OperationAttempt> {
     /// hand out a number for a pair that was never scanned. So the write is
     /// refused, and the caller either finishes the operation on the triple it
     /// took a number for, or drives the other triple under a key of its own.
-    ///
-    /// A store whose `instance_allocation` column family does not exist yet
-    /// can hold no allocation, so it has nothing to strand and nothing is
-    /// refused there.
     fn refuse_moving_off_an_allocation(
         &self,
         stored: &OperationAttempt,
@@ -1791,9 +1767,8 @@ impl<'d> Table<'d, OperationAttempt> {
         {
             return Ok(());
         }
-        let Some(allocations) = Table::<InstanceAllocation>::open(self.map.db) else {
-            return Ok(());
-        };
+        let allocations = Table::<InstanceAllocation>::open(self.map.db)
+            .context("the instance allocation column family is not registered")?;
         if allocations.holds_number_for(stored, txn)? {
             bail!(
                 "operation attempt {} holds instance number {:?} for host {}, target {}, and cannot be re-driven onto host {}, target {}, instance {:?}",
@@ -1826,27 +1801,21 @@ impl<'d> Table<'d, OperationAttempt> {
     /// leak nothing collects, and the reverse is an install that starts and
     /// cannot bind.
     ///
-    /// A store whose `instance_allocation` or port allocation column families
-    /// do not exist yet can hold no allocation of that kind, so there is
-    /// nothing to release and that half of the call is a no-op. That is the
-    /// state of a database at format `0.46.0`, which the column families
-    /// reach only with the format bump that registers them.
-    ///
     /// # Errors
     ///
-    /// Returns an error if the database operation fails.
+    /// Returns an error if the instance or port allocation column families are
+    /// not registered, or if the database operation fails.
     fn release_resources(
         &self,
         attempt: &OperationAttempt,
         txn: &Transaction<'_, OptimisticTransactionDB>,
     ) -> Result<()> {
-        if let Some(ports) = Table::<PortAllocation>::open(self.map.db) {
-            ports.release_for_attempt(attempt, txn)?;
-        }
-        let Some(allocations) = Table::<InstanceAllocation>::open(self.map.db) else {
-            return Ok(());
-        };
-        allocations.release_for_attempt(attempt, txn)
+        Table::<PortAllocation>::open(self.map.db)
+            .context("the port allocation column families are not registered")?
+            .release_for_attempt(attempt, txn)?;
+        Table::<InstanceAllocation>::open(self.map.db)
+            .context("the instance allocation column family is not registered")?
+            .release_for_attempt(attempt, txn)
     }
 
     /// Deletes the attempt with the given idempotency key, along with its
@@ -2267,10 +2236,7 @@ impl<'d> Table<'d, OperationAttempt> {
         // the index keys above and nothing there sweeps it up. A row that
         // moves to another triple leaves the pointer it stamped naming it,
         // and `latest_attempt` for the triple it left would answer with a row
-        // whose own fields name a different one. Where the family is not
-        // registered there is no pointer to strand, so its absence is not an
-        // error here — unlike a finalization, which would lose the record of
-        // which attempt is current.
+        // whose own fields name a different one.
         let pointer_key = latest_pointer_key(&new.host, &new.target, new.instance)?;
         let vacated = match stored {
             Some(stored) => {
@@ -2279,9 +2245,8 @@ impl<'d> Table<'d, OperationAttempt> {
             }
             None => None,
         };
-        if let Some(vacated) = &vacated
-            && let Some(latest) = Map::open(self.map.db, super::OPERATION_ATTEMPT_LATEST)
-        {
+        if let Some(vacated) = &vacated {
+            let latest = self.latest_pointer()?;
             let holder = txn
                 .get_for_update_cf(latest.cf, vacated, EXCLUSIVE)
                 .context("cannot read the latest pointer")?;
@@ -2335,12 +2300,6 @@ impl<'d> Table<'d, OperationAttempt> {
     }
 
     /// Returns the column family holding the latest pointers.
-    ///
-    /// It is registered by the migration that bumps the database format, not
-    /// by this table, so a store predating that bump has none. Reporting its
-    /// absence is the whole point: a finalization that quietly skipped the
-    /// pointer would leave the triple with no record of which attempt is
-    /// current, which is exactly what the pointer exists to hold.
     fn latest_pointer(&self) -> Result<Map<'_>> {
         Map::open(self.map.db, super::OPERATION_ATTEMPT_LATEST)
             .context("the latest operation attempt column family is not registered")
@@ -2510,15 +2469,12 @@ mod tests {
             let mut opts = rocksdb::Options::default();
             opts.create_if_missing(true);
             opts.create_missing_column_families(true);
-            // The families a store held before the format bump, plus the
-            // latest-pointer family alone: the instance and port allocation
-            // families that bump also registers stay absent, because the
-            // tests below are about a store that holds neither.
-            let names = super::super::map_names_before_v0_47_alpha_4(&[
-                super::super::OPERATION_ATTEMPT_LATEST,
-            ]);
-            let db = OptimisticTransactionDB::open_cf(&opts, dir.path().join("states.db"), names)
-                .unwrap();
+            let db = OptimisticTransactionDB::open_cf(
+                &opts,
+                dir.path().join("states.db"),
+                super::super::MAP_NAMES,
+            )
+            .unwrap();
             Self {
                 db,
                 _dir: dir,
@@ -3252,70 +3208,6 @@ mod tests {
                 .unwrap(),
             Some(there)
         );
-    }
-
-    /// Every writer releases the instance number the row it stores gives
-    /// back, and reaches for the `instance_allocation` column family to do it.
-    /// A store that predates the format bump registering that column family
-    /// has none, and can hold no allocation either, so the release is a no-op
-    /// rather than a failure: the writes go through exactly as they did. This
-    /// `TestDb` is such a store — it opens the column families `MAP_NAMES`
-    /// held before that bump — so every other test here covers the same
-    /// ground; this one says so.
-    #[test]
-    fn a_store_without_the_allocation_table_writes_as_it_always_did() {
-        let test_db = TestDb::new();
-        let table = test_db.table();
-
-        // A failed install of a numbered instance: the one write that would
-        // release a number if there were a column family holding one.
-        let mut failed = module_attempt("attempt-1");
-        failed.phase = Phase::Completed;
-        failed.outcome = Some(Outcome::Failed);
-        failed.finalized_at = Some(timestamp(1_700_000_500));
-        table.upsert(&failed).unwrap();
-        assert_eq!(table.get("attempt-1").unwrap().unwrap(), failed);
-
-        let live = live_attempt("attempt-2", "host-b.example", "sensor", Some(1));
-        table.upsert(&live).unwrap();
-        assert_eq!(table.sweep_expired(timestamp(1_700_086_400)).unwrap(), 1);
-        assert_eq!(
-            table.get("attempt-2").unwrap().unwrap().outcome,
-            Some(Outcome::Failed)
-        );
-    }
-
-    /// Taking a number is the other direction, and there the absent column
-    /// family is a refusal rather than a no-op: there is nowhere to record
-    /// that the number is taken, so handing one out would number an instance
-    /// against nothing. Nothing is written at all.
-    #[test]
-    fn a_store_without_the_allocation_table_cannot_hand_out_a_number() {
-        let test_db = TestDb::new();
-        let table = test_db.table();
-
-        // An install, since only an install takes a number at all: an
-        // attempt refused for its action would never reach the column family
-        // this test is about.
-        let request = InstallIntent {
-            host: "host-a.example".to_string(),
-            target: "sensor".to_string(),
-            selector: BuildSelector::Version("1.2.3".to_string()),
-            on_failure: OnFailure::Rollback,
-            bind_addrs: None,
-        };
-        let mut attempt = module_attempt("attempt-1");
-        attempt.action = Action::Install;
-        attempt.instance = None;
-        attempt.install_intent = Some(request.digest().unwrap());
-        let error = table
-            .allocate_instance(&attempt, &request)
-            .expect_err("there is no column family to take a number from");
-        assert!(
-            matches!(error, InstanceAllocationError::Database(_)),
-            "expected a database refusal, got {error:?}"
-        );
-        assert_eq!(table.get("attempt-1").unwrap(), None);
     }
 
     #[test]

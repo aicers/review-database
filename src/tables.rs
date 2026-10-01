@@ -223,35 +223,6 @@ pub(crate) const MAP_NAMES: [&str; 42] = [
     TRUSTED_USER_AGENTS,
 ];
 
-/// The column families the 0.47.0-alpha.4 format bump added to [`MAP_NAMES`].
-#[cfg(test)]
-const MAP_NAMES_ADDED_BY_V0_47_ALPHA_4: [&str; 5] = [
-    INSTANCE_ALLOCATIONS,
-    OPERATION_ATTEMPT_LATEST,
-    PORT_ALLOCATIONS,
-    PORT_ALLOCATIONS_BY_ATTEMPT,
-    PORT_ALLOCATIONS_BY_INSTANCE,
-];
-
-/// Returns [`MAP_NAMES`] as a store predating the 0.47.0-alpha.4 format bump
-/// held it, followed by `extra`.
-///
-/// A table whose column family that bump registers still has to answer for a
-/// store the bump has not reached, where the family is simply absent. Such a
-/// store is built by taking the current list back to what it was and naming
-/// whichever of the new families the test wants present, so that the physical
-/// set stays what the code under test is being asked about. The two triage
-/// families 0.47.0-alpha.6 removed are left out as well, since no table opens
-/// them any more.
-#[cfg(test)]
-pub(super) fn map_names_before_v0_47_alpha_4(extra: &[&'static str]) -> Vec<&'static str> {
-    MAP_NAMES
-        .into_iter()
-        .filter(|name| !MAP_NAMES_ADDED_BY_V0_47_ALPHA_4.contains(name))
-        .chain(extra.iter().copied())
-        .collect()
-}
-
 // Keys for the meta map.
 pub(super) const EVENT_TAGS: &[u8] = b"event tags";
 pub(super) const NETWORK_TAGS: &[u8] = b"network tags";
