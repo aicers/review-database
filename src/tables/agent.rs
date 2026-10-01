@@ -438,7 +438,7 @@ mod test {
         assert_eq!(agent.installed_version, None);
         assert_eq!(agent.installed_commit, None);
         assert_eq!(agent.lifecycle, Lifecycle::NotInstalled);
-        assert!(agent.bound_addrs.is_empty());
+        assert_eq!(agent.bound_addrs, Vec::<(String, String)>::new());
     }
 
     #[test]

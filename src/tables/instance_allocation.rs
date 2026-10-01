@@ -1098,7 +1098,7 @@ mod tests {
             conflict.as_ref().starts_with("Resource busy:"),
             "expected a commit conflict, got {conflict}"
         );
-        assert!(held(&table).is_empty());
+        assert_eq!(held(&table), Vec::<u32>::new());
 
         // The re-run, which is what the caller does with the conflict: the
         // committed row is returned untouched and no number is taken for it.
@@ -1106,7 +1106,7 @@ mod tests {
             .allocate_instance(&install("attempt-1", None), &intent())
             .unwrap();
         assert_eq!(stored, failed);
-        assert!(held(&table).is_empty());
+        assert_eq!(held(&table), Vec::<u32>::new());
 
         // Why the read has to be the transaction's first, shown at the level
         // where the other ordering can be expressed: a transaction opened
@@ -1187,7 +1187,7 @@ mod tests {
                 .unwrap()
         };
         assert_eq!(allocate_in_txn("attempt-1"), 1);
-        assert!(held(&table).is_empty());
+        assert_eq!(held(&table), Vec::<u32>::new());
         assert_eq!(allocate_in_txn("attempt-1"), 1);
         assert_eq!(allocate_in_txn("attempt-2"), 2);
         txn.commit().unwrap();

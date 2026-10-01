@@ -403,7 +403,7 @@ mod test {
         assert_eq!(external_service.installed_version, None);
         assert_eq!(external_service.installed_commit, None);
         assert_eq!(external_service.lifecycle, Lifecycle::NotInstalled);
-        assert!(external_service.bound_addrs.is_empty());
+        assert_eq!(external_service.bound_addrs, Vec::<(String, String)>::new());
     }
 
     /// This column family holds records and nothing else, so the generic

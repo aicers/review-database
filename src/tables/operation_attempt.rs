@@ -2744,8 +2744,8 @@ mod tests {
         assert_eq!(table.get("op-1").unwrap(), None);
         // The row's index entries and the pointer that named it go with it,
         // leaving nothing behind.
-        assert!(test_db.raw_keys().is_empty());
-        assert!(test_db.pointed_at_keys().is_empty());
+        assert_eq!(test_db.raw_keys(), Vec::<Vec<u8>>::new());
+        assert_eq!(test_db.pointed_at_keys(), Vec::<String>::new());
     }
 
     #[test]
@@ -2775,10 +2775,10 @@ mod tests {
         let stored = table.get("op-onboard").unwrap().unwrap();
         assert_eq!(stored, onboard);
         assert_eq!(stored.action, Action::Onboard);
-        assert!(stored.target.is_empty());
-        assert!(stored.package_digest.is_empty());
-        assert!(stored.resolved_version.is_empty());
-        assert!(stored.resolved_commit.is_empty());
+        assert_eq!(stored.target, "");
+        assert_eq!(stored.package_digest, "");
+        assert_eq!(stored.resolved_version, "");
+        assert_eq!(stored.resolved_commit, "");
         assert_eq!(stored.instance, None);
         assert_eq!(stored.expires_at, timestamp(1_700_003_800));
     }
@@ -2946,7 +2946,7 @@ mod tests {
         // Nothing of it is left, the single-flight entry included: an orphaned
         // one is checked as raw presence, so it would hold the triple's slot
         // against every later attempt while `live_attempt` reported it free.
-        assert!(test_db.raw_keys().is_empty());
+        assert_eq!(test_db.raw_keys(), Vec::<Vec<u8>>::new());
         assert_eq!(table.live_attempt(HOST, TARGET, Some(1)).unwrap(), None);
         table
             .upsert(&live_attempt("op-2", HOST, TARGET, Some(1)))
@@ -2959,7 +2959,7 @@ mod tests {
         assert_eq!(test_db.pointed_at_keys(), ["op-3"]);
         table.map.put(b"op-3", b"not a stored value").unwrap();
         table.delete("op-3").unwrap();
-        assert!(test_db.pointed_at_keys().is_empty());
+        assert_eq!(test_db.pointed_at_keys(), Vec::<String>::new());
         assert_eq!(table.latest_attempt(HOST, TARGET, Some(2)).unwrap(), None);
     }
 
@@ -3266,11 +3266,9 @@ mod tests {
         attempt.expires_at = timestamp(1_700_000_500);
         table.upsert(&attempt).unwrap();
 
-        assert!(
-            table
-                .expired_attempts(timestamp(1_700_000_499))
-                .unwrap()
-                .is_empty()
+        assert_eq!(
+            table.expired_attempts(timestamp(1_700_000_499)).unwrap(),
+            Vec::new()
         );
         assert_eq!(table.sweep_expired(timestamp(1_700_000_499)).unwrap(), 0);
         assert_eq!(table.get("op-1").unwrap(), Some(attempt));
@@ -3873,7 +3871,7 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["op-3", "op-2"]
         );
-        assert!(table.expired_attempts(timestamp(-61)).unwrap().is_empty());
+        assert_eq!(table.expired_attempts(timestamp(-61)).unwrap(), Vec::new());
     }
 
     #[test]
@@ -3991,7 +3989,7 @@ mod tests {
             0,
             "a terminal attempt that still owes a cleanup is out of the sweep's reach"
         );
-        assert!(test_db.pointed_at_keys().is_empty());
+        assert_eq!(test_db.pointed_at_keys(), Vec::<String>::new());
 
         // Discharging the last owed item stamps it and moves the pointer, in
         // the transaction that discharges it.

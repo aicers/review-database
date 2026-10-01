@@ -1148,18 +1148,18 @@ mod tests {
         let (_, rounds) = table
             .load_rounds_by_cluster(model_id, cluster_id, &Some(batches[3]), &None, true, 2)
             .unwrap();
-        assert!(rounds.is_empty());
+        assert_eq!(rounds, Vec::<NaiveDateTime>::new());
 
         let (retrieved_model_id, rounds) = table
             .load_rounds_by_cluster(model_id, cluster_id, &None, &None, true, 0)
             .unwrap();
         assert_eq!(u32::try_from(retrieved_model_id).unwrap(), model_id);
-        assert!(rounds.is_empty());
+        assert_eq!(rounds, Vec::<NaiveDateTime>::new());
 
         let (_, rounds) = table
             .load_rounds_by_cluster(model_id, cluster_id, &None, &Some(batches[0]), false, 2)
             .unwrap();
-        assert!(rounds.is_empty());
+        assert_eq!(rounds, Vec::<NaiveDateTime>::new());
     }
 
     #[test]
@@ -1716,12 +1716,12 @@ mod tests {
         };
         store.update_retention_config(&long, &update).unwrap();
         assert_eq!(store.purge_old_column_stats().unwrap(), Some(1));
-        assert!(
+        assert_eq!(
             table
                 .iter(Direction::Forward, None)
                 .collect::<Result<Vec<_>>>()
-                .unwrap()
-                .is_empty()
+                .unwrap(),
+            Vec::new()
         );
 
         // Re-insert and then clear retention: purge becomes a no-op again.

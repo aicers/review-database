@@ -1299,8 +1299,8 @@ mod test {
         assert!(res.is_some());
 
         let (returned, invalid_agents, invalid_external_services) = res.unwrap();
-        assert!(invalid_agents.is_empty());
-        assert!(invalid_external_services.is_empty());
+        assert_eq!(invalid_agents, Vec::<String>::new());
+        assert_eq!(invalid_external_services, Vec::<String>::new());
         assert_eq!(returned, node);
     }
 
@@ -1502,8 +1502,8 @@ mod test {
         assert!(updated.is_some());
         let (updated, invalid_agents, invalid_external_services) = updated.unwrap();
 
-        assert!(invalid_agents.is_empty());
-        assert!(invalid_external_services.is_empty());
+        assert_eq!(invalid_agents, Vec::<String>::new());
+        assert_eq!(invalid_external_services, Vec::<String>::new());
 
         node.name_draft = Some("update".to_string());
         node.profile = Some(profile.clone());
@@ -1588,8 +1588,8 @@ mod test {
         let updated = node_table.get_by_id(id).unwrap();
         assert!(updated.is_some());
         let (updated, invalid_agents, invalid_external_services) = updated.unwrap();
-        assert!(invalid_agents.is_empty());
-        assert!(invalid_external_services.is_empty());
+        assert_eq!(invalid_agents, Vec::<String>::new());
+        assert_eq!(invalid_external_services, Vec::<String>::new());
 
         assert_eq!(updated.agents, update.agents);
     }
@@ -1640,7 +1640,7 @@ mod test {
         let updated = node_table.get_by_id(id).unwrap();
         assert!(updated.is_some());
         let (updated, invalid, _) = updated.unwrap();
-        assert!(invalid.is_empty());
+        assert_eq!(invalid, Vec::<String>::new());
 
         // Check that the status of the `AgentKind::Sensor` agent was not updated.
         assert_eq!(updated.agents[0].status, Status::Enabled);
@@ -1694,8 +1694,8 @@ mod test {
 
         let (updated, invalid_agents, invalid_external_services) =
             node_table.get_by_id(id).unwrap().unwrap();
-        assert!(invalid_agents.is_empty());
-        assert!(invalid_external_services.is_empty());
+        assert_eq!(invalid_agents, Vec::<String>::new());
+        assert_eq!(invalid_external_services, Vec::<String>::new());
 
         // One read returns the new status and the untouched lifecycle together.
         let updated_agent = updated.agents.get(1).expect("two agents");
@@ -1989,8 +1989,8 @@ mod test {
         let updated = node_table.get_by_id(id).unwrap();
         assert!(updated.is_some());
         let (updated, invalid_agents, invalid_external_services) = updated.unwrap();
-        assert!(invalid_agents.is_empty());
-        assert!(invalid_external_services.is_empty());
+        assert_eq!(invalid_agents, Vec::<String>::new());
+        assert_eq!(invalid_external_services, Vec::<String>::new());
 
         assert_eq!(updated.external_services, update.external_services);
     }
@@ -2061,8 +2061,8 @@ mod test {
         // A single read returns `status` and `lifecycle` together.
         let (updated, invalid_agents, invalid_external_services) =
             node_table.get_by_id(id).unwrap().unwrap();
-        assert!(invalid_agents.is_empty());
-        assert!(invalid_external_services.is_empty());
+        assert_eq!(invalid_agents, Vec::<String>::new());
+        assert_eq!(invalid_external_services, Vec::<String>::new());
 
         let updated_agent = updated.agents.get(1).expect("two agents");
         assert_eq!(updated_agent.installed_version.as_deref(), Some("1.2.3"));
@@ -2081,7 +2081,7 @@ mod test {
         assert_eq!(untouched_agent.installed_version, None);
         assert_eq!(untouched_agent.installed_commit, None);
         assert_eq!(untouched_agent.lifecycle, Lifecycle::NotInstalled);
-        assert!(untouched_agent.bound_addrs.is_empty());
+        assert_eq!(untouched_agent.bound_addrs, Vec::<(String, String)>::new());
 
         let updated_external_service = updated
             .external_services
@@ -2201,8 +2201,8 @@ mod test {
 
         let (read, invalid_agents, invalid_external_services) =
             node_table.get_by_id(id).unwrap().unwrap();
-        assert!(invalid_agents.is_empty());
-        assert!(invalid_external_services.is_empty());
+        assert_eq!(invalid_agents, Vec::<String>::new());
+        assert_eq!(invalid_external_services, Vec::<String>::new());
 
         let read_agent = read.agents.first().expect("one agent");
         assert_eq!(read_agent.lifecycle, Lifecycle::Unknown);
@@ -2451,7 +2451,7 @@ mod test {
         // Verify that no state change occurred — the node and its agent still
         // reflect the pre-update state.
         let (after, invalid_agents, _) = node_table.get_by_id(id).unwrap().unwrap();
-        assert!(invalid_agents.is_empty());
+        assert_eq!(invalid_agents, Vec::<String>::new());
         assert_eq!(after.profile, Some(profile));
         assert_eq!(after.agents, node.agents);
     }
