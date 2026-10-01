@@ -17,6 +17,9 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 - Corrected `EventDb` iteration to use signed chronological key order across
   the Unix epoch, and made `remove_before` consistently retain events exactly
   at its cutoff while deleting all earlier events.
+- A data directory whose `VERSION` is `0.46.0-alpha.1` now migrates to the
+  current format instead of failing with "migration from 0.46.0-alpha.1 is not
+  supported".
 
 ### Added
 
