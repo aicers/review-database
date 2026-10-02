@@ -1271,6 +1271,15 @@ pub(crate) mod tests {
     // Verify all six counters against explicit stored endpoints, including
     // accumulation and rejection by both address and non-address filters.
     fn assert_address_aggregation(event: &Event, orig: &[IpAddr], resp: &[IpAddr]) {
+        assert_address_aggregation_with_filters(event, orig, resp, &[]);
+    }
+
+    fn assert_address_aggregation_with_filters(
+        event: &Event,
+        orig: &[IpAddr],
+        resp: &[IpAddr],
+        matching_filters: &[EventFilter],
+    ) {
         use std::collections::HashMap;
 
         let mut networks = Vec::new();
@@ -1313,15 +1322,20 @@ pub(crate) mod tests {
         assert!(!event.matches(&absent_resp).unwrap().0);
         let mut absent_sensor = event_filter();
         absent_sensor.sensors = Some(vec!["absent-sensor".to_string()]);
-        for (filter, repetitions) in [
-            (event_filter(), 1),
-            (event_filter(), 2),
-            (absent_orig, 1),
-            (absent_resp, 1),
-            (absent_sensor, 1),
-        ] {
-            let matched = event.matches(&filter).unwrap().0;
-            let count = if matched { repetitions } else { 0 };
+        assert!(!event.matches(&absent_sensor).unwrap().0);
+        let filters = [
+            (event_filter(), 1, true),
+            (event_filter(), 2, true),
+            (absent_orig, 1, false),
+            (absent_resp, 1, false),
+            (absent_sensor, 1, false),
+        ];
+        for (filter, repetitions, matched) in filters
+            .iter()
+            .map(|(f, n, m)| (f, *n, *m))
+            .chain(matching_filters.iter().map(|filter| (filter, 1, true)))
+        {
+            assert_eq!(event.matches(filter).unwrap().0, matched);
             let mut all = HashMap::new();
             let mut originators = HashMap::new();
             let mut responders = HashMap::new();
@@ -1329,57 +1343,51 @@ pub(crate) mod tests {
             let mut kinds = HashMap::new();
             let mut network_counts = HashMap::new();
             for _ in 0..repetitions {
-                event.count_ip_address(&mut all, &filter).unwrap();
+                event.count_ip_address(&mut all, filter).unwrap();
                 event
-                    .count_originator_ip_address(&mut originators, &filter)
+                    .count_originator_ip_address(&mut originators, filter)
                     .unwrap();
                 event
-                    .count_responder_ip_address(&mut responders, &filter)
+                    .count_responder_ip_address(&mut responders, filter)
                     .unwrap();
                 event
-                    .count_ip_address_pair(&mut pair_counts, &filter)
+                    .count_ip_address_pair(&mut pair_counts, filter)
                     .unwrap();
                 event
-                    .count_ip_address_pair_and_kind(&mut kinds, &filter)
+                    .count_ip_address_pair_and_kind(&mut kinds, filter)
                     .unwrap();
                 event
-                    .count_network(&mut network_counts, &networks, &filter)
+                    .count_network(&mut network_counts, &networks, filter)
                     .unwrap();
             }
+            if !matched {
+                assert!(all.is_empty());
+                assert!(originators.is_empty());
+                assert!(responders.is_empty());
+                assert!(pair_counts.is_empty());
+                assert!(kinds.is_empty());
+                assert!(network_counts.is_empty());
+                continue;
+            }
             let expected = |addrs: &[IpAddr]| -> HashMap<_, _> {
-                addrs
-                    .iter()
-                    .copied()
-                    .filter(|_| matched)
-                    .map(|a| (a, count))
-                    .collect()
+                addrs.iter().copied().map(|a| (a, repetitions)).collect()
             };
             assert_eq!(
                 all,
-                union
-                    .iter()
-                    .copied()
-                    .filter(|_| matched)
-                    .map(|a| (a, count))
-                    .collect()
+                union.iter().copied().map(|a| (a, repetitions)).collect()
             );
             assert_eq!(originators, expected(orig));
             assert_eq!(responders, expected(resp));
             assert_eq!(
                 pair_counts,
-                pairs
-                    .iter()
-                    .copied()
-                    .filter(|_| matched)
-                    .map(|p| (p, count))
-                    .collect()
+                pairs.iter().copied().map(|p| (p, repetitions)).collect()
             );
-            let kind = event.kind(&filter).unwrap();
+            let kind = event.kind(filter).unwrap();
             assert_eq!(
                 kinds,
                 pairs
                     .iter()
-                    .filter_map(|&(a, b)| kind.map(|k| ((a, b, k), count)))
+                    .filter_map(|&(a, b)| kind.map(|k| ((a, b, k), repetitions)))
                     .collect()
             );
             let ids: std::collections::HashSet<_> = union
@@ -1388,10 +1396,7 @@ pub(crate) mod tests {
                 .collect();
             assert_eq!(
                 network_counts,
-                ids.into_iter()
-                    .filter(|_| matched)
-                    .map(|id| (id, count))
-                    .collect()
+                ids.into_iter().map(|id| (id, repetitions)).collect()
             );
         }
     }
@@ -1448,6 +1453,195 @@ pub(crate) mod tests {
                     &vector,
                 );
             }
+        }
+    }
+
+    #[test]
+    fn address_aggregation_matching_filters_keep_all_vector_endpoints() {
+        let time = stored_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap());
+        let a = "127.0.0.1".parse().unwrap();
+        let b = "127.0.1.2".parse().unwrap();
+        let c = "127.0.1.3".parse().unwrap();
+        let mut rdp = rdp_brute_force_fields();
+        rdp.orig_addr = a;
+        rdp.resp_addrs = vec![b, c];
+        let mut scan = multi_host_port_scan_fields();
+        scan.orig_addr = a;
+        scan.resp_addrs = vec![b, c];
+        let mut ddos = external_ddos_fields();
+        ddos.orig_addrs = vec![b, c];
+        ddos.resp_addr = a;
+        let mut unusual = unusual_destination_pattern_fields();
+        unusual.destination_ips = vec![b, c];
+        unusual.resp_country_codes = vec![crate::util::COUNTRY_CODE_UNRESOLVED; 2];
+
+        for (event, orig, resp) in [
+            (
+                Event::RdpBruteForce(RdpBruteForce::new(time, &rdp)),
+                vec![a],
+                vec![b, c],
+            ),
+            (
+                Event::MultiHostPortScan(MultiHostPortScan::new(time, &scan)),
+                vec![a],
+                vec![b, c],
+            ),
+            (
+                Event::ExternalDdos(ExternalDdos::new(time, &ddos)),
+                vec![b, c],
+                vec![a],
+            ),
+            (
+                Event::Blocklist(RecordType::UnusualDestinationPattern(
+                    UnusualDestinationPattern::new(time, unusual),
+                )),
+                vec![],
+                vec![b, c],
+            ),
+        ] {
+            let mut filters = Vec::new();
+            for &addr in &orig {
+                let mut filter = event_filter();
+                filter.originator = Some(addr);
+                filters.push(filter);
+            }
+            for &addr in &resp {
+                let mut filter = event_filter();
+                filter.responder = Some(addr);
+                filters.push(filter);
+            }
+            for &originator in &orig {
+                for &responder in &resp {
+                    let mut filter = event_filter();
+                    filter.originator = Some(originator);
+                    filter.responder = Some(responder);
+                    filters.push(filter);
+                }
+            }
+            // Selecting one endpoint must retain every stored endpoint and pair.
+            assert_address_aggregation_with_filters(&event, &orig, &resp, &filters);
+        }
+    }
+
+    #[test]
+    fn network_aggregation_counts_fixed_ids_once_per_event() {
+        use std::collections::HashMap;
+
+        let time = stored_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap());
+        let mut networks = Vec::new();
+        for (id, cidr) in [
+            (7, "127.0.0.0/24"),
+            (8, "127.0.0.0/16"),
+            (9, "2001:db8::/32"),
+        ] {
+            let mut network = crate::Network::new(
+                String::new(),
+                String::new(),
+                HostNetworkGroup::new(Vec::new(), vec![cidr.parse().unwrap()], Vec::new()),
+                Vec::new(),
+            );
+            network.id = id;
+            networks.push(network);
+        }
+        for len in [4, super::super::ADDRESS_COUNT_STACK_DEDUP_LIMIT + 1] {
+            let mut fields = rdp_brute_force_fields();
+            fields.orig_addr = "127.0.0.1".parse().unwrap();
+            fields.resp_addrs = ["127.0.0.2", "127.0.1.2", "2001:db8::1", "192.0.2.2"]
+                .into_iter()
+                .map(|addr| addr.parse().unwrap())
+                .cycle()
+                .take(len)
+                .collect();
+            fields.resp_country_codes = vec![crate::util::COUNTRY_CODE_UNRESOLVED; len];
+            let event = Event::RdpBruteForce(RdpBruteForce::new(time, &fields));
+            let mut filter = event_filter();
+            filter.responder = Some("127.0.1.2".parse().unwrap());
+            assert!(event.matches(&filter).unwrap().0);
+            let mut counts = HashMap::new();
+            for count in 1..=2 {
+                event
+                    .count_network(&mut counts, &networks, &filter)
+                    .unwrap();
+                // The /24 wins its overlap with /16; unmapped addresses add no ID.
+                assert_eq!(counts, HashMap::from([(7, count), (8, count), (9, count)]));
+            }
+        }
+    }
+
+    #[test]
+    fn address_aggregation_empty_vectors_keep_surviving_side_without_pairs() {
+        let time = stored_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap());
+        let a = "127.0.0.1".parse().unwrap();
+        let mut rdp = rdp_brute_force_fields();
+        rdp.orig_addr = a;
+        rdp.resp_addrs.clear();
+        rdp.resp_country_codes.clear();
+        assert_address_aggregation(
+            &Event::RdpBruteForce(RdpBruteForce::new(time, &rdp)),
+            &[a],
+            &[],
+        );
+        let mut ddos = external_ddos_fields();
+        ddos.orig_addrs.clear();
+        ddos.orig_country_codes.clear();
+        ddos.resp_addr = a;
+        assert_address_aggregation(
+            &Event::ExternalDdos(ExternalDdos::new(time, &ddos)),
+            &[],
+            &[a],
+        );
+        let mut unusual = unusual_destination_pattern_fields();
+        unusual.destination_ips.clear();
+        unusual.resp_country_codes.clear();
+        assert_address_aggregation(
+            &Event::Blocklist(RecordType::UnusualDestinationPattern(
+                UnusualDestinationPattern::new(time, unusual),
+            )),
+            &[],
+            &[],
+        );
+    }
+
+    #[test]
+    fn address_aggregation_counts_stored_unspecified_address() {
+        use std::collections::HashMap;
+
+        let time = stored_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap());
+        let addr = IpAddr::V4(Ipv4Addr::UNSPECIFIED);
+        let mut fields = dns_event_fields();
+        fields.orig_addr = addr;
+        fields.resp_addr = addr;
+        let event = Event::DnsCovertChannel(DnsCovertChannel::new(time, fields));
+        let mut filters = Vec::new();
+        for axis in 0..6 {
+            let mut filter = event_filter();
+            match axis {
+                0 => filter.originator = Some(addr),
+                1 => filter.responder = Some(addr),
+                2 => {
+                    filter.originator = Some(addr);
+                    filter.responder = Some(addr);
+                }
+                3 => filter.endpoints = Some(vec![create_endpoint(addr)]),
+                4 => filter.customers = Some(vec![create_customer(addr)]),
+                _ => filter.directions = Some(create_directions(FlowKind::Internal, addr)),
+            }
+            filters.push(filter);
+        }
+        assert_address_aggregation_with_filters(&event, &[addr], &[addr], &filters);
+        let mut network = crate::Network::new(
+            String::new(),
+            String::new(),
+            HostNetworkGroup::new(Vec::new(), vec!["0.0.0.0/32".parse().unwrap()], Vec::new()),
+            Vec::new(),
+        );
+        network.id = 3;
+        for filter in filters {
+            let mut counts = HashMap::new();
+            event
+                .count_network(&mut counts, std::slice::from_ref(&network), &filter)
+                .unwrap();
+            assert_eq!(counts, HashMap::from([(3, 1)]));
         }
     }
 
