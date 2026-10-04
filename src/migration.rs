@@ -110,7 +110,7 @@ use crate::{
 /// // release that involves database format change) to 3.5.0, including
 /// // all alpha changes finalized in 3.5.0.
 /// ```
-const COMPATIBLE_VERSION_REQ: &str = ">=0.48.0-alpha.1,<0.48.0-alpha.2";
+const COMPATIBLE_VERSION_REQ: &str = ">=0.48.0,<0.49.0";
 
 /// Number of event records applied in each atomic migration write.
 const EVENT_MIGRATION_BATCH_SIZE: usize = 100;
@@ -150,17 +150,11 @@ const VERSION_TMP_FILE_NAME: &str = "VERSION.tmp";
 
 /// Migrates the data directory to the up-to-date format if necessary.
 ///
-/// Migration is supported from released versions only. The current format's
-/// own marker, `0.48.0-alpha.1`, is accepted as current, and every other
-/// prerelease marker is refused with "migration from {version} is not
-/// supported". Under semver's matching rule a requirement admits a prerelease
-/// marker only when one of its comparators names a prerelease of the same
-/// `major.minor.patch`: `COMPATIBLE_VERSION_REQ` therefore admits exactly
-/// `0.48.0-alpha.1`, the 0.47→0.48 entry's `<0.48.0-alpha.1` bound admits only
-/// the `0.48.0` prereleases below it, which no build wrote, and no other
-/// requirement in the migration table carries a prerelease at all. Every other
-/// prerelease marker, `0.46.0-alpha.1` and `0.47.0-alpha.6` included, is
-/// refused.
+/// Migration is supported between released versions only. A prerelease marker,
+/// such as `0.46.0-alpha.1` or `0.47.0-alpha.6`, is refused with "migration
+/// from {version} is not supported": neither `COMPATIBLE_VERSION_REQ` nor any
+/// requirement in the migration table carries a prerelease, so under semver's
+/// matching rule none of them admits it.
 ///
 /// Pass a shared `IP2Location` database handle when available so endpoint
 /// country-code fields can be resolved during the stored event schema
@@ -253,8 +247,8 @@ pub fn migrate_data_dir<P: AsRef<Path>>(
             |data_dir, _backup_dir, _locator| migrate_0_46_to_0_47(data_dir),
         ),
         (
-            VersionReq::parse(">=0.47.0,<0.48.0-alpha.1")?,
-            Version::parse("0.48.0-alpha.1")?,
+            VersionReq::parse(">=0.47.0,<0.48.0")?,
+            Version::parse("0.48.0")?,
             |data_dir, _backup_dir, _locator| migrate_0_47_to_0_48(data_dir),
         ),
     ];
@@ -340,7 +334,7 @@ fn migrate_0_46_to_0_47(data_dir: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Migrates a database in the 0.47.x format to 0.48.0-alpha.1.
+/// Migrates a database in the 0.47.x format to 0.48.0.
 ///
 /// The one stored-shape change is `failure_kind`, appended to the value of
 /// every operation attempt. This rewrites each attempt still in the 0.47
@@ -372,7 +366,7 @@ fn migrate_0_47_to_0_48(data_dir: &Path) -> Result<()> {
     let column_families = map_names_for_existing_format(&opts, &db_path)?;
     let db: rocksdb::OptimisticTransactionDB<rocksdb::SingleThreaded> =
         rocksdb::OptimisticTransactionDB::open_cf(&opts, &db_path, column_families)
-            .context("failed to open database for the 0.48.0-alpha.1 migration")?;
+            .context("failed to open database for the 0.48.0 migration")?;
 
     migrate_record_layout(
         &db,
@@ -2578,8 +2572,8 @@ mod tests {
     ///
     /// Migration is supported between released versions only, as the
     /// `migrate_data_dir` doc comment records. The markers cover older
-    /// prereleases, the first and last of the 0.47 cycle, and one written by a
-    /// newer build of the current format's cycle.
+    /// prereleases, the first and last of the 0.47 cycle, and prereleases of
+    /// the format migrated to.
     #[test]
     fn migration_refuses_unsupported_prerelease_markers() {
         for marker in [
@@ -2588,6 +2582,7 @@ mod tests {
             "0.46.0-alpha.1",
             "0.47.0-alpha.1",
             "0.47.0-alpha.6",
+            "0.48.0-alpha.1",
             "0.48.0-alpha.2",
         ] {
             let data_dir = tempfile::tempdir().unwrap();
