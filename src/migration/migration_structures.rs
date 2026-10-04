@@ -10,7 +10,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     AgentConfig, AgentKind, AgentStatus, ExternalServiceConfig, ExternalServiceKind,
-    ExternalServiceStatus,
+    ExternalServiceStatus, OperationAction, OperationCleanupState, OperationFailureKind,
+    OperationOutcome, OperationPhase, OperationRetryPolicy,
     event::{DceRpcContext, EventKind, FtpCommand, TriageScore},
     types::HostNetworkGroup,
 };
@@ -228,6 +229,104 @@ impl From<ExternalServiceValueV0_46> for ExternalServiceValueV0_47 {
             lifecycle: 0,
             bound_addrs: Vec::new(),
             instance: None,
+        }
+    }
+}
+
+/// The width of the request digest an operation attempt stores, a SHA-256
+/// digest in both the 0.47 and the 0.48 layout.
+const OPERATION_ATTEMPT_DIGEST_LEN: usize = 32;
+
+/// The stored `OperationAttempt` value as of database format 0.47, before
+/// `failure_kind` was added.
+///
+/// This mirrors, field for field and in order, the private `Value` of the
+/// operation attempts table as the 0.47.0 release stores it, with owned
+/// strings where that struct borrows them; serde encodes the two identically.
+/// Its encoding is a strict prefix of an [`OperationAttemptValueV0_48`] one,
+/// and because `bincode` rejects both a short read and bytes left over,
+/// neither layout decodes the other's rows. It describes a released layout
+/// and must never be modified; a committed fixture pins it to the release.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub(crate) struct OperationAttemptValueV0_47 {
+    pub host: String,
+    pub target: String,
+    pub instance: Option<u32>,
+    pub action: OperationAction,
+    pub install_intent: Option<[u8; OPERATION_ATTEMPT_DIGEST_LEN]>,
+    pub package_digest: String,
+    pub resolved_version: String,
+    pub resolved_commit: String,
+    pub phase: OperationPhase,
+    pub cleanup_state: Option<OperationCleanupState>,
+    pub started_at: DateTime<Utc>,
+    pub retry_policy: OperationRetryPolicy,
+    pub outcome: Option<OperationOutcome>,
+    pub finalized_at: Option<DateTime<Utc>>,
+    pub expires_at: DateTime<Utc>,
+    pub backup_id: Option<u32>,
+    pub pre_update_version: Option<String>,
+}
+
+/// The stored `OperationAttempt` value as of database format 0.48.
+///
+/// It is [`OperationAttemptValueV0_47`] with `failure_kind` appended as the
+/// last field, so a 0.47 encoding is a strict prefix of one of these. This
+/// mirrors the private `Value` of the live operation attempts table, whose
+/// component types it deliberately reuses, and the drift test beside that
+/// table holds the two together.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub(crate) struct OperationAttemptValueV0_48 {
+    pub host: String,
+    pub target: String,
+    pub instance: Option<u32>,
+    pub action: OperationAction,
+    pub install_intent: Option<[u8; OPERATION_ATTEMPT_DIGEST_LEN]>,
+    pub package_digest: String,
+    pub resolved_version: String,
+    pub resolved_commit: String,
+    pub phase: OperationPhase,
+    pub cleanup_state: Option<OperationCleanupState>,
+    pub started_at: DateTime<Utc>,
+    pub retry_policy: OperationRetryPolicy,
+    pub outcome: Option<OperationOutcome>,
+    pub finalized_at: Option<DateTime<Utc>>,
+    pub expires_at: DateTime<Utc>,
+    pub backup_id: Option<u32>,
+    pub pre_update_version: Option<String>,
+    pub failure_kind: Option<OperationFailureKind>,
+}
+
+impl From<OperationAttemptValueV0_47> for OperationAttemptValueV0_48 {
+    /// Copies every field and derives `failure_kind` from `outcome`.
+    ///
+    /// A `Failed` attempt gets [`OperationFailureKind::Other`]: 0.47 never
+    /// recorded why it failed, and nothing reconstructs a specific kind, but
+    /// a kind is what keeps the row writable — the discharge of a teardown
+    /// it still owes is refused without one. Every other attempt, a
+    /// non-terminal one included, gets `None`.
+    fn from(old: OperationAttemptValueV0_47) -> Self {
+        let failure_kind =
+            (old.outcome == Some(OperationOutcome::Failed)).then_some(OperationFailureKind::Other);
+        Self {
+            host: old.host,
+            target: old.target,
+            instance: old.instance,
+            action: old.action,
+            install_intent: old.install_intent,
+            package_digest: old.package_digest,
+            resolved_version: old.resolved_version,
+            resolved_commit: old.resolved_commit,
+            phase: old.phase,
+            cleanup_state: old.cleanup_state,
+            started_at: old.started_at,
+            retry_policy: old.retry_policy,
+            outcome: old.outcome,
+            finalized_at: old.finalized_at,
+            expires_at: old.expires_at,
+            backup_id: old.backup_id,
+            pre_update_version: old.pre_update_version,
+            failure_kind,
         }
     }
 }

@@ -196,6 +196,44 @@ pub enum Outcome {
     Cancelled = 4,
 }
 
+/// The remedy group of an attempt that finalized [`Outcome::Failed`].
+///
+/// It records why the attempt failed as a closed set of remedies an operator
+/// can act on, not as the cause itself. Which failure maps to which kind is
+/// `review`'s decision, and this crate stores the value it is given, with one
+/// exception it decides itself: [`Table::sweep_expired`], which finalizes an
+/// expired attempt `Failed` inside this crate, writes
+/// [`FailureKind::NoConfirmation`].
+///
+/// The stored encoding is the variant index, the 0-based declaration
+/// position, as for [`Action`]; the discriminants below are not stored. A
+/// kind is therefore only ever appended, never inserted or reordered, and
+/// appending one leaves existing rows readable without a format change.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, Eq, PartialEq)]
+#[repr(u8)]
+pub enum FailureKind {
+    /// The host lacked disk space.
+    HostDiskSpace = 1,
+    /// The host's agent cannot take this enrollment.
+    HostAgentUnsupported = 2,
+    /// The host's namespace is not configured.
+    HostNotPrepared = 3,
+    /// An instance not under management is in the way.
+    UnmanagedInstance = 4,
+    /// The requested build is reported failed on the host.
+    ServiceFailed = 5,
+    /// The host answered, but the requested build is not in place.
+    NotApplied = 6,
+    /// The registrar refused the registration.
+    TrustAnchorRefused = 7,
+    /// The selected build can no longer be served.
+    BuildNotServable = 8,
+    /// No confirmation arrived before the attempt's deadline.
+    NoConfirmation = 9,
+    /// Anything else, including every row migrated from 0.47.
+    Other = 10,
+}
+
 /// The terminating retry budget of an apply.
 ///
 /// This crate stores the budget; `review` advances and enforces it. Unlike the
@@ -556,10 +594,11 @@ fn is_uuid_v4(key: &str) -> bool {
 /// exactly when `action` is [`Action::Onboard`], so a reader never has to
 /// guess which absent encoding a given field uses. `backup_id` and
 /// `pre_update_version` are core-update-scoped rather than package-scoped, and
-/// use `Option` as each other does. `install_intent` and `finalized_at` are
-/// neither: each is absent for a state the row is genuinely in — an operation
-/// that dedupes on something other than a request digest, and an attempt that
-/// is not finished with — so each is an `Option` too.
+/// use `Option` as each other does. `install_intent`, `failure_kind` and
+/// `finalized_at` are neither: each is absent for a state the row is genuinely
+/// in — an operation that dedupes on something other than a request digest,
+/// an attempt that did not fail, and an attempt that is not finished with —
+/// so each is an `Option` too.
 ///
 /// # Identity
 ///
@@ -691,6 +730,16 @@ pub struct OperationAttempt {
     pub retry_policy: RetryPolicy,
     /// The terminal result, or `None` while the attempt is non-terminal.
     pub outcome: Option<Outcome>,
+    /// Why the attempt failed, as a remedy group, or `None` for an attempt
+    /// that did not fail.
+    ///
+    /// It is `Some` **if and only if** `outcome` is
+    /// `Some(`[`Outcome::Failed`]`)`, and every write to the table refuses a
+    /// row that says otherwise — including a later re-write of a failed row,
+    /// such as the discharge of its owed cleanup, which carries the kind
+    /// forward. [`Table::sweep_expired`] writes
+    /// [`FailureKind::NoConfirmation`]; every other kind is the caller's.
+    pub failure_kind: Option<FailureKind>,
     /// When the attempt was finished with, or `None` while it still has work
     /// to do.
     ///
@@ -773,6 +822,7 @@ impl OperationAttempt {
             expires_at: self.expires_at,
             backup_id: self.backup_id,
             pre_update_version: self.pre_update_version.as_deref().map(Cow::Borrowed),
+            failure_kind: self.failure_kind,
         };
         super::serialize(&value).expect("serializable")
     }
@@ -801,6 +851,7 @@ impl FromKeyValue for OperationAttempt {
             started_at: value.started_at,
             retry_policy: value.retry_policy,
             outcome: value.outcome,
+            failure_kind: value.failure_kind,
             finalized_at: value.finalized_at,
             expires_at: value.expires_at,
             backup_id: value.backup_id,
@@ -813,9 +864,16 @@ impl FromKeyValue for OperationAttempt {
 ///
 /// The string fields are `Cow` so that a write borrows them from the record
 /// and a read owns them, without a second struct whose field order could
-/// silently drift from this one: bincode writes no field names, so a field
-/// present on one side and missing on the other would be dropped on read
-/// rather than rejected.
+/// silently drift from this one: bincode writes no field names, so two
+/// structs whose fields differ in order but not in type would decode each
+/// other's bytes into the wrong fields without complaint. A field present on
+/// one side and missing on the other is rejected rather than dropped, because
+/// the encoding is read with options that refuse both a short value and
+/// trailing bytes.
+///
+/// A new field is appended, never inserted, so that an older layout stays a
+/// strict prefix of this one; the format step that introduces it relies on
+/// that to tell the two apart.
 #[derive(Deserialize, Serialize)]
 struct Value<'a> {
     host: Cow<'a, str>,
@@ -835,6 +893,7 @@ struct Value<'a> {
     expires_at: DateTime<Utc>,
     backup_id: Option<u32>,
     pre_update_version: Option<Cow<'a, str>>,
+    failure_kind: Option<FailureKind>,
 }
 
 /// What a [`Table::prune`] call keeps.
@@ -1227,7 +1286,10 @@ impl<'d> Table<'d, OperationAttempt> {
     ///
     /// Returns an error if the attempt carries no `install_intent`, since
     /// every other action is keyed by a value unique by construction and is
-    /// written with [`Table::upsert`], or if the database operation fails.
+    /// written with [`Table::upsert`], if `finalized_at` is set for an attempt
+    /// that is not fully discharged or unset for one that is, if
+    /// `failure_kind` is set for an attempt whose outcome is not `Failed` or
+    /// unset for one whose outcome is, or if the database operation fails.
     ///
     /// A refusal that concerns the request key carries a [`RequestKeyError`]
     /// a caller can downcast to: [`RequestKeyError::MalformedRequestKey`]
@@ -1324,8 +1386,10 @@ impl<'d> Table<'d, OperationAttempt> {
     ///
     /// Returns an error if the attempt's idempotency key is empty, if
     /// `finalized_at` is set for an attempt that is not fully discharged or
-    /// unset for one that is, if an install carries no `install_intent` or an
-    /// `install_intent` is carried by an attempt that is not an install, if
+    /// unset for one that is, if `failure_kind` is set for an attempt whose
+    /// outcome is not `Failed` or unset for one whose outcome is, if an
+    /// install carries no `install_intent` or an `install_intent` is carried
+    /// by an attempt that is not an install, if
     /// the attempt carries an `install_intent` and no row is held under its
     /// key, which is [`Table::create_or_resolve`]'s decision to make, if
     /// the attempt is non-terminal and a different
@@ -1485,7 +1549,10 @@ impl<'d> Table<'d, OperationAttempt> {
     /// [`Action::Install`], if its `target` is empty, if that `target` names a
     /// core component or is registered as one on its `host`, if the database has no
     /// `instance_allocation` column family, if the attempt's idempotency key
-    /// is empty, if the attempt is non-terminal and a different attempt is
+    /// is empty, if `finalized_at` is set for an attempt that is not fully
+    /// discharged or unset for one that is, if `failure_kind` is set for an
+    /// attempt whose outcome is not `Failed` or unset for one whose outcome
+    /// is, if the attempt is non-terminal and a different attempt is
     /// already live for its `(host, target, instance)` triple, if `request`
     /// is not the request the attempt records — a differing host, target or
     /// digest — or if it asks for addresses, which is
@@ -1568,6 +1635,9 @@ impl<'d> Table<'d, OperationAttempt> {
     /// is a store missing the instance allocation, port allocation or core
     /// component column families, and so is a `request` that is not the one
     /// the attempt records or that asks for addresses other than `bindings`.
+    /// An attempt whose `failure_kind` disagrees with its outcome — set where
+    /// the outcome is not `Failed`, or unset where it is — is refused as a
+    /// database error too, as [`Table::allocate_instance`] refuses it.
     pub fn allocate_instance_and_addrs(
         &self,
         attempt: &OperationAttempt,
@@ -1884,11 +1954,14 @@ impl<'d> Table<'d, OperationAttempt> {
     /// Finalizes every non-terminal attempt whose deadline had passed at
     /// `instant`, and returns how many it finalized.
     ///
-    /// A finalized attempt gets `outcome = Some(Outcome::Failed)`, and
-    /// `finalized_at` together with the latest pointer where it owes no
-    /// cleanup: `phase`, `retry_policy` and above all `cleanup_state` are left
-    /// as they were. Clearing an owed cleanup here is what would orphan a minted
-    /// bootroot identity, so the sweep never does it. The attempt leaves the
+    /// A finalized attempt gets `outcome = Some(Outcome::Failed)` and
+    /// `failure_kind = Some(FailureKind::NoConfirmation)` — no confirmation
+    /// arrived before the deadline, the one kind this crate decides rather
+    /// than the caller — and `finalized_at` together with the latest pointer
+    /// where it owes no cleanup: `phase`, `retry_policy` and above all
+    /// `cleanup_state` are left as they were. Clearing an owed cleanup here is
+    /// what would orphan a minted bootroot identity, so the sweep never does
+    /// it. The attempt leaves the
     /// non-terminal index, which frees the single-flight slot, and stays in
     /// the owed-cleanup index for `review` to discharge once the registrar is
     /// reachable. A host that never returns therefore leaks neither the slot
@@ -1929,6 +2002,7 @@ impl<'d> Table<'d, OperationAttempt> {
                 }
                 let mut failed = stored.clone();
                 failed.outcome = Some(Outcome::Failed);
+                failed.failure_kind = Some(FailureKind::NoConfirmation);
                 // Nothing owed means the attempt is finished with, so the
                 // same write stamps it and moves the pointer. One that still
                 // owes a cleanup is terminal and not finished, and stays out
@@ -2172,6 +2246,11 @@ impl<'d> Table<'d, OperationAttempt> {
         if new.finalized_at.is_some() != new.is_fully_discharged() {
             bail!(
                 "an operation attempt carries a finalization instant exactly when it is terminal and owes no cleanup"
+            );
+        }
+        if new.failure_kind.is_some() != (new.outcome == Some(Outcome::Failed)) {
+            bail!(
+                "an operation attempt carries a failure kind exactly when its outcome is `Failed`"
             );
         }
         // An install is the one action submitted with a request the client
@@ -2454,6 +2533,18 @@ mod tests {
         Outcome::RolledBack,
         Outcome::Cancelled,
     ];
+    const FAILURE_KINDS: [FailureKind; 10] = [
+        FailureKind::HostDiskSpace,
+        FailureKind::HostAgentUnsupported,
+        FailureKind::HostNotPrepared,
+        FailureKind::UnmanagedInstance,
+        FailureKind::ServiceFailed,
+        FailureKind::NotApplied,
+        FailureKind::TrustAnchorRefused,
+        FailureKind::BuildNotServable,
+        FailureKind::NoConfirmation,
+        FailureKind::Other,
+    ];
 
     /// A database carrying this table's column family.
     struct TestDb {
@@ -2538,6 +2629,7 @@ mod tests {
                 backoff_seconds: 30,
             },
             outcome: None,
+            failure_kind: None,
             finalized_at: None,
             expires_at: timestamp(1_700_086_400),
             backup_id: None,
@@ -2566,6 +2658,7 @@ mod tests {
                 backoff_seconds: 60,
             },
             outcome: None,
+            failure_kind: None,
             finalized_at: None,
             expires_at: timestamp(1_700_100_000),
             backup_id: None,
@@ -2595,6 +2688,7 @@ mod tests {
                 backoff_seconds: 0,
             },
             outcome: None,
+            failure_kind: None,
             finalized_at: None,
             expires_at: timestamp(1_700_003_800),
             backup_id: None,
@@ -3028,6 +3122,11 @@ mod tests {
             attempt.outcome = outcome;
             assert_eq!(round_trip(&attempt).outcome, outcome);
         }
+        attempt.outcome = Some(Outcome::Failed);
+        for failure_kind in FAILURE_KINDS.map(Some).into_iter().chain([None]) {
+            attempt.failure_kind = failure_kind;
+            assert_eq!(round_trip(&attempt).failure_kind, failure_kind);
+        }
         for retry_policy in [
             RetryPolicy {
                 max_attempts: 5,
@@ -3230,7 +3329,8 @@ mod tests {
 
         let swept = table.get(REQUEST_KEY).unwrap().unwrap();
         assert_eq!(swept.outcome, Some(Outcome::Failed));
-        // The sweep records the outcome and nothing else.
+        assert_eq!(swept.failure_kind, Some(FailureKind::NoConfirmation));
+        // The sweep records the outcome and why, and nothing else.
         assert_eq!(swept.phase, attempt.phase);
         assert_eq!(swept.retry_policy, attempt.retry_policy);
         assert_eq!(swept.expires_at, attempt.expires_at);
@@ -3275,10 +3375,11 @@ mod tests {
 
         // A deadline reached exactly has passed.
         assert_eq!(table.sweep_expired(timestamp(1_700_000_500)).unwrap(), 1);
-        assert_eq!(
-            table.get("op-1").unwrap().unwrap().outcome,
-            Some(Outcome::Failed)
-        );
+        let swept = table.get("op-1").unwrap().unwrap();
+        assert_eq!(swept.outcome, Some(Outcome::Failed));
+        assert_eq!(swept.failure_kind, Some(FailureKind::NoConfirmation));
+        // Nothing was owed, so the same write finished it with.
+        assert_eq!(swept.finalized_at, Some(timestamp(1_700_000_500)));
     }
 
     #[test]
@@ -3295,10 +3396,9 @@ mod tests {
         // The deadline belongs to every action, so one sweep takes both.
         assert_eq!(table.sweep_expired(onboard.expires_at).unwrap(), 2);
         for key in ["op-onboard", REQUEST_KEY] {
-            assert_eq!(
-                table.get(key).unwrap().unwrap().outcome,
-                Some(Outcome::Failed)
-            );
+            let swept = table.get(key).unwrap().unwrap();
+            assert_eq!(swept.outcome, Some(Outcome::Failed));
+            assert_eq!(swept.failure_kind, Some(FailureKind::NoConfirmation));
         }
         assert_eq!(
             table.get("op-onboard").unwrap().unwrap().cleanup_state,
@@ -3831,6 +3931,7 @@ mod tests {
         assert_eq!(table.live_attempt(&here.host, "", None).unwrap(), None);
         let mut owed = here;
         owed.outcome = Some(Outcome::Failed);
+        owed.failure_kind = Some(FailureKind::NoConfirmation);
         assert_eq!(
             table.attempt_owing_cleanup("", &owed.host, None).unwrap(),
             Some(owed)
@@ -3915,6 +4016,7 @@ mod tests {
         // rather than the row the pointer names.
         let mut failed = running;
         failed.outcome = Some(Outcome::Failed);
+        failed.failure_kind = Some(FailureKind::HostDiskSpace);
         table.upsert(&failed).unwrap();
         assert_eq!(table.live_attempt(HOST, TARGET, Some(1)).unwrap(), None);
         assert_eq!(
@@ -4607,5 +4709,243 @@ mod tests {
             table.resolve_request_key(REQUEST_KEY, &digest).unwrap(),
             None
         );
+    }
+
+    /// The stored byte of every failure kind is its variant index, 0 through
+    /// 9 in declaration order, and *not* its `#[repr(u8)]` discriminant.
+    /// review-web mirrors this enum one for one, so the bytes are a contract
+    /// beyond this crate.
+    #[test]
+    fn failure_kind_stored_bytes_are_pinned() {
+        let expected: [(FailureKind, &[u8]); 10] = [
+            (FailureKind::HostDiskSpace, &[0]),
+            (FailureKind::HostAgentUnsupported, &[1]),
+            (FailureKind::HostNotPrepared, &[2]),
+            (FailureKind::UnmanagedInstance, &[3]),
+            (FailureKind::ServiceFailed, &[4]),
+            (FailureKind::NotApplied, &[5]),
+            (FailureKind::TrustAnchorRefused, &[6]),
+            (FailureKind::BuildNotServable, &[7]),
+            (FailureKind::NoConfirmation, &[8]),
+            (FailureKind::Other, &[9]),
+        ];
+        for (kind, bytes) in expected {
+            assert_eq!(crate::tables::serialize(&kind).unwrap(), bytes);
+        }
+    }
+
+    /// Everything a refused write must leave as it was: the row, every key in
+    /// the column family, and every latest pointer.
+    fn snapshot(
+        test_db: &TestDb,
+        idempotency_key: &str,
+    ) -> (Option<OperationAttempt>, Vec<Vec<u8>>, Vec<String>) {
+        (
+            test_db.table().get(idempotency_key).unwrap(),
+            test_db.raw_keys(),
+            test_db.pointed_at_keys(),
+        )
+    }
+
+    #[test]
+    fn a_failure_kind_is_carried_exactly_when_the_outcome_is_failed() {
+        let test_db = TestDb::new();
+        let table = test_db.table();
+
+        // A finished row elsewhere, so the latest pointers are not empty and a
+        // refusal that disturbed them would show.
+        table
+            .upsert(&terminal_attempt(
+                "op-elsewhere",
+                HOST,
+                TARGET,
+                Some(2),
+                1_000,
+                9_000,
+            ))
+            .unwrap();
+        let live = live_attempt("op-kind", HOST, TARGET, Some(1));
+        table.upsert(&live).unwrap();
+        let before = snapshot(&test_db, "op-kind");
+
+        // `Failed` with no kind is refused.
+        let mut failed = live.clone();
+        failed.phase = Phase::Completed;
+        failed.outcome = Some(Outcome::Failed);
+        failed.finalized_at = Some(timestamp(1_700_000_900));
+        assert!(table.upsert(&failed).is_err());
+        assert_eq!(snapshot(&test_db, "op-kind"), before);
+
+        // A kind under any other outcome is refused, and so is one on a row
+        // that is not terminal at all.
+        for outcome in [
+            Some(Outcome::Succeeded),
+            Some(Outcome::RolledBack),
+            Some(Outcome::Cancelled),
+            None,
+        ] {
+            let mut refused = live.clone();
+            refused.outcome = outcome;
+            if outcome.is_some() {
+                refused.phase = Phase::Completed;
+                refused.finalized_at = Some(timestamp(1_700_000_900));
+            }
+            refused.failure_kind = Some(FailureKind::Other);
+            assert!(table.upsert(&refused).is_err(), "{outcome:?}");
+            assert_eq!(snapshot(&test_db, "op-kind"), before, "{outcome:?}");
+        }
+
+        // An install created under its request key is held to the same rule.
+        let mut install = install_attempt(REQUEST_KEY, HOST, TARGET, Some(3));
+        install.failure_kind = Some(FailureKind::HostNotPrepared);
+        let before_install = snapshot(&test_db, REQUEST_KEY);
+        assert!(table.create_or_resolve(&install).is_err());
+        assert_eq!(snapshot(&test_db, REQUEST_KEY), before_install);
+        assert_eq!(before_install.0, None);
+
+        // `Failed` with a kind is accepted, whichever kind it is, and reads
+        // back through the table as written. Changing the kind of a row
+        // already `Failed` is not refused: which kind stands is the caller's.
+        for kind in FAILURE_KINDS {
+            let mut accepted = failed.clone();
+            accepted.failure_kind = Some(kind);
+            table.upsert(&accepted).unwrap();
+            assert_eq!(table.get("op-kind").unwrap(), Some(accepted));
+        }
+    }
+
+    #[test]
+    fn a_discharge_carries_the_failure_kind_forward() {
+        let test_db = TestDb::new();
+        let table = test_db.table();
+
+        let mut failed = owing(
+            live_attempt("op-failed", HOST, TARGET, Some(1)),
+            CleanupState::PendingDeregister,
+        );
+        failed.phase = Phase::Completed;
+        failed.outcome = Some(Outcome::Failed);
+        failed.failure_kind = Some(FailureKind::HostDiskSpace);
+        table.upsert(&failed).unwrap();
+        assert_eq!(
+            table.attempt_owing_cleanup(TARGET, HOST, Some(1)).unwrap(),
+            Some(failed.clone())
+        );
+        assert_eq!(table.pointed_at_key(HOST, TARGET, Some(1)).unwrap(), None);
+
+        // A discharge that drops the kind is refused, and the owed entry stays.
+        let mut discharged = failed.clone();
+        discharged.cleanup_state = None;
+        discharged.finalized_at = Some(timestamp(1_700_000_900));
+        let mut dropped = discharged.clone();
+        dropped.failure_kind = None;
+        let before = snapshot(&test_db, "op-failed");
+        assert!(table.upsert(&dropped).is_err());
+        assert_eq!(snapshot(&test_db, "op-failed"), before);
+        assert_eq!(
+            table.attempt_owing_cleanup(TARGET, HOST, Some(1)).unwrap(),
+            Some(failed)
+        );
+
+        // The same discharge keeping the kind is accepted, and moves the
+        // pointer.
+        table.upsert(&discharged).unwrap();
+        assert_eq!(
+            table.attempt_owing_cleanup(TARGET, HOST, Some(1)).unwrap(),
+            None
+        );
+        assert_eq!(
+            table.pointed_at_key(HOST, TARGET, Some(1)).unwrap(),
+            Some("op-failed".to_string())
+        );
+        assert_eq!(
+            table.latest_attempt(HOST, TARGET, Some(1)).unwrap(),
+            Some(discharged)
+        );
+    }
+
+    #[test]
+    fn an_expired_attempt_owing_a_cleanup_is_discharged_with_its_kind() {
+        let test_db = TestDb::new();
+        let table = test_db.table();
+
+        let attempt = owing(
+            live_attempt("op-expired", HOST, TARGET, Some(1)),
+            CleanupState::PendingDeregister,
+        );
+        table.upsert(&attempt).unwrap();
+        assert_eq!(table.sweep_expired(attempt.expires_at).unwrap(), 1);
+
+        let swept = table.get("op-expired").unwrap().unwrap();
+        assert_eq!(swept.failure_kind, Some(FailureKind::NoConfirmation));
+        assert_eq!(swept.finalized_at, None);
+        assert_eq!(
+            table.attempt_owing_cleanup(TARGET, HOST, Some(1)).unwrap(),
+            Some(swept.clone())
+        );
+
+        let mut discharged = swept;
+        discharged.cleanup_state = None;
+        discharged.finalized_at = Some(timestamp(1_700_090_000));
+        table.upsert(&discharged).unwrap();
+        assert_eq!(
+            table.latest_attempt(HOST, TARGET, Some(1)).unwrap(),
+            Some(discharged)
+        );
+    }
+
+    #[test]
+    fn the_sweep_leaves_the_kind_of_an_attempt_already_failed() {
+        let test_db = TestDb::new();
+        let table = test_db.table();
+
+        let mut failed = live_attempt("op-failed", HOST, TARGET, Some(1));
+        failed.phase = Phase::Completed;
+        failed.outcome = Some(Outcome::Failed);
+        failed.failure_kind = Some(FailureKind::ServiceFailed);
+        failed.finalized_at = Some(timestamp(1_700_000_900));
+        table.upsert(&failed).unwrap();
+
+        // Its deadline passes later; the sweep finalizes nothing, and the kind
+        // the caller wrote stands.
+        assert_eq!(table.sweep_expired(failed.expires_at).unwrap(), 0);
+        let stored = table.get("op-failed").unwrap().unwrap();
+        assert_eq!(stored.failure_kind, Some(FailureKind::ServiceFailed));
+        assert_eq!(stored, failed);
+    }
+
+    /// Holds the pinned 0.48 layout the migration writes to the live `Value`:
+    /// it must decode a live encoding and re-encode it to the very same bytes.
+    /// The options the table reads with refuse a short value and trailing
+    /// bytes alike, so a field added to either side and not the other fails
+    /// here.
+    #[test]
+    fn pinned_v0_48_layout_matches_the_live_value() {
+        use bincode::Options;
+
+        use crate::migration::migration_structures::OperationAttemptValueV0_48;
+
+        let mut attempt = install_attempt(REQUEST_KEY, HOST, TARGET, Some(7));
+        attempt.cleanup_state = Some(CleanupState::PendingDeregister);
+        attempt.phase = Phase::AwaitingReport;
+        attempt.outcome = Some(Outcome::Failed);
+        attempt.finalized_at = Some(timestamp(1_700_000_900));
+        attempt.backup_id = Some(9);
+        attempt.pre_update_version = Some("0.47.0".to_string());
+
+        for failure_kind in [Some(FailureKind::TrustAnchorRefused), None] {
+            attempt.failure_kind = failure_kind;
+            let live = attempt.record_value();
+            let pinned: OperationAttemptValueV0_48 =
+                bincode::DefaultOptions::new().deserialize(&live).unwrap();
+            assert_eq!(pinned.failure_kind, failure_kind);
+            assert_eq!(pinned.host, attempt.host);
+            assert_eq!(pinned.install_intent, attempt.install_intent);
+            assert_eq!(pinned.pre_update_version, attempt.pre_update_version);
+            assert_eq!(
+                bincode::DefaultOptions::new().serialize(&pinned).unwrap(),
+                live
+            );
+        }
     }
 }

@@ -23,8 +23,8 @@ use crate::{
         BlocklistDceRpcFieldsStoredV0_42, BlocklistDceRpcFieldsStoredV0_44,
         BlocklistDhcpFieldsStoredV0_42, BlocklistDhcpFieldsStoredV0_44, ExternalServiceValueV0_46,
         ExternalServiceValueV0_47, HttpThreatFieldsStoredV0_43, HttpThreatFieldsStoredV0_44,
-        V0_46_COUNTRY_CODE_LOOKUP_FAILED, migrate_event_stored_schema_to_v0_46,
-        validate_event_stored_schema_v0_46,
+        OperationAttemptValueV0_47, OperationAttemptValueV0_48, V0_46_COUNTRY_CODE_LOOKUP_FAILED,
+        migrate_event_stored_schema_to_v0_46, validate_event_stored_schema_v0_46,
     },
     tables::{NETWORK_TAGS, TRIAGE_EXCLUSION_REASON, TRIAGE_POLICY},
 };
@@ -110,7 +110,7 @@ use crate::{
 /// // release that involves database format change) to 3.5.0, including
 /// // all alpha changes finalized in 3.5.0.
 /// ```
-const COMPATIBLE_VERSION_REQ: &str = ">=0.47.0,<0.48.0";
+const COMPATIBLE_VERSION_REQ: &str = ">=0.48.0-alpha.1,<0.48.0-alpha.2";
 
 /// Number of event records applied in each atomic migration write.
 const EVENT_MIGRATION_BATCH_SIZE: usize = 100;
@@ -126,6 +126,16 @@ const COUNTRY_CODE_SWAP_COMPLETED_KEY: &[u8] =
 /// The name of the file recording the database format version.
 const VERSION_FILE_NAME: &str = "VERSION";
 
+/// The first key byte the 0.47 layout of the "operation attempts" column
+/// family reserves for its index entries.
+///
+/// Every record key, an idempotency key and so a non-empty UTF-8 string, sorts
+/// below it, and every index entry starts at or above it. This is the 0.47
+/// layout's reserved byte, written out rather than taken from the live table:
+/// [`migrate_0_47_to_0_48`] describes the layout it migrates, and a later
+/// change to the live layout must not change what it walks.
+const OPERATION_ATTEMPT_RESERVED_V0_47: u8 = 0xf8;
+
 /// The name of the temporary file that [`create_version_file`] renames over
 /// [`VERSION_FILE_NAME`].
 ///
@@ -140,11 +150,17 @@ const VERSION_TMP_FILE_NAME: &str = "VERSION.tmp";
 
 /// Migrates the data directory to the up-to-date format if necessary.
 ///
-/// Migration is supported between released versions only. A prerelease marker,
-/// such as `0.46.0-alpha.1` or `0.47.0-alpha.6`, is refused with "migration
-/// from {version} is not supported": neither `COMPATIBLE_VERSION_REQ` nor any
-/// requirement in the migration table carries a prerelease, so under semver's
-/// matching rule none of them admits it.
+/// Migration is supported from released versions only. The current format's
+/// own marker, `0.48.0-alpha.1`, is accepted as current, and every other
+/// prerelease marker is refused with "migration from {version} is not
+/// supported". Under semver's matching rule a requirement admits a prerelease
+/// marker only when one of its comparators names a prerelease of the same
+/// `major.minor.patch`: `COMPATIBLE_VERSION_REQ` therefore admits exactly
+/// `0.48.0-alpha.1`, the 0.47→0.48 entry's `<0.48.0-alpha.1` bound admits only
+/// the `0.48.0` prereleases below it, which no build wrote, and no other
+/// requirement in the migration table carries a prerelease at all. Every other
+/// prerelease marker, `0.46.0-alpha.1` and `0.47.0-alpha.6` included, is
+/// refused.
 ///
 /// Pass a shared `IP2Location` database handle when available so endpoint
 /// country-code fields can be resolved during the stored event schema
@@ -236,6 +252,11 @@ pub fn migrate_data_dir<P: AsRef<Path>>(
             Version::parse("0.47.0")?,
             |data_dir, _backup_dir, _locator| migrate_0_46_to_0_47(data_dir),
         ),
+        (
+            VersionReq::parse(">=0.47.0,<0.48.0-alpha.1")?,
+            Version::parse("0.48.0-alpha.1")?,
+            |data_dir, _backup_dir, _locator| migrate_0_47_to_0_48(data_dir),
+        ),
     ];
 
     while let Some((_req, to, m)) = migration
@@ -296,6 +317,7 @@ fn migrate_0_46_to_0_47(data_dir: &Path) -> Result<()> {
         &db,
         crate::tables::AGENTS,
         "agent",
+        None,
         &[("0.46", |bytes| {
             bincode::DefaultOptions::new()
                 .deserialize::<AgentValueV0_46>(bytes)
@@ -306,6 +328,7 @@ fn migrate_0_46_to_0_47(data_dir: &Path) -> Result<()> {
         &db,
         crate::tables::EXTERNAL_SERVICES,
         "external service",
+        None,
         &[("0.46", |bytes| {
             bincode::DefaultOptions::new()
                 .deserialize::<ExternalServiceValueV0_46>(bytes)
@@ -315,6 +338,53 @@ fn migrate_0_46_to_0_47(data_dir: &Path) -> Result<()> {
     migrate_country_code_placeholders(&db)?;
     migrate_drop_triage_column_families(&mut db)?;
     Ok(())
+}
+
+/// Migrates a database in the 0.47.x format to 0.48.0-alpha.1.
+///
+/// The one stored-shape change is `failure_kind`, appended to the value of
+/// every operation attempt. This rewrites each attempt still in the 0.47
+/// layout into the 0.48 one, with `failure_kind = Some(Other)` where its
+/// `outcome` is `Failed` and `None` otherwise: 0.47 never recorded why an
+/// attempt failed, and `Other` keeps a failed attempt that still owes a
+/// teardown dischargeable, since the write path refuses a `Failed` row with no
+/// kind. Nothing reconstructs a specific kind.
+///
+/// It walks the record key space of the "operation attempts" family only —
+/// every key below [`OPERATION_ATTEMPT_RESERVED_V0_47`] — and never reads the
+/// index entries above that byte, which share the family but are not records
+/// and do not decode as one. The index entries, the "operation attempt
+/// latest" family, every record key and every other family are left as they
+/// are, and no column family is created or dropped, so the store is opened
+/// with exactly the families it physically holds.
+///
+/// A rerun is safe. `VERSION` is written only after the whole chain succeeds,
+/// so a run interrupted after some batches committed restarts from `0.47.0`;
+/// each value is probed as the 0.48 layout first, and a row already in it,
+/// whatever its kind, is left byte for byte as it is. A store with no
+/// attempts, including one that reaches this step from an older format, has
+/// nothing to do.
+fn migrate_0_47_to_0_48(data_dir: &Path) -> Result<()> {
+    let db_path = data_dir.join("states.db");
+    let mut opts = rocksdb::Options::default();
+    opts.create_if_missing(false);
+    opts.create_missing_column_families(false);
+    let column_families = map_names_for_existing_format(&opts, &db_path)?;
+    let db: rocksdb::OptimisticTransactionDB<rocksdb::SingleThreaded> =
+        rocksdb::OptimisticTransactionDB::open_cf(&opts, &db_path, column_families)
+            .context("failed to open database for the 0.48.0-alpha.1 migration")?;
+
+    migrate_record_layout(
+        &db,
+        crate::tables::OPERATION_ATTEMPTS,
+        "operation attempt",
+        Some(&[OPERATION_ATTEMPT_RESERVED_V0_47]),
+        &[("0.47", |bytes| {
+            bincode::DefaultOptions::new()
+                .deserialize::<OperationAttemptValueV0_47>(bytes)
+                .map(OperationAttemptValueV0_48::from)
+        })],
+    )
 }
 
 /// Drops the "triage policy" and "triage exclusion reason" column families,
@@ -439,6 +509,12 @@ type PreviousLayout<Current> = fn(&[u8]) -> Result<Current, bincode::Error>;
 /// Rewrites every value in `cf_name` that is not already in the `Current`
 /// layout.
 ///
+/// With `upper_bound` set to `Some(bound)`, only values whose key sorts below
+/// `bound` are read or rewritten, and nothing at or above it is touched; with
+/// `None`, the whole column family is. A family that shares its key space
+/// between records and entries of another shape bounds the scan below the
+/// first key the other entries can take.
+///
 /// `Current` is probed first, so a row already in that layout is recognized as
 /// it is and its stored bytes are left untouched; only a row that fails that
 /// probe is read back through `previous`, newest layout first, and rewritten
@@ -461,6 +537,7 @@ fn migrate_record_layout<Current>(
     db: &rocksdb::OptimisticTransactionDB<rocksdb::SingleThreaded>,
     cf_name: &str,
     record: &str,
+    upper_bound: Option<&[u8]>,
     previous: &[(&str, PreviousLayout<Current>)],
 ) -> Result<()>
 where
@@ -478,7 +555,11 @@ where
     let mut converted = 0usize;
     let mut already_current = 0usize;
 
-    for entry in db.iterator_cf(&cf, rocksdb::IteratorMode::Start) {
+    let mut readopts = rocksdb::ReadOptions::default();
+    if let Some(bound) = upper_bound {
+        readopts.set_iterate_upper_bound(bound);
+    }
+    for entry in db.iterator_cf_opt(&cf, readopts, rocksdb::IteratorMode::Start) {
         let (key, value) = entry.with_context(|| format!("failed to read a {record} record"))?;
         let Err(current_error) = bincode::DefaultOptions::new().deserialize::<Current>(&value)
         else {
@@ -1994,14 +2075,15 @@ mod tests {
     use crate::migration::migration_structures::{
         AgentValueV0_46, AgentValueV0_47, BlocklistConnFieldsStoredV0_42,
         ExternalServiceValueV0_46, ExternalServiceValueV0_47, MultiHostPortScanFieldsStoredV0_42,
-        V0_46_COUNTRY_CODE_UNRESOLVED,
+        OperationAttemptValueV0_47, OperationAttemptValueV0_48, V0_46_COUNTRY_CODE_UNRESOLVED,
     };
     use crate::tables::NETWORK_TAGS;
     use crate::test::{DbGuard, acquire_db_permit};
     use crate::{
         Agent, AgentConfig, AgentKind, AgentStatus, CoreComponent, ExternalService,
         ExternalServiceConfig, ExternalServiceKind, ExternalServiceStatus, Indexable, Lifecycle,
-        Store,
+        OperationAction, OperationAttempt, OperationCleanupState, OperationFailureKind,
+        OperationOutcome, OperationPhase, OperationRetryPolicy, Store,
     };
 
     #[derive(Default)]
@@ -2496,8 +2578,8 @@ mod tests {
     ///
     /// Migration is supported between released versions only, as the
     /// `migrate_data_dir` doc comment records. The markers cover older
-    /// prereleases, one of the format migrated from, and the first and last
-    /// of the format migrated to.
+    /// prereleases, the first and last of the 0.47 cycle, and one written by a
+    /// newer build of the current format's cycle.
     #[test]
     fn migration_refuses_unsupported_prerelease_markers() {
         for marker in [
@@ -2506,6 +2588,7 @@ mod tests {
             "0.46.0-alpha.1",
             "0.47.0-alpha.1",
             "0.47.0-alpha.6",
+            "0.48.0-alpha.2",
         ] {
             let data_dir = tempfile::tempdir().unwrap();
             let backup_dir = tempfile::tempdir().unwrap();
@@ -3363,7 +3446,7 @@ mod tests {
         assert_eq!(stored.resp_country_code, crate::COUNTRY_CODE_UNRESOLVED);
         assert_eq!(
             read_version_file(&data_dir.path().join(VERSION_FILE_NAME)).unwrap(),
-            Version::parse("0.47.0").unwrap()
+            Version::parse(env!("CARGO_PKG_VERSION")).unwrap()
         );
     }
 
@@ -4037,11 +4120,13 @@ mod tests {
     /// mirror, so a change to either side of that deliberate coupling fails
     /// here rather than at the next migration.
     ///
-    /// Field-by-field comparison alone would not notice a field appended to a
-    /// live `Value`, because `bincode` ignores bytes left over after the last
-    /// field it was asked for. Re-encoding the pinned layout and demanding the
-    /// same bytes back closes that, and an appended field is exactly the drift
-    /// that would make this migration write values missing it.
+    /// Decoding alone already fails on a field appended to or dropped from
+    /// either side, because [`bincode::DefaultOptions`] rejects both a short
+    /// read and trailing bytes. The field-by-field comparison catches two
+    /// fields of one type trading places, which decodes cleanly. Re-encoding
+    /// the pinned layout and demanding the same bytes back pins the last
+    /// thing: that what the migration writes through the pinned layout is,
+    /// byte for byte, what the live table writes.
     #[test]
     fn pinned_current_layouts_match_live_table_values() {
         use crate::tables::Value as ValueTrait;
@@ -4138,6 +4223,31 @@ mod tests {
         let before = entries_outside_states_db(data_dir.path());
         super::migrate_0_46_to_0_47(data_dir.path()).unwrap();
         assert_eq!(entries_outside_states_db(data_dir.path()), before);
+
+        // The 0.47→0.48 step over a store holding operation attempts in the
+        // 0.47 layout writes nowhere else either.
+        let attempts = operation_attempt_rows()
+            .into_iter()
+            .map(|row| (row.idempotency_key.as_bytes().to_vec(), v0_47_value(&row)))
+            .collect::<Vec<_>>();
+        put_entries(
+            &db_path,
+            crate::tables::MAP_NAMES,
+            crate::tables::OPERATION_ATTEMPTS,
+            &attempts,
+        );
+        let before = entries_outside_states_db(data_dir.path());
+        super::migrate_0_47_to_0_48(data_dir.path()).unwrap();
+        assert_eq!(entries_outside_states_db(data_dir.path()), before);
+        let (records, _) = operation_attempt_families(&db_path);
+        assert_eq!(records.len(), attempts.len());
+        for (_, value) in records {
+            assert!(
+                bincode::DefaultOptions::new()
+                    .deserialize::<OperationAttemptValueV0_48>(&value)
+                    .is_ok()
+            );
+        }
     }
 
     /// Every file under `data_dir` except the `states.db` directory, with its
@@ -6148,5 +6258,602 @@ mod tests {
             .serialize(&expected)
             .expect("serializable");
         assert_eq!(encoded.as_slice(), FIXTURE_BYTES);
+    }
+
+    /// The idempotency keys of the rows [`operation_attempt_rows`] builds.
+    const FAILED_OWING: &str = "op-failed-owing";
+    const FAILED_DONE: &str = "op-failed-done";
+    const SUCCEEDED: &str = "op-succeeded";
+    const ROLLED_BACK: &str = "op-rolled-back";
+    const CANCELLED: &str = "op-cancelled";
+    const LIVE: &str = "op-live";
+    const ONBOARD: &str = "op-onboard";
+
+    /// The host and package the operation-attempt fixtures run on.
+    const ATTEMPT_HOST: &str = "host-a.example";
+    const ATTEMPT_TARGET: &str = "sensor";
+
+    fn attempt_timestamp(secs: i64) -> chrono::DateTime<chrono::Utc> {
+        chrono::DateTime::from_timestamp(secs, 0).unwrap()
+    }
+
+    /// A non-terminal update on `(ATTEMPT_HOST, ATTEMPT_TARGET, instance)`.
+    fn update_attempt(idempotency_key: &str, instance: u32) -> OperationAttempt {
+        OperationAttempt {
+            idempotency_key: idempotency_key.to_string(),
+            host: ATTEMPT_HOST.to_string(),
+            target: ATTEMPT_TARGET.to_string(),
+            instance: Some(instance),
+            action: OperationAction::Update,
+            install_intent: None,
+            package_digest: "sha256:aaa".to_string(),
+            resolved_version: "1.2.3".to_string(),
+            resolved_commit: "c0ffee".to_string(),
+            phase: OperationPhase::Dispatched,
+            cleanup_state: None,
+            started_at: attempt_timestamp(1_700_000_000),
+            retry_policy: OperationRetryPolicy {
+                max_attempts: 5,
+                attempts_made: 1,
+                backoff_seconds: 30,
+            },
+            outcome: None,
+            failure_kind: None,
+            finalized_at: None,
+            expires_at: attempt_timestamp(1_700_086_400),
+            backup_id: Some(instance),
+            pre_update_version: Some("0.47.0".to_string()),
+        }
+    }
+
+    /// The same attempt, terminal with `outcome`: finalized where it owes
+    /// nothing, and carrying `HostDiskSpace` where it failed, which the write
+    /// path demands and the 0.47 layout cannot hold.
+    fn terminated(mut attempt: OperationAttempt, outcome: OperationOutcome) -> OperationAttempt {
+        attempt.phase = OperationPhase::Completed;
+        attempt.outcome = Some(outcome);
+        attempt.failure_kind =
+            (outcome == OperationOutcome::Failed).then_some(OperationFailureKind::HostDiskSpace);
+        if attempt.cleanup_state.is_none() {
+            attempt.finalized_at = Some(attempt_timestamp(1_700_000_900));
+        }
+        attempt
+    }
+
+    /// One row in every state the 0.47→0.48 conversion tells apart: failed
+    /// and still owing a teardown, failed and finalized, each other terminal
+    /// outcome, non-terminal, and an onboarding owing its identity teardown.
+    fn operation_attempt_rows() -> Vec<OperationAttempt> {
+        let mut failed_owing = update_attempt(FAILED_OWING, 1);
+        failed_owing.cleanup_state = Some(OperationCleanupState::PendingDeregister);
+        let onboard = OperationAttempt {
+            idempotency_key: ONBOARD.to_string(),
+            host: "pending.example".to_string(),
+            target: String::new(),
+            instance: None,
+            action: OperationAction::Onboard,
+            install_intent: None,
+            package_digest: String::new(),
+            resolved_version: String::new(),
+            resolved_commit: String::new(),
+            phase: OperationPhase::Pending,
+            cleanup_state: Some(OperationCleanupState::PendingIdentityTeardown),
+            started_at: attempt_timestamp(1_700_000_200),
+            retry_policy: OperationRetryPolicy {
+                max_attempts: 1,
+                attempts_made: 0,
+                backoff_seconds: 0,
+            },
+            outcome: None,
+            failure_kind: None,
+            finalized_at: None,
+            expires_at: attempt_timestamp(1_700_003_800),
+            backup_id: None,
+            pre_update_version: None,
+        };
+        vec![
+            terminated(failed_owing, OperationOutcome::Failed),
+            terminated(update_attempt(FAILED_DONE, 2), OperationOutcome::Failed),
+            terminated(update_attempt(SUCCEEDED, 3), OperationOutcome::Succeeded),
+            terminated(update_attempt(ROLLED_BACK, 4), OperationOutcome::RolledBack),
+            terminated(update_attempt(CANCELLED, 5), OperationOutcome::Cancelled),
+            update_attempt(LIVE, 6),
+            onboard,
+        ]
+    }
+
+    /// The 0.47 encoding of a value the live table wrote: the same fields,
+    /// without the `failure_kind` 0.47 does not have.
+    fn v0_47_encoding(live: &[u8]) -> Vec<u8> {
+        let current: OperationAttemptValueV0_48 =
+            bincode::DefaultOptions::new().deserialize(live).unwrap();
+        let old = OperationAttemptValueV0_47 {
+            host: current.host,
+            target: current.target,
+            instance: current.instance,
+            action: current.action,
+            install_intent: current.install_intent,
+            package_digest: current.package_digest,
+            resolved_version: current.resolved_version,
+            resolved_commit: current.resolved_commit,
+            phase: current.phase,
+            cleanup_state: current.cleanup_state,
+            started_at: current.started_at,
+            retry_policy: current.retry_policy,
+            outcome: current.outcome,
+            finalized_at: current.finalized_at,
+            expires_at: current.expires_at,
+            backup_id: current.backup_id,
+            pre_update_version: current.pre_update_version,
+        };
+        bincode::DefaultOptions::new().serialize(&old).unwrap()
+    }
+
+    /// The 0.47 encoding of `row`, built from its public fields rather than
+    /// through the table, for a store that holds no live table to write it.
+    fn v0_47_value(row: &OperationAttempt) -> Vec<u8> {
+        let old = OperationAttemptValueV0_47 {
+            host: row.host.clone(),
+            target: row.target.clone(),
+            instance: row.instance,
+            action: row.action,
+            install_intent: row.install_intent,
+            package_digest: row.package_digest.clone(),
+            resolved_version: row.resolved_version.clone(),
+            resolved_commit: row.resolved_commit.clone(),
+            phase: row.phase,
+            cleanup_state: row.cleanup_state,
+            started_at: row.started_at,
+            retry_policy: row.retry_policy,
+            outcome: row.outcome,
+            finalized_at: row.finalized_at,
+            expires_at: row.expires_at,
+            backup_id: row.backup_id,
+            pre_update_version: row.pre_update_version.clone(),
+        };
+        bincode::DefaultOptions::new().serialize(&old).unwrap()
+    }
+
+    /// Every entry of `cf_name`, in key order.
+    fn all_entries(db: &rocksdb::OptimisticTransactionDB, cf_name: &str) -> Entries {
+        let cf = db.cf_handle(cf_name).unwrap();
+        db.iterator_cf(&cf, rocksdb::IteratorMode::Start)
+            .map(|entry| {
+                let (key, value) = entry.unwrap();
+                (key.to_vec(), value.to_vec())
+            })
+            .collect()
+    }
+
+    /// Every entry of both operation-attempt families, the records, index
+    /// entries and latest pointers alike.
+    fn operation_attempt_families(db_path: &Path) -> (Entries, Entries) {
+        let db = open_states_db(db_path, crate::tables::MAP_NAMES);
+        (
+            all_entries(&db, crate::tables::OPERATION_ATTEMPTS),
+            all_entries(&db, crate::tables::OPERATION_ATTEMPT_LATEST),
+        )
+    }
+
+    /// The index entries of the "operation attempts" family, at or above its
+    /// reserved byte, and every latest pointer.
+    fn operation_attempt_index_entries(db_path: &Path) -> (Entries, Entries) {
+        let (attempts, latest) = operation_attempt_families(db_path);
+        let indexes = attempts
+            .into_iter()
+            .filter(|(key, _)| {
+                key.first()
+                    .is_some_and(|lead| *lead >= super::OPERATION_ATTEMPT_RESERVED_V0_47)
+            })
+            .collect();
+        (indexes, latest)
+    }
+
+    /// Writes `rows` through the live table, so every index entry and latest
+    /// pointer is the one the table writes — and 0.47.0 wrote, since this
+    /// change alters no key — then rewrites the record of each row not named
+    /// in `keep_current` into the 0.47 layout and marks both directories
+    /// `0.47.0`.
+    fn operation_attempt_store_v0_47(
+        data_dir: &Path,
+        backup_dir: &Path,
+        rows: &[OperationAttempt],
+        keep_current: &[&str],
+    ) {
+        {
+            let store = Store::new(data_dir, backup_dir, None).unwrap();
+            let table = store.operation_attempt_map();
+            for row in rows {
+                table.upsert(row).unwrap();
+            }
+        }
+
+        let db = open_states_db(&data_dir.join("states.db"), crate::tables::MAP_NAMES);
+        let cf = db.cf_handle(crate::tables::OPERATION_ATTEMPTS).unwrap();
+        for row in rows {
+            if keep_current.contains(&row.idempotency_key.as_str()) {
+                continue;
+            }
+            let key = row.idempotency_key.as_bytes();
+            let live = db.get_cf(&cf, key).unwrap().unwrap();
+            db.put_cf(&cf, key, v0_47_encoding(&live)).unwrap();
+        }
+        drop(db);
+        write_version(data_dir, "0.47.0");
+        write_version(backup_dir, "0.47.0");
+    }
+
+    /// The row as 0.48 reads it after the migration: `Other` where it failed,
+    /// and no kind otherwise.
+    fn migrated(mut row: OperationAttempt) -> OperationAttempt {
+        row.failure_kind =
+            (row.outcome == Some(OperationOutcome::Failed)).then_some(OperationFailureKind::Other);
+        row
+    }
+
+    /// Decodes the committed fixture of one operation attempt as the released
+    /// 0.47.0 layout stores it, and re-encodes it.
+    ///
+    /// The fixture was produced once, by the unmodified 0.47.0 `Value`, before
+    /// `failure_kind` was added; the code that wrote it no longer exists, so
+    /// it is never regenerated. It pins [`OperationAttemptValueV0_47`] to the
+    /// release, and the 0.48 encoding of the same row to that one followed by
+    /// the `failure_kind` bytes alone.
+    #[test]
+    fn operation_attempt_v0_47_matches_literal_fixture() {
+        const FIXTURE_BYTES: &[u8] =
+            include_bytes!("../tests/fixtures/operation_attempt_v0_47_literal.bin");
+
+        let expected = OperationAttemptValueV0_47 {
+            host: "host-a.example".to_string(),
+            target: "sensor".to_string(),
+            instance: Some(7),
+            action: OperationAction::Install,
+            install_intent: Some([0xab; 32]),
+            package_digest: "sha256:0123456789abcdef".to_string(),
+            resolved_version: "1.2.3".to_string(),
+            resolved_commit: "c0ffee".to_string(),
+            phase: OperationPhase::AwaitingReport,
+            cleanup_state: Some(OperationCleanupState::PendingDeregister),
+            started_at: chrono::DateTime::from_timestamp(1_700_000_000, 123_456_789).unwrap(),
+            retry_policy: OperationRetryPolicy {
+                max_attempts: 5,
+                attempts_made: 2,
+                backoff_seconds: 30,
+            },
+            outcome: Some(OperationOutcome::Failed),
+            finalized_at: Some(
+                chrono::DateTime::from_timestamp(1_700_000_500, 987_654_321).unwrap(),
+            ),
+            expires_at: chrono::DateTime::from_timestamp(1_700_086_400, 42).unwrap(),
+            backup_id: Some(9),
+            pre_update_version: Some("0.46.0".to_string()),
+        };
+
+        let decoded: OperationAttemptValueV0_47 = bincode::DefaultOptions::new()
+            .deserialize(FIXTURE_BYTES)
+            .unwrap();
+        assert_eq!(decoded, expected);
+        assert_eq!(
+            bincode::DefaultOptions::new().serialize(&decoded).unwrap(),
+            FIXTURE_BYTES
+        );
+        // A 0.47 value is not a 0.48 one: it ends where `failure_kind` starts.
+        assert!(
+            bincode::DefaultOptions::new()
+                .deserialize::<OperationAttemptValueV0_48>(FIXTURE_BYTES)
+                .is_err()
+        );
+
+        // The conversion keeps every field and, the row having failed, gives
+        // it `Other`: index 9 behind the `Some` tag. The 0.48 encoding is the
+        // 0.47 one followed by those bytes and nothing else.
+        let converted = OperationAttemptValueV0_48::from(decoded);
+        assert_eq!(converted.failure_kind, Some(OperationFailureKind::Other));
+        let encoded = bincode::DefaultOptions::new()
+            .serialize(&converted)
+            .unwrap();
+        assert_eq!(encoded.strip_prefix(FIXTURE_BYTES), Some(&[1, 9][..]));
+        // And a 0.48 value is not a 0.47 one: its trailing bytes are refused.
+        assert!(
+            bincode::DefaultOptions::new()
+                .deserialize::<OperationAttemptValueV0_47>(&encoded)
+                .is_err()
+        );
+
+        let mut without_kind = converted;
+        without_kind.failure_kind = None;
+        let encoded = bincode::DefaultOptions::new()
+            .serialize(&without_kind)
+            .unwrap();
+        assert_eq!(encoded.strip_prefix(FIXTURE_BYTES), Some(&[0][..]));
+    }
+
+    /// The conversion gives `Other` to a failed attempt and no kind to any
+    /// other, a non-terminal one included.
+    #[test]
+    fn operation_attempt_conversion_derives_the_kind_from_the_outcome() {
+        let fixture: OperationAttemptValueV0_47 = bincode::DefaultOptions::new()
+            .deserialize(include_bytes!(
+                "../tests/fixtures/operation_attempt_v0_47_literal.bin"
+            ))
+            .unwrap();
+        for (outcome, expected) in [
+            (
+                Some(OperationOutcome::Failed),
+                Some(OperationFailureKind::Other),
+            ),
+            (Some(OperationOutcome::Succeeded), None),
+            (Some(OperationOutcome::RolledBack), None),
+            (Some(OperationOutcome::Cancelled), None),
+            (None, None),
+        ] {
+            let mut old = fixture.clone();
+            old.outcome = outcome;
+            let converted = OperationAttemptValueV0_48::from(old.clone());
+            assert_eq!(converted.failure_kind, expected, "{outcome:?}");
+            assert_eq!(converted.outcome, outcome);
+            assert_eq!(converted.host, old.host);
+            assert_eq!(converted.pre_update_version, old.pre_update_version);
+            // Every field but the kind is copied as it was.
+            let mut encoded = bincode::DefaultOptions::new()
+                .serialize(&converted)
+                .unwrap();
+            encoded.truncate(encoded.len() - if expected.is_some() { 2 } else { 1 });
+            assert_eq!(
+                encoded,
+                bincode::DefaultOptions::new().serialize(&old).unwrap()
+            );
+        }
+    }
+
+    #[test]
+    fn migration_from_v0_47_records_a_failure_kind() {
+        let _permit = acquire_db_permit();
+        let data_dir = tempfile::tempdir().unwrap();
+        let backup_dir = tempfile::tempdir().unwrap();
+        let db_path = data_dir.path().join("states.db");
+        let rows = operation_attempt_rows();
+        operation_attempt_store_v0_47(data_dir.path(), backup_dir.path(), &rows, &[]);
+
+        // Every record is now in the 0.47 layout, which 0.48 cannot read.
+        let (records_before, _) = operation_attempt_families(&db_path);
+        for (key, value) in &records_before {
+            if key.first() < Some(&super::OPERATION_ATTEMPT_RESERVED_V0_47) {
+                assert!(
+                    bincode::DefaultOptions::new()
+                        .deserialize::<OperationAttemptValueV0_47>(value)
+                        .is_ok()
+                );
+            }
+        }
+        let indexes_before = operation_attempt_index_entries(&db_path);
+        // An `expires_at` entry for each of the seven rows, a non-terminal one
+        // for the live row and the onboarding, an owed-cleanup one for the
+        // two owing a teardown, and a latest pointer for each finalized row.
+        assert_eq!(indexes_before.0.len(), 7 + 2 + 2);
+        assert_eq!(indexes_before.1.len(), 4);
+        let other_families_before = {
+            let db = open_states_db(&db_path, crate::tables::MAP_NAMES);
+            let names = crate::tables::MAP_NAMES
+                .iter()
+                .filter(|name| {
+                    **name != crate::tables::OPERATION_ATTEMPTS
+                        && **name != crate::tables::OPERATION_ATTEMPT_LATEST
+                })
+                .collect::<Vec<_>>();
+            names
+                .into_iter()
+                .map(|name| all_entries(&db, name))
+                .collect::<Vec<_>>()
+        };
+
+        migrate_data_dir(data_dir.path(), backup_dir.path(), None).unwrap();
+
+        let current = Version::parse(env!("CARGO_PKG_VERSION")).unwrap();
+        assert_eq!(
+            read_version_file(&data_dir.path().join(VERSION_FILE_NAME)).unwrap(),
+            current
+        );
+        assert_eq!(
+            read_version_file(&backup_dir.path().join(VERSION_FILE_NAME)).unwrap(),
+            current
+        );
+        // No index entry, latest pointer, other family or family name moved.
+        assert_eq!(operation_attempt_index_entries(&db_path), indexes_before);
+        {
+            let db = open_states_db(&db_path, crate::tables::MAP_NAMES);
+            let after = crate::tables::MAP_NAMES
+                .iter()
+                .filter(|name| {
+                    **name != crate::tables::OPERATION_ATTEMPTS
+                        && **name != crate::tables::OPERATION_ATTEMPT_LATEST
+                })
+                .map(|name| all_entries(&db, name))
+                .collect::<Vec<_>>();
+            assert_eq!(after, other_families_before);
+        }
+        let mut families = super::existing_map_names(&rocksdb::Options::default(), &db_path)
+            .unwrap()
+            .into_iter()
+            .collect::<Vec<_>>();
+        families.sort_unstable();
+        let mut expected_families = crate::tables::MAP_NAMES
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>();
+        expected_families.sort_unstable();
+        assert_eq!(families, expected_families);
+
+        let store = Store::new(data_dir.path(), backup_dir.path(), None).unwrap();
+        let table = store.operation_attempt_map();
+        for row in &rows {
+            assert_eq!(
+                table.get(&row.idempotency_key).unwrap(),
+                Some(migrated(row.clone())),
+                "{}",
+                row.idempotency_key
+            );
+        }
+        assert_eq!(
+            table.get(FAILED_OWING).unwrap().unwrap().failure_kind,
+            Some(OperationFailureKind::Other)
+        );
+        assert_eq!(
+            table.get(FAILED_DONE).unwrap().unwrap().failure_kind,
+            Some(OperationFailureKind::Other)
+        );
+
+        // The failed attempt that still owed a teardown can be discharged,
+        // carrying the kind the migration gave it.
+        let mut discharged = table.get(FAILED_OWING).unwrap().unwrap();
+        discharged.cleanup_state = None;
+        discharged.finalized_at = Some(attempt_timestamp(1_700_001_000));
+        table.upsert(&discharged).unwrap();
+        assert_eq!(
+            table
+                .attempt_owing_cleanup(ATTEMPT_TARGET, ATTEMPT_HOST, Some(1))
+                .unwrap(),
+            None
+        );
+        let latest = table
+            .latest_attempt(ATTEMPT_HOST, ATTEMPT_TARGET, Some(1))
+            .unwrap()
+            .unwrap();
+        assert_eq!(latest, discharged);
+        assert_eq!(latest.failure_kind, Some(OperationFailureKind::Other));
+    }
+
+    #[test]
+    fn migration_from_v0_47_is_rerun_safe() {
+        let _permit = acquire_db_permit();
+        let data_dir = tempfile::tempdir().unwrap();
+        let backup_dir = tempfile::tempdir().unwrap();
+        let db_path = data_dir.path().join("states.db");
+        operation_attempt_store_v0_47(
+            data_dir.path(),
+            backup_dir.path(),
+            &operation_attempt_rows(),
+            &[],
+        );
+        migrate_data_dir(data_dir.path(), backup_dir.path(), None).unwrap();
+
+        let migrated_store = operation_attempt_families(&db_path);
+        super::migrate_0_47_to_0_48(data_dir.path()).unwrap();
+        assert_eq!(operation_attempt_families(&db_path), migrated_store);
+    }
+
+    #[test]
+    fn migration_from_a_partly_migrated_v0_47_store_rewrites_only_old_rows() {
+        let _permit = acquire_db_permit();
+        let data_dir = tempfile::tempdir().unwrap();
+        let backup_dir = tempfile::tempdir().unwrap();
+        let db_path = data_dir.path().join("states.db");
+        let rows = operation_attempt_rows();
+        // A run interrupted after converting these two left them in the 0.48
+        // layout, the failed one with a kind other than `Other`, and the
+        // markers at `0.47.0`.
+        let already = [FAILED_OWING, SUCCEEDED];
+        operation_attempt_store_v0_47(data_dir.path(), backup_dir.path(), &rows, &already);
+        let (before, _) = operation_attempt_families(&db_path);
+
+        migrate_data_dir(data_dir.path(), backup_dir.path(), None).unwrap();
+
+        let (after, _) = operation_attempt_families(&db_path);
+        assert_eq!(after.len(), before.len());
+        for ((key, old), (new_key, new)) in before.iter().zip(&after) {
+            assert_eq!(key, new_key);
+            let untouched = key.first() >= Some(&super::OPERATION_ATTEMPT_RESERVED_V0_47)
+                || already.iter().any(|name| name.as_bytes() == key.as_slice());
+            assert_eq!(old == new, untouched, "{}", String::from_utf8_lossy(key));
+        }
+
+        let store = Store::new(data_dir.path(), backup_dir.path(), None).unwrap();
+        let table = store.operation_attempt_map();
+        for row in rows {
+            let expected = if already.contains(&row.idempotency_key.as_str()) {
+                row.clone()
+            } else {
+                migrated(row.clone())
+            };
+            assert_eq!(table.get(&row.idempotency_key).unwrap(), Some(expected));
+        }
+        assert_eq!(
+            table.get(FAILED_OWING).unwrap().unwrap().failure_kind,
+            Some(OperationFailureKind::HostDiskSpace)
+        );
+    }
+
+    #[test]
+    fn migration_from_v0_47_rejects_an_operation_attempt_matching_neither_layout() {
+        let data_dir = tempfile::tempdir().unwrap();
+        let backup_dir = tempfile::tempdir().unwrap();
+        let db_path = data_dir.path().join("states.db");
+        create_states_db(&db_path, crate::tables::MAP_NAMES);
+        let key = b"op-foreign".to_vec();
+        put_entries(
+            &db_path,
+            crate::tables::MAP_NAMES,
+            crate::tables::OPERATION_ATTEMPTS,
+            &[(key.clone(), FOREIGN_VALUE.to_vec())],
+        );
+        write_version(data_dir.path(), "0.47.0");
+        write_version(backup_dir.path(), "0.47.0");
+
+        let error = migrate_data_dir(data_dir.path(), backup_dir.path(), None).unwrap_err();
+        let message = format!("{error:#}");
+        assert!(message.contains("operation attempt"), "{message}");
+        assert!(
+            message.contains(&data_encoding::HEXLOWER.encode(&key)),
+            "{message}"
+        );
+        assert!(message.contains("current schema error"), "{message}");
+        assert!(
+            message.contains("previous schema error (0.47)"),
+            "{message}"
+        );
+
+        let marker = Version::parse("0.47.0").unwrap();
+        assert_eq!(
+            read_version_file(&data_dir.path().join(VERSION_FILE_NAME)).unwrap(),
+            marker
+        );
+        assert_eq!(
+            read_version_file(&backup_dir.path().join(VERSION_FILE_NAME)).unwrap(),
+            marker
+        );
+        assert_eq!(
+            raw_value(
+                &db_path,
+                crate::tables::MAP_NAMES,
+                crate::tables::OPERATION_ATTEMPTS,
+                &key
+            ),
+            Some(FOREIGN_VALUE.to_vec()),
+            "the unreadable value must be left as it was"
+        );
+    }
+
+    /// A store with no operation attempts at all has nothing for the step to
+    /// do, and reaches the current format.
+    #[test]
+    fn migration_from_v0_47_without_operation_attempts() {
+        let data_dir = tempfile::tempdir().unwrap();
+        let backup_dir = tempfile::tempdir().unwrap();
+        let db_path = data_dir.path().join("states.db");
+        create_states_db(&db_path, crate::tables::MAP_NAMES);
+        write_version(data_dir.path(), "0.47.0");
+        write_version(backup_dir.path(), "0.47.0");
+
+        migrate_data_dir(data_dir.path(), backup_dir.path(), None).unwrap();
+
+        assert_eq!(
+            read_version_file(&data_dir.path().join(VERSION_FILE_NAME)).unwrap(),
+            Version::parse(env!("CARGO_PKG_VERSION")).unwrap()
+        );
+        assert_eq!(
+            operation_attempt_families(&db_path),
+            (Vec::new(), Vec::new())
+        );
     }
 }

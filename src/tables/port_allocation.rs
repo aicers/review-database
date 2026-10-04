@@ -811,8 +811,8 @@ mod tests {
     use crate::tables::operation_attempt::AddressAllocationError;
     use crate::tables::{
         BuildSelector, InstallIntent, InstanceAllocation, InstanceAllocationError, OperationAction,
-        OperationCleanupState, OperationOnFailure, OperationOutcome, OperationPhase,
-        OperationRetryPolicy,
+        OperationCleanupState, OperationFailureKind, OperationOnFailure, OperationOutcome,
+        OperationPhase, OperationRetryPolicy,
     };
     use crate::test::{DbGuard, acquire_db_permit};
 
@@ -987,6 +987,7 @@ mod tests {
                 backoff_seconds: 30,
             },
             outcome: None,
+            failure_kind: None,
             expires_at: timestamp(1_700_086_400),
             backup_id: None,
             pre_update_version: None,
@@ -1035,6 +1036,9 @@ mod tests {
         }
         attempt.phase = OperationPhase::Completed;
         attempt.outcome = Some(outcome);
+        // A failed attempt records why, and no other outcome does.
+        attempt.failure_kind =
+            (outcome == OperationOutcome::Failed).then_some(OperationFailureKind::ServiceFailed);
         attempt.finalized_at = Some(timestamp(1_700_000_500));
         attempt
     }
