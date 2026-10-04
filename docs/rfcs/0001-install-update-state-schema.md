@@ -4,7 +4,10 @@
 (v0.46.0; DB format `COMPATIBLE_VERSION_REQ = ">=0.46.0,<0.47.0"`).
 Re-verify before relying.
 
-**Status:** Accepted; implementation is decomposed from §6.
+**Status:** Accepted; implementation is decomposed from §6. Amended
+2026-10-04 by [#940](https://github.com/aicers/review-database/issues/940):
+`operation_attempt.failure_kind` (§4d, §4f, §6 item 7); the crate is at the
+released `0.47.0`, so §4f's alpha targets are historical.
 `aicers/review-database` is an aicers repo (in-repo issue flow,
 AgentCoop-decomposable, no external gate). The D set is `review-database`
 (this doc, D1), `review` (D2),
@@ -458,6 +461,20 @@ The manager (review) and the API (review-web) consume these types:
     window. `None` for every other attempt. (These two are core-update-scoped,
     not package-scoped, so they use `Option` rather than the empty-string
     convention above; both use the same encoding as each other.)
+  - **`failure_kind: Option<FailureKind>`** (2026-10-04) — why an attempt that
+    finalized `Failed` failed, as a closed remedy group: `HostDiskSpace`,
+    `HostAgentUnsupported`, `HostNotPrepared`, `UnmanagedInstance`,
+    `ServiceFailed`, `NotApplied`, `TrustAnchorRefused`, `BuildNotServable`,
+    `NoConfirmation` and `Other`. **It is `Some` if and only if `outcome` is
+    `Some(Failed)`**, and the write path behind `Table::upsert` refuses a row
+    that says otherwise, as it does for `finalized_at`. Which failure maps to
+    which kind is review's (RFC-D2 §4b); this crate stores the value, with one
+    exception it decides itself: `Table::sweep_expired`, which finalizes an
+    expired attempt `Failed` inside this crate, writes `NoConfirmation`. The
+    type is re-exported as `OperationFailureKind`, as `Outcome` is as
+    `OperationOutcome`. Its stored encoding is the variant index, as for
+    `Action`, so a kind is appended and never inserted or reordered, and
+    appending one leaves existing rows readable without a format change.
 - **Why these fields (do not trim):** `target` is host-agnostic but modules /
   roxyd / core components apply **per host**, so without `host` +
   `instance` + resolved `(version, commit)` + `idempotency_key`,
@@ -836,6 +853,26 @@ The manager (review) and the API (review-web) consume these types:
     RFC-D2 §4e.
 - Follow the existing style-guide cases in the `migration.rs` doc comment for
   choosing the version range.
+
+- **[DECISION, 2026-10-04] Adding `failure_kind` is a stored-shape change, and
+  `0.47.0` is released, so it opens a new step rather than extending
+  `migrate_0_46_to_0_47`.** The bullets above that target a `0.47.0` alpha and
+  widen the 0.46 step describe the cycle that ended with the `0.47.0` release,
+  and do not apply here. Following case 6 of the `migration.rs` doc comment,
+  `COMPATIBLE_VERSION_REQ` becomes `">=0.48.0-alpha.1,<0.48.0-alpha.2"` and the
+  table gains
+  `(">=0.47.0,<0.48.0-alpha.1", 0.48.0-alpha.1, migrate_0_47_to_0_48)`, in the
+  same change as the shape; if another shape change has already opened the 0.48
+  cycle, extend its step and move to the next alpha instead. The step walks the
+  `operation_attempt` records only — the range below the reserved index byte
+  that `Table::iter` uses, not `migrate_record_layout` over the whole family,
+  whose index entries do not decode as records — and rewrites each 0.47-layout
+  row with `failure_kind = Some(Other)` where `outcome` is `Some(Failed)` and
+  `None` otherwise, leaving rows already in the new layout as they are. That is
+  the whole migration. The store holds the whole Central Manager database, so
+  the format rule applies regardless of install state; `Other` keeps the
+  invariant true for every row, so a migrated `Failed` attempt that still owes a
+  teardown can still be discharged; and nothing reconstructs a specific kind.
 
 ### 4g-bis. Bind-address allocation
 
@@ -1271,6 +1308,16 @@ Dependency order within this repo:
    `CARGO_PKG_VERSION`, so it cannot serve this. Without it, a rolled-back
    REView faces a `0.47.0` marker over restored `0.46.0` content and refuses to
    start (§4f). Includes the marker round-trip test in §5. Depends on 5.
+
+7. **`failure_kind` on `operation_attempt`** (§4d, §4f, 2026-10-04) — the
+   `FailureKind` enum re-exported as `OperationFailureKind`, the field, the
+   write path's refusal of a row whose `failure_kind` and `outcome` disagree,
+   `sweep_expired` writing `NoConfirmation`, and the `migrate_0_47_to_0_48` step
+   of §4f, with a migration test from a released `0.47.0` store holding a
+   `Failed` row that owes a teardown — it migrates to `Some(Other)` and its
+   discharge is then accepted — and a rerun over an already-migrated store.
+   review writes the field (RFC-D2 §4b) and review-web exposes it (RFC-D3 §5b).
+   Builds on 4–6, released in `0.47.0`.
 
 Issues 3 and 4 build the table logic independently of each other and of 1–2,
 but their **CF registration is deferred to issue 5**, which lands last (it
