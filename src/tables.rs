@@ -91,9 +91,10 @@ pub use self::node::{
 };
 pub use self::operation_attempt::{
     Action as OperationAction, AddressAllocationError, BuildSelector,
-    CleanupState as OperationCleanupState, InstallIntent, OnFailure as OperationOnFailure,
-    OperationAttempt, Outcome as OperationOutcome, Phase as OperationPhase, RequestKeyError,
-    RetentionBound as OperationRetentionBound, RetryPolicy as OperationRetryPolicy,
+    CleanupState as OperationCleanupState, FailureKind as OperationFailureKind, InstallIntent,
+    OnFailure as OperationOnFailure, OperationAttempt, Outcome as OperationOutcome,
+    Phase as OperationPhase, RequestKeyError, RetentionBound as OperationRetentionBound,
+    RetryPolicy as OperationRetryPolicy,
 };
 pub use self::outlier_info::{Key as OutlierInfoKey, OutlierInfo, Value as OutlierInfoValue};
 pub use self::port_allocation::{

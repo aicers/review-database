@@ -587,8 +587,8 @@ mod tests {
 
     use super::*;
     use crate::tables::{
-        BuildSelector, InstallIntent, OperationCleanupState, OperationOnFailure, OperationPhase,
-        OperationRetryPolicy,
+        BuildSelector, InstallIntent, OperationCleanupState, OperationFailureKind,
+        OperationOnFailure, OperationPhase, OperationRetryPolicy,
     };
     use crate::test::{DbGuard, acquire_db_permit};
 
@@ -721,6 +721,7 @@ mod tests {
                 backoff_seconds: 30,
             },
             outcome: None,
+            failure_kind: None,
             expires_at: timestamp(1_700_086_400),
             backup_id: None,
             pre_update_version: None,
@@ -745,6 +746,9 @@ mod tests {
         }
         attempt.phase = OperationPhase::Completed;
         attempt.outcome = Some(outcome);
+        // A failed attempt records why, and no other outcome does.
+        attempt.failure_kind =
+            (outcome == OperationOutcome::Failed).then_some(OperationFailureKind::ServiceFailed);
         attempt.finalized_at = Some(timestamp(1_700_000_500));
         attempt
     }
@@ -809,6 +813,22 @@ mod tests {
             .into_iter()
             .map(|row| row.instance)
             .collect()
+    }
+
+    /// An allocating install whose failure kind disagrees with its outcome is
+    /// refused by the same write-path check as every other row write, and
+    /// the refusal takes no number and stores no row.
+    #[test]
+    fn an_allocation_carrying_a_failure_kind_without_failing_is_refused() {
+        let test_db = TestDb::new();
+        let table = test_db.table();
+
+        let mut attempt = install("attempt-kind", None);
+        attempt.failure_kind = Some(OperationFailureKind::Other);
+        let refused = test_db.attempts().allocate_instance(&attempt, &intent());
+        assert!(matches!(refused, Err(InstanceAllocationError::Database(_))));
+        assert_eq!(table.allocated(HOST, COMPONENT).unwrap(), Vec::new());
+        assert_eq!(test_db.attempts().get(&key("attempt-kind")).unwrap(), None);
     }
 
     /// The owning idempotency key is what identifies the attempt that holds
@@ -1624,6 +1644,7 @@ mod tests {
         assert_eq!(table.allocated(HOST, "review").unwrap(), Vec::new());
         attempt.phase = OperationPhase::Completed;
         attempt.outcome = Some(OperationOutcome::Failed);
+        attempt.failure_kind = Some(OperationFailureKind::ServiceFailed);
         attempt.finalized_at = Some(timestamp(1_700_000_500));
         attempts.upsert(&attempt).unwrap();
         assert_eq!(table.allocated(HOST, "review").unwrap(), Vec::new());
