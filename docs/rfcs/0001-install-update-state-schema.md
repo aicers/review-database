@@ -7,7 +7,10 @@ Re-verify before relying.
 **Status:** Accepted; implementation is decomposed from §6. Amended
 2026-10-04 by [#940](https://github.com/aicers/review-database/issues/940):
 `operation_attempt.failure_kind` (§4d, §4f, §6 item 7); the crate is at the
-released `0.47.0`, so §4f's alpha targets are historical.
+released `0.47.0`, so §4f's alpha targets are historical. Amended
+2026-10-05: the configuration template an install is submitted with,
+`config_template` on `InstallIntent` and `operation_attempt` (§4d amendment,
+§4f, §5, §6 item 8).
 `aicers/review-database` is an aicers repo (in-repo issue flow,
 AgentCoop-decomposable, no external gate). The D set is `review-database`
 (this doc, D1), `review` (D2),
@@ -334,7 +337,10 @@ The manager (review) and the API (review-web) consume these types:
       `<ip>:<port>`, an IPv6 address in square brackets, lowercase, RFC 5952
       compressed — named explicitly so no implementation re-derives it.
       **`None` and an empty list are distinct**: `None` encodes count
-      `u32::MAX`, an empty list encodes count `0`.
+      `u32::MAX`, an empty list encodes count `0`;
+    - (2026-10-05) the `config_template` id, last: `None` encodes the length
+      word `u32::MAX` with no bytes following, and `Some(id)` is
+      length-prefixed like every other segment (§4d amendment below).
 
     Every length and count is `u32` big-endian and fixed width, so no field
     boundary can shift. Nothing else enters the transcript — not the instance
@@ -475,6 +481,10 @@ The manager (review) and the API (review-web) consume these types:
     `OperationOutcome`. Its stored encoding is the variant index, as for
     `Action`, so a kind is appended and never inserted or reordered, and
     appending one leaves existing rows readable without a format change.
+  - **`config_template: Option<String>`** (2026-10-05) — the deploy-core
+    configuration template id an install was submitted with; `None` for an
+    install without one and for every other action. Persisted because a
+    re-sent install is rebuilt from the row (§4d amendment below).
 - **Why these fields (do not trim):** `target` is host-agnostic but modules /
   roxyd / core components apply **per host**, so without `host` +
   `instance` + resolved `(version, commit)` + `idempotency_key`,
@@ -667,6 +677,108 @@ The manager (review) and the API (review-web) consume these types:
     RFC-D2 §4d).
   RFC-D3's single-flight and RFC-D2's blocking guards read **these**, not
   process state.
+
+#### 4d amendment (2026-10-05): the configuration template an install carries
+
+The Unsupervised Engine (reconverge) cannot start from a configuration file
+that holds only bind addresses, so its first install now carries a
+**configuration template**: one entry of a compile-time catalog in deploy-core
+(module `config_template`), picked by id by the operator and rendered by roxyd
+with host values under its render-once rule. review-protocol's
+`NodePackageRequest::Install` gains `config_template: Option<String>` (the id),
+and REView's `installService` gains an optional `configTemplate`. REView links
+deploy-core and owns every catalog check at the mutation boundary: a target
+that requires a template (today reconverge alone) refuses a request without
+one, a target that does not refuses a request carrying one, and an id not in
+the target's catalog is refused. Updates never carry one. This crate's part is
+narrower — make the id part of what "the same request" means, and keep it on
+the attempt so a re-sent attempt sends the same `Install` — and it is stated
+here in full.
+
+- **[DECISION] `InstallIntent` (`src/tables/operation_attempt.rs`) gains
+  `config_template: Option<String>`** — the id as submitted, `None` for an
+  install submitted without one. It enters the transcript **last, after the
+  bind addresses**, by the transcript's own absent-versus-present convention:
+  `bind_addrs` reserves the count `u32::MAX` for `None`
+  (`ABSENT_BIND_ADDRS`), and `config_template` reserves the **length word**
+  `u32::MAX` the same way. `None` encodes as that word with no bytes after
+  it; `Some(id)` encodes as every other segment, a `u32` big-endian byte
+  length followed by the UTF-8 bytes. So an absent template and any present
+  id — the empty string included, though no catalog id is empty — hash
+  differently, and an id `u32::MAX` bytes long is refused, as an over-long
+  `bind_addrs` list is.
+- **A reused request key with a different template is `RequestKeyReused`
+  through the digest**, exactly as a different bind-address map is: with one
+  template and with another, or with one and without, are different digests,
+  and the existing comparison refuses the second. The store compares no
+  template field of its own for this.
+- **[DECISION] The golden vector is regenerated, and no digest compatibility
+  is kept.** This is the first version: the manager and its agents ship
+  together. The domain tag stays `clumit-install-intent-v1`. A digest a
+  `0.48.x` store already holds was taken over the shorter transcript, so a
+  resubmission of a request key whose row predates the change hashes
+  differently and is refused `RequestKeyReused`; that one-time refusal across
+  the upgrade is accepted rather than engineered around.
+- **[DECISION] `OperationAttempt` persists `config_template:
+  Option<String>`**, because REView rebuilds a re-sent `Install` from the row
+  (review `src/deploy/recovery.rs`, `prepare_resend`), and the row holds only
+  the **digest** of the request, which cannot be inverted. The bind addresses
+  need no such field: each allocation row carries the full `SocketAddr`, and
+  the re-send rebuilds the map from the rows under the attempt's own key
+  (`restore_bind_addrs` → `PortAllocation` `allocated_by(idempotency_key)`,
+  §4g-bis). A template has no allocation row and nothing else holds it, so it
+  is a column of the attempt. It cannot be dropped the way `on_failure` is —
+  `prepare_resend` deliberately re-sends `Rollback`, since `on_failure` is not
+  persisted — because a re-send whose first send never reached roxyd **is**
+  the first install, and without the template roxyd would write the
+  bind-address-only file reconverge cannot start from.
+  - **`Some` only under `Action::Install`.** The write path
+    (`write_with_transaction`) refuses a row carrying a template under any
+    other action, as it refuses an `install_intent` under one. `None` is a
+    valid install: every target but reconverge installs without one.
+  - **The id is stored verbatim and not validated here.** This crate does not
+    link deploy-core; the catalog, its id shape and which targets require a
+    template are REView's checks (above). A row that names an id the catalog
+    no longer holds is still re-sent as recorded, and roxyd's own refusal of
+    an unknown id answers it.
+  - **The attempt and the request are tied, as for host and target.**
+    `check_request` already refuses a request whose `host` or `target`
+    differs from the attempt it is presented with; it refuses one whose
+    `config_template` differs in the same way, before anything is taken. The
+    digest comparison alone would not catch it — it compares the request
+    with the stored digest, not with the attempt's own columns — and a row
+    whose template disagrees with its digest would re-send a template the
+    key never answered for.
+  - A key that already names an attempt returns that row as stored,
+    template included; nothing here changes that rule.
+- **[DECISION] Adding the column is a stored-shape change after a release, so
+  it opens a new format step.** The stored `Value` gains
+  `config_template: Option<Cow<str>>` **appended last**, so a `0.48` encoding
+  stays a strict prefix of the new one. `0.48.0` is released
+  (`COMPATIBLE_VERSION_REQ = ">=0.48.0,<0.49.0"`), so, following case 6 of the
+  `migration.rs` doc comment exactly as the `failure_kind` step did (§4f):
+  `COMPATIBLE_VERSION_REQ` becomes `">=0.49.0-alpha.1,<0.49.0-alpha.2"` and the
+  table gains `(">=0.48.0,<0.49.0-alpha.1", 0.49.0-alpha.1,
+  migrate_0_48_to_0_49)`, in the same change as the shape; if another shape
+  change has already opened the 0.49 cycle, extend its step and move to the
+  next alpha instead. Read the numbers off the crate, not off this text.
+  This step is the store's format rule (§4f, 2026-10-04), not install
+  compatibility, so the first-version "no compatibility" rule does not remove
+  it: `migrate_data_dir` refuses an unmigrated `0.48.0` data directory
+  outright, with or without attempts, and an unrewritten row does not decode.
+  The step walks the `operation_attempt` **records** only —
+  `migrate_record_layout` bounded below the reserved index byte (`0xf8`,
+  written out as the 0.48 layout's, as `OPERATION_ATTEMPT_RESERVED_V0_47` is
+  for the 0.47 step) —
+  reads a 0.48-layout row as the existing `OperationAttemptValueV0_48`, and
+  rewrites it as a new `OperationAttemptValueV0_49` (that layout with
+  `config_template` appended) carrying **`None`**, leaving a row already in
+  the new layout byte for byte as it is. `None` is the truth for every
+  existing row: no install before this change carried a template. No column
+  family is created or dropped, and the index entries and the latest pointer
+  are untouched. The drift test beside the live `Value` moves to the new
+  layout; `OperationAttemptValueV0_48` describes a released layout and is not
+  modified. That is the whole migration.
 
 ### 4e. `Node::update` diff + read path
 
@@ -873,6 +985,9 @@ The manager (review) and the API (review-web) consume these types:
   the format rule applies regardless of install state; `Other` keeps the
   invariant true for every row, so a migrated `Failed` attempt that still owes a
   teardown can still be discharged; and nothing reconstructs a specific kind.
+- **[DECISION, 2026-10-05] Adding `config_template` opens the 0.49 cycle the
+  same way**, with a `migrate_0_48_to_0_49` step that rewrites each 0.48-layout
+  `operation_attempt` record with `config_template = None` (§4d amendment).
 
 ### 4g-bis. Bind-address allocation
 
@@ -1057,10 +1172,13 @@ onboard, and a stored `None` presented with a digest is refused. The digest
 matches a **golden vector** committed beside the test, and a re-encode after
 any change to the transcript fails against it rather than silently changing
 what "the same request" means; the `None`-versus-empty `bind_addrs` pair
-produces **different** digests. `finalized_at` is set **iff** the outcome is terminal
-**and** `cleanup_state` is empty: a test asserts a terminal row that still owes
-cleanup has `finalized_at = None` and is **not** reachable by the sweep, and
-that discharging the last owed item stamps it in that same transaction.
+produces **different** digests, and so do an absent `config_template`, a
+present one and a different one (2026-10-05: the golden vector is taken over
+a request carrying a template, §4d amendment). `finalized_at` is set **iff**
+the outcome is terminal **and** `cleanup_state` is empty: a test asserts a
+terminal row that still owes cleanup has `finalized_at = None` and is **not**
+reachable by the sweep, and that discharging the last owed item stamps it in
+that same transaction.
 Retention keeps the **most recent** terminal attempt per
 `(host, target, instance)` indefinitely and sweeps **older** terminal attempts
 30 days past their `finalized_at`; a test asserts a sibling instance's record
@@ -1229,6 +1347,19 @@ through.
   each migration, not a runtime check: the migration added in this slice writes
   only under `data_dir/states.db`, and the §4f constraint is recorded for
   future migrations.
+- **The configuration template rides the attempt (§4d amendment,
+  2026-10-05).** `config_template` round-trips as `Some(id)` and `None` on an
+  `Install` attempt; a row carrying one under `Update`, `Remove` or `Onboard`
+  is refused by the write path. A request key resubmitted with a different
+  template, or with one where the first had none, is refused
+  `RequestKeyReused`, and the same request resubmitted returns the stored row
+  with its template. `allocate_instance` refuses an attempt whose
+  `config_template` is not the request's. The transcript test writes the
+  template segment out byte for byte, including the `u32::MAX` length word
+  for `None`. A `0.48.0` fixture holding `operation_attempt` rows migrates
+  with every row carrying `config_template = None` and every other field,
+  index entry and the latest pointer unchanged; a rerun over the migrated
+  store changes nothing.
 
 ## 6. Issue decomposition (AgentCoop)
 
@@ -1318,6 +1449,16 @@ Dependency order within this repo:
    discharge is then accepted — and a rerun over an already-migrated store.
    review writes the field (RFC-D2 §4b) and review-web exposes it (RFC-D3 §5b).
    Builds on 4–6, released in `0.47.0`.
+
+8. **`config_template` on `InstallIntent` and `operation_attempt`** (§4d
+   amendment, §4f, 2026-10-05) — the `InstallIntent` field and its transcript
+   segment after the bind addresses, the regenerated golden vector, the
+   `OperationAttempt` field appended to the stored `Value`, the write path's
+   refusal of a template under any action but `Install`, `check_request`'s
+   template tie, the `migrate_0_48_to_0_49` step with
+   `OperationAttemptValueV0_49`, and the §5 tests. review sends and re-sends
+   the field (RFC-D2), and review-web exposes `configTemplate` (RFC-D3).
+   Builds on 7, released in `0.48.0`.
 
 Issues 3 and 4 build the table logic independently of each other and of 1–2,
 but their **CF registration is deferred to issue 5**, which lands last (it
