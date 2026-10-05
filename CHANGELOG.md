@@ -5,7 +5,7 @@ file is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), and
 this project adheres to [Semantic
 Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.49.0] - 2026-10-05
 
 ### Changed
 
@@ -21,7 +21,7 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   an attempt that carries one under any action but install.
   `allocate_instance` and `allocate_instance_and_addrs` refuse a request
   whose template is not the attempt's. A struct literal must now set the field.
-- **BREAKING**: Bumped the database format to `0.49.0-alpha.1`. The migration
+- **BREAKING**: Bumped the database format to `0.49.0`. The migration
   from `0.48.x` rewrites every stored operation attempt to the layout carrying
   `config_template`, with no template. Every other field, every index entry
   and the latest attempt pointer are left as they were, and nothing else in
@@ -1824,7 +1824,7 @@ AsRef<[u8]>`). This change accommodates scenarios where the information stored
 - Modified `FtpBruteForce` by adding an `is_internal` field which is a boolean
   indicating whether it is internal or not.
 
-[Unreleased]: https://github.com/aicers/review-database/compare/0.48.0...main
+[0.49.0]: https://github.com/aicers/review-database/compare/0.48.0...0.49.0
 [0.48.0]: https://github.com/aicers/review-database/compare/0.47.0...0.48.0
 [0.47.0]: https://github.com/aicers/review-database/compare/0.46.0...0.47.0
 [0.46.0]: https://github.com/aicers/review-database/compare/0.45.0...0.46.0
