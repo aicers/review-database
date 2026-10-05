@@ -139,6 +139,12 @@ const ON_FAILURE_HOLD_TAG: u8 = 1;
 /// allowed to read back as `None`.
 const ABSENT_BIND_ADDRS: u32 = u32::MAX;
 
+/// The length word that encodes an absent configuration template.
+///
+/// An empty id is a distinct request, so absence cannot use length zero.
+/// An id this long is refused rather than allowed to read back as `None`.
+const ABSENT_CONFIG_TEMPLATE: u32 = u32::MAX;
+
 /// The operator's intent for an attempt.
 ///
 /// This is recorded for display and audit; it is not a wire distinction,
@@ -293,6 +299,11 @@ pub struct InstallIntent {
     /// digests: the first leaves the addresses to the component, the second
     /// asks for none at all.
     pub bind_addrs: Option<Vec<(String, SocketAddr)>>,
+    /// The deploy-core configuration template id the install was submitted
+    /// with, or `None` for an install submitted without one.
+    ///
+    /// `None` and `Some("")` are distinct requests.
+    pub config_template: Option<String>,
 }
 
 impl InstallIntent {
@@ -302,7 +313,8 @@ impl InstallIntent {
     ///
     /// Returns an error if a segment is longer than `u32::MAX` bytes, or if
     /// the request carries `u32::MAX` bind addresses or more, which is the
-    /// count reserved for an absent list.
+    /// count reserved for an absent list, or if the configuration template is
+    /// `u32::MAX` bytes long or longer, the length reserved for absence.
     pub fn digest(&self) -> Result<[u8; DIGEST_LEN]> {
         let transcript = self.transcript()?;
         digest::digest(&digest::SHA256, &transcript)
@@ -334,30 +346,41 @@ impl InstallIntent {
             OnFailure::Rollback => ON_FAILURE_ROLLBACK_TAG,
             OnFailure::Hold => ON_FAILURE_HOLD_TAG,
         });
-        let Some(bind_addrs) = &self.bind_addrs else {
+        if let Some(bind_addrs) = &self.bind_addrs {
+            let count = u32::try_from(bind_addrs.len())
+                .ok()
+                .filter(|count| *count != ABSENT_BIND_ADDRS);
+            let count = count.context("too many bind addresses to encode")?;
+            transcript.extend_from_slice(&count.to_be_bytes());
+            // The caller's order is not the transcript's: two requests that name
+            // the same listeners in a different order are the same request. The
+            // address breaks a tie between two entries under one listener key,
+            // which the key alone leaves to the caller's order and so to chance.
+            let mut sorted: Vec<&(String, SocketAddr)> = bind_addrs.iter().collect();
+            sorted.sort_unstable_by(|left, right| {
+                left.0.cmp(&right.0).then_with(|| left.1.cmp(&right.1))
+            });
+            for (listener_key, addr) in sorted {
+                push_segment(&mut transcript, listener_key)?;
+                // `SocketAddr`'s own `Display`, named rather than re-derived: an
+                // IPv6 address in square brackets, lowercase and compressed as
+                // RFC 5952 says.
+                push_segment(&mut transcript, &addr.to_string())?;
+            }
+        } else {
             transcript.extend_from_slice(&ABSENT_BIND_ADDRS.to_be_bytes());
-            return Ok(transcript);
-        };
-        let count = u32::try_from(bind_addrs.len())
-            .ok()
-            .filter(|count| *count != ABSENT_BIND_ADDRS);
-        let count = count.context("too many bind addresses to encode")?;
-        transcript.extend_from_slice(&count.to_be_bytes());
-        // The caller's order is not the transcript's: two requests that name
-        // the same listeners in a different order are the same request. The
-        // address breaks a tie between two entries under one listener key,
-        // which the key alone leaves to the caller's order and so to chance.
-        let mut sorted: Vec<&(String, SocketAddr)> = bind_addrs.iter().collect();
-        sorted.sort_unstable_by(|left, right| {
-            left.0.cmp(&right.0).then_with(|| left.1.cmp(&right.1))
-        });
-        for (listener_key, addr) in sorted {
-            push_segment(&mut transcript, listener_key)?;
-            // `SocketAddr`'s own `Display`, named rather than re-derived: an
-            // IPv6 address in square brackets, lowercase and compressed as
-            // RFC 5952 says.
-            push_segment(&mut transcript, &addr.to_string())?;
         }
+        if let Some(id) = &self.config_template {
+            let length =
+                u32::try_from(id.len()).context("configuration template is too long to encode")?;
+            if length == ABSENT_CONFIG_TEMPLATE {
+                bail!("configuration template is too long to encode");
+            }
+            push_segment(&mut transcript, id)?;
+        } else {
+            transcript.extend_from_slice(&ABSENT_CONFIG_TEMPLATE.to_be_bytes());
+        }
+
         Ok(transcript)
     }
 }
@@ -483,7 +506,9 @@ impl From<PortAllocationError> for AddressAllocationError {
 /// addresses the operator never submitted, under a key that answered as the
 /// same request. Nothing else sees both, so they are tied here — the digest
 /// says the request presented is the one the row records, and the comparison
-/// below says the addresses taken are the ones it names.
+/// below says the addresses taken are the ones it names. The template column
+/// must also agree with the request: it is used to rebuild a re-sent install,
+/// and a digest alone cannot prove that the column holds what it hashed.
 ///
 /// The transport is not part of the tie. `bind_addrs` carries
 /// `(listener key, address)` and nothing else, because which transport a
@@ -507,6 +532,12 @@ fn check_request(
             attempt.host,
             request.target,
             request.host
+        );
+    }
+    if request.config_template != attempt.config_template {
+        bail!(
+            "operation attempt {} records a configuration template other than the one presented with it",
+            attempt.idempotency_key
         );
     }
     if attempt.install_intent != Some(request.digest()?) {
@@ -594,11 +625,12 @@ fn is_uuid_v4(key: &str) -> bool {
 /// exactly when `action` is [`Action::Onboard`], so a reader never has to
 /// guess which absent encoding a given field uses. `backup_id` and
 /// `pre_update_version` are core-update-scoped rather than package-scoped, and
-/// use `Option` as each other does. `install_intent`, `failure_kind` and
-/// `finalized_at` are neither: each is absent for a state the row is genuinely
-/// in — an operation that dedupes on something other than a request digest,
-/// an attempt that did not fail, and an attempt that is not finished with —
-/// so each is an `Option` too.
+/// use `Option` as each other does. `config_template` is absent for an install
+/// submitted without a template and for every other action. `install_intent`,
+/// `failure_kind` and `finalized_at` are neither: each is absent for a state
+/// the row is genuinely in — an operation that dedupes on something other
+/// than a request digest, an attempt that did not fail, and an attempt that
+/// is not finished with — so each is an `Option` too.
 ///
 /// # Identity
 ///
@@ -707,6 +739,12 @@ pub struct OperationAttempt {
     /// in canonical hyphenated form. See [`InstallIntent::digest`] and
     /// [`Table::resolve_request_key`].
     pub install_intent: Option<[u8; DIGEST_LEN]>,
+    /// The configuration template id an install was submitted with.
+    ///
+    /// It is `None` for an install without one and for every other action.
+    /// This crate stores it verbatim without validation. It is persisted
+    /// because a re-sent install is rebuilt from this row.
+    pub config_template: Option<String>,
     /// The digest of the package being applied. Empty for [`Action::Onboard`].
     pub package_digest: String,
     /// The version the selector resolved to. Empty for [`Action::Onboard`].
@@ -823,6 +861,7 @@ impl OperationAttempt {
             backup_id: self.backup_id,
             pre_update_version: self.pre_update_version.as_deref().map(Cow::Borrowed),
             failure_kind: self.failure_kind,
+            config_template: self.config_template.as_deref().map(Cow::Borrowed),
         };
         super::serialize(&value).expect("serializable")
     }
@@ -843,6 +882,7 @@ impl FromKeyValue for OperationAttempt {
             instance: value.instance,
             action: value.action,
             install_intent: value.install_intent,
+            config_template: value.config_template.map(Cow::into_owned),
             package_digest: value.package_digest.into_owned(),
             resolved_version: value.resolved_version.into_owned(),
             resolved_commit: value.resolved_commit.into_owned(),
@@ -894,6 +934,7 @@ struct Value<'a> {
     backup_id: Option<u32>,
     pre_update_version: Option<Cow<'a, str>>,
     failure_kind: Option<FailureKind>,
+    config_template: Option<Cow<'a, str>>,
 }
 
 /// What a [`Table::prune`] call keeps.
@@ -1389,6 +1430,7 @@ impl<'d> Table<'d, OperationAttempt> {
     /// unset for one that is, if `failure_kind` is set for an attempt whose
     /// outcome is not `Failed` or unset for one whose outcome is, if an
     /// install carries no `install_intent` or an `install_intent` is carried
+    /// by an attempt that is not an install, if a `config_template` is carried
     /// by an attempt that is not an install, if
     /// the attempt carries an `install_intent` and no row is held under its
     /// key, which is [`Table::create_or_resolve`]'s decision to make, if
@@ -1554,8 +1596,8 @@ impl<'d> Table<'d, OperationAttempt> {
     /// attempt whose outcome is not `Failed` or unset for one whose outcome
     /// is, if the attempt is non-terminal and a different attempt is
     /// already live for its `(host, target, instance)` triple, if `request`
-    /// is not the request the attempt records — a differing host, target or
-    /// digest — or if it asks for addresses, which is
+    /// is not the request the attempt records — a differing host, target,
+    /// configuration template or digest — or if it asks for addresses, which is
     /// [`Table::allocate_instance_and_addrs`]'s call and not this one, or if
     /// the database operation fails.
     pub fn allocate_instance(
@@ -1594,10 +1636,10 @@ impl<'d> Table<'d, OperationAttempt> {
     /// is the component's and reaches this call only through `bindings` —
     /// which is why only the `(listener key, address)` pairs are compared. A
     /// `bindings` that is not the request's addresses is refused rather than
-    /// written, because the row keeps only the request's digest: a retry
-    /// resolves its key by that digest and then rebuilds the map it sent from
-    /// these rows, and rows taken for some other map would answer it with
-    /// addresses nobody submitted.
+    /// written, because the row keeps the request's digest and template but
+    /// not its addresses: a retry resolves its key by that digest and then
+    /// rebuilds the map it sent from these rows, and rows taken for some
+    /// other map would answer it with addresses nobody submitted.
     ///
     /// The instance number is taken **first**, because the address rows'
     /// owner names it and it has to be chosen before they can be keyed. All
@@ -1634,7 +1676,8 @@ impl<'d> Table<'d, OperationAttempt> {
     /// twice, or a listener with no key, is refused as a database error, as
     /// is a store missing the instance allocation, port allocation or core
     /// component column families, and so is a `request` that is not the one
-    /// the attempt records or that asks for addresses other than `bindings`.
+    /// the attempt records — a differing host, target, configuration template
+    /// or digest — or that asks for addresses other than `bindings`.
     /// An attempt whose `failure_kind` disagrees with its outcome — set where
     /// the outcome is not `Failed`, or unset where it is — is refused as a
     /// database error too, as [`Table::allocate_instance`] refuses it.
@@ -1698,8 +1741,8 @@ impl<'d> Table<'d, OperationAttempt> {
             }
             // What the attempt is has been judged; what it was submitted with
             // is judged here, before the store is touched. The row carries
-            // only the request's digest, so this is the one place that can
-            // hold the attempt, the request and the addresses together.
+            // the digest and template, but not the whole request, so this is
+            // the one place that can tie it to the addresses being taken.
             check_request(attempt, request, bindings)?;
             // A component the registry holds is host-fixed infrastructure and
             // has no instance dimension, so there is no number to take for it
@@ -2264,6 +2307,12 @@ impl<'d> Table<'d, OperationAttempt> {
                 "an install records the digest of the request it was submitted with, and no other action does"
             );
         }
+        if new.config_template.is_some() && new.action != Action::Install {
+            bail!(
+                "operation attempt {} carries a configuration template under an action other than install",
+                new.idempotency_key
+            );
+        }
         // An install is keyed by the request key the client supplied, and that
         // is the only shape `resolve_request_key` can reach a row under: a key
         // it refuses as malformed leaves the row unfindable.
@@ -2509,7 +2558,7 @@ mod tests {
     const OTHER_REQUEST_KEY: &str = "3f2c8b41-5e6d-4a7b-b8c9-0d1e2f3a4b5c";
 
     /// The digest of [`golden_intent`], which pins the transcript.
-    const GOLDEN_DIGEST: &str = "4b3062211c665de1d18371cdc00bd92ee3ca139c40bd8e9c0c8cbe138295b6d1";
+    const GOLDEN_DIGEST: &str = "f1fe59cef4eeb87894277683a26db53d8aabec6be67533df78c4cc64d805f654";
 
     const ACTIONS: [Action; 4] = [
         Action::Install,
@@ -2617,6 +2666,7 @@ mod tests {
             instance: Some(1),
             action: Action::Update,
             install_intent: None,
+            config_template: None,
             package_digest: "sha256:aaa".to_string(),
             resolved_version: "1.2.3".to_string(),
             resolved_commit: "c0ffee".to_string(),
@@ -2646,6 +2696,7 @@ mod tests {
             instance: None,
             action: Action::Update,
             install_intent: None,
+            config_template: None,
             package_digest: "sha256:bbb".to_string(),
             resolved_version: "0.47.0".to_string(),
             resolved_commit: "deadbeef".to_string(),
@@ -2676,6 +2727,7 @@ mod tests {
             instance: None,
             action: Action::Onboard,
             install_intent: None,
+            config_template: None,
             package_digest: String::new(),
             resolved_version: String::new(),
             resolved_commit: String::new(),
@@ -2722,6 +2774,7 @@ mod tests {
         let mut attempt = live_attempt(request_key, host, target, instance);
         attempt.action = Action::Install;
         attempt.install_intent = Some(golden_intent().digest().unwrap());
+        attempt.config_template = golden_intent().config_template;
         attempt
     }
 
@@ -2787,6 +2840,7 @@ mod tests {
             target: "giganto".to_string(),
             selector: BuildSelector::Version("1.2.3".to_string()),
             on_failure: OnFailure::Rollback,
+            config_template: Some("baseline".to_string()),
             bind_addrs: Some(vec![
                 (
                     "ingest".to_string(),
@@ -4223,6 +4277,7 @@ mod tests {
         expected.extend_from_slice(b"1.2.3");
         // `on_failure`.
         expected.push(0);
+        let prefix_without_addrs = expected.clone();
         // Two bind addresses, in ascending listener-key order rather than the
         // order they were handed over in, each rendered by `SocketAddr`'s own
         // `Display`: lowercase, compressed, and in brackets for IPv6.
@@ -4236,8 +4291,30 @@ mod tests {
         expected.extend_from_slice(&[0, 0, 0, 19]);
         expected.extend_from_slice(b"[2001:db8::1]:38370");
 
+        let prefix = expected.clone();
+        expected.extend_from_slice(&[0, 0, 0, 8]);
+        expected.extend_from_slice(b"baseline");
         let intent = golden_intent();
         assert_eq!(intent.transcript().unwrap(), expected);
+
+        let mut without_template = intent.clone();
+        without_template.config_template = None;
+        let mut absent = prefix;
+        absent.extend_from_slice(&[0xff, 0xff, 0xff, 0xff]);
+        assert_eq!(without_template.transcript().unwrap(), absent);
+
+        // Both absent markers follow the request fields, with nothing after.
+        without_template.bind_addrs = None;
+        let mut absent_both = prefix_without_addrs.clone();
+        absent_both.extend_from_slice(&[0xff; 8]);
+        assert_eq!(without_template.transcript().unwrap(), absent_both);
+        let mut template_without_addrs = without_template.clone();
+        template_without_addrs.config_template = Some("baseline".to_string());
+        let mut template_only = prefix_without_addrs;
+        template_only.extend_from_slice(&[0xff; 4]);
+        template_only.extend_from_slice(&[0, 0, 0, 8]);
+        template_only.extend_from_slice(b"baseline");
+        assert_eq!(template_without_addrs.transcript().unwrap(), template_only);
         assert_eq!(
             data_encoding::HEXLOWER.encode(&intent.digest().unwrap()),
             GOLDEN_DIGEST
@@ -4281,7 +4358,21 @@ mod tests {
         shifted.host = "host-a.exampl".to_string();
         shifted.target = "egiganto".to_string();
 
+        let mut absent_template = intent.clone();
+        absent_template.config_template = None;
+        let mut empty_template = intent.clone();
+        empty_template.config_template = Some(String::new());
+        let mut other_template = intent.clone();
+        other_template.config_template = Some("other".to_string());
+        assert_ne!(
+            absent_template.digest().unwrap(),
+            empty_template.digest().unwrap()
+        );
+
         for other in [
+            absent_template,
+            empty_template,
+            other_template,
             absent,
             empty,
             other_host,
@@ -4914,16 +5005,176 @@ mod tests {
         assert_eq!(stored, failed);
     }
 
-    /// Holds the pinned 0.48 layout the migration writes to the live `Value`:
+    #[test]
+    fn configuration_templates_round_trip_verbatim_for_installs() {
+        let test_db = TestDb::new();
+        let table = test_db.table();
+        for config_template in [Some("baseline".to_string()), Some(String::new()), None] {
+            let mut attempt = install_attempt(REQUEST_KEY, HOST, TARGET, Some(7));
+            attempt.config_template = config_template;
+            table.create_or_resolve(&attempt).unwrap();
+            table.upsert(&attempt).unwrap();
+            assert_eq!(table.get(REQUEST_KEY).unwrap(), Some(attempt));
+            table.delete(REQUEST_KEY).unwrap();
+        }
+    }
+
+    #[test]
+    fn configuration_templates_are_carried_only_by_installs() {
+        let test_db = TestDb::new();
+        let table = test_db.table();
+        table
+            .upsert(&terminal_attempt(
+                "op-elsewhere",
+                HOST,
+                TARGET,
+                Some(9),
+                1_000,
+                9_000,
+            ))
+            .unwrap();
+        for action in [Action::Update, Action::Remove, Action::Onboard] {
+            let mut attempt = module_attempt("op-template");
+            attempt.action = action;
+            table.upsert(&attempt).unwrap();
+            let before = snapshot(&test_db, "op-template");
+            attempt.config_template = Some("baseline".to_string());
+            let error = table.upsert(&attempt).unwrap_err().to_string();
+            assert!(error.contains("configuration template"), "{error}");
+            assert_eq!(snapshot(&test_db, "op-template"), before);
+            table.delete("op-template").unwrap();
+        }
+    }
+
+    #[test]
+    fn changing_a_template_reuses_the_request_key() {
+        let test_db = TestDb::new();
+        let table = test_db.table();
+        for initial in [Some("baseline".to_string()), None] {
+            let mut request = golden_intent();
+            request.bind_addrs = None;
+            request.config_template = initial;
+            let mut attempt = install_attempt(REQUEST_KEY, &request.host, &request.target, None);
+            attempt.install_intent = Some(request.digest().unwrap());
+            attempt.config_template = request.config_template.clone();
+            let stored = table.allocate_instance(&attempt, &request).unwrap();
+            assert_eq!(
+                table
+                    .resolve_request_key(REQUEST_KEY, &request.digest().unwrap())
+                    .unwrap(),
+                Some(stored.clone())
+            );
+            for other in [
+                Some("different".to_string()),
+                None,
+                Some("baseline".to_string()),
+            ] {
+                if other == request.config_template {
+                    continue;
+                }
+                let mut changed = request.clone();
+                changed.config_template = other;
+                assert!(matches!(
+                    table.resolve_request_key(REQUEST_KEY, &changed.digest().unwrap()).unwrap_err(),
+                    RequestKeyError::RequestKeyReused { request_key } if request_key == REQUEST_KEY
+                ));
+                // A known key returns the recorded row before checking the request.
+                assert_eq!(table.allocate_instance(&attempt, &changed).unwrap(), stored);
+                assert_eq!(
+                    table
+                        .allocate_instance_and_addrs(&attempt, &changed, &[])
+                        .unwrap(),
+                    stored
+                );
+            }
+            table.delete(REQUEST_KEY).unwrap();
+        }
+    }
+
+    /// Verifies that neither allocator nor either port index took anything.
+    fn assert_no_allocations(test_db: &TestDb) {
+        for family in [
+            super::super::INSTANCE_ALLOCATIONS,
+            super::super::PORT_ALLOCATIONS,
+            super::super::PORT_ALLOCATIONS_BY_ATTEMPT,
+            super::super::PORT_ALLOCATIONS_BY_INSTANCE,
+        ] {
+            let cf = test_db.db.cf_handle(family).unwrap();
+            assert!(
+                test_db
+                    .db
+                    .iterator_cf(cf, IteratorMode::Start)
+                    .next()
+                    .is_none(),
+                "{family}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_fresh_allocation_ties_the_template_to_the_attempt() {
+        let test_db = TestDb::new();
+        let table = test_db.table();
+        for (recorded, presented) in [
+            (None, Some("baseline")),
+            (Some("baseline"), None),
+            (Some("baseline"), Some("different")),
+        ] {
+            let mut request = golden_intent();
+            request.config_template = presented.map(str::to_string);
+            let mut attempt = install_attempt(REQUEST_KEY, &request.host, &request.target, None);
+            attempt.install_intent = Some(request.digest().unwrap());
+            attempt.config_template = recorded.map(str::to_string);
+            let before = snapshot(&test_db, REQUEST_KEY);
+            let error = table
+                .allocate_instance(&attempt, &request)
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains(REQUEST_KEY), "{error}");
+            assert!(
+                error.contains("records a configuration template other than"),
+                "{error}"
+            );
+            assert!(!error.contains("records the digest"), "{error}");
+            assert_eq!(snapshot(&test_db, REQUEST_KEY), before);
+            assert_no_allocations(&test_db);
+        }
+
+        let mut request = golden_intent();
+        let binding = ListenerBinding {
+            listener_key: "ingest".to_string(),
+            transport: ListenerTransport::Tcp,
+            addr: "127.0.0.1:38370".parse().unwrap(),
+        };
+        request.bind_addrs = Some(vec![(binding.listener_key.clone(), binding.addr)]);
+        let mut attempt = install_attempt(REQUEST_KEY, &request.host, &request.target, None);
+        attempt.install_intent = Some(request.digest().unwrap());
+        attempt.config_template = None;
+        let before = snapshot(&test_db, REQUEST_KEY);
+        let error = table
+            .allocate_instance_and_addrs(&attempt, &request, &[binding])
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("records a configuration template other than"),
+            "{error}"
+        );
+        assert!(error.contains(REQUEST_KEY), "{error}");
+        assert!(!error.contains("records the digest"), "{error}");
+        assert_eq!(snapshot(&test_db, REQUEST_KEY), before);
+        assert_no_allocations(&test_db);
+    }
+
+    /// Holds the pinned 0.49 layout the migration writes to the live `Value`:
     /// it must decode a live encoding and re-encode it to the very same bytes.
     /// The options the table reads with refuse a short value and trailing
     /// bytes alike, so a field added to either side and not the other fails
     /// here.
     #[test]
-    fn pinned_v0_48_layout_matches_the_live_value() {
+    fn pinned_v0_49_layout_matches_the_live_value() {
         use bincode::Options;
 
-        use crate::migration::migration_structures::OperationAttemptValueV0_48;
+        use crate::migration::migration_structures::OperationAttemptValueV0_49;
 
         let mut attempt = install_attempt(REQUEST_KEY, HOST, TARGET, Some(7));
         attempt.cleanup_state = Some(CleanupState::PendingDeregister);
@@ -4933,19 +5184,23 @@ mod tests {
         attempt.backup_id = Some(9);
         attempt.pre_update_version = Some("0.47.0".to_string());
 
-        for failure_kind in [Some(FailureKind::TrustAnchorRefused), None] {
-            attempt.failure_kind = failure_kind;
-            let live = attempt.record_value();
-            let pinned: OperationAttemptValueV0_48 =
-                bincode::DefaultOptions::new().deserialize(&live).unwrap();
-            assert_eq!(pinned.failure_kind, failure_kind);
-            assert_eq!(pinned.host, attempt.host);
-            assert_eq!(pinned.install_intent, attempt.install_intent);
-            assert_eq!(pinned.pre_update_version, attempt.pre_update_version);
-            assert_eq!(
-                bincode::DefaultOptions::new().serialize(&pinned).unwrap(),
-                live
-            );
+        for config_template in [Some("baseline".to_string()), None] {
+            attempt.config_template = config_template.clone();
+            for failure_kind in [Some(FailureKind::TrustAnchorRefused), None] {
+                attempt.failure_kind = failure_kind;
+                let live = attempt.record_value();
+                let pinned: OperationAttemptValueV0_49 =
+                    bincode::DefaultOptions::new().deserialize(&live).unwrap();
+                assert_eq!(pinned.failure_kind, failure_kind);
+                assert_eq!(pinned.config_template, config_template);
+                assert_eq!(pinned.host, attempt.host);
+                assert_eq!(pinned.install_intent, attempt.install_intent);
+                assert_eq!(pinned.pre_update_version, attempt.pre_update_version);
+                assert_eq!(
+                    bincode::DefaultOptions::new().serialize(&pinned).unwrap(),
+                    live
+                );
+            }
         }
     }
 }

@@ -5,6 +5,35 @@ file is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), and
 this project adheres to [Semantic
 Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- **BREAKING**: `InstallIntent` gains a public `config_template` field: the
+  configuration template id an install is submitted with. It enters the
+  request digest: a request key resubmitted with a different template, or
+  with a template where the first submission had none, is refused
+  `RequestKeyReused`. Every install request's digest changes, so resubmitting
+  a request key whose attempt was recorded before the upgrade is refused
+  once as reused. A struct literal must now set the field.
+- **BREAKING**: `OperationAttempt` gains a public `config_template` field
+  that keeps the template an install was submitted with. Every write refuses
+  an attempt that carries one under any action but install.
+  `allocate_instance` and `allocate_instance_and_addrs` refuse a request
+  whose template is not the attempt's. A struct literal must now set the field.
+- **BREAKING**: Bumped the database format to `0.49.0-alpha.1`. The migration
+  from `0.48.x` rewrites every stored operation attempt to the layout carrying
+  `config_template`, with no template. Every other field, every index entry
+  and the latest attempt pointer are left as they were, and nothing else in
+  the store changes. An interrupted run can be retried, including a migration
+  from `0.47.x` interrupted during or after the step to this format.
+- **BREAKING**: Updated review-protocol to `0.21.0`, taken from
+  `https://github.com/aicers/review-protocol.git` at that tag instead of tag
+  `0.20.0`. The re-exported `review_database::ThreatLevel` is now the type
+  from that release, so a crate that also depends on `review-protocol`
+  directly must use the same Git source and tag for its `ThreatLevel` to be
+  interchangeable with this crate's.
+
 ## [0.48.0] - 2026-10-04
 
 ### Changed
@@ -1795,6 +1824,7 @@ AsRef<[u8]>`). This change accommodates scenarios where the information stored
 - Modified `FtpBruteForce` by adding an `is_internal` field which is a boolean
   indicating whether it is internal or not.
 
+[Unreleased]: https://github.com/aicers/review-database/compare/0.48.0...main
 [0.48.0]: https://github.com/aicers/review-database/compare/0.47.0...0.48.0
 [0.47.0]: https://github.com/aicers/review-database/compare/0.46.0...0.47.0
 [0.46.0]: https://github.com/aicers/review-database/compare/0.45.0...0.46.0

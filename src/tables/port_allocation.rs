@@ -942,6 +942,7 @@ mod tests {
     /// component, which is an absent `bind_addrs` rather than an empty list.
     fn request_for(host: &str, target: &str, bindings: &[ListenerBinding]) -> InstallIntent {
         InstallIntent {
+            config_template: None,
             host: host.to_string(),
             target: target.to_string(),
             selector: BuildSelector::Version("1.2.3".to_string()),
@@ -992,6 +993,7 @@ mod tests {
             backup_id: None,
             pre_update_version: None,
             install_intent: Some(request_for(HOST, COMPONENT, &[]).digest().unwrap()),
+            config_template: None,
             finalized_at: None,
         }
     }

@@ -234,7 +234,7 @@ impl From<ExternalServiceValueV0_46> for ExternalServiceValueV0_47 {
 }
 
 /// The width of the request digest an operation attempt stores, a SHA-256
-/// digest in both the 0.47 and the 0.48 layout.
+/// digest in the 0.47, 0.48 and 0.49 layouts.
 const OPERATION_ATTEMPT_DIGEST_LEN: usize = 32;
 
 /// The stored `OperationAttempt` value as of database format 0.47, before
@@ -268,13 +268,14 @@ pub(crate) struct OperationAttemptValueV0_47 {
     pub pre_update_version: Option<String>,
 }
 
-/// The stored `OperationAttempt` value as of database format 0.48.
+/// The stored `OperationAttempt` value as of the released database format
+/// 0.48.0, before `config_template` was added.
 ///
-/// It is [`OperationAttemptValueV0_47`] with `failure_kind` appended as the
-/// last field, so a 0.47 encoding is a strict prefix of one of these. This
-/// mirrors the private `Value` of the live operation attempts table, whose
-/// component types it deliberately reuses, and the drift test beside that
-/// table holds the two together.
+/// It mirrors the private `Value` as 0.48.0 stores it, with owned strings
+/// where that struct borrows them. Its encoding is a strict prefix of an
+/// [`OperationAttemptValueV0_49`] one, and neither layout decodes the other's
+/// rows. It describes a released layout and must never be modified; a
+/// committed fixture pins it to the release.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub(crate) struct OperationAttemptValueV0_48 {
     pub host: String,
@@ -327,6 +328,63 @@ impl From<OperationAttemptValueV0_47> for OperationAttemptValueV0_48 {
             backup_id: old.backup_id,
             pre_update_version: old.pre_update_version,
             failure_kind,
+        }
+    }
+}
+
+/// The stored `OperationAttempt` value as of database format 0.49.
+///
+/// It is [`OperationAttemptValueV0_48`] with `config_template` appended
+/// last. It mirrors the private `Value` of the live operation attempts
+/// table, whose component types it deliberately reuses, and the drift test
+/// beside that table holds the two together.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub(crate) struct OperationAttemptValueV0_49 {
+    pub host: String,
+    pub target: String,
+    pub instance: Option<u32>,
+    pub action: OperationAction,
+    pub install_intent: Option<[u8; OPERATION_ATTEMPT_DIGEST_LEN]>,
+    pub package_digest: String,
+    pub resolved_version: String,
+    pub resolved_commit: String,
+    pub phase: OperationPhase,
+    pub cleanup_state: Option<OperationCleanupState>,
+    pub started_at: DateTime<Utc>,
+    pub retry_policy: OperationRetryPolicy,
+    pub outcome: Option<OperationOutcome>,
+    pub finalized_at: Option<DateTime<Utc>>,
+    pub expires_at: DateTime<Utc>,
+    pub backup_id: Option<u32>,
+    pub pre_update_version: Option<String>,
+    pub failure_kind: Option<OperationFailureKind>,
+    pub config_template: Option<String>,
+}
+
+impl From<OperationAttemptValueV0_48> for OperationAttemptValueV0_49 {
+    /// Copies every field and records no template: no earlier install
+    /// carried one.
+    fn from(old: OperationAttemptValueV0_48) -> Self {
+        Self {
+            host: old.host,
+            target: old.target,
+            instance: old.instance,
+            action: old.action,
+            install_intent: old.install_intent,
+            package_digest: old.package_digest,
+            resolved_version: old.resolved_version,
+            resolved_commit: old.resolved_commit,
+            phase: old.phase,
+            cleanup_state: old.cleanup_state,
+            started_at: old.started_at,
+            retry_policy: old.retry_policy,
+            outcome: old.outcome,
+            finalized_at: old.finalized_at,
+            expires_at: old.expires_at,
+            backup_id: old.backup_id,
+            pre_update_version: old.pre_update_version,
+            failure_kind: old.failure_kind,
+            config_template: None,
         }
     }
 }
