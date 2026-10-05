@@ -683,6 +683,7 @@ mod tests {
     /// pair asks for that pair's request here.
     fn intent_for(host: &str, component: &str) -> InstallIntent {
         InstallIntent {
+            config_template: None,
             host: host.to_string(),
             target: component.to_string(),
             selector: BuildSelector::Version("1.2.3".to_string()),
@@ -726,6 +727,7 @@ mod tests {
             backup_id: None,
             pre_update_version: None,
             install_intent: Some(intent_digest()),
+            config_template: None,
             finalized_at: None,
         }
     }
