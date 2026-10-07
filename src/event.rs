@@ -1393,10 +1393,13 @@ impl Event {
         counter: &mut HashMap<IpAddr, usize>,
         filter: &EventFilter,
     ) -> Result<()> {
+        let (orig, resp) = self.address_slices();
+        if orig.is_empty() && resp.is_empty() {
+            return Ok(());
+        }
         if !self.matches(filter)?.0 {
             return Ok(());
         }
-        let (orig, resp) = self.address_slices();
         Self::increment_distinct_address_buckets(
             counter,
             orig.iter().chain(resp).copied(),
@@ -1420,10 +1423,13 @@ impl Event {
         counter: &mut HashMap<(IpAddr, IpAddr), usize>,
         filter: &EventFilter,
     ) -> Result<()> {
+        let (orig, resp) = self.address_slices();
+        if orig.is_empty() || resp.is_empty() {
+            return Ok(());
+        }
         if !self.matches(filter)?.0 {
             return Ok(());
         }
-        let (orig, resp) = self.address_slices();
         Self::increment_distinct_address_buckets(
             counter,
             orig.iter().flat_map(|&a| resp.iter().map(move |&b| (a, b))),
@@ -1446,13 +1452,13 @@ impl Event {
         counter: &mut HashMap<(IpAddr, IpAddr, &'static str), usize>,
         filter: &EventFilter,
     ) -> Result<()> {
-        if !self.matches(filter)?.0 {
+        let (orig, resp) = self.address_slices();
+        if orig.is_empty() || resp.is_empty() {
             return Ok(());
         }
         let Some(kind) = self.kind(filter)? else {
             return Ok(());
         };
-        let (orig, resp) = self.address_slices();
         Self::increment_distinct_address_buckets(
             counter,
             orig.iter()
@@ -1476,10 +1482,13 @@ impl Event {
         counter: &mut HashMap<IpAddr, usize>,
         filter: &EventFilter,
     ) -> Result<()> {
+        let (orig, _) = self.address_slices();
+        if orig.is_empty() {
+            return Ok(());
+        }
         if !self.matches(filter)?.0 {
             return Ok(());
         }
-        let (orig, _) = self.address_slices();
         Self::increment_distinct_address_buckets(counter, orig.iter().copied(), orig.len());
 
         Ok(())
@@ -1498,10 +1507,13 @@ impl Event {
         counter: &mut HashMap<IpAddr, usize>,
         filter: &EventFilter,
     ) -> Result<()> {
+        let (_, resp) = self.address_slices();
+        if resp.is_empty() {
+            return Ok(());
+        }
         if !self.matches(filter)?.0 {
             return Ok(());
         }
-        let (_, resp) = self.address_slices();
         Self::increment_distinct_address_buckets(counter, resp.iter().copied(), resp.len());
 
         Ok(())
@@ -1776,10 +1788,13 @@ impl Event {
         networks: &[Network],
         filter: &EventFilter,
     ) -> Result<()> {
+        let (orig, resp) = self.address_slices();
+        if orig.is_empty() && resp.is_empty() {
+            return Ok(());
+        }
         if !self.matches(filter)?.0 {
             return Ok(());
         }
-        let (orig, resp) = self.address_slices();
         Self::increment_distinct_address_buckets(
             counter,
             orig.iter()

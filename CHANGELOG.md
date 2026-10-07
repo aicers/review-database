@@ -18,7 +18,8 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   same network, now contribute 1 instead of 2 to their address or network
   bucket.
 - `WindowsThreat` and `ExtraThreat`, which carry no addresses, no longer match
-  `0.0.0.0` address filters or IP address triage exclusions.
+  any address-based filter, including ranges such as `0.0.0.0/0`, or IP address
+  triage exclusions.
 
 ## [0.49.0] - 2026-10-05
 
