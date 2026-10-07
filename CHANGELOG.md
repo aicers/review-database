@@ -7,6 +7,11 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- **BREAKING**: Replaced `From<(i32, i32)>` with `TryFrom<(i32, i32)>` for
+  `StructuredColumnType`. Callers must handle errors for unknown type IDs.
+
 ### Fixed
 
 - Address and network aggregation no longer drops every responder address
@@ -27,6 +32,16 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   query an inclusive two-hour range anchored at a lone `start` or `end`,
   clamping calculated endpoints to the `i64` range. Previously, they ignored
   a lone bound and queried the last two hours instead.
+- Model deserialization now returns an error for inputs shorter than the
+  16-byte header instead of panicking.
+- Column-statistics round pagination now handles excessive limits normally,
+  without allocating memory proportional to the limit.
+- Column-statistics APIs now reject used timestamps outside the i64 epoch
+  nanosecond range instead of panicking or returning incorrect results.
+  Invalid insertion timestamps and removal cutoffs leave stored data intact;
+  unused pagination bounds remain ignored.
+- Structured column type conversion now returns an error for unknown type IDs
+  instead of panicking.
 
 ## [0.49.0] - 2026-10-05
 

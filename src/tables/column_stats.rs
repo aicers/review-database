@@ -88,12 +88,12 @@ impl<'d> Table<'d, ColumnStats> {
     ///
     /// # Errors
     ///
-    /// Returns an error if iteration fails to decode an entry or if the
-    /// database operation fails.
+    /// Returns an error if the cutoff is outside the i64 nanosecond range,
+    /// iteration fails to decode an entry, or a database operation fails.
     pub fn remove_older_than(&self, cutoff: NaiveDateTime) -> Result<usize> {
         const BATCH_SIZE: usize = 1024;
 
-        let cutoff_ts = from_naive_utc(cutoff);
+        let cutoff_ts = from_naive_utc(cutoff)?;
         let mut total = 0;
         let mut batch: Vec<Vec<u8>> = Vec::with_capacity(BATCH_SIZE);
 
@@ -130,7 +130,8 @@ impl<'d> Table<'d, ColumnStats> {
     ///
     /// # Errors
     ///
-    /// Returns an error if the database operation fails.
+    /// Returns an error if a requested time is outside the i64 nanosecond range, or if
+    /// the database operation fails.
     pub fn get_column_statistics(
         &self,
         model: u32,
@@ -158,6 +159,8 @@ impl<'d> Table<'d, ColumnStats> {
         }
         time.into_iter()
             .map(from_naive_utc)
+            .collect::<Result<Vec<_>>>()?
+            .into_iter()
             .flat_map(|t| self.get(t, model, cluster))
             .map(|result: std::result::Result<ColumnStats, anyhow::Error>| {
                 let column_stats = result?;
@@ -180,14 +183,15 @@ impl<'d> Table<'d, ColumnStats> {
     /// Conversion must be handled before calling.
     ///
     /// # Errors
-    /// Returns an error if the database operation fails.
+    /// Returns an error if the batch timestamp is outside the i64 nanosecond range, or if
+    /// the database operation fails.
     pub fn insert_column_statistics(
         &self,
         stats: Vec<(u32, Vec<structured::ColumnStatistics>)>,
         model_id: u32,
         batch_ts: NaiveDateTime,
     ) -> Result<()> {
-        let batch_ts = from_naive_utc(batch_ts);
+        let batch_ts = from_naive_utc(batch_ts)?;
         for (cluster_id, columns) in stats {
             let mut key = Key {
                 cluster_id,
@@ -228,7 +232,8 @@ impl<'d> Table<'d, ColumnStats> {
     ///
     /// # Errors
     ///
-    /// Returns an error if the database operation fails.
+    /// Returns an error if the supplied time is outside the i64 nanosecond range, or if
+    /// the database operation fails.
     pub fn get_top_multimaps_of_model(
         &self,
         model_id: u32,
@@ -238,7 +243,7 @@ impl<'d> Table<'d, ColumnStats> {
         min_top_n_of_1_to_n: usize,
         time: Option<NaiveDateTime>,
     ) -> Result<Vec<TopMultimaps>> {
-        let time = time.map(from_naive_utc);
+        let time = time.map(from_naive_utc).transpose()?;
         let column_1: HashSet<_> = get_selected_column_index(column_1).into_iter().collect();
         let column_n: HashSet<_> = get_selected_column_index(column_n).into_iter().collect();
         let prefix_size = if time.is_some() {
@@ -335,7 +340,8 @@ impl<'d> Table<'d, ColumnStats> {
     ///
     /// # Errors
     ///
-    /// Returns an error if an underlying database error occurs.
+    /// Returns an error if the supplied time is outside the i64 nanosecond range, or if
+    /// an underlying database error occurs.
     pub fn get_top_columns_of_model(
         &self,
         model_id: u32,
@@ -346,7 +352,7 @@ impl<'d> Table<'d, ColumnStats> {
         portion_of_top_n: Option<f64>,
     ) -> Result<Vec<TopElementCountsByColumn>> {
         let columns = get_columns_for_top_n(top_n);
-        let time = time.map(from_naive_utc);
+        let time = time.map(from_naive_utc).transpose()?;
         let prefix_size = if time.is_some() {
             size_of::<i32>() + size_of::<u32>() + size_of::<i64>()
         } else {
@@ -474,7 +480,8 @@ impl<'d> Table<'d, ColumnStats> {
     ///
     /// # Errors
     ///
-    /// Returns an error if an underlying database operation fails.
+    /// Returns an error if the supplied time is outside the i64 nanosecond range, or if
+    /// an underlying database operation fails.
     pub fn get_top_ip_addresses_of_model(
         &self,
         model_id: u32,
@@ -483,7 +490,7 @@ impl<'d> Table<'d, ColumnStats> {
         time: Option<NaiveDateTime>,
         portion_of_top_n: Option<f64>,
     ) -> Result<Vec<TopElementCountsByColumn>> {
-        let time = time.map(from_naive_utc).map(i64::to_be_bytes);
+        let time = time.map(from_naive_utc).transpose()?.map(i64::to_be_bytes);
         let mut total_of_top_n: HashMap<_, HashMap<_, HashMap<String, i64>>> = HashMap::new();
         let prefix_size = if time.is_some() {
             size_of::<i32>() + size_of::<u32>() + size_of::<i64>()
@@ -577,7 +584,8 @@ impl<'d> Table<'d, ColumnStats> {
     ///
     /// # Errors
     ///
-    /// Returns an error if the database operation fails.
+    /// Returns an error if a used boundary is outside the i64 nanosecond range, or if
+    /// the database operation fails.
     pub fn load_rounds_by_cluster(
         &self,
         model_id: u32,
@@ -595,7 +603,7 @@ impl<'d> Table<'d, ColumnStats> {
         let mut prefix = model_id.to_be_bytes().to_vec();
         prefix.extend(cluster_id.to_be_bytes());
         let boundary = if is_first { after } else { before };
-        let boundary_ts = boundary.map(from_naive_utc);
+        let boundary_ts = boundary.map(from_naive_utc).transpose()?;
         let seek_key = boundary_ts.map(|batch_ts| round_seek_key(model_id, cluster_id, batch_ts));
         let direction = if is_first {
             Direction::Forward
@@ -605,7 +613,7 @@ impl<'d> Table<'d, ColumnStats> {
         let from = seek_key.as_deref();
         let iter = self.prefix_iter(direction, from, &prefix);
 
-        let mut rounds = Vec::with_capacity(limit);
+        let mut rounds = Vec::new();
         let mut last_batch_ts = None;
         for result in iter {
             let column_stats = result?;
@@ -631,7 +639,8 @@ impl<'d> Table<'d, ColumnStats> {
 
     /// # Errors
     ///
-    /// Returns an error if the database operation fails.
+    /// Returns an error if a stored column type is unsupported, or if
+    /// the database operation fails.
     pub fn get_column_types_of_model(
         &self,
         model_id: u32,
@@ -650,11 +659,11 @@ impl<'d> Table<'d, ColumnStats> {
             for result in iter {
                 let column_stats = result?;
                 if column_stats.model_id == model_id {
-                    column_types.push(crate::StructuredColumnType::from((
+                    column_types.push(crate::StructuredColumnType::try_from((
                         i32::try_from(column_stats.column_index)?,
                         get_column_type(&column_stats)
                             .ok_or(anyhow::anyhow!("Unsupported column type"))?,
-                    )));
+                    ))?);
                 }
             }
             return Ok(column_types);
@@ -785,13 +794,10 @@ fn from_timestamp(timestamp: i64) -> Result<NaiveDateTime> {
         .ok_or(anyhow::anyhow!("Invalid timestamp: {timestamp}"))
 }
 
-fn from_naive_utc(date: NaiveDateTime) -> i64 {
-    // Convert a NaiveDateTime to a timestamp in nanoseconds.
-    const A_BILLION: i64 = 1_000_000_000;
-
-    let seconds = date.and_utc().timestamp();
-    let nanos = i64::from(date.and_utc().timestamp_subsec_nanos());
-    seconds * A_BILLION + nanos
+fn from_naive_utc(date: NaiveDateTime) -> Result<i64> {
+    date.and_utc()
+        .timestamp_nanos_opt()
+        .ok_or_else(|| anyhow::anyhow!("timestamp is outside the i64 nanosecond range: {date}"))
 }
 
 fn to_multi_maps(
@@ -1163,6 +1169,98 @@ mod tests {
     }
 
     #[test]
+    fn round_limits_and_unused_boundaries() {
+        let (_permit, store) = setup_store();
+        let table = store.column_stats_map();
+        let model_id = 42;
+        let cluster_id = 123;
+        let batches: Vec<_> = (1..=3)
+            .map(|month| {
+                NaiveDate::from_ymd_opt(2024, month, 10)
+                    .unwrap()
+                    .and_hms_opt(0, 0, 0)
+                    .unwrap()
+            })
+            .collect();
+        for is_first in [true, false] {
+            assert_eq!(
+                table
+                    .load_rounds_by_cluster(
+                        model_id,
+                        cluster_id,
+                        &None,
+                        &None,
+                        is_first,
+                        usize::MAX
+                    )
+                    .unwrap()
+                    .1,
+                Vec::<NaiveDateTime>::new()
+            );
+        }
+
+        for batch in &batches {
+            let stats = structured::ColumnStatistics {
+                description: Description::default(),
+                n_largest_count: NLargestCount::default(),
+            };
+            table
+                .insert_column_statistics(
+                    vec![(cluster_id, vec![stats.clone(), stats])],
+                    model_id,
+                    *batch,
+                )
+                .unwrap();
+        }
+        let invalid = NaiveDate::from_ymd_opt(3000, 1, 1)
+            .unwrap()
+            .and_hms_opt(0, 0, 0)
+            .unwrap();
+        for is_first in [true, false] {
+            let (_, rounds) = table
+                .load_rounds_by_cluster(model_id, cluster_id, &None, &None, is_first, usize::MAX)
+                .unwrap();
+            assert_eq!(rounds, batches);
+            assert_eq!(
+                table
+                    .load_rounds_by_cluster(
+                        model_id,
+                        cluster_id,
+                        &Some(invalid),
+                        &Some(invalid),
+                        is_first,
+                        0
+                    )
+                    .unwrap()
+                    .1,
+                Vec::<NaiveDateTime>::new()
+            );
+        }
+        let (_, rounds) = table
+            .load_rounds_by_cluster(
+                model_id,
+                cluster_id,
+                &None,
+                &Some(invalid),
+                true,
+                usize::MAX,
+            )
+            .unwrap();
+        assert_eq!(rounds, batches);
+        let (_, rounds) = table
+            .load_rounds_by_cluster(
+                model_id,
+                cluster_id,
+                &Some(invalid),
+                &None,
+                false,
+                usize::MAX,
+            )
+            .unwrap();
+        assert_eq!(rounds, batches);
+    }
+
+    #[test]
     fn round_seek_key_matches_stored_key_prefix() {
         let model_id = 42;
         let cluster_id = 123;
@@ -1271,7 +1369,7 @@ mod tests {
             .unwrap()
             .and_hms_opt(12, 0, 0)
             .unwrap();
-        let ts = from_naive_utc(now);
+        let ts = from_naive_utc(now).unwrap();
         let restored = from_timestamp(ts).unwrap();
         assert_eq!(restored, now);
     }
@@ -1473,7 +1571,7 @@ mod tests {
             .collect::<Result<Vec<_>>>()
             .unwrap();
         assert_eq!(remaining.len(), 1);
-        assert_eq!(remaining[0].batch_ts, from_naive_utc(recent_ts));
+        assert_eq!(remaining[0].batch_ts, from_naive_utc(recent_ts).unwrap());
     }
 
     #[test]
@@ -1605,7 +1703,10 @@ mod tests {
         remaining_ts.sort_unstable();
         assert_eq!(
             remaining_ts,
-            vec![from_naive_utc(at_cutoff), from_naive_utc(just_after)]
+            vec![
+                from_naive_utc(at_cutoff).unwrap(),
+                from_naive_utc(just_after).unwrap()
+            ]
         );
     }
 
@@ -1666,7 +1767,7 @@ mod tests {
             .unwrap();
         assert_eq!(remaining.len(), recent_count as usize);
         for stats in &remaining {
-            assert_eq!(stats.batch_ts, from_naive_utc(recent_ts));
+            assert_eq!(stats.batch_ts, from_naive_utc(recent_ts).unwrap());
         }
     }
 
@@ -1798,6 +1899,188 @@ mod tests {
         }
 
         #[test]
+        fn timestamp_range_and_leap_second() {
+            let minimum = NaiveDate::from_ymd_opt(1677, 9, 21)
+                .unwrap()
+                .and_hms_nano_opt(0, 12, 43, 145_224_192)
+                .unwrap();
+            let maximum = NaiveDate::from_ymd_opt(2262, 4, 11)
+                .unwrap()
+                .and_hms_nano_opt(23, 47, 16, 854_775_807)
+                .unwrap();
+            assert_eq!(from_naive_utc(minimum).unwrap(), i64::MIN);
+            assert_eq!(from_naive_utc(maximum).unwrap(), i64::MAX);
+            assert_eq!(
+                from_naive_utc(minimum + chrono::Duration::nanoseconds(1)).unwrap(),
+                i64::MIN + 1
+            );
+            assert!(from_naive_utc(minimum - chrono::Duration::nanoseconds(1)).is_err());
+            assert!(from_naive_utc(maximum + chrono::Duration::nanoseconds(1)).is_err());
+            let leap_second = NaiveDate::from_ymd_opt(2016, 12, 31)
+                .unwrap()
+                .and_hms_nano_opt(23, 59, 59, 1_500_000_000)
+                .unwrap();
+            assert_eq!(
+                from_naive_utc(leap_second).unwrap(),
+                1_483_228_800_500_000_000
+            );
+        }
+
+        #[test]
+        fn invalid_timestamps_return_errors_on_empty_table() {
+            let (_permit, store) = setup_store();
+            let table = store.column_stats_map();
+            let model_id = 7;
+            let cluster_id = 11;
+            let present = NaiveDate::from_ymd_opt(2026, 10, 7)
+                .unwrap()
+                .and_hms_opt(0, 0, 0)
+                .unwrap();
+
+            for year in [1600, 3000] {
+                let invalid = NaiveDate::from_ymd_opt(year, 1, 1)
+                    .unwrap()
+                    .and_hms_opt(0, 0, 0)
+                    .unwrap();
+                assert!(
+                    table
+                        .insert_column_statistics(
+                            vec![(cluster_id, vec![default_column_statistics()])],
+                            model_id,
+                            invalid
+                        )
+                        .is_err()
+                );
+                assert!(table.iter(Direction::Forward, None).next().is_none());
+                assert!(
+                    table
+                        .get_column_statistics(model_id, cluster_id, vec![present, invalid])
+                        .is_err()
+                );
+                assert!(
+                    table
+                        .get_top_columns_of_model(
+                            model_id,
+                            vec![cluster_id],
+                            &[true],
+                            10,
+                            Some(invalid),
+                            None,
+                        )
+                        .is_err()
+                );
+                assert!(
+                    table
+                        .get_top_multimaps_of_model(
+                            model_id,
+                            vec![cluster_id],
+                            (&[true], &[true]),
+                            10,
+                            0,
+                            Some(invalid),
+                        )
+                        .is_err()
+                );
+                assert!(
+                    table
+                        .get_top_ip_addresses_of_model(
+                            model_id,
+                            &[cluster_id],
+                            10,
+                            Some(invalid),
+                            None
+                        )
+                        .is_err()
+                );
+                assert!(
+                    table
+                        .load_rounds_by_cluster(
+                            model_id,
+                            cluster_id,
+                            &Some(invalid),
+                            &None,
+                            true,
+                            10
+                        )
+                        .is_err()
+                );
+                assert!(
+                    table
+                        .load_rounds_by_cluster(
+                            model_id,
+                            cluster_id,
+                            &None,
+                            &Some(invalid),
+                            false,
+                            10
+                        )
+                        .is_err()
+                );
+                assert!(table.remove_older_than(invalid).is_err());
+            }
+        }
+
+        #[test]
+        fn invalid_timestamps_preserve_stored_statistics() {
+            let (_permit, store) = setup_store();
+            let table = store.column_stats_map();
+            let model_id = 7;
+            let cluster_id = 11;
+            let present = NaiveDate::from_ymd_opt(2026, 10, 7)
+                .unwrap()
+                .and_hms_opt(0, 0, 0)
+                .unwrap();
+
+            table
+                .insert_column_statistics(
+                    vec![(cluster_id, vec![default_column_statistics()])],
+                    model_id,
+                    present,
+                )
+                .unwrap();
+            for year in [1600, 3000] {
+                let invalid = NaiveDate::from_ymd_opt(year, 1, 1)
+                    .unwrap()
+                    .and_hms_opt(0, 0, 0)
+                    .unwrap();
+                assert!(
+                    table
+                        .insert_column_statistics(
+                            vec![(cluster_id, vec![default_column_statistics()])],
+                            model_id,
+                            invalid
+                        )
+                        .is_err()
+                );
+                assert!(table.remove_older_than(invalid).is_err());
+                let remaining = table
+                    .get_column_statistics(model_id, cluster_id, vec![])
+                    .unwrap();
+                assert_eq!(remaining.len(), 1);
+                assert_eq!(remaining[0].batch_ts, present);
+            }
+            assert_eq!(
+                table
+                    .get_top_columns_of_model(model_id, vec![], &[], 10, None, None)
+                    .unwrap()
+                    .len(),
+                0
+            );
+            assert!(
+                table
+                    .get_top_multimaps_of_model(model_id, vec![], (&[], &[]), 10, 0, None)
+                    .unwrap()
+                    .is_empty()
+            );
+            assert!(
+                table
+                    .get_top_ip_addresses_of_model(model_id, &[], 10, None, None)
+                    .unwrap()
+                    .is_empty()
+            );
+        }
+
+        #[test]
         fn test_key_bytes_for_timestamp() {
             let epoch = NaiveDate::from_ymd_opt(1970, 1, 1)
                 .unwrap()
@@ -1814,12 +2097,12 @@ mod tests {
 
             let cases = [
                 (epoch, 0_i64),
-                (leap_second, from_naive_utc(leap_second)),
+                (leap_second, from_naive_utc(leap_second).unwrap()),
                 (pre_epoch, -1_i64),
             ];
 
             for (timestamp, expected_nanos) in cases {
-                assert_eq!(from_naive_utc(timestamp), expected_nanos);
+                assert_eq!(from_naive_utc(timestamp).unwrap(), expected_nanos);
                 assert_eq!(from_timestamp(expected_nanos).unwrap(), timestamp);
 
                 let key = Key {
@@ -1851,7 +2134,7 @@ mod tests {
                 .unwrap()
                 .and_hms_nano_opt(12, 34, 56, 123_456_789)
                 .unwrap();
-            let expected_nanos = from_naive_utc(timestamp);
+            let expected_nanos = from_naive_utc(timestamp).unwrap();
 
             table
                 .insert_column_statistics(
@@ -1904,9 +2187,9 @@ mod tests {
                     .unwrap();
             }
 
-            let epoch_nanos = from_naive_utc(epoch);
-            let leap_nanos = from_naive_utc(leap_second);
-            let pre_epoch_nanos = from_naive_utc(pre_epoch);
+            let epoch_nanos = from_naive_utc(epoch).unwrap();
+            let leap_nanos = from_naive_utc(leap_second).unwrap();
+            let pre_epoch_nanos = from_naive_utc(pre_epoch).unwrap();
 
             // RocksDB orders keys by unsigned byte comparison. Big-endian `i64`
             // nanoseconds therefore sort non-negative timestamps before negative
@@ -1960,9 +2243,9 @@ mod tests {
             let forward =
                 ordered_unique_batch_ts(&table, model_id, cluster_id, Direction::Forward, None);
             let expected = vec![
-                from_naive_utc(batch_a),
-                from_naive_utc(batch_b),
-                from_naive_utc(batch_c),
+                from_naive_utc(batch_a).unwrap(),
+                from_naive_utc(batch_b).unwrap(),
+                from_naive_utc(batch_c).unwrap(),
             ];
             assert_eq!(forward, expected);
 
@@ -1986,7 +2269,7 @@ mod tests {
             // A full-key seek including `model_id` honors timestamp order.
             let mut full_seek_key = model_id.to_be_bytes().to_vec();
             full_seek_key.extend(cluster_id.to_be_bytes());
-            full_seek_key.extend(from_naive_utc(batch_b).to_be_bytes());
+            full_seek_key.extend(from_naive_utc(batch_b).unwrap().to_be_bytes());
             let forward_from_b = ordered_unique_batch_ts(
                 &table,
                 model_id,
@@ -1996,7 +2279,10 @@ mod tests {
             );
             assert_eq!(
                 forward_from_b,
-                vec![from_naive_utc(batch_b), from_naive_utc(batch_c)]
+                vec![
+                    from_naive_utc(batch_b).unwrap(),
+                    from_naive_utc(batch_c).unwrap()
+                ]
             );
         }
 
@@ -2025,7 +2311,10 @@ mod tests {
                 .unwrap();
             assert_eq!(stats.len(), 1);
             assert_eq!(stats[0].batch_ts, timestamp);
-            assert_eq!(from_naive_utc(stats[0].batch_ts), from_naive_utc(timestamp));
+            assert_eq!(
+                from_naive_utc(stats[0].batch_ts).unwrap(),
+                from_naive_utc(timestamp).unwrap()
+            );
 
             let all_stats = table
                 .get_column_statistics(model_id, cluster_id, vec![])
