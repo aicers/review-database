@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use chrono::NaiveDateTime;
 use num_traits::{FromPrimitive, ToPrimitive};
 use rocksdb::{Direction, OptimisticTransactionDB};
@@ -221,14 +221,14 @@ impl<'d> Table<'d, ColumnStats> {
     ///
     /// # Panics
     ///
-    /// Will panic if `column_1` or `column_n` is not a valid slice of booleans,
-    /// or if `number_of_top_n` is larger than `usize::MAX`.
-    /// Will panic if `cluster_ids` contains invalid `i32` values.
-    /// Will panic if `column_1` or `column_n` contains indices that are out of bounds for `u32`.
+    /// Panics if a selected index in `column_1` or `column_n` cannot fit in `u32`,
+    /// a returned column index cannot fit in `usize`, or `time` is outside the
+    /// range representable as an `i64` nanosecond timestamp.
     ///
     /// # Errors
     ///
-    /// Returns an error if the database operation fails.
+    /// Returns an error if a database operation fails or a stored count cannot
+    /// fit in `i64`.
     pub fn get_top_multimaps_of_model(
         &self,
         model_id: u32,
@@ -318,7 +318,7 @@ impl<'d> Table<'d, ColumnStats> {
                     },
                 );
 
-            result.push(to_multi_maps(col_n, selected));
+            result.push(to_multi_maps(col_n, selected)?);
         }
 
         Ok(result)
@@ -331,11 +331,15 @@ impl<'d> Table<'d, ColumnStats> {
     ///
     /// # Panics
     ///
-    /// Will panic if `top_n` is not a valid slice of booleans or if `number_of_top_n` is larger than `usize::MAX`.
+    /// Panics if a selected index in `top_n` cannot fit in `i32`, a returned
+    /// column index cannot fit in `usize`, or `time` is outside the range
+    /// representable as an `i64` nanosecond timestamp.
     ///
     /// # Errors
     ///
-    /// Returns an error if an underlying database error occurs.
+    /// Returns an error if a database operation fails or a stored count cannot
+    /// fit in `i64`. A per-value sum overflowing `i64` also returns an error.
+    /// Returns an error if a stored column index cannot fit in `i32`.
     pub fn get_top_columns_of_model(
         &self,
         model_id: u32,
@@ -376,20 +380,20 @@ impl<'d> Table<'d, ColumnStats> {
                     .or_default()
                     .entry(column_stats.column_index)
                     .or_default();
-                for (value, count) in column_stats.n_largest_count.top_n().iter().map(|ec| {
-                    (
-                        ec.value.to_string(),
-                        ec.count.to_i64().expect("Count is not a valid i64"),
-                    )
-                }) {
-                    *entry.entry(value).or_insert(0) += count;
+                for ec in column_stats.n_largest_count.top_n() {
+                    let count = i64::try_from(ec.count)
+                        .context("converting stored column-statistics count to i64")?;
+                    let sum = entry.entry(ec.value.to_string()).or_insert(0);
+                    *sum = sum.checked_add(count).ok_or_else(|| {
+                        anyhow::anyhow!("column-statistics per-value count sum overflows i64")
+                    })?;
                 }
             }
         }
         let limited_top_n = limited_top_n_of_clusters(
             total_of_top_n,
             portion_of_top_n.unwrap_or(DEFAULT_PORTION_OF_TOP_N),
-        );
+        )?;
 
         Ok(to_element_counts(limited_top_n, number_of_top_n))
     }
@@ -400,11 +404,12 @@ impl<'d> Table<'d, ColumnStats> {
     ///
     /// # Panics
     ///
-    /// Will panic if `usize` is smaller than 4 bytes or if `cluster_ids` is empty.
+    /// Panics if a returned column index cannot fit in `usize`.
     ///
     /// # Errors
     ///
-    /// Returns an error if an underlying database operation fails.
+    /// Returns an error if a database operation fails or a stored count cannot
+    /// fit in `i64`. A per-value sum overflowing `i64` also returns an error.
     pub fn get_top_ip_addresses_of_cluster(
         &self,
         model_id: u32,
@@ -436,8 +441,12 @@ impl<'d> Table<'d, ColumnStats> {
                 }
                 let entry: &mut _ = top_n.entry(column_stats.column_index).or_default();
                 for ec in column_stats.n_largest_count.top_n() {
-                    *entry.entry(ec.value.to_string()).or_insert(0) +=
-                        ec.count.to_i64().expect("Count is not a valid i64");
+                    let count = i64::try_from(ec.count)
+                        .context("converting stored column-statistics count to i64")?;
+                    let sum = entry.entry(ec.value.to_string()).or_insert(0);
+                    *sum = sum.checked_add(count).ok_or_else(|| {
+                        anyhow::anyhow!("column-statistics per-value count sum overflows i64")
+                    })?;
                 }
             }
         }
@@ -469,12 +478,13 @@ impl<'d> Table<'d, ColumnStats> {
     ///
     /// # Panics
     ///
-    /// Will panic if `portion_of_top_n` is not between 0.0 and 1.0.
-    /// Will panic if a `column_index` from the database cannot be represented as a `usize`.
+    /// Panics if a returned column index cannot fit in `usize`, or `time` is
+    /// outside the range representable as an `i64` nanosecond timestamp.
     ///
     /// # Errors
     ///
-    /// Returns an error if an underlying database operation fails.
+    /// Returns an error if a database operation fails or a stored count cannot
+    /// fit in `i64`. A per-value sum overflowing `i64` also returns an error.
     pub fn get_top_ip_addresses_of_model(
         &self,
         model_id: u32,
@@ -527,14 +537,17 @@ impl<'d> Table<'d, ColumnStats> {
                         })
                 }) {
                     let (value, count) = result?;
-                    *entry.entry(value).or_insert(0) += count;
+                    let sum = entry.entry(value).or_insert(0);
+                    *sum = sum.checked_add(count).ok_or_else(|| {
+                        anyhow::anyhow!("column-statistics per-value count sum overflows i64")
+                    })?;
                 }
             }
         }
         let limited_top_n = limited_top_n_of_clusters(
             total_of_top_n,
             portion_of_top_n.unwrap_or(DEFAULT_PORTION_OF_TOP_N),
-        );
+        )?;
         Ok(to_element_counts(limited_top_n, size))
     }
 
@@ -712,31 +725,45 @@ fn get_columns_for_top_n(top_n: &[bool]) -> HashSet<i32> {
         .collect()
 }
 
+/// Selects values within each cluster by ratio, then aggregates across clusters.
+///
+/// # Errors
+///
+/// Returns an error if a cross-cluster per-value count sum overflows `i64`.
 fn limited_top_n_of_clusters(
     top_n_of_clusters: HashMap<u32, HashMap<u32, HashMap<String, i64>>>,
     limit_rate: f64,
-) -> HashMap<u32, HashMap<String, i64>> {
+) -> Result<HashMap<u32, HashMap<String, i64>>> {
     use std::cmp::Reverse;
 
     let mut top_n_total: HashMap<u32, HashMap<String, i64>> = HashMap::new(); // (usize, (String, BigDecimal)) = (column_index, (Ip Address, size))
     for (_, top_n) in top_n_of_clusters {
         for (column_index, t) in top_n {
-            let total_sizes: i64 = t.iter().map(|v| v.1).sum();
+            let total_sizes: i128 = t.values().map(|&size| i128::from(size)).sum();
             let mut top_n: Vec<(String, i64)> = t.into_iter().collect();
             top_n.sort_by_key(|v| Reverse(v.1));
 
-            let size_including_ips =
-                i64::from_f64((total_sizes.to_f64().unwrap_or(0.0) * limit_rate).trunc())
-                    .unwrap_or_else(|| i64::from_u32(DEFAULT_NUMBER_OF_COLUMN).unwrap_or(i64::MAX));
+            // Only exactly 1.0 uses the integer total; nearby ratios retain float rounding.
+            #[allow(clippy::float_cmp)]
+            let size_including_ips = if limit_rate == 1.0 {
+                total_sizes
+            } else {
+                // Non-default ratios preserve the existing floating-point rounding.
+                i128::from_f64((total_sizes.to_f64().unwrap_or(0.0) * limit_rate).trunc())
+                    .unwrap_or_else(|| i128::from(DEFAULT_NUMBER_OF_COLUMN))
+            };
 
-            let mut sum_sizes = 0;
+            let mut sum_sizes = 0_i128;
             for (ip, size) in top_n {
-                sum_sizes += size;
-                *top_n_total
+                sum_sizes += i128::from(size);
+                let sum = top_n_total
                     .entry(column_index)
                     .or_default()
                     .entry(ip)
-                    .or_insert(0) += size;
+                    .or_insert(0);
+                *sum = sum.checked_add(size).ok_or_else(|| {
+                    anyhow::anyhow!("cross-cluster per-value count sum overflows i64")
+                })?;
                 if sum_sizes > size_including_ips {
                     break;
                 }
@@ -744,7 +771,7 @@ fn limited_top_n_of_clusters(
         }
     }
 
-    top_n_total
+    Ok(top_n_total)
 }
 
 fn to_element_counts(
@@ -797,31 +824,38 @@ fn from_naive_utc(date: NaiveDateTime) -> i64 {
 fn to_multi_maps(
     column: u32,
     selected: HashMap<u32, HashMap<u32, Vec<&[structured::ElementCount]>>>,
-) -> TopMultimaps {
-    TopMultimaps {
+) -> Result<TopMultimaps> {
+    Ok(TopMultimaps {
         n_index: column.to_usize().expect("column index < usize::max"),
         selected: selected
             .into_iter()
-            .map(|(cluster_id, v)| TopColumnsOfCluster {
-                cluster_id,
-                columns: v
-                    .into_iter()
-                    .map(|(col, top_n)| TopElementCountsByColumn {
-                        column_index: col.to_usize().expect("column index < usize::max"),
-                        counts: top_n
-                            .into_iter()
-                            .flat_map(|ecs| {
-                                ecs.iter().map(|ec| ElementCount {
-                                    value: ec.value.to_string(),
-                                    count: ec.count.to_i64().expect("Count is not a valid i64"),
-                                })
+            .map(|(cluster_id, v)| {
+                Ok(TopColumnsOfCluster {
+                    cluster_id,
+                    columns: v
+                        .into_iter()
+                        .map(|(col, top_n)| {
+                            Ok(TopElementCountsByColumn {
+                                column_index: col.to_usize().expect("column index < usize::max"),
+                                counts: top_n
+                                    .into_iter()
+                                    .flat_map(|ecs| ecs.iter())
+                                    .map(|ec| {
+                                        Ok(ElementCount {
+                                            value: ec.value.to_string(),
+                                            count: i64::try_from(ec.count).context(
+                                                "converting stored column-statistics count to i64",
+                                            )?,
+                                        })
+                                    })
+                                    .collect::<Result<_>>()?,
                             })
-                            .collect(),
-                    })
-                    .collect(),
+                        })
+                        .collect::<Result<_>>()?,
+                })
             })
-            .collect(),
-    }
+            .collect::<Result<_>>()?,
+    })
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
@@ -1306,7 +1340,7 @@ mod tests {
             .collect(),
         );
 
-        let limited = limited_top_n_of_clusters(input, 0.5);
+        let limited = limited_top_n_of_clusters(input, 0.5).unwrap();
         assert!(limited.contains_key(&0));
         assert!(limited.contains_key(&1));
     }
@@ -1341,12 +1375,168 @@ mod tests {
             .or_default()
             .insert(column_index, vec![&data]);
 
-        let result = to_multi_maps(0, selected);
+        let result = to_multi_maps(0, selected).unwrap();
         assert_eq!(result.n_index, 0);
         assert_eq!(result.selected.len(), 1);
         assert_eq!(result.selected[0].cluster_id, 1);
         assert_eq!(result.selected[0].columns[0].counts[0].count, 42);
     }
+
+    #[cfg(target_pointer_width = "64")]
+    fn ip_statistics(counts: &[usize]) -> structured::ColumnStatistics {
+        let elements: Vec<_> = counts
+            .iter()
+            .enumerate()
+            .map(|(index, &count)| ElementCount {
+                value: Element::IpAddr(
+                    std::net::Ipv4Addr::new(192, 0, 2, u8::try_from(index + 1).unwrap()).into(),
+                ),
+                count,
+            })
+            .collect();
+        let mode = elements.first().map(|ec| ec.value.clone());
+        structured::ColumnStatistics {
+            description: Description::default(),
+            n_largest_count: NLargestCount::new(counts.len(), elements, mode),
+        }
+    }
+
+    #[test]
+    #[cfg(target_pointer_width = "64")]
+    fn test_top_queries_count_conversion_errors() {
+        let (_permit, store) = setup_store();
+        let table = store.column_stats_map();
+        let time = from_timestamp(0).unwrap();
+        let count = usize::try_from(i64::MAX).unwrap() + 1;
+        table
+            .insert_column_statistics(vec![(1, vec![ip_statistics(&[count])])], 1, time)
+            .unwrap();
+
+        assert!(
+            table
+                .get_top_columns_of_model(1, vec![1], &[true], 3, None, None)
+                .is_err()
+        );
+        assert!(table.get_top_ip_addresses_of_cluster(1, &[1], 3).is_err());
+        assert!(
+            table
+                .get_top_multimaps_of_model(1, vec![1], (&[true], &[true]), 3, 0, None)
+                .is_err()
+        );
+    }
+
+    #[test]
+    #[cfg(target_pointer_width = "64")]
+    fn test_top_queries_count_sum_overflow_across_batches() {
+        let (_permit, store) = setup_store();
+        let table = store.column_stats_map();
+        for (batch, count) in [(0, usize::try_from(i64::MAX).unwrap()), (1, 1)] {
+            table
+                .insert_column_statistics(
+                    vec![(1, vec![ip_statistics(&[count])])],
+                    1,
+                    from_timestamp(batch).unwrap(),
+                )
+                .unwrap();
+        }
+
+        assert!(
+            table
+                .get_top_columns_of_model(1, vec![1], &[true], 3, None, None)
+                .is_err()
+        );
+        assert!(table.get_top_ip_addresses_of_cluster(1, &[1], 3).is_err());
+        assert!(
+            table
+                .get_top_ip_addresses_of_model(1, &[1], 3, None, None)
+                .is_err()
+        );
+    }
+
+    #[test]
+    #[cfg(target_pointer_width = "64")]
+    fn test_top_queries_count_sum_overflow_across_clusters() {
+        let (_permit, store) = setup_store();
+        let table = store.column_stats_map();
+        table
+            .insert_column_statistics(
+                vec![
+                    (
+                        1,
+                        vec![ip_statistics(&[usize::try_from(i64::MAX).unwrap()])],
+                    ),
+                    (2, vec![ip_statistics(&[1])]),
+                ],
+                1,
+                from_timestamp(0).unwrap(),
+            )
+            .unwrap();
+
+        assert!(
+            table
+                .get_top_columns_of_model(1, vec![1, 2], &[true], 3, None, None)
+                .is_err()
+        );
+        assert!(
+            table
+                .get_top_ip_addresses_of_model(1, &[1, 2], 3, None, None)
+                .is_err()
+        );
+        assert!(
+            table
+                .get_top_ip_addresses_of_cluster(1, &[1, 2], 3)
+                .is_err()
+        );
+    }
+
+    #[test]
+    #[cfg(target_pointer_width = "64")]
+    fn test_top_queries_large_ratio_totals() {
+        let max = usize::try_from(i64::MAX).unwrap();
+        for (counts, ratio) in [
+            (vec![max, 1], None),
+            (vec![max, 3, 3], None),
+            (vec![max, max / 2], Some(0.9)),
+        ] {
+            let (_permit, store) = setup_store();
+            let table = store.column_stats_map();
+            table
+                .insert_column_statistics(
+                    vec![(1, vec![ip_statistics(&counts)])],
+                    1,
+                    from_timestamp(0).unwrap(),
+                )
+                .unwrap();
+
+            let columns = table
+                .get_top_columns_of_model(1, vec![1], &[true], 3, None, ratio)
+                .unwrap();
+            let ips = table
+                .get_top_ip_addresses_of_model(1, &[1], 3, None, ratio)
+                .unwrap();
+            for result in [columns, ips] {
+                assert_eq!(result.len(), 1);
+                assert_eq!(result[0].column_index, 0);
+                let actual: Vec<_> = result[0]
+                    .counts
+                    .iter()
+                    .map(|ec| (ec.value.clone(), ec.count))
+                    .collect();
+                let expected: Vec<_> = counts
+                    .iter()
+                    .enumerate()
+                    .map(|(index, &count)| {
+                        (
+                            format!("192.0.2.{}", index + 1),
+                            i64::try_from(count).unwrap(),
+                        )
+                    })
+                    .collect();
+                assert_eq!(actual, expected, "ratio {ratio:?}");
+            }
+        }
+    }
+
     #[test]
     fn test_get_top_ip_addresses_of_model() {
         use chrono::NaiveDate;

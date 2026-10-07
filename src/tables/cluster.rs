@@ -99,7 +99,8 @@ impl<'d> Table<'d, Cluster> {
     ///
     /// # Errors
     ///
-    /// Returns an error if a database operation fails.
+    /// Returns an error if a database operation fails or accumulating a cluster
+    /// size overflows `i64`. No updates are committed on error.
     pub fn update_clusters(
         &self,
         updates: Vec<crate::UpdateClusterRequest>,
@@ -167,7 +168,9 @@ impl<'d> Table<'d, Cluster> {
 
             entry.signature = update.signature;
 
-            entry.size += update.size;
+            entry.size = entry.size.checked_add(update.size).ok_or_else(|| {
+                anyhow!("size accumulation overflows i64 for cluster {}", entry.id)
+            })?;
 
             if let Some(score) = update.score {
                 entry.score = Some(score);
@@ -594,6 +597,38 @@ mod tests {
         assert!(c.sensors.contains(&"sZ".to_string()));
         assert_eq!(c.size, 15); // 10 + 5
         assert_eq!(c.signature, "merged-sig");
+    }
+
+    #[test]
+    fn test_update_clusters_size_overflow_is_atomic() {
+        let (_permit, store) = setup_store();
+        let table = store.cluster_map();
+        let normal = make_cluster(1, 1);
+        let mut full = make_cluster(1, 2);
+        full.size = i64::MAX;
+        table.insert(&normal).unwrap();
+        table.insert(&full).unwrap();
+
+        let updates = [normal.id, full.id]
+            .into_iter()
+            .map(|cluster_id| crate::UpdateClusterRequest {
+                cluster_id,
+                detector_id: 77,
+                event_ids: vec![(999, "new-sensor".into())],
+                labels: Some(vec!["new-label".into()]),
+                status_id: 9,
+                signature: "new-signature".into(),
+                size: 1,
+                score: Some(0.5),
+            })
+            .collect();
+        assert!(table.update_clusters(updates, 1, 2).is_err());
+
+        let mut stored = table
+            .load_clusters(1, None, None, None, None, &None, &None, true, 10)
+            .unwrap();
+        stored.sort_unstable_by_key(|cluster| cluster.id);
+        assert_eq!(stored, vec![normal, full]);
     }
 
     #[test]
