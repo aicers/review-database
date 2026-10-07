@@ -1839,7 +1839,7 @@ AsRef<[u8]>`). This change accommodates scenarios where the information stored
 - Modified `FtpBruteForce` by adding an `is_internal` field which is a boolean
   indicating whether it is internal or not.
 
-[Unreleased]: https://github.com/aicers/review-database/compare/0.47.0...HEAD
+[Unreleased]: https://github.com/aicers/review-database/compare/0.49.0...main
 [0.49.0]: https://github.com/aicers/review-database/compare/0.48.0...0.49.0
 [0.48.0]: https://github.com/aicers/review-database/compare/0.47.0...0.48.0
 [0.47.0]: https://github.com/aicers/review-database/compare/0.46.0...0.47.0
