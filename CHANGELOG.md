@@ -23,6 +23,10 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 - Time-series queries now return an error on arithmetic overflow instead of
   panicking or returning wrapped results. Failure to reserve capacity for a
   cluster query's filled-slot result now returns an error instead of aborting.
+- `get_top_time_series_of_cluster` and `get_top_time_series_of_model` now
+  query an inclusive two-hour range anchored at a lone `start` or `end`,
+  clamping calculated endpoints to the `i64` range. Previously, they ignored
+  a lone bound and queried the last two hours instead.
 
 ## [0.49.0] - 2026-10-05
 
