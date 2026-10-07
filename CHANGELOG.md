@@ -42,6 +42,11 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   unused pagination bounds remain ignored.
 - Structured column type conversion now returns an error for unknown type IDs
   instead of panicking.
+- Column-statistics queries return errors instead of panicking or returning
+  wrapped values when counts cannot be converted to `i64` or added without overflow.
+- Large counts no longer drop values from ratio-based selection at the default ratio.
+- `update_clusters` returns an error instead of storing a wrapped size when size
+  accumulation overflows.
 
 ## [0.49.0] - 2026-10-05
 
