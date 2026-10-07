@@ -20,6 +20,9 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 - `WindowsThreat` and `ExtraThreat`, which carry no addresses, no longer match
   any address-based filter, including ranges such as `0.0.0.0/0`, or IP address
   triage exclusions.
+- Time-series queries now return an error on arithmetic overflow instead of
+  panicking or returning wrapped results. Failure to reserve capacity for a
+  cluster query's filled-slot result now returns an error instead of aborting.
 
 ## [0.49.0] - 2026-10-05
 
