@@ -8,6 +8,13 @@ pub use self::time_series::{ClusterTrend, LineSegment, Regression, TopTrendsByCo
 impl TryFrom<(i32, i32)> for StructuredColumnType {
     type Error = anyhow::Error;
 
+    /// Converts a `(column_index, type_id)` pair into a structured column type.
+    ///
+    /// Preserves the column index and accepts type IDs in `1..=7`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for all type IDs outside `1..=7`.
     fn try_from((column_index, type_id): (i32, i32)) -> Result<Self, Self::Error> {
         let data_type = match type_id {
             1 => "int64",
