@@ -70,6 +70,8 @@ impl<'d> Table<'d, TimeSeries> {
         start: Option<i64>,
         end: Option<i64>,
     ) -> Result<(TimeRange, (i64, i64))> {
+        const TWO_HOURS_NANOS: i64 = 2 * 60 * 60 * 1_000_000_000;
+
         use rocksdb::Direction;
         let mut iter = self.prefix_iter(Direction::Forward, None, prefix);
         let (earliest, latest) = iter
@@ -89,22 +91,31 @@ impl<'d> Table<'d, TimeSeries> {
                 .timestamp_nanos_opt()
                 .ok_or(anyhow!("illegal time stamp"))?,
         );
-        let (start, end) = if let (Some(s), Some(e)) = (start, end) {
-            (s, e)
-        } else {
-            let prev = chrono::DateTime::<chrono::Utc>::from_timestamp_nanos(recent)
-                - chrono::Duration::hours(2);
-            (
-                prev.timestamp_nanos_opt()
-                    .ok_or(anyhow!("illegal time stamp"))?,
-                recent,
-            )
+        let (start, end) = match (start, end) {
+            (Some(s), Some(e)) => (s, e),
+            (Some(s), None) => (s, s.saturating_add(TWO_HOURS_NANOS)),
+            (None, Some(e)) => (e.saturating_sub(TWO_HOURS_NANOS), e),
+            (None, None) => {
+                let prev = chrono::DateTime::<chrono::Utc>::from_timestamp_nanos(recent)
+                    - chrono::Duration::hours(2);
+                (
+                    prev.timestamp_nanos_opt()
+                        .ok_or(anyhow!("illegal time stamp"))?,
+                    recent,
+                )
+            }
         };
         Ok(((earliest, latest), (start, end)))
     }
 
     /// Gets the top time series of the given cluster,
     /// extrapolation is performed to fill vacant slots.
+    ///
+    /// `start` and `end` are nanosecond timestamps defining an inclusive range.
+    /// With only `start`, the range ends two hours afterward; with only `end`,
+    /// it begins two hours beforehand. Calculated endpoints are clamped to the
+    /// `i64` range. With neither bound, the range covers the two hours ending
+    /// at the latest stored value for the cluster, or the current time if empty.
     ///
     /// # Errors
     ///
@@ -162,6 +173,14 @@ impl<'d> Table<'d, TimeSeries> {
     }
 
     /// Returns the top trends of a model.
+    ///
+    /// When `time` is `Some`, selects that batch and ignores `start` and `end`.
+    /// Otherwise, `start` and `end` are nanosecond timestamps defining an
+    /// inclusive range. With only `start`, the range ends two hours afterward;
+    /// with only `end`, it begins two hours beforehand. Calculated endpoints
+    /// are clamped to the `i64` range. With neither bound, the range covers the
+    /// two hours ending at the latest stored value for the model, or the
+    /// current time if empty.
     ///
     /// # Errors
     ///
@@ -448,6 +467,93 @@ mod tests {
         }
     }
 
+    fn assert_top_time_series_range(
+        table: &Table<'_, TimeSeries>,
+        model_id: u32,
+        start: Option<i64>,
+        end: Option<i64>,
+        expected: &[(i64, usize)],
+    ) {
+        let (_, _, columns) = table
+            .get_top_time_series_of_cluster(model_id, 1, start, end)
+            .unwrap();
+        assert_eq!(columns.len(), 1);
+        assert_eq!(columns[0].index, Some(0));
+        assert_eq!(columns[0].time_counts, expected);
+
+        let columns = table
+            .get_top_time_series_of_model(model_id, None, start, end)
+            .unwrap();
+        assert_eq!(columns.len(), 1);
+        let (index, clusters) = &columns[0];
+        assert_eq!(*index, Some(0));
+        assert_eq!(clusters.len(), 1);
+        assert_eq!(clusters[0].id, 1);
+        assert_eq!(clusters[0].time_counts, expected);
+    }
+
+    #[test]
+    fn test_get_top_time_series_bound_combinations() {
+        const HOUR: i64 = 60 * 60 * 1_000_000_000;
+        const T: i64 = 1_640_995_200_000_000_000;
+
+        let (_permit, store) = setup_store();
+        let table = store.time_series_map();
+        let values = [
+            (T, 10),
+            (T + HOUR, 20),
+            (T + 3 * HOUR, 30),
+            (T + 6 * HOUR, 40),
+        ];
+        table
+            .add_time_series(
+                1,
+                T,
+                vec![(1, vec![create_test_column(0, values.to_vec())])],
+            )
+            .unwrap();
+
+        for (start, end, expected) in [
+            (Some(T), None, &values[..2]),
+            (None, Some(T + 3 * HOUR), &values[1..3]),
+            (Some(T + HOUR), Some(T + 3 * HOUR), &values[1..3]),
+            (None, None, &values[3..]),
+        ] {
+            assert_top_time_series_range(&table, 1, start, end, expected);
+        }
+    }
+
+    #[test]
+    fn test_get_top_time_series_clamps_lone_bounds() {
+        const HOUR: i64 = 60 * 60 * 1_000_000_000;
+
+        let (_permit, store) = setup_store();
+        let table = store.time_series_map();
+        for (model_id, start, end, values) in [
+            (
+                1,
+                Some(i64::MAX - HOUR),
+                None,
+                [(i64::MAX - HOUR / 2, 10), (i64::MAX, 20)],
+            ),
+            (
+                2,
+                None,
+                Some(i64::MIN + HOUR),
+                [(i64::MIN, 30), (i64::MIN + HOUR / 2, 40)],
+            ),
+        ] {
+            table
+                .add_time_series(
+                    model_id,
+                    0,
+                    vec![(1, vec![create_test_column(0, values.to_vec())])],
+                )
+                .unwrap();
+            assert_top_time_series_range(&table, model_id, start, end, &values);
+        }
+    }
+
     #[test]
     fn test_add_time_series() {
         let (_permit, store) = setup_store();
@@ -652,7 +758,22 @@ mod tests {
         let result = table
             .get_top_time_series_of_model(model_id, Some(batch_ts), None, None)
             .unwrap();
-        assert!(!result.is_empty());
+        let bounded_result = table
+            .get_top_time_series_of_model(model_id, Some(batch_ts), Some(0), Some(1))
+            .unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(bounded_result.len(), 1);
+        let (index, clusters) = &result[0];
+        let (bounded_index, bounded_clusters) = &bounded_result[0];
+        assert_eq!(index, bounded_index);
+        assert_eq!(clusters.len(), 1);
+        assert_eq!(bounded_clusters.len(), 1);
+        assert_eq!(clusters[0].id, bounded_clusters[0].id);
+        assert_eq!(clusters[0].time_counts, bounded_clusters[0].time_counts);
+        assert_eq!(
+            clusters[0].time_counts,
+            [(1_640_995_200, 10), (1_640_995_260, 15)]
+        );
     }
 
     #[test]
