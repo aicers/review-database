@@ -825,36 +825,34 @@ fn to_multi_maps(
     column: u32,
     selected: HashMap<u32, HashMap<u32, Vec<&[structured::ElementCount]>>>,
 ) -> Result<TopMultimaps> {
-    Ok(TopMultimaps {
-        n_index: column.to_usize().expect("column index < usize::max"),
-        selected: selected
-            .into_iter()
-            .map(|(cluster_id, v)| {
-                Ok(TopColumnsOfCluster {
-                    cluster_id,
-                    columns: v
-                        .into_iter()
-                        .map(|(col, top_n)| {
-                            Ok(TopElementCountsByColumn {
-                                column_index: col.to_usize().expect("column index < usize::max"),
-                                counts: top_n
-                                    .into_iter()
-                                    .flat_map(|ecs| ecs.iter())
-                                    .map(|ec| {
-                                        Ok(ElementCount {
-                                            value: ec.value.to_string(),
-                                            count: i64::try_from(ec.count).context(
-                                                "converting stored column-statistics count to i64",
-                                            )?,
-                                        })
-                                    })
-                                    .collect::<Result<_>>()?,
-                            })
+    let n_index = column.to_usize().expect("column index < usize::max");
+    let mut clusters = Vec::with_capacity(selected.len());
+    for (cluster_id, v) in selected {
+        let mut columns = Vec::with_capacity(v.len());
+        for (col, top_n) in v {
+            columns.push(TopElementCountsByColumn {
+                column_index: col.to_usize().expect("column index < usize::max"),
+                counts: top_n
+                    .into_iter()
+                    .flat_map(|ecs| ecs.iter())
+                    .map(|ec| {
+                        Ok(ElementCount {
+                            value: ec.value.to_string(),
+                            count: i64::try_from(ec.count)
+                                .context("converting stored column-statistics count to i64")?,
                         })
-                        .collect::<Result<_>>()?,
-                })
-            })
-            .collect::<Result<_>>()?,
+                    })
+                    .collect::<Result<_>>()?,
+            });
+        }
+        clusters.push(TopColumnsOfCluster {
+            cluster_id,
+            columns,
+        });
+    }
+    Ok(TopMultimaps {
+        n_index,
+        selected: clusters,
     })
 }
 
