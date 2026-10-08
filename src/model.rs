@@ -40,11 +40,14 @@ impl Model {
     /// # Errors
     ///
     /// Returns an error if format version doesn't match `MagicHeader::FORMAT_VERSION` or
-    /// if deserialization process failed.
+    /// if the input is shorter than the 16-byte header or deserialization fails.
     pub fn from_serialized(serialized: &[u8]) -> Result<Self> {
         use anyhow::anyhow;
 
-        let header = MagicHeader::try_from(&serialized[..MagicHeader::MAGIC_SIZE])?;
+        let header_bytes = serialized
+            .get(..MagicHeader::MAGIC_SIZE)
+            .ok_or_else(|| anyhow!("length should be {} bytes or more", MagicHeader::MAGIC_SIZE))?;
+        let header = MagicHeader::try_from(header_bytes)?;
         if header.format != MagicHeader::FORMAT_VERSION {
             return Err(anyhow!(
                 "Model format mismatch: {:?} (Expecting: {:?})",
@@ -146,7 +149,10 @@ impl TryFrom<&[u8]> for MagicHeader {
         use anyhow::anyhow;
 
         if v.len() < MagicHeader::MAGIC_SIZE {
-            return Err(anyhow!("length should be > {}", MagicHeader::MAGIC_SIZE));
+            return Err(anyhow!(
+                "length should be {} bytes or more",
+                MagicHeader::MAGIC_SIZE
+            ));
         }
 
         let tag = (v[..4]).to_vec();
@@ -206,6 +212,17 @@ mod tests {
                 scores: crate::types::ModelScores::default(),
             },
         )
+    }
+
+    #[test]
+    fn short_serialized_model() {
+        for length in [0, 15] {
+            let input = vec![0; length];
+            let error = super::Model::from_serialized(&input).err().unwrap();
+            assert_eq!(error.to_string(), "length should be 16 bytes or more");
+            let error = super::MagicHeader::try_from(input.as_slice()).unwrap_err();
+            assert_eq!(error.to_string(), "length should be 16 bytes or more");
+        }
     }
 
     #[test]

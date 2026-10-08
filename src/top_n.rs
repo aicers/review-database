@@ -5,8 +5,17 @@ use serde::{Deserialize, Serialize};
 #[allow(deprecated)]
 pub use self::time_series::{ClusterTrend, LineSegment, Regression, TopTrendsByColumn};
 
-impl From<(i32, i32)> for StructuredColumnType {
-    fn from((column_index, type_id): (i32, i32)) -> Self {
+impl TryFrom<(i32, i32)> for StructuredColumnType {
+    type Error = anyhow::Error;
+
+    /// Converts a `(column_index, type_id)` pair into a structured column type.
+    ///
+    /// Preserves the column index and accepts type IDs in `1..=7`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for all type IDs outside `1..=7`.
+    fn try_from((column_index, type_id): (i32, i32)) -> Result<Self, Self::Error> {
         let data_type = match type_id {
             1 => "int64",
             2 => "enum",
@@ -15,12 +24,16 @@ impl From<(i32, i32)> for StructuredColumnType {
             5 => "ipaddr",
             6 => "datetime",
             7 => "binary",
-            _ => unreachable!(),
+            _ => {
+                return Err(anyhow::anyhow!(
+                    "unknown structured column type ID: {type_id}"
+                ));
+            }
         };
-        Self {
+        Ok(Self {
             column_index,
             data_type: data_type.to_string(),
-        }
+        })
     }
 }
 
@@ -40,4 +53,29 @@ pub struct StructuredColumnType {
 pub struct TopElementCountsByColumn {
     pub column_index: usize,
     pub counts: Vec<ElementCount>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::StructuredColumnType;
+
+    #[test]
+    fn structured_column_type_conversion() {
+        for type_id in [0, 8] {
+            assert!(StructuredColumnType::try_from((42, type_id)).is_err());
+        }
+        for (type_id, expected) in [
+            (1, "int64"),
+            (2, "enum"),
+            (3, "float64"),
+            (4, "utf8"),
+            (5, "ipaddr"),
+            (6, "datetime"),
+            (7, "binary"),
+        ] {
+            let column = StructuredColumnType::try_from((42, type_id)).unwrap();
+            assert_eq!(column.column_index, 42);
+            assert_eq!(column.data_type, expected);
+        }
+    }
 }
