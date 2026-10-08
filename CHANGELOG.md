@@ -5,6 +5,22 @@ file is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), and
 this project adheres to [Semantic
 Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- Address and network aggregation no longer drops every responder address
+  from RDP brute-force and multi-host port-scan events, every originator
+  address from external DDoS events, or all but one responder address from
+  unusual destination-pattern events. Each matching event now contributes
+  once per distinct stored address, address pair, or network bucket.
+  Identical originator and responder addresses, or addresses mapping to the
+  same network, now contribute 1 instead of 2 to their address or network
+  bucket.
+- `WindowsThreat` and `ExtraThreat`, which carry no addresses, no longer match
+  any address-based filter, including ranges such as `0.0.0.0/0`, or IP address
+  triage exclusions.
+
 ## [0.49.0] - 2026-10-05
 
 ### Changed
@@ -1824,6 +1840,7 @@ AsRef<[u8]>`). This change accommodates scenarios where the information stored
 - Modified `FtpBruteForce` by adding an `is_internal` field which is a boolean
   indicating whether it is internal or not.
 
+[Unreleased]: https://github.com/aicers/review-database/compare/0.49.0...main
 [0.49.0]: https://github.com/aicers/review-database/compare/0.48.0...0.49.0
 [0.48.0]: https://github.com/aicers/review-database/compare/0.47.0...0.48.0
 [0.47.0]: https://github.com/aicers/review-database/compare/0.46.0...0.47.0

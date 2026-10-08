@@ -161,6 +161,8 @@ use super::{
 /// Caps the quadratic, allocation-free deduplication path at a size where it
 /// remains cheaper than allocating a hash set; retune only with benchmarks.
 const COUNTRY_COUNT_STACK_DEDUP_LIMIT: usize = 8;
+// Address and network buckets have their own allocation-free deduplication limit.
+const ADDRESS_COUNT_STACK_DEDUP_LIMIT: usize = 8;
 const EVENT_DELETION_BATCH_SIZE: usize = 1000;
 const FIRST_NON_NEGATIVE_EVENT_KEY: [u8; 16] = 0_i128.to_be_bytes();
 const FIRST_NEGATIVE_EVENT_KEY: [u8; 16] = i128::MIN.to_be_bytes();
@@ -801,220 +803,6 @@ impl Event {
         }
     }
 
-    fn address_pair(&self, filter: &EventFilter) -> Result<(Option<IpAddr>, Option<IpAddr>)> {
-        let mut addr_pair = (None, None);
-        match self {
-            Event::DnsCovertChannel(event) => {
-                if event.matches(filter)?.0 {
-                    addr_pair = (Some(event.orig_addr), Some(event.resp_addr));
-                }
-            }
-            Event::HttpThreat(event) => {
-                if event.matches(filter)?.0 {
-                    addr_pair = (Some(event.orig_addr), Some(event.resp_addr));
-                }
-            }
-            Event::RdpBruteForce(event) => {
-                if event.matches(filter)?.0 {
-                    addr_pair = (Some(event.orig_addr), None);
-                }
-            }
-            Event::RepeatedHttpSessions(event) => {
-                if event.matches(filter)?.0 {
-                    addr_pair = (Some(event.orig_addr), Some(event.resp_addr));
-                }
-            }
-            Event::TorConnection(event) => {
-                if event.matches(filter)?.0 {
-                    addr_pair = (Some(event.orig_addr), Some(event.resp_addr));
-                }
-            }
-            Event::TorConnectionConn(event) => {
-                if event.matches(filter)?.0 {
-                    addr_pair = (Some(event.orig_addr), Some(event.resp_addr));
-                }
-            }
-            Event::DomainGenerationAlgorithm(event) => {
-                if event.matches(filter)?.0 {
-                    addr_pair = (Some(event.orig_addr), Some(event.resp_addr));
-                }
-            }
-            Event::FtpBruteForce(event) => {
-                if event.matches(filter)?.0 {
-                    addr_pair = (Some(event.orig_addr), Some(event.resp_addr));
-                }
-            }
-            Event::FtpPlainText(event) => {
-                if event.matches(filter)?.0 {
-                    addr_pair = (Some(event.orig_addr), Some(event.resp_addr));
-                }
-            }
-            Event::PortScan(event) => {
-                if event.matches(filter)?.0 {
-                    addr_pair = (Some(event.orig_addr), Some(event.resp_addr));
-                }
-            }
-            Event::MultiHostPortScan(event) => {
-                if event.matches(filter)?.0 {
-                    addr_pair = (Some(event.orig_addr), None);
-                }
-            }
-            Event::ExternalDdos(event) => {
-                if event.matches(filter)?.0 {
-                    addr_pair = (None, Some(event.resp_addr));
-                }
-            }
-            Event::NonBrowser(event) => {
-                if event.matches(filter)?.0 {
-                    addr_pair = (Some(event.orig_addr), Some(event.resp_addr));
-                }
-            }
-            Event::LdapBruteForce(event) => {
-                if event.matches(filter)?.0 {
-                    addr_pair = (Some(event.orig_addr), Some(event.resp_addr));
-                }
-            }
-            Event::LdapPlainText(event) => {
-                if event.matches(filter)?.0 {
-                    addr_pair = (Some(event.orig_addr), Some(event.resp_addr));
-                }
-            }
-            Event::CryptocurrencyMiningPool(event) => {
-                if event.matches(filter)?.0 {
-                    addr_pair = (Some(event.orig_addr), Some(event.resp_addr));
-                }
-            }
-            Event::Blocklist(record_type) => match record_type {
-                RecordType::Bootp(bootp_event) => {
-                    if bootp_event.matches(filter)?.0 {
-                        addr_pair = (Some(bootp_event.orig_addr), Some(bootp_event.resp_addr));
-                    }
-                }
-                RecordType::Conn(conn_event) => {
-                    if conn_event.matches(filter)?.0 {
-                        addr_pair = (Some(conn_event.orig_addr), Some(conn_event.resp_addr));
-                    }
-                }
-                RecordType::DceRpc(dcerpc_event) => {
-                    if dcerpc_event.matches(filter)?.0 {
-                        addr_pair = (Some(dcerpc_event.orig_addr), Some(dcerpc_event.resp_addr));
-                    }
-                }
-                RecordType::Dhcp(dhcp_event) => {
-                    if dhcp_event.matches(filter)?.0 {
-                        addr_pair = (Some(dhcp_event.orig_addr), Some(dhcp_event.resp_addr));
-                    }
-                }
-                RecordType::Dns(dns_event) => {
-                    if dns_event.matches(filter)?.0 {
-                        addr_pair = (Some(dns_event.orig_addr), Some(dns_event.resp_addr));
-                    }
-                }
-                RecordType::Ftp(ftp_event) => {
-                    if ftp_event.matches(filter)?.0 {
-                        addr_pair = (Some(ftp_event.orig_addr), Some(ftp_event.resp_addr));
-                    }
-                }
-                RecordType::Http(http_event) => {
-                    if http_event.matches(filter)?.0 {
-                        addr_pair = (Some(http_event.orig_addr), Some(http_event.resp_addr));
-                    }
-                }
-                RecordType::Kerberos(kerberos_event) => {
-                    if kerberos_event.matches(filter)?.0 {
-                        addr_pair = (
-                            Some(kerberos_event.orig_addr),
-                            Some(kerberos_event.resp_addr),
-                        );
-                    }
-                }
-                RecordType::Ldap(ldap_event) => {
-                    if ldap_event.matches(filter)?.0 {
-                        addr_pair = (Some(ldap_event.orig_addr), Some(ldap_event.resp_addr));
-                    }
-                }
-                RecordType::MalformedDns(malformed_dns_event) => {
-                    if malformed_dns_event.matches(filter)?.0 {
-                        addr_pair = (
-                            Some(malformed_dns_event.orig_addr),
-                            Some(malformed_dns_event.resp_addr),
-                        );
-                    }
-                }
-                RecordType::Mqtt(mqtt_event) => {
-                    if mqtt_event.matches(filter)?.0 {
-                        addr_pair = (Some(mqtt_event.orig_addr), Some(mqtt_event.resp_addr));
-                    }
-                }
-                RecordType::Nfs(nfs_event) => {
-                    if nfs_event.matches(filter)?.0 {
-                        addr_pair = (Some(nfs_event.orig_addr), Some(nfs_event.resp_addr));
-                    }
-                }
-                RecordType::Ntlm(ntlm_event) => {
-                    if ntlm_event.matches(filter)?.0 {
-                        addr_pair = (Some(ntlm_event.orig_addr), Some(ntlm_event.resp_addr));
-                    }
-                }
-                RecordType::Radius(radius_event) => {
-                    if radius_event.matches(filter)?.0 {
-                        addr_pair = (Some(radius_event.orig_addr), Some(radius_event.resp_addr));
-                    }
-                }
-                RecordType::Rdp(rdp_event) => {
-                    if rdp_event.matches(filter)?.0 {
-                        addr_pair = (Some(rdp_event.orig_addr), Some(rdp_event.resp_addr));
-                    }
-                }
-                RecordType::Smb(smb_event) => {
-                    if smb_event.matches(filter)?.0 {
-                        addr_pair = (Some(smb_event.orig_addr), Some(smb_event.resp_addr));
-                    }
-                }
-                RecordType::Smtp(smtp_event) => {
-                    if smtp_event.matches(filter)?.0 {
-                        addr_pair = (Some(smtp_event.orig_addr), Some(smtp_event.resp_addr));
-                    }
-                }
-                RecordType::Ssh(ssh_event) => {
-                    if ssh_event.matches(filter)?.0 {
-                        addr_pair = (Some(ssh_event.orig_addr), Some(ssh_event.resp_addr));
-                    }
-                }
-                RecordType::Tls(tls_event) => {
-                    if tls_event.matches(filter)?.0 {
-                        addr_pair = (Some(tls_event.orig_addr), Some(tls_event.resp_addr));
-                    }
-                }
-                RecordType::UnusualDestinationPattern(event) => {
-                    if event.matches(filter)?.0 {
-                        // UnusualDestinationPattern has multiple responder IPs but no originator.
-                        // Use the first responder IP if available.
-                        addr_pair = (None, event.destination_ips.first().copied());
-                    }
-                }
-            },
-            Event::WindowsThreat(_event) => {}
-            Event::NetworkThreat(event) => {
-                if event.matches(filter)?.0 {
-                    addr_pair = (Some(event.orig_addr), Some(event.resp_addr));
-                }
-            }
-            Event::ExtraThreat(_event) => {}
-            Event::LockyRansomware(event) => {
-                if event.matches(filter)?.0 {
-                    addr_pair = (Some(event.orig_addr), Some(event.resp_addr));
-                }
-            }
-            Event::SuspiciousTlsTraffic(event) => {
-                if event.matches(filter)?.0 {
-                    addr_pair = (Some(event.orig_addr), Some(event.resp_addr));
-                }
-            }
-        }
-        Ok(addr_pair)
-    }
-
     fn kind(&self, filter: &EventFilter) -> Result<Option<&'static str>> {
         let mut kind = None;
         match self {
@@ -1290,6 +1078,68 @@ impl Event {
         kind.categories()
     }
 
+    /// Returns every stored originator and responder address used by filtering.
+    fn address_slices(&self) -> (&[IpAddr], &[IpAddr]) {
+        match self {
+            Event::DnsCovertChannel(event) => (event.orig_addrs(), event.resp_addrs()),
+            Event::HttpThreat(event) => (event.orig_addrs(), event.resp_addrs()),
+            Event::RdpBruteForce(event) => (event.orig_addrs(), event.resp_addrs()),
+            Event::RepeatedHttpSessions(event) => (event.orig_addrs(), event.resp_addrs()),
+            Event::TorConnection(event) => (event.orig_addrs(), event.resp_addrs()),
+            Event::TorConnectionConn(event) => (event.orig_addrs(), event.resp_addrs()),
+            Event::DomainGenerationAlgorithm(event) => (event.orig_addrs(), event.resp_addrs()),
+            Event::FtpBruteForce(event) => (event.orig_addrs(), event.resp_addrs()),
+            Event::FtpPlainText(event) => (event.orig_addrs(), event.resp_addrs()),
+            Event::PortScan(event) => (event.orig_addrs(), event.resp_addrs()),
+            Event::MultiHostPortScan(event) => (event.orig_addrs(), event.resp_addrs()),
+            Event::ExternalDdos(event) => (event.orig_addrs(), event.resp_addrs()),
+            Event::NonBrowser(event) => (event.orig_addrs(), event.resp_addrs()),
+            Event::LdapBruteForce(event) => (event.orig_addrs(), event.resp_addrs()),
+            Event::LdapPlainText(event) => (event.orig_addrs(), event.resp_addrs()),
+            Event::CryptocurrencyMiningPool(event) => (event.orig_addrs(), event.resp_addrs()),
+            Event::Blocklist(record_type) => match record_type {
+                RecordType::Bootp(bootp_event) => {
+                    (bootp_event.orig_addrs(), bootp_event.resp_addrs())
+                }
+                RecordType::Conn(conn_event) => (conn_event.orig_addrs(), conn_event.resp_addrs()),
+                RecordType::DceRpc(dcerpc_event) => {
+                    (dcerpc_event.orig_addrs(), dcerpc_event.resp_addrs())
+                }
+                RecordType::Dhcp(dhcp_event) => (dhcp_event.orig_addrs(), dhcp_event.resp_addrs()),
+                RecordType::Dns(dns_event) => (dns_event.orig_addrs(), dns_event.resp_addrs()),
+                RecordType::Ftp(ftp_event) => (ftp_event.orig_addrs(), ftp_event.resp_addrs()),
+                RecordType::Http(http_event) => (http_event.orig_addrs(), http_event.resp_addrs()),
+                RecordType::Kerberos(kerberos_event) => {
+                    (kerberos_event.orig_addrs(), kerberos_event.resp_addrs())
+                }
+                RecordType::Ldap(ldap_event) => (ldap_event.orig_addrs(), ldap_event.resp_addrs()),
+                RecordType::MalformedDns(malformed_dns_event) => (
+                    malformed_dns_event.orig_addrs(),
+                    malformed_dns_event.resp_addrs(),
+                ),
+                RecordType::Mqtt(mqtt_event) => (mqtt_event.orig_addrs(), mqtt_event.resp_addrs()),
+                RecordType::Nfs(nfs_event) => (nfs_event.orig_addrs(), nfs_event.resp_addrs()),
+                RecordType::Ntlm(ntlm_event) => (ntlm_event.orig_addrs(), ntlm_event.resp_addrs()),
+                RecordType::Radius(radius_event) => {
+                    (radius_event.orig_addrs(), radius_event.resp_addrs())
+                }
+                RecordType::Rdp(rdp_event) => (rdp_event.orig_addrs(), rdp_event.resp_addrs()),
+                RecordType::Smb(smb_event) => (smb_event.orig_addrs(), smb_event.resp_addrs()),
+                RecordType::Smtp(smtp_event) => (smtp_event.orig_addrs(), smtp_event.resp_addrs()),
+                RecordType::Ssh(ssh_event) => (ssh_event.orig_addrs(), ssh_event.resp_addrs()),
+                RecordType::Tls(tls_event) => (tls_event.orig_addrs(), tls_event.resp_addrs()),
+                RecordType::UnusualDestinationPattern(event) => {
+                    (event.orig_addrs(), event.resp_addrs())
+                }
+            },
+            Event::WindowsThreat(event) => (event.orig_addrs(), event.resp_addrs()),
+            Event::NetworkThreat(event) => (event.orig_addrs(), event.resp_addrs()),
+            Event::ExtraThreat(event) => (event.orig_addrs(), event.resp_addrs()),
+            Event::LockyRansomware(event) => (event.orig_addrs(), event.resp_addrs()),
+            Event::SuspiciousTlsTraffic(event) => (event.orig_addrs(), event.resp_addrs()),
+        }
+    }
+
     /// Returns the full stored country-code slices for both endpoint sides.
     ///
     /// The slices correspond to the stored origin and response endpoint vectors
@@ -1502,7 +1352,38 @@ impl Event {
         Ok(())
     }
 
-    /// Counts the number of events per IP address.
+    fn increment_distinct_address_buckets<K: Copy + Eq + std::hash::Hash>(
+        counter: &mut HashMap<K, usize>,
+        keys: impl Iterator<Item = K>,
+        upper_bound: usize,
+    ) {
+        if upper_bound <= ADDRESS_COUNT_STACK_DEDUP_LIMIT {
+            let mut seen = [None; ADDRESS_COUNT_STACK_DEDUP_LIMIT];
+            let mut seen_len = 0;
+            for key in keys {
+                if !seen[..seen_len].contains(&Some(key)) {
+                    // At most upper_bound keys are yielded, so this slot exists.
+                    if let Some(slot) = seen.get_mut(seen_len) {
+                        *slot = Some(key);
+                        seen_len += 1;
+                        *counter.entry(key).or_insert(0) += 1;
+                    }
+                }
+            }
+        } else {
+            let mut seen = HashSet::new();
+            for key in keys {
+                if seen.insert(key) {
+                    *counter.entry(key).or_insert(0) += 1;
+                }
+            }
+        }
+    }
+
+    /// Counts each matching event once per distinct address across both sides.
+    ///
+    /// Buckets are the union of addresses selecting the event through
+    /// `EventFilter::originator` or `EventFilter::responder`.
     ///
     /// # Errors
     ///
@@ -1512,25 +1393,27 @@ impl Event {
         counter: &mut HashMap<IpAddr, usize>,
         filter: &EventFilter,
     ) -> Result<()> {
-        let addr_pair = self.address_pair(filter)?;
-
-        if let Some(orig_addr) = addr_pair.0 {
-            counter
-                .entry(orig_addr)
-                .and_modify(|e| *e += 1)
-                .or_insert(1);
+        let (orig, resp) = self.address_slices();
+        if orig.is_empty() && resp.is_empty() {
+            return Ok(());
         }
-        if let Some(resp_addr) = addr_pair.1 {
-            counter
-                .entry(resp_addr)
-                .and_modify(|e| *e += 1)
-                .or_insert(1);
+        if !self.matches(filter)?.0 {
+            return Ok(());
         }
+        Self::increment_distinct_address_buckets(
+            counter,
+            orig.iter().chain(resp).copied(),
+            orig.len().saturating_add(resp.len()),
+        );
 
         Ok(())
     }
 
-    /// Counts the number of events per IP address pair.
+    /// Counts each matching event once per distinct originator/responder pair.
+    ///
+    /// Each pair selects the event through the corresponding
+    /// `EventFilter::originator` and `EventFilter::responder` fields together.
+    /// An empty side produces no pair bucket.
     ///
     /// # Errors
     ///
@@ -1540,21 +1423,26 @@ impl Event {
         counter: &mut HashMap<(IpAddr, IpAddr), usize>,
         filter: &EventFilter,
     ) -> Result<()> {
-        let addr_pair = self.address_pair(filter)?;
-
-        if let Some(orig_addr) = addr_pair.0
-            && let Some(resp_addr) = addr_pair.1
-        {
-            counter
-                .entry((orig_addr, resp_addr))
-                .and_modify(|e| *e += 1)
-                .or_insert(1);
+        let (orig, resp) = self.address_slices();
+        if orig.is_empty() || resp.is_empty() {
+            return Ok(());
         }
+        if !self.matches(filter)?.0 {
+            return Ok(());
+        }
+        Self::increment_distinct_address_buckets(
+            counter,
+            orig.iter().flat_map(|&a| resp.iter().map(move |&b| (a, b))),
+            orig.len().saturating_mul(resp.len()),
+        );
 
         Ok(())
     }
 
-    /// Counts the number of events per IP address and event kind.
+    /// Counts each matching event once per distinct address pair and event kind.
+    ///
+    /// Pairs follow [`Event::count_ip_address_pair`]; events without a kind
+    /// produce no bucket.
     ///
     /// # Errors
     ///
@@ -1564,23 +1452,27 @@ impl Event {
         counter: &mut HashMap<(IpAddr, IpAddr, &'static str), usize>,
         filter: &EventFilter,
     ) -> Result<()> {
-        let addr_pair = self.address_pair(filter)?;
-        let kind = self.kind(filter)?;
-
-        if let Some(orig_addr) = addr_pair.0
-            && let Some(resp_addr) = addr_pair.1
-            && let Some(kind) = kind
-        {
-            counter
-                .entry((orig_addr, resp_addr, kind))
-                .and_modify(|e| *e += 1)
-                .or_insert(1);
+        let (orig, resp) = self.address_slices();
+        if orig.is_empty() || resp.is_empty() {
+            return Ok(());
         }
+        let Some(kind) = self.kind(filter)? else {
+            return Ok(());
+        };
+        Self::increment_distinct_address_buckets(
+            counter,
+            orig.iter()
+                .flat_map(|&a| resp.iter().map(move |&b| (a, b, kind))),
+            orig.len().saturating_mul(resp.len()),
+        );
 
         Ok(())
     }
 
-    /// Counts the number of events per originator IP address.
+    /// Counts each matching event once per distinct originator address.
+    ///
+    /// Bucket keys are exactly the addresses selecting the event through
+    /// `EventFilter::originator`.
     ///
     /// # Errors
     ///
@@ -1590,19 +1482,22 @@ impl Event {
         counter: &mut HashMap<IpAddr, usize>,
         filter: &EventFilter,
     ) -> Result<()> {
-        let addr_pair = self.address_pair(filter)?;
-
-        if let Some(orig_addr) = addr_pair.0 {
-            counter
-                .entry(orig_addr)
-                .and_modify(|e| *e += 1)
-                .or_insert(1);
+        let (orig, _) = self.address_slices();
+        if orig.is_empty() {
+            return Ok(());
         }
+        if !self.matches(filter)?.0 {
+            return Ok(());
+        }
+        Self::increment_distinct_address_buckets(counter, orig.iter().copied(), orig.len());
 
         Ok(())
     }
 
-    /// Counts the number of events per responder IP address.
+    /// Counts each matching event once per distinct responder address.
+    ///
+    /// Bucket keys are exactly the addresses selecting the event through
+    /// `EventFilter::responder`.
     ///
     /// # Errors
     ///
@@ -1612,14 +1507,14 @@ impl Event {
         counter: &mut HashMap<IpAddr, usize>,
         filter: &EventFilter,
     ) -> Result<()> {
-        let addr_pair = self.address_pair(filter)?;
-
-        if let Some(resp_addr) = addr_pair.1 {
-            counter
-                .entry(resp_addr)
-                .and_modify(|e| *e += 1)
-                .or_insert(1);
+        let (_, resp) = self.address_slices();
+        if resp.is_empty() {
+            return Ok(());
         }
+        if !self.matches(filter)?.0 {
+            return Ok(());
+        }
+        Self::increment_distinct_address_buckets(counter, resp.iter().copied(), resp.len());
 
         Ok(())
     }
@@ -1879,7 +1774,10 @@ impl Event {
         Ok(())
     }
 
-    /// Counts the number of events per network.
+    /// Counts each matching event once per distinct network ID across both sides.
+    ///
+    /// Each stored address maps through `find_network`. Addresses outside the
+    /// supplied networks produce no bucket, and shared network IDs count once.
     ///
     /// # Errors
     ///
@@ -1890,18 +1788,20 @@ impl Event {
         networks: &[Network],
         filter: &EventFilter,
     ) -> Result<()> {
-        let addr_pair = self.address_pair(filter)?;
-
-        if let Some(orig_addr) = addr_pair.0
-            && let Some(id) = find_network(orig_addr, networks)
-        {
-            counter.entry(id).and_modify(|e| *e += 1).or_insert(1);
+        let (orig, resp) = self.address_slices();
+        if orig.is_empty() && resp.is_empty() {
+            return Ok(());
         }
-        if let Some(resp_addr) = addr_pair.1
-            && let Some(id) = find_network(resp_addr, networks)
-        {
-            counter.entry(id).and_modify(|e| *e += 1).or_insert(1);
+        if !self.matches(filter)?.0 {
+            return Ok(());
         }
+        Self::increment_distinct_address_buckets(
+            counter,
+            orig.iter()
+                .chain(resp)
+                .filter_map(|&addr| find_network(addr, networks)),
+            orig.len().saturating_add(resp.len()),
+        );
 
         Ok(())
     }
@@ -5751,13 +5651,6 @@ mod tests {
             confidence_max: None,
             triage_policies: None,
         };
-        assert_eq!(
-            event.address_pair(&filter).unwrap(),
-            (
-                Some(IpAddr::V4(Ipv4Addr::LOCALHOST)),
-                Some(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)))
-            )
-        );
         assert_eq!(event.kind(&filter).unwrap(), Some(BLOCKLIST));
         let mut counter = HashMap::new();
         event.count_level(&mut counter, &filter).unwrap();
@@ -6043,13 +5936,6 @@ mod tests {
             confidence_max: None,
             triage_policies: None,
         };
-        assert_eq!(
-            event.address_pair(&filter).unwrap(),
-            (
-                Some(IpAddr::V4(Ipv4Addr::LOCALHOST)),
-                Some(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)))
-            )
-        );
         assert_eq!(event.kind(&filter).unwrap(), Some(BLOCKLIST));
         let mut counter = HashMap::new();
         event.count_level(&mut counter, &filter).unwrap();
@@ -6482,13 +6368,6 @@ mod tests {
             confidence_max: None,
             triage_policies: None,
         };
-        assert_eq!(
-            event.address_pair(&filter).unwrap(),
-            (
-                Some(IpAddr::V4(Ipv4Addr::LOCALHOST)),
-                Some(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)))
-            )
-        );
         assert_eq!(event.kind(&filter).unwrap(), Some(BLOCKLIST));
         let mut counter = HashMap::new();
         event.count_level(&mut counter, &filter).unwrap();
@@ -6817,13 +6696,6 @@ mod tests {
             confidence_max: None,
             triage_policies: None,
         };
-        assert_eq!(
-            event.address_pair(&filter).unwrap(),
-            (
-                Some(IpAddr::V4(Ipv4Addr::LOCALHOST)),
-                Some(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)))
-            )
-        );
         assert_eq!(event.kind(&filter).unwrap(), Some(BLOCKLIST));
         let mut counter = HashMap::new();
         event.count_level(&mut counter, &filter).unwrap();
@@ -6915,13 +6787,6 @@ mod tests {
             confidence_max: None,
             triage_policies: None,
         };
-        assert_eq!(
-            event.address_pair(&filter).unwrap(),
-            (
-                Some(IpAddr::V4(Ipv4Addr::LOCALHOST)),
-                Some(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)))
-            )
-        );
         assert_eq!(event.kind(&filter).unwrap(), Some(BLOCKLIST));
         let mut counter = HashMap::new();
         event.count_level(&mut counter, &filter).unwrap();
@@ -7284,13 +7149,6 @@ mod tests {
             confidence_max: None,
             triage_policies: None,
         };
-        assert_eq!(
-            event.address_pair(&filter).unwrap(),
-            (
-                Some(IpAddr::V4(Ipv4Addr::LOCALHOST)),
-                Some(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)))
-            )
-        );
         assert_eq!(event.kind(&filter).unwrap(), Some(BLOCKLIST));
         let mut counter = HashMap::new();
         event.count_level(&mut counter, &filter).unwrap();
@@ -7859,13 +7717,6 @@ mod tests {
             confidence_max: None,
             triage_policies: None,
         };
-        assert_eq!(
-            event.address_pair(&filter).unwrap(),
-            (
-                Some(IpAddr::V4(Ipv4Addr::LOCALHOST)),
-                Some(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)))
-            )
-        );
         assert_eq!(event.kind(&filter).unwrap(), Some(TOR_CONNECTION));
         let mut counter = HashMap::new();
         event.count_level(&mut counter, &filter).unwrap();
@@ -8093,13 +7944,6 @@ mod tests {
             confidence_max: None,
             triage_policies: None,
         };
-        assert_eq!(
-            event.address_pair(&filter).unwrap(),
-            (
-                Some(IpAddr::V4(Ipv4Addr::LOCALHOST)),
-                Some(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)))
-            )
-        );
         assert_eq!(event.kind(&filter).unwrap(), Some(SUSPICIOUS_TLS_TRAFFIC));
         let mut counter = HashMap::new();
         event.count_level(&mut counter, &filter).unwrap();
