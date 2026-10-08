@@ -27,6 +27,11 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   query an inclusive two-hour range anchored at a lone `start` or `end`,
   clamping calculated endpoints to the `i64` range. Previously, they ignored
   a lone bound and queried the last two hours instead.
+- Column-statistics queries return errors instead of panicking or returning
+  wrapped values when counts cannot be converted to `i64` or added without overflow.
+- Large counts no longer drop values from ratio-based selection at the default ratio.
+- `update_clusters` returns an error instead of storing a wrapped size when size
+  accumulation overflows.
 
 ## [0.49.0] - 2026-10-05
 
