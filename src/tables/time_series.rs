@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use anyhow::{Result, anyhow};
+use anyhow::{Context, Result, anyhow};
 use chrono::Utc;
 use rocksdb::OptimisticTransactionDB;
 
@@ -106,13 +106,11 @@ impl<'d> Table<'d, TimeSeries> {
     /// Gets the top time series of the given cluster,
     /// extrapolation is performed to fill vacant slots.
     ///
-    /// # Panics
-    ///
-    /// Will panic if `usize` is smaller than 4 bytes.
-    ///
     /// # Errors
     ///
-    /// Returns an error if an underlying database error occurs.
+    /// Returns an error if an underlying database error occurs, count summation
+    /// overflows, an adjacent slot difference or the filled series length
+    /// overflows, or reserving capacity for the filled series fails.
     pub fn get_top_time_series_of_cluster(
         &self,
         model_id: u32,
@@ -129,12 +127,18 @@ impl<'d> Table<'d, TimeSeries> {
         for item in self.prefix_iter(Direction::Forward, None, &prefix) {
             let ts = item?;
             if ts.value >= start && ts.value <= end {
-                columns
+                let count = columns
                     .entry(ts.count_index)
                     .or_default()
                     .entry(ts.value)
-                    .and_modify(|c| *c += ts.count)
-                    .or_insert(ts.count);
+                    .or_default();
+                *count = count.checked_add(ts.count).ok_or_else(|| {
+                    anyhow!(
+                        "count summation overflow for column {:?}, value {}",
+                        ts.count_index,
+                        ts.value
+                    )
+                })?;
             }
         }
 
@@ -144,13 +148,14 @@ impl<'d> Table<'d, TimeSeries> {
             .map(|(column, top_n)| {
                 let mut top_n = top_n.into_iter().collect::<Vec<_>>();
                 top_n.sort_by_key(|t| t.0);
-                let top_n = fill_vacant_time_slots(&top_n);
-                Column {
+                let top_n = fill_vacant_time_slots(&top_n)
+                    .with_context(|| format!("filling time slots for column {column:?}"))?;
+                Ok(Column {
                     index: column,
                     time_counts: top_n,
-                }
+                })
             })
-            .collect::<Vec<_>>();
+            .collect::<Result<Vec<_>>>()?;
         columns.sort_by_key(|c| c.index);
 
         Ok((earliest, latest, columns))
@@ -158,13 +163,10 @@ impl<'d> Table<'d, TimeSeries> {
 
     /// Returns the top trends of a model.
     ///
-    /// # Panics
-    ///
-    /// Will panic if `usize` is smaller than 4 bytes.
-    ///
     /// # Errors
     ///
-    /// Returns an error if an underlying database operation fails.
+    /// Returns an error if an underlying database operation fails or count
+    /// summation overflows.
     pub fn get_top_time_series_of_model(
         &self,
         model_id: u32,
@@ -175,14 +177,21 @@ impl<'d> Table<'d, TimeSeries> {
         let series = self.time_series_of_model(model_id, time, start, end)?;
         let mut columns: HashMap<Option<i32>, HashMap<u32, HashMap<i64, usize>>> = HashMap::new();
         for ts in series {
-            columns
+            let count = columns
                 .entry(ts.count_index)
                 .or_default()
                 .entry(ts.cluster_id)
                 .or_default()
                 .entry(ts.value)
-                .and_modify(|c| *c += ts.count)
-                .or_insert(ts.count);
+                .or_default();
+            *count = count.checked_add(ts.count).ok_or_else(|| {
+                anyhow!(
+                    "count summation overflow for cluster {}, column {:?}, value {}",
+                    ts.cluster_id,
+                    ts.count_index,
+                    ts.value
+                )
+            })?;
         }
         let mut res: Vec<_> = columns
             .into_iter()
@@ -249,29 +258,51 @@ impl<'d> Table<'d, TimeSeries> {
 
 type TimeRange = (Option<i64>, Option<i64>);
 
-fn fill_vacant_time_slots(series: &[(i64, usize)]) -> Vec<(i64, usize)> {
+// The input has sorted, distinct values, as collected by the cluster query.
+fn fill_vacant_time_slots(series: &[(i64, usize)]) -> Result<Vec<(i64, usize)>> {
     if series.len() <= 2 {
-        return series.to_vec();
+        return Ok(series.to_vec());
     }
-    let mut min_diff = series[1].0 - series[0].0;
-    for index in 2..series.len() {
-        let diff = series[index].0 - series[index - 1].0;
-        if diff < min_diff {
-            min_diff = diff;
+    let differences = series.windows(2).map(|pair| {
+        pair[1].0.checked_sub(pair[0].0).ok_or_else(|| {
+            anyhow!(
+                "adjacent slot difference overflow between {} and {}",
+                pair[0].0,
+                pair[1].0
+            )
+        })
+    });
+    let min_diff = differences
+        .clone()
+        .try_fold(i64::MAX, |min, diff| Ok::<_, anyhow::Error>(min.min(diff?)))?;
+    let length = differences.clone().try_fold(1usize, |length, diff| {
+        let slots = diff?
+            .checked_div(min_diff)
+            .ok_or_else(|| anyhow!("slot count division overflow"))?;
+        let slots = usize::try_from(slots).context("filled series length overflow")?;
+        length
+            .checked_add(slots)
+            .ok_or_else(|| anyhow!("filled series length overflow"))
+    })?;
+    let mut filled_series = Vec::new();
+    filled_series
+        .try_reserve_exact(length)
+        .with_context(|| format!("reserving capacity for filled series of length {length}"))?;
+    filled_series.push(series[0]);
+    for (pair, diff) in series.windows(2).zip(differences) {
+        let (prev, cur) = (pair[0], pair[1]);
+        let slots = diff? / min_diff;
+        for d in 1..slots {
+            let value = d
+                .checked_mul(min_diff)
+                .and_then(|offset| prev.0.checked_add(offset))
+                .ok_or_else(|| anyhow!("interpolated slot value overflow"))?;
+            filled_series.push((value, 0));
         }
-    }
-    let mut filled_series = vec![series[0]];
-    for (cur, prev) in series[1..].iter().zip(series[..series.len() - 1].iter()) {
-        let diff = (cur.0 - prev.0) / min_diff;
-        if diff > 1 {
-            for d in 1..diff {
-                filled_series.push((prev.0 + d * min_diff, 0));
-            }
-        }
-        filled_series.push(*cur);
+        filled_series.push(cur);
     }
 
-    filled_series
+    Ok(filled_series)
 }
 
 pub type TimeCount = (i64, usize); // (utc_timestamp_nano, count)
@@ -659,7 +690,7 @@ mod tests {
     #[test]
     fn test_fill_vacant_time_slots() {
         let series = vec![(1000, 10), (2000, 15), (4000, 20)];
-        let filled = fill_vacant_time_slots(&series);
+        let filled = fill_vacant_time_slots(&series).unwrap();
 
         assert_eq!(filled.len(), 4);
         assert_eq!(filled[0], (1000, 10));
@@ -671,12 +702,120 @@ mod tests {
     #[test]
     fn test_fill_vacant_time_slots_short_series() {
         let series = vec![(1000, 10)];
-        let filled = fill_vacant_time_slots(&series);
+        let filled = fill_vacant_time_slots(&series).unwrap();
         assert_eq!(filled, series);
 
         let series = vec![(1000, 10), (2000, 15)];
-        let filled = fill_vacant_time_slots(&series);
+        let filled = fill_vacant_time_slots(&series).unwrap();
         assert_eq!(filled, series);
+
+        let series = [(i64::MIN, 1), (i64::MAX, 2)];
+        assert_eq!(fill_vacant_time_slots(&series).unwrap(), series);
+        assert_eq!(fill_vacant_time_slots(&[]).unwrap(), Vec::new());
+    }
+
+    #[test]
+    fn test_fill_vacant_time_slots_irregular_spacing() {
+        let series = [(0, 10), (2, 15), (5, 20), (8, 25)];
+        assert_eq!(fill_vacant_time_slots(&series).unwrap(), series);
+    }
+
+    #[test]
+    fn test_fill_vacant_time_slots_difference_overflow() {
+        let series = [(i64::MIN, 1), (0, 2), (i64::MAX, 3)];
+        let error = fill_vacant_time_slots(&series).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("adjacent slot difference overflow")
+        );
+    }
+
+    #[test]
+    fn test_fill_vacant_time_slots_length_overflow() {
+        let series = [(i64::MIN, 1), (i64::MIN + 1, 2), (0, 3), (i64::MAX, 4)];
+        let error = fill_vacant_time_slots(&series).unwrap_err();
+        assert!(error.to_string().contains("filled series length overflow"));
+    }
+
+    #[test]
+    fn test_fill_vacant_time_slots_reservation_failure() {
+        let series = [(0, 1), (1, 2), (1_000_000_000_000_000_000, 3)];
+        let error = fill_vacant_time_slots(&series).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("reserving capacity for filled series")
+        );
+        assert!(
+            error
+                .downcast_ref::<std::collections::TryReserveError>()
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn test_get_top_time_series_of_cluster_reservation_failure() {
+        let (_permit, store) = setup_store();
+        let table = store.time_series_map();
+        let end = 1_000_000_000_000_000_000;
+        table
+            .add_time_series(
+                1,
+                0,
+                vec![(
+                    1,
+                    vec![create_test_column(0, vec![(0, 1), (1, 2), (end, 3)])],
+                )],
+            )
+            .unwrap();
+
+        let error = table
+            .get_top_time_series_of_cluster(1, 1, Some(0), Some(end))
+            .err()
+            .unwrap();
+        assert!(
+            error
+                .downcast_ref::<std::collections::TryReserveError>()
+                .is_some()
+        );
+
+        let model_series = table
+            .get_top_time_series_of_model(1, None, Some(0), Some(end))
+            .unwrap();
+        assert_eq!(model_series.len(), 1);
+        assert_eq!(model_series[0].1.len(), 1);
+        assert_eq!(model_series[0].1[0].time_counts, [(0, 1), (1, 2), (end, 3)]);
+    }
+
+    #[test]
+    fn test_top_time_series_queries_count_overflow() {
+        let (_permit, store) = setup_store();
+        let table = store.time_series_map();
+        for (batch, count) in [(0, usize::MAX), (1, 1)] {
+            table
+                .add_time_series(
+                    1,
+                    batch,
+                    vec![(1, vec![create_test_column(0, vec![(0, count)])])],
+                )
+                .unwrap();
+        }
+
+        let cluster_error = table
+            .get_top_time_series_of_cluster(1, 1, Some(0), Some(0))
+            .err()
+            .unwrap();
+        assert!(
+            cluster_error
+                .to_string()
+                .contains("count summation overflow")
+        );
+        let model_error = table
+            .get_top_time_series_of_model(1, None, Some(0), Some(0))
+            .err()
+            .unwrap();
+        assert!(model_error.to_string().contains("count summation overflow"));
     }
 
     #[test]
