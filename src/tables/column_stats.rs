@@ -157,23 +157,26 @@ impl<'d> Table<'d, ColumnStats> {
                 })
                 .collect();
         }
-        time.into_iter()
-            .map(from_naive_utc)
-            .collect::<Result<Vec<_>>>()?
-            .into_iter()
-            .flat_map(|t| self.get(t, model, cluster))
-            .map(|result: std::result::Result<ColumnStats, anyhow::Error>| {
+        // Validate all requested times before reading any database entries so
+        // timestamp errors retain precedence over database errors.
+        for &t in &time {
+            from_naive_utc(t)?;
+        }
+        let mut statistics = Vec::new();
+        for t in time {
+            for result in self.get(from_naive_utc(t)?, model, cluster) {
                 let column_stats = result?;
-                Ok(Statistics {
+                statistics.push(Statistics {
                     batch_ts: from_timestamp(column_stats.batch_ts)?,
                     column_index: i32::try_from(column_stats.column_index)?,
                     column_stats: structured::ColumnStatistics {
                         description: column_stats.description,
                         n_largest_count: column_stats.n_largest_count,
                     },
-                })
-            })
-            .collect()
+                });
+            }
+        }
+        Ok(statistics)
     }
 
     /// Inserts column statistics into the database.
@@ -2018,6 +2021,72 @@ mod tests {
                 );
                 assert!(table.remove_older_than(invalid).is_err());
             }
+        }
+
+        #[test]
+        fn requested_times_preserve_order_duplicates_and_error_precedence() {
+            let (_permit, store) = setup_store();
+            let table = store.column_stats_map();
+            let model_id = 7;
+            let cluster_id = 11;
+            let first = NaiveDate::from_ymd_opt(2026, 10, 7)
+                .unwrap()
+                .and_hms_opt(0, 0, 0)
+                .unwrap();
+            let second = NaiveDate::from_ymd_opt(2026, 10, 8)
+                .unwrap()
+                .and_hms_opt(0, 0, 0)
+                .unwrap();
+            let invalid = NaiveDate::from_ymd_opt(3000, 1, 1)
+                .unwrap()
+                .and_hms_opt(0, 0, 0)
+                .unwrap();
+
+            for time in [first, second] {
+                table
+                    .insert_column_statistics(
+                        vec![(cluster_id, vec![default_column_statistics()])],
+                        model_id,
+                        time,
+                    )
+                    .unwrap();
+            }
+            let requested = vec![second, first, second];
+            let statistics = table
+                .get_column_statistics(model_id, cluster_id, requested.clone())
+                .unwrap();
+            assert_eq!(
+                statistics
+                    .iter()
+                    .map(|stats| stats.batch_ts)
+                    .collect::<Vec<_>>(),
+                requested
+            );
+
+            let key = Key {
+                model_id,
+                cluster_id,
+                batch_ts: from_naive_utc(first).unwrap(),
+                column_index: 0,
+            };
+            table.map.delete(&key.to_bytes()).unwrap();
+            table
+                .map
+                .insert(&key.to_bytes(), b"invalid statistics")
+                .unwrap();
+            assert!(
+                table
+                    .get_column_statistics(model_id, cluster_id, vec![first])
+                    .is_err()
+            );
+            let error = table
+                .get_column_statistics(model_id, cluster_id, vec![first, invalid])
+                .err()
+                .unwrap();
+            assert_eq!(
+                error.to_string(),
+                from_naive_utc(invalid).unwrap_err().to_string()
+            );
         }
 
         #[test]
