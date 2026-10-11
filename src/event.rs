@@ -1294,7 +1294,8 @@ impl Event {
         // TODO: Need to implement country counting for `WindowsThreat`.
         // 1. for Network Connection: count country via ip
         // 2. for other Sysmon events: count the country by KR because the event does not have ip address.
-        if self.kind(filter)?.is_none() {
+        let (matched, _triage) = self.matches(filter)?;
+        if !matched {
             return Ok(());
         }
 
@@ -1556,222 +1557,62 @@ impl Event {
         counter: &mut HashMap<ThreatLevel, usize>,
         filter: &EventFilter,
     ) -> Result<()> {
-        let mut level = None;
-        match self {
-            Event::DnsCovertChannel(event) => {
-                if event.matches(filter)?.0 {
-                    level = Some(event.level());
-                }
-            }
-            Event::HttpThreat(event) => {
-                if event.matches(filter)?.0 {
-                    level = Some(event.level());
-                }
-            }
-            Event::RdpBruteForce(event) => {
-                if event.matches(filter)?.0 {
-                    level = Some(event.level());
-                }
-            }
-            Event::RepeatedHttpSessions(event) => {
-                if event.matches(filter)?.0 {
-                    level = Some(event.level());
-                }
-            }
-            Event::TorConnection(event) => {
-                if event.matches(filter)?.0 {
-                    level = Some(event.level());
-                }
-            }
-            Event::TorConnectionConn(event) => {
-                if event.matches(filter)?.0 {
-                    level = Some(event.level());
-                }
-            }
-            Event::DomainGenerationAlgorithm(event) => {
-                if event.matches(filter)?.0 {
-                    level = Some(event.level());
-                }
-            }
-            Event::FtpBruteForce(event) => {
-                if event.matches(filter)?.0 {
-                    level = Some(event.level());
-                }
-            }
-            Event::FtpPlainText(event) => {
-                if event.matches(filter)?.0 {
-                    level = Some(event.level());
-                }
-            }
-            Event::PortScan(event) => {
-                if event.matches(filter)?.0 {
-                    level = Some(event.level());
-                }
-            }
-            Event::MultiHostPortScan(event) => {
-                if event.matches(filter)?.0 {
-                    level = Some(event.level());
-                }
-            }
-            Event::ExternalDdos(event) => {
-                if event.matches(filter)?.0 {
-                    level = Some(event.level());
-                }
-            }
-            Event::NonBrowser(event) => {
-                if event.matches(filter)?.0 {
-                    level = Some(event.level());
-                }
-            }
-            Event::LdapBruteForce(event) => {
-                if event.matches(filter)?.0 {
-                    level = Some(event.level());
-                }
-            }
-            Event::LdapPlainText(event) => {
-                if event.matches(filter)?.0 {
-                    level = Some(event.level());
-                }
-            }
-            Event::CryptocurrencyMiningPool(event) => {
-                if event.matches(filter)?.0 {
-                    level = Some(event.level());
-                }
-            }
-            Event::Blocklist(record_type) => match record_type {
-                RecordType::Bootp(bootp_event) => {
-                    if bootp_event.matches(filter)?.0 {
-                        level = Some(bootp_event.level());
-                    }
-                }
-                RecordType::Conn(conn_event) => {
-                    if conn_event.matches(filter)?.0 {
-                        level = Some(conn_event.level());
-                    }
-                }
-                RecordType::DceRpc(dcerpc_event) => {
-                    if dcerpc_event.matches(filter)?.0 {
-                        level = Some(dcerpc_event.level());
-                    }
-                }
-                RecordType::Dhcp(dhcp_event) => {
-                    if dhcp_event.matches(filter)?.0 {
-                        level = Some(dhcp_event.level());
-                    }
-                }
-                RecordType::Dns(dns_event) => {
-                    if dns_event.matches(filter)?.0 {
-                        level = Some(dns_event.level());
-                    }
-                }
-                RecordType::Ftp(ftp_event) => {
-                    if ftp_event.matches(filter)?.0 {
-                        level = Some(ftp_event.level());
-                    }
-                }
-                RecordType::Http(http_event) => {
-                    if http_event.matches(filter)?.0 {
-                        level = Some(http_event.level());
-                    }
-                }
-                RecordType::Kerberos(kerberos_event) => {
-                    if kerberos_event.matches(filter)?.0 {
-                        level = Some(kerberos_event.level());
-                    }
-                }
-                RecordType::Ldap(ldap_event) => {
-                    if ldap_event.matches(filter)?.0 {
-                        level = Some(ldap_event.level());
-                    }
-                }
-                RecordType::MalformedDns(malformed_dns_event) => {
-                    if malformed_dns_event.matches(filter)?.0 {
-                        level = Some(malformed_dns_event.level());
-                    }
-                }
-                RecordType::Mqtt(mqtt_event) => {
-                    if mqtt_event.matches(filter)?.0 {
-                        level = Some(mqtt_event.level());
-                    }
-                }
-                RecordType::Nfs(nfs_event) => {
-                    if nfs_event.matches(filter)?.0 {
-                        level = Some(nfs_event.level());
-                    }
-                }
-                RecordType::Ntlm(ntlm_event) => {
-                    if ntlm_event.matches(filter)?.0 {
-                        level = Some(ntlm_event.level());
-                    }
-                }
-                RecordType::Radius(radius_event) => {
-                    if radius_event.matches(filter)?.0 {
-                        level = Some(radius_event.level());
-                    }
-                }
-                RecordType::Rdp(rdp_event) => {
-                    if rdp_event.matches(filter)?.0 {
-                        level = Some(rdp_event.level());
-                    }
-                }
-                RecordType::Smb(smb_event) => {
-                    if smb_event.matches(filter)?.0 {
-                        level = Some(smb_event.level());
-                    }
-                }
-                RecordType::Smtp(smtp_event) => {
-                    if smtp_event.matches(filter)?.0 {
-                        level = Some(smtp_event.level());
-                    }
-                }
-                RecordType::Ssh(ssh_event) => {
-                    if ssh_event.matches(filter)?.0 {
-                        level = Some(ssh_event.level());
-                    }
-                }
-                RecordType::Tls(tls_event) => {
-                    if tls_event.matches(filter)?.0 {
-                        level = Some(tls_event.level());
-                    }
-                }
-                RecordType::UnusualDestinationPattern(event) => {
-                    if event.matches(filter)?.0 {
-                        level = Some(event.level());
-                    }
-                }
-            },
-            Event::WindowsThreat(event) => {
-                if event.matches(filter)?.0 {
-                    level = Some(event.level());
-                }
-            }
-            Event::NetworkThreat(event) => {
-                if event.matches(filter)?.0 {
-                    level = Some(event.level());
-                }
-            }
-            Event::ExtraThreat(event) => {
-                if event.matches(filter)?.0 {
-                    level = Some(event.level());
-                }
-            }
-            Event::LockyRansomware(event) => {
-                if event.matches(filter)?.0 {
-                    level = Some(event.level());
-                }
-            }
-            Event::SuspiciousTlsTraffic(event) => {
-                if event.matches(filter)?.0 {
-                    level = Some(event.level());
-                }
-            }
+        let (matched, _triage) = self.matches(filter)?;
+        if !matched {
+            return Ok(());
         }
 
-        if let Some(level) = level {
-            *counter.entry(level).or_insert(0) += 1;
-        }
+        *counter.entry(self.level()).or_insert(0) += 1;
 
         Ok(())
+    }
+
+    fn level(&self) -> ThreatLevel {
+        match self {
+            Event::DnsCovertChannel(event) => event.level(),
+            Event::HttpThreat(event) => event.level(),
+            Event::RdpBruteForce(event) => event.level(),
+            Event::RepeatedHttpSessions(event) => event.level(),
+            Event::TorConnection(event) => event.level(),
+            Event::TorConnectionConn(event) => event.level(),
+            Event::DomainGenerationAlgorithm(event) => event.level(),
+            Event::FtpBruteForce(event) => event.level(),
+            Event::FtpPlainText(event) => event.level(),
+            Event::PortScan(event) => event.level(),
+            Event::MultiHostPortScan(event) => event.level(),
+            Event::ExternalDdos(event) => event.level(),
+            Event::NonBrowser(event) => event.level(),
+            Event::LdapBruteForce(event) => event.level(),
+            Event::LdapPlainText(event) => event.level(),
+            Event::CryptocurrencyMiningPool(event) => event.level(),
+            Event::Blocklist(record_type) => match record_type {
+                RecordType::Bootp(bootp_event) => bootp_event.level(),
+                RecordType::Conn(conn_event) => conn_event.level(),
+                RecordType::DceRpc(dcerpc_event) => dcerpc_event.level(),
+                RecordType::Dhcp(dhcp_event) => dhcp_event.level(),
+                RecordType::Dns(dns_event) => dns_event.level(),
+                RecordType::Ftp(ftp_event) => ftp_event.level(),
+                RecordType::Http(http_event) => http_event.level(),
+                RecordType::Kerberos(kerberos_event) => kerberos_event.level(),
+                RecordType::Ldap(ldap_event) => ldap_event.level(),
+                RecordType::MalformedDns(malformed_dns_event) => malformed_dns_event.level(),
+                RecordType::Mqtt(mqtt_event) => mqtt_event.level(),
+                RecordType::Nfs(nfs_event) => nfs_event.level(),
+                RecordType::Ntlm(ntlm_event) => ntlm_event.level(),
+                RecordType::Radius(radius_event) => radius_event.level(),
+                RecordType::Rdp(rdp_event) => rdp_event.level(),
+                RecordType::Smb(smb_event) => smb_event.level(),
+                RecordType::Smtp(smtp_event) => smtp_event.level(),
+                RecordType::Ssh(ssh_event) => ssh_event.level(),
+                RecordType::Tls(tls_event) => tls_event.level(),
+                RecordType::UnusualDestinationPattern(event) => event.level(),
+            },
+            Event::WindowsThreat(event) => event.level(),
+            Event::NetworkThreat(event) => event.level(),
+            Event::ExtraThreat(event) => event.level(),
+            Event::LockyRansomware(event) => event.level(),
+            Event::SuspiciousTlsTraffic(event) => event.level(),
+        }
     }
 
     /// Counts each matching event once per distinct network ID across both sides.
@@ -3895,6 +3736,54 @@ mod tests {
         },
         types::EventCategory,
     };
+
+    #[test]
+    fn count_level_counts_distinct_threat_levels() {
+        use super::ThreatLevel;
+
+        let message = example_message(
+            EventKind::DnsCovertChannel,
+            EventCategory::CommandAndControl,
+        );
+        let fields: DnsEventFields = bincode::deserialize(&message.fields).unwrap();
+        let medium = Event::DnsCovertChannel(DnsCovertChannel::new(message.time, fields.into()));
+        let message = example_message(EventKind::LockyRansomware, EventCategory::Impact);
+        let fields: DnsEventFields = bincode::deserialize(&message.fields).unwrap();
+        let high = Event::LockyRansomware(LockyRansomware::new(message.time, fields.into()));
+        let filter = EventFilter {
+            levels: Some(vec![ThreatLevel::Medium, ThreatLevel::High]),
+            ..country_filter(None)
+        };
+        let mut counter = HashMap::new();
+
+        for event in [&medium, &high, &medium] {
+            event.count_level(&mut counter, &filter).unwrap();
+        }
+
+        assert_eq!(
+            counter,
+            HashMap::from([(ThreatLevel::Medium, 2), (ThreatLevel::High, 1)])
+        );
+    }
+
+    #[test]
+    fn count_level_rejected_event_preserves_populated_counter() {
+        use super::ThreatLevel;
+
+        let message = example_message(EventKind::LockyRansomware, EventCategory::Impact);
+        let fields: DnsEventFields = bincode::deserialize(&message.fields).unwrap();
+        let event = Event::LockyRansomware(LockyRansomware::new(message.time, fields.into()));
+        let filter = EventFilter {
+            levels: Some(vec![ThreatLevel::Medium]),
+            ..country_filter(None)
+        };
+        let expected = HashMap::from([(ThreatLevel::Medium, 3), (ThreatLevel::High, 2)]);
+        let mut counter = expected.clone();
+
+        event.count_level(&mut counter, &filter).unwrap();
+
+        assert_eq!(counter, expected);
+    }
 
     #[derive(Default)]
     struct FakeCountryLookup {
