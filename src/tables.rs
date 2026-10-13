@@ -26,6 +26,7 @@ mod network;
 mod node;
 mod operation_attempt;
 mod outlier_info;
+mod owned_network;
 mod port_allocation;
 mod qualifier;
 mod retention_config;
@@ -97,6 +98,7 @@ pub use self::operation_attempt::{
     RetryPolicy as OperationRetryPolicy,
 };
 pub use self::outlier_info::{Key as OutlierInfoKey, OutlierInfo, Value as OutlierInfoValue};
+pub use self::owned_network::{OwnedNetwork, OwnedNetworkSet, OwnedNetworkTable, ReplaceOutcome};
 pub use self::port_allocation::{
     ListenerBinding, PortAllocation, PortAllocationError, PortOwner, Transport as ListenerTransport,
 };
@@ -144,6 +146,7 @@ pub(super) const CORE_COMPONENTS: &str = "core components";
 pub(super) const CSV_COLUMN_EXTRAS: &str = "csv column extras";
 pub(crate) const CUSTOMERS: &str = "customers";
 pub(super) const CUSTOMER_DELETION_JOBS: &str = "customer deletion jobs";
+pub(super) const CUSTOMER_NETWORKS: &str = "customer networks";
 pub(super) const DATA_SOURCES: &str = "data sources";
 pub(super) const FILTERS: &str = "filters";
 pub(super) const HOSTS: &str = "hosts";
@@ -179,7 +182,7 @@ pub(super) const TRIAGE_RESPONSE: &str = "triage response";
 pub(super) const TRUSTED_DNS_SERVERS: &str = "trusted DNS servers";
 pub(super) const TRUSTED_USER_AGENTS: &str = "trusted user agents";
 
-pub(crate) const MAP_NAMES: [&str; 42] = [
+pub(crate) const MAP_NAMES: [&str; 43] = [
     ACCESS_TOKENS,
     ACCOUNTS,
     AGENTS,
@@ -194,6 +197,7 @@ pub(crate) const MAP_NAMES: [&str; 42] = [
     CSV_COLUMN_EXTRAS,
     CUSTOMERS,
     CUSTOMER_DELETION_JOBS,
+    CUSTOMER_NETWORKS,
     DATA_SOURCES,
     FILTERS,
     HOSTS,
@@ -437,6 +441,16 @@ impl StateDb {
     pub(crate) fn customers(&self) -> IndexedTable<'_, Customer> {
         let inner = self.inner.as_ref().expect("database must be open");
         IndexedTable::<Customer>::open(inner).expect("{CUSTOMERS} table must be present")
+    }
+
+    #[must_use]
+    pub(crate) fn customer_networks(&self) -> OwnedNetworkTable<'_> {
+        let inner = self
+            .inner
+            .as_ref()
+            .expect("table access requires a successfully opened StateDb");
+        OwnedNetworkTable::open(inner)
+            .expect("StateDb::open initializes the customer networks column family")
     }
 
     #[must_use]

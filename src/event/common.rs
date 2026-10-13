@@ -140,6 +140,7 @@ pub(super) trait Match {
         }
 
         if let Some((kinds, internal)) = &filter.directions {
+            let internal = internal.groups_for(self.sensor());
             let internal_orig = internal.iter().any(|net| {
                 self.orig_addrs()
                     .iter()
@@ -649,14 +650,14 @@ pub(crate) mod tests {
             DnsEventFieldsStored, DomainGenerationAlgorithm, Event, EventFilter, ExternalDdos,
             ExternalDdosFieldsStored, ExtraThreat, ExtraThreatFieldsStored, FlowKind,
             FtpBruteForce, FtpBruteForceFieldsStored, FtpEventFieldsStored, FtpPlainText,
-            HttpEventFieldsStored, HttpThreat, HttpThreatFieldsStored, LdapBruteForce,
-            LdapBruteForceFieldsStored, LdapEventFieldsStored, LdapPlainText, LearningMethod,
-            LockyRansomware, MultiHostPortScan, MultiHostPortScanFieldsStored, NetworkThreat,
-            NetworkThreatFieldsStored, NetworkType, NonBrowser, PortScan, PortScanFieldsStored,
-            RdpBruteForce, RdpBruteForceFieldsStored, RecordType, RepeatedHttpSessions,
-            RepeatedHttpSessionsFieldsStored, SuspiciousTlsTraffic, TorConnection,
-            UnusualDestinationPattern, UnusualDestinationPatternFieldsStored, WindowsThreat,
-            WindowsThreatFieldsStored,
+            HttpEventFieldsStored, HttpThreat, HttpThreatFieldsStored, InternalNetworks,
+            LdapBruteForce, LdapBruteForceFieldsStored, LdapEventFieldsStored, LdapPlainText,
+            LearningMethod, LockyRansomware, MultiHostPortScan, MultiHostPortScanFieldsStored,
+            NetworkThreat, NetworkThreatFieldsStored, NetworkType, NonBrowser, PortScan,
+            PortScanFieldsStored, RdpBruteForce, RdpBruteForceFieldsStored, RecordType,
+            RepeatedHttpSessions, RepeatedHttpSessionsFieldsStored, SuspiciousTlsTraffic,
+            TorConnection, UnusualDestinationPattern, UnusualDestinationPatternFieldsStored,
+            WindowsThreat, WindowsThreatFieldsStored,
         },
         types::Endpoint,
     };
@@ -1645,6 +1646,188 @@ pub(crate) mod tests {
         }
     }
 
+    fn dns_event_from(sensor: &str, orig_addr: IpAddr, resp_addr: IpAddr) -> Event {
+        let time = stored_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap());
+        let mut fields = dns_event_fields();
+        fields.sensor = sensor.to_string();
+        fields.orig_addr = orig_addr;
+        fields.resp_addr = resp_addr;
+        Event::DnsCovertChannel(DnsCovertChannel::new(time, fields))
+    }
+
+    fn network_group(cidr: &str) -> HostNetworkGroup {
+        HostNetworkGroup::new(Vec::new(), vec![cidr.parse().unwrap()], Vec::new())
+    }
+
+    fn per_sensor(entries: &[(&str, &[&str])]) -> InternalNetworks {
+        InternalNetworks::PerSensor(
+            entries
+                .iter()
+                .map(|(sensor, cidrs)| {
+                    (
+                        (*sensor).to_string(),
+                        cidrs.iter().map(|cidr| network_group(cidr)).collect(),
+                    )
+                })
+                .collect(),
+        )
+    }
+
+    /// Returns the flow kinds out of all three a filter on `internal` lets
+    /// `event` through for, each tried on its own.
+    fn matching_kinds(event: &Event, internal: &InternalNetworks) -> Vec<FlowKind> {
+        [FlowKind::Inbound, FlowKind::Outbound, FlowKind::Internal]
+            .into_iter()
+            .filter(|kind| {
+                let mut filter = event_filter();
+                filter.directions = Some((vec![*kind], internal.clone()));
+                event.matches(&filter).unwrap().0
+            })
+            .collect()
+    }
+
+    #[test]
+    fn directions_shared_classifies_every_event_against_the_same_groups() {
+        let internal = InternalNetworks::Shared(vec![
+            network_group("10.0.0.0/8"),
+            network_group("192.168.0.0/16"),
+        ]);
+        let inside: IpAddr = "10.0.0.1".parse().unwrap();
+        let also_inside: IpAddr = "192.168.0.1".parse().unwrap();
+        let outside: IpAddr = "8.8.8.8".parse().unwrap();
+
+        for sensor in ["sensor-a", "sensor-b", ""] {
+            assert_eq!(
+                matching_kinds(&dns_event_from(sensor, inside, also_inside), &internal),
+                vec![FlowKind::Internal]
+            );
+            assert_eq!(
+                matching_kinds(&dns_event_from(sensor, inside, outside), &internal),
+                vec![FlowKind::Outbound]
+            );
+            assert_eq!(
+                matching_kinds(&dns_event_from(sensor, outside, also_inside), &internal),
+                vec![FlowKind::Inbound]
+            );
+            assert_eq!(
+                matching_kinds(&dns_event_from(sensor, outside, outside), &internal),
+                Vec::<FlowKind>::new()
+            );
+        }
+
+        let mut filter = event_filter();
+        filter.directions = Some((
+            vec![FlowKind::Inbound, FlowKind::Outbound, FlowKind::Internal],
+            internal,
+        ));
+        assert!(
+            !dns_event_from("sensor-a", outside, outside)
+                .matches(&filter)
+                .unwrap()
+                .0
+        );
+    }
+
+    #[test]
+    fn directions_per_sensor_uses_only_the_events_own_sensor() {
+        let internal = per_sensor(&[
+            ("sensor-a", &["10.0.0.0/8"]),
+            ("sensor-b", &["192.168.0.0/16"]),
+        ]);
+        let a_net: IpAddr = "10.0.0.1".parse().unwrap();
+        let b_net: IpAddr = "192.168.0.1".parse().unwrap();
+
+        // The same pair of addresses is outbound for one sensor's customer and
+        // inbound for the other's.
+        assert_eq!(
+            matching_kinds(&dns_event_from("sensor-a", a_net, b_net), &internal),
+            vec![FlowKind::Outbound]
+        );
+        assert_eq!(
+            matching_kinds(&dns_event_from("sensor-b", a_net, b_net), &internal),
+            vec![FlowKind::Inbound]
+        );
+        assert_eq!(
+            matching_kinds(&dns_event_from("sensor-a", a_net, a_net), &internal),
+            vec![FlowKind::Internal]
+        );
+        // Internal to the other sensor's customer only: neither side is
+        // internal for this event.
+        assert_eq!(
+            matching_kinds(&dns_event_from("sensor-a", b_net, b_net), &internal),
+            Vec::<FlowKind>::new()
+        );
+    }
+
+    #[test]
+    fn directions_per_sensor_excludes_an_unknown_sensor() {
+        let internal = per_sensor(&[("sensor-a", &["10.0.0.0/8"])]);
+        let inside: IpAddr = "10.0.0.1".parse().unwrap();
+        let outside: IpAddr = "8.8.8.8".parse().unwrap();
+
+        for (orig, resp) in [
+            (inside, inside),
+            (inside, outside),
+            (outside, inside),
+            (outside, outside),
+        ] {
+            let event = dns_event_from("sensor-c", orig, resp);
+            assert_eq!(matching_kinds(&event, &internal), Vec::<FlowKind>::new());
+
+            let mut filter = event_filter();
+            filter.directions = Some((
+                vec![FlowKind::Inbound, FlowKind::Outbound, FlowKind::Internal],
+                internal.clone(),
+            ));
+            assert!(!event.matches(&filter).unwrap().0);
+        }
+
+        // An empty map knows no sensor at all.
+        let empty = InternalNetworks::PerSensor(std::collections::HashMap::new());
+        assert_eq!(
+            matching_kinds(&dns_event_from("sensor-a", inside, inside), &empty),
+            Vec::<FlowKind>::new()
+        );
+    }
+
+    #[test]
+    fn directions_per_sensor_sensors_sharing_groups_behave_identically() {
+        let internal = per_sensor(&[
+            ("sensor-a", &["10.0.0.0/8", "192.168.0.0/16"]),
+            ("sensor-b", &["10.0.0.0/8", "192.168.0.0/16"]),
+        ]);
+        let addrs: [IpAddr; 3] = [
+            "10.0.0.1".parse().unwrap(),
+            "192.168.0.1".parse().unwrap(),
+            "8.8.8.8".parse().unwrap(),
+        ];
+        for orig in addrs {
+            for resp in addrs {
+                assert_eq!(
+                    matching_kinds(&dns_event_from("sensor-a", orig, resp), &internal),
+                    matching_kinds(&dns_event_from("sensor-b", orig, resp), &internal),
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn directions_per_sensor_keeps_any_address_semantics() {
+        let time = stored_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap());
+        // Responders 127.0.0.2 and 127.0.0.3; only the second is internal.
+        let mut fields = multi_host_port_scan_fields();
+        fields.sensor = "sensor-a".to_string();
+        let event = Event::MultiHostPortScan(MultiHostPortScan::new(time, &fields));
+        let internal = per_sensor(&[("sensor-a", &["127.0.0.3/32"])]);
+        assert_eq!(matching_kinds(&event, &internal), vec![FlowKind::Inbound]);
+
+        // Originators 127.0.0.1 and 127.0.0.3; only the second is internal.
+        let mut fields = external_ddos_fields();
+        fields.sensor = "sensor-a".to_string();
+        let event = Event::ExternalDdos(ExternalDdos::new(time, &fields));
+        assert_eq!(matching_kinds(&event, &internal), vec![FlowKind::Outbound]);
+    }
+
     #[test]
     fn address_aggregation_single_endpoints_and_empty_events() {
         let time = stored_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap());
@@ -2078,8 +2261,11 @@ pub(crate) mod tests {
         bincode::DefaultOptions::new().serialize(v).ok()
     }
 
-    fn create_directions(kind: FlowKind, addr: IpAddr) -> (Vec<FlowKind>, Vec<HostNetworkGroup>) {
-        (vec![kind], vec![create_host_network_group(addr)])
+    fn create_directions(kind: FlowKind, addr: IpAddr) -> (Vec<FlowKind>, InternalNetworks) {
+        (
+            vec![kind],
+            InternalNetworks::Shared(vec![create_host_network_group(addr)]),
+        )
     }
 
     fn create_endpoint(addr: IpAddr) -> Endpoint {

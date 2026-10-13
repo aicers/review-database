@@ -1907,6 +1907,27 @@ pub enum LearningMethod {
     SemiSupervised,
 }
 
+/// The networks whose addresses count as internal for the `directions` field
+/// of an [`EventFilter`].
+#[derive(Clone, Debug, PartialEq)]
+pub enum InternalNetworks {
+    /// Every event is tested against the same groups.
+    Shared(Vec<HostNetworkGroup>),
+    /// Groups keyed by the event's sensor. An event whose sensor is not a key
+    /// has no internal address.
+    PerSensor(HashMap<String, Vec<HostNetworkGroup>>),
+}
+
+impl InternalNetworks {
+    /// Returns the groups an event from `sensor` is tested against.
+    pub(crate) fn groups_for(&self, sensor: &str) -> &[HostNetworkGroup] {
+        match self {
+            Self::Shared(groups) => groups,
+            Self::PerSensor(groups) => groups.get(sensor).map_or(&[], Vec::as_slice),
+        }
+    }
+}
+
 /// A filter used to query events from the database.
 ///
 /// # Notes
@@ -1920,6 +1941,10 @@ pub enum LearningMethod {
 /// In other words, customer filtering performs network-range matching against
 /// the customer's registered networks, not direct per-event customer
 /// attribution.
+///
+/// `directions` classifies an event by whether any of its originator and any
+/// of its responder addresses fall within the [`InternalNetworks`] chosen for
+/// it. An event with neither side internal never matches.
 ///
 /// `countries` compares stored two-byte codes directly. This includes the
 /// [`crate::COUNTRY_CODE_UNKNOWN`] and [`crate::COUNTRY_CODE_UNRESOLVED`]
@@ -1937,7 +1962,7 @@ pub enum LearningMethod {
 pub struct EventFilter {
     customers: Option<Vec<Customer>>,
     endpoints: Option<Vec<Endpoint>>,
-    directions: Option<(Vec<FlowKind>, Vec<HostNetworkGroup>)>,
+    directions: Option<(Vec<FlowKind>, InternalNetworks)>,
     originator: Option<IpAddr>,
     responder: Option<IpAddr>,
     countries: Option<Vec<[u8; 2]>>,
@@ -1958,7 +1983,7 @@ impl EventFilter {
     pub fn new(
         customers: Option<Vec<Customer>>,
         endpoints: Option<Vec<Endpoint>>,
-        directions: Option<(Vec<FlowKind>, Vec<HostNetworkGroup>)>,
+        directions: Option<(Vec<FlowKind>, InternalNetworks)>,
         originator: Option<IpAddr>,
         responder: Option<IpAddr>,
         countries: Option<Vec<[u8; 2]>>,
@@ -3680,7 +3705,7 @@ pub enum FlowKind {
 }
 
 /// Possible network types of `CustomerNetwork`.
-#[derive(Clone, Copy, Eq, PartialEq, Deserialize, Serialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize, Serialize)]
 pub enum NetworkType {
     Intranet,
     Extranet,

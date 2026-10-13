@@ -55,12 +55,13 @@ pub use self::tables::{
     ModelIndicator, Network, NetworkFilter, NetworkUpdate, Node, NodeProfile, NodeTable,
     NodeUpdate, OperationAction, OperationAttempt, OperationCleanupState, OperationFailureKind,
     OperationOnFailure, OperationOutcome, OperationPhase, OperationRetentionBound,
-    OperationRetryPolicy, OutlierInfo, OutlierInfoKey, OutlierInfoValue, PacketAttr,
-    PeriodForSearch, PortAllocation, PortAllocationError, PortOwner, ProtocolPorts,
-    RequestKeyError, Response, ResponseKind, RetentionConfig, RetentionConfigUpdate,
-    SamplingInterval, SamplingKind, SamplingPeriod, SamplingPolicy, SamplingPolicyUpdate,
-    Structured, StructuredClusteringAlgorithm, Table, Template, TimeSeries, TopColumnsOfCluster,
-    TopMultimaps, TorExitNode, TrafficFilter, TriageExclusion, TriagePolicyInput, TriageResponse,
+    OperationRetryPolicy, OutlierInfo, OutlierInfoKey, OutlierInfoValue, OwnedNetwork,
+    OwnedNetworkSet, OwnedNetworkTable, PacketAttr, PeriodForSearch, PortAllocation,
+    PortAllocationError, PortOwner, ProtocolPorts, ReplaceOutcome, RequestKeyError, Response,
+    ResponseKind, RetentionConfig, RetentionConfigUpdate, SamplingInterval, SamplingKind,
+    SamplingPeriod, SamplingPolicy, SamplingPolicyUpdate, Structured,
+    StructuredClusteringAlgorithm, Table, Template, TimeSeries, TopColumnsOfCluster, TopMultimaps,
+    TorExitNode, TrafficFilter, TriageExclusion, TriagePolicyInput, TriageResponse,
     TriageResponseUpdate, TrustedDomain, TrustedUserAgent, UniqueKey, Unstructured,
     UnstructuredClusteringAlgorithm, UserAgent, ValueKind,
 };
@@ -797,6 +798,12 @@ impl Store {
     #[allow(clippy::missing_panics_doc)]
     pub fn customer_map(&self) -> IndexedTable<'_, Customer> {
         self.states.customers()
+    }
+
+    /// Returns the table of the networks each customer owns.
+    #[must_use]
+    pub fn customer_networks_map(&self) -> OwnedNetworkTable<'_> {
+        self.states.customer_networks()
     }
 
     #[must_use]
