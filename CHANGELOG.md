@@ -5,7 +5,7 @@ file is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), and
 this project adheres to [Semantic
 Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.50.0] - 2026-10-13
 
 ### Added
 
@@ -36,7 +36,7 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   `Option<(Vec<FlowKind>, InternalNetworks)>` instead of
   `Option<(Vec<FlowKind>, Vec<HostNetworkGroup>)>`. Wrap the existing groups
   in `InternalNetworks::Shared` to keep the previous behavior.
-- **BREAKING**: Bumped the database format to `0.50.0-alpha.1`. The migration
+- **BREAKING**: Bumped the database format to `0.50.0`. The migration
   from `0.49.x` creates the empty column family of the customer networks
   table and changes nothing else in the store; in particular, nothing is
   copied from the `customers` table. An interrupted run can be retried,
@@ -1898,7 +1898,7 @@ AsRef<[u8]>`). This change accommodates scenarios where the information stored
 - Modified `FtpBruteForce` by adding an `is_internal` field which is a boolean
   indicating whether it is internal or not.
 
-[Unreleased]: https://github.com/aicers/review-database/compare/0.49.0...main
+[0.50.0]: https://github.com/aicers/review-database/compare/0.49.0...0.50.0
 [0.49.0]: https://github.com/aicers/review-database/compare/0.48.0...0.49.0
 [0.48.0]: https://github.com/aicers/review-database/compare/0.47.0...0.48.0
 [0.47.0]: https://github.com/aicers/review-database/compare/0.46.0...0.47.0

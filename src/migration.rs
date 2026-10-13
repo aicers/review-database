@@ -111,7 +111,7 @@ use crate::{
 /// // release that involves database format change) to 3.5.0, including
 /// // all alpha changes finalized in 3.5.0.
 /// ```
-const COMPATIBLE_VERSION_REQ: &str = ">=0.50.0-alpha.1,<0.50.0-alpha.2";
+const COMPATIBLE_VERSION_REQ: &str = ">=0.50.0,<0.51.0";
 
 /// Number of event records applied in each atomic migration write.
 const EVENT_MIGRATION_BATCH_SIZE: usize = 100;
@@ -161,11 +161,11 @@ const VERSION_TMP_FILE_NAME: &str = "VERSION.tmp";
 
 /// Migrates the data directory to the up-to-date format if necessary.
 ///
-/// The current format's own marker, `0.50.0-alpha.1`, is accepted as
-/// current. Migration otherwise supports released versions only: the
-/// `<0.50.0-alpha.1` bound admits only 0.50.0 prereleases below it, which no
-/// build wrote. Every other prerelease marker is refused with "migration
-/// from {version} is not supported".
+/// Migration is supported between released versions only. A prerelease marker,
+/// such as `0.46.0-alpha.1` or `0.47.0-alpha.6`, is refused with "migration
+/// from {version} is not supported": neither `COMPATIBLE_VERSION_REQ` nor any
+/// requirement in the migration table carries a prerelease, so under semver's
+/// matching rule none of them admits it.
 ///
 /// Pass a shared `IP2Location` database handle when available so endpoint
 /// country-code fields can be resolved during the stored event schema
@@ -268,8 +268,8 @@ pub fn migrate_data_dir<P: AsRef<Path>>(
             |data_dir, _backup_dir, _locator| migrate_0_48_to_0_49(data_dir),
         ),
         (
-            VersionReq::parse(">=0.49.0,<0.50.0-alpha.1")?,
-            Version::parse("0.50.0-alpha.1")?,
+            VersionReq::parse(">=0.49.0,<0.50.0")?,
+            Version::parse("0.50.0")?,
             |data_dir, _backup_dir, _locator| migrate_0_49_to_0_50(data_dir),
         ),
     ];
@@ -454,7 +454,7 @@ fn migrate_0_48_to_0_49(data_dir: &Path) -> Result<()> {
     )
 }
 
-/// Migrates a database in the 0.49.x format to 0.50.0-alpha.1.
+/// Migrates a database in the 0.49.x format to 0.50.0.
 ///
 /// Creates the empty "customer networks" column family. Nothing is copied into
 /// it, and no other column family is read or written: the networks of the
@@ -470,7 +470,7 @@ fn migrate_0_49_to_0_50(data_dir: &Path) -> Result<()> {
     let column_families = map_names_for_existing_format(&opts, &db_path)?;
     let mut db: rocksdb::OptimisticTransactionDB<rocksdb::SingleThreaded> =
         rocksdb::OptimisticTransactionDB::open_cf(&opts, &db_path, column_families)
-            .context("failed to open database for the 0.50.0-alpha.1 migration")?;
+            .context("failed to open database for the 0.50.0 migration")?;
 
     if db.cf_handle(crate::tables::CUSTOMER_NETWORKS).is_none() {
         info!(
@@ -965,7 +965,7 @@ const MAP_NAMES_FOR_V0_47_MIGRATION: [&str; 44] = [
 
 /// Lists column family names for database formats 0.47 through 0.49: the
 /// families [`migrate_0_46_to_0_47`] leaves behind, without the "customer
-/// networks" family 0.50.0-alpha.1 adds.
+/// networks" family 0.50.0 adds.
 #[cfg(test)]
 const MAP_NAMES_V0_47_TO_V0_49: [&str; 42] = [
     "access_tokens",
@@ -2738,10 +2738,10 @@ mod tests {
     /// Test that prerelease markers are refused and their `VERSION` files left
     /// unchanged.
     ///
-    /// The current format's own marker is accepted unchanged, as the
-    /// `migrate_data_dir` doc comment records. The refused markers cover older
-    /// prereleases, the 0.47 through 0.49 cycles, and a future 0.50
-    /// prerelease.
+    /// Migration is supported between released versions only, as the
+    /// `migrate_data_dir` doc comment records. The markers cover older
+    /// prereleases, the 0.47 through 0.49 cycles, and prereleases of the format
+    /// migrated to.
     #[test]
     fn migration_refuses_unsupported_prerelease_markers() {
         for marker in [
@@ -2754,6 +2754,7 @@ mod tests {
             "0.48.0-alpha.2",
             "0.49.0-alpha.1",
             "0.49.0-alpha.2",
+            "0.50.0-alpha.1",
             "0.50.0-alpha.2",
         ] {
             let data_dir = tempfile::tempdir().unwrap();
@@ -2778,22 +2779,6 @@ mod tests {
                 expected
             );
         }
-        let data_dir = tempfile::tempdir().unwrap();
-        let backup_dir = tempfile::tempdir().unwrap();
-        write_version(data_dir.path(), "0.50.0-alpha.1");
-        write_version(backup_dir.path(), "0.50.0-alpha.1");
-        let before = (
-            entries_outside_states_db(data_dir.path()),
-            entries_outside_states_db(backup_dir.path()),
-        );
-        migrate_data_dir(data_dir.path(), backup_dir.path(), None).unwrap();
-        assert_eq!(
-            (
-                entries_outside_states_db(data_dir.path()),
-                entries_outside_states_db(backup_dir.path()),
-            ),
-            before
-        );
     }
 
     /// Test `read_version_file` and `create_version_file` helper functions.
@@ -3114,7 +3099,7 @@ mod tests {
         crate::tables::TRIAGE_POLICY,
     ];
 
-    /// The column families the 0.50.0-alpha.1 format adds to the 0.49 set.
+    /// The column families the 0.50.0 format adds to the 0.49 set.
     const FAMILIES_ADDED_BY_V0_50: [&str; 1] = [crate::tables::CUSTOMER_NETWORKS];
 
     /// Migrates a database in the 0.43-through-0.46 layout, recorded as
