@@ -5,11 +5,11 @@ use argon2::{
     Argon2,
     password_hash::{PasswordHasher, PasswordVerifier, phc::PasswordHash},
 };
-use chrono::{DateTime, Utc};
-use ring::{
+use aws_lc_rs::{
     digest, pbkdf2,
     rand::{self, SecureRandom},
 };
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use strum_macros::{Display, EnumString};
 
@@ -445,6 +445,40 @@ mod tests {
         let password = "password";
         let pbkdf2 = SaltedPassword::with_pbkdf2(password).unwrap();
         assert!(pbkdf2.is_match(password));
+        assert!(!pbkdf2.is_match("wrong-password"));
+        assert_eq!(pbkdf2.algorithm, HashAlgorithm::Sha512);
+        assert_eq!(pbkdf2.iterations.get(), 210_000);
+        assert_eq!(pbkdf2.salt.len(), 64);
+        assert_eq!(pbkdf2.hash.len(), 64);
+
+        let another = SaltedPassword::with_pbkdf2(password).unwrap();
+        assert_ne!(pbkdf2.salt, another.salt);
+    }
+
+    #[test]
+    fn legacy_pbkdf2_account_verifies() {
+        // This fixture uses the account_bytes.bin layout with its hash replaced
+        // by ring 0.17.14's PBKDF2-HMAC-SHA512 output for "legacy-password",
+        // salt bytes 0..64, 210,000 iterations and a 64-byte output.
+        const LEGACY_ACCOUNT_BYTES: &[u8] = include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/account_pbkdf2_ring_bytes.bin"
+        ));
+
+        let account = Account::from_key_value(b"fixture-user", LEGACY_ACCOUNT_BYTES)
+            .expect("legacy PBKDF2 account must deserialize");
+
+        assert_eq!(
+            account.password_hash_algorithm,
+            PasswordHashAlgorithm::Pbkdf2HmacSha512
+        );
+        assert_eq!(account.password.algorithm, HashAlgorithm::Sha512);
+        assert_eq!(account.password.iterations.get(), 210_000);
+        assert_eq!(account.password.salt, (0_u8..64).collect::<Vec<_>>());
+        assert_eq!(account.password.hash.len(), 64);
+        assert!(account.verify_password("legacy-password"));
+        assert!(!account.verify_password("wrong-password"));
+        assert_eq!(account.value().as_slice(), LEGACY_ACCOUNT_BYTES);
     }
 
     #[test]

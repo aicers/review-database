@@ -74,8 +74,8 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 
 use anyhow::{Context, Result, anyhow, bail};
+use aws_lc_rs::digest;
 use chrono::{DateTime, TimeDelta, Utc};
-use ring::digest;
 use rocksdb::{Direction, IteratorMode, OptimisticTransactionDB, ReadOptions, Transaction};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
