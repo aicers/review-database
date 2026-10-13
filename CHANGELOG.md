@@ -7,10 +7,41 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- `Store::customer_networks_map` returns an `OwnedNetworkTable` over a new
+  table holding one `OwnedNetworkSet` per customer ID: the customer's owned
+  networks, each an `OwnedNetwork` with a name, a `NetworkType` and a
+  `HostNetworkGroup`, together with the writer's revision and the time of the
+  last write. `replace` stores a customer's full set atomically, refuses
+  duplicate network names, and returns `ReplaceOutcome::Stale` without writing
+  when the stored revision is higher; otherwise it returns
+  `ReplaceOutcome::Written` with the row it overwrote. `get`, `remove` and
+  `iter`, in ascending customer ID order, complete the table, and
+  `OwnedNetworkSet::internal_groups` and `OwnedNetworkSet::merged_group`
+  derive the internal groups and a single merged group from a set. The table
+  is separate from the `customers` table, which is unchanged.
+- `event::InternalNetworks` selects the networks the `directions` filter
+  treats as internal: `Shared` tests every event against the same groups, as
+  before, and `PerSensor` tests each event only against the groups listed for
+  its own sensor. An event whose sensor is not listed has no internal address
+  and never matches a `directions` filter.
+- `NetworkType` implements `Debug`.
+
 ### Changed
 
 - **BREAKING**: Replaced `From<(i32, i32)>` with `TryFrom<(i32, i32)>` for
   `StructuredColumnType`. Callers must handle errors for unknown type IDs.
+- **BREAKING**: The `directions` parameter of `EventFilter::new` is now
+  `Option<(Vec<FlowKind>, InternalNetworks)>` instead of
+  `Option<(Vec<FlowKind>, Vec<HostNetworkGroup>)>`. Wrap the existing groups
+  in `InternalNetworks::Shared` to keep the previous behavior.
+- **BREAKING**: Bumped the database format to `0.50.0-alpha.1`. The migration
+  from `0.49.x` creates the empty column family of the customer networks
+  table and changes nothing else in the store; in particular, nothing is
+  copied from the `customers` table. An interrupted run can be retried,
+  including a migration from an older format interrupted after the step to
+  this one.
 
 ### Fixed
 

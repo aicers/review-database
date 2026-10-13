@@ -111,7 +111,7 @@ use crate::{
 /// // release that involves database format change) to 3.5.0, including
 /// // all alpha changes finalized in 3.5.0.
 /// ```
-const COMPATIBLE_VERSION_REQ: &str = ">=0.49.0,<0.50.0";
+const COMPATIBLE_VERSION_REQ: &str = ">=0.50.0-alpha.1,<0.50.0-alpha.2";
 
 /// Number of event records applied in each atomic migration write.
 const EVENT_MIGRATION_BATCH_SIZE: usize = 100;
@@ -161,11 +161,11 @@ const VERSION_TMP_FILE_NAME: &str = "VERSION.tmp";
 
 /// Migrates the data directory to the up-to-date format if necessary.
 ///
-/// Migration is supported between released versions only. A prerelease marker,
-/// such as `0.46.0-alpha.1` or `0.47.0-alpha.6`, is refused with "migration
-/// from {version} is not supported": neither `COMPATIBLE_VERSION_REQ` nor any
-/// requirement in the migration table carries a prerelease, so under semver's
-/// matching rule none of them admits it.
+/// The current format's own marker, `0.50.0-alpha.1`, is accepted as
+/// current. Migration otherwise supports released versions only: the
+/// `<0.50.0-alpha.1` bound admits only 0.50.0 prereleases below it, which no
+/// build wrote. Every other prerelease marker is refused with "migration
+/// from {version} is not supported".
 ///
 /// Pass a shared `IP2Location` database handle when available so endpoint
 /// country-code fields can be resolved during the stored event schema
@@ -267,6 +267,11 @@ pub fn migrate_data_dir<P: AsRef<Path>>(
             Version::parse("0.49.0")?,
             |data_dir, _backup_dir, _locator| migrate_0_48_to_0_49(data_dir),
         ),
+        (
+            VersionReq::parse(">=0.49.0,<0.50.0-alpha.1")?,
+            Version::parse("0.50.0-alpha.1")?,
+            |data_dir, _backup_dir, _locator| migrate_0_49_to_0_50(data_dir),
+        ),
     ];
 
     while let Some((_req, to, m)) = migration
@@ -299,7 +304,9 @@ fn migrate_0_45_to_0_46(data_dir: &Path, locator: Option<&dyn CountryLookup>) ->
 /// core components, operation attempts, instance allocations, the operation
 /// attempt latest pointer and the three port allocation families — and
 /// leaves the rest alone, so a retry after an interrupted run finds nothing to
-/// do rather than failing on a family that already exists.
+/// do rather than failing on a family that already exists. Any family a later
+/// step of an interrupted chain already created is opened as well, since
+/// RocksDB refuses an open that omits one, but is not created here.
 ///
 /// Once every other step has finished, this drops the "triage policy" and
 /// "triage exclusion reason" families, with every row in them. The list still
@@ -319,8 +326,17 @@ fn migrate_0_46_to_0_47(data_dir: &Path) -> Result<()> {
     opts.create_if_missing(false);
     opts.create_missing_column_families(true);
 
+    let mut column_families: Vec<String> = MAP_NAMES_FOR_V0_47_MIGRATION
+        .iter()
+        .map(ToString::to_string)
+        .collect();
+    for name in existing_map_names(&opts, &db_path)? {
+        if !column_families.contains(&name) {
+            column_families.push(name);
+        }
+    }
     let mut db: rocksdb::OptimisticTransactionDB<rocksdb::SingleThreaded> =
-        rocksdb::OptimisticTransactionDB::open_cf(&opts, &db_path, MAP_NAMES_FOR_V0_47_MIGRATION)
+        rocksdb::OptimisticTransactionDB::open_cf(&opts, &db_path, column_families)
             .context("failed to open database for the 0.47.0 migration")?;
 
     migrate_record_layout(
@@ -436,6 +452,38 @@ fn migrate_0_48_to_0_49(data_dir: &Path) -> Result<()> {
         })],
         &[],
     )
+}
+
+/// Migrates a database in the 0.49.x format to 0.50.0-alpha.1.
+///
+/// Creates the empty "customer networks" column family. Nothing is copied into
+/// it, and no other column family is read or written: the networks of the
+/// "customers" family are not the owned networks the new family records.
+///
+/// A rerun is safe: the family is created only if it is missing, so a chain
+/// interrupted after this step finds it there and leaves it as it is.
+fn migrate_0_49_to_0_50(data_dir: &Path) -> Result<()> {
+    let db_path = data_dir.join("states.db");
+    let mut opts = rocksdb::Options::default();
+    opts.create_if_missing(false);
+    opts.create_missing_column_families(false);
+    let column_families = map_names_for_existing_format(&opts, &db_path)?;
+    let mut db: rocksdb::OptimisticTransactionDB<rocksdb::SingleThreaded> =
+        rocksdb::OptimisticTransactionDB::open_cf(&opts, &db_path, column_families)
+            .context("failed to open database for the 0.50.0-alpha.1 migration")?;
+
+    if db.cf_handle(crate::tables::CUSTOMER_NETWORKS).is_none() {
+        info!(
+            "Creating '{}' column family",
+            crate::tables::CUSTOMER_NETWORKS
+        );
+        db.create_cf(
+            crate::tables::CUSTOMER_NETWORKS,
+            &rocksdb::Options::default(),
+        )
+        .context("failed to create customer networks column family")?;
+    }
+    Ok(())
 }
 
 /// Drops the "triage policy" and "triage exclusion reason" column families,
@@ -910,6 +958,55 @@ const MAP_NAMES_FOR_V0_47_MIGRATION: [&str; 44] = [
     "traffic filter rules",
     "triage exclusion reason",
     "triage policy",
+    "triage response",
+    "trusted DNS servers",
+    "trusted user agents",
+];
+
+/// Lists column family names for database formats 0.47 through 0.49: the
+/// families [`migrate_0_46_to_0_47`] leaves behind, without the "customer
+/// networks" family 0.50.0-alpha.1 adds.
+#[cfg(test)]
+const MAP_NAMES_V0_47_TO_V0_49: [&str; 42] = [
+    "access_tokens",
+    "accounts",
+    "agents",
+    "allow networks",
+    "batch_info",
+    "block networks",
+    "category",
+    "cluster",
+    "column stats",
+    "configs",
+    "core components",
+    "csv column extras",
+    "customers",
+    "customer deletion jobs",
+    "data sources",
+    "filters",
+    "hosts",
+    "instance allocations",
+    "models",
+    "model indicators",
+    "meta",
+    "networks",
+    "nodes",
+    "operation attempts",
+    "operation attempt latest",
+    "outliers",
+    "port allocations",
+    "port allocations by attempt",
+    "port allocations by instance",
+    "qualifiers",
+    "external services",
+    "sampling policy",
+    "scores",
+    "statuses",
+    "templates",
+    "label database",
+    "time series",
+    "Tor exit nodes",
+    "traffic filter rules",
     "triage response",
     "trusted DNS servers",
     "trusted user agents",
@@ -2641,10 +2738,10 @@ mod tests {
     /// Test that prerelease markers are refused and their `VERSION` files left
     /// unchanged.
     ///
-    /// Migration is supported between released versions only, as the
-    /// `migrate_data_dir` doc comment records. The markers cover older
-    /// prereleases, the 0.47 and 0.48 cycles, and prereleases of the format
-    /// migrated to.
+    /// The current format's own marker is accepted unchanged, as the
+    /// `migrate_data_dir` doc comment records. The refused markers cover older
+    /// prereleases, the 0.47 through 0.49 cycles, and a future 0.50
+    /// prerelease.
     #[test]
     fn migration_refuses_unsupported_prerelease_markers() {
         for marker in [
@@ -2657,6 +2754,7 @@ mod tests {
             "0.48.0-alpha.2",
             "0.49.0-alpha.1",
             "0.49.0-alpha.2",
+            "0.50.0-alpha.2",
         ] {
             let data_dir = tempfile::tempdir().unwrap();
             let backup_dir = tempfile::tempdir().unwrap();
@@ -2680,6 +2778,22 @@ mod tests {
                 expected
             );
         }
+        let data_dir = tempfile::tempdir().unwrap();
+        let backup_dir = tempfile::tempdir().unwrap();
+        write_version(data_dir.path(), "0.50.0-alpha.1");
+        write_version(backup_dir.path(), "0.50.0-alpha.1");
+        let before = (
+            entries_outside_states_db(data_dir.path()),
+            entries_outside_states_db(backup_dir.path()),
+        );
+        migrate_data_dir(data_dir.path(), backup_dir.path(), None).unwrap();
+        assert_eq!(
+            (
+                entries_outside_states_db(data_dir.path()),
+                entries_outside_states_db(backup_dir.path()),
+            ),
+            before
+        );
     }
 
     /// Test `read_version_file` and `create_version_file` helper functions.
@@ -3000,6 +3114,9 @@ mod tests {
         crate::tables::TRIAGE_POLICY,
     ];
 
+    /// The column families the 0.50.0-alpha.1 format adds to the 0.49 set.
+    const FAMILIES_ADDED_BY_V0_50: [&str; 1] = [crate::tables::CUSTOMER_NETWORKS];
+
     /// Migrates a database in the 0.43-through-0.46 layout, recorded as
     /// `version`, and asserts that it reaches the current format with its agent
     /// and external-service values converted.
@@ -3038,12 +3155,20 @@ mod tests {
             crate::tables::MAP_NAMES,
         )
         .unwrap();
-        for name in FAMILIES_ABSENT_AT_V0_46 {
+        for name in FAMILIES_ABSENT_AT_V0_46
+            .into_iter()
+            .chain(FAMILIES_ADDED_BY_V0_50)
+        {
             assert!(db.cf_handle(name).is_some(), "{name} must exist");
         }
         assert_eq!(
-            FAMILIES_ABSENT_AT_V0_46.len() - FAMILIES_REMOVED_BY_V0_47.len(),
+            FAMILIES_ABSENT_AT_V0_46.len() + FAMILIES_ADDED_BY_V0_50.len()
+                - FAMILIES_REMOVED_BY_V0_47.len(),
             crate::tables::MAP_NAMES.len() - super::MAP_NAMES_V0_43_TO_V0_46.len()
+        );
+        assert_eq!(
+            super::MAP_NAMES_V0_47_TO_V0_49.len() + FAMILIES_ADDED_BY_V0_50.len(),
+            crate::tables::MAP_NAMES.len()
         );
         drop(db);
 
@@ -3873,7 +3998,7 @@ mod tests {
         );
         let after_crash = open_states_db(
             &resumed_dir.path().join("states.db"),
-            crate::tables::MAP_NAMES,
+            super::MAP_NAMES_V0_47_TO_V0_49,
         );
         for name in FAMILIES_ABSENT_AT_V0_46 {
             assert!(after_crash.cf_handle(name).is_some(), "{name} must exist");
@@ -4300,7 +4425,7 @@ mod tests {
             .collect::<Vec<_>>();
         put_entries(
             &db_path,
-            crate::tables::MAP_NAMES,
+            super::MAP_NAMES_V0_47_TO_V0_49,
             crate::tables::OPERATION_ATTEMPTS,
             &attempts,
         );
@@ -4326,6 +4451,189 @@ mod tests {
                     .is_ok()
             );
         }
+        super::migrate_0_49_to_0_50(data_dir.path()).unwrap();
+        assert_eq!(entries_outside_states_db(data_dir.path()), before);
+    }
+
+    /// Every entry of the column family `cf_name`, in key order.
+    fn cf_entries<'a>(
+        db_path: &Path,
+        families: impl IntoIterator<Item = &'a str>,
+        cf_name: &str,
+    ) -> Entries {
+        let db = open_states_db(db_path, families);
+        let cf = db.cf_handle(cf_name).unwrap();
+        db.iterator_cf(&cf, rocksdb::IteratorMode::Start)
+            .map(|entry| {
+                let (key, value) = entry.unwrap();
+                (key.to_vec(), value.to_vec())
+            })
+            .collect()
+    }
+
+    /// Every file under `dir`, with its contents.
+    fn files_under(dir: &Path) -> Vec<(std::path::PathBuf, Vec<u8>)> {
+        let mut entries = Vec::new();
+        let mut pending = vec![dir.to_path_buf()];
+        while let Some(dir) = pending.pop() {
+            for entry in std::fs::read_dir(&dir).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    pending.push(path);
+                } else {
+                    let contents = std::fs::read(&path).unwrap();
+                    entries.push((path, contents));
+                }
+            }
+        }
+        entries.sort_unstable();
+        entries
+    }
+
+    /// A `0.49.0` store with customers migrates to the current format with an
+    /// empty "customer networks" family, the customers byte for byte as they
+    /// were, and both markers naming the current version; a second start finds
+    /// the store current and touches nothing.
+    #[test]
+    fn migration_from_v0_49_creates_empty_customer_networks() {
+        let _permit = acquire_db_permit();
+        let current_version = Version::parse(env!("CARGO_PKG_VERSION")).unwrap();
+        let data_dir = tempfile::tempdir().unwrap();
+        let backup_dir = tempfile::tempdir().unwrap();
+        let db_path = data_dir.path().join("states.db");
+
+        create_states_db(&db_path, super::MAP_NAMES_V0_47_TO_V0_49);
+        let customer = crate::Customer {
+            id: 0,
+            name: "acme".to_string(),
+            description: "a customer".to_string(),
+            networks: vec![crate::CustomerNetwork {
+                name: "office".to_string(),
+                description: String::new(),
+                network_type: crate::event::NetworkType::Intranet,
+                network_group: crate::HostNetworkGroup::new(
+                    Vec::new(),
+                    vec!["10.0.0.0/8".parse().unwrap()],
+                    Vec::new(),
+                ),
+            }],
+            creation_time: chrono::Utc::now(),
+        };
+        put_entries(
+            &db_path,
+            super::MAP_NAMES_V0_47_TO_V0_49,
+            crate::tables::CUSTOMERS,
+            &[(
+                customer.name.as_bytes().to_vec(),
+                bincode::DefaultOptions::new().serialize(&customer).unwrap(),
+            )],
+        );
+        let customers = cf_entries(
+            &db_path,
+            super::MAP_NAMES_V0_47_TO_V0_49,
+            crate::tables::CUSTOMERS,
+        );
+        write_version(data_dir.path(), "0.49.0");
+        write_version(backup_dir.path(), "0.49.0");
+
+        migrate_data_dir(data_dir.path(), backup_dir.path(), None).unwrap();
+
+        assert_eq!(
+            read_version_file(&data_dir.path().join(VERSION_FILE_NAME)).unwrap(),
+            current_version
+        );
+        assert_eq!(
+            read_version_file(&backup_dir.path().join(VERSION_FILE_NAME)).unwrap(),
+            current_version
+        );
+        let mut present =
+            super::existing_map_names(&rocksdb::Options::default(), &db_path).unwrap();
+        present.sort_unstable();
+        let mut expected: Vec<String> = crate::tables::MAP_NAMES
+            .into_iter()
+            .map(str::to_string)
+            .collect();
+        expected.sort_unstable();
+        assert_eq!(present, expected);
+        assert_eq!(
+            cf_entries(
+                &db_path,
+                crate::tables::MAP_NAMES,
+                crate::tables::CUSTOMER_NETWORKS
+            ),
+            Entries::new()
+        );
+        assert_eq!(
+            cf_entries(&db_path, crate::tables::MAP_NAMES, crate::tables::CUSTOMERS),
+            customers
+        );
+
+        // A second start is a no-op: nothing under either directory changes.
+        let before = (files_under(data_dir.path()), files_under(backup_dir.path()));
+        migrate_data_dir(data_dir.path(), backup_dir.path(), None).unwrap();
+        assert_eq!(
+            (files_under(data_dir.path()), files_under(backup_dir.path())),
+            before
+        );
+
+        let store = Store::new(data_dir.path(), backup_dir.path(), None).unwrap();
+        assert_eq!(store.customer_networks_map().iter().count(), 0);
+        assert_eq!(store.customer_map().count().unwrap(), 0);
+    }
+
+    /// `VERSION` is written only after the whole chain succeeds, so a chain
+    /// from `0.46.0` interrupted after the "customer networks" family was
+    /// created retries from that marker with the family already there. Every
+    /// earlier step must open it, and the retry must complete without creating
+    /// it again.
+    #[test]
+    fn migration_from_v0_46_retried_after_customer_networks_was_created() {
+        let _permit = acquire_db_permit();
+        let current_version = Version::parse(env!("CARGO_PKG_VERSION")).unwrap();
+        let data_dir = tempfile::tempdir().unwrap();
+        let backup_dir = tempfile::tempdir().unwrap();
+        let db_path = data_dir.path().join("states.db");
+
+        create_states_db(
+            &db_path,
+            super::MAP_NAMES_V0_43_TO_V0_46
+                .into_iter()
+                .chain(FAMILIES_ADDED_BY_V0_50),
+        );
+        put_entries(
+            &db_path,
+            super::MAP_NAMES_V0_43_TO_V0_46
+                .into_iter()
+                .chain(FAMILIES_ADDED_BY_V0_50),
+            crate::tables::CUSTOMER_NETWORKS,
+            &[(1u32.to_be_bytes().to_vec(), b"kept".to_vec())],
+        );
+        write_version(data_dir.path(), "0.46.0");
+        write_version(backup_dir.path(), "0.46.0");
+
+        migrate_data_dir(data_dir.path(), backup_dir.path(), None).unwrap();
+
+        assert_eq!(
+            read_version_file(&data_dir.path().join(VERSION_FILE_NAME)).unwrap(),
+            current_version
+        );
+        let mut present =
+            super::existing_map_names(&rocksdb::Options::default(), &db_path).unwrap();
+        present.sort_unstable();
+        let mut expected: Vec<String> = crate::tables::MAP_NAMES
+            .into_iter()
+            .map(str::to_string)
+            .collect();
+        expected.sort_unstable();
+        assert_eq!(present, expected);
+        assert_eq!(
+            cf_entries(
+                &db_path,
+                crate::tables::MAP_NAMES,
+                crate::tables::CUSTOMER_NETWORKS
+            ),
+            vec![(1u32.to_be_bytes().to_vec(), b"kept".to_vec())]
+        );
     }
 
     /// Every file under `data_dir` except the `states.db` directory, with its
@@ -6508,7 +6816,8 @@ mod tests {
     /// Every entry of both operation-attempt families, the records, index
     /// entries and latest pointers alike.
     fn operation_attempt_families(db_path: &Path) -> (Entries, Entries) {
-        let db = open_states_db(db_path, crate::tables::MAP_NAMES);
+        let families = super::existing_map_names(&rocksdb::Options::default(), db_path).unwrap();
+        let db = open_states_db(db_path, families.iter().map(String::as_str));
         (
             all_entries(&db, crate::tables::OPERATION_ATTEMPTS),
             all_entries(&db, crate::tables::OPERATION_ATTEMPT_LATEST),
