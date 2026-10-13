@@ -7,12 +7,11 @@ use std::{
     ops::{BitAnd, RangeInclusive},
 };
 
-use anyhow::{Result, anyhow};
+use anyhow::{Context, Result, anyhow};
 use attrievent::attribute::RawEventKind;
 use chrono::{DateTime, Utc};
 use ipnet::{IpNet, Ipv4Net, Ipv6Net};
 use serde::{Deserialize, Serialize};
-use tracing::warn;
 
 use crate::types::{EventCategory, HostNetworkGroup};
 
@@ -177,25 +176,26 @@ pub enum TriageExclusion {
     Uri(Vec<String>),
 }
 
-impl From<ExclusionReason> for TriageExclusion {
-    fn from(reason: ExclusionReason) -> Self {
-        match reason {
-            ExclusionReason::IpAddress(mut group) => {
-                TriageExclusion::IpAddress(match NetworkFilter::new(&mut group) {
-                    Ok(filter) => filter,
-                    Err(error) => {
-                        warn!("Failed to build IP triage exclusion filter: {error}");
-                        NetworkFilter::default()
-                    }
-                })
-            }
+impl TryFrom<ExclusionReason> for TriageExclusion {
+    type Error = anyhow::Error;
+
+    /// Constructs an exclusion matcher from an exclusion reason.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the domain regex set or IP network filter cannot be built.
+    fn try_from(reason: ExclusionReason) -> Result<Self> {
+        Ok(match reason {
+            ExclusionReason::IpAddress(mut group) => TriageExclusion::IpAddress(
+                NetworkFilter::new(&mut group).context("building IP triage exclusion filter")?,
+            ),
             ExclusionReason::Domain(domains) => {
                 // Create regex patterns for domain matching
                 // Supports both exact domain matches and subdomain matches
-                let patterns: Vec<String> = if domains.is_empty() {
-                    vec![String::from("(?!)")] // Never match pattern
+                let regex_set = if domains.is_empty() {
+                    regex::RegexSet::empty()
                 } else {
-                    domains
+                    let patterns: Vec<String> = domains
                         .iter()
                         .map(|domain| {
                             // Escape special regex characters in domain
@@ -203,15 +203,15 @@ impl From<ExclusionReason> for TriageExclusion {
                             // Pattern to match exact domain or subdomain
                             format!(r"(^{escaped}$|\.{escaped}$)")
                         })
-                        .collect()
+                        .collect();
+                    regex::RegexSet::new(&patterns)
+                        .context("building domain triage exclusion regex set")?
                 };
-                let regex_set =
-                    regex::RegexSet::new(&patterns).expect("Valid regex patterns for domains");
                 TriageExclusion::Domain(regex_set)
             }
             ExclusionReason::Hostname(hostnames) => TriageExclusion::Hostname(hostnames),
             ExclusionReason::Uri(uris) => TriageExclusion::Uri(uris),
-        }
+        })
     }
 }
 
@@ -515,7 +515,34 @@ mod test {
 
     use ipnet::IpNet;
 
-    use crate::{HostNetworkGroup, NetworkFilter};
+    use crate::{ExclusionReason, HostNetworkGroup, NetworkFilter, TriageExclusion};
+
+    #[test]
+    fn triage_exclusion_empty_domains_match_nothing() {
+        let exclusion = TriageExclusion::try_from(ExclusionReason::Domain(Vec::new())).unwrap();
+        let TriageExclusion::Domain(matcher) = exclusion else {
+            panic!("expected a domain exclusion");
+        };
+        assert!(!matcher.is_match("example.com"));
+        assert!(!matcher.is_match(""));
+    }
+
+    #[test]
+    fn triage_exclusion_oversized_domains_return_error() {
+        const DOMAIN_COUNT: usize = 5_000;
+        let domains = (0..DOMAIN_COUNT)
+            .map(|index| format!("host{index:06}.sub.example-domain.com"))
+            .collect();
+        assert!(TriageExclusion::try_from(ExclusionReason::Domain(domains)).is_err());
+    }
+
+    #[test]
+    fn triage_exclusion_mixed_family_range_returns_error() {
+        let range =
+            "192.0.2.1".parse::<IpAddr>().unwrap()..="2001:db8::1".parse::<IpAddr>().unwrap();
+        let group = HostNetworkGroup::new(Vec::new(), Vec::new(), vec![range]);
+        assert!(TriageExclusion::try_from(ExclusionReason::IpAddress(group)).is_err());
+    }
 
     #[test]
     fn network_filter_matches_both_families_when_ipv4_has_shorter_prefix() {

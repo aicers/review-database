@@ -5,6 +5,20 @@ file is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), and
 this project adheres to [Semantic
 Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- **BREAKING**: Replaced `From<ExclusionReason>` with `TryFrom<ExclusionReason>`
+  for `TriageExclusion`. An IP address exclusion whose network filter cannot be
+  built now returns an error instead of silently substituting an empty filter.
+
+### Fixed
+
+- An empty domain list now becomes a triage exclusion that excludes nothing.
+- A domain exclusion list exceeding the regex size limit now returns an error
+  instead of panicking.
+
 ## [0.50.0] - 2026-10-13
 
 ### Added
@@ -1898,6 +1912,7 @@ AsRef<[u8]>`). This change accommodates scenarios where the information stored
 - Modified `FtpBruteForce` by adding an `is_internal` field which is a boolean
   indicating whether it is internal or not.
 
+[Unreleased]: https://github.com/aicers/review-database/compare/0.50.0...HEAD
 [0.50.0]: https://github.com/aicers/review-database/compare/0.49.0...0.50.0
 [0.49.0]: https://github.com/aicers/review-database/compare/0.48.0...0.49.0
 [0.48.0]: https://github.com/aicers/review-database/compare/0.47.0...0.48.0
