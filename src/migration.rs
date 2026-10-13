@@ -4519,15 +4519,15 @@ mod tests {
             }],
             creation_time: chrono::Utc::now(),
         };
-        put_entries(
-            &db_path,
-            super::MAP_NAMES_V0_47_TO_V0_49,
-            crate::tables::CUSTOMERS,
-            &[(
-                customer.name.as_bytes().to_vec(),
-                bincode::DefaultOptions::new().serialize(&customer).unwrap(),
-            )],
-        );
+        let customer_id = {
+            use crate::collections::Indexed;
+
+            let db = open_states_db(&db_path, super::MAP_NAMES_V0_47_TO_V0_49);
+            crate::IndexedMap::new(&db, crate::tables::CUSTOMERS)
+                .unwrap()
+                .insert(customer.clone())
+                .unwrap()
+        };
         let customers = cf_entries(
             &db_path,
             super::MAP_NAMES_V0_47_TO_V0_49,
@@ -4578,7 +4578,13 @@ mod tests {
 
         let store = Store::new(data_dir.path(), backup_dir.path(), None).unwrap();
         assert_eq!(store.customer_networks_map().iter().count(), 0);
-        assert_eq!(store.customer_map().count().unwrap(), 0);
+        let customer_map = store.customer_map();
+        assert_eq!(customer_map.count().unwrap(), 1);
+        let stored = customer_map.get_by_id(customer_id).unwrap().unwrap();
+        assert_eq!(stored.name, customer.name);
+        assert_eq!(stored.description, customer.description);
+        assert!(stored.networks == customer.networks);
+        assert_eq!(stored.creation_time, customer.creation_time);
     }
 
     /// `VERSION` is written only after the whole chain succeeds, so a chain

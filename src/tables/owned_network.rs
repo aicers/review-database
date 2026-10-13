@@ -67,7 +67,7 @@ pub struct OwnedNetwork {
 }
 
 /// The result of [`OwnedNetworkTable::replace`].
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum ReplaceOutcome {
     /// The set was written. `previous` is the row that was overwritten, read in
     /// the same transaction, or `None` if there was none.
