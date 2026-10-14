@@ -1853,13 +1853,12 @@ pub(crate) mod tests {
     #[test]
     fn no_address_events_reject_unspecified_filters_and_ip_exclusions() {
         let addr = IpAddr::V4(Ipv4Addr::UNSPECIFIED);
-        let exclusions = vec![crate::TriageExclusion::from(
-            crate::tables::ExclusionReason::IpAddress(HostNetworkGroup::new(
-                vec![addr],
-                Vec::new(),
-                Vec::new(),
-            )),
-        )];
+        let exclusions = vec![
+            crate::TriageExclusion::try_from(crate::tables::ExclusionReason::IpAddress(
+                HostNetworkGroup::new(vec![addr], Vec::new(), Vec::new()),
+            ))
+            .unwrap(),
+        ];
         for event in [
             Event::ExtraThreat(extra_threat()),
             Event::WindowsThreat(windows_threat()),
@@ -3992,9 +3991,13 @@ pub(crate) mod tests {
             "10.0.0.0/8".parse().unwrap(),
             "2001:db8::/32".parse().unwrap(),
         ];
-        let exclusion = vec![crate::TriageExclusion::from(ExclusionReason::IpAddress(
-            HostNetworkGroup::new(Vec::new(), networks, Vec::new()),
-        ))];
+        let exclusion =
+            vec![
+                crate::TriageExclusion::try_from(ExclusionReason::IpAddress(
+                    HostNetworkGroup::new(Vec::new(), networks, Vec::new()),
+                ))
+                .unwrap(),
+            ];
 
         let time = stored_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap());
 
@@ -4023,10 +4026,14 @@ pub(crate) mod tests {
             "192.0.2.1".parse().unwrap(),
             "2001:db8::1".parse().unwrap(),
         )];
-        let invalid_exclusion = vec![crate::TriageExclusion::from(ExclusionReason::IpAddress(
-            HostNetworkGroup::new(Vec::new(), Vec::new(), ip_ranges),
-        ))];
-        assert!(!v4_event.matches_exclusion(&invalid_exclusion));
+        assert!(
+            crate::TriageExclusion::try_from(ExclusionReason::IpAddress(HostNetworkGroup::new(
+                Vec::new(),
+                Vec::new(),
+                ip_ranges,
+            )))
+            .is_err()
+        );
     }
 
     #[test]

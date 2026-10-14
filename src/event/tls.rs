@@ -734,23 +734,24 @@ mod tests {
     }
 
     fn ip_exclusion(addr: &str) -> TriageExclusion {
-        TriageExclusion::from(ExclusionReason::IpAddress(HostNetworkGroup::new(
+        TriageExclusion::try_from(ExclusionReason::IpAddress(HostNetworkGroup::new(
             vec![addr.parse().unwrap()],
             vec![],
             vec![],
         )))
+        .unwrap()
     }
 
     fn domain_exclusion(domain: &str) -> TriageExclusion {
-        TriageExclusion::from(ExclusionReason::Domain(vec![domain.to_string()]))
+        TriageExclusion::try_from(ExclusionReason::Domain(vec![domain.to_string()])).unwrap()
     }
 
     fn hostname_exclusion(hostname: &str) -> TriageExclusion {
-        TriageExclusion::from(ExclusionReason::Hostname(vec![hostname.to_string()]))
+        TriageExclusion::try_from(ExclusionReason::Hostname(vec![hostname.to_string()])).unwrap()
     }
 
     fn uri_exclusion(uri: &str) -> TriageExclusion {
-        TriageExclusion::from(ExclusionReason::Uri(vec![uri.to_string()]))
+        TriageExclusion::try_from(ExclusionReason::Uri(vec![uri.to_string()])).unwrap()
     }
 
     #[test]
