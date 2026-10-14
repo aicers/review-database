@@ -195,16 +195,13 @@ impl TryFrom<ExclusionReason> for TriageExclusion {
                 let regex_set = if domains.is_empty() {
                     regex::RegexSet::empty()
                 } else {
-                    let patterns: Vec<String> = domains
-                        .iter()
-                        .map(|domain| {
-                            // Escape special regex characters in domain
-                            let escaped = regex::escape(domain);
-                            // Pattern to match exact domain or subdomain
-                            format!(r"(^{escaped}$|\.{escaped}$)")
-                        })
-                        .collect();
-                    regex::RegexSet::new(&patterns)
+                    let patterns = domains.iter().map(|domain| {
+                        // Escape special regex characters in domain
+                        let escaped = regex::escape(domain);
+                        // Pattern to match exact domain or subdomain
+                        format!(r"(^{escaped}$|\.{escaped}$)")
+                    });
+                    regex::RegexSet::new(patterns)
                         .context("building domain triage exclusion regex set")?
                 };
                 TriageExclusion::Domain(regex_set)
