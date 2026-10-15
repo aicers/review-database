@@ -111,7 +111,7 @@ use crate::{
 /// // release that involves database format change) to 3.5.0, including
 /// // all alpha changes finalized in 3.5.0.
 /// ```
-const COMPATIBLE_VERSION_REQ: &str = ">=0.50.0,<0.51.0";
+const COMPATIBLE_VERSION_REQ: &str = ">=0.50.0,<0.52.0";
 
 /// Number of event records applied in each atomic migration write.
 const EVENT_MIGRATION_BATCH_SIZE: usize = 100;
@@ -3044,6 +3044,7 @@ mod tests {
             "`START_VERSION` {start_version} is ahead of current {current_base}; please correct it"
         );
 
+        let compatible = VersionReq::parse(COMPATIBLE_VERSION_REQ).unwrap();
         for minor in start_version.minor..=current_base.minor {
             let version = if minor == current_base.minor {
                 current_pkg_version.clone()
@@ -3075,8 +3076,14 @@ mod tests {
 
             let data_version = read_version_file(&data_dir.path().join("VERSION")).unwrap();
             let backup_version = read_version_file(&backup_dir.path().join("VERSION")).unwrap();
-            assert_eq!(data_version, current_pkg_version);
-            assert_eq!(backup_version, current_pkg_version);
+            // A store already in the current format keeps its own marker.
+            let expected = if compatible.matches(&version) {
+                version.clone()
+            } else {
+                current_pkg_version.clone()
+            };
+            assert_eq!(data_version, expected);
+            assert_eq!(backup_version, expected);
         }
     }
 
