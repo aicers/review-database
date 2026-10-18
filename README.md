@@ -13,8 +13,8 @@ flexible database interface for efficient data management.
   system configurations
 - Advanced querying capabilities including time series data and statistical
   analysis
-- Support for various cybersecurity-related entities such as agents, customers,
-  data sources, and traffic filters
+- Support for various cybersecurity-related entities such as agents, data
+  sources, and traffic filters
 - Flexible schema migration tools for seamless updates
 - Backup and restore functionalities for data integrity
 - Efficient data structures for handling large-scale datasets
@@ -23,10 +23,7 @@ flexible database interface for efficient data management.
 
 - Event Management: Store and retrieve various types of security events (e.g.,
   HTTP threats, network threats, Windows threats)
-- User and Account Management: Manage user accounts, access tokens, and
-  permissions
-- Network Configuration: Handle allow/block networks, trusted domains, and Tor
-  exit nodes
+- Network Configuration: Handle trusted domains and Tor exit nodes
 - Model Management: Store and update machine learning models with versioning
   support
 - Data Analysis: Support for outlier detection, time series analysis, and

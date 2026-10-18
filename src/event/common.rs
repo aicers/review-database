@@ -83,26 +83,6 @@ pub(super) trait Match {
     /// triage scores are only returned if the event matches the filter.
     #[allow(clippy::too_many_lines)]
     fn other_matches(&self, filter: &EventFilter) -> Result<(bool, Option<Vec<TriageScore>>)> {
-        // Customer matching uses the customer's registered network ranges to
-        // test event addresses (orig_addrs/resp_addrs). It does NOT filter based
-        // on a customer ID attached to the event. If you need per-event
-        // customer attribution, that requires modifying the EventDb schema
-        // (see issue #687) — do not attempt to change storage layout in this
-        // function.
-        if let Some(customers) = &filter.customers
-            && customers.iter().all(|customer| {
-                self.orig_addrs()
-                    .iter()
-                    .all(|&orig_addr| !customer.contains(orig_addr))
-                    && self
-                        .resp_addrs()
-                        .iter()
-                        .all(|&resp_addr| !customer.contains(resp_addr))
-            })
-        {
-            return Ok((false, None));
-        }
-
         if let Some(endpoints) = &filter.endpoints
             && endpoints.iter().all(|endpoint| match endpoint.direction {
                 Some(TrafficDirection::From) => self
@@ -633,8 +613,7 @@ pub(crate) mod tests {
     use super::{AttrValue, Match, is_attr_matched};
     use crate::event::timestamp;
     use crate::{
-        AttrCmpKind, Customer, CustomerNetwork, EventCategory, HostNetworkGroup, PacketAttr,
-        ValueKind,
+        AttrCmpKind, EventCategory, HostNetworkGroup, PacketAttr, ValueKind,
         event::{
             BlocklistBootp, BlocklistBootpFieldsStored, BlocklistConn, BlocklistConnFieldsStored,
             BlocklistDceRpc, BlocklistDceRpcFieldsStored, BlocklistDhcp, BlocklistDhcpFieldsStored,
@@ -653,14 +632,18 @@ pub(crate) mod tests {
             HttpEventFieldsStored, HttpThreat, HttpThreatFieldsStored, InternalNetworks,
             LdapBruteForce, LdapBruteForceFieldsStored, LdapEventFieldsStored, LdapPlainText,
             LearningMethod, LockyRansomware, MultiHostPortScan, MultiHostPortScanFieldsStored,
-            NetworkThreat, NetworkThreatFieldsStored, NetworkType, NonBrowser, PortScan,
-            PortScanFieldsStored, RdpBruteForce, RdpBruteForceFieldsStored, RecordType,
-            RepeatedHttpSessions, RepeatedHttpSessionsFieldsStored, SuspiciousTlsTraffic,
-            TorConnection, UnusualDestinationPattern, UnusualDestinationPatternFieldsStored,
-            WindowsThreat, WindowsThreatFieldsStored,
+            NetworkThreat, NetworkThreatFieldsStored, NonBrowser, PortScan, PortScanFieldsStored,
+            RdpBruteForce, RdpBruteForceFieldsStored, RecordType, RepeatedHttpSessions,
+            RepeatedHttpSessionsFieldsStored, SuspiciousTlsTraffic, TorConnection,
+            UnusualDestinationPattern, UnusualDestinationPatternFieldsStored, WindowsThreat,
+            WindowsThreatFieldsStored,
         },
         types::Endpoint,
     };
+
+    /// Every sensor the event fixtures below are recorded by, so that a
+    /// `directions` filter built for them gives each event internal groups.
+    const FIXTURE_SENSORS: &[&str] = &["sensor", "collector1", "", "sensro"];
 
     #[test]
     fn empty_byte_slice_to_colon_separated_string() {
@@ -1086,11 +1069,14 @@ pub(crate) mod tests {
         let mut success_filter = event_filter();
         let orig_addr = IpAddr::V4(Ipv4Addr::LOCALHOST);
         let resp_addr = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2));
-        success_filter.customers = Some(vec![create_customer(orig_addr)]);
         success_filter.endpoints = Some(vec![create_endpoint(orig_addr)]);
         success_filter.originator = Some(orig_addr);
         success_filter.responder = Some(resp_addr);
-        success_filter.directions = Some(create_directions(FlowKind::Outbound, orig_addr));
+        success_filter.directions = Some(create_directions(
+            FlowKind::Outbound,
+            FIXTURE_SENSORS,
+            orig_addr,
+        ));
 
         assert!(
             single_address_events
@@ -1100,14 +1086,6 @@ pub(crate) mod tests {
 
         // Filtering fail.
         let fail_addr = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 10));
-
-        let mut fail_filter = event_filter();
-        fail_filter.customers = Some(vec![create_customer(fail_addr)]);
-        assert!(
-            single_address_events
-                .iter()
-                .all(|event| !event.matches(&fail_filter).unwrap().0)
-        );
 
         let mut fail_filter = event_filter();
         fail_filter.endpoints = Some(vec![create_endpoint(fail_addr)]);
@@ -1134,7 +1112,11 @@ pub(crate) mod tests {
         );
 
         let mut fail_filter = event_filter();
-        fail_filter.directions = Some(create_directions(FlowKind::Outbound, fail_addr));
+        fail_filter.directions = Some(create_directions(
+            FlowKind::Outbound,
+            FIXTURE_SENSORS,
+            fail_addr,
+        ));
         assert!(
             single_address_events
                 .iter()
@@ -1159,11 +1141,14 @@ pub(crate) mod tests {
         let mut success_filter = event_filter();
         let orig_addr = IpAddr::V4(Ipv4Addr::LOCALHOST);
         let resp_addr = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2));
-        success_filter.customers = Some(vec![create_customer(orig_addr)]);
         success_filter.endpoints = Some(vec![create_endpoint(orig_addr)]);
         success_filter.originator = Some(orig_addr);
         success_filter.responder = Some(resp_addr);
-        success_filter.directions = Some(create_directions(FlowKind::Outbound, orig_addr));
+        success_filter.directions = Some(create_directions(
+            FlowKind::Outbound,
+            FIXTURE_SENSORS,
+            orig_addr,
+        ));
 
         assert!(
             multi_address_events
@@ -1173,14 +1158,6 @@ pub(crate) mod tests {
 
         // Filtering fail.
         let fail_addr = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 10));
-
-        let mut fail_filter = event_filter();
-        fail_filter.customers = Some(vec![create_customer(fail_addr)]);
-        assert!(
-            multi_address_events
-                .iter()
-                .all(|event| !event.matches(&fail_filter).unwrap().0)
-        );
 
         let mut fail_filter = event_filter();
         fail_filter.endpoints = Some(vec![create_endpoint(fail_addr)]);
@@ -1207,7 +1184,11 @@ pub(crate) mod tests {
         );
 
         let mut fail_filter = event_filter();
-        fail_filter.directions = Some(create_directions(FlowKind::Outbound, fail_addr));
+        fail_filter.directions = Some(create_directions(
+            FlowKind::Outbound,
+            FIXTURE_SENSORS,
+            fail_addr,
+        ));
         assert!(
             multi_address_events
                 .iter()
@@ -1227,14 +1208,6 @@ pub(crate) mod tests {
             IpAddr::V4(Ipv4Addr::new(127, 0, 0, 10)),
             IpAddr::V4(Ipv4Addr::UNSPECIFIED),
         ] {
-            let mut fail_filter = event_filter();
-            fail_filter.customers = Some(vec![create_customer(fail_addr)]);
-            assert!(
-                no_address_events
-                    .iter()
-                    .all(|event| !event.matches(&fail_filter).unwrap().0)
-            );
-
             let mut fail_filter = event_filter();
             fail_filter.endpoints = Some(vec![create_endpoint(fail_addr)]);
             assert!(
@@ -1260,7 +1233,11 @@ pub(crate) mod tests {
             );
 
             let mut fail_filter = event_filter();
-            fail_filter.directions = Some(create_directions(FlowKind::Internal, fail_addr));
+            fail_filter.directions = Some(create_directions(
+                FlowKind::Internal,
+                FIXTURE_SENSORS,
+                fail_addr,
+            ));
             assert!(
                 no_address_events
                     .iter()
@@ -1289,7 +1266,6 @@ pub(crate) mod tests {
                 String::new(),
                 String::new(),
                 HostNetworkGroup::new(Vec::new(), vec![cidr.parse().unwrap()], Vec::new()),
-                Vec::new(),
             );
             network.id = id;
             networks.push(network);
@@ -1539,7 +1515,6 @@ pub(crate) mod tests {
                 String::new(),
                 String::new(),
                 HostNetworkGroup::new(Vec::new(), vec![cidr.parse().unwrap()], Vec::new()),
-                Vec::new(),
             );
             network.id = id;
             networks.push(network);
@@ -1614,7 +1589,7 @@ pub(crate) mod tests {
         fields.resp_addr = addr;
         let event = Event::DnsCovertChannel(DnsCovertChannel::new(time, fields));
         let mut filters = Vec::new();
-        for axis in 0..6 {
+        for axis in 0..5 {
             let mut filter = event_filter();
             match axis {
                 0 => filter.originator = Some(addr),
@@ -1624,8 +1599,10 @@ pub(crate) mod tests {
                     filter.responder = Some(addr);
                 }
                 3 => filter.endpoints = Some(vec![create_endpoint(addr)]),
-                4 => filter.customers = Some(vec![create_customer(addr)]),
-                _ => filter.directions = Some(create_directions(FlowKind::Internal, addr)),
+                _ => {
+                    filter.directions =
+                        Some(create_directions(FlowKind::Internal, FIXTURE_SENSORS, addr));
+                }
             }
             filters.push(filter);
         }
@@ -1634,7 +1611,6 @@ pub(crate) mod tests {
             String::new(),
             String::new(),
             HostNetworkGroup::new(Vec::new(), vec!["0.0.0.0/32".parse().unwrap()], Vec::new()),
-            Vec::new(),
         );
         network.id = 3;
         for filter in filters {
@@ -1684,48 +1660,6 @@ pub(crate) mod tests {
                 event.matches(&filter).unwrap().0
             })
             .collect()
-    }
-
-    #[test]
-    fn directions_shared_classifies_every_event_against_the_same_groups() {
-        let internal = InternalNetworks::Shared(vec![
-            network_group("10.0.0.0/8"),
-            network_group("192.168.0.0/16"),
-        ]);
-        let inside: IpAddr = "10.0.0.1".parse().unwrap();
-        let also_inside: IpAddr = "192.168.0.1".parse().unwrap();
-        let outside: IpAddr = "8.8.8.8".parse().unwrap();
-
-        for sensor in ["sensor-a", "sensor-b", ""] {
-            assert_eq!(
-                matching_kinds(&dns_event_from(sensor, inside, also_inside), &internal),
-                vec![FlowKind::Internal]
-            );
-            assert_eq!(
-                matching_kinds(&dns_event_from(sensor, inside, outside), &internal),
-                vec![FlowKind::Outbound]
-            );
-            assert_eq!(
-                matching_kinds(&dns_event_from(sensor, outside, also_inside), &internal),
-                vec![FlowKind::Inbound]
-            );
-            assert_eq!(
-                matching_kinds(&dns_event_from(sensor, outside, outside), &internal),
-                Vec::<FlowKind>::new()
-            );
-        }
-
-        let mut filter = event_filter();
-        filter.directions = Some((
-            vec![FlowKind::Inbound, FlowKind::Outbound, FlowKind::Internal],
-            internal,
-        ));
-        assert!(
-            !dns_event_from("sensor-a", outside, outside)
-                .matches(&filter)
-                .unwrap()
-                .0
-        );
     }
 
     #[test]
@@ -1864,14 +1798,16 @@ pub(crate) mod tests {
             Event::WindowsThreat(windows_threat()),
         ] {
             assert!(!event.matches_exclusion(&exclusions));
-            for axis in 0..5 {
+            for axis in 0..4 {
                 let mut filter = event_filter();
                 match axis {
                     0 => filter.originator = Some(addr),
                     1 => filter.responder = Some(addr),
                     2 => filter.endpoints = Some(vec![create_endpoint(addr)]),
-                    3 => filter.customers = Some(vec![create_customer(addr)]),
-                    _ => filter.directions = Some(create_directions(FlowKind::Internal, addr)),
+                    _ => {
+                        filter.directions =
+                            Some(create_directions(FlowKind::Internal, FIXTURE_SENSORS, addr));
+                    }
                 }
                 assert!(!event.matches(&filter).unwrap().0);
             }
@@ -2260,11 +2196,18 @@ pub(crate) mod tests {
         bincode::DefaultOptions::new().serialize(v).ok()
     }
 
-    fn create_directions(kind: FlowKind, addr: IpAddr) -> (Vec<FlowKind>, InternalNetworks) {
-        (
-            vec![kind],
-            InternalNetworks::Shared(vec![create_host_network_group(addr)]),
-        )
+    /// Returns a `directions` filter treating `addr` as internal for every
+    /// sensor in `sensors`.
+    fn create_directions(
+        kind: FlowKind,
+        sensors: &[&str],
+        addr: IpAddr,
+    ) -> (Vec<FlowKind>, InternalNetworks) {
+        let groups = sensors
+            .iter()
+            .map(|sensor| ((*sensor).to_string(), vec![create_host_network_group(addr)]))
+            .collect();
+        (vec![kind], InternalNetworks::PerSensor(groups))
     }
 
     fn create_endpoint(addr: IpAddr) -> Endpoint {
@@ -2274,32 +2217,12 @@ pub(crate) mod tests {
         }
     }
 
-    fn create_customer(addr: IpAddr) -> Customer {
-        Customer {
-            id: u32::MAX,
-            name: "customer".to_string(),
-            description: "description".to_string(),
-            networks: vec![create_customer_network(addr)],
-            creation_time: chrono::Utc::now(),
-        }
-    }
-
-    fn create_customer_network(addr: IpAddr) -> CustomerNetwork {
-        CustomerNetwork {
-            name: "customer network".to_string(),
-            description: "description".to_string(),
-            network_type: NetworkType::Intranet,
-            network_group: create_host_network_group(addr),
-        }
-    }
-
     fn create_host_network_group(addr: IpAddr) -> HostNetworkGroup {
         HostNetworkGroup::new(vec![addr], Vec::new(), Vec::new())
     }
 
     fn event_filter() -> EventFilter {
         EventFilter {
-            customers: None,
             endpoints: None,
             directions: None,
             originator: None,
@@ -4092,7 +4015,6 @@ pub(crate) mod tests {
         );
 
         let filter = EventFilter {
-            customers: None,
             endpoints: None,
             directions: None,
             originator: None,

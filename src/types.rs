@@ -6,10 +6,22 @@ use chrono::{NaiveDateTime, naive::serde::ts_nanoseconds_option};
 use ipnet::IpNet;
 use num_derive::{FromPrimitive, ToPrimitive};
 use serde::{Deserialize, Serialize};
-use strum_macros::Display;
+use strum_macros::{Display, EnumString};
 
-pub use crate::account::{Account, Role};
 use crate::event::TrafficDirection;
+
+/// Possible roles of a user.
+#[derive(Clone, Copy, Debug, Display, Eq, PartialEq, Deserialize, Serialize, EnumString)]
+pub enum Role {
+    #[strum(serialize = "System Administrator")]
+    SystemAdministrator,
+    #[strum(serialize = "Security Administrator")]
+    SecurityAdministrator,
+    #[strum(serialize = "Security Manager")]
+    SecurityManager,
+    #[strum(serialize = "Security Monitor")]
+    SecurityMonitor,
+}
 
 pub trait FromKeyValue: Sized + private::Sealed {
     /// Creates a new instance from the given key and value.
@@ -25,21 +37,15 @@ mod private {
 
     pub trait Sealed {}
 
-    impl Sealed for tables::AccessToken {}
-    impl Sealed for types::Account {}
     impl Sealed for tables::Agent {}
-    impl Sealed for tables::AllowNetwork {}
     impl Sealed for tables::BackupConfig {}
     impl Sealed for crate::BatchInfo {}
-    impl Sealed for tables::BlockNetwork {}
     impl Sealed for crate::Category {}
     impl Sealed for tables::Cluster {}
     impl Sealed for tables::CoreComponent {}
     impl Sealed for tables::CsvColumnExtra {}
-    impl Sealed for tables::Customer {}
     impl Sealed for tables::CustomerDataDeletionJob {}
     impl Sealed for tables::DataSource {}
-    impl Sealed for tables::Filter {}
     impl Sealed for tables::Host {}
     impl Sealed for tables::InnerNode {}
     impl Sealed for tables::InstanceAllocation {}
