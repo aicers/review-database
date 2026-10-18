@@ -5,6 +5,46 @@ file is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), and
 this project adheres to [Semantic
 Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- **BREAKING**: `EventFilter::new` no longer takes the `customers` parameter,
+  and events can no longer be filtered by a customer's network ranges.
+- **BREAKING**: Networks no longer carry tag IDs: `Network::new` and
+  `NetworkUpdate::new` no longer take them, and `Network::tag_ids` and
+  `IndexedTable<Network>::remove_tag` no longer exist.
+- **BREAKING**: Bumped the database format to `0.52.0-alpha.1`. The migration
+  — from `0.50.x` and `0.51.x`, and through the earlier steps from every older
+  supported format — deletes the `access_tokens`, `accounts`, `allow networks`,
+  `block networks`, `customers` and `filters` column families and every row in
+  them, together with the stored network tags. Those rows survive only in
+  backups taken before the migration; such a backup can be restored with
+  `backup::restore_states_offline` followed by `write_version_markers` naming
+  the format the backup was taken at, for use with a `0.51.x` build, not with
+  `Store::restore_from_backup` or `Store::restore_from_latest_backup`. Nothing
+  else in the store changes, and an interrupted run can be retried.
+
+### Removed
+
+- **BREAKING**: Removed accounts, access tokens and saved filters:
+  `Store::account_map`, `Store::access_token_map`, `Store::filter_map`,
+  `types::Account`, `AccessToken`, `Filter`, `FilterValue`, `PeriodForSearch`,
+  `event::FilterEndpoint` and `event::Id` no longer exist.
+- **BREAKING**: Removed the account policy API: `Store::init_account_policy`,
+  `Store::update_account_policy`, `Store::account_policy`, `AccountPolicy` and
+  `AccountPolicyUpdate` no longer exist.
+- **BREAKING**: Removed customers: `Store::customer_map`, `Customer`,
+  `CustomerNetwork` and `CustomerUpdate` no longer exist.
+  `Store::customer_networks_map` holds the networks each customer owns.
+- **BREAKING**: Removed allow and block networks: `Store::allow_network_map`,
+  `Store::block_network_map`, `AllowNetwork`, `AllowNetworkUpdate`,
+  `BlockNetwork` and `BlockNetworkUpdate` no longer exist.
+- **BREAKING**: Removed network tags: `Store::network_tag_set` and
+  `CustomerTagSet` no longer exist. Event and workflow tags are unchanged.
+- **BREAKING**: Removed `InternalNetworks::Shared`; use
+  `InternalNetworks::PerSensor`.
+
 ## [0.51.0] - 2026-10-15
 
 ### Changed
@@ -1912,6 +1952,7 @@ AsRef<[u8]>`). This change accommodates scenarios where the information stored
 - Modified `FtpBruteForce` by adding an `is_internal` field which is a boolean
   indicating whether it is internal or not.
 
+[Unreleased]: https://github.com/aicers/review-database/compare/0.51.0...main
 [0.51.0]: https://github.com/aicers/review-database/compare/0.50.0...0.51.0
 [0.50.0]: https://github.com/aicers/review-database/compare/0.49.0...0.50.0
 [0.49.0]: https://github.com/aicers/review-database/compare/0.48.0...0.49.0

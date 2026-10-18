@@ -1,4 +1,3 @@
-mod account;
 pub mod backup;
 mod batch_info;
 mod category;
@@ -25,11 +24,10 @@ use std::{io, sync::Arc};
 use anyhow::{Result, anyhow};
 pub use attrievent::attribute::RawEventKind;
 pub use rocksdb::backup::BackupEngineInfo;
-pub use tags::{CustomerTagSet, TagSet};
-use tags::{EventTagId, NetworkTagId, WorkflowTagId};
+pub use tags::TagSet;
+use tags::{EventTagId, WorkflowTagId};
 use thiserror::Error;
 
-pub use self::account::{AccountPolicy, AccountPolicyUpdate, Role};
 pub use self::batch_info::BatchInfo;
 pub use self::category::Category;
 pub use self::cluster::*;
@@ -42,21 +40,19 @@ pub use self::model::{Digest, Model};
 pub use self::scores::Scores;
 use self::tables::StateDb;
 pub use self::tables::{
-    AccessToken, AddressAllocationError, Agent, AgentConfig, AgentKind, AgentStatus, AllowNetwork,
-    AllowNetworkUpdate, AttrCmpKind, BackupConfig, BackupConfigUpdate, BlockNetwork,
-    BlockNetworkUpdate, BuildSelector, Cluster, ClusterTimeSeries, ColumnStats, ColumnTimeSeries,
-    Confidence, CoreComponent, CsvColumnExtra as CsvColumnExtraConfig, Customer,
-    CustomerDataDeletionJob, CustomerDataDeletionService, CustomerDataDeletionServiceResult,
-    CustomerDataDeletionStatus, CustomerNetwork, CustomerUpdate, DataSource, DataSourceUpdate,
-    DataType, ExclusionReason, ExternalService, ExternalServiceConfig, ExternalServiceKind,
-    ExternalServiceStatus, Filter, FilterValue, Host, IndexedTable, InstallIntent,
-    InstanceAllocation, InstanceAllocationError, Iterable, LabelDb, LabelDbKind, LabelDbRule,
-    LabelDbRuleKind, Lifecycle, ListenerBinding, ListenerTransport, Model as ModelDigest,
-    ModelIndicator, Network, NetworkFilter, NetworkUpdate, Node, NodeProfile, NodeTable,
-    NodeUpdate, OperationAction, OperationAttempt, OperationCleanupState, OperationFailureKind,
-    OperationOnFailure, OperationOutcome, OperationPhase, OperationRetentionBound,
-    OperationRetryPolicy, OutlierInfo, OutlierInfoKey, OutlierInfoValue, OwnedNetwork,
-    OwnedNetworkSet, OwnedNetworkTable, PacketAttr, PeriodForSearch, PortAllocation,
+    AddressAllocationError, Agent, AgentConfig, AgentKind, AgentStatus, AttrCmpKind, BackupConfig,
+    BackupConfigUpdate, BuildSelector, Cluster, ClusterTimeSeries, ColumnStats, ColumnTimeSeries,
+    Confidence, CoreComponent, CsvColumnExtra as CsvColumnExtraConfig, CustomerDataDeletionJob,
+    CustomerDataDeletionService, CustomerDataDeletionServiceResult, CustomerDataDeletionStatus,
+    DataSource, DataSourceUpdate, DataType, ExclusionReason, ExternalService,
+    ExternalServiceConfig, ExternalServiceKind, ExternalServiceStatus, Host, IndexedTable,
+    InstallIntent, InstanceAllocation, InstanceAllocationError, Iterable, LabelDb, LabelDbKind,
+    LabelDbRule, LabelDbRuleKind, Lifecycle, ListenerBinding, ListenerTransport,
+    Model as ModelDigest, ModelIndicator, Network, NetworkFilter, NetworkUpdate, Node, NodeProfile,
+    NodeTable, NodeUpdate, OperationAction, OperationAttempt, OperationCleanupState,
+    OperationFailureKind, OperationOnFailure, OperationOutcome, OperationPhase,
+    OperationRetentionBound, OperationRetryPolicy, OutlierInfo, OutlierInfoKey, OutlierInfoValue,
+    OwnedNetwork, OwnedNetworkSet, OwnedNetworkTable, PacketAttr, PortAllocation,
     PortAllocationError, PortOwner, ProtocolPorts, ReplaceOutcome, RequestKeyError, Response,
     ResponseKind, RetentionConfig, RetentionConfigUpdate, SamplingInterval, SamplingKind,
     SamplingPeriod, SamplingPolicy, SamplingPolicyUpdate, Structured,
@@ -70,7 +66,7 @@ pub use self::top_n::*;
 pub use self::top_n::{
     ClusterTrend, ElementCount, LineSegment, Regression, StructuredColumnType, TopTrendsByColumn,
 };
-pub use self::types::{EventCategory, HostNetworkGroup, Qualifier, Status};
+pub use self::types::{EventCategory, HostNetworkGroup, Qualifier, Role, Status};
 pub use self::util::{COUNTRY_CODE_UNKNOWN, COUNTRY_CODE_UNRESOLVED, find_ip_country};
 
 const DEFAULT_STATES: &str = "states.db";
@@ -141,38 +137,14 @@ impl Store {
 
     #[must_use]
     #[allow(clippy::missing_panics_doc)]
-    pub fn access_token_map(&self) -> Table<'_, AccessToken> {
-        self.states.access_tokens()
-    }
-
-    #[must_use]
-    #[allow(clippy::missing_panics_doc)]
-    pub fn account_map(&self) -> Table<'_, types::Account> {
-        self.states.accounts()
-    }
-
-    #[must_use]
-    #[allow(clippy::missing_panics_doc)]
     pub fn agents_map(&self) -> Table<'_, Agent> {
         self.states.agents()
     }
 
     #[must_use]
     #[allow(clippy::missing_panics_doc)]
-    pub fn allow_network_map(&self) -> IndexedTable<'_, AllowNetwork> {
-        self.states.allow_networks()
-    }
-
-    #[must_use]
-    #[allow(clippy::missing_panics_doc)]
     pub fn batch_info_map(&self) -> Table<'_, batch_info::BatchInfo> {
         self.states.batch_info()
-    }
-
-    #[must_use]
-    #[allow(clippy::missing_panics_doc)]
-    pub fn block_network_map(&self) -> IndexedTable<'_, BlockNetwork> {
-        self.states.block_networks()
     }
 
     #[must_use]
@@ -644,160 +616,10 @@ impl Store {
         }
     }
 
-    /// Initializes account policy settings in the config table.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if policy invalid, any of the config values have already
-    /// been initialized or if database operation fails.
-    pub fn init_account_policy(&self, policy: &AccountPolicy) -> Result<()> {
-        policy.validate()?;
-
-        let config = self.config_map();
-        let expiry = policy.expiry_period_in_secs.to_string();
-        let lockout = policy.lockout_threshold.to_string();
-        let duration = policy.lockout_duration_in_secs.to_string();
-        let suspension = policy.suspension_threshold.to_string();
-
-        let updates = vec![
-            (tables::KEY_EXPIRY_PERIOD, expiry.as_str()),
-            (tables::KEY_LOCKOUT_THRESHOLD, lockout.as_str()),
-            (tables::KEY_LOCKOUT_DURATION, duration.as_str()),
-            (tables::KEY_SUSPENSION_THRESHOLD, suspension.as_str()),
-        ];
-        config.init_multi(&updates)?;
-        Ok(())
-    }
-
-    /// Updates account policy settings in the config table.
-    ///
-    /// This function updates account policy fields using compare-and-swap
-    /// semantics. Both old policy (for verification) and new policy update must
-    /// be provided to ensure no concurrent modifications have occurred.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the new policy is invalid, if any old value does not
-    /// match the current value in the database (indicating concurrent modification),
-    /// if the key does not exist, or if the database operation fails.
-    pub fn update_account_policy(
-        &self,
-        old_policy: &AccountPolicy,
-        update: &AccountPolicyUpdate,
-    ) -> Result<()> {
-        let config = self.config_map();
-        let mut updates = Vec::new();
-
-        let old_expiry_str = old_policy.expiry_period_in_secs.to_string();
-        let new_expiry_str;
-        if let Some(new_val) = update.expiry_period_in_secs {
-            new_expiry_str = new_val.to_string();
-            updates.push((
-                tables::KEY_EXPIRY_PERIOD,
-                old_expiry_str.as_str(),
-                new_expiry_str.as_str(),
-            ));
-        }
-
-        let old_lockout_threshold_str = old_policy.lockout_threshold.to_string();
-        let new_lockout_threshold_str;
-        if let Some(new_val) = update.lockout_threshold {
-            new_lockout_threshold_str = new_val.to_string();
-            updates.push((
-                tables::KEY_LOCKOUT_THRESHOLD,
-                old_lockout_threshold_str.as_str(),
-                new_lockout_threshold_str.as_str(),
-            ));
-        }
-
-        let old_lockout_duration_str = old_policy.lockout_duration_in_secs.to_string();
-        let new_lockout_duration_str;
-        if let Some(new_val) = update.lockout_duration_in_secs {
-            new_lockout_duration_str = new_val.to_string();
-            updates.push((
-                tables::KEY_LOCKOUT_DURATION,
-                old_lockout_duration_str.as_str(),
-                new_lockout_duration_str.as_str(),
-            ));
-        }
-
-        let old_suspension_threshold_str = old_policy.suspension_threshold.to_string();
-        let new_suspension_threshold_str;
-        if let Some(new_val) = update.suspension_threshold {
-            new_suspension_threshold_str = new_val.to_string();
-            updates.push((
-                tables::KEY_SUSPENSION_THRESHOLD,
-                old_suspension_threshold_str.as_str(),
-                new_suspension_threshold_str.as_str(),
-            ));
-        }
-
-        // Validate the NEW resulting policy
-        let resulting_policy = AccountPolicy {
-            expiry_period_in_secs: update
-                .expiry_period_in_secs
-                .unwrap_or(old_policy.expiry_period_in_secs),
-            lockout_threshold: update
-                .lockout_threshold
-                .unwrap_or(old_policy.lockout_threshold),
-            lockout_duration_in_secs: update
-                .lockout_duration_in_secs
-                .unwrap_or(old_policy.lockout_duration_in_secs),
-            suspension_threshold: update
-                .suspension_threshold
-                .unwrap_or(old_policy.suspension_threshold),
-        };
-        resulting_policy.validate()?;
-
-        if !updates.is_empty() {
-            config.update_compare_multi(&updates)?;
-        }
-
-        Ok(())
-    }
-
-    /// Returns the current account policy settings from the config table.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if any policy value is missing or invalid.
-    pub fn account_policy(&self) -> Result<AccountPolicy> {
-        let config = self.config_map();
-        let expiry = config
-            .current(tables::KEY_EXPIRY_PERIOD)?
-            .ok_or_else(|| anyhow!("missing expiry period"))?
-            .parse()?;
-        let lockout = config
-            .current(tables::KEY_LOCKOUT_THRESHOLD)?
-            .ok_or_else(|| anyhow!("missing lockout threshold"))?
-            .parse()?;
-        let duration = config
-            .current(tables::KEY_LOCKOUT_DURATION)?
-            .ok_or_else(|| anyhow!("missing lockout duration"))?
-            .parse()?;
-        let suspension = config
-            .current(tables::KEY_SUSPENSION_THRESHOLD)?
-            .ok_or_else(|| anyhow!("missing suspension threshold"))?
-            .parse()?;
-
-        Ok(AccountPolicy {
-            expiry_period_in_secs: expiry,
-            lockout_threshold: lockout,
-            lockout_duration_in_secs: duration,
-            suspension_threshold: suspension,
-        })
-    }
-
     #[must_use]
     #[allow(clippy::missing_panics_doc)]
     pub fn csv_column_extra_map(&self) -> IndexedTable<'_, CsvColumnExtraConfig> {
         self.states.csv_column_extras()
-    }
-
-    #[must_use]
-    #[allow(clippy::missing_panics_doc)]
-    pub fn customer_map(&self) -> IndexedTable<'_, Customer> {
-        self.states.customers()
     }
 
     /// Returns the table of the networks each customer owns.
@@ -833,12 +655,6 @@ impl Store {
 
     #[must_use]
     #[allow(clippy::missing_panics_doc)]
-    pub fn filter_map(&self) -> Table<'_, Filter> {
-        self.states.filters()
-    }
-
-    #[must_use]
-    #[allow(clippy::missing_panics_doc)]
     pub fn model_map(&self) -> IndexedTable<'_, tables::Model> {
         self.states.models()
     }
@@ -853,24 +669,6 @@ impl Store {
     #[allow(clippy::missing_panics_doc)]
     pub fn network_map(&self) -> IndexedTable<'_, Network> {
         self.states.networks()
-    }
-
-    /// Returns the customer-scoped tag set for network tags.
-    ///
-    /// Network tags are now scoped per customer. Each customer has their own
-    /// isolated set of network tags, allowing multiple customers to have tags
-    /// with the same name without conflicts.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if database operation fails or the data is invalid.
-    #[allow(clippy::missing_panics_doc)]
-    pub fn network_tag_set(&self, customer_id: u32) -> Result<CustomerTagSet<'_, NetworkTagId>> {
-        let set = self
-            .states
-            .indexed_set(tables::NETWORK_TAGS)
-            .expect("always available");
-        CustomerTagSet::new(set, customer_id)
     }
 
     #[must_use]

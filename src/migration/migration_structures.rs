@@ -16,30 +16,6 @@ use crate::{
     types::HostNetworkGroup,
 };
 
-/// `AllowNetwork` structure from version 0.42.x (before `customer_id` was added)
-///
-/// In version 0.42.x, `AllowNetwork` used only name as the key.
-/// From 0.43.x, `customer_id` was added and the key became `customer_id` + name.
-#[derive(Clone, Deserialize, Serialize)]
-pub(crate) struct AllowNetworkV0_42 {
-    pub(crate) id: u32,
-    pub(crate) name: String,
-    pub(crate) networks: HostNetworkGroup,
-    pub(crate) description: String,
-}
-
-/// `BlockNetwork` structure from version 0.42.x (before `customer_id` was added)
-///
-/// In version 0.42.x, `BlockNetwork` used only name as the key.
-/// From 0.43.x, `customer_id` was added and the key became `customer_id` + name.
-#[derive(Clone, Deserialize, Serialize)]
-pub(crate) struct BlockNetworkV0_42 {
-    pub(crate) id: u32,
-    pub(crate) name: String,
-    pub(crate) networks: HostNetworkGroup,
-    pub(crate) description: String,
-}
-
 /// Network value structure from version 0.43.x
 ///
 /// This structure represents the old serialized value format where:

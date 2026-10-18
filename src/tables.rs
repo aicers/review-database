@@ -1,21 +1,15 @@
-mod access_token;
-mod accounts;
 mod agent;
-mod allow_network;
 mod backup_config;
 mod batch_info;
-mod block_network;
 mod category;
 mod cluster;
 mod column_stats;
 mod config;
 mod core_component;
 mod csv_column_extra;
-mod customer;
 mod customer_data_deletion_job;
 mod data_source;
 mod external_service;
-mod filter;
 mod hosts;
 mod instance_allocation;
 mod label_db;
@@ -53,28 +47,22 @@ use anyhow::{Result, anyhow};
 use rocksdb::Direction;
 use serde::{Deserialize, Serialize};
 
-pub use self::access_token::AccessToken;
 pub use self::agent::{Agent, AgentKind};
-pub use self::allow_network::{AllowNetwork, Update as AllowNetworkUpdate};
 pub use self::backup_config::{BackupConfig, BackupConfigUpdate};
-pub use self::block_network::{BlockNetwork, Update as BlockNetworkUpdate};
 pub use self::cluster::Cluster;
 pub use self::column_stats::{ColumnStats, TopColumnsOfCluster, TopMultimaps};
 pub use self::config::{
-    KEY_BACKUP_DURATION, KEY_BACKUP_TIME, KEY_EVENT_RETENTION_PERIOD_DAYS, KEY_EXPIRY_PERIOD,
-    KEY_LOCKOUT_DURATION, KEY_LOCKOUT_THRESHOLD, KEY_NUM_OF_BACKUPS_TO_KEEP, KEY_RETENTION_PERIOD,
-    KEY_SUSPENSION_THRESHOLD,
+    KEY_BACKUP_DURATION, KEY_BACKUP_TIME, KEY_EVENT_RETENTION_PERIOD_DAYS,
+    KEY_NUM_OF_BACKUPS_TO_KEEP, KEY_RETENTION_PERIOD,
 };
 pub use self::core_component::CoreComponent;
 pub use self::csv_column_extra::CsvColumnExtra;
-pub use self::customer::{Customer, Network as CustomerNetwork, Update as CustomerUpdate};
 pub use self::customer_data_deletion_job::{
     CustomerDataDeletionJob, CustomerDataDeletionService, CustomerDataDeletionServiceResult,
     CustomerDataDeletionStatus,
 };
 pub use self::data_source::{DataSource, DataType, Update as DataSourceUpdate};
 pub use self::external_service::{ExternalService, ExternalServiceKind};
-pub use self::filter::{Filter, PeriodForSearch, Value as FilterValue};
 pub use self::hosts::{Host, UserAgent};
 pub use self::instance_allocation::{InstanceAllocation, InstanceAllocationError};
 pub use self::label_db::{
@@ -128,7 +116,7 @@ use crate::{
     category::Category,
     collections::{Indexed, IndexedSet},
     scores::Scores,
-    types::{Account, FromKeyValue, Qualifier, Status},
+    types::{FromKeyValue, Qualifier, Status},
 };
 
 // Key-value map names in `Database`.
@@ -182,24 +170,18 @@ pub(super) const TRIAGE_RESPONSE: &str = "triage response";
 pub(super) const TRUSTED_DNS_SERVERS: &str = "trusted DNS servers";
 pub(super) const TRUSTED_USER_AGENTS: &str = "trusted user agents";
 
-pub(crate) const MAP_NAMES: [&str; 43] = [
-    ACCESS_TOKENS,
-    ACCOUNTS,
+pub(crate) const MAP_NAMES: [&str; 37] = [
     AGENTS,
-    ALLOW_NETWORKS,
     BATCH_INFO,
-    BLOCK_NETWORKS,
     CATEGORY,
     CLUSTER,
     COLUMN_STATS,
     CONFIGS,
     CORE_COMPONENTS,
     CSV_COLUMN_EXTRAS,
-    CUSTOMERS,
     CUSTOMER_DELETION_JOBS,
     CUSTOMER_NETWORKS,
     DATA_SOURCES,
-    FILTERS,
     HOSTS,
     INSTANCE_ALLOCATIONS,
     MODELS,
@@ -321,18 +303,6 @@ impl StateDb {
     }
 
     #[must_use]
-    pub(crate) fn access_tokens(&self) -> Table<'_, AccessToken> {
-        let inner = self.inner.as_ref().expect("database must be open");
-        Table::<AccessToken>::open(inner).expect("{ACCESS_TOKENS} table must be present")
-    }
-
-    #[must_use]
-    pub(crate) fn accounts(&self) -> Table<'_, Account> {
-        let inner = self.inner.as_ref().expect("database must be open");
-        Table::<Account>::open(inner).expect("{ACCOUNTS} table must be present")
-    }
-
-    #[must_use]
     pub(crate) fn agents(&self) -> Table<'_, Agent> {
         let inner = self.inner.as_ref().expect("database must be open");
         Table::<Agent>::open(inner).expect("{AGENTS} table must be present")
@@ -348,12 +318,6 @@ impl StateDb {
     pub(crate) fn batch_info(&self) -> Table<'_, BatchInfo> {
         let inner = self.inner.as_ref().expect("database must be open");
         Table::<BatchInfo>::open(inner).expect("{BATCH_INFO} table must be present")
-    }
-
-    #[must_use]
-    pub(crate) fn filters(&self) -> Table<'_, Filter> {
-        let inner = self.inner.as_ref().expect("database must be open");
-        Table::<Filter>::open(inner).expect("{FILTERS} table must be present")
     }
 
     #[must_use]
@@ -419,28 +383,10 @@ impl StateDb {
     }
 
     #[must_use]
-    pub(crate) fn allow_networks(&self) -> IndexedTable<'_, AllowNetwork> {
-        let inner = self.inner.as_ref().expect("database must be open");
-        IndexedTable::<AllowNetwork>::open(inner).expect("{ALLOW_NETWORKS} table must be present")
-    }
-
-    #[must_use]
-    pub(crate) fn block_networks(&self) -> IndexedTable<'_, BlockNetwork> {
-        let inner = self.inner.as_ref().expect("database must be open");
-        IndexedTable::<BlockNetwork>::open(inner).expect("{BLOCK_NETWORKS} table must be present")
-    }
-
-    #[must_use]
     pub(crate) fn sampling_policies(&self) -> IndexedTable<'_, SamplingPolicy> {
         let inner = self.inner.as_ref().expect("database must be open");
         IndexedTable::<SamplingPolicy>::open(inner)
             .expect("{SAMPLING_POLICY} table must be present")
-    }
-
-    #[must_use]
-    pub(crate) fn customers(&self) -> IndexedTable<'_, Customer> {
-        let inner = self.inner.as_ref().expect("database must be open");
-        IndexedTable::<Customer>::open(inner).expect("{CUSTOMERS} table must be present")
     }
 
     #[must_use]
@@ -700,22 +646,16 @@ mod iteration {
 
     pub trait Eligible {}
 
-    impl Eligible for tables::AccessToken {}
-    impl Eligible for types::Account {}
     impl Eligible for tables::Agent {}
-    impl Eligible for tables::AllowNetwork {}
     impl Eligible for crate::BatchInfo {}
-    impl Eligible for tables::BlockNetwork {}
     impl Eligible for crate::Category {}
     impl Eligible for tables::Cluster {}
     impl Eligible for tables::ColumnStats {}
     impl Eligible for tables::CoreComponent {}
     impl Eligible for tables::CsvColumnExtra {}
-    impl Eligible for tables::Customer {}
     impl Eligible for tables::CustomerDataDeletionJob {}
     impl Eligible for tables::DataSource {}
     impl Eligible for tables::ExternalService {}
-    impl Eligible for tables::Filter {}
     impl Eligible for tables::Host {}
     impl Eligible for tables::InstanceAllocation {}
     impl Eligible for tables::InnerNode {}

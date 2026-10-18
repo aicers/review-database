@@ -5,12 +5,6 @@ use rocksdb::OptimisticTransactionDB;
 
 use crate::{Map, Table};
 
-// Account policy keys
-pub const KEY_EXPIRY_PERIOD: &str = "expiry_period_in_secs";
-pub const KEY_LOCKOUT_THRESHOLD: &str = "lockout_threshold";
-pub const KEY_LOCKOUT_DURATION: &str = "lockout_duration_in_secs";
-pub const KEY_SUSPENSION_THRESHOLD: &str = "suspension_threshold";
-
 // Backup config keys
 pub const KEY_BACKUP_DURATION: &str = "backup_duration";
 pub const KEY_BACKUP_TIME: &str = "backup_time";
@@ -31,7 +25,7 @@ impl<'d> Table<'d, String> {
         Map::open(db, super::CONFIGS).map(Table::new)
     }
 
-    /// Initializes the account policy expiry period.
+    /// Initializes a config value.
     ///
     /// # Errors
     ///
@@ -55,7 +49,7 @@ impl<'d> Table<'d, String> {
         self.map.insert_multi(&updates)
     }
 
-    /// Updates or initializes the account policy expiry period.
+    /// Updates or initializes a config value.
     ///
     /// # Errors
     ///
@@ -110,8 +104,8 @@ impl<'d> Table<'d, String> {
         self.map.delete(key.as_bytes())
     }
 
-    /// Returns the current account policy expiry period,
-    /// or `None` if it hasn't been initialized.
+    /// Returns the current config value for `key`, or `None` if it hasn't
+    /// been initialized.
     ///
     /// # Errors
     ///
@@ -131,15 +125,11 @@ mod tests {
     use std::sync::Arc;
 
     use crate::tables::config::{
-        KEY_BACKUP_DURATION, KEY_BACKUP_TIME, KEY_EVENT_RETENTION_PERIOD_DAYS, KEY_EXPIRY_PERIOD,
-        KEY_LOCKOUT_DURATION, KEY_LOCKOUT_THRESHOLD, KEY_NUM_OF_BACKUPS_TO_KEEP,
-        KEY_RETENTION_PERIOD, KEY_SUSPENSION_THRESHOLD,
+        KEY_BACKUP_DURATION, KEY_BACKUP_TIME, KEY_EVENT_RETENTION_PERIOD_DAYS,
+        KEY_NUM_OF_BACKUPS_TO_KEEP, KEY_RETENTION_PERIOD,
     };
     use crate::test::{DbGuard, acquire_db_permit};
-    use crate::{
-        AccountPolicy, AccountPolicyUpdate, BackupConfig, BackupConfigUpdate, RetentionConfig,
-        RetentionConfigUpdate, Store,
-    };
+    use crate::{BackupConfig, BackupConfigUpdate, RetentionConfig, RetentionConfigUpdate, Store};
 
     fn setup_store() -> (DbGuard<'static>, Arc<Store>) {
         let permit = acquire_db_permit();
@@ -213,339 +203,6 @@ mod tests {
 
         // Try to update a key that doesn't exist - should fail
         assert!(table.update_compare("nonexistent", "old", "new").is_err());
-    }
-
-    #[test]
-    fn init_account_policy_test() {
-        let (_permit, store) = setup_store();
-
-        let policy = AccountPolicy {
-            expiry_period_in_secs: 3600,
-            lockout_threshold: 5,
-            lockout_duration_in_secs: 1800,
-            suspension_threshold: 10,
-        };
-
-        // Initialize account policy with default values
-        assert!(store.init_account_policy(&policy).is_ok());
-
-        // Verify all values were stored correctly
-        let config = store.config_map();
-        assert_eq!(
-            config.current(KEY_EXPIRY_PERIOD).unwrap(),
-            Some("3600".to_string())
-        );
-        assert_eq!(
-            config.current(KEY_LOCKOUT_THRESHOLD).unwrap(),
-            Some("5".to_string())
-        );
-        assert_eq!(
-            config.current(KEY_LOCKOUT_DURATION).unwrap(),
-            Some("1800".to_string())
-        );
-        assert_eq!(
-            config.current(KEY_SUSPENSION_THRESHOLD).unwrap(),
-            Some("10".to_string())
-        );
-    }
-
-    #[test]
-    fn init_account_policy_already_exists() {
-        let (_permit, store) = setup_store();
-
-        let policy = AccountPolicy {
-            expiry_period_in_secs: 3600,
-            lockout_threshold: 5,
-            lockout_duration_in_secs: 1800,
-            suspension_threshold: 10,
-        };
-
-        // Initialize account policy
-        assert!(store.init_account_policy(&policy).is_ok());
-
-        let new_policy = AccountPolicy {
-            expiry_period_in_secs: 7200,
-            lockout_threshold: 3,
-            lockout_duration_in_secs: 900,
-            suspension_threshold: 5,
-        };
-
-        // Try to initialize again - should fail
-        assert!(store.init_account_policy(&new_policy).is_err());
-    }
-
-    #[test]
-    fn update_account_policy_all_fields() {
-        let (_permit, store) = setup_store();
-
-        let policy = AccountPolicy {
-            expiry_period_in_secs: 3600,
-            lockout_threshold: 5,
-            lockout_duration_in_secs: 1800,
-            suspension_threshold: 10,
-        };
-
-        // Initialize account policy
-        assert!(store.init_account_policy(&policy).is_ok());
-
-        let update = AccountPolicyUpdate {
-            expiry_period_in_secs: Some(7200),
-            lockout_threshold: Some(3),
-            lockout_duration_in_secs: Some(900),
-            suspension_threshold: Some(5),
-        };
-
-        // Update all fields
-        assert!(store.update_account_policy(&policy, &update).is_ok());
-
-        // Verify all values were updated
-        let config = store.config_map();
-        assert_eq!(
-            config.current(KEY_EXPIRY_PERIOD).unwrap(),
-            Some("7200".to_string())
-        );
-        assert_eq!(
-            config.current(KEY_LOCKOUT_THRESHOLD).unwrap(),
-            Some("3".to_string())
-        );
-        assert_eq!(
-            config.current(KEY_LOCKOUT_DURATION).unwrap(),
-            Some("900".to_string())
-        );
-        assert_eq!(
-            config.current(KEY_SUSPENSION_THRESHOLD).unwrap(),
-            Some("5".to_string())
-        );
-    }
-
-    #[test]
-    fn update_account_policy_partial() {
-        let (_permit, store) = setup_store();
-
-        let policy = AccountPolicy {
-            expiry_period_in_secs: 3600,
-            lockout_threshold: 5,
-            lockout_duration_in_secs: 1800,
-            suspension_threshold: 10,
-        };
-
-        // Initialize account policy
-        assert!(store.init_account_policy(&policy).is_ok());
-
-        let update = AccountPolicyUpdate {
-            expiry_period_in_secs: Some(7200),
-            lockout_threshold: Some(3),
-            ..Default::default()
-        };
-
-        // Update only some fields (expiry_period and lockout_threshold)
-        assert!(store.update_account_policy(&policy, &update).is_ok());
-
-        // Verify updated values changed and others remained the same
-        let config = store.config_map();
-        assert_eq!(
-            config.current(KEY_EXPIRY_PERIOD).unwrap(),
-            Some("7200".to_string())
-        );
-        assert_eq!(
-            config.current(KEY_LOCKOUT_THRESHOLD).unwrap(),
-            Some("3".to_string())
-        );
-        assert_eq!(
-            config.current(KEY_LOCKOUT_DURATION).unwrap(),
-            Some("1800".to_string())
-        );
-        assert_eq!(
-            config.current(KEY_SUSPENSION_THRESHOLD).unwrap(),
-            Some("10".to_string())
-        );
-    }
-
-    #[test]
-    fn update_account_policy_wrong_old_value() {
-        let (_permit, store) = setup_store();
-
-        let policy = AccountPolicy {
-            expiry_period_in_secs: 3600,
-            lockout_threshold: 5,
-            lockout_duration_in_secs: 1800,
-            suspension_threshold: 10,
-        };
-
-        // Initialize account policy
-        assert!(store.init_account_policy(&policy).is_ok());
-
-        let wrong_policy = AccountPolicy {
-            expiry_period_in_secs: 9999, // wrong old value
-            ..policy
-        };
-
-        let update = AccountPolicyUpdate {
-            expiry_period_in_secs: Some(7200),
-            ..Default::default()
-        };
-
-        // Try to update with wrong old values - should fail
-        assert!(store.update_account_policy(&wrong_policy, &update).is_err());
-
-        // Verify values remained unchanged
-        let config = store.config_map();
-        assert_eq!(
-            config.current(KEY_EXPIRY_PERIOD).unwrap(),
-            Some("3600".to_string())
-        );
-    }
-
-    #[test]
-    fn update_account_policy_no_changes() {
-        let (_permit, store) = setup_store();
-
-        let policy = AccountPolicy {
-            expiry_period_in_secs: 3600,
-            lockout_threshold: 5,
-            lockout_duration_in_secs: 1800,
-            suspension_threshold: 10,
-        };
-
-        // Initialize account policy
-        assert!(store.init_account_policy(&policy).is_ok());
-
-        let update = AccountPolicyUpdate::default();
-
-        // Update with no changes (all None)
-        assert!(store.update_account_policy(&policy, &update).is_ok());
-
-        // Verify values remained unchanged
-        let config = store.config_map();
-        assert_eq!(
-            config.current(KEY_EXPIRY_PERIOD).unwrap(),
-            Some("3600".to_string())
-        );
-        assert_eq!(
-            config.current(KEY_LOCKOUT_THRESHOLD).unwrap(),
-            Some("5".to_string())
-        );
-    }
-
-    #[test]
-    fn update_account_policy_atomicity() {
-        let (_permit, store) = setup_store();
-
-        let policy = AccountPolicy {
-            expiry_period_in_secs: 3600,
-            lockout_threshold: 5,
-            lockout_duration_in_secs: 1800,
-            suspension_threshold: 10,
-        };
-
-        // Initialize account policy
-        assert!(store.init_account_policy(&policy).is_ok());
-
-        // Try to update with mixed valid/invalid old values
-        // expiry_period: valid old value (3600) -> new value (7200)
-        // lockout_threshold: invalid old value (999) -> new value (3)
-        let mixed_policy = AccountPolicy {
-            lockout_threshold: 999, // incorrect
-            ..policy
-        };
-
-        let update = AccountPolicyUpdate {
-            expiry_period_in_secs: Some(7200),
-            lockout_threshold: Some(3),
-            ..Default::default()
-        };
-
-        assert!(store.update_account_policy(&mixed_policy, &update).is_err());
-
-        // Verify NO values were updated (atomicity)
-        let config = store.config_map();
-        assert_eq!(
-            config.current(KEY_EXPIRY_PERIOD).unwrap(),
-            Some("3600".to_string()) // Should NOT be 7200
-        );
-        assert_eq!(
-            config.current(KEY_LOCKOUT_THRESHOLD).unwrap(),
-            Some("5".to_string())
-        );
-    }
-
-    #[test]
-    fn init_account_policy_atomicity() {
-        let (_permit, store) = setup_store();
-
-        // Pre-create ONE of the keys (simulating partial state or conflict)
-        store.config_map().init(KEY_EXPIRY_PERIOD, "3600").unwrap();
-
-        let policy = AccountPolicy {
-            expiry_period_in_secs: 7200,
-            lockout_threshold: 5,
-            lockout_duration_in_secs: 1800,
-            suspension_threshold: 10,
-        };
-
-        // 2. Try to initialize policy (should fail because one key exists)
-        assert!(store.init_account_policy(&policy).is_err());
-
-        // 3. Verify ALL other keys were NOT created (atomicity check)
-        // If it wasn't atomic, "lockout_threshold" might have been created before failure
-        let config = store.config_map();
-        assert!(config.current(KEY_LOCKOUT_THRESHOLD).unwrap().is_none());
-        assert!(config.current(KEY_LOCKOUT_DURATION).unwrap().is_none());
-        assert!(config.current(KEY_SUSPENSION_THRESHOLD).unwrap().is_none());
-
-        // Verify existing key was NOT overwritten
-        assert_eq!(
-            config.current(KEY_EXPIRY_PERIOD).unwrap(),
-            Some("3600".to_string())
-        );
-    }
-
-    #[test]
-    fn init_account_policy_validation_failure() {
-        let (_permit, store) = setup_store();
-
-        // Invalid policy: lockout_threshold (10) > suspension_threshold (5)
-        let policy = AccountPolicy {
-            expiry_period_in_secs: 3600,
-            lockout_threshold: 10,
-            lockout_duration_in_secs: 1800,
-            suspension_threshold: 5,
-        };
-
-        // Should return error due to validation
-        assert!(store.init_account_policy(&policy).is_err());
-
-        // Verify nothing was written
-        let config = store.config_map();
-        assert!(config.current(KEY_EXPIRY_PERIOD).unwrap().is_none());
-    }
-
-    #[test]
-    fn update_account_policy_validation_failure() {
-        let (_permit, store) = setup_store();
-
-        let policy = AccountPolicy {
-            expiry_period_in_secs: 3600,
-            lockout_threshold: 5,
-            lockout_duration_in_secs: 1800,
-            suspension_threshold: 10,
-        };
-        store.init_account_policy(&policy).unwrap();
-
-        // Try to update to an invalid state: lockout(15) > suspension(10)
-        let update = AccountPolicyUpdate {
-            lockout_threshold: Some(15),
-            ..Default::default()
-        };
-
-        assert!(store.update_account_policy(&policy, &update).is_err());
-
-        // Verify values remained unchanged
-        let config = store.config_map();
-        assert_eq!(
-            config.current(KEY_LOCKOUT_THRESHOLD).unwrap(),
-            Some("5".to_string())
-        );
     }
 
     fn assert_backup_config_values(

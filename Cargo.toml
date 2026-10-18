@@ -1,12 +1,11 @@
 [package]
 name = "review-database"
-version = "0.51.0"
+version = "0.52.0-alpha.1"
 edition = "2024"
 
 [dependencies]
 aho-corasick = "1"
 anyhow = "1"
-argon2 = "0.6"
 attrievent = { git = "https://github.com/aicers/attrievent.git", tag = "0.4.0" }
 aws-lc-rs = { version = "1", default-features = false, features = ["alloc", "non-fips"] }
 bincode = "1"

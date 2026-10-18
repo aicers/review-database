@@ -151,7 +151,7 @@ pub use self::{
     unusual_destination_pattern::{UnusualDestinationPattern, UnusualDestinationPatternFields},
 };
 use super::{
-    Customer, EventCategory, Network, TriageExclusion, TriagePolicyInput,
+    EventCategory, Network, TriageExclusion, TriagePolicyInput,
     migration::migration_structures::{
         V0_46_COUNTRY_CODE_LOOKUP_FAILED, V0_46_COUNTRY_CODE_UNRESOLVED,
     },
@@ -1911,8 +1911,6 @@ pub enum LearningMethod {
 /// of an [`EventFilter`].
 #[derive(Clone, Debug, PartialEq)]
 pub enum InternalNetworks {
-    /// Every event is tested against the same groups.
-    Shared(Vec<HostNetworkGroup>),
     /// Groups keyed by the event's sensor. An event whose sensor is not a key
     /// has no internal address.
     PerSensor(HashMap<String, Vec<HostNetworkGroup>>),
@@ -1922,7 +1920,6 @@ impl InternalNetworks {
     /// Returns the groups an event from `sensor` is tested against.
     pub(crate) fn groups_for(&self, sensor: &str) -> &[HostNetworkGroup] {
         match self {
-            Self::Shared(groups) => groups,
             Self::PerSensor(groups) => groups.get(sensor).map_or(&[], Vec::as_slice),
         }
     }
@@ -1932,16 +1929,6 @@ impl InternalNetworks {
 ///
 /// # Notes
 ///
-/// The `customers` field does **not** filter events by an explicit customer ID
-/// stored on each event. Instead, the current implementation resolves each
-/// customer's registered network ranges and matches an event if any of its
-/// originator addresses (`orig_addrs`) or responder addresses (`resp_addrs`) fall
-/// within those ranges.
-///
-/// In other words, customer filtering performs network-range matching against
-/// the customer's registered networks, not direct per-event customer
-/// attribution.
-///
 /// `directions` classifies an event by whether any of its originator and any
 /// of its responder addresses fall within the [`InternalNetworks`] chosen for
 /// it. An event with neither side internal never matches.
@@ -1949,18 +1936,8 @@ impl InternalNetworks {
 /// `countries` compares stored two-byte codes directly. This includes the
 /// [`crate::COUNTRY_CODE_UNKNOWN`] and [`crate::COUNTRY_CODE_UNRESOLVED`]
 /// placeholders, which callers may filter explicitly.
-///
-/// # Limitations
-///
-/// The event storage schema (`EventDb`) does not currently store an explicit
-/// customer identifier for each event. Introducing explicit customer
-/// attribution in storage would require a cross-cutting schema change and is
-/// intentionally out of scope. See [issue #687] for context.
-///
-/// [issue #687]: https://github.com/aicers/review-database/issues/687
 #[allow(clippy::module_name_repetitions)]
 pub struct EventFilter {
-    customers: Option<Vec<Customer>>,
     endpoints: Option<Vec<Endpoint>>,
     directions: Option<(Vec<FlowKind>, InternalNetworks)>,
     originator: Option<IpAddr>,
@@ -1981,7 +1958,6 @@ impl EventFilter {
     #[allow(clippy::too_many_arguments)]
     #[must_use]
     pub fn new(
-        customers: Option<Vec<Customer>>,
         endpoints: Option<Vec<Endpoint>>,
         directions: Option<(Vec<FlowKind>, InternalNetworks)>,
         originator: Option<IpAddr>,
@@ -1997,7 +1973,6 @@ impl EventFilter {
         triage_policies: Option<Vec<TriagePolicyInput>>,
     ) -> Self {
         Self {
-            customers,
             endpoints,
             directions,
             originator,
@@ -3687,15 +3662,6 @@ pub enum InvalidEvent {
     Value(Box<[u8]>),
 }
 
-pub type Id = u32;
-
-#[derive(Clone, Deserialize, Serialize, PartialEq, Debug)]
-pub struct FilterEndpoint {
-    pub direction: Option<TrafficDirection>,
-    pub predefined: Option<Id>,
-    pub custom: Option<HostNetworkGroup>,
-}
-
 /// Traffic flow direction.
 #[derive(Clone, Copy, Eq, PartialEq, Deserialize, Serialize, Debug)]
 pub enum FlowKind {
@@ -3704,7 +3670,7 @@ pub enum FlowKind {
     Internal,
 }
 
-/// Possible network types of `CustomerNetwork`.
+/// Possible network types of `OwnedNetwork`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize, Serialize)]
 pub enum NetworkType {
     Intranet,
@@ -3842,7 +3808,6 @@ mod tests {
 
     fn country_filter(countries: Option<Vec<[u8; 2]>>) -> EventFilter {
         EventFilter {
-            customers: None,
             endpoints: None,
             directions: None,
             originator: None,
@@ -3861,7 +3826,6 @@ mod tests {
 
     fn category_filter(categories: Option<Vec<Option<EventCategory>>>) -> EventFilter {
         EventFilter {
-            customers: None,
             endpoints: None,
             directions: None,
             originator: None,
@@ -4208,7 +4172,6 @@ mod tests {
     fn country_filter_search_uses_stored_codes_without_ip2location() {
         fn country_only_filter(country: [u8; 2]) -> EventFilter {
             EventFilter {
-                customers: None,
                 endpoints: None,
                 directions: None,
                 originator: None,
@@ -4865,7 +4828,6 @@ mod tests {
         assert!(e.is_some());
         let (_key, event) = e.unwrap().unwrap();
         let filter = EventFilter {
-            customers: None,
             endpoints: None,
             directions: None,
             originator: Some(IpAddr::V4(Ipv4Addr::LOCALHOST)),
@@ -5550,7 +5512,6 @@ mod tests {
         assert!(e.is_some());
         let (_key, event) = e.unwrap().unwrap();
         let filter = EventFilter {
-            customers: None,
             endpoints: None,
             directions: None,
             originator: Some(IpAddr::V4(Ipv4Addr::LOCALHOST)),
@@ -5835,7 +5796,6 @@ mod tests {
         assert!(e.is_some());
         let (_key, event) = e.unwrap().unwrap();
         let filter = EventFilter {
-            customers: None,
             endpoints: None,
             directions: None,
             originator: Some(IpAddr::V4(Ipv4Addr::LOCALHOST)),
@@ -6267,7 +6227,6 @@ mod tests {
         assert!(e.is_some());
         let (_key, event) = e.unwrap().unwrap();
         let filter = EventFilter {
-            customers: None,
             endpoints: None,
             directions: None,
             originator: Some(IpAddr::V4(Ipv4Addr::LOCALHOST)),
@@ -6595,7 +6554,6 @@ mod tests {
         assert!(e.is_some());
         let (_key, event) = e.unwrap().unwrap();
         let filter = EventFilter {
-            customers: None,
             endpoints: None,
             directions: None,
             originator: Some(IpAddr::V4(Ipv4Addr::LOCALHOST)),
@@ -6686,7 +6644,6 @@ mod tests {
         assert!(e.is_some());
         let (_key, event) = e.unwrap().unwrap();
         let filter = EventFilter {
-            customers: None,
             endpoints: None,
             directions: None,
             originator: Some(IpAddr::V4(Ipv4Addr::LOCALHOST)),
@@ -7048,7 +7005,6 @@ mod tests {
         assert!(e.is_some());
         let (_key, event) = e.unwrap().unwrap();
         let filter = EventFilter {
-            customers: None,
             endpoints: None,
             directions: None,
             originator: Some(IpAddr::V4(Ipv4Addr::LOCALHOST)),
@@ -7616,7 +7572,6 @@ mod tests {
         assert!(e.is_some());
         let (_key, event) = e.unwrap().unwrap();
         let filter = EventFilter {
-            customers: None,
             endpoints: None,
             directions: None,
             originator: Some(IpAddr::V4(Ipv4Addr::LOCALHOST)),
@@ -7843,7 +7798,6 @@ mod tests {
         assert!(e.is_some());
         let (_key, event) = e.unwrap().unwrap();
         let filter = EventFilter {
-            customers: None,
             endpoints: None,
             directions: None,
             originator: Some(IpAddr::V4(Ipv4Addr::LOCALHOST)),

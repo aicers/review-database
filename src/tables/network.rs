@@ -4,13 +4,13 @@ use std::borrow::Cow;
 
 use anyhow::Result;
 use chrono::{DateTime, Utc};
-use rocksdb::{Direction, OptimisticTransactionDB};
+use rocksdb::OptimisticTransactionDB;
 use serde::{Deserialize, Serialize};
 
 use super::UniqueKey;
 use crate::{
-    HostNetworkGroup, Indexable, IndexedMap, IndexedMapUpdate, IndexedTable, Iterable,
-    collections::Indexed, types::FromKeyValue,
+    HostNetworkGroup, Indexable, IndexedMap, IndexedMapUpdate, IndexedTable, collections::Indexed,
+    types::FromKeyValue,
 };
 
 #[derive(Clone, PartialEq, Debug)]
@@ -19,43 +19,28 @@ pub struct Network {
     pub name: String,
     pub description: String,
     pub networks: HostNetworkGroup,
+    /// Tag IDs of rows written before network tags were removed. Kept so
+    /// that every stored row decodes, and carried through updates unchanged.
     tag_ids: Vec<u32>,
     pub creation_time: DateTime<Utc>,
 }
 
 impl Network {
     #[must_use]
-    pub fn new(
-        name: String,
-        description: String,
-        networks: HostNetworkGroup,
-        tag_ids: Vec<u32>,
-    ) -> Self {
+    pub fn new(name: String, description: String, networks: HostNetworkGroup) -> Self {
         Self {
             id: 0,
             name,
             description,
             networks,
-            tag_ids: Self::clean_up(tag_ids),
+            tag_ids: Vec::new(),
             creation_time: Utc::now(),
         }
     }
 
-    #[must_use]
-    pub fn tag_ids(&self) -> &[u32] {
+    #[cfg(test)]
+    pub(crate) fn tag_ids(&self) -> &[u32] {
         &self.tag_ids
-    }
-
-    fn contains_tag(&self, tag: u32) -> Result<usize> {
-        self.tag_ids
-            .binary_search(&tag)
-            .map_err(|idx| anyhow::anyhow!("{idx}"))
-    }
-
-    fn clean_up(mut tag_ids: Vec<u32>) -> Vec<u32> {
-        tag_ids.sort_unstable();
-        tag_ids.dedup();
-        tag_ids
     }
 }
 
@@ -146,25 +131,6 @@ impl<'d> IndexedTable<'d, Network> {
         self.indexed_map.insert(entry)
     }
 
-    /// Removes `tag_id` in all the related entries
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the database query fails.
-    pub fn remove_tag(&self, tag_id: u32) -> Result<()> {
-        let iter = self.iter(Direction::Forward, None);
-        for entry in iter {
-            let mut network = entry?;
-            if let Ok(idx) = network.contains_tag(tag_id) {
-                network.tag_ids.remove(idx);
-                let old = Update::new(None, None, None, None);
-                let new = Update::new(None, None, None, Some(network.tag_ids));
-                self.indexed_map.update(network.id, &old, &new)?;
-            }
-        }
-        Ok(())
-    }
-
     /// Updates the `Network` from `old` to `new`, given `id`.
     ///
     /// # Errors
@@ -179,7 +145,6 @@ pub struct Update {
     name: Option<String>,
     description: Option<String>,
     networks: Option<HostNetworkGroup>,
-    tag_ids: Option<Vec<u32>>,
 }
 
 impl Update {
@@ -188,14 +153,11 @@ impl Update {
         name: Option<String>,
         description: Option<String>,
         networks: Option<HostNetworkGroup>,
-        tag_ids: Option<Vec<u32>>,
     ) -> Self {
-        let tag_ids = tag_ids.map(Network::clean_up);
         Self {
             name,
             description,
             networks,
-            tag_ids,
         }
     }
 }
@@ -222,10 +184,6 @@ impl IndexedMapUpdate for Update {
             value.networks = v.clone();
         }
 
-        if let Some(tag_ids) = self.tag_ids.as_deref() {
-            value.tag_ids = Network::clean_up(tag_ids.to_vec());
-        }
-
         Ok(value)
     }
 
@@ -242,11 +200,6 @@ impl IndexedMapUpdate for Update {
         }
         if let Some(v) = &self.networks
             && v != &value.networks
-        {
-            return false;
-        }
-        if let Some(v) = self.tag_ids.as_deref()
-            && v != value.tag_ids
         {
             return false;
         }
@@ -344,7 +297,7 @@ mod test {
         let (_permit, store) = setup_store();
         let table = store.network_map();
 
-        let mut network = create_network("TestNetwork", "TestDescription", vec![1, 2]);
+        let mut network = create_network("TestNetwork", "TestDescription");
         let inserted_id1 = table.insert(network.clone()).unwrap();
         network.id = inserted_id1;
 
@@ -360,9 +313,9 @@ mod test {
         let (_permit, store) = setup_store();
         let table = store.network_map();
 
-        let mut network1 = create_network("Network1", "Description1", vec![1, 2]);
-        let mut network2 = create_network("Network2", "Description2", vec![2]);
-        let mut network3 = create_network("Network3", "Description3", vec![3, 1]);
+        let mut network1 = create_network("Network1", "Description1");
+        let mut network2 = create_network("Network2", "Description2");
+        let mut network3 = create_network("Network3", "Description3");
 
         network1.id = table.insert(network1.clone()).unwrap();
         network2.id = table.insert(network2.clone()).unwrap();
@@ -385,55 +338,24 @@ mod test {
     }
 
     #[test]
-    fn remove_tag() {
-        let (_permit, store) = setup_store();
-        let table = store.network_map();
-
-        let mut network1 = create_network("Network1", "Description1", vec![1, 2]);
-        let mut network2 = create_network("Network2", "Description2", vec![2]);
-        let mut network3 = create_network("Network3", "Description3", vec![3, 1]);
-
-        network1.id = table.insert(network1.clone()).unwrap();
-        network2.id = table.insert(network2.clone()).unwrap();
-        network3.id = table.insert(network3.clone()).unwrap();
-
-        table.remove_tag(2).unwrap();
-
-        assert_eq!(
-            table.get_by_id(network1.id).unwrap().unwrap().tag_ids(),
-            &[1]
-        );
-        assert_eq!(
-            table.get_by_id(network2.id).unwrap().unwrap().tag_ids(),
-            &[] as &[u32]
-        );
-        assert_eq!(
-            table.get_by_id(network3.id).unwrap().unwrap().tag_ids(),
-            &[1, 3]
-        );
-    }
-
-    #[test]
     fn update() {
         let (_permit, store) = setup_store();
         let mut table = store.network_map();
 
-        let mut network = create_network("Network1", "Description1", vec![1, 2]);
+        let mut network = create_network("Network1", "Description1");
         network.id = table.insert(network.clone()).unwrap();
         let old = super::Update::new(
             Some(network.name.clone()),
             Some(network.description.clone()),
             Some(network.networks.clone()),
-            Some(network.tag_ids().to_vec()),
         );
 
-        let mut updated_network = create_network("UpdatedNetwork", "UpdatedDescription", vec![3]);
+        let mut updated_network = create_network("UpdatedNetwork", "UpdatedDescription");
         updated_network.creation_time = network.creation_time;
         let update = super::Update::new(
             Some(updated_network.name.clone()),
             Some(updated_network.description.clone()),
             Some(updated_network.networks.clone()),
-            Some(updated_network.tag_ids().to_vec()),
         );
 
         table.update(network.id, &old, &update).unwrap();
@@ -445,6 +367,34 @@ mod test {
         assert_eq!(iter.count(), 1);
     }
 
+    #[test]
+    fn new_network_stores_no_tag_ids() {
+        let (_permit, store) = setup_store();
+        let table = store.network_map();
+
+        let id = table
+            .insert(create_network("Network1", "Description1"))
+            .unwrap();
+
+        let stored = table.get_by_id(id).unwrap().unwrap();
+        assert_eq!(stored.tag_ids(), &[] as &[u32]);
+    }
+
+    #[test]
+    fn update_keeps_stored_tag_ids() {
+        let (_permit, store) = setup_store();
+        let mut table = store.network_map();
+
+        let id = table.insert(deterministic_fixture_network()).unwrap();
+        let old = super::Update::new(None, None, None);
+        let new = super::Update::new(None, Some("New description".to_string()), None);
+        table.update(id, &old, &new).unwrap();
+
+        let stored = table.get_by_id(id).unwrap().unwrap();
+        assert_eq!(stored.description, "New description");
+        assert_eq!(stored.tag_ids(), &[3, 7, 42]);
+    }
+
     fn setup_store() -> (DbGuard<'static>, Arc<Store>) {
         let permit = acquire_db_permit();
         let db_dir = tempfile::tempdir().unwrap();
@@ -453,12 +403,11 @@ mod test {
         (permit, store)
     }
 
-    fn create_network(name: &str, description: &str, tag_ids: Vec<u32>) -> Network {
+    fn create_network(name: &str, description: &str) -> Network {
         Network::new(
             name.to_string(),
             description.to_string(),
             HostNetworkGroup::default(),
-            tag_ids,
         )
     }
 }
