@@ -5,7 +5,7 @@ file is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), and
 this project adheres to [Semantic
 Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.52.0] - 2026-10-18
 
 ### Changed
 
@@ -14,7 +14,7 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 - **BREAKING**: Networks no longer carry tag IDs: `Network::new` and
   `NetworkUpdate::new` no longer take them, and `Network::tag_ids` and
   `IndexedTable<Network>::remove_tag` no longer exist.
-- **BREAKING**: Bumped the database format to `0.52.0-alpha.1`. The migration
+- **BREAKING**: Bumped the database format to `0.52.0`. The migration
   — from `0.50.x` and `0.51.x`, and through the earlier steps from every older
   supported format — deletes the `access_tokens`, `accounts`, `allow networks`,
   `block networks`, `customers` and `filters` column families and every row in
@@ -1952,7 +1952,7 @@ AsRef<[u8]>`). This change accommodates scenarios where the information stored
 - Modified `FtpBruteForce` by adding an `is_internal` field which is a boolean
   indicating whether it is internal or not.
 
-[Unreleased]: https://github.com/aicers/review-database/compare/0.51.0...main
+[0.52.0]: https://github.com/aicers/review-database/compare/0.51.0...0.52.0
 [0.51.0]: https://github.com/aicers/review-database/compare/0.50.0...0.51.0
 [0.50.0]: https://github.com/aicers/review-database/compare/0.49.0...0.50.0
 [0.49.0]: https://github.com/aicers/review-database/compare/0.48.0...0.49.0
