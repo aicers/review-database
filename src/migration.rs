@@ -4486,7 +4486,8 @@ mod tests {
 
     /// Creates a store over `families`, a subset of the 0.50 and 0.51 set,
     /// marked `version`, with a row in each of the families the 0.52 step
-    /// drops that `families` names, network and event tags in "meta", a
+    /// drops that `families` names, network, event and workflow tags and the
+    /// 0.47 country-code swap keys in "meta", a
     /// "networks" row carrying tag IDs, and a row in "customer networks" and
     /// in "configs".
     fn create_v0_51_store(data_dir: &Path, backup_dir: &Path, version: &str, families: &[&str]) {
@@ -4519,6 +4520,14 @@ mod tests {
                 (
                     crate::tables::EVENT_TAGS.to_vec(),
                     tag_index_bytes(&["event-tag"]),
+                ),
+                (
+                    crate::tables::WORKFLOW_TAGS.to_vec(),
+                    tag_index_bytes(&["workflow-tag"]),
+                ),
+                (
+                    COUNTRY_CODE_SWAP_CHECKPOINT_KEY.to_vec(),
+                    b"checkpoint".to_vec(),
                 ),
                 (
                     COUNTRY_CODE_SWAP_COMPLETED_KEY.to_vec(),
