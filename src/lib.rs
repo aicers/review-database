@@ -48,7 +48,8 @@ pub use self::tables::{
     ExternalServiceConfig, ExternalServiceKind, ExternalServiceStatus, Host, IndexedTable,
     InstallIntent, InstanceAllocation, InstanceAllocationError, Iterable, LabelDb, LabelDbKind,
     LabelDbRule, LabelDbRuleKind, Lifecycle, ListenerBinding, ListenerTransport,
-    Model as ModelDigest, ModelIndicator, Network, NetworkFilter, NetworkUpdate, Node, NodeProfile,
+    Model as ModelDigest, ModelIndicator, Network, NetworkFilter, NetworkListEntry,
+    NetworkListReplaceOutcome, NetworkListSet, NetworkListTable, NetworkUpdate, Node, NodeProfile,
     NodeTable, NodeUpdate, OperationAction, OperationAttempt, OperationCleanupState,
     OperationFailureKind, OperationOnFailure, OperationOutcome, OperationPhase,
     OperationRetentionBound, OperationRetryPolicy, OutlierInfo, OutlierInfoKey, OutlierInfoValue,
@@ -626,6 +627,12 @@ impl Store {
     #[must_use]
     pub fn customer_networks_map(&self) -> OwnedNetworkTable<'_> {
         self.states.customer_networks()
+    }
+
+    /// Returns the table of each customer's allowlist and blocklist.
+    #[must_use]
+    pub fn network_lists_map(&self) -> NetworkListTable<'_> {
+        self.states.network_lists()
     }
 
     #[must_use]
