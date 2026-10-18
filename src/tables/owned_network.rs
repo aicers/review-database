@@ -45,16 +45,24 @@ impl OwnedNetworkSet {
     /// network, whatever its type, sorted and deduplicated.
     #[must_use]
     pub fn merged_group(&self) -> HostNetworkGroup {
-        let mut hosts = Vec::new();
-        let mut networks = Vec::new();
-        let mut ip_ranges = Vec::new();
-        for network in &self.networks {
-            hosts.extend_from_slice(network.group.hosts());
-            networks.extend_from_slice(network.group.networks());
-            ip_ranges.extend_from_slice(network.group.ip_ranges());
-        }
-        HostNetworkGroup::new(hosts, networks, ip_ranges)
+        merge_groups(self.networks.iter().map(|network| &network.group))
     }
+}
+
+/// Returns one group holding the hosts, networks and ranges of every group in
+/// `groups`, sorted and deduplicated.
+pub(super) fn merge_groups<'a>(
+    groups: impl IntoIterator<Item = &'a HostNetworkGroup>,
+) -> HostNetworkGroup {
+    let mut hosts = Vec::new();
+    let mut networks = Vec::new();
+    let mut ip_ranges = Vec::new();
+    for group in groups {
+        hosts.extend_from_slice(group.hosts());
+        networks.extend_from_slice(group.networks());
+        ip_ranges.extend_from_slice(group.ip_ranges());
+    }
+    HostNetworkGroup::new(hosts, networks, ip_ranges)
 }
 
 /// A network a customer owns.

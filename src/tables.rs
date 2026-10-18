@@ -17,6 +17,7 @@ mod lifecycle;
 mod model;
 mod model_indicator;
 mod network;
+mod network_list;
 mod node;
 mod operation_attempt;
 mod outlier_info;
@@ -72,6 +73,9 @@ pub use self::lifecycle::Lifecycle;
 pub use self::model::Model;
 pub use self::model_indicator::ModelIndicator;
 pub use self::network::{Network, Update as NetworkUpdate};
+pub use self::network_list::{
+    NetworkListEntry, NetworkListReplaceOutcome, NetworkListSet, NetworkListTable,
+};
 pub(crate) use self::node::Inner as InnerNode;
 pub use self::node::{
     Config as AgentConfig, Config as ExternalServiceConfig, Node, Profile as NodeProfile,
@@ -142,6 +146,7 @@ pub(super) const INSTANCE_ALLOCATIONS: &str = "instance allocations";
 pub(super) const MODELS: &str = "models";
 pub(super) const MODEL_INDICATORS: &str = "model indicators";
 pub(crate) const META: &str = "meta";
+pub(super) const NETWORK_LISTS: &str = "network lists";
 pub(super) const NETWORKS: &str = "networks";
 pub(super) const NODES: &str = "nodes";
 pub(super) const OPERATION_ATTEMPTS: &str = "operation attempts";
@@ -170,7 +175,7 @@ pub(super) const TRIAGE_RESPONSE: &str = "triage response";
 pub(super) const TRUSTED_DNS_SERVERS: &str = "trusted DNS servers";
 pub(super) const TRUSTED_USER_AGENTS: &str = "trusted user agents";
 
-pub(crate) const MAP_NAMES: [&str; 37] = [
+pub(crate) const MAP_NAMES: [&str; 38] = [
     AGENTS,
     BATCH_INFO,
     CATEGORY,
@@ -187,6 +192,7 @@ pub(crate) const MAP_NAMES: [&str; 37] = [
     MODELS,
     MODEL_INDICATORS,
     META,
+    NETWORK_LISTS,
     NETWORKS,
     NODES,
     OPERATION_ATTEMPTS,
@@ -397,6 +403,16 @@ impl StateDb {
             .expect("table access requires a successfully opened StateDb");
         OwnedNetworkTable::open(inner)
             .expect("StateDb::open initializes the customer networks column family")
+    }
+
+    #[must_use]
+    pub(crate) fn network_lists(&self) -> NetworkListTable<'_> {
+        let inner = self
+            .inner
+            .as_ref()
+            .expect("table access requires a successfully opened StateDb");
+        NetworkListTable::open(inner)
+            .expect("StateDb::open initializes the network lists column family")
     }
 
     #[must_use]
