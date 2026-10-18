@@ -5,7 +5,7 @@ file is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), and
 this project adheres to [Semantic
 Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.53.0] - 2026-10-18
 
 ### Added
 
@@ -19,7 +19,7 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
-- **BREAKING**: Bumped the database format to `0.53.0-alpha.1`. The migration
+- **BREAKING**: Bumped the database format to `0.53.0`. The migration
   from `0.52.x`, and through the earlier steps from every older supported
   format, creates the empty column family of the network lists table and
   changes nothing else in the store. An interrupted run can be retried.
@@ -1971,7 +1971,7 @@ AsRef<[u8]>`). This change accommodates scenarios where the information stored
 - Modified `FtpBruteForce` by adding an `is_internal` field which is a boolean
   indicating whether it is internal or not.
 
-[Unreleased]: https://github.com/aicers/review-database/compare/0.52.0...main
+[0.53.0]: https://github.com/aicers/review-database/compare/0.52.0...0.53.0
 [0.52.0]: https://github.com/aicers/review-database/compare/0.51.0...0.52.0
 [0.51.0]: https://github.com/aicers/review-database/compare/0.50.0...0.51.0
 [0.50.0]: https://github.com/aicers/review-database/compare/0.49.0...0.50.0
