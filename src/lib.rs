@@ -5,6 +5,7 @@ mod classifier_fs;
 mod cluster;
 mod collections;
 mod column_statistics;
+mod engine_instance;
 pub mod event;
 mod geo;
 mod migration;
@@ -48,23 +49,26 @@ pub use self::tables::{
     BackupConfigUpdate, BuildSelector, Cluster, ClusterTimeSeries, ColumnStats, ColumnTimeSeries,
     Confidence, CoreComponent, CsvColumnExtra as CsvColumnExtraConfig, CustomerDataDeletionJob,
     CustomerDataDeletionService, CustomerDataDeletionServiceResult, CustomerDataDeletionStatus,
-    DataSource, DataSourceUpdate, DataType, ExclusionReason, ExternalService,
-    ExternalServiceConfig, ExternalServiceKind, ExternalServiceStatus, Host, IndexedTable,
-    InstallIntent, InstanceAllocation, InstanceAllocationError, Iterable, LabelDb, LabelDbKind,
-    LabelDbRule, LabelDbRuleKind, Lifecycle, ListenerBinding, ListenerTransport,
-    Model as ModelDigest, ModelIndicator, ModelInstance, ModelOwner, Network, NetworkFilter,
-    NetworkListEntry, NetworkListReplaceOutcome, NetworkListSet, NetworkListTable, NetworkUpdate,
-    Node, NodeProfile, NodeTable, NodeUpdate, OperationAction, OperationAttempt,
-    OperationCleanupState, OperationFailureKind, OperationOnFailure, OperationOutcome,
-    OperationPhase, OperationRetentionBound, OperationRetryPolicy, OutlierInfo, OutlierInfoKey,
-    OutlierInfoValue, OwnedNetwork, OwnedNetworkSet, OwnedNetworkTable, PacketAttr, PortAllocation,
+    DataSource, DataSourceUpdate, DataType, DetectorSourceStatus, DetectorState, DetectorStatus,
+    EngineDetectorRef, EngineDocumentError, EngineDocumentRefs, EngineDocumentWrite,
+    EngineInstanceState, ExclusionReason, ExternalService, ExternalServiceConfig,
+    ExternalServiceKind, ExternalServiceStatus, Host, IndexedTable, InstallIntent,
+    InstanceAllocation, InstanceAllocationError, Iterable, LabelDb, LabelDbKind, LabelDbRule,
+    LabelDbRuleKind, Lifecycle, ListenerBinding, ListenerTransport, Model as ModelDigest,
+    ModelIndicator, ModelInstance, ModelOwner, ModelUse, Network, NetworkFilter, NetworkListEntry,
+    NetworkListReplaceOutcome, NetworkListSet, NetworkListTable, NetworkUpdate, Node, NodeProfile,
+    NodeTable, NodeUpdate, OperationAction, OperationAttempt, OperationCleanupState,
+    OperationFailureKind, OperationOnFailure, OperationOutcome, OperationPhase,
+    OperationRetentionBound, OperationRetryPolicy, OutlierInfo, OutlierInfoKey, OutlierInfoValue,
+    OwnedNetwork, OwnedNetworkSet, OwnedNetworkTable, PacketAttr, PortAllocation,
     PortAllocationError, PortOwner, PreviousTraining, PreviousTrainingResults, ProtocolPorts,
     ReplaceOutcome, ReplacedModel, RequestKeyError, Response, ResponseKind, RetentionConfig,
-    RetentionConfigUpdate, SamplingInterval, SamplingKind, SamplingPeriod, SamplingPolicy,
-    SamplingPolicyUpdate, Structured, StructuredClusteringAlgorithm, Table, Template, TimeSeries,
-    TopColumnsOfCluster, TopMultimaps, TorExitNode, TrafficFilter, TrainedWith, TriageExclusion,
-    TriagePolicyInput, TriageResponse, TriageResponseUpdate, TrustedDomain, TrustedUserAgent,
-    UniqueKey, Unstructured, UnstructuredClusteringAlgorithm, UserAgent, ValueKind,
+    RetentionConfigUpdate, RoundOutcome, SamplingInterval, SamplingKind, SamplingPeriod,
+    SamplingPolicy, SamplingPolicyUpdate, SourceState, Structured, StructuredClusteringAlgorithm,
+    Table, Template, TimeSeries, TopColumnsOfCluster, TopMultimaps, TorExitNode, TrafficFilter,
+    TrainedWith, TriageExclusion, TriagePolicyInput, TriageResponse, TriageResponseUpdate,
+    TrustedDomain, TrustedUserAgent, UniqueKey, Unstructured, UnstructuredClusteringAlgorithm,
+    UserAgent, ValueKind,
 };
 pub use self::top_n::*;
 #[allow(deprecated)]
@@ -149,6 +153,14 @@ impl Store {
         self.states.events(self.country_lookup.clone())
     }
 
+    /// Returns the table of agent rows.
+    ///
+    /// Its writers are row-level: an Unsupervised Engine agent's `config` and
+    /// `draft` are written only through
+    /// [`NodeTable::update_with_engine_documents`], which writes the
+    /// references of those documents with them, and deleting an agent's row
+    /// here leaves its engine records, which only the [`NodeTable`] writers
+    /// that remove an agent remove.
     #[must_use]
     #[allow(clippy::missing_panics_doc)]
     pub fn agents_map(&self) -> Table<'_, Agent> {

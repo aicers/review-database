@@ -243,6 +243,11 @@ impl<'d> Table<'d, Agent> {
 
     /// Deletes the agent with given `node_id` and `id`.
     ///
+    /// This deletes the row alone. The engine records of an Unsupervised
+    /// Engine agent — its document references, detector statuses and stopped
+    /// state — stay; only the [`NodeTable`](crate::NodeTable) writers that
+    /// remove an agent remove them.
+    ///
     /// # Errors
     ///
     /// Returns `None` if the table does not exist.
@@ -253,6 +258,12 @@ impl<'d> Table<'d, Agent> {
     }
 
     /// Updates the `Agent` in the database.
+    ///
+    /// This writes the row alone. An Unsupervised Engine agent's `config` and
+    /// `draft` are written only through
+    /// [`NodeTable::update_with_engine_documents`](crate::NodeTable::update_with_engine_documents),
+    /// which writes the references of those documents in the same
+    /// transaction.
     ///
     /// # Errors
     ///

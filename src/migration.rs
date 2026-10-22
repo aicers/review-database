@@ -112,7 +112,7 @@ use crate::{
 /// // release that involves database format change) to 3.5.0, including
 /// // all alpha changes finalized in 3.5.0.
 /// ```
-const COMPATIBLE_VERSION_REQ: &str = ">=0.55.0-alpha.1,<0.55.0-alpha.2";
+const COMPATIBLE_VERSION_REQ: &str = ">=0.55.0-alpha.2,<0.55.0-alpha.3";
 
 /// Number of event records applied in each atomic migration write.
 const EVENT_MIGRATION_BATCH_SIZE: usize = 100;
@@ -162,11 +162,12 @@ const VERSION_TMP_FILE_NAME: &str = "VERSION.tmp";
 
 /// Migrates the data directory to the up-to-date format if necessary.
 ///
-/// The current format's own marker, `0.55.0-alpha.1`, is accepted as
-/// current. Migration otherwise supports released versions only: the
-/// `<0.55.0-alpha.1` bound admits only 0.55.0 prereleases below it, which no
-/// build wrote. Every other prerelease marker is refused with "migration
-/// from {version} is not supported".
+/// The current format's own marker, `0.55.0-alpha.2`, is accepted as
+/// current. Migration otherwise supports released versions only, with one
+/// exception: the `<0.55.0-alpha.2` bound admits `0.55.0-alpha.1`, which
+/// `main` wrote before this format, and which migrates by rerunning the
+/// 0.53 step. Every other prerelease marker is refused with "migration from
+/// {version} is not supported".
 ///
 /// Pass a shared `IP2Location` database handle when available so endpoint
 /// country-code fields can be resolved during the stored event schema
@@ -286,8 +287,8 @@ pub fn migrate_data_dir<P: AsRef<Path>>(
             |data_dir, _backup_dir, _locator| migrate_0_52_to_0_53(data_dir),
         ),
         (
-            VersionReq::parse(">=0.53.0,<0.55.0-alpha.1")?,
-            Version::parse("0.55.0-alpha.1")?,
+            VersionReq::parse(">=0.53.0,<0.55.0-alpha.2")?,
+            Version::parse("0.55.0-alpha.2")?,
             |data_dir, _backup_dir, _locator| migrate_0_53_to_0_55(data_dir),
         ),
     ];
@@ -609,8 +610,9 @@ const PREVIOUS_RESULT_FAMILIES_V0_55: [&str; 7] = [
     crate::tables::PREVIOUS_OUTLIERS,
 ];
 
-/// Migrates a database in the 0.53.x format to 0.55.0-alpha.1, model format
-/// 2, removing every model stored before it.
+/// Migrates a database in the 0.53.x format, or in the 0.55.0-alpha.1
+/// format, to 0.55.0-alpha.2: model format 2, removing every model stored
+/// before it, and the engine instance records.
 ///
 /// Models before format 2 record no owner and no event kind, and none is
 /// converted:
@@ -619,11 +621,18 @@ const PREVIOUS_RESULT_FAMILIES_V0_55: [&str; 7] = [
 /// 2. the per-model families, [`PER_MODEL_FAMILIES_V0_53`], are dropped and
 ///    created again empty, so every per-model row goes, including rows
 ///    orphaned by earlier removals whose model row is already gone;
-/// 3. the seven previous-result families are created;
+/// 3. the seven previous-result families, [`PREVIOUS_RESULT_FAMILIES_V0_55`],
+///    are dropped where present and created again empty, and the `engine
+///    instances` family is created when missing;
 /// 4. the `classifiers` directory under `data_dir` is removed with every
 ///    classifier file in it.
 ///
 /// No other column family is read or written, so detection events stay.
+/// A store stamped `0.55.0-alpha.1` reruns the whole step, so the format 2
+/// models it stored, their previous training results and their classifier
+/// files are removed too: they are prerelease data, which RFC 0006 §3 of
+/// Clumit Security Web accepts losing.
+///
 /// Every step is safe to rerun: a family is dropped only when present and
 /// created only when missing, and a missing directory is not an error, so a
 /// chain interrupted anywhere in this step retries it from the start.
@@ -644,9 +653,12 @@ fn migrate_0_53_to_0_55(data_dir: &Path) -> Result<()> {
     let column_families = map_names_for_existing_format(&opts, &db_path)?;
     let mut db: rocksdb::OptimisticTransactionDB<rocksdb::SingleThreaded> =
         rocksdb::OptimisticTransactionDB::open_cf(&opts, &db_path, column_families)
-            .context("failed to open database for the 0.55.0-alpha.1 migration")?;
+            .context("failed to open database for the 0.55.0-alpha.2 migration")?;
 
-    for name in PER_MODEL_FAMILIES_V0_53 {
+    for name in PER_MODEL_FAMILIES_V0_53
+        .into_iter()
+        .chain(PREVIOUS_RESULT_FAMILIES_V0_55)
+    {
         if db.cf_handle(name).is_some() {
             info!("Dropping '{name}' column family");
             db.drop_cf(name)
@@ -656,12 +668,11 @@ fn migrate_0_53_to_0_55(data_dir: &Path) -> Result<()> {
         db.create_cf(name, &rocksdb::Options::default())
             .with_context(|| format!("failed to create '{name}' column family"))?;
     }
-    for name in PREVIOUS_RESULT_FAMILIES_V0_55 {
-        if db.cf_handle(name).is_none() {
-            info!("Creating '{name}' column family");
-            db.create_cf(name, &rocksdb::Options::default())
-                .with_context(|| format!("failed to create '{name}' column family"))?;
-        }
+    let name = crate::tables::ENGINE_INSTANCES;
+    if db.cf_handle(name).is_none() {
+        info!("Creating '{name}' column family");
+        db.create_cf(name, &rocksdb::Options::default())
+            .with_context(|| format!("failed to create '{name}' column family"))?;
     }
     drop(db);
 
@@ -2825,7 +2836,7 @@ mod tests {
             "0.52.0-alpha.2",
             "0.53.0-alpha.1",
             "0.53.0-alpha.2",
-            "0.55.0-alpha.2",
+            "0.55.0-alpha.3",
         ] {
             let data_dir = tempfile::tempdir().unwrap();
             let backup_dir = tempfile::tempdir().unwrap();
@@ -2851,8 +2862,8 @@ mod tests {
         }
         let data_dir = tempfile::tempdir().unwrap();
         let backup_dir = tempfile::tempdir().unwrap();
-        write_version(data_dir.path(), "0.55.0-alpha.1");
-        write_version(backup_dir.path(), "0.55.0-alpha.1");
+        write_version(data_dir.path(), "0.55.0-alpha.2");
+        write_version(backup_dir.path(), "0.55.0-alpha.2");
         let before = (
             entries_outside_states_db(data_dir.path()),
             entries_outside_states_db(backup_dir.path()),
@@ -3209,8 +3220,17 @@ mod tests {
     /// The column families the 0.53.0 format adds to the 0.52 set.
     const FAMILIES_ADDED_BY_V0_53: [&str; 1] = [crate::tables::NETWORK_LISTS];
 
-    /// The column families the 0.55.0-alpha.1 format adds to the 0.53 set.
-    const FAMILIES_ADDED_BY_V0_55: [&str; 7] = super::PREVIOUS_RESULT_FAMILIES_V0_55;
+    /// The column families the 0.55.0-alpha.2 format adds to the 0.53 set.
+    const FAMILIES_ADDED_BY_V0_55: [&str; 8] = [
+        crate::tables::PREVIOUS_BATCH_INFO,
+        crate::tables::PREVIOUS_SCORES,
+        crate::tables::PREVIOUS_CLUSTER,
+        crate::tables::PREVIOUS_COLUMN_STATS,
+        crate::tables::PREVIOUS_CSV_COLUMN_EXTRAS,
+        crate::tables::PREVIOUS_TIME_SERIES,
+        crate::tables::PREVIOUS_OUTLIERS,
+        crate::tables::ENGINE_INSTANCES,
+    ];
 
     /// Migrates a database in the 0.43-through-0.46 layout, recorded as
     /// `version`, and asserts that it reaches the current format with its agent
@@ -5341,7 +5361,9 @@ mod tests {
         kept_family_entries(db_path)
             .into_iter()
             .map(|(name, entries)| {
-                if super::PER_MODEL_FAMILIES_V0_53.contains(&name.as_str()) {
+                if super::PER_MODEL_FAMILIES_V0_53.contains(&name.as_str())
+                    || super::PREVIOUS_RESULT_FAMILIES_V0_55.contains(&name.as_str())
+                {
                     (name, Entries::new())
                 } else {
                     (name, entries)
@@ -5475,10 +5497,13 @@ mod tests {
             ),
             // In step 3, after some previous-result families were created.
             (with_previous(3), false, &["model_0", "model_7"]),
+            // In step 3, after the previous-result families were created and
+            // before "engine instances" was.
+            (with_previous(7), false, &["model_0", "model_7"]),
             // In step 4, part-way through the classifier files.
-            (with_previous(7), false, &["model_7"]),
+            (with_previous(8), false, &["model_7"]),
             // After step 4, before `VERSION` was written.
-            (with_previous(7), false, &[]),
+            (with_previous(8), false, &[]),
         ];
         for (families, per_model_rows, classifier_dirs) in interruptions {
             let data_dir = tempfile::tempdir().unwrap();
@@ -5513,6 +5538,156 @@ mod tests {
         super::migrate_0_53_to_0_55(data_dir.path()).unwrap();
         migrate_data_dir(data_dir.path(), backup_dir.path(), None).unwrap();
         assert_migrated_from_v0_53(data_dir.path(), backup_dir.path(), &expected);
+    }
+
+    /// A `0.54.0` store, in the same format as `0.53.x`, migrates as one
+    /// stamped `0.53.0` does: every model is removed and the new families,
+    /// "engine instances" among them, are created empty. A second start
+    /// finds the store current and touches nothing.
+    #[test]
+    fn migration_from_v0_54_creates_engine_instances() {
+        let _permit = acquire_db_permit();
+        let data_dir = tempfile::tempdir().unwrap();
+        let backup_dir = tempfile::tempdir().unwrap();
+        let db_path = data_dir.path().join("states.db");
+
+        create_v0_53_store(
+            data_dir.path(),
+            backup_dir.path(),
+            &super::MAP_NAMES_V0_53,
+            true,
+            &["model_0"],
+        );
+        write_version(data_dir.path(), "0.54.0");
+        write_version(backup_dir.path(), "0.54.0");
+        let expected = entries_without_models(&db_path);
+
+        migrate_data_dir(data_dir.path(), backup_dir.path(), None).unwrap();
+        assert_migrated_from_v0_53(data_dir.path(), backup_dir.path(), &expected);
+
+        let before = (files_under(data_dir.path()), files_under(backup_dir.path()));
+        migrate_data_dir(data_dir.path(), backup_dir.path(), None).unwrap();
+        assert_eq!(
+            (files_under(data_dir.path()), files_under(backup_dir.path())),
+            before
+        );
+    }
+
+    /// Creates, through a current store, a model trained twice, so it has a
+    /// classifier file and a previous training result, then takes away the
+    /// "engine instances" family and stamps the store `0.55.0-alpha.1`, the
+    /// format `main` wrote before "engine instances" was added.
+    fn create_v0_55_alpha_1_store(data_dir: &Path, backup_dir: &Path) {
+        migrate_data_dir(data_dir, backup_dir, None).unwrap();
+        {
+            let store = Store::new(data_dir, backup_dir, None).unwrap();
+            let owner = crate::ModelOwner {
+                customer_id: 1,
+                instance: crate::ModelInstance {
+                    node_id: 0,
+                    agent_key: "reconverge".to_string(),
+                },
+            };
+            for run_id in 1..=2 {
+                let body = crate::model::Model {
+                    id: 0,
+                    name: "format-2".to_string(),
+                    version: 1,
+                    kind: "Multifield".to_string(),
+                    serialized_classifier: b"classifier".to_vec(),
+                    max_event_id_num: 10,
+                    event_kind: "http".to_string(),
+                    classification_id: i64::from(run_id),
+                    batch_info: Vec::new(),
+                    scores: [(1, 0.5)].into_iter().collect(),
+                };
+                store
+                    .replace_model(
+                        body,
+                        owner.clone(),
+                        chrono::DateTime::from_timestamp(i64::from(run_id), 0).unwrap(),
+                        crate::TrainedWith {
+                            run_id,
+                            definition: format!("run = {run_id}"),
+                        },
+                    )
+                    .unwrap();
+            }
+            assert_eq!(store.model_map().count_models().unwrap(), 1);
+        }
+        let db_path = data_dir.join("states.db");
+        let mut db = open_states_db(&db_path, crate::tables::MAP_NAMES);
+        db.drop_cf(crate::tables::ENGINE_INSTANCES).unwrap();
+        drop(db);
+        write_version(data_dir, "0.55.0-alpha.1");
+        write_version(backup_dir, "0.55.0-alpha.1");
+    }
+
+    /// A store stamped `0.55.0-alpha.1` reruns the 0.53 step: the format 2
+    /// model stored under `alpha.1` is removed with its previous training
+    /// result and its classifier files, which is accepted for prerelease
+    /// data, and "engine instances" is created empty. A second start finds
+    /// the store current and touches nothing.
+    #[test]
+    fn migration_from_v0_55_alpha_1_reruns_the_wipe_and_creates_engine_instances() {
+        let _permit = acquire_db_permit();
+        let current_version = Version::parse(env!("CARGO_PKG_VERSION")).unwrap();
+        let data_dir = tempfile::tempdir().unwrap();
+        let backup_dir = tempfile::tempdir().unwrap();
+        let db_path = data_dir.path().join("states.db");
+
+        create_v0_55_alpha_1_store(data_dir.path(), backup_dir.path());
+        assert!(!present_families(&db_path).contains(&crate::tables::ENGINE_INSTANCES.to_string()));
+        assert!(data_dir.path().join("classifiers").exists());
+        let present: Vec<String> = present_families(&db_path);
+        let families: Vec<&str> = present.iter().map(String::as_str).collect();
+        assert!(
+            !cf_entries(
+                &db_path,
+                families.iter().copied(),
+                crate::tables::PREVIOUS_SCORES
+            )
+            .is_empty(),
+            "the fixture has a previous training result"
+        );
+
+        migrate_data_dir(data_dir.path(), backup_dir.path(), None).unwrap();
+
+        assert_eq!(
+            read_version_file(&data_dir.path().join(VERSION_FILE_NAME)).unwrap(),
+            current_version
+        );
+        assert_eq!(
+            read_version_file(&backup_dir.path().join(VERSION_FILE_NAME)).unwrap(),
+            current_version
+        );
+        assert_eq!(present_families(&db_path), current_families());
+        for name in super::PER_MODEL_FAMILIES_V0_53
+            .into_iter()
+            .chain(FAMILIES_ADDED_BY_V0_55)
+        {
+            assert_eq!(
+                cf_entries(&db_path, crate::tables::MAP_NAMES, name),
+                Entries::new(),
+                "{name} must be empty"
+            );
+        }
+        assert!(!data_dir.path().join("classifiers").exists());
+        {
+            let store = Store::new(data_dir.path(), backup_dir.path(), None).unwrap();
+            assert_eq!(store.model_map().count_models().unwrap(), 0);
+            assert_eq!(
+                store.engine_instance_states().unwrap(),
+                Vec::<crate::EngineInstanceState>::new()
+            );
+        }
+
+        let before = (files_under(data_dir.path()), files_under(backup_dir.path()));
+        migrate_data_dir(data_dir.path(), backup_dir.path(), None).unwrap();
+        assert_eq!(
+            (files_under(data_dir.path()), files_under(backup_dir.path())),
+            before
+        );
     }
 
     /// Every file under `data_dir` except the `states.db` directory, with its

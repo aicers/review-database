@@ -9,6 +9,7 @@ mod core_component;
 mod csv_column_extra;
 mod customer_data_deletion_job;
 mod data_source;
+mod engine_instance;
 mod external_service;
 mod hosts;
 mod instance_allocation;
@@ -64,6 +65,14 @@ pub use self::customer_data_deletion_job::{
     CustomerDataDeletionStatus,
 };
 pub use self::data_source::{DataSource, DataType, Update as DataSourceUpdate};
+pub use self::engine_instance::{
+    DetectorSourceStatus, DetectorState, DetectorStatus, EngineDetectorRef, EngineDocumentError,
+    EngineDocumentRefs, EngineDocumentWrite, EngineInstanceState, ModelUse, RoundOutcome,
+    SourceState,
+};
+pub(crate) use self::engine_instance::{
+    EngineInstances, Row as EngineInstanceRow, key as engine_instance_key,
+};
 pub use self::external_service::{ExternalService, ExternalServiceKind};
 pub use self::hosts::{Host, UserAgent};
 pub use self::instance_allocation::{InstanceAllocation, InstanceAllocationError};
@@ -144,6 +153,7 @@ pub(crate) const CUSTOMERS: &str = "customers";
 pub(super) const CUSTOMER_DELETION_JOBS: &str = "customer deletion jobs";
 pub(super) const CUSTOMER_NETWORKS: &str = "customer networks";
 pub(super) const DATA_SOURCES: &str = "data sources";
+pub(super) const ENGINE_INSTANCES: &str = "engine instances";
 pub(super) const FILTERS: &str = "filters";
 pub(super) const HOSTS: &str = "hosts";
 pub(super) const INSTANCE_ALLOCATIONS: &str = "instance allocations";
@@ -188,7 +198,7 @@ pub(super) const TRIAGE_RESPONSE: &str = "triage response";
 pub(super) const TRUSTED_DNS_SERVERS: &str = "trusted DNS servers";
 pub(super) const TRUSTED_USER_AGENTS: &str = "trusted user agents";
 
-pub(crate) const MAP_NAMES: [&str; 45] = [
+pub(crate) const MAP_NAMES: [&str; 46] = [
     AGENTS,
     BATCH_INFO,
     CATEGORY,
@@ -200,6 +210,7 @@ pub(crate) const MAP_NAMES: [&str; 45] = [
     CUSTOMER_DELETION_JOBS,
     CUSTOMER_NETWORKS,
     DATA_SOURCES,
+    ENGINE_INSTANCES,
     HOSTS,
     INSTANCE_ALLOCATIONS,
     MODELS,
@@ -501,6 +512,10 @@ impl StateDb {
     pub(crate) fn data_sources(&self) -> IndexedTable<'_, DataSource> {
         let inner = self.inner.as_ref().expect("database must be open");
         IndexedTable::<DataSource>::open(inner).expect("{DATA_SOURCES} table must be present")
+    }
+
+    pub(crate) fn engine_instances(&self) -> EngineInstances<'_> {
+        EngineInstances::open(self.db()).expect("StateDb::open creates the engine instances family")
     }
 
     pub(crate) fn nodes(&self) -> NodeTable<'_> {

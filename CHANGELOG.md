@@ -33,9 +33,42 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   already stored, returning a `PutOutcome`: `Stored` with its key,
   `AlreadyStored`, or `Rejected` with the reason for an event that can never
   be stored. Only a database failure is an error.
+- `NodeTable::update_with_engine_documents` updates a node as
+  `NodeTable::update` does and, in the same transaction, stores the references
+  of the engine documents of its Unsupervised Engine agents, given as
+  `EngineDocumentWrite`s: for each detector (`EngineDetectorRef`), its ID,
+  model, sources and indicator, for the applied (`config`) and pending
+  (`draft`) document (`EngineDocumentRefs`). It refuses, with an
+  `EngineDocumentError` and changing nothing, a model that does not exist or
+  belongs to another instance, a model or detector ID repeated in one
+  document, an indicator that does not exist, an agent key that is not an
+  Unsupervised Engine agent of the node or is listed twice, a kind change to
+  or from Unsupervised, a changed `draft` or `config` without its
+  references, and references of a `draft` or `config` that is no longer the
+  stored one.
+- `Store::engine_instance_state` and `Store::engine_instance_states` return an
+  engine instance's references and stopped state (`EngineInstanceState`), and
+  `Store::model_users` returns the detectors whose applied or pending document
+  names a model (`ModelUse`).
+- `Store::set_detector_status` stores the last status a detector of an engine
+  instance reported (`DetectorStatus`, with `DetectorState`, `RoundOutcome`,
+  `DetectorSourceStatus` and `SourceState`), and `Store::detector_statuses`
+  returns an instance's statuses ordered by detector ID. Writing an instance's
+  references drops the statuses of detectors neither document names.
+- `Store::set_engine_instance_stopped` records whether an engine instance is
+  stopped.
+- Removing an agent through `NodeTable::update`,
+  `NodeTable::update_with_engine_documents` or `NodeTable::remove` removes its
+  engine references, detector statuses and stopped state.
 
 ### Changed
 
+- **BREAKING**: `NodeTable::update` refuses, with an `EngineDocumentError`, a
+  change of the `config`, `draft` or kind of an Unsupervised Engine agent;
+  `NodeTable::update_with_engine_documents` writes engine documents.
+- `NodeTable::remove` removes the node, its agents and its external services
+  in one transaction, so a failure changes nothing, and the lists of agents
+  and external services it could not remove are always empty.
 - **BREAKING**: Models are in format 2. `Model` and `Digest` carry the event
   kind the model was trained on, `event_kind`, in place of `data_source_id`,
   and `Model::from_serialized` refuses format 1.
@@ -46,14 +79,14 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 - `Store::delete_model` also removes the model's previous training result and
   every classifier file of the model, and removes the model and all its rows
   in one transaction.
-- **BREAKING**: Bumped the database format to `0.55.0-alpha.1`. The migration
-  from `0.53.x`, and through the earlier steps from every older supported
-  format, removes every stored model, all of its records and its classifier
-  files, and creates the empty column families of the previous training
-  results; nothing else in the store changes, and an interrupted run can be
-  retried. The migration cannot be rolled back by a snapshot of the states
-  database: a model restored from one has no classifier file and has to be
-  deleted.
+- **BREAKING**: Bumped the database format to `0.55.0-alpha.2`. The migration
+  from `0.53.x` and `0.54.x`, and through the earlier steps from every older
+  supported format, removes every stored model, all of its records and its
+  classifier files, and creates the empty column families of the previous
+  training results and of the engine instances; nothing else in the store
+  changes, and an interrupted run can be retried. The migration cannot be
+  rolled back by a snapshot of the states database: a model restored from one
+  has no classifier file and has to be deleted.
 - `Store::load_model_by_name` returns the model's stored scores instead of
   empty scores.
 - Repeating identical `Table<ColumnStats>::insert_column_statistics` or
