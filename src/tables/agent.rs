@@ -32,6 +32,7 @@ pub enum AgentKind {
     Sensor = 2,
     SemiSupervised = 3,
     TimeSeriesGenerator = 4,
+    LogCollector = 5,
 }
 
 impl AgentKind {
@@ -53,6 +54,7 @@ impl AgentKind {
             Self::Sensor => Some("piglet"),
             Self::SemiSupervised => Some("hog"),
             Self::TimeSeriesGenerator => Some("crusher"),
+            Self::LogCollector => Some("reproduce"),
         }
     }
 }
@@ -304,6 +306,7 @@ mod test {
         assert_eq!(AgentKind::Unsupervised.package_id(), Some("reconverge"));
         assert_eq!(AgentKind::SemiSupervised.package_id(), Some("hog"));
         assert_eq!(AgentKind::TimeSeriesGenerator.package_id(), Some("crusher"));
+        assert_eq!(AgentKind::LogCollector.package_id(), Some("reproduce"));
 
         // A variant added later must fail this match too, so the assertions
         // above cannot fall behind the enum once its arm is written.
@@ -311,8 +314,59 @@ mod test {
             AgentKind::Sensor
             | AgentKind::Unsupervised
             | AgentKind::SemiSupervised
-            | AgentKind::TimeSeriesGenerator => {}
+            | AgentKind::TimeSeriesGenerator
+            | AgentKind::LogCollector => {}
         }
+    }
+
+    #[test]
+    fn log_collector_kind_parses_and_has_discriminant_5() {
+        use num_traits::{FromPrimitive, ToPrimitive};
+
+        assert_eq!(
+            "log_collector".parse::<AgentKind>().unwrap(),
+            AgentKind::LogCollector
+        );
+        assert_eq!(AgentKind::LogCollector.to_u32(), Some(5));
+        assert_eq!(AgentKind::from_u32(5), Some(AgentKind::LogCollector));
+    }
+
+    /// Stored rows encode the kind by declaration position, not by
+    /// discriminant, so the existing kinds must keep positions 0–3 and the
+    /// new one must take position 4.
+    #[test]
+    fn agent_kind_stored_encoding_is_declaration_position() {
+        for (bytes, kind) in [
+            ([0_u8], AgentKind::Unsupervised),
+            ([1], AgentKind::Sensor),
+            ([2], AgentKind::SemiSupervised),
+            ([3], AgentKind::TimeSeriesGenerator),
+            ([4], AgentKind::LogCollector),
+        ] {
+            assert_eq!(
+                super::super::deserialize::<AgentKind>(&bytes).unwrap(),
+                kind
+            );
+            assert_eq!(super::super::serialize(&kind).unwrap(), bytes);
+        }
+    }
+
+    #[test]
+    fn log_collector_agent_round_trips_through_store() {
+        let (_permit, store) = setup_store();
+        let table = store.agents_map();
+
+        let agent = create_agent(
+            1,
+            "001.reproduce",
+            AgentKind::LogCollector,
+            Some(VALID_TOML),
+            None,
+        );
+        table.insert(&agent).unwrap();
+        let stored = table.get(1, "001.reproduce").unwrap().unwrap();
+        assert_eq!(stored, agent);
+        assert_eq!(stored.kind, AgentKind::LogCollector);
     }
 
     #[test]
