@@ -181,6 +181,10 @@ impl<'d> Table<'d, ColumnStats> {
 
     /// Inserts column statistics into the database.
     ///
+    /// A row already stored under the same model, cluster, batch timestamp
+    /// and column index is overwritten, so repeating an identical call
+    /// succeeds and leaves the rows as the first call did.
+    ///
     /// # Differences from Postgres version
     /// This function expects `cluster_id` as a `u32`, not a `String`.
     /// Conversion must be handled before calling.
@@ -209,9 +213,7 @@ impl<'d> Table<'d, ColumnStats> {
                     description: col.description,
                     n_largest_count: col.n_largest_count,
                 };
-                // Insert the serialized value into the map.
-                self.map
-                    .insert(&key.to_bytes(), &super::serialize(&value)?)?;
+                self.map.put(&key.to_bytes(), &super::serialize(&value)?)?;
             }
         }
 
@@ -1059,6 +1061,60 @@ mod tests {
             stats[0].column_stats.n_largest_count.number_of_elements(),
             2
         );
+    }
+
+    /// Repeating an identical call succeeds and leaves the rows as the first
+    /// call did.
+    #[test]
+    fn insert_column_statistics_repeat_is_a_no_op() {
+        use structured::ColumnStatistics;
+
+        let (_permit, store) = setup_store();
+        let table = store.column_stats_map();
+        let batch_ts = NaiveDate::from_ymd_opt(2023, 6, 1)
+            .unwrap()
+            .and_hms_opt(0, 0, 0)
+            .unwrap();
+        let statistics = || {
+            vec![(
+                3,
+                vec![
+                    ColumnStatistics {
+                        description: Description::default(),
+                        n_largest_count: NLargestCount::new(
+                            1,
+                            vec![ElementCount {
+                                value: Element::Int(1),
+                                count: 10,
+                            }],
+                            Some(Element::Int(1)),
+                        ),
+                    },
+                    ColumnStatistics {
+                        description: Description::default(),
+                        n_largest_count: NLargestCount::default(),
+                    },
+                ],
+            )]
+        };
+
+        table
+            .insert_column_statistics(statistics(), 8, batch_ts)
+            .unwrap();
+        let first: Vec<_> = table
+            .iter(Direction::Forward, None)
+            .map(Result::unwrap)
+            .collect();
+        assert_eq!(first.len(), 2);
+
+        table
+            .insert_column_statistics(statistics(), 8, batch_ts)
+            .unwrap();
+        let second: Vec<_> = table
+            .iter(Direction::Forward, None)
+            .map(Result::unwrap)
+            .collect();
+        assert_eq!(second, first);
     }
 
     #[test]

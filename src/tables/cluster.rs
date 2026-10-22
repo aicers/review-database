@@ -101,28 +101,47 @@ impl<'d> Table<'d, Cluster> {
     ///
     /// Returns an error if a database operation fails or accumulating a cluster
     /// size overflows `i64`. No updates are committed on error.
-    pub fn update_clusters(
+    #[cfg(test)]
+    pub(crate) fn update_clusters(
         &self,
-        updates: Vec<crate::UpdateClusterRequest>,
+        updates: &[crate::UpdateClusterRequest],
         model_id: u32,
         max_event_id_num: usize,
     ) -> Result<()> {
         let txn = self.map.db.transaction();
+        self.update_clusters_with_transaction(updates, model_id, max_event_id_num, &txn)?;
+        Ok(txn.commit()?)
+    }
+
+    /// Applies `updates` to the clusters of `model_id` within a transaction,
+    /// retaining only the top `max_event_id_num` event IDs per cluster.
+    ///
+    /// Every cluster read here is read for update, so a concurrent write of
+    /// it makes the transaction fail to commit rather than be overwritten.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a database operation fails or accumulating a cluster
+    /// size overflows `i64`.
+    pub(crate) fn update_clusters_with_transaction(
+        &self,
+        updates: &[crate::UpdateClusterRequest],
+        model_id: u32,
+        max_event_id_num: usize,
+        txn: &rocksdb::Transaction<OptimisticTransactionDB>,
+    ) -> Result<()> {
         let now = chrono::Utc::now().naive_utc();
-        for mut update in updates {
+        for update in updates {
             let key = Key {
                 model_id,
                 cluster_id: update.cluster_id,
             }
             .to_bytes();
 
-            update
-                .event_ids
-                .sort_unstable_by_key(|(id, _)| Reverse(*id));
-
-            let Some(value) = self.map.get(&key)? else {
-                let (event_ids, sensors) =
-                    update.event_ids.into_iter().take(max_event_id_num).unzip();
+            let Some(value) = txn.get_for_update_cf(self.map.cf, &key, crate::EXCLUSIVE)? else {
+                let mut event_ids = update.event_ids.clone();
+                event_ids.sort_unstable_by_key(|(id, _)| Reverse(*id));
+                let (event_ids, sensors) = event_ids.into_iter().take(max_event_id_num).unzip();
 
                 let entry = Cluster {
                     model_id,
@@ -131,15 +150,15 @@ impl<'d> Table<'d, Cluster> {
                     detector_id: update.detector_id,
                     event_ids,
                     sensors,
-                    labels: update.labels,
+                    labels: update.labels.clone(),
                     qualifier_id: 1, // default to "Unqualified"
                     status_id: update.status_id,
-                    signature: update.signature,
+                    signature: update.signature.clone(),
                     size: update.size,
                     score: update.score,
                     last_modification_time: Some(now),
                 };
-                self.insert_with_transaction(&entry, &txn)?;
+                self.insert_with_transaction(&entry, txn)?;
                 continue;
             };
             let mut entry: Cluster = FromKeyValue::from_key_value(&key, value.as_ref())?;
@@ -162,11 +181,11 @@ impl<'d> Table<'d, Cluster> {
 
             entry.status_id = update.status_id;
 
-            if let Some(labels) = update.labels {
-                entry.labels = Some(labels);
+            if let Some(labels) = &update.labels {
+                entry.labels = Some(labels.clone());
             }
 
-            entry.signature = update.signature;
+            entry.signature.clone_from(&update.signature);
 
             entry.size = entry.size.checked_add(update.size).ok_or_else(|| {
                 anyhow!("size accumulation overflows i64 for cluster {}", entry.id)
@@ -176,9 +195,9 @@ impl<'d> Table<'d, Cluster> {
                 entry.score = Some(score);
             }
             entry.last_modification_time = Some(now);
-            self.put_with_transaction(&entry, &txn)?;
+            self.put_with_transaction(&entry, txn)?;
         }
-        Ok(txn.commit()?)
+        Ok(())
     }
 
     /// Returns the clusters that satisfy the given conditions.
@@ -564,7 +583,7 @@ mod tests {
             size: 10,
             score: Some(0.5),
         };
-        table.update_clusters(vec![req], 1, 2).unwrap();
+        table.update_clusters(&[req], 1, 2).unwrap();
 
         let inserted = table
             .load_clusters(1, None, None, None, None, &None, &None, true, 10)
@@ -585,7 +604,7 @@ mod tests {
             size: 5,
             score: None,
         };
-        table.update_clusters(vec![req2], 1, 1).unwrap();
+        table.update_clusters(&[req2], 1, 1).unwrap();
 
         let merged = table
             .load_clusters(1, None, None, None, None, &None, &None, true, 10)
@@ -621,8 +640,8 @@ mod tests {
                 size: 1,
                 score: Some(0.5),
             })
-            .collect();
-        assert!(table.update_clusters(updates, 1, 2).is_err());
+            .collect::<Vec<_>>();
+        assert!(table.update_clusters(&updates, 1, 2).is_err());
 
         let mut stored = table
             .load_clusters(1, None, None, None, None, &None, &None, true, 10)

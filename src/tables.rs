@@ -23,6 +23,7 @@ mod operation_attempt;
 mod outlier_info;
 mod owned_network;
 mod port_allocation;
+mod previous_training;
 mod qualifier;
 mod retention_config;
 mod sampling_policy;
@@ -70,7 +71,9 @@ pub use self::label_db::{
     Kind as LabelDbKind, LabelDb, Rule as LabelDbRule, RuleKind as LabelDbRuleKind,
 };
 pub use self::lifecycle::Lifecycle;
-pub use self::model::Model;
+pub use self::model::{
+    Model, ModelInstance, ModelOwner, PreviousTraining, ReplacedModel, TrainedWith,
+};
 pub use self::model_indicator::ModelIndicator;
 pub use self::network::{Network, Update as NetworkUpdate};
 pub use self::network_list::{
@@ -94,6 +97,7 @@ pub use self::owned_network::{OwnedNetwork, OwnedNetworkSet, OwnedNetworkTable, 
 pub use self::port_allocation::{
     ListenerBinding, PortAllocation, PortAllocationError, PortOwner, Transport as ListenerTransport,
 };
+pub use self::previous_training::PreviousTrainingResults;
 pub use self::retention_config::{RetentionConfig, RetentionConfigUpdate};
 pub use self::sampling_policy::{
     Interval as SamplingInterval, Kind as SamplingKind, Period as SamplingPeriod, SamplingPolicy,
@@ -159,6 +163,15 @@ pub(super) const OUTLIERS: &str = "outliers";
 pub(super) const PORT_ALLOCATIONS: &str = "port allocations";
 pub(super) const PORT_ALLOCATIONS_BY_ATTEMPT: &str = "port allocations by attempt";
 pub(super) const PORT_ALLOCATIONS_BY_INSTANCE: &str = "port allocations by instance";
+// The previous training result of each model: one mirror of each per-model
+// column family a replace moves rows out of, with the same row layout.
+pub(super) const PREVIOUS_BATCH_INFO: &str = "previous batch_info";
+pub(super) const PREVIOUS_CLUSTER: &str = "previous cluster";
+pub(super) const PREVIOUS_COLUMN_STATS: &str = "previous column stats";
+pub(super) const PREVIOUS_CSV_COLUMN_EXTRAS: &str = "previous csv column extras";
+pub(super) const PREVIOUS_OUTLIERS: &str = "previous outliers";
+pub(super) const PREVIOUS_SCORES: &str = "previous scores";
+pub(super) const PREVIOUS_TIME_SERIES: &str = "previous time series";
 pub(super) const QUALIFIERS: &str = "qualifiers";
 pub(super) const EXTERNAL_SERVICES: &str = "external services";
 pub(super) const SAMPLING_POLICY: &str = "sampling policy";
@@ -175,7 +188,7 @@ pub(super) const TRIAGE_RESPONSE: &str = "triage response";
 pub(super) const TRUSTED_DNS_SERVERS: &str = "trusted DNS servers";
 pub(super) const TRUSTED_USER_AGENTS: &str = "trusted user agents";
 
-pub(crate) const MAP_NAMES: [&str; 38] = [
+pub(crate) const MAP_NAMES: [&str; 45] = [
     AGENTS,
     BATCH_INFO,
     CATEGORY,
@@ -201,6 +214,13 @@ pub(crate) const MAP_NAMES: [&str; 38] = [
     PORT_ALLOCATIONS,
     PORT_ALLOCATIONS_BY_ATTEMPT,
     PORT_ALLOCATIONS_BY_INSTANCE,
+    PREVIOUS_BATCH_INFO,
+    PREVIOUS_CLUSTER,
+    PREVIOUS_COLUMN_STATS,
+    PREVIOUS_CSV_COLUMN_EXTRAS,
+    PREVIOUS_OUTLIERS,
+    PREVIOUS_SCORES,
+    PREVIOUS_TIME_SERIES,
     QUALIFIERS,
     EXTERNAL_SERVICES,
     SAMPLING_POLICY,
@@ -306,6 +326,18 @@ impl StateDb {
             .ok_or_else(|| anyhow!("states database {} is not a directory", path.display()))?;
         open.push(id);
         Ok(OpenStateDb(id))
+    }
+
+    /// Returns the open database.
+    pub(crate) fn db(&self) -> &rocksdb::OptimisticTransactionDB {
+        self.inner.as_ref().expect("database must be open")
+    }
+
+    /// Returns the read view of the previous training results.
+    #[must_use]
+    pub(crate) fn previous_training_results(&self) -> PreviousTrainingResults<'_> {
+        PreviousTrainingResults::open(self.db())
+            .expect("StateDb::open creates every previous-result column family")
     }
 
     #[must_use]
@@ -692,6 +724,31 @@ mod iteration {
     impl Eligible for tables::TrustedUserAgent {}
 }
 
+/// The opt-in list of record types whose [`IndexedTable`] may be written
+/// through the generic methods `put`, `remove`, `deactivate` and
+/// `update_with_transaction`.
+///
+/// `tables::Model` is deliberately absent: a model row is created, changed
+/// and removed only together with its per-model records and classifier files,
+/// through the `Store` methods that hold the model-files lock, so the generic
+/// writers are not reachable for it. As with [`iteration`], the trait is not
+/// exported, so nothing outside the crate can add a type to the list.
+mod indexed_writes {
+    use crate::{tables, types};
+
+    pub trait Eligible {}
+
+    impl Eligible for crate::Category {}
+    impl Eligible for tables::CsvColumnExtra {}
+    impl Eligible for tables::DataSource {}
+    impl Eligible for tables::InnerNode {}
+    impl Eligible for tables::Network {}
+    impl Eligible for types::Qualifier {}
+    impl Eligible for tables::SamplingPolicy {}
+    impl Eligible for types::Status {}
+    impl Eligible for tables::TriageResponse {}
+}
+
 /// Represents a table that can be iterated over.
 ///
 /// A [`Table`] offers this only for a record type whose column family holds
@@ -959,7 +1016,7 @@ impl<'d, R> IndexedTable<'d, R> {
     /// Returns an error if the database operation fails.
     pub fn put(&self, entry: R) -> Result<u32>
     where
-        R: Indexable,
+        R: Indexable + indexed_writes::Eligible,
     {
         self.indexed_map.insert(entry)
     }
@@ -975,7 +1032,7 @@ impl<'d, R> IndexedTable<'d, R> {
         txn: &rocksdb::Transaction<rocksdb::OptimisticTransactionDB>,
     ) -> Result<u32>
     where
-        R: Indexable,
+        R: Indexable + indexed_writes::Eligible,
     {
         self.indexed_map.insert_with_transaction(entry, txn)
     }
@@ -987,7 +1044,7 @@ impl<'d, R> IndexedTable<'d, R> {
     /// Returns an error if the database operation fails.
     pub fn remove(&self, id: u32) -> Result<Vec<u8>>
     where
-        R: Indexable,
+        R: Indexable + indexed_writes::Eligible,
     {
         self.indexed_map.remove::<R>(id)
     }
@@ -1003,7 +1060,7 @@ impl<'d, R> IndexedTable<'d, R> {
         txn: &rocksdb::Transaction<rocksdb::OptimisticTransactionDB>,
     ) -> Result<Vec<u8>>
     where
-        R: Indexable,
+        R: Indexable + indexed_writes::Eligible,
     {
         self.indexed_map.remove_with_transaction::<R>(id, txn)
     }
@@ -1042,7 +1099,10 @@ impl<'d, R> IndexedTable<'d, R> {
     /// # Errors
     ///
     /// Returns an error if the database operation fails.
-    pub fn deactivate(&self, id: u32) -> Result<Vec<u8>> {
+    pub fn deactivate(&self, id: u32) -> Result<Vec<u8>>
+    where
+        R: indexed_writes::Eligible,
+    {
         self.indexed_map.deactivate(id)
     }
 
@@ -1059,6 +1119,7 @@ impl<'d, R> IndexedTable<'d, R> {
         txn: &rocksdb::Transaction<rocksdb::OptimisticTransactionDB>,
     ) -> Result<()>
     where
+        R: indexed_writes::Eligible,
         O: IndexedMapUpdate,
         O::Entry: Indexable + FromKeyValue,
         V: IndexedMapUpdate,

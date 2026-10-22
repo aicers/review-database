@@ -1,24 +1,102 @@
 use std::borrow::Cow;
 
-use anyhow::Result;
+use anyhow::{Result, anyhow};
+use chrono::{DateTime, Utc};
 use rocksdb::OptimisticTransactionDB;
 use serde::{Deserialize, Serialize};
 
 use super::UniqueKey;
 use crate::{
-    Indexable, IndexedMap, IndexedMapUpdate, IndexedTable, Iterable, collections::Indexed,
-    types::FromKeyValue,
+    EXCLUSIVE, Indexable, IndexedMap, IndexedMapUpdate, IndexedTable, Iterable,
+    collections::Indexed, types::FromKeyValue,
 };
 
-#[derive(Clone, Deserialize, Serialize)]
+/// The record of a model: what the model is, who owns it, and which training
+/// produced its current and previous classifiers.
+///
+/// A record is created, given a new classifier and removed only through
+/// [`Store::replace_model`](crate::Store::replace_model),
+/// [`Store::update_model`](crate::Store::update_model) and
+/// [`Store::delete_model`](crate::Store::delete_model), which keep it, the
+/// model's per-model records and its classifier files consistent.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 pub struct Model {
     pub id: u32,
     pub name: String,
     pub version: i32,
+    /// The clustering method.
     pub kind: String,
     pub max_event_id_num: i32,
-    pub data_source_id: i32,
     pub classification_id: Option<i64>,
+    /// The Giganto event kind the model was trained on, such as `http`, a
+    /// Sysmon kind or a log kind.
+    pub event_kind: String,
+    /// The customer the model belongs to.
+    pub customer_id: u32,
+    /// The engine instance the model belongs to; `None` is the model's "no
+    /// instance" state, `Some` its ready state.
+    pub instance: Option<ModelInstance>,
+    /// When the run that produced the current classifier succeeded.
+    pub trained_at: DateTime<Utc>,
+    /// The generation of the current classifier file.
+    pub classifier_generation: u64,
+    /// The id of the run that produced the current classifier.
+    pub trained_run_id: u32,
+    /// The exact training definition text of the run that produced the
+    /// current classifier. It is a snapshot that changes only on replace,
+    /// and nothing in this crate parses it.
+    pub trained_definition: String,
+    /// The summary of the previous training result, `None` until the first
+    /// replace. It is also the previous result's existence marker: a model
+    /// whose `previous` is `None` has no rows in
+    /// [`Store::previous_training_results`](crate::Store::previous_training_results).
+    pub previous: Option<PreviousTraining>,
+    /// The `classification_id` whose cluster updates were last applied by
+    /// [`Store::update_clusters`](crate::Store::update_clusters).
+    pub clusters_applied: Option<i64>,
+}
+
+/// The engine instance a model belongs to, named as the agents table keys an
+/// `Agent`: its node id, then its key.
+#[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+pub struct ModelInstance {
+    pub node_id: u32,
+    pub agent_key: String,
+}
+
+/// The owner a model is created for, and which a replace of it must match.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ModelOwner {
+    pub customer_id: u32,
+    pub instance: ModelInstance,
+}
+
+/// The run that produced a classifier, and that run's exact training
+/// definition text.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TrainedWith {
+    pub run_id: u32,
+    pub definition: String,
+}
+
+/// The outcome of [`Store::replace_model`](crate::Store::replace_model).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ReplacedModel {
+    /// The id of the model inserted or replaced.
+    pub id: u32,
+    /// `true` if no model of that name existed and one was inserted.
+    pub inserted: bool,
+}
+
+/// The summary of a model's previous training result, with the snapshot of
+/// the definition that trained it.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct PreviousTraining {
+    pub trained_at: DateTime<Utc>,
+    pub version: i32,
+    pub classifier_generation: u64,
+    pub trained_run_id: u32,
+    pub trained_definition: String,
 }
 
 /// Functions for the `model` indexed map.
@@ -37,7 +115,8 @@ impl<'d> IndexedTable<'d, Model> {
     /// # Errors
     ///
     /// Returns an error if the `id` is invalid or the database operation fails.
-    pub fn update(&mut self, id: u32, old: &Update, new: &Update) -> Result<()> {
+    #[cfg(test)]
+    pub(crate) fn update(&mut self, id: u32, old: &Update, new: &Update) -> Result<()> {
         self.indexed_map.update(id, old, new)
     }
 
@@ -46,8 +125,22 @@ impl<'d> IndexedTable<'d, Model> {
     /// # Errors
     ///
     /// Returns an error if the model already exists or if a database operation fails.
-    pub fn add_model(&self, model: Model) -> Result<u32> {
+    #[cfg(test)]
+    pub(crate) fn add_model(&self, model: Model) -> Result<u32> {
         self.indexed_map.insert(model)
+    }
+
+    /// Adds a new model within a transaction and returns its id.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the model already exists or if a database operation fails.
+    pub(crate) fn add_model_with_transaction(
+        &self,
+        model: Model,
+        txn: &rocksdb::Transaction<OptimisticTransactionDB>,
+    ) -> Result<u32> {
+        self.indexed_map.insert_with_transaction(model, txn)
     }
 
     /// Deletes the model with the given name.
@@ -55,10 +148,26 @@ impl<'d> IndexedTable<'d, Model> {
     /// # Errors
     ///
     /// Returns an error if the model does not exist or if a database operation fails.
-    pub fn delete_model(&self, name: &str) -> Result<u32> {
+    #[cfg(test)]
+    pub(crate) fn delete_model(&self, name: &str) -> Result<u32> {
         let model: Model = self.load_model_by_name(name)?;
-        self.remove(model.id)?;
+        self.indexed_map.remove::<Model>(model.id)?;
         Ok(model.id)
+    }
+
+    /// Removes the model with the given id within a transaction.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the model does not exist or if a database operation fails.
+    pub(crate) fn remove_model_with_transaction(
+        &self,
+        id: u32,
+        txn: &rocksdb::Transaction<OptimisticTransactionDB>,
+    ) -> Result<()> {
+        self.indexed_map
+            .remove_with_transaction::<Model>(id, txn)
+            .map(|_| ())
     }
 
     /// Returns the number of models.
@@ -76,8 +185,7 @@ impl<'d> IndexedTable<'d, Model> {
     ///
     /// Returns an error if the model does not exist or if a database operation fails.
     pub fn load_model(&self, id: u32) -> Result<Model> {
-        self.get_by_id(id)?
-            .ok_or(anyhow::anyhow!("model not found"))
+        self.get_by_id(id)?.ok_or(anyhow!("model not found"))
     }
 
     /// Returns the model with the given name.
@@ -90,7 +198,26 @@ impl<'d> IndexedTable<'d, Model> {
             .get_by_key(name.as_bytes())?
             .map(|r| super::deserialize(r.as_ref()))
             .transpose()?
-            .ok_or(anyhow::anyhow!("model not found"))
+            .ok_or(anyhow!("model not found"))
+    }
+
+    /// Returns the model with the given name, read within a transaction that
+    /// the read then conflicts with.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the name is empty or if a database operation fails.
+    pub(crate) fn load_model_by_name_in_transaction(
+        &self,
+        name: &str,
+        txn: &rocksdb::Transaction<OptimisticTransactionDB>,
+    ) -> Result<Option<Model>> {
+        if name.is_empty() {
+            return Ok(None);
+        }
+        txn.get_for_update_cf(self.indexed_map.cf(), name.as_bytes(), EXCLUSIVE)?
+            .map(|value| super::deserialize(&value))
+            .transpose()
     }
 
     /// Returns the models between `after` and `before`.
@@ -139,17 +266,39 @@ impl<'d> IndexedTable<'d, Model> {
         .collect()
     }
 
-    /// Updates the model with the given name.
+    /// Replaces the model with the given id, as stored, by `model`.
     ///
     /// # Errors
     ///
     /// Returns an error if the model does not exist or if a database operation fails.
-    pub fn update_model(&mut self, model: &Model) -> Result<u32> {
+    #[cfg(test)]
+    pub(crate) fn update_model(&mut self, model: &Model) -> Result<u32> {
         let old = self.load_model(model.id)?;
-        let old = old.into();
-        let new = model.into();
-        self.update(model.id, &old, &new)?;
+        self.update(model.id, &Update::from(&old), &Update::from(model))?;
         Ok(model.id)
+    }
+
+    /// Replaces the stored record `old` by `new` within a transaction.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the stored record is not `old`, if `new` has
+    /// another id or name, or if a database operation fails.
+    pub(crate) fn update_model_with_transaction(
+        &self,
+        old: &Model,
+        new: &Model,
+        txn: &rocksdb::Transaction<OptimisticTransactionDB>,
+    ) -> Result<()> {
+        if old.id != new.id || old.name != new.name {
+            return Err(anyhow!("a model's id and name do not change"));
+        }
+        self.indexed_map.update_with_transaction(
+            old.id,
+            &Update::from(old),
+            &Update::from(new),
+            txn,
+        )
     }
 }
 
@@ -186,39 +335,14 @@ impl Indexable for Model {
     }
 }
 
-#[derive(Clone, Deserialize, Serialize)]
-pub struct Update {
-    name: Option<String>,
-    version: Option<i32>,
-    kind: Option<String>,
-    max_event_id_num: Option<i32>,
-    data_source_id: Option<i32>,
-    classification_id: Option<i64>,
-}
-
-impl From<Model> for Update {
-    fn from(model: Model) -> Self {
-        Self {
-            name: Some(model.name),
-            version: Some(model.version),
-            kind: Some(model.kind),
-            max_event_id_num: Some(model.max_event_id_num),
-            data_source_id: Some(model.data_source_id),
-            classification_id: model.classification_id,
-        }
-    }
-}
+/// A whole-record update of a model: as `old`, it matches only the record it
+/// was taken from; as `new`, it replaces every field but the id.
+#[derive(Clone)]
+pub(crate) struct Update(Model);
 
 impl From<&Model> for Update {
     fn from(model: &Model) -> Self {
-        Self {
-            name: Some(model.name.clone()),
-            version: Some(model.version),
-            kind: Some(model.kind.clone()),
-            max_event_id_num: Some(model.max_event_id_num),
-            data_source_id: Some(model.data_source_id),
-            classification_id: model.classification_id,
-        }
+        Self(model.clone())
     }
 }
 
@@ -226,57 +350,18 @@ impl IndexedMapUpdate for Update {
     type Entry = Model;
 
     fn key(&self) -> Option<Cow<'_, [u8]>> {
-        self.name
-            .as_ref()
-            .map(|name| Cow::Borrowed(name.as_bytes()))
+        Some(Cow::Borrowed(self.0.name.as_bytes()))
     }
 
-    fn apply(&self, mut value: Self::Entry) -> Result<Self::Entry, anyhow::Error> {
-        if let Some(name) = &self.name {
-            value.name.clone_from(name);
-        }
-        if let Some(version) = self.version {
-            value.version = version;
-        }
-        if let Some(kind) = &self.kind {
-            value.kind.clone_from(kind);
-        }
-        if let Some(max_event_id_num) = self.max_event_id_num {
-            value.max_event_id_num = max_event_id_num;
-        }
-        if let Some(data_source_id) = self.data_source_id {
-            value.data_source_id = data_source_id;
-        }
-        Ok(value)
+    fn apply(&self, value: Self::Entry) -> Result<Self::Entry, anyhow::Error> {
+        Ok(Model {
+            id: value.id,
+            ..self.0.clone()
+        })
     }
 
     fn verify(&self, value: &Self::Entry) -> bool {
-        if let Some(name) = &self.name
-            && name != &value.name
-        {
-            return false;
-        }
-        if let Some(version) = self.version
-            && version != value.version
-        {
-            return false;
-        }
-        if let Some(kind) = &self.kind
-            && kind != &value.kind
-        {
-            return false;
-        }
-        if let Some(max_event_id_num) = self.max_event_id_num
-            && max_event_id_num != value.max_event_id_num
-        {
-            return false;
-        }
-        if let Some(data_source_id) = self.data_source_id
-            && data_source_id != value.data_source_id
-        {
-            return false;
-        }
-        true
+        self.0 == *value
     }
 }
 
@@ -303,8 +388,19 @@ mod tests {
             version,
             kind: "test-kind".to_string(),
             max_event_id_num: 100,
-            data_source_id: 42,
             classification_id: None,
+            event_kind: "http".to_string(),
+            customer_id: 7,
+            instance: Some(ModelInstance {
+                node_id: 1,
+                agent_key: "unsupervised@host".to_string(),
+            }),
+            trained_at: chrono::DateTime::from_timestamp(1_700_000_000, 123).unwrap(),
+            classifier_generation: 1,
+            trained_run_id: 9,
+            trained_definition: "eps = 5.0".to_string(),
+            previous: None,
+            clusters_applied: None,
         }
     }
 
@@ -323,6 +419,9 @@ mod tests {
 
         let loaded_by_name = table.load_model_by_name("alpha").unwrap();
         assert_eq!(loaded_by_name.id, id);
+
+        // Every field of the record round-trips.
+        assert_eq!(loaded_by_name, Model { id, ..model });
     }
 
     #[test]
@@ -410,22 +509,37 @@ mod tests {
         let mut m = make_model("verify", 1);
         m.id = 123;
 
-        let update = Update {
-            name: Some("verify".into()),
-            version: Some(2),
-            kind: Some("changed".into()),
-            max_event_id_num: Some(200),
-            data_source_id: Some(77),
-            classification_id: None,
-        };
+        let mut changed = m.clone();
+        changed.id = 0;
+        changed.version = 2;
+        changed.max_event_id_num = 200;
+        changed.classification_id = Some(5);
+        let update = Update::from(&changed);
 
         let applied = update.apply(m.clone()).unwrap();
+        assert_eq!(applied.id, 123, "the id is kept");
         assert_eq!(applied.version, 2);
-        assert_eq!(applied.kind, "changed");
         assert_eq!(applied.max_event_id_num, 200);
-        assert_eq!(applied.data_source_id, 77);
+        assert_eq!(applied.classification_id, Some(5));
 
-        assert!(update.verify(&applied));
-        assert!(!update.verify(&m)); // old model doesn't match update
+        assert!(Update::from(&m).verify(&m));
+        assert!(!Update::from(&m).verify(&applied)); // a changed record doesn't match
+    }
+
+    #[test]
+    fn test_update_with_transaction_refuses_renaming() {
+        let (_permit, store) = setup_store();
+        let table = store.model_map();
+        let id = table.add_model(make_model("gamma", 1)).unwrap();
+        let old = table.load_model(id).unwrap();
+        let mut renamed = old.clone();
+        renamed.name = "delta".to_string();
+
+        let txn = store.states.db().transaction();
+        assert!(
+            table
+                .update_model_with_transaction(&old, &renamed, &txn)
+                .is_err()
+        );
     }
 }

@@ -15,6 +15,11 @@ impl<'d> Table<'d, TimeSeries> {
         Map::open(db, super::TIME_SERIES).map(Table::new)
     }
 
+    /// Stores the time series of `model_id` for the batch at `batch_ts`.
+    ///
+    /// A row already stored under the same key is overwritten, so repeating
+    /// an identical call succeeds and leaves the rows as the first call did.
+    ///
     /// # Errors
     ///
     /// Returns an error if the database operation fails.
@@ -36,7 +41,7 @@ impl<'d> Table<'d, TimeSeries> {
                         value,
                         count,
                     };
-                    self.insert_with_transaction(&ts, &txn)?;
+                    self.put_with_transaction(&ts, &txn)?;
                 }
             }
         }
@@ -581,6 +586,34 @@ mod tests {
 
         let result = table.add_time_series(model_id, batch_ts, series);
         assert!(result.is_ok());
+    }
+
+    /// Repeating an identical call succeeds and leaves the rows as the first
+    /// call did.
+    #[test]
+    fn add_time_series_repeat_is_a_no_op() {
+        let (_permit, store) = setup_store();
+        let table = store.time_series_map();
+        let series = || {
+            vec![
+                (1, vec![create_test_column(0, vec![(100, 10), (160, 15)])]),
+                (2, vec![create_test_column(1, vec![(100, 5)])]),
+            ]
+        };
+
+        table.add_time_series(4, 1_000, series()).unwrap();
+        let first: Vec<_> = table
+            .iter(rocksdb::Direction::Forward, None)
+            .map(Result::unwrap)
+            .collect();
+        assert_eq!(first.len(), 3);
+
+        table.add_time_series(4, 1_000, series()).unwrap();
+        let second: Vec<_> = table
+            .iter(rocksdb::Direction::Forward, None)
+            .map(Result::unwrap)
+            .collect();
+        assert_eq!(second, first);
     }
 
     #[test]
