@@ -56,7 +56,33 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   returns an instance's statuses ordered by detector ID. Writing an instance's
   references drops the statuses of detectors neither document names.
 - `Store::set_engine_instance_stopped` records whether an engine instance is
-  stopped.
+  stopped. Stopping an instance also fails its active model runs.
+- Training definitions (`TrainingDefinition`), the settings each Unsupervised
+  Engine model is trained from, share one name namespace with models.
+  `Store::insert_training_definition` stores one (`NewTrainingDefinition`, with
+  its `ModelMethod`) for an Unsupervised Engine instance of the customer of the
+  instance's node; `Store::update_training_definition` replaces its settings
+  (`TrainingDefinitionUpdate`) between runs, keeping its method and event kind
+  once its model exists; `Store::remove_training_definition` removes one that
+  has no model and no active run, with its runs; and
+  `Store::training_definition` and `Store::training_definitions` read them.
+  `Store::training_definition_state` returns a definition's
+  `TrainingDefinitionState`.
+- Model runs (`ModelRun`, identified by a `RunId`, with a `RunKind` and a
+  `RunState`) train or clone models, at most one at a time on each engine
+  instance. `Store::start_training_run` requests a training of a definition
+  and returns a `StartedTrainingRun` with the definition text to relay;
+  `Store::start_clone_run` requests a clone of a model into a new definition,
+  reserving its name; `Store::report_run` records the `ReportedRunState` an
+  engine reports; `Store::fail_run` fails a run; and `Store::complete_run`
+  accepts a run's uploaded model, inserting or replacing it and recording on
+  it the definition the run trained with. A clone that fails or is cancelled
+  frees its target name. `Store::reconcile_runs` fails the runs an instance no
+  longer reports after it reconnects and returns, in a `RunReconciliation`,
+  the reported runs it has to cancel. `Store::model_run`, `Store::model_runs`
+  and `Store::active_run` read runs.
+- Training definition and model run writes refuse, changing nothing, with a
+  `TrainingError` (with `FixedField`) naming what they refused.
 - Removing an agent through `NodeTable::update`,
   `NodeTable::update_with_engine_documents` or `NodeTable::remove` removes its
   engine references, detector statuses and stopped state.
@@ -79,14 +105,15 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 - `Store::delete_model` also removes the model's previous training result and
   every classifier file of the model, and removes the model and all its rows
   in one transaction.
-- **BREAKING**: Bumped the database format to `0.55.0-alpha.2`. The migration
+- **BREAKING**: Bumped the database format to `0.55.0-alpha.3`. The migration
   from `0.53.x` and `0.54.x`, and through the earlier steps from every older
   supported format, removes every stored model, all of its records and its
   classifier files, and creates the empty column families of the previous
-  training results and of the engine instances; nothing else in the store
-  changes, and an interrupted run can be retried. The migration cannot be
-  rolled back by a snapshot of the states database: a model restored from one
-  has no classifier file and has to be deleted.
+  training results, the engine instances, the training definitions and the
+  model runs; nothing else in the store changes, and an interrupted run can be
+  retried. The migration cannot be rolled back by a snapshot of the states
+  database: a model restored from one has no classifier file and has to be
+  deleted.
 - `Store::load_model_by_name` returns the model's stored scores instead of
   empty scores.
 - Repeating identical `Table<ColumnStats>::insert_column_statistics` or

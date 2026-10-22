@@ -17,6 +17,7 @@ mod label_db;
 mod lifecycle;
 mod model;
 mod model_indicator;
+mod model_run;
 mod network;
 mod network_list;
 mod node;
@@ -34,6 +35,7 @@ mod template;
 mod time_series;
 mod tor_exit_node;
 mod traffic_filter;
+mod training_definition;
 mod triage_policy;
 mod triage_response;
 mod trusted_domain;
@@ -84,6 +86,8 @@ pub use self::model::{
     Model, ModelInstance, ModelOwner, PreviousTraining, ReplacedModel, TrainedWith,
 };
 pub use self::model_indicator::ModelIndicator;
+pub(crate) use self::model_run::ModelRuns;
+pub use self::model_run::{ModelRun, ReportedRunState, RunId, RunKind, RunState};
 pub use self::network::{Network, Update as NetworkUpdate};
 pub use self::network_list::{
     NetworkListEntry, NetworkListReplaceOutcome, NetworkListSet, NetworkListTable,
@@ -119,6 +123,10 @@ pub use self::template::{
 pub use self::time_series::{Cluster as ClusterTimeSeries, Column as ColumnTimeSeries, TimeSeries};
 pub use self::tor_exit_node::TorExitNode;
 pub use self::traffic_filter::{ProtocolPorts, TrafficFilter};
+pub(crate) use self::training_definition::TrainingDefinitions;
+pub use self::training_definition::{
+    ModelMethod, NewTrainingDefinition, TrainingDefinition, TrainingDefinitionUpdate,
+};
 pub use self::triage_policy::{
     AttrCmpKind, Confidence, ExclusionReason, NetworkFilter, PacketAttr, Response, ResponseKind,
     TriageExclusion, TriagePolicyInput, ValueKind,
@@ -160,6 +168,7 @@ pub(super) const INSTANCE_ALLOCATIONS: &str = "instance allocations";
 pub(super) const MODELS: &str = "models";
 pub(super) const MODEL_INDICATORS: &str = "model indicators";
 pub(crate) const META: &str = "meta";
+pub(super) const MODEL_RUNS: &str = "model runs";
 pub(super) const NETWORK_LISTS: &str = "network lists";
 pub(super) const NETWORKS: &str = "networks";
 pub(super) const NODES: &str = "nodes";
@@ -192,13 +201,14 @@ pub(super) const LABEL_DB: &str = "label database";
 pub(super) const TIME_SERIES: &str = "time series";
 pub(super) const TOR_EXIT_NODES: &str = "Tor exit nodes";
 pub(super) const TRAFFIC_FILTER_RULES: &str = "traffic filter rules";
+pub(super) const TRAINING_DEFINITIONS: &str = "training definitions";
 pub(super) const TRIAGE_EXCLUSION_REASON: &str = "triage exclusion reason";
 pub(super) const TRIAGE_POLICY: &str = "triage policy";
 pub(super) const TRIAGE_RESPONSE: &str = "triage response";
 pub(super) const TRUSTED_DNS_SERVERS: &str = "trusted DNS servers";
 pub(super) const TRUSTED_USER_AGENTS: &str = "trusted user agents";
 
-pub(crate) const MAP_NAMES: [&str; 46] = [
+pub(crate) const MAP_NAMES: [&str; 48] = [
     AGENTS,
     BATCH_INFO,
     CATEGORY,
@@ -216,6 +226,7 @@ pub(crate) const MAP_NAMES: [&str; 46] = [
     MODELS,
     MODEL_INDICATORS,
     META,
+    MODEL_RUNS,
     NETWORK_LISTS,
     NETWORKS,
     NODES,
@@ -242,6 +253,7 @@ pub(crate) const MAP_NAMES: [&str; 46] = [
     TIME_SERIES,
     TOR_EXIT_NODES,
     TRAFFIC_FILTER_RULES,
+    TRAINING_DEFINITIONS,
     TRIAGE_RESPONSE,
     TRUSTED_DNS_SERVERS,
     TRUSTED_USER_AGENTS,
@@ -251,6 +263,9 @@ pub(crate) const MAP_NAMES: [&str; 46] = [
 pub(super) const EVENT_TAGS: &[u8] = b"event tags";
 pub(super) const NETWORK_TAGS: &[u8] = b"network tags";
 pub(super) const WORKFLOW_TAGS: &[u8] = b"workflow tags";
+/// The last allocated model run id, as a big-endian `u32`; absent before the
+/// first run.
+pub(super) const MODEL_RUN_ID_COUNTER: &[u8] = b"model run id counter";
 
 /// The directories of the states databases a [`StateDb`] in this process has
 /// open.
@@ -516,6 +531,15 @@ impl StateDb {
 
     pub(crate) fn engine_instances(&self) -> EngineInstances<'_> {
         EngineInstances::open(self.db()).expect("StateDb::open creates the engine instances family")
+    }
+
+    pub(crate) fn training_definitions(&self) -> TrainingDefinitions<'_> {
+        TrainingDefinitions::open(self.db())
+            .expect("StateDb::open creates the training definitions family")
+    }
+
+    pub(crate) fn model_runs(&self) -> ModelRuns<'_> {
+        ModelRuns::open(self.db()).expect("StateDb::open creates the model runs and meta families")
     }
 
     pub(crate) fn nodes(&self) -> NodeTable<'_> {

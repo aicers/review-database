@@ -17,6 +17,7 @@ mod tags;
 #[cfg(test)]
 mod test;
 mod top_n;
+mod training;
 pub mod types;
 mod util;
 
@@ -55,25 +56,30 @@ pub use self::tables::{
     ExternalServiceKind, ExternalServiceStatus, Host, IndexedTable, InstallIntent,
     InstanceAllocation, InstanceAllocationError, Iterable, LabelDb, LabelDbKind, LabelDbRule,
     LabelDbRuleKind, Lifecycle, ListenerBinding, ListenerTransport, Model as ModelDigest,
-    ModelIndicator, ModelInstance, ModelOwner, ModelUse, Network, NetworkFilter, NetworkListEntry,
-    NetworkListReplaceOutcome, NetworkListSet, NetworkListTable, NetworkUpdate, Node, NodeProfile,
-    NodeTable, NodeUpdate, OperationAction, OperationAttempt, OperationCleanupState,
-    OperationFailureKind, OperationOnFailure, OperationOutcome, OperationPhase,
-    OperationRetentionBound, OperationRetryPolicy, OutlierInfo, OutlierInfoKey, OutlierInfoValue,
-    OwnedNetwork, OwnedNetworkSet, OwnedNetworkTable, PacketAttr, PortAllocation,
-    PortAllocationError, PortOwner, PreviousTraining, PreviousTrainingResults, ProtocolPorts,
-    ReplaceOutcome, ReplacedModel, RequestKeyError, Response, ResponseKind, RetentionConfig,
-    RetentionConfigUpdate, RoundOutcome, SamplingInterval, SamplingKind, SamplingPeriod,
-    SamplingPolicy, SamplingPolicyUpdate, SourceState, Structured, StructuredClusteringAlgorithm,
-    Table, Template, TimeSeries, TopColumnsOfCluster, TopMultimaps, TorExitNode, TrafficFilter,
-    TrainedWith, TriageExclusion, TriagePolicyInput, TriageResponse, TriageResponseUpdate,
-    TrustedDomain, TrustedUserAgent, UniqueKey, Unstructured, UnstructuredClusteringAlgorithm,
-    UserAgent, ValueKind,
+    ModelIndicator, ModelInstance, ModelMethod, ModelOwner, ModelRun, ModelUse, Network,
+    NetworkFilter, NetworkListEntry, NetworkListReplaceOutcome, NetworkListSet, NetworkListTable,
+    NetworkUpdate, NewTrainingDefinition, Node, NodeProfile, NodeTable, NodeUpdate,
+    OperationAction, OperationAttempt, OperationCleanupState, OperationFailureKind,
+    OperationOnFailure, OperationOutcome, OperationPhase, OperationRetentionBound,
+    OperationRetryPolicy, OutlierInfo, OutlierInfoKey, OutlierInfoValue, OwnedNetwork,
+    OwnedNetworkSet, OwnedNetworkTable, PacketAttr, PortAllocation, PortAllocationError, PortOwner,
+    PreviousTraining, PreviousTrainingResults, ProtocolPorts, ReplaceOutcome, ReplacedModel,
+    ReportedRunState, RequestKeyError, Response, ResponseKind, RetentionConfig,
+    RetentionConfigUpdate, RoundOutcome, RunId, RunKind, RunState, SamplingInterval, SamplingKind,
+    SamplingPeriod, SamplingPolicy, SamplingPolicyUpdate, SourceState, Structured,
+    StructuredClusteringAlgorithm, Table, Template, TimeSeries, TopColumnsOfCluster, TopMultimaps,
+    TorExitNode, TrafficFilter, TrainedWith, TrainingDefinition, TrainingDefinitionUpdate,
+    TriageExclusion, TriagePolicyInput, TriageResponse, TriageResponseUpdate, TrustedDomain,
+    TrustedUserAgent, UniqueKey, Unstructured, UnstructuredClusteringAlgorithm, UserAgent,
+    ValueKind,
 };
 pub use self::top_n::*;
 #[allow(deprecated)]
 pub use self::top_n::{
     ClusterTrend, ElementCount, LineSegment, Regression, StructuredColumnType, TopTrendsByColumn,
+};
+pub use self::training::{
+    FixedField, RunReconciliation, StartedTrainingRun, TrainingDefinitionState, TrainingError,
 };
 pub use self::types::{EventCategory, HostNetworkGroup, Qualifier, Role, Status};
 pub use self::util::{COUNTRY_CODE_UNKNOWN, COUNTRY_CODE_UNRESOLVED, find_ip_country};
@@ -93,6 +99,8 @@ pub struct Store {
     model_files: Mutex<()>,
     #[cfg(test)]
     model_files_hook: Mutex<Option<model_lifecycle::ModelFilesHook>>,
+    #[cfg(test)]
+    training_hook: Mutex<Option<training::TrainingHook>>,
 }
 
 impl Store {
@@ -143,6 +151,8 @@ impl Store {
             model_files: Mutex::new(()),
             #[cfg(test)]
             model_files_hook: Mutex::new(None),
+            #[cfg(test)]
+            training_hook: Mutex::new(None),
         };
         Ok(store)
     }

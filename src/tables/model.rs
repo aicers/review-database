@@ -15,6 +15,7 @@ use crate::{
 /// produced its current and previous classifiers.
 ///
 /// A record is created, given a new classifier and removed only through
+/// [`Store::complete_run`](crate::Store::complete_run),
 /// [`Store::replace_model`](crate::Store::replace_model),
 /// [`Store::update_model`](crate::Store::update_model) and
 /// [`Store::delete_model`](crate::Store::delete_model), which keep it, the
@@ -216,6 +217,25 @@ impl<'d> IndexedTable<'d, Model> {
             return Ok(None);
         }
         txn.get_for_update_cf(self.indexed_map.cf(), name.as_bytes(), EXCLUSIVE)?
+            .map(|value| super::deserialize(&value))
+            .transpose()
+    }
+
+    /// Returns the model with the given name as `snapshot` holds it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a database operation fails.
+    pub(crate) fn load_model_by_name_in_snapshot(
+        &self,
+        name: &str,
+        snapshot: &rocksdb::SnapshotWithThreadMode<'_, OptimisticTransactionDB>,
+    ) -> Result<Option<Model>> {
+        if name.is_empty() {
+            return Ok(None);
+        }
+        snapshot
+            .get_cf(self.indexed_map.cf(), name.as_bytes())?
             .map(|value| super::deserialize(&value))
             .transpose()
     }

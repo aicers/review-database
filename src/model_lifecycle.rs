@@ -173,8 +173,13 @@ impl Store {
     /// a new classifier, keeping its current training result as the previous
     /// one.
     ///
-    /// This is the only way to create a model and the only way to give an
-    /// existing model a new classifier from a run. The model is looked up by
+    /// The Central Manager creates and replaces models only through
+    /// [`Store::complete_run`], which calls the same replace in the
+    /// transaction that ends the model's run as succeeded: only a model's
+    /// own run can create or replace it (RFC 0006 §7 of Clumit Security
+    /// Web), which aicers/review enforces by refusing engines'
+    /// `insert_model`. This method stays public for tests and tools; it
+    /// writes no training definition and no run. The model is looked up by
     /// `model.name`; `model.id` is ignored.
     ///
     /// - If no model has that name, a record is inserted for `owner` with
@@ -620,7 +625,10 @@ fn commit_or_retry(txn: Txn<'_>) -> Result<bool> {
     }
 }
 
-fn column_family<'d>(db: &'d OptimisticTransactionDB, name: &str) -> Result<&'d ColumnFamily> {
+pub(crate) fn column_family<'d>(
+    db: &'d OptimisticTransactionDB,
+    name: &str,
+) -> Result<&'d ColumnFamily> {
     db.cf_handle(name)
         .ok_or_else(|| anyhow!("database error: cannot find column family \"{name}\""))
 }
@@ -782,7 +790,7 @@ impl Store {
             .unwrap_or_else(PoisonError::into_inner) = hook;
     }
 
-    fn run_model_files_hook(&self, point: ModelFilesPoint) -> Result<()> {
+    pub(crate) fn run_model_files_hook(&self, point: ModelFilesPoint) -> Result<()> {
         let hook = self
             .model_files_hook
             .lock()
