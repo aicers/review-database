@@ -449,17 +449,29 @@ impl Store {
         }
     }
 
-    /// Deletes the model with the given name, with everything stored for it.
+    /// Deletes the model with the given name, with everything stored for it,
+    /// unless it is in use.
     ///
     /// The record (with the current and the previous definition snapshots),
     /// the model's rows in every per-model column family and in every
-    /// previous-result column family, and its indicators are removed in one
-    /// transaction; after that commits, the model's classifier directory is
-    /// removed with every classifier file in it. Detection events stay.
+    /// previous-result column family, its indicators, its training
+    /// definition and every run record whose model is its name are removed
+    /// in one transaction; after that commits, the model's classifier
+    /// directory is removed with every classifier file in it. Clone runs
+    /// from the model that created another model stay with that model, and
+    /// detection events stay.
     ///
     /// # Errors
     ///
-    /// Returns an error, and changes nothing, if no model has the name or a
+    /// Returns a [`TrainingError`](crate::TrainingError) inside the error,
+    /// and changes nothing, checked in this order: `ModelNotFound`;
+    /// `ModelInUse` while a detector of any instance's applied or pending
+    /// engine document names the model, naming the first such detector in
+    /// node id, agent key, then detector id order; `RunInProgress` while a
+    /// run that creates or replaces the model, or clones from it, is
+    /// active; `IndicatorInUse` while one of the model's indicators, in name
+    /// order, is named by such a detector or by a training definition other
+    /// than the model's own. Returns an error, and changes nothing, if a
     /// database operation fails. A failure to remove the classifier
     /// directory is logged, not returned: the commit has already taken
     /// effect.
@@ -470,10 +482,15 @@ impl Store {
         loop {
             let txn = self.model_transaction();
             let Some(record) = models.load_model_by_name_in_transaction(name, &txn)? else {
-                bail!("model {name:?} not found");
+                return Err(crate::TrainingError::ModelNotFound {
+                    name: name.to_string(),
+                }
+                .into());
             };
+            self.check_model_unused(&txn, &record)?;
             models.remove_model_with_transaction(record.id, &txn)?;
             delete_model_rows(db, &txn, record.id)?;
+            self.remove_training_records(&txn, name)?;
             #[cfg(test)]
             self.run_model_files_hook(ModelFilesPoint::BeforeCommit)?;
             if txn.commit_or_retry()? {

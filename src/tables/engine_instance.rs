@@ -297,6 +297,23 @@ impl<'d> EngineInstances<'d> {
         self.map.delete_with_transaction(key, txn)
     }
 
+    /// Returns every row with its instance as `txn` sees it, ordered by key:
+    /// node id, then agent key.
+    ///
+    /// The scan is not tracked by `txn`: a row written after it does not
+    /// conflict with the transaction.
+    pub(crate) fn scan(
+        &self,
+        txn: &Transaction<OptimisticTransactionDB>,
+    ) -> Result<Vec<(ModelInstance, Row)>> {
+        txn.iterator_cf(self.map.cf, IteratorMode::Start)
+            .map(|entry| {
+                let (key, value) = entry.context("cannot read engine instances")?;
+                Ok((instance_of(&key)?, super::deserialize(&value)?))
+            })
+            .collect()
+    }
+
     /// Returns every stored row with its instance, ordered by key.
     pub(crate) fn all(&self) -> Result<Vec<(ModelInstance, Row)>> {
         self.map

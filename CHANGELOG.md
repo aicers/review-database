@@ -81,11 +81,26 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   longer reports after it reconnects and returns, in a `RunReconciliation`,
   the reported runs it has to cancel. `Store::model_run`, `Store::model_runs`
   and `Store::active_run` read runs.
-- Training definition and model run writes refuse, changing nothing, with a
-  `TrainingError` (with `FixedField`) naming what they refused.
+- Training definition and model run writes, model deletes and assigns, and
+  model indicator writes refuse, changing nothing, with a `TrainingError`
+  (with `FixedField` and `Referrer`) naming what they refused.
 - Removing an agent through `NodeTable::update`,
   `NodeTable::update_with_engine_documents` or `NodeTable::remove` removes its
-  engine references, detector statuses and stopped state.
+  engine references, detector statuses and stopped state, fails the model runs
+  its instance performs and the clone runs creating a training definition on
+  it, and leaves its models and training definitions with no instance.
+- `Store::assign_model` gives a model with no instance, and its training
+  definition, an Unsupervised Engine instance of the model's customer.
+  `Store::detach_engine_instance` detaches the runs, models and training
+  definitions of an engine instance whose agent row is already gone, as
+  removing the agent does. `Store::engine_instance_owns_models` returns the
+  names of the models and training definitions of an instance, and
+  `Store::source_references` returns the engine detectors and training
+  definitions that list given sources (`SourceReference`, naming each holder
+  with a `Referrer`). `Store::insert_model_indicator`,
+  `Store::update_model_indicator` and `Store::remove_model_indicators` write
+  model indicators, refusing to change or remove one that an engine document
+  or a training definition names, and to move one to another model.
 
 ### Changed
 
@@ -102,9 +117,12 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   `trained_at`, `trained_run_id`, `trained_definition`,
   `classifier_generation`, `previous` and `clusters_applied`, and loses
   `data_source_id`.
-- `Store::delete_model` also removes the model's previous training result and
-  every classifier file of the model, and removes the model and all its rows
-  in one transaction.
+- **BREAKING**: `Store::delete_model` refuses, with a `TrainingError`, a model
+  an engine document names, a model with an active run, and a model one of
+  whose indicators an engine document or another model's training definition
+  names. It also removes the model's training definition and runs, its
+  previous training result and every classifier file of the model, and
+  removes the model and all its records in one transaction.
 - **BREAKING**: Bumped the database format to `0.55.0-alpha.3`. The migration
   from `0.53.x` and `0.54.x`, and through the earlier steps from every older
   supported format, removes every stored model, all of its records and its
@@ -137,8 +155,9 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 - **BREAKING**: The table-level model writers — `add_model`, `update`,
   `update_model` and `delete_model` on `IndexedTable<ModelDigest>`, and its
   generic `put`, `put_with_transaction`, `remove`, `remove_with_transaction`,
-  `deactivate` and `update_with_transaction` — and
-  `Table<Cluster>::update_clusters` are no longer public.
+  `deactivate` and `update_with_transaction` —
+  `Table<Cluster>::update_clusters`, and `insert`, `update` and `remove` on
+  `Table<ModelIndicator>` are no longer public.
 
 ## [0.54.0] - 2026-10-22
 

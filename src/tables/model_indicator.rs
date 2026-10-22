@@ -39,7 +39,7 @@ impl ModelIndicator {
         Self::from_key_value(name.as_bytes(), &buf)
     }
 
-    fn into_key_value(self) -> Result<(Vec<u8>, Vec<u8>)> {
+    pub(crate) fn into_key_value(self) -> Result<(Vec<u8>, Vec<u8>)> {
         let key = self.name.into_bytes();
         let value = Value {
             description: self.description,
@@ -95,12 +95,15 @@ impl<'d> Table<'d, ModelIndicator> {
             .transpose()
     }
 
-    /// Inserts the `ModelIndicator` into the database.
+    /// Inserts the `ModelIndicator` into the database, overwriting one of
+    /// the same name, past the guards of
+    /// [`Store::insert_model_indicator`](crate::Store::insert_model_indicator).
     ///
     /// # Errors
     ///
     /// Returns an error if the serialization fails or the database operation fails.
-    pub fn insert(&self, indicator: ModelIndicator) -> Result<()> {
+    #[cfg(test)]
+    pub(crate) fn insert(&self, indicator: ModelIndicator) -> Result<()> {
         let (key, value) = indicator.into_key_value()?;
         self.map.put(&key, &value)
     }
@@ -110,23 +113,14 @@ impl<'d> Table<'d, ModelIndicator> {
     /// # Errors
     ///
     /// Returns an error if the database operation fails.
-    pub fn remove<'a>(&self, names: impl Iterator<Item = &'a str>) -> Result<Vec<String>> {
+    #[cfg(test)]
+    pub(crate) fn remove<'a>(&self, names: impl Iterator<Item = &'a str>) -> Result<Vec<String>> {
         let mut removed = vec![];
         for name in names {
             self.map.delete(name.as_bytes())?;
             removed.push(name.to_string());
         }
         Ok(removed)
-    }
-
-    /// Updates the `ModelIndicator` in the database.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the serialization fails or the database operation fails.
-    pub fn update(&self, indicator: ModelIndicator) -> Result<()> {
-        self.remove(std::iter::once(indicator.name.as_str()))?;
-        self.insert(indicator)
     }
 }
 

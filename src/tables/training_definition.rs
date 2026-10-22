@@ -144,6 +144,22 @@ impl<'d> TrainingDefinitions<'d> {
         self.map.delete_with_transaction(name.as_bytes(), txn)
     }
 
+    /// Returns every definition as `txn` sees it, ordered by name.
+    ///
+    /// The scan is not tracked by `txn`: a definition written after it does
+    /// not conflict with the transaction.
+    pub(crate) fn scan(
+        &self,
+        txn: &Transaction<OptimisticTransactionDB>,
+    ) -> Result<Vec<TrainingDefinition>> {
+        txn.iterator_cf(self.map.cf, IteratorMode::Start)
+            .map(|entry| {
+                let (_, value) = entry.context("cannot read training definitions")?;
+                super::deserialize(&value)
+            })
+            .collect()
+    }
+
     /// Returns every definition, ordered by name.
     pub(crate) fn all(&self) -> Result<Vec<TrainingDefinition>> {
         self.map
