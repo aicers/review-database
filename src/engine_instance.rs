@@ -19,6 +19,7 @@ use crate::{
     Agent, AgentKind, DetectorStatus, EXCLUSIVE, EngineDocumentError, EngineInstanceState,
     ModelInstance, ModelUse, Store,
     tables::{self, EngineInstanceRow as Row},
+    training::INSTANCE_STOPPED,
     types::FromKeyValue,
 };
 
@@ -101,7 +102,7 @@ impl Store {
         detector_id: i32,
         status: &DetectorStatus,
     ) -> Result<()> {
-        self.write_engine_instance(instance, |row| {
+        self.write_engine_instance(instance, |_, row| {
             if !row.names_detector(detector_id) {
                 return Err(EngineDocumentError::UnknownDetector {
                     node_id: instance.node_id,
@@ -135,6 +136,11 @@ impl Store {
 
     /// Records whether an engine instance is stopped.
     ///
+    /// Stopping an instance also fails, in the same transaction, every
+    /// active run the instance performs, with the reason "instance stopped";
+    /// a clone run among them removes the target definition it reserved.
+    /// Recording that an instance is not stopped changes no run.
+    ///
     /// # Errors
     ///
     /// Returns an error, and changes nothing, if the database operation
@@ -146,8 +152,13 @@ impl Store {
         instance: &ModelInstance,
         stopped: bool,
     ) -> Result<()> {
-        self.write_engine_instance(instance, |row| {
+        self.write_engine_instance(instance, |txn, row| {
             row.stopped = stopped;
+            if stopped {
+                self.fail_active_runs_of_instance(txn, instance, INSTANCE_STOPPED)?;
+                #[cfg(test)]
+                self.run_training_hook()?;
+            }
             Ok(())
         })
     }
@@ -158,7 +169,7 @@ impl Store {
     fn write_engine_instance(
         &self,
         instance: &ModelInstance,
-        change: impl Fn(&mut Row) -> Result<()>,
+        change: impl Fn(&Transaction<OptimisticTransactionDB>, &mut Row) -> Result<()>,
     ) -> Result<()> {
         let db = self.states.db();
         let agents = self.states.agents();
@@ -176,7 +187,7 @@ impl Store {
             let mut row = engine_instances
                 .get_for_update(&txn, &key)?
                 .unwrap_or_default();
-            change(&mut row)?;
+            change(&txn, &mut row)?;
             engine_instances.put(&txn, &key, &row)?;
             match txn.commit() {
                 Ok(()) => return Ok(()),
@@ -197,12 +208,20 @@ fn is_unsupervised_agent(
     agents: &rocksdb::ColumnFamily,
     key: &[u8],
 ) -> Result<bool> {
-    Ok(txn
-        .get_for_update_cf(agents, key, EXCLUSIVE)
+    Ok(agent_for_update(txn, agents, key)?
+        .is_some_and(|agent| agent.kind == AgentKind::Unsupervised))
+}
+
+/// Returns the agent row at `key`, read for update within `txn`.
+pub(crate) fn agent_for_update(
+    txn: &Transaction<OptimisticTransactionDB>,
+    agents: &rocksdb::ColumnFamily,
+    key: &[u8],
+) -> Result<Option<Agent>> {
+    txn.get_for_update_cf(agents, key, EXCLUSIVE)
         .context("cannot read agent")?
         .map(|value| Agent::from_key_value(key, &value))
-        .transpose()?
-        .is_some_and(|agent| agent.kind == AgentKind::Unsupervised))
+        .transpose()
 }
 
 #[cfg(test)]

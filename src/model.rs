@@ -110,6 +110,31 @@ pub(crate) enum ClusteringMethod {
     Timeseries = 3,
 }
 
+impl From<crate::ModelMethod> for ClusteringMethod {
+    fn from(method: crate::ModelMethod) -> Self {
+        match method {
+            crate::ModelMethod::Multidimension => Self::Multifield,
+            crate::ModelMethod::Prefix => Self::Prefix,
+            crate::ModelMethod::Timeseries => Self::Timeseries,
+        }
+    }
+}
+
+impl TryFrom<ClusteringMethod> for crate::ModelMethod {
+    type Error = anyhow::Error;
+
+    fn try_from(method: ClusteringMethod) -> Result<Self> {
+        match method {
+            ClusteringMethod::Multifield => Ok(Self::Multidimension),
+            ClusteringMethod::Prefix => Ok(Self::Prefix),
+            ClusteringMethod::Timeseries => Ok(Self::Timeseries),
+            ClusteringMethod::Distribution => Err(anyhow::anyhow!(
+                "the Distribution method is not trained by runs"
+            )),
+        }
+    }
+}
+
 impl TryFrom<u32> for ClusteringMethod {
     type Error = anyhow::Error;
 

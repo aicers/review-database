@@ -225,6 +225,19 @@ impl<'d> Table<'d> {
             .delete(txn, &engine_instance::key(node_id, agent_key))
     }
 
+    /// Returns the applied profile of node `id`, read for update within
+    /// `txn`; `None` if the node has none or does not exist.
+    pub(crate) fn applied_profile_in_transaction(
+        &self,
+        id: u32,
+        txn: &rocksdb::Transaction<OptimisticTransactionDB>,
+    ) -> Result<Option<Profile>> {
+        Ok(self
+            .node
+            .get_by_id_in_transaction(id, txn)?
+            .and_then(|node| node.profile))
+    }
+
     #[allow(unused)]
     pub(crate) fn agent_raw(&self) -> &Map<'_> {
         self.agent.raw()
