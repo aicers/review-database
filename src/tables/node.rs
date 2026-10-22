@@ -1042,9 +1042,9 @@ mod test {
                     };
                     Some(toml::to_string(&config).unwrap().try_into().unwrap())
                 }
-                AgentKind::TimeSeriesGenerator | AgentKind::Unsupervised => {
-                    Some(String::new().try_into().unwrap())
-                }
+                AgentKind::TimeSeriesGenerator
+                | AgentKind::Unsupervised
+                | AgentKind::LogCollector => Some(String::new().try_into().unwrap()),
             })
             .collect()
     }
