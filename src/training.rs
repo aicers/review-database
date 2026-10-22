@@ -34,19 +34,22 @@ use rocksdb::{OptimisticTransactionDB, Transaction};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    AgentKind, ModelInstance, ModelMethod, ModelOwner, ModelRun, NewTrainingDefinition,
+    AgentKind, ModelInstance, ModelMethod, ModelOwner, ModelRun, NewTrainingDefinition, Referrer,
     ReplacedModel, ReportedRunState, RunId, RunKind, RunState, Store, TrainedWith,
     TrainingDefinition, TrainingDefinitionUpdate,
     classifier_fs::{self, ClassifierFsError},
     engine_instance::agent_for_update,
     model_lifecycle::column_family,
-    tables,
+    tables::{self, ModelRuns, TrainingDefinitions},
 };
 
 type Txn<'a> = Transaction<'a, OptimisticTransactionDB>;
 
 /// The reason an instance's active runs fail when it is stopped.
 pub(crate) const INSTANCE_STOPPED: &str = "instance stopped";
+
+/// The reason an instance's active runs fail when its agent is removed.
+pub(crate) const INSTANCE_REMOVED: &str = "instance removed";
 
 /// The reason a run fails when its instance reconnects without it.
 const NOT_RUNNING_AFTER_RECONNECT: &str = "not running on the instance after it reconnected";
@@ -102,7 +105,8 @@ pub enum FixedField {
     EventKind,
 }
 
-/// A refusal of a training definition or model run write.
+/// A refusal of a training definition, model run, model or model indicator
+/// write.
 ///
 /// It is returned inside the `anyhow::Error` of the refusing method, so a
 /// caller can `downcast_ref` it. A refused write changes nothing.
@@ -181,9 +185,33 @@ pub enum TrainingError {
         expected: String,
         actual: String,
     },
+    /// A detector of an applied or pending engine document names the model.
+    ModelInUse {
+        name: String,
+        instance: ModelInstance,
+        detector_id: i32,
+    },
+    /// A detector of an applied or pending engine document, or a training
+    /// definition, names the model indicator.
+    IndicatorInUse { indicator: String, by: Referrer },
+    /// A model indicator already has the name.
+    IndicatorExists { indicator: String },
+    /// The update would move the model indicator to another model.
+    IndicatorModelChange {
+        indicator: String,
+        model_id: u32,
+        new_model_id: u32,
+    },
+    /// The model has an instance.
+    ModelHasInstance {
+        name: String,
+        instance: ModelInstance,
+    },
 }
 
 impl fmt::Display for TrainingError {
+    // One arm per variant, each a message of its own.
+    #[allow(clippy::too_many_lines)]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::NameTaken { name } => {
@@ -267,6 +295,34 @@ impl fmt::Display for TrainingError {
                 expected,
                 actual,
             } => write!(f, "{name:?} reads {expected:?} events, not {actual:?}"),
+            Self::ModelInUse {
+                name,
+                instance,
+                detector_id,
+            } => write!(
+                f,
+                "model {name:?} is used by detector {detector_id} of agent {:?} of node {}",
+                instance.agent_key, instance.node_id
+            ),
+            Self::IndicatorInUse { indicator, by } => {
+                write!(f, "model indicator {indicator:?} is used by {by}")
+            }
+            Self::IndicatorExists { indicator } => {
+                write!(f, "model indicator {indicator:?} already exists")
+            }
+            Self::IndicatorModelChange {
+                indicator,
+                model_id,
+                new_model_id,
+            } => write!(
+                f,
+                "model indicator {indicator:?} belongs to model {model_id}, not {new_model_id}"
+            ),
+            Self::ModelHasInstance { name, instance } => write!(
+                f,
+                "model {name:?} belongs to agent {:?} of node {}",
+                instance.agent_key, instance.node_id
+            ),
         }
     }
 }
@@ -292,6 +348,9 @@ impl Store {
         let mut record = new_record(definition, false);
         self.write_training(|txn| {
             self.check_new_definition(txn, &record)?;
+            if let Some(instance) = &record.instance {
+                self.hold_agent_row(txn, instance)?;
+            }
             let now = Utc::now();
             record.created_at = now;
             record.updated_at = now;
@@ -917,11 +976,7 @@ impl Store {
     }
 
     /// Ends `run`, active as read for update within `txn`, as `state`,
-    /// `Failed` or `Cancelled`, with `reason`.
-    ///
-    /// A training run stays the last run of its definition. A clone run is
-    /// removed with the target definition it reserved, which frees the
-    /// name.
+    /// `Failed` or `Cancelled`, with `reason`, as [`end_run`] does.
     pub(crate) fn end_run_with_transaction(
         &self,
         txn: &Txn<'_>,
@@ -929,58 +984,40 @@ impl Store {
         state: RunState,
         reason: Option<&str>,
     ) -> Result<()> {
-        if !matches!(state, RunState::Failed | RunState::Cancelled) {
-            bail!("a run ends here only as failed or cancelled, not {state:?}");
-        }
-        let runs = self.states.model_runs();
-        if let RunKind::Clone { .. } = run.kind {
-            let definitions = self.states.training_definitions();
-            if definitions
-                .get_for_update(txn, &run.model)?
-                .is_some_and(|target| target.cloning && target.last_run == Some(run.id))
-            {
-                definitions.delete(txn, &run.model)?;
-            }
-            return runs.delete(txn, run.id);
-        }
-        runs.put(
+        end_run(
             txn,
-            &ModelRun {
-                state,
-                reason: reason.map(ToString::to_string),
-                updated_at: Utc::now(),
-                ..run
-            },
+            &self.states.model_runs(),
+            &self.states.training_definitions(),
+            run,
+            state,
+            reason,
         )
     }
 
     /// Fails, within `txn`, every active run `instance` performs, with
-    /// `reason`.
+    /// `reason`, as [`fail_active_runs`] does.
     pub(crate) fn fail_active_runs_of_instance(
         &self,
         txn: &Txn<'_>,
         instance: &ModelInstance,
         reason: &str,
     ) -> Result<()> {
-        let runs = self.states.model_runs();
-        runs.last_id_for_update(txn)?;
-        for scanned in runs.scan(txn)? {
-            if !scanned.state.is_active() || scanned.instance != *instance {
-                continue;
-            }
-            if let Some(run) = runs.get_for_update(txn, scanned.id)?
-                && run.state.is_active()
-            {
-                self.end_run_with_transaction(txn, run, RunState::Failed, Some(reason))?;
-            }
-        }
-        Ok(())
+        fail_active_runs(
+            txn,
+            &self.states.model_runs(),
+            &self.states.training_definitions(),
+            instance,
+            reason,
+        )
     }
 
     /// Runs `attempt` in an optimistic transaction and commits it, retrying
     /// from the start on a commit conflict. A refusal `attempt` returns ends
     /// the write without committing.
-    fn write_training<T>(&self, mut attempt: impl FnMut(&Txn<'_>) -> Result<T>) -> Result<T> {
+    pub(crate) fn write_training<T>(
+        &self,
+        mut attempt: impl FnMut(&Txn<'_>) -> Result<T>,
+    ) -> Result<T> {
         let db = self.states.db();
         loop {
             let txn = db.transaction();
@@ -1088,7 +1125,11 @@ impl Store {
 
     /// Refuses, within `txn`, an instance that is not an
     /// [`AgentKind::Unsupervised`] agent row with an instance number.
-    fn check_instance_eligible(&self, txn: &Txn<'_>, instance: &ModelInstance) -> Result<()> {
+    pub(crate) fn check_instance_eligible(
+        &self,
+        txn: &Txn<'_>,
+        instance: &ModelInstance,
+    ) -> Result<()> {
         let key = tables::engine_instance_key(instance.node_id, &instance.agent_key);
         let eligible = agent_for_update(txn, self.states.agents().raw().cf, &key)?
             .is_some_and(|agent| agent.kind == AgentKind::Unsupervised && agent.instance.is_some());
@@ -1101,6 +1142,27 @@ impl Store {
             }
             .into())
         }
+    }
+
+    /// Writes the agent row of `instance`, read for update within `txn`,
+    /// back unchanged; an absent row stays absent.
+    ///
+    /// A writer that gives a record this instance calls it after
+    /// [`Store::check_instance_eligible`], when nothing else it writes is a
+    /// key the detach of an uninstalled instance reads: the removal deletes
+    /// the row, so whichever of the two commits second conflicts, and either
+    /// the removal's retry detaches the new record or the writer's retry
+    /// refuses the instance.
+    pub(crate) fn hold_agent_row(&self, txn: &Txn<'_>, instance: &ModelInstance) -> Result<()> {
+        let agents = self.states.agents();
+        let key = tables::engine_instance_key(instance.node_id, &instance.agent_key);
+        if let Some(value) = txn
+            .get_for_update_cf(agents.raw().cf, &key, crate::EXCLUSIVE)
+            .context("cannot read agent")?
+        {
+            agents.raw().put_with_transaction(&key, &value, txn)?;
+        }
+        Ok(())
     }
 
     /// Refuses, within `txn`, an instance recorded as stopped.
@@ -1176,6 +1238,65 @@ impl Store {
         }
         Ok(())
     }
+}
+
+/// Ends `run`, active as read for update within `txn`, as `state`, `Failed`
+/// or `Cancelled`, with `reason`.
+///
+/// A training run stays the last run of its definition. A clone run is
+/// removed with the target definition it reserved, which frees the name.
+pub(crate) fn end_run(
+    txn: &Txn<'_>,
+    runs: &ModelRuns<'_>,
+    definitions: &TrainingDefinitions<'_>,
+    run: ModelRun,
+    state: RunState,
+    reason: Option<&str>,
+) -> Result<()> {
+    if !matches!(state, RunState::Failed | RunState::Cancelled) {
+        bail!("a run ends here only as failed or cancelled, not {state:?}");
+    }
+    if let RunKind::Clone { .. } = run.kind {
+        if definitions
+            .get_for_update(txn, &run.model)?
+            .is_some_and(|target| target.cloning && target.last_run == Some(run.id))
+        {
+            definitions.delete(txn, &run.model)?;
+        }
+        return runs.delete(txn, run.id);
+    }
+    runs.put(
+        txn,
+        &ModelRun {
+            state,
+            reason: reason.map(ToString::to_string),
+            updated_at: Utc::now(),
+            ..run
+        },
+    )
+}
+
+/// Fails, within `txn`, every active run `instance` performs, with `reason`,
+/// reading the run id counter for update before scanning the runs.
+pub(crate) fn fail_active_runs(
+    txn: &Txn<'_>,
+    runs: &ModelRuns<'_>,
+    definitions: &TrainingDefinitions<'_>,
+    instance: &ModelInstance,
+    reason: &str,
+) -> Result<()> {
+    runs.last_id_for_update(txn)?;
+    for scanned in runs.scan(txn)? {
+        if !scanned.state.is_active() || scanned.instance != *instance {
+            continue;
+        }
+        if let Some(run) = runs.get_for_update(txn, scanned.id)?
+            && run.state.is_active()
+        {
+            end_run(txn, runs, definitions, run, RunState::Failed, Some(reason))?;
+        }
+    }
+    Ok(())
 }
 
 /// Returns the stored form of a new definition, its timestamps to be set
@@ -2136,14 +2257,8 @@ mod tests {
         );
         store.set_engine_instance_stopped(&engine, false).unwrap();
 
-        // An instance whose agent row is gone.
-        let node = store.node_map().get_by_id(f.node).unwrap().unwrap().0;
-        let mut without = node.clone();
-        without.agents.retain(|a| a.key != ENGINE);
-        store
-            .node_map()
-            .update(f.node, &node.into(), &without.into())
-            .unwrap();
+        // An instance whose agent row is gone, its records still attached.
+        store.agents_map().delete(f.node, ENGINE).unwrap();
         assert_eq!(
             refusal(store, |s| s.start_training_run("d")),
             TrainingError::InstanceNotEligible {
@@ -2724,13 +2839,8 @@ mod tests {
             .insert_training_definition(new_definition("source", engine.clone()))
             .unwrap();
         let trained = train(store, "source", &engine);
-        let node = store.node_map().get_by_id(f.node).unwrap().unwrap().0;
-        let mut without = node.clone();
-        without.agents.retain(|a| a.key != ENGINE);
-        store
-            .node_map()
-            .update(f.node, &node.into(), &without.into())
-            .unwrap();
+        // The agent row is gone, the model still attached to its instance.
+        store.agents_map().delete(f.node, ENGINE).unwrap();
 
         assert_eq!(
             refusal(store, |s| s.start_clone_run(

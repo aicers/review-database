@@ -769,9 +769,12 @@ mod iteration {
 ///
 /// `tables::Model` is deliberately absent: a model row is created, changed
 /// and removed only together with its per-model records and classifier files,
-/// through the `Store` methods that hold the model-files lock, so the generic
-/// writers are not reachable for it. As with [`iteration`], the trait is not
-/// exported, so nothing outside the crate can add a type to the list.
+/// through the `Store` methods that hold the model-files lock, or has its
+/// instance alone changed by `Store::assign_model` and by the detach of an
+/// uninstalled engine instance, which write no classifier file and so take
+/// no lock. The generic writers are not reachable for it. As with
+/// [`iteration`], the trait is not exported, so nothing outside the crate can
+/// add a type to the list.
 mod indexed_writes {
     use crate::{tables, types};
 

@@ -10,6 +10,7 @@ pub mod event;
 mod geo;
 mod migration;
 mod model;
+mod model_guard;
 mod model_lifecycle;
 mod scores;
 mod tables;
@@ -43,6 +44,7 @@ pub use self::column_statistics::*;
 pub use self::event::{Event, EventDb, EventKind, EventMessage, PutOutcome, ThreatLevel};
 pub use self::migration::{migrate_data_dir, write_version_markers};
 pub use self::model::{Digest, Model};
+pub use self::model_guard::{Referrer, SourceReference};
 pub use self::scores::Scores;
 use self::tables::StateDb;
 pub use self::tables::{

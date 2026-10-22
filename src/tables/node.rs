@@ -14,13 +14,13 @@ use serde::{Deserialize, Serialize};
 use strum_macros::EnumString;
 
 use super::{
-    EngineInstances, Model, ModelInstance, TableIter as TI,
+    EngineInstances, Model, ModelInstance, ModelRuns, TableIter as TI, TrainingDefinitions,
     engine_instance::{self, EngineDetectorRef, EngineDocumentError, EngineDocumentWrite},
 };
 use crate::{
     Agent, AgentKind, EXCLUSIVE, ExternalService, Indexable, IndexedMap, IndexedMapUpdate,
     IndexedTable, Iterable, Map, Table as CrateTable, UniqueKey, collections::Indexed,
-    types::FromKeyValue,
+    model_guard::InstanceRecords, training::INSTANCE_REMOVED, types::FromKeyValue,
 };
 
 #[derive(
@@ -151,6 +151,8 @@ pub struct Table<'d> {
     engine_instances: EngineInstances<'d>,
     model: IndexedTable<'d, Model>,
     model_indicator: Map<'d>,
+    model_runs: ModelRuns<'d>,
+    training_definitions: TrainingDefinitions<'d>,
     /// Run by every writer after its checks and before its commit.
     #[cfg(test)]
     before_commit_hook: Option<BeforeCommitHook<'d>>,
@@ -180,6 +182,8 @@ impl<'d> Table<'d> {
         let engine_instances = EngineInstances::open(db)?;
         let model = IndexedTable::<Model>::open(db)?;
         let model_indicator = Map::open(db, super::MODEL_INDICATORS)?;
+        let model_runs = ModelRuns::open(db)?;
+        let training_definitions = TrainingDefinitions::open(db)?;
         Some(Self {
             node,
             agent,
@@ -187,6 +191,8 @@ impl<'d> Table<'d> {
             engine_instances,
             model,
             model_indicator,
+            model_runs,
+            training_definitions,
             #[cfg(test)]
             before_commit_hook: None,
         })
@@ -206,23 +212,42 @@ impl<'d> Table<'d> {
             .map_or(Ok(()), |hook| hook())
     }
 
-    /// Removes, within `txn`, the records an agent leaves behind when it is
-    /// removed from node `node_id`: its `engine instances` row, with its
-    /// references and detector statuses.
+    /// Detaches, within `txn`, the records an agent leaves behind when it is
+    /// removed from node `node_id`: the runs its instance performs fail with
+    /// the reason "instance removed", a clone among them removing the target
+    /// definition it reserved, as does a clone creating a definition on the
+    /// instance; its models and training definitions are left with no
+    /// instance; and its `engine instances` row, with its references,
+    /// detector statuses and stopped state, is deleted.
     ///
     /// Every writer that removes an agent calls this for each agent key it
     /// removes, whatever the agent's kind: the agent row may already be
-    /// missing, and deleting an absent row changes nothing. The delete makes
-    /// the transaction track the key, so a concurrent write of the row
-    /// conflicts with the removal instead of leaving a row behind.
+    /// missing, and an agent without records changes nothing. The run id
+    /// counter, the runs, definitions and models it changes and the deleted
+    /// row are tracked by the transaction, so a concurrent write of any of
+    /// them conflicts with the removal instead of leaving a record behind;
+    /// a record that gains the instance after the scans conflicts through
+    /// the counter or the agent row the writer removes.
     fn remove_agent_records(
         &self,
         txn: &rocksdb::Transaction<OptimisticTransactionDB>,
         node_id: u32,
         agent_key: &str,
     ) -> Result<()> {
-        self.engine_instances
-            .delete(txn, &engine_instance::key(node_id, agent_key))
+        InstanceRecords {
+            runs: &self.model_runs,
+            definitions: &self.training_definitions,
+            models: &self.model,
+            engine_instances: &self.engine_instances,
+        }
+        .detach(
+            txn,
+            &ModelInstance {
+                node_id,
+                agent_key: agent_key.to_string(),
+            },
+            INSTANCE_REMOVED,
+        )
     }
 
     /// Returns the applied profile of node `id`, read for update within
@@ -481,8 +506,9 @@ impl<'d> Table<'d> {
     }
 
     /// Removes a node with given `id`, with its agents, its external
-    /// services and the records of its agents, returns `(key,
-    /// invalid_agents, invalid_external_services)`.
+    /// services and the records of its agents, detaching each agent's
+    /// instance as [`Table::update`] does, returns `(key, invalid_agents,
+    /// invalid_external_services)`.
     ///
     /// Everything is removed in one transaction, so a failure removes
     /// nothing, and the two lists of agents and external services that could
@@ -546,7 +572,10 @@ impl<'d> Table<'d> {
     ///
     /// Removing an agent removes its engine records — an Unsupervised Engine
     /// instance's document references, detector statuses and stopped state —
-    /// in the same transaction.
+    /// in the same transaction, and detaches its instance there: the runs it
+    /// performs, and a clone creating a definition on it, fail with the
+    /// reason "instance removed", and its models and training definitions are
+    /// left with no instance.
     ///
     /// An engine document is written only together with its references, by
     /// [`Table::update_with_engine_documents`]; this method refuses to change

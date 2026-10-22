@@ -6,9 +6,11 @@ use rocksdb::OptimisticTransactionDB;
 use serde::{Deserialize, Serialize};
 
 use super::UniqueKey;
+#[cfg(test)]
+use crate::IndexedMapUpdate;
 use crate::{
-    EXCLUSIVE, Indexable, IndexedMap, IndexedMapUpdate, IndexedTable, Iterable,
-    collections::Indexed, types::FromKeyValue,
+    EXCLUSIVE, Indexable, IndexedMap, IndexedTable, Iterable, collections::Indexed,
+    types::FromKeyValue,
 };
 
 /// The record of a model: what the model is, who owns it, and which training
@@ -221,6 +223,29 @@ impl<'d> IndexedTable<'d, Model> {
             .transpose()
     }
 
+    /// Returns every model record as `txn` sees it, ordered by name, skipping
+    /// the index entry at the empty key.
+    ///
+    /// The scan is not tracked by `txn`: a record written after it does not
+    /// conflict with the transaction.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a database operation fails or a record cannot be
+    /// deserialized.
+    pub(crate) fn scan(
+        &self,
+        txn: &rocksdb::Transaction<OptimisticTransactionDB>,
+    ) -> Result<Vec<Model>> {
+        txn.iterator_cf(self.indexed_map.cf(), rocksdb::IteratorMode::Start)
+            .filter_map(|entry| match entry {
+                Ok((key, _)) if key.is_empty() => None,
+                Ok((_, value)) => Some(super::deserialize(&value)),
+                Err(e) => Some(Err(anyhow!("cannot read models: {e}"))),
+            })
+            .collect()
+    }
+
     /// Returns the model with the given name as `snapshot` holds it.
     ///
     /// # Errors
@@ -300,10 +325,17 @@ impl<'d> IndexedTable<'d, Model> {
 
     /// Replaces the stored record `old` by `new` within a transaction.
     ///
+    /// `old` must be the record as `txn` read it for update with
+    /// [`load_model_by_name_in_transaction`](Self::load_model_by_name_in_transaction).
+    /// The record is not read again: a change committed since that read
+    /// makes `txn` conflict at its commit, so the caller's retry loop starts
+    /// over, rather than failing here with an error no loop retries. The id
+    /// and name do not change, so neither do the record's key and the index.
+    ///
     /// # Errors
     ///
-    /// Returns an error if the stored record is not `old`, if `new` has
-    /// another id or name, or if a database operation fails.
+    /// Returns an error if `new` has another id or name, or if a database
+    /// operation fails.
     pub(crate) fn update_model_with_transaction(
         &self,
         old: &Model,
@@ -313,12 +345,8 @@ impl<'d> IndexedTable<'d, Model> {
         if old.id != new.id || old.name != new.name {
             return Err(anyhow!("a model's id and name do not change"));
         }
-        self.indexed_map.update_with_transaction(
-            old.id,
-            &Update::from(old),
-            &Update::from(new),
-            txn,
-        )
+        txn.put_cf(self.indexed_map.cf(), new.name.as_bytes(), new.value())
+            .map_err(Into::into)
     }
 }
 
@@ -355,17 +383,21 @@ impl Indexable for Model {
     }
 }
 
-/// A whole-record update of a model: as `old`, it matches only the record it
-/// was taken from; as `new`, it replaces every field but the id.
+/// A whole-record update of a model, for the tests' `update_model`: as
+/// `old`, it matches only the record it was taken from; as `new`, it
+/// replaces every field but the id.
+#[cfg(test)]
 #[derive(Clone)]
 pub(crate) struct Update(Model);
 
+#[cfg(test)]
 impl From<&Model> for Update {
     fn from(model: &Model) -> Self {
         Self(model.clone())
     }
 }
 
+#[cfg(test)]
 impl IndexedMapUpdate for Update {
     type Entry = Model;
 
@@ -544,6 +576,71 @@ mod tests {
 
         assert!(Update::from(&m).verify(&m));
         assert!(!Update::from(&m).verify(&applied)); // a changed record doesn't match
+    }
+
+    #[test]
+    fn a_record_changed_after_the_read_makes_the_update_conflict_at_commit() {
+        let (_permit, store) = setup_store();
+        let table = store.model_map();
+        table.add_model(make_model("gamma", 1)).unwrap();
+
+        let txn = store.states.db().transaction();
+        let read = table
+            .load_model_by_name_in_transaction("gamma", &txn)
+            .unwrap()
+            .unwrap();
+
+        // A run completing between the read and the write.
+        let completing = store.states.db().transaction();
+        let stored = table
+            .load_model_by_name_in_transaction("gamma", &completing)
+            .unwrap()
+            .unwrap();
+        let completed = Model {
+            classifier_generation: 2,
+            trained_run_id: 10,
+            ..stored.clone()
+        };
+        table
+            .update_model_with_transaction(&stored, &completed, &completing)
+            .unwrap();
+        completing.commit().unwrap();
+
+        let detached = Model {
+            instance: None,
+            ..read.clone()
+        };
+        table
+            .update_model_with_transaction(&read, &detached, &txn)
+            .unwrap();
+        let error = txn.commit().unwrap_err();
+        assert!(
+            error.as_ref().starts_with("Resource busy:"),
+            "a retryable conflict, not {error}"
+        );
+        assert_eq!(table.load_model_by_name("gamma").unwrap(), completed);
+    }
+
+    #[test]
+    fn an_update_keeps_the_index() {
+        let (_permit, store) = setup_store();
+        let table = store.model_map();
+        let id = table.add_model(make_model("gamma", 1)).unwrap();
+        let old = table.load_model(id).unwrap();
+        let new = Model {
+            version: 2,
+            ..old.clone()
+        };
+
+        let txn = store.states.db().transaction();
+        table
+            .update_model_with_transaction(&old, &new, &txn)
+            .unwrap();
+        txn.commit().unwrap();
+
+        assert_eq!(table.load_model(id).unwrap(), new);
+        assert_eq!(table.load_model_by_name("gamma").unwrap(), new);
+        assert_eq!(table.add_model(make_model("delta", 1)).unwrap(), id + 1);
     }
 
     #[test]

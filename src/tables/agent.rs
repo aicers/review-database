@@ -245,8 +245,12 @@ impl<'d> Table<'d, Agent> {
     ///
     /// This deletes the row alone. The engine records of an Unsupervised
     /// Engine agent — its document references, detector statuses and stopped
-    /// state — stay; only the [`NodeTable`](crate::NodeTable) writers that
-    /// remove an agent remove them.
+    /// state — stay, and so do its instance's runs, models and training
+    /// definitions, still attached to it; the
+    /// [`NodeTable`](crate::NodeTable) writers that remove an agent detach
+    /// them, and so does
+    /// [`Store::detach_engine_instance`](crate::Store::detach_engine_instance)
+    /// once the row is gone.
     ///
     /// # Errors
     ///
