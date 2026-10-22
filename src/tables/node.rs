@@ -1,6 +1,10 @@
 //! The `network` table.
 
-use std::{borrow::Cow, collections::HashMap, fmt::Display};
+use std::{
+    borrow::Cow,
+    collections::{HashMap, HashSet},
+    fmt::Display,
+};
 
 use anyhow::{Context, Result, bail};
 use chrono::{DateTime, Utc};
@@ -9,10 +13,14 @@ use rocksdb::{Direction, OptimisticTransactionDB};
 use serde::{Deserialize, Serialize};
 use strum_macros::EnumString;
 
-use super::TableIter as TI;
+use super::{
+    EngineInstances, Model, ModelInstance, TableIter as TI,
+    engine_instance::{self, EngineDetectorRef, EngineDocumentError, EngineDocumentWrite},
+};
 use crate::{
-    Agent, ExternalService, Indexable, IndexedMap, IndexedMapUpdate, IndexedTable, Iterable, Map,
-    Table as CrateTable, UniqueKey, collections::Indexed, types::FromKeyValue,
+    Agent, AgentKind, EXCLUSIVE, ExternalService, Indexable, IndexedMap, IndexedMapUpdate,
+    IndexedTable, Iterable, Map, Table as CrateTable, UniqueKey, collections::Indexed,
+    types::FromKeyValue,
 };
 
 #[derive(
@@ -140,7 +148,18 @@ pub struct Table<'d> {
     node: IndexedTable<'d, Inner>,
     agent: CrateTable<'d, Agent>,
     external_service: CrateTable<'d, ExternalService>,
+    engine_instances: EngineInstances<'d>,
+    model: IndexedTable<'d, Model>,
+    model_indicator: Map<'d>,
+    /// Run by every writer after its checks and before its commit.
+    #[cfg(test)]
+    before_commit_hook: Option<BeforeCommitHook<'d>>,
 }
+
+/// A hook the tests run before a node writer commits; an error it returns
+/// ends the write with that error.
+#[cfg(test)]
+pub(crate) type BeforeCommitHook<'d> = Box<dyn Fn() -> Result<()> + 'd>;
 
 type NodeWithInvalidAgentExternalService = (Node, Vec<String>, Vec<String>);
 
@@ -158,11 +177,52 @@ impl<'d> Table<'d> {
             .expect("{super::NODES} must be present");
         let agent = Map::open(db, super::AGENTS).map(CrateTable::new)?;
         let external_service = Map::open(db, super::EXTERNAL_SERVICES).map(CrateTable::new)?;
+        let engine_instances = EngineInstances::open(db)?;
+        let model = IndexedTable::<Model>::open(db)?;
+        let model_indicator = Map::open(db, super::MODEL_INDICATORS)?;
         Some(Self {
             node,
             agent,
             external_service,
+            engine_instances,
+            model,
+            model_indicator,
+            #[cfg(test)]
+            before_commit_hook: None,
         })
+    }
+
+    /// Sets the hook every writer runs after its checks and before its
+    /// commit.
+    #[cfg(test)]
+    pub(crate) fn set_before_commit_hook(&mut self, hook: Option<BeforeCommitHook<'d>>) {
+        self.before_commit_hook = hook;
+    }
+
+    #[cfg(test)]
+    fn run_before_commit_hook(&self) -> Result<()> {
+        self.before_commit_hook
+            .as_ref()
+            .map_or(Ok(()), |hook| hook())
+    }
+
+    /// Removes, within `txn`, the records an agent leaves behind when it is
+    /// removed from node `node_id`: its `engine instances` row, with its
+    /// references and detector statuses.
+    ///
+    /// Every writer that removes an agent calls this for each agent key it
+    /// removes, whatever the agent's kind: the agent row may already be
+    /// missing, and deleting an absent row changes nothing. The delete makes
+    /// the transaction track the key, so a concurrent write of the row
+    /// conflicts with the removal instead of leaving a row behind.
+    fn remove_agent_records(
+        &self,
+        txn: &rocksdb::Transaction<OptimisticTransactionDB>,
+        node_id: u32,
+        agent_key: &str,
+    ) -> Result<()> {
+        self.engine_instances
+            .delete(txn, &engine_instance::key(node_id, agent_key))
     }
 
     #[allow(unused)]
@@ -407,30 +467,49 @@ impl<'d> Table<'d> {
         }
     }
 
-    /// Removes a node with given `id`, returns `(key, invalid_agents, invalid_external_services)`.
+    /// Removes a node with given `id`, with its agents, its external
+    /// services and the records of its agents, returns `(key,
+    /// invalid_agents, invalid_external_services)`.
+    ///
+    /// Everything is removed in one transaction, so a failure removes
+    /// nothing, and the two lists of agents and external services that could
+    /// not be removed are always empty.
     ///
     /// # Errors
     ///
-    /// Returns an error if the database operation fails.
+    /// Returns an error if no node has the `id` or the database operation
+    /// fails.
     pub fn remove(&self, id: u32) -> Result<(Vec<u8>, Vec<String>, Vec<String>)> {
-        use anyhow::anyhow;
-        let inner = self.node.get_by_id(id)?.ok_or(anyhow!("No such id"))?;
-        let mut invalid_agents = vec![];
-        for agent in inner.agents {
-            if self.agent.delete(id, &agent).is_err() {
-                invalid_agents.push(agent);
+        loop {
+            let txn = self.node.raw().db().transaction();
+            let inner: Inner = self
+                .node
+                .get_by_id_in_transaction(id, &txn)?
+                .ok_or_else(|| anyhow::anyhow!("No such id"))?;
+            for agent in &inner.agents {
+                let mut key = id.to_be_bytes().to_vec();
+                key.extend(agent.as_bytes());
+                self.agent.delete_with_transaction(&key, &txn)?;
+                self.remove_agent_records(&txn, id, agent)?;
+            }
+            for external_service in &inner.external_services {
+                let mut key = id.to_be_bytes().to_vec();
+                key.extend(external_service.as_bytes());
+                self.external_service.delete_with_transaction(&key, &txn)?;
+            }
+            let key = self.node.remove_with_transaction(id, &txn)?;
+            #[cfg(test)]
+            self.run_before_commit_hook()?;
+            match txn.commit() {
+                Ok(()) => return Ok((key, Vec::new(), Vec::new())),
+                Err(e) => {
+                    if !e.as_ref().starts_with("Resource busy:") {
+                        return Err(e).context("failed to remove node");
+                    }
+                    // Transaction failed due to conflict, retry
+                }
             }
         }
-
-        let mut invalid_external_services = vec![];
-        for external_service in inner.external_services {
-            if self.external_service.delete(id, &external_service).is_err() {
-                invalid_external_services.push(external_service);
-            }
-        }
-        self.node
-            .remove(id)
-            .map(|key| (key, invalid_agents, invalid_external_services))
     }
 
     #[must_use]
@@ -452,11 +531,193 @@ impl<'d> Table<'d> {
     /// Returns the post-update `Node` constructed from the successfully-committed
     /// transaction attempt, with `creation_time` preserved from the existing record.
     ///
+    /// Removing an agent removes its engine records — an Unsupervised Engine
+    /// instance's document references, detector statuses and stopped state —
+    /// in the same transaction.
+    ///
+    /// An engine document is written only together with its references, by
+    /// [`Table::update_with_engine_documents`]; this method refuses to change
+    /// the `config`, `draft` or `kind` of an agent kept under one key in `old`
+    /// and `new` when either side is [`AgentKind::Unsupervised`]. Adding or
+    /// removing such an agent, or changing its install state, is accepted.
+    ///
     /// # Errors
     ///
     /// Returns an error if the `id` is invalid, the database operation fails, or if the hostname is already in use.
-    #[allow(clippy::too_many_lines)]
+    ///
+    /// Returns an [`EngineDocumentError::RequiresEngineDocuments`] inside the
+    /// error, and changes nothing, if the update changes an Unsupervised
+    /// Engine agent's `config`, `draft` or `kind`.
     pub fn update(&mut self, id: u32, old: &Update, new: &Update) -> Result<Node> {
+        refuse_engine_document_changes(old, new)?;
+        self.update_in_transaction(id, old, new, &[])
+    }
+
+    /// Updates the `Node` from `old` to `new` as [`Table::update`] does, and
+    /// writes, in the same optimistic transaction, the references of the
+    /// engine documents of the node's Unsupervised Engine agents listed in
+    /// `documents`.
+    ///
+    /// For each listed agent, a slot given as `Some` replaces the stored
+    /// `applied` (the references of the agent's `config`) or `pending` (those
+    /// of its `draft`) references, and the detector statuses of detector ids
+    /// that appear in neither slot afterwards are dropped. An Unsupervised
+    /// Engine agent kept from `old` whose `draft` changes has to be listed
+    /// with `pending`, and one whose `config` changes with `applied`, so that
+    /// a document never changes without its references.
+    ///
+    /// The models and indicators the written slots name, and the stored rows
+    /// of the listed agents kept from `old`, are read within the transaction,
+    /// so a concurrent removal of any of them, or a concurrent write of a
+    /// listed agent's document, makes the update retry and check again.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error, and changes nothing, if [`Table::update`] would fail
+    /// for any reason other than the engine document changes it refuses, or
+    /// if the database operation fails. Returns an [`EngineDocumentError`]
+    /// inside the error, and changes nothing, if
+    ///
+    /// - an agent key is listed twice, or does not name an
+    ///   [`AgentKind::Unsupervised`] agent of `new` on the node (for an agent
+    ///   kept from `old`, of its stored row);
+    /// - an agent kept under one key changes its kind to or from
+    ///   [`AgentKind::Unsupervised`];
+    /// - a written slot names a model that does not exist or whose instance
+    ///   is not the listed agent, names a model twice, repeats a detector id,
+    ///   or names an indicator that does not exist;
+    /// - an Unsupervised Engine agent's `draft` or `config` changes without
+    ///   the matching slot;
+    /// - a written slot's document, the stored `config` for `applied` or the
+    ///   stored `draft` for `pending` of an agent kept from `old`, is not the
+    ///   one in `old`.
+    pub fn update_with_engine_documents(
+        &mut self,
+        id: u32,
+        old: &Update,
+        new: &Update,
+        documents: &[EngineDocumentWrite],
+    ) -> Result<Node> {
+        check_engine_documents(id, old, new, documents)?;
+        self.update_in_transaction(id, old, new, documents)
+    }
+
+    /// Checks, within `txn`, what the documents to write rely on in the
+    /// database: the stored row of each listed agent kept from `old`, and the
+    /// models and indicators of each written slot.
+    fn check_engine_documents_in_transaction(
+        &self,
+        txn: &rocksdb::Transaction<OptimisticTransactionDB>,
+        id: u32,
+        old: &Update,
+        documents: &[EngineDocumentWrite],
+    ) -> Result<()> {
+        for document in documents {
+            let agent_key = &document.agent_key;
+            if let Some(old_agent) = old.agents.iter().find(|a| a.key == *agent_key) {
+                let key = engine_instance::key(id, agent_key);
+                let stored = txn
+                    .get_for_update_cf(self.agent.raw().cf, &key, EXCLUSIVE)
+                    .context("cannot read agent")?
+                    .map(|value| Agent::from_key_value(&key, &value))
+                    .transpose()?;
+                let Some(stored) = stored.filter(|agent| agent.kind == AgentKind::Unsupervised)
+                else {
+                    return Err(EngineDocumentError::NotUnsupervisedAgent {
+                        node_id: id,
+                        agent_key: agent_key.clone(),
+                    }
+                    .into());
+                };
+                // The agent update below compares the stored row with `old`
+                // only when the agent changes, so a document kept unchanged
+                // would otherwise have its references replaced from a stale
+                // `old`.
+                if (document.applied.is_some() && stored.config != old_agent.config)
+                    || (document.pending.is_some() && stored.draft != old_agent.draft)
+                {
+                    return Err(EngineDocumentError::StaleDocument {
+                        agent_key: agent_key.clone(),
+                    }
+                    .into());
+                }
+            }
+            let instance = ModelInstance {
+                node_id: id,
+                agent_key: agent_key.clone(),
+            };
+            for detector in written_detectors(document) {
+                let Some(model) = self
+                    .model
+                    .load_model_by_name_in_transaction(&detector.model, txn)?
+                else {
+                    return Err(EngineDocumentError::ModelNotFound {
+                        agent_key: agent_key.clone(),
+                        model: detector.model.clone(),
+                    }
+                    .into());
+                };
+                if model.instance.as_ref() != Some(&instance) {
+                    return Err(EngineDocumentError::ModelOfAnotherInstance {
+                        agent_key: agent_key.clone(),
+                        model: detector.model.clone(),
+                    }
+                    .into());
+                }
+                if let Some(indicator) = &detector.indicator
+                    && txn
+                        .get_for_update_cf(self.model_indicator.cf, indicator.as_bytes(), EXCLUSIVE)
+                        .context("cannot read model indicator")?
+                        .is_none()
+                {
+                    return Err(EngineDocumentError::IndicatorNotFound {
+                        agent_key: agent_key.clone(),
+                        indicator: indicator.clone(),
+                    }
+                    .into());
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Writes, within `txn`, the references of each listed agent, dropping
+    /// the statuses of detector ids neither slot has afterwards.
+    fn write_engine_documents(
+        &self,
+        txn: &rocksdb::Transaction<OptimisticTransactionDB>,
+        id: u32,
+        documents: &[EngineDocumentWrite],
+    ) -> Result<()> {
+        for document in documents {
+            let key = engine_instance::key(id, &document.agent_key);
+            let mut row = self
+                .engine_instances
+                .get_for_update(txn, &key)?
+                .unwrap_or_default();
+            if let Some(applied) = &document.applied {
+                row.applied.clone_from(applied);
+            }
+            if let Some(pending) = &document.pending {
+                row.pending.clone_from(pending);
+            }
+            row.retain_named_statuses();
+            self.engine_instances.put(txn, &key, &row)?;
+        }
+        Ok(())
+    }
+
+    /// Updates the node as [`Table::update`] describes, and writes
+    /// `documents`, which [`check_engine_documents`] has accepted, in the
+    /// same transaction.
+    #[allow(clippy::too_many_lines)]
+    fn update_in_transaction(
+        &mut self,
+        id: u32,
+        old: &Update,
+        new: &Update,
+        documents: &[EngineDocumentWrite],
+    ) -> Result<Node> {
         use crate::collections::Indexed;
 
         let old_inner = InnerUpdate {
@@ -517,6 +778,8 @@ impl<'d> Table<'d> {
                 None => bail!("no such id"),
             };
 
+            self.check_engine_documents_in_transaction(&txn, id, old, documents)?;
+
             if let Err(e) = self
                 .node
                 .update_with_transaction(id, &old_inner, &new_inner, &txn)
@@ -540,6 +803,7 @@ impl<'d> Table<'d> {
                     }
                     return Err(e);
                 }
+                self.remove_agent_records(&txn, id, to_remove)?;
             }
             old_agents.retain(|&k, _| new_agents.contains_key(k));
 
@@ -639,6 +903,11 @@ impl<'d> Table<'d> {
                 }
             }
 
+            self.write_engine_documents(&txn, id, documents)?;
+
+            #[cfg(test)]
+            self.run_before_commit_hook()?;
+
             // Commit all writes atomically
             match txn.commit() {
                 Ok(()) => {
@@ -728,6 +997,130 @@ impl<'d> Table<'d> {
         updated_agent.status = new_status;
         self.agent.update(agent, &updated_agent)
     }
+}
+
+/// Refuses, for [`Table::update`], a change of the `config`, `draft` or
+/// `kind` of an agent kept under one key when either side is
+/// [`AgentKind::Unsupervised`].
+fn refuse_engine_document_changes(old: &Update, new: &Update) -> Result<()> {
+    for (old_agent, new_agent) in kept_agents(old, new) {
+        if (old_agent.kind == AgentKind::Unsupervised || new_agent.kind == AgentKind::Unsupervised)
+            && (old_agent.kind != new_agent.kind
+                || old_agent.config != new_agent.config
+                || old_agent.draft != new_agent.draft)
+        {
+            return Err(EngineDocumentError::RequiresEngineDocuments {
+                agent_key: new_agent.key.clone(),
+            }
+            .into());
+        }
+    }
+    Ok(())
+}
+
+/// Checks, for [`Table::update_with_engine_documents`], what `documents`
+/// require of `old` and `new` and of themselves.
+fn check_engine_documents(
+    id: u32,
+    old: &Update,
+    new: &Update,
+    documents: &[EngineDocumentWrite],
+) -> Result<()> {
+    for (old_agent, new_agent) in kept_agents(old, new) {
+        if old_agent.kind != new_agent.kind
+            && (old_agent.kind == AgentKind::Unsupervised
+                || new_agent.kind == AgentKind::Unsupervised)
+        {
+            return Err(EngineDocumentError::KindChanged {
+                agent_key: new_agent.key.clone(),
+            }
+            .into());
+        }
+    }
+
+    let mut listed = HashSet::new();
+    for document in documents {
+        let agent_key = &document.agent_key;
+        if !listed.insert(agent_key.as_str()) {
+            return Err(EngineDocumentError::DuplicateAgentKey {
+                agent_key: agent_key.clone(),
+            }
+            .into());
+        }
+        if !new
+            .agents
+            .iter()
+            .any(|a| a.key == *agent_key && a.kind == AgentKind::Unsupervised)
+        {
+            return Err(EngineDocumentError::NotUnsupervisedAgent {
+                node_id: id,
+                agent_key: agent_key.clone(),
+            }
+            .into());
+        }
+        for refs in [&document.applied, &document.pending].into_iter().flatten() {
+            let mut models = HashSet::new();
+            let mut detector_ids = HashSet::new();
+            for detector in &refs.detectors {
+                if !detector_ids.insert(detector.id) {
+                    return Err(EngineDocumentError::DuplicateDetectorId {
+                        agent_key: agent_key.clone(),
+                        detector_id: detector.id,
+                    }
+                    .into());
+                }
+                if !models.insert(detector.model.as_str()) {
+                    return Err(EngineDocumentError::DuplicateModel {
+                        agent_key: agent_key.clone(),
+                        model: detector.model.clone(),
+                    }
+                    .into());
+                }
+            }
+        }
+    }
+
+    for (old_agent, new_agent) in kept_agents(old, new) {
+        if new_agent.kind != AgentKind::Unsupervised {
+            continue;
+        }
+        let document = documents.iter().find(|d| d.agent_key == new_agent.key);
+        if old_agent.draft != new_agent.draft && document.is_none_or(|d| d.pending.is_none()) {
+            return Err(EngineDocumentError::DraftWithoutReferences {
+                agent_key: new_agent.key.clone(),
+            }
+            .into());
+        }
+        if old_agent.config != new_agent.config && document.is_none_or(|d| d.applied.is_none()) {
+            return Err(EngineDocumentError::ConfigWithoutReferences {
+                agent_key: new_agent.key.clone(),
+            }
+            .into());
+        }
+    }
+    Ok(())
+}
+
+/// Returns the agents kept under one key in `old` and `new`, as `(old, new)`
+/// pairs.
+fn kept_agents<'a>(
+    old: &'a Update,
+    new: &'a Update,
+) -> impl Iterator<Item = (&'a Agent, &'a Agent)> + 'a {
+    new.agents.iter().filter_map(|new_agent| {
+        old.agents
+            .iter()
+            .find(|a| a.key == new_agent.key)
+            .map(|old_agent| (old_agent, new_agent))
+    })
+}
+
+/// Returns the detectors of the slots `document` writes.
+fn written_detectors(document: &EngineDocumentWrite) -> impl Iterator<Item = &EngineDetectorRef> {
+    [&document.applied, &document.pending]
+        .into_iter()
+        .flatten()
+        .flat_map(|refs| &refs.detectors)
 }
 
 pub struct TableIter<'d> {
