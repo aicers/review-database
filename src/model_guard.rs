@@ -900,7 +900,7 @@ mod tests {
     }
 
     /// Writes the `engine instances` row of `instance` as is, past every
-    /// check, as the `alpha.2` migration rerun may have left it.
+    /// check.
     fn put_row(store: &Store, instance: &ModelInstance, row: &Row) {
         let txn = store.states.db().transaction();
         store
@@ -1124,8 +1124,8 @@ mod tests {
         assert!(!has_model(store, "m"));
     }
 
-    /// References kept from an `alpha.2` store may name a model of another
-    /// instance; the first in table order is named.
+    /// A reference on another instance that names the model, written past
+    /// every check, also refuses the delete; the first in table order is named.
     #[test]
     fn delete_refuses_a_model_a_reference_on_another_instance_names() {
         let f = setup();

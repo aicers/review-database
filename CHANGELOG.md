@@ -5,7 +5,7 @@ file is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), and
 this project adheres to [Semantic
 Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.55.0] - 2026-10-23
 
 ### Added
 
@@ -123,7 +123,7 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   names. It also removes the model's training definition and runs, its
   previous training result and every classifier file of the model, and
   removes the model and all its records in one transaction.
-- **BREAKING**: Bumped the database format to `0.55.0-alpha.3`. The migration
+- **BREAKING**: Bumped the database format to `0.55.0`. The migration
   from `0.53.x` and `0.54.x`, and through the earlier steps from every older
   supported format, removes every stored model, all of its records and its
   classifier files, and creates the empty column families of the previous
@@ -156,8 +156,10 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   `update_model` and `delete_model` on `IndexedTable<ModelDigest>`, and its
   generic `put`, `put_with_transaction`, `remove`, `remove_with_transaction`,
   `deactivate` and `update_with_transaction` —
-  `Table<Cluster>::update_clusters`, and `insert`, `update` and `remove` on
+  `Table<Cluster>::update_clusters`, and `insert` and `remove` on
   `Table<ModelIndicator>` are no longer public.
+  `Table<ModelIndicator>::update` was removed; use
+  `Store::update_model_indicator`.
 
 ## [0.54.0] - 2026-10-22
 
@@ -2133,7 +2135,7 @@ AsRef<[u8]>`). This change accommodates scenarios where the information stored
 - Modified `FtpBruteForce` by adding an `is_internal` field which is a boolean
   indicating whether it is internal or not.
 
-[Unreleased]: https://github.com/aicers/review-database/compare/0.54.0...main
+[0.55.0]: https://github.com/aicers/review-database/compare/0.54.0...0.55.0
 [0.54.0]: https://github.com/aicers/review-database/compare/0.53.0...0.54.0
 [0.53.0]: https://github.com/aicers/review-database/compare/0.52.0...0.53.0
 [0.52.0]: https://github.com/aicers/review-database/compare/0.51.0...0.52.0
