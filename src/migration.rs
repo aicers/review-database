@@ -112,7 +112,7 @@ use crate::{
 /// // release that involves database format change) to 3.5.0, including
 /// // all alpha changes finalized in 3.5.0.
 /// ```
-const COMPATIBLE_VERSION_REQ: &str = ">=0.53.0,<0.55.0";
+const COMPATIBLE_VERSION_REQ: &str = ">=0.55.0-alpha.1,<0.55.0-alpha.2";
 
 /// Number of event records applied in each atomic migration write.
 const EVENT_MIGRATION_BATCH_SIZE: usize = 100;
@@ -162,11 +162,11 @@ const VERSION_TMP_FILE_NAME: &str = "VERSION.tmp";
 
 /// Migrates the data directory to the up-to-date format if necessary.
 ///
-/// Migration is supported between released versions only. A prerelease marker,
-/// such as `0.46.0-alpha.1` or `0.47.0-alpha.6`, is refused with "migration
-/// from {version} is not supported": neither `COMPATIBLE_VERSION_REQ` nor any
-/// requirement in the migration table carries a prerelease, so under semver's
-/// matching rule none of them admits it.
+/// The current format's own marker, `0.55.0-alpha.1`, is accepted as
+/// current. Migration otherwise supports released versions only: the
+/// `<0.55.0-alpha.1` bound admits only 0.55.0 prereleases below it, which no
+/// build wrote. Every other prerelease marker is refused with "migration
+/// from {version} is not supported".
 ///
 /// Pass a shared `IP2Location` database handle when available so endpoint
 /// country-code fields can be resolved during the stored event schema
@@ -217,12 +217,14 @@ pub fn migrate_data_dir<P: AsRef<Path>>(
     // A list of migrations where each item is a tuple of (version requirement, to version,
     // migration function).
     //
-    // Every migration body below writes only inside `data_dir/states.db`. A
-    // rollback snapshot taken before an update therefore has to cover that one
-    // database and nothing else, and restoring it does not restore the two
-    // `VERSION` files, which this function writes after the whole chain
-    // succeeds and which a rollback must put back separately, through
-    // `write_version_markers`.
+    // Every migration body below writes only inside `data_dir/states.db`,
+    // except `migrate_0_53_to_0_55`, which also removes the `classifiers`
+    // directory and declares itself non-rollbackable (see its doc comment).
+    // For every other step, a rollback snapshot taken before an update
+    // therefore has to cover that one database and nothing else, and
+    // restoring it does not restore the two `VERSION` files, which this
+    // function writes after the whole chain succeeds and which a rollback
+    // must put back separately, through `write_version_markers`.
     //
     // * The "version requirement" should include all the earlier, released versions that use the
     //   database format the migration function can handle, and exclude the first future version
@@ -282,6 +284,11 @@ pub fn migrate_data_dir<P: AsRef<Path>>(
             VersionReq::parse(">=0.52.0,<0.53.0")?,
             Version::parse("0.53.0")?,
             |data_dir, _backup_dir, _locator| migrate_0_52_to_0_53(data_dir),
+        ),
+        (
+            VersionReq::parse(">=0.53.0,<0.55.0-alpha.1")?,
+            Version::parse("0.55.0-alpha.1")?,
+            |data_dir, _backup_dir, _locator| migrate_0_53_to_0_55(data_dir),
         ),
     ];
 
@@ -574,6 +581,97 @@ fn migrate_0_52_to_0_53(data_dir: &Path) -> Result<()> {
         info!("Creating '{}' column family", crate::tables::NETWORK_LISTS);
         db.create_cf(crate::tables::NETWORK_LISTS, &rocksdb::Options::default())
             .context("failed to create network lists column family")?;
+    }
+    Ok(())
+}
+
+/// The per-model column families the 0.55.0-alpha.1 migration empties.
+const PER_MODEL_FAMILIES_V0_53: [&str; 9] = [
+    crate::tables::MODELS,
+    crate::tables::BATCH_INFO,
+    crate::tables::SCORES,
+    crate::tables::CLUSTER,
+    crate::tables::COLUMN_STATS,
+    crate::tables::CSV_COLUMN_EXTRAS,
+    crate::tables::TIME_SERIES,
+    crate::tables::MODEL_INDICATORS,
+    crate::tables::OUTLIERS,
+];
+
+/// The previous-result column families the 0.55.0-alpha.1 format adds.
+const PREVIOUS_RESULT_FAMILIES_V0_55: [&str; 7] = [
+    crate::tables::PREVIOUS_BATCH_INFO,
+    crate::tables::PREVIOUS_SCORES,
+    crate::tables::PREVIOUS_CLUSTER,
+    crate::tables::PREVIOUS_COLUMN_STATS,
+    crate::tables::PREVIOUS_CSV_COLUMN_EXTRAS,
+    crate::tables::PREVIOUS_TIME_SERIES,
+    crate::tables::PREVIOUS_OUTLIERS,
+];
+
+/// Migrates a database in the 0.53.x format to 0.55.0-alpha.1, model format
+/// 2, removing every model stored before it.
+///
+/// Models before format 2 record no owner and no event kind, and none is
+/// converted:
+///
+/// 1. the database is opened over the column families it physically holds;
+/// 2. the per-model families, [`PER_MODEL_FAMILIES_V0_53`], are dropped and
+///    created again empty, so every per-model row goes, including rows
+///    orphaned by earlier removals whose model row is already gone;
+/// 3. the seven previous-result families are created;
+/// 4. the `classifiers` directory under `data_dir` is removed with every
+///    classifier file in it.
+///
+/// No other column family is read or written, so detection events stay.
+/// Every step is safe to rerun: a family is dropped only when present and
+/// created only when missing, and a missing directory is not an error, so a
+/// chain interrupted anywhere in this step retries it from the start.
+///
+/// # Rollback
+///
+/// This step writes outside `states.db`, and is not rollbackable by a
+/// pre-update snapshot of `states.db`: restoring one brings back the model
+/// rows cleared here but not the classifier files removed here, so each
+/// restored pre-format-2 model fails to load with "Classifier file not
+/// found" and has to be deleted, which is the outcome RFC 0006 §3 of
+/// Clumit Security Web accepts for those models.
+fn migrate_0_53_to_0_55(data_dir: &Path) -> Result<()> {
+    let db_path = data_dir.join("states.db");
+    let mut opts = rocksdb::Options::default();
+    opts.create_if_missing(false);
+    opts.create_missing_column_families(false);
+    let column_families = map_names_for_existing_format(&opts, &db_path)?;
+    let mut db: rocksdb::OptimisticTransactionDB<rocksdb::SingleThreaded> =
+        rocksdb::OptimisticTransactionDB::open_cf(&opts, &db_path, column_families)
+            .context("failed to open database for the 0.55.0-alpha.1 migration")?;
+
+    for name in PER_MODEL_FAMILIES_V0_53 {
+        if db.cf_handle(name).is_some() {
+            info!("Dropping '{name}' column family");
+            db.drop_cf(name)
+                .with_context(|| format!("failed to drop '{name}' column family"))?;
+        }
+        info!("Creating '{name}' column family");
+        db.create_cf(name, &rocksdb::Options::default())
+            .with_context(|| format!("failed to create '{name}' column family"))?;
+    }
+    for name in PREVIOUS_RESULT_FAMILIES_V0_55 {
+        if db.cf_handle(name).is_none() {
+            info!("Creating '{name}' column family");
+            db.create_cf(name, &rocksdb::Options::default())
+                .with_context(|| format!("failed to create '{name}' column family"))?;
+        }
+    }
+    drop(db);
+
+    let classifiers = data_dir.join(crate::classifier_fs::CLASSIFIERS_DIR);
+    match std::fs::remove_dir_all(&classifiers) {
+        Ok(()) => info!("Removed '{}'", classifiers.display()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => {
+            return Err(e).with_context(|| format!("failed to remove {}", classifiers.display()));
+        }
     }
     Ok(())
 }
@@ -1174,6 +1272,50 @@ const MAP_NAMES_V0_52: [&str; 37] = [
     "models",
     "model indicators",
     "meta",
+    "networks",
+    "nodes",
+    "operation attempts",
+    "operation attempt latest",
+    "outliers",
+    "port allocations",
+    "port allocations by attempt",
+    "port allocations by instance",
+    "qualifiers",
+    "external services",
+    "sampling policy",
+    "scores",
+    "statuses",
+    "templates",
+    "label database",
+    "time series",
+    "Tor exit nodes",
+    "traffic filter rules",
+    "triage response",
+    "trusted DNS servers",
+    "trusted user agents",
+];
+
+/// Lists column family names for database format 0.53, before
+/// [`migrate_0_53_to_0_55`] adds the previous-result families.
+#[cfg(test)]
+const MAP_NAMES_V0_53: [&str; 38] = [
+    "agents",
+    "batch_info",
+    "category",
+    "cluster",
+    "column stats",
+    "configs",
+    "core components",
+    "csv column extras",
+    "customer deletion jobs",
+    "customer networks",
+    "data sources",
+    "hosts",
+    "instance allocations",
+    "models",
+    "model indicators",
+    "meta",
+    "network lists",
     "networks",
     "nodes",
     "operation attempts",
@@ -2661,10 +2803,10 @@ mod tests {
     /// Test that prerelease markers are refused and their `VERSION` files left
     /// unchanged.
     ///
-    /// Migration is supported between released versions only, as the
-    /// `migrate_data_dir` doc comment records. The markers cover older
-    /// prereleases, the 0.47 through 0.50 cycles, the 0.52 prereleases, and
-    /// prereleases of the format migrated to.
+    /// The current format's own marker is accepted unchanged, as the
+    /// `migrate_data_dir` doc comment records. The refused markers cover older
+    /// prereleases, the 0.47 through 0.50 cycles, the 0.52 and 0.53
+    /// prereleases and a future 0.55 prerelease.
     #[test]
     fn migration_refuses_unsupported_prerelease_markers() {
         for marker in [
@@ -2683,6 +2825,7 @@ mod tests {
             "0.52.0-alpha.2",
             "0.53.0-alpha.1",
             "0.53.0-alpha.2",
+            "0.55.0-alpha.2",
         ] {
             let data_dir = tempfile::tempdir().unwrap();
             let backup_dir = tempfile::tempdir().unwrap();
@@ -2706,6 +2849,22 @@ mod tests {
                 expected
             );
         }
+        let data_dir = tempfile::tempdir().unwrap();
+        let backup_dir = tempfile::tempdir().unwrap();
+        write_version(data_dir.path(), "0.55.0-alpha.1");
+        write_version(backup_dir.path(), "0.55.0-alpha.1");
+        let before = (
+            entries_outside_states_db(data_dir.path()),
+            entries_outside_states_db(backup_dir.path()),
+        );
+        migrate_data_dir(data_dir.path(), backup_dir.path(), None).unwrap();
+        assert_eq!(
+            (
+                entries_outside_states_db(data_dir.path()),
+                entries_outside_states_db(backup_dir.path()),
+            ),
+            before
+        );
     }
 
     /// Test `read_version_file` and `create_version_file` helper functions.
@@ -3050,6 +3209,9 @@ mod tests {
     /// The column families the 0.53.0 format adds to the 0.52 set.
     const FAMILIES_ADDED_BY_V0_53: [&str; 1] = [crate::tables::NETWORK_LISTS];
 
+    /// The column families the 0.55.0-alpha.1 format adds to the 0.53 set.
+    const FAMILIES_ADDED_BY_V0_55: [&str; 7] = super::PREVIOUS_RESULT_FAMILIES_V0_55;
+
     /// Migrates a database in the 0.43-through-0.46 layout, recorded as
     /// `version`, and asserts that it reaches the current format with its agent
     /// and external-service values converted.
@@ -3092,6 +3254,7 @@ mod tests {
             .into_iter()
             .chain(FAMILIES_ADDED_BY_V0_50)
             .chain(FAMILIES_ADDED_BY_V0_53)
+            .chain(FAMILIES_ADDED_BY_V0_55)
         {
             assert!(db.cf_handle(name).is_some(), "{name} must exist");
         }
@@ -3099,6 +3262,7 @@ mod tests {
             FAMILIES_ABSENT_AT_V0_46.len()
                 + FAMILIES_ADDED_BY_V0_50.len()
                 + FAMILIES_ADDED_BY_V0_53.len()
+                + FAMILIES_ADDED_BY_V0_55.len()
                 - FAMILIES_REMOVED_BY_V0_47.len()
                 - FAMILIES_REMOVED_BY_V0_52.len(),
             crate::tables::MAP_NAMES.len() - super::MAP_NAMES_V0_43_TO_V0_46.len()
@@ -3107,7 +3271,12 @@ mod tests {
             super::MAP_NAMES_V0_47_TO_V0_49.len()
                 + FAMILIES_ADDED_BY_V0_50.len()
                 + FAMILIES_ADDED_BY_V0_53.len()
+                + FAMILIES_ADDED_BY_V0_55.len()
                 - FAMILIES_REMOVED_BY_V0_52.len(),
+            crate::tables::MAP_NAMES.len()
+        );
+        assert_eq!(
+            super::MAP_NAMES_V0_53.len() + FAMILIES_ADDED_BY_V0_55.len(),
             crate::tables::MAP_NAMES.len()
         );
         drop(db);
@@ -4973,9 +5142,14 @@ mod tests {
             .chain(FAMILIES_ADDED_BY_V0_53)
             .collect();
         v0_53.sort_unstable();
+        let mut listed_v0_53 = super::MAP_NAMES_V0_53;
+        listed_v0_53.sort_unstable();
+        assert_eq!(v0_53, listed_v0_53);
+        let mut v0_55: Vec<&str> = v0_53.into_iter().chain(FAMILIES_ADDED_BY_V0_55).collect();
+        v0_55.sort_unstable();
         let mut current = crate::tables::MAP_NAMES;
         current.sort_unstable();
-        assert_eq!(v0_53, current);
+        assert_eq!(v0_55, current);
 
         create_v0_52_store(data_dir.path(), backup_dir.path(), &super::MAP_NAMES_V0_52);
         assert!(
@@ -5063,6 +5237,282 @@ mod tests {
             vec![(1u32.to_be_bytes().to_vec(), b"kept".to_vec())]
         );
         assert_eq!(kept_family_entries(&db_path), expected);
+    }
+
+    /// Rows a 0.53 store holds in each per-model family: those of model "m"
+    /// (id 0), with records in every per-model family, and orphan clusters
+    /// and outliers of model id 7, which has no model row. The values need
+    /// not decode: the migration drops the families wholesale.
+    fn per_model_rows_v0_53() -> Vec<(&'static str, Entries)> {
+        let key = |id: u32, rest: &[u8]| {
+            let mut key = id.to_be_bytes().to_vec();
+            key.extend_from_slice(rest);
+            key
+        };
+        vec![
+            (
+                crate::tables::MODELS,
+                vec![
+                    (Vec::new(), b"model index".to_vec()),
+                    (b"m".to_vec(), b"format 1 model".to_vec()),
+                ],
+            ),
+            (
+                crate::tables::BATCH_INFO,
+                vec![(key(0, &1_i64.to_be_bytes()), b"batch".to_vec())],
+            ),
+            (crate::tables::SCORES, vec![(vec![0], b"scores".to_vec())]),
+            (
+                crate::tables::CLUSTER,
+                vec![
+                    (key(0, &1_u32.to_be_bytes()), b"cluster".to_vec()),
+                    (key(7, &1_u32.to_be_bytes()), b"orphan cluster".to_vec()),
+                ],
+            ),
+            (
+                crate::tables::COLUMN_STATS,
+                vec![(key(0, &[0; 16]), b"column stats".to_vec())],
+            ),
+            (
+                crate::tables::CSV_COLUMN_EXTRAS,
+                vec![
+                    (Vec::new(), b"extra index".to_vec()),
+                    (key(0, &[]), b"extra".to_vec()),
+                ],
+            ),
+            (
+                crate::tables::TIME_SERIES,
+                vec![(key(0, &[0; 20]), b"time series".to_vec())],
+            ),
+            (
+                crate::tables::MODEL_INDICATORS,
+                vec![(b"indicator".to_vec(), b"indicator".to_vec())],
+            ),
+            (
+                crate::tables::OUTLIERS,
+                vec![
+                    (key(0, &[0; 24]), b"outlier".to_vec()),
+                    (key(7, &[0; 24]), b"orphan outlier".to_vec()),
+                ],
+            ),
+        ]
+    }
+
+    /// Creates a store over `families`, a 0.53-and-later set, marked
+    /// `0.53.0`, with the rows of [`create_v0_52_store`], a row in "network
+    /// lists", the rows of [`per_model_rows_v0_53`] in each per-model family
+    /// `families` has if `per_model_rows` is set, and, under `classifiers`,
+    /// the files of `classifier_dirs`.
+    fn create_v0_53_store(
+        data_dir: &Path,
+        backup_dir: &Path,
+        families: &[&str],
+        per_model_rows: bool,
+        classifier_dirs: &[&str],
+    ) {
+        let db_path = data_dir.join("states.db");
+        create_v0_52_store(data_dir, backup_dir, families);
+        put_entries(
+            &db_path,
+            families.iter().copied(),
+            crate::tables::NETWORK_LISTS,
+            &[(1_u32.to_be_bytes().to_vec(), b"network lists row".to_vec())],
+        );
+        if per_model_rows {
+            for (family, rows) in per_model_rows_v0_53() {
+                if families.contains(&family) {
+                    put_entries(&db_path, families.iter().copied(), family, &rows);
+                }
+            }
+        }
+        for dir in classifier_dirs {
+            let dir = data_dir.join("classifiers").join(dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("classifier_m.bin"), b"format 1 classifier").unwrap();
+        }
+        std::fs::write(data_dir.join("untouched"), b"keep me").unwrap();
+        write_version(data_dir, "0.53.0");
+        write_version(backup_dir, "0.53.0");
+    }
+
+    /// What [`kept_family_entries`] reads from `db_path` once the per-model
+    /// families are emptied.
+    fn entries_without_models(db_path: &Path) -> Vec<(String, Entries)> {
+        kept_family_entries(db_path)
+            .into_iter()
+            .map(|(name, entries)| {
+                if super::PER_MODEL_FAMILIES_V0_53.contains(&name.as_str()) {
+                    (name, Entries::new())
+                } else {
+                    (name, entries)
+                }
+            })
+            .collect()
+    }
+
+    /// Asserts that the store migrated from 0.53 has every current family,
+    /// with no row in the per-model and previous-result families and every
+    /// other family as `expected` holds it, that `classifiers` is gone and
+    /// nothing else outside `states.db` changed, and that both markers name
+    /// the current version.
+    fn assert_migrated_from_v0_53(
+        data_dir: &Path,
+        backup_dir: &Path,
+        expected: &[(String, Entries)],
+    ) {
+        let current_version = Version::parse(env!("CARGO_PKG_VERSION")).unwrap();
+        let db_path = data_dir.join("states.db");
+        assert_eq!(
+            read_version_file(&data_dir.join(VERSION_FILE_NAME)).unwrap(),
+            current_version
+        );
+        assert_eq!(
+            read_version_file(&backup_dir.join(VERSION_FILE_NAME)).unwrap(),
+            current_version
+        );
+        assert_eq!(present_families(&db_path), current_families());
+        for name in super::PER_MODEL_FAMILIES_V0_53
+            .into_iter()
+            .chain(FAMILIES_ADDED_BY_V0_55)
+        {
+            assert_eq!(
+                cf_entries(&db_path, crate::tables::MAP_NAMES, name),
+                Entries::new(),
+                "{name} must be empty"
+            );
+        }
+        assert_eq!(kept_family_entries(&db_path), expected);
+        assert!(!data_dir.join("classifiers").exists());
+        assert_eq!(
+            entries_outside_states_db(data_dir),
+            vec![
+                (
+                    data_dir.join("VERSION"),
+                    current_version.to_string().into_bytes()
+                ),
+                (data_dir.join("untouched"), b"keep me".to_vec()),
+            ]
+        );
+
+        let store = Store::new(data_dir, backup_dir, None).unwrap();
+        assert_eq!(store.model_map().count_models().unwrap(), 0);
+        assert_eq!(store.network_lists_map().iter().count(), 1);
+    }
+
+    /// A populated `0.53.0` store — models, every per-model record, orphan
+    /// clusters and outliers of a model id with no model row, and classifier
+    /// files — loses every model: the nine per-model families end empty, the
+    /// seven previous-result families exist empty, the `classifiers`
+    /// directory is gone, and every other family is unchanged byte for byte.
+    /// A second start finds the store current and touches nothing.
+    #[test]
+    fn migration_from_v0_53_removes_every_model() {
+        let _permit = acquire_db_permit();
+        let data_dir = tempfile::tempdir().unwrap();
+        let backup_dir = tempfile::tempdir().unwrap();
+        let db_path = data_dir.path().join("states.db");
+
+        create_v0_53_store(
+            data_dir.path(),
+            backup_dir.path(),
+            &super::MAP_NAMES_V0_53,
+            true,
+            &["model_0", "model_7"],
+        );
+        for (family, rows) in per_model_rows_v0_53() {
+            assert_eq!(
+                cf_entries(&db_path, super::MAP_NAMES_V0_53, family),
+                rows,
+                "the fixture fills {family}"
+            );
+        }
+        let expected = entries_without_models(&db_path);
+
+        migrate_data_dir(data_dir.path(), backup_dir.path(), None).unwrap();
+        assert_migrated_from_v0_53(data_dir.path(), backup_dir.path(), &expected);
+
+        let before = (files_under(data_dir.path()), files_under(backup_dir.path()));
+        migrate_data_dir(data_dir.path(), backup_dir.path(), None).unwrap();
+        assert_eq!(
+            (files_under(data_dir.path()), files_under(backup_dir.path())),
+            before
+        );
+    }
+
+    /// `VERSION` is written only after the whole chain succeeds, so a
+    /// migration from `0.53.0` interrupted at any point of its step retries
+    /// that step from the start. Each interruption point leaves a different
+    /// store; the retry completes from every one of them.
+    #[test]
+    fn migration_from_v0_53_completes_after_an_interruption_at_each_step() {
+        let _permit = acquire_db_permit();
+        let without = |dropped: &[&str]| -> Vec<&'static str> {
+            super::MAP_NAMES_V0_53
+                .into_iter()
+                .filter(|name| !dropped.contains(name))
+                .collect()
+        };
+        let with_previous = |count: usize| -> Vec<&'static str> {
+            super::MAP_NAMES_V0_53
+                .into_iter()
+                .chain(FAMILIES_ADDED_BY_V0_55.into_iter().take(count))
+                .collect()
+        };
+        // (families present, per-model rows left, classifier directories left)
+        let interruptions: Vec<(Vec<&str>, bool, &[&str])> = vec![
+            // In step 2, after the first families were dropped and before
+            // they were created again.
+            (
+                without(&[crate::tables::MODELS, crate::tables::BATCH_INFO]),
+                true,
+                &["model_0", "model_7"],
+            ),
+            // In step 2, after the first families were emptied.
+            (
+                super::MAP_NAMES_V0_53.to_vec(),
+                true,
+                &["model_0", "model_7"],
+            ),
+            // In step 3, after some previous-result families were created.
+            (with_previous(3), false, &["model_0", "model_7"]),
+            // In step 4, part-way through the classifier files.
+            (with_previous(7), false, &["model_7"]),
+            // After step 4, before `VERSION` was written.
+            (with_previous(7), false, &[]),
+        ];
+        for (families, per_model_rows, classifier_dirs) in interruptions {
+            let data_dir = tempfile::tempdir().unwrap();
+            let backup_dir = tempfile::tempdir().unwrap();
+            let db_path = data_dir.path().join("states.db");
+            create_v0_53_store(
+                data_dir.path(),
+                backup_dir.path(),
+                &families,
+                per_model_rows,
+                classifier_dirs,
+            );
+            let expected = entries_without_models(&db_path);
+
+            migrate_data_dir(data_dir.path(), backup_dir.path(), None).unwrap();
+            assert_migrated_from_v0_53(data_dir.path(), backup_dir.path(), &expected);
+        }
+
+        // The step itself, run again over a migrated store, changes nothing.
+        let data_dir = tempfile::tempdir().unwrap();
+        let backup_dir = tempfile::tempdir().unwrap();
+        let db_path = data_dir.path().join("states.db");
+        create_v0_53_store(
+            data_dir.path(),
+            backup_dir.path(),
+            &super::MAP_NAMES_V0_53,
+            true,
+            &["model_0"],
+        );
+        let expected = entries_without_models(&db_path);
+        super::migrate_0_53_to_0_55(data_dir.path()).unwrap();
+        super::migrate_0_53_to_0_55(data_dir.path()).unwrap();
+        migrate_data_dir(data_dir.path(), backup_dir.path(), None).unwrap();
+        assert_migrated_from_v0_53(data_dir.path(), backup_dir.path(), &expected);
     }
 
     /// Every file under `data_dir` except the `states.db` directory, with its

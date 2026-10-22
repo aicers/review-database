@@ -5,6 +5,81 @@ file is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), and
 this project adheres to [Semantic
 Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- `Store::replace_model` inserts a model trained by a run, or gives the model
+  of the same name a new classifier. It takes the decoded model, the owner
+  (`ModelOwner`: a customer ID and the engine instance, `ModelInstance`), the
+  time the run succeeded and the run that trained it (`TrainedWith`: its run
+  ID and exact training definition text), and returns a `ReplacedModel` with
+  the model's ID and whether it was inserted. Replacing a model keeps its ID,
+  owner, method and event kind, and refuses any other; its current batch
+  information, scores, clusters, column statistics, CSV column extras, time
+  series and outliers become its previous training result, and its record's
+  `previous` summary (`PreviousTraining`) keeps the time, version, run ID and
+  definition of the training replaced. A model using the `Distribution`
+  method, or a new model whose name is empty, longer than 255 bytes, or
+  contains `..`, `/`, `\`, a control character or one of `:<>|*?"`, is
+  refused.
+- `Store::previous_training_results` returns `PreviousTrainingResults`, a
+  read-only view of every model's previous training result, with the same
+  table types as the `Store` methods of the same names.
+- `Store::update_clusters` applies a model's cluster updates once per
+  classification: a repeated call for the classification ID already applied
+  returns `false` and changes nothing.
+- `EventDb::put_unless_stored` stores an event unless the same event is
+  already stored, returning a `PutOutcome`: `Stored` with its key,
+  `AlreadyStored`, or `Rejected` with the reason for an event that can never
+  be stored. Only a database failure is an error.
+
+### Changed
+
+- **BREAKING**: Models are in format 2. `Model` and `Digest` carry the event
+  kind the model was trained on, `event_kind`, in place of `data_source_id`,
+  and `Model::from_serialized` refuses format 1.
+- **BREAKING**: `ModelDigest` gains `event_kind`, `customer_id`, `instance`,
+  `trained_at`, `trained_run_id`, `trained_definition`,
+  `classifier_generation`, `previous` and `clusters_applied`, and loses
+  `data_source_id`.
+- `Store::delete_model` also removes the model's previous training result and
+  every classifier file of the model, and removes the model and all its rows
+  in one transaction.
+- **BREAKING**: Bumped the database format to `0.55.0-alpha.1`. The migration
+  from `0.53.x`, and through the earlier steps from every older supported
+  format, removes every stored model, all of its records and its classifier
+  files, and creates the empty column families of the previous training
+  results; nothing else in the store changes, and an interrupted run can be
+  retried. The migration cannot be rolled back by a snapshot of the states
+  database: a model restored from one has no classifier file and has to be
+  deleted.
+- `Store::load_model_by_name` returns the model's stored scores instead of
+  empty scores.
+- Repeating identical `Table<ColumnStats>::insert_column_statistics` or
+  `Table<TimeSeries>::add_time_series` calls succeeds and leaves the rows as
+  the first call did, instead of failing.
+- `Store::update_model` writes each upload's classifier to a new file and
+  switches the model to it in the same commit that stores the upload's record,
+  batch information and scores, instead of overwriting the classifier file
+  after the record was stored. It refuses an upload whose ID, method or event
+  kind is not the stored model's.
+
+### Fixed
+
+- `Store::update_model` stores the uploaded `classification_id`; it kept the
+  one the model was added with.
+
+### Removed
+
+- **BREAKING**: Removed `Store::add_model`; `Store::replace_model` creates
+  models.
+- **BREAKING**: The table-level model writers — `add_model`, `update`,
+  `update_model` and `delete_model` on `IndexedTable<ModelDigest>`, and its
+  generic `put`, `put_with_transaction`, `remove`, `remove_with_transaction`,
+  `deactivate` and `update_with_transaction` — and
+  `Table<Cluster>::update_clusters` are no longer public.
+
 ## [0.54.0] - 2026-10-22
 
 ### Changed
@@ -1979,6 +2054,7 @@ AsRef<[u8]>`). This change accommodates scenarios where the information stored
 - Modified `FtpBruteForce` by adding an `is_internal` field which is a boolean
   indicating whether it is internal or not.
 
+[Unreleased]: https://github.com/aicers/review-database/compare/0.54.0...main
 [0.54.0]: https://github.com/aicers/review-database/compare/0.53.0...0.54.0
 [0.53.0]: https://github.com/aicers/review-database/compare/0.52.0...0.53.0
 [0.52.0]: https://github.com/aicers/review-database/compare/0.51.0...0.52.0

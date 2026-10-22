@@ -9,6 +9,7 @@ pub mod event;
 mod geo;
 mod migration;
 mod model;
+mod model_lifecycle;
 mod scores;
 mod tables;
 mod tags;
@@ -19,7 +20,10 @@ pub mod types;
 mod util;
 
 use std::path::{Path, PathBuf};
-use std::{io, sync::Arc};
+use std::{
+    io,
+    sync::{Arc, Mutex},
+};
 
 use anyhow::{Result, anyhow};
 pub use attrievent::attribute::RawEventKind;
@@ -34,7 +38,7 @@ pub use self::cluster::*;
 pub use self::collections::Indexable;
 pub(crate) use self::collections::{IndexedMap, IndexedMapUpdate, Map};
 pub use self::column_statistics::*;
-pub use self::event::{Event, EventDb, EventKind, EventMessage, ThreatLevel};
+pub use self::event::{Event, EventDb, EventKind, EventMessage, PutOutcome, ThreatLevel};
 pub use self::migration::{migrate_data_dir, write_version_markers};
 pub use self::model::{Digest, Model};
 pub use self::scores::Scores;
@@ -48,19 +52,19 @@ pub use self::tables::{
     ExternalServiceConfig, ExternalServiceKind, ExternalServiceStatus, Host, IndexedTable,
     InstallIntent, InstanceAllocation, InstanceAllocationError, Iterable, LabelDb, LabelDbKind,
     LabelDbRule, LabelDbRuleKind, Lifecycle, ListenerBinding, ListenerTransport,
-    Model as ModelDigest, ModelIndicator, Network, NetworkFilter, NetworkListEntry,
-    NetworkListReplaceOutcome, NetworkListSet, NetworkListTable, NetworkUpdate, Node, NodeProfile,
-    NodeTable, NodeUpdate, OperationAction, OperationAttempt, OperationCleanupState,
-    OperationFailureKind, OperationOnFailure, OperationOutcome, OperationPhase,
-    OperationRetentionBound, OperationRetryPolicy, OutlierInfo, OutlierInfoKey, OutlierInfoValue,
-    OwnedNetwork, OwnedNetworkSet, OwnedNetworkTable, PacketAttr, PortAllocation,
-    PortAllocationError, PortOwner, ProtocolPorts, ReplaceOutcome, RequestKeyError, Response,
-    ResponseKind, RetentionConfig, RetentionConfigUpdate, SamplingInterval, SamplingKind,
-    SamplingPeriod, SamplingPolicy, SamplingPolicyUpdate, Structured,
-    StructuredClusteringAlgorithm, Table, Template, TimeSeries, TopColumnsOfCluster, TopMultimaps,
-    TorExitNode, TrafficFilter, TriageExclusion, TriagePolicyInput, TriageResponse,
-    TriageResponseUpdate, TrustedDomain, TrustedUserAgent, UniqueKey, Unstructured,
-    UnstructuredClusteringAlgorithm, UserAgent, ValueKind,
+    Model as ModelDigest, ModelIndicator, ModelInstance, ModelOwner, Network, NetworkFilter,
+    NetworkListEntry, NetworkListReplaceOutcome, NetworkListSet, NetworkListTable, NetworkUpdate,
+    Node, NodeProfile, NodeTable, NodeUpdate, OperationAction, OperationAttempt,
+    OperationCleanupState, OperationFailureKind, OperationOnFailure, OperationOutcome,
+    OperationPhase, OperationRetentionBound, OperationRetryPolicy, OutlierInfo, OutlierInfoKey,
+    OutlierInfoValue, OwnedNetwork, OwnedNetworkSet, OwnedNetworkTable, PacketAttr, PortAllocation,
+    PortAllocationError, PortOwner, PreviousTraining, PreviousTrainingResults, ProtocolPorts,
+    ReplaceOutcome, ReplacedModel, RequestKeyError, Response, ResponseKind, RetentionConfig,
+    RetentionConfigUpdate, SamplingInterval, SamplingKind, SamplingPeriod, SamplingPolicy,
+    SamplingPolicyUpdate, Structured, StructuredClusteringAlgorithm, Table, Template, TimeSeries,
+    TopColumnsOfCluster, TopMultimaps, TorExitNode, TrafficFilter, TrainedWith, TriageExclusion,
+    TriagePolicyInput, TriageResponse, TriageResponseUpdate, TrustedDomain, TrustedUserAgent,
+    UniqueKey, Unstructured, UnstructuredClusteringAlgorithm, UserAgent, ValueKind,
 };
 pub use self::top_n::*;
 #[allow(deprecated)]
@@ -79,6 +83,12 @@ pub struct Store {
     pretrained: PathBuf,
     classifier_fm: classifier_fs::ClassifierFileManager,
     country_lookup: Option<geo::SharedCountryLookup>,
+    /// The model-files lock. Every operation that reads a model record and
+    /// then writes or removes its classifier files, or reads a classifier
+    /// file for a record, holds it throughout; see `model_lifecycle`.
+    model_files: Mutex<()>,
+    #[cfg(test)]
+    model_files_hook: Mutex<Option<model_lifecycle::ModelFilesHook>>,
 }
 
 impl Store {
@@ -126,6 +136,9 @@ impl Store {
             pretrained,
             classifier_fm,
             country_lookup,
+            model_files: Mutex::new(()),
+            #[cfg(test)]
+            model_files_hook: Mutex::new(None),
         };
         Ok(store)
     }
@@ -804,187 +817,6 @@ impl Store {
         Ok(types::PretrainedModel(buf))
     }
 
-    /// Adds a new model and related statistics to the database.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the model already exists or if a database operation fails.
-    pub fn add_model(&self, model: crate::model::Model) -> Result<i32> {
-        self.upsert_model(model, false)
-    }
-
-    /// Updates the model and related statistics with given id.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the model does not exist or if a database operation fails.
-    pub fn update_model(&self, model: crate::model::Model) -> Result<i32> {
-        self.upsert_model(model, true)
-    }
-
-    fn upsert_model(&self, model: crate::model::Model, is_update: bool) -> Result<i32> {
-        let classifier = model.serialized_classifier;
-        let batch_info = model.batch_info;
-        let scores = model.scores;
-        let name = model.name.clone();
-        let model_id = if is_update { model.id } else { 0 };
-        let model = tables::Model {
-            id: u32::try_from(model_id)?,
-            name: model.name,
-            version: model.version,
-            kind: model.kind,
-            max_event_id_num: model.max_event_id_num,
-            data_source_id: model.data_source_id,
-            classification_id: Some(model.classification_id),
-        };
-
-        let mut table = self.model_map();
-        let model_id = i32::try_from(if is_update {
-            table.update_model(&model)?
-        } else {
-            table.add_model(model)?
-        })?;
-
-        let model_id_u32 = u32::try_from(model_id)?;
-        self.classifier_fm
-            .store_classifier(model_id_u32, &name, &classifier)?;
-
-        let table = self.batch_info_map();
-        for batch in batch_info {
-            let record = BatchInfo {
-                model: model_id_u32,
-                inner: batch.clone(),
-            };
-            if is_update {
-                table.put(&record)?;
-            } else {
-                table.insert(&record)?;
-            }
-        }
-
-        let record = Scores::new(model_id_u32, scores);
-        if is_update {
-            self.scores_map().put(&record)?;
-        } else {
-            self.scores_map().insert(&record)?;
-        }
-
-        Ok(model_id)
-    }
-
-    /// Delete model data given `name` and related statistics
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if database operation fails or the data is invalid.
-    pub fn delete_model(&self, name: &str) -> Result<()> {
-        let table = self.model_map();
-        let model_id = table.delete_model(name)?;
-        self.delete_stats(model_id)?;
-        self.classifier_fm.delete_classifier(model_id, name)?;
-        Ok(())
-    }
-
-    /// Delete statistics of `model_id`
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if database operation fails or the data is invalid.
-    fn delete_stats(&self, model_id: u32) -> Result<()> {
-        let cluster_map = self.cluster_map();
-        let to_remove = cluster_map
-            .prefix_iter(rocksdb::Direction::Forward, None, &model_id.to_be_bytes())
-            .filter_map(|e| {
-                let cluster = e.ok()?;
-                Some(cluster.unique_key())
-            });
-        let txn = cluster_map.transaction();
-        for key in to_remove {
-            cluster_map.delete_with_transaction(&key, &txn)?;
-        }
-        txn.commit()?;
-
-        let batch_info_map = self.batch_info_map();
-        batch_info_map.delete_all_for(model_id)?;
-
-        let score_map = self.scores_map();
-        score_map.delete(model_id)?;
-
-        let column_stats_map = self.column_stats_map();
-        let to_remove: Vec<_> = column_stats_map
-            .iter(rocksdb::Direction::Forward, None)
-            .filter_map(|e| {
-                let cs = e.ok()?;
-                if cs.model_id == model_id {
-                    Some(cs.unique_key())
-                } else {
-                    None
-                }
-            })
-            .collect();
-        let txn = column_stats_map.transaction();
-        for key in to_remove {
-            column_stats_map.delete_with_transaction(&key, &txn)?;
-        }
-        txn.commit()?;
-
-        let csv_column_extra_map = self.csv_column_extra_map();
-        let to_remove: Vec<_> = csv_column_extra_map
-            .prefix_iter(rocksdb::Direction::Forward, None, &model_id.to_be_bytes())
-            .filter_map(|e| {
-                let col_extra = e.ok()?;
-                Some(col_extra.id)
-            })
-            .collect();
-        for id in to_remove {
-            csv_column_extra_map.remove(id)?;
-        }
-
-        let time_series_map = self.time_series_map();
-        let to_remove: Vec<_> = time_series_map
-            .prefix_iter(rocksdb::Direction::Forward, None, &model_id.to_be_bytes())
-            .filter_map(|e| {
-                let ts = e.ok()?;
-                Some(ts.unique_key())
-            })
-            .collect();
-        let txn = time_series_map.transaction();
-        for key in to_remove {
-            time_series_map.delete_with_transaction(&key, &txn)?;
-        }
-        txn.commit()?;
-
-        let model_indicator_map = self.model_indicator_map();
-        let to_remove: Vec<_> = model_indicator_map
-            .iter(rocksdb::Direction::Forward, None)
-            .filter_map(|e| {
-                let indicator = e.ok()?;
-                if indicator.model_id == model_id {
-                    Some(indicator.name)
-                } else {
-                    None
-                }
-            })
-            .collect();
-        model_indicator_map.remove(to_remove.iter().map(String::as_str))?;
-
-        let outlier_info_map = self.outlier_map();
-        let to_remove: Vec<_> = outlier_info_map
-            .prefix_iter(rocksdb::Direction::Forward, None, &model_id.to_be_bytes())
-            .filter_map(|e| {
-                let outlier = e.ok()?;
-                Some(outlier.unique_key())
-            })
-            .collect();
-        let txn = outlier_info_map.transaction();
-        for key in to_remove {
-            outlier_info_map.delete_with_transaction(&key, &txn)?;
-        }
-        txn.commit()?;
-
-        Ok(())
-    }
-
     /// Removes column statistics entries older than the configured
     /// retention period.
     ///
@@ -1006,41 +838,6 @@ impl Store {
         let table = self.column_stats_map();
         let count = table.remove_older_than(cutoff)?;
         Ok(Some(count))
-    }
-
-    /// Returns the model and classifer with the given model name.
-    /// Note:
-    ///     Model name is unique in the database.
-    ///     `batch_info` and `scores` are empty.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the model does not exist or if a database operation fails.
-    pub fn load_model_by_name(&self, name: &str) -> Result<crate::model::Model> {
-        let table = self.model_map();
-        let model = table.load_model_by_name(name)?;
-
-        if !self.classifier_fm.classifier_exists(model.id, &model.name) {
-            return Err(anyhow!(
-                "Classifier file not found for model {}",
-                model.name
-            ));
-        }
-
-        let classifier = self.classifier_fm.load_classifier(model.id, &model.name)?;
-
-        Ok(crate::model::Model {
-            id: i32::try_from(model.id)?,
-            name: model.name,
-            version: model.version,
-            kind: model.kind,
-            max_event_id_num: model.max_event_id_num,
-            data_source_id: model.data_source_id,
-            classification_id: model.classification_id.unwrap_or_default(),
-            serialized_classifier: classifier,
-            batch_info: Vec::new(),
-            scores: crate::types::ModelScores::default(),
-        })
     }
 
     /// Backup current database and keep most recent `num_backups_to_keep` backups

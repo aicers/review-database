@@ -8,7 +8,7 @@ pub struct Digest {
     pub id: i32,
     pub name: String,
     pub version: i32,
-    pub data_source_id: i32,
+    pub event_kind: String,
     pub classification_id: Option<i64>,
 }
 
@@ -20,27 +20,35 @@ pub struct Model {
     pub kind: String,
     pub serialized_classifier: Vec<u8>,
     pub max_event_id_num: i32,
-    pub data_source_id: i32,
+    pub event_kind: String,
     pub classification_id: i64,
     pub batch_info: Vec<crate::types::ModelBatchInfo>,
     pub scores: crate::types::ModelScores,
 }
 
 impl Model {
-    fn header(&self) -> Result<MagicHeader> {
+    /// Returns the clustering method `kind` names.
+    pub(crate) fn method(&self) -> Result<ClusteringMethod> {
         use std::str::FromStr;
+        Ok(ClusteringMethod::from_str(&self.kind)?)
+    }
+
+    fn header(&self) -> Result<MagicHeader> {
         Ok(MagicHeader {
             tag: MagicHeader::MAGIC_STRING.to_vec(),
             format: MagicHeader::FORMAT_VERSION,
-            kind: ClusteringMethod::from_str(&self.kind)?,
+            kind: self.method()?,
             version: self.version,
         })
     }
 
+    /// Decodes a model serialized in format 2.
+    ///
     /// # Errors
     ///
-    /// Returns an error if format version doesn't match `MagicHeader::FORMAT_VERSION` or
-    /// if the input is shorter than the 16-byte header or deserialization fails.
+    /// Returns an error if the input is shorter than the 16-byte header, if
+    /// its format is not `MagicHeader::FORMAT_VERSION` (no earlier format is
+    /// read), or if deserialization fails.
     pub fn from_serialized(serialized: &[u8]) -> Result<Self> {
         use anyhow::anyhow;
 
@@ -66,7 +74,7 @@ impl Model {
             kind,
             serialized_classifier: model.serialized_classifier,
             max_event_id_num: model.max_event_id_num,
-            data_source_id: model.data_source_id,
+            event_kind: model.event_kind,
             classification_id: model.classification_id,
             batch_info: model.batch_info,
             scores: model.scores,
@@ -83,7 +91,7 @@ impl Model {
             name: self.name,
             serialized_classifier: self.serialized_classifier,
             max_event_id_num: self.max_event_id_num,
-            data_source_id: self.data_source_id,
+            event_kind: self.event_kind,
             classification_id: self.classification_id,
             batch_info: self.batch_info,
             scores: self.scores,
@@ -95,7 +103,7 @@ impl Model {
 
 #[repr(u32)]
 #[derive(Debug, Clone, Copy, Deserialize, Eq, PartialEq, Serialize, EnumString, Display)]
-enum ClusteringMethod {
+pub(crate) enum ClusteringMethod {
     Distribution = 0,
     Multifield = 1, // This corresponds to ClusteringMethod::Multidimention in REconverge
     Prefix = 2,
@@ -127,7 +135,7 @@ struct MagicHeader {
 }
 
 impl MagicHeader {
-    const FORMAT_VERSION: u32 = 1;
+    const FORMAT_VERSION: u32 = 2;
     const MAGIC_STRING: &'static [u8] = b"RCM\0";
     const MAGIC_SIZE: usize = 16;
 }
@@ -178,7 +186,7 @@ struct Body {
     name: String,
     serialized_classifier: Vec<u8>,
     max_event_id_num: i32,
-    data_source_id: i32,
+    event_kind: String,
     classification_id: i64,
     batch_info: Vec<crate::types::ModelBatchInfo>,
     scores: crate::types::ModelScores,
@@ -196,7 +204,7 @@ mod tests {
                 kind: "Multifield".to_owned(),
                 serialized_classifier: b"test".to_vec(),
                 max_event_id_num: 123,
-                data_source_id: 1,
+                event_kind: "http".to_owned(),
                 classification_id: 0,
                 batch_info: vec![],
                 scores: crate::types::ModelScores::default(),
@@ -206,7 +214,7 @@ mod tests {
                 name: "example".to_owned(),
                 serialized_classifier: b"test".to_vec(),
                 max_event_id_num: 123,
-                data_source_id: 1,
+                event_kind: "http".to_owned(),
                 classification_id: 0,
                 batch_info: vec![],
                 scores: crate::types::ModelScores::default(),
@@ -265,5 +273,51 @@ mod tests {
         let d_model = super::Model::from_serialized(&serialized).unwrap();
         let (model, _body) = example();
         assert_eq!(d_model.id, model.id);
+        assert_eq!(d_model.name, model.name);
+        assert_eq!(d_model.version, model.version);
+        assert_eq!(d_model.kind, model.kind);
+        assert_eq!(d_model.serialized_classifier, model.serialized_classifier);
+        assert_eq!(d_model.max_event_id_num, model.max_event_id_num);
+        assert_eq!(d_model.event_kind, "http");
+        assert_eq!(d_model.classification_id, model.classification_id);
+    }
+
+    /// The same fixture as petabi/reconverge#1959: header format 2, method 1
+    /// (`Multifield`), version 1, and a body whose `event_kind` sits where
+    /// format 1 had `data_source_id`.
+    #[test]
+    fn format_2_golden_fixture() {
+        const GOLDEN: &str = "52434d0002000000010000000100000002016d03010203320468747470000000";
+
+        let model = super::Model {
+            id: 1,
+            name: "m".to_owned(),
+            version: 1,
+            kind: "Multifield".to_owned(),
+            serialized_classifier: vec![1, 2, 3],
+            max_event_id_num: 25,
+            event_kind: "http".to_owned(),
+            classification_id: 0,
+            batch_info: vec![],
+            scores: crate::types::ModelScores::default(),
+        };
+        let serialized = model.into_serialized().unwrap();
+        assert_eq!(serialized.len(), 32);
+        assert_eq!(data_encoding::HEXLOWER.encode(&serialized), GOLDEN);
+
+        let decoded = super::Model::from_serialized(&serialized).unwrap();
+        assert_eq!(decoded.event_kind, "http");
+        assert_eq!(decoded.kind, "Multifield");
+        assert_eq!(decoded.max_event_id_num, 25);
+    }
+
+    #[test]
+    fn format_1_is_refused() {
+        let (model, _) = example();
+        let mut serialized = model.into_serialized().unwrap();
+        serialized[4..8].copy_from_slice(&1_u32.to_le_bytes());
+
+        let error = super::Model::from_serialized(&serialized).unwrap_err();
+        assert_eq!(error.to_string(), "Model format mismatch: 1 (Expecting: 2)");
     }
 }

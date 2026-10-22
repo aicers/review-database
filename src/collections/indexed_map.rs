@@ -6,6 +6,7 @@ use super::Indexed;
 ///
 /// The IDs are stored in the first entry, i.e., under an empty key, as a
 /// serialized `Vec`.
+#[derive(Clone)]
 pub struct IndexedMap<'a> {
     db: &'a rocksdb::OptimisticTransactionDB,
     cf: &'a rocksdb::ColumnFamily,

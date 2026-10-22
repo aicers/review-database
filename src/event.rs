@@ -166,6 +166,10 @@ const ADDRESS_COUNT_STACK_DEDUP_LIMIT: usize = 8;
 const EVENT_DELETION_BATCH_SIZE: usize = 1000;
 const FIRST_NON_NEGATIVE_EVENT_KEY: [u8; 16] = 0_i128.to_be_bytes();
 const FIRST_NEGATIVE_EVENT_KEY: [u8; 16] = i128::MIN.to_be_bytes();
+/// The length of the leading bytes of an event key that hold its time and
+/// kind; the remaining four tell apart events sharing both.
+const EVENT_KEY_TIME_AND_KIND_LEN: usize = 12;
+const TOO_MANY_EVENTS: &str = "too many events with the same timestamp";
 
 type PhysicalEventDb = rocksdb::OptimisticTransactionDB<rocksdb::SingleThreaded>;
 type PhysicalEventIterator<'i> = rocksdb::DBIteratorWithThreadMode<'i, PhysicalEventDb>;
@@ -2809,6 +2813,59 @@ fn event_sensor_matches(kind: EventKind, value: &[u8], sensors: &HashSet<&str>) 
     })
 }
 
+/// The outcome of [`EventDb::put_unless_stored`].
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum PutOutcome {
+    /// The event was stored under this key.
+    Stored(i128),
+    /// The same event was already stored; nothing was written.
+    AlreadyStored,
+    /// The event can never be stored, for the given reason; nothing was
+    /// written.
+    Rejected(String),
+}
+
+/// Returns the key of `event` with its time and kind and a zero counter.
+fn event_key_base(event: &EventMessage) -> Result<i128> {
+    use anyhow::anyhow;
+    Ok((i128::from(timestamp::event_key_nanos(event.time)) << 64)
+        | (event
+            .kind
+            .to_i128()
+            .ok_or(anyhow!("`EventKind` exceeds i128::MAX"))?
+            << 32))
+}
+
+/// Returns a key no event occupies with the time and kind of `base`, read
+/// for update within `txn`, or `None` if every one is taken.
+fn free_event_key(
+    txn: &rocksdb::Transaction<rocksdb::OptimisticTransactionDB>,
+    base: i128,
+) -> Result<Option<i128>> {
+    let mut key = base;
+    if txn
+        .get_for_update(key.to_be_bytes(), super::EXCLUSIVE)
+        .context("cannot read from event database")?
+        .is_some()
+    {
+        let start = i128::from(rng().next_u32());
+        key |= start;
+        #[allow(clippy::cast_possible_wrap)] // bit pattern
+        while txn
+            .get_for_update(key.to_be_bytes(), super::EXCLUSIVE)
+            .context("cannot read from event database")?
+            .is_some()
+        {
+            let next = (key + 1) & 0xffff_ffff;
+            if next == start {
+                return Ok(None);
+            }
+            key = key & 0xffff_ffff_ffff_ffff_ffff_ffff_0000_0000_u128 as i128 | next;
+        }
+    }
+    Ok(Some(key))
+}
+
 #[allow(clippy::module_name_repetitions)]
 pub struct EventDb<'a> {
     inner: &'a rocksdb::OptimisticTransactionDB,
@@ -2921,41 +2978,18 @@ impl<'a> EventDb<'a> {
     /// Returns an error if the fields cannot be deserialized as the
     /// producer-facing schema or if a database operation fails.
     pub fn put(&self, event: &EventMessage) -> Result<i128> {
-        use anyhow::anyhow;
         let stored_fields =
             convert_for_storage(event.kind, &event.fields, self.country_lookup.as_deref())?;
-        let mut key = (i128::from(timestamp::event_key_nanos(event.time)) << 64)
-            | (event
-                .kind
-                .to_i128()
-                .ok_or(anyhow!("`EventKind` exceeds i128::MAX"))?
-                << 32);
+        let base = event_key_base(event)?;
         loop {
             let txn = self.inner.transaction();
-            if txn
-                .get_for_update(key.to_be_bytes(), super::EXCLUSIVE)
-                .context("cannot read from event database")?
-                .is_some()
-            {
-                let start = i128::from(rng().next_u32());
-                key |= start;
-                #[allow(clippy::cast_possible_wrap)] // bit pattern
-                while txn
-                    .get_for_update(key.to_be_bytes(), super::EXCLUSIVE)
-                    .context("cannot read from event database")?
-                    .is_some()
-                {
-                    let next = (key + 1) & 0xffff_ffff;
-                    if next == start {
-                        bail!("too many events with the same timestamp");
-                    }
-                    key = key & 0xffff_ffff_ffff_ffff_ffff_ffff_0000_0000_u128 as i128 | next;
-                }
-            }
+            let Some(key) = free_event_key(&txn, base)? else {
+                bail!(TOO_MANY_EVENTS);
+            };
             txn.put(key.to_be_bytes(), stored_fields.as_slice())
                 .context("cannot write event")?;
             match txn.commit() {
-                Ok(()) => break,
+                Ok(()) => return Ok(key),
                 Err(e) => {
                     if !e.as_ref().starts_with("Resource busy:") {
                         return Err(e).context("failed to store event");
@@ -2963,7 +2997,72 @@ impl<'a> EventDb<'a> {
                 }
             }
         }
-        Ok(key)
+    }
+
+    /// Stores a new event unless the same event is already stored.
+    ///
+    /// The event is the same when an event of the same time and kind is
+    /// stored with identical bytes, which is what [`EventDb::put`] would have
+    /// stored for it; then nothing is written and the outcome is
+    /// [`PutOutcome::AlreadyStored`]. Otherwise the event is stored as `put`
+    /// stores it and the outcome is [`PutOutcome::Stored`] with its key. An
+    /// event that can never be stored — its fields fail to convert for
+    /// storage, or no key is free at its time and kind — is
+    /// [`PutOutcome::Rejected`] with the reason, and nothing is written.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error only if a database operation fails.
+    pub fn put_unless_stored(&self, event: &EventMessage) -> Result<PutOutcome> {
+        let stored_fields =
+            match convert_for_storage(event.kind, &event.fields, self.country_lookup.as_deref()) {
+                Ok(fields) => fields,
+                Err(e) => return Ok(PutOutcome::Rejected(e.to_string())),
+            };
+        let base = match event_key_base(event) {
+            Ok(base) => base,
+            Err(e) => return Ok(PutOutcome::Rejected(e.to_string())),
+        };
+        let key = base.to_be_bytes();
+        // An `i128` key is 16 bytes, longer than its time and kind.
+        let prefix = &key[..EVENT_KEY_TIME_AND_KIND_LEN];
+        loop {
+            let txn = self.inner.transaction();
+            // The scan below is not tracked for conflicts, and two calls for
+            // one event find different free keys when the first key of its
+            // time and kind is taken. That first key is read for update
+            // before the scan, and written back unchanged when taken: a call
+            // committing after this read conflicts with this one, which then
+            // retries, and one committing before it is seen by the scan.
+            if let Some(first) = txn
+                .get_for_update(key, super::EXCLUSIVE)
+                .context("cannot read from event database")?
+            {
+                txn.put(key, first).context("cannot write event")?;
+            }
+            let mut readopts = rocksdb::ReadOptions::default();
+            readopts.set_iterate_range(rocksdb::PrefixRange(prefix));
+            for entry in txn.iterator_opt(IteratorMode::From(prefix, Direction::Forward), readopts)
+            {
+                let (_, value) = entry.context("cannot read from event database")?;
+                if *value == *stored_fields {
+                    return Ok(PutOutcome::AlreadyStored);
+                }
+            }
+            let Some(key) = free_event_key(&txn, base)? else {
+                return Ok(PutOutcome::Rejected(TOO_MANY_EVENTS.to_string()));
+            };
+            txn.put(key.to_be_bytes(), stored_fields.as_slice())
+                .context("cannot write event")?;
+            match txn.commit() {
+                Ok(()) => return Ok(PutOutcome::Stored(key)),
+                Err(e) => {
+                    if !e.as_ref().starts_with("Resource busy:") {
+                        return Err(e).context("failed to store event");
+                    }
+                }
+            }
+        }
     }
 
     /// Updates an old key-value pair to a new one.
@@ -3702,7 +3801,7 @@ mod tests {
     use super::{COUNTRY_COUNT_STACK_DEDUP_LIMIT, EXTERNAL_DDOS, timestamp};
     use crate::test::{DbGuard, acquire_db_permit};
     use crate::{
-        Store,
+        PutOutcome, Store,
         event::{
             BlocklistBootp, BlocklistBootpFields, BlocklistConn, BlocklistConnFields,
             BlocklistDceRpc, BlocklistDceRpcFields, BlocklistDhcp, BlocklistDhcpFields,
@@ -4007,6 +4106,114 @@ mod tests {
         assert!(iter.next().is_some());
         assert!(iter.next().is_some());
         assert!(iter.next().is_none());
+    }
+
+    /// An event is stored once however often it is put, while an event that
+    /// differs only in its fields, or only in its time, is stored beside it.
+    #[test]
+    fn event_db_put_unless_stored_stores_an_event_once() {
+        let (_permit, store) = setup_store();
+        let db = store.events();
+        let time = Utc.with_ymd_and_hms(2026, 1, 2, 3, 4, 5).unwrap();
+        let msg = dns_message("sensor-a", time);
+
+        let PutOutcome::Stored(key) = db.put_unless_stored(&msg).unwrap() else {
+            panic!("the first put stores the event");
+        };
+        assert_eq!(
+            db.put_unless_stored(&msg).unwrap(),
+            PutOutcome::AlreadyStored
+        );
+        assert_eq!(db.raw_iter().count(), 1);
+        let (stored_key, _) = db.iter_forward().next().unwrap().unwrap();
+        assert_eq!(stored_key, key);
+
+        // Another event of the same time and kind takes another key, and is
+        // itself stored only once.
+        let other = dns_message("sensor-b", time);
+        let PutOutcome::Stored(other_key) = db.put_unless_stored(&other).unwrap() else {
+            panic!("an event with other fields is stored");
+        };
+        assert_ne!(other_key, key);
+        assert_eq!(
+            db.put_unless_stored(&other).unwrap(),
+            PutOutcome::AlreadyStored
+        );
+        assert_eq!(
+            db.put_unless_stored(&msg).unwrap(),
+            PutOutcome::AlreadyStored
+        );
+        let later = dns_message("sensor-a", time + chrono::Duration::seconds(1));
+        assert!(matches!(
+            db.put_unless_stored(&later).unwrap(),
+            PutOutcome::Stored(_)
+        ));
+        assert_eq!(db.raw_iter().count(), 3);
+
+        // An event `put` stored is recognized as well.
+        let put_only = dns_message("sensor-c", time);
+        db.put(&put_only).unwrap();
+        assert_eq!(
+            db.put_unless_stored(&put_only).unwrap(),
+            PutOutcome::AlreadyStored
+        );
+        assert_eq!(db.raw_iter().count(), 4);
+    }
+
+    /// Concurrent calls for one event store it once, also when another event
+    /// already holds the first key of its time and kind.
+    #[test]
+    fn event_db_put_unless_stored_stores_an_event_once_under_concurrency() {
+        const CALLERS: usize = 8;
+
+        let (_permit, store) = setup_store();
+        let time = Utc.with_ymd_and_hms(2026, 1, 2, 3, 4, 5).unwrap();
+        store.events().put(&dns_message("sensor-a", time)).unwrap();
+        let msg = dns_message("sensor-b", time);
+
+        for _ in 0..10 {
+            let barrier = std::sync::Barrier::new(CALLERS);
+            let outcomes: Vec<PutOutcome> = std::thread::scope(|scope| {
+                let handles: Vec<_> = (0..CALLERS)
+                    .map(|_| {
+                        scope.spawn(|| {
+                            barrier.wait();
+                            store.events().put_unless_stored(&msg).unwrap()
+                        })
+                    })
+                    .collect();
+                handles.into_iter().map(|h| h.join().unwrap()).collect()
+            });
+            assert!(
+                outcomes
+                    .iter()
+                    .filter(|outcome| matches!(outcome, PutOutcome::Stored(_)))
+                    .count()
+                    <= 1
+            );
+            assert_eq!(store.events().raw_iter().count(), 2);
+        }
+    }
+
+    /// An event whose fields do not convert for storage is rejected with the
+    /// reason, not returned as an error, and nothing is written.
+    #[test]
+    fn event_db_put_unless_stored_rejects_unconvertible_fields() {
+        let (_permit, store) = setup_store();
+        let db = store.events();
+        let mut msg = example_message(
+            EventKind::DnsCovertChannel,
+            EventCategory::CommandAndControl,
+        );
+        msg.fields = vec![0xff; 3];
+
+        let outcome = db.put_unless_stored(&msg).unwrap();
+        let PutOutcome::Rejected(reason) = outcome else {
+            panic!("expected a rejection, got {outcome:?}");
+        };
+        assert_ne!(reason, "");
+        assert_eq!(db.raw_iter().count(), 0);
+        assert!(db.put(&msg).is_err());
     }
 
     #[test]
