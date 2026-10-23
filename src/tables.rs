@@ -31,6 +31,7 @@ mod retention_config;
 mod sampling_policy;
 mod scores;
 mod status;
+mod system_log_collector;
 mod template;
 mod time_series;
 mod tor_exit_node;
@@ -116,6 +117,9 @@ pub use self::sampling_policy::{
     Interval as SamplingInterval, Kind as SamplingKind, Period as SamplingPeriod, SamplingPolicy,
     Update as SamplingPolicyUpdate,
 };
+pub use self::system_log_collector::{
+    SystemInstallRecord, SystemLogCollector, SystemLogCollectorRefusal, SystemLogCollectorTable,
+};
 pub use self::template::{
     Structured, StructuredClusteringAlgorithm, Template, Unstructured,
     UnstructuredClusteringAlgorithm,
@@ -170,6 +174,7 @@ pub(super) const MODEL_INDICATORS: &str = "model indicators";
 pub(crate) const META: &str = "meta";
 pub(super) const MODEL_RUNS: &str = "model runs";
 pub(super) const NETWORK_LISTS: &str = "network lists";
+pub(super) const SYSTEM_LOG_COLLECTORS: &str = "system log collectors";
 pub(super) const NETWORKS: &str = "networks";
 pub(super) const NODES: &str = "nodes";
 pub(super) const OPERATION_ATTEMPTS: &str = "operation attempts";
@@ -208,7 +213,7 @@ pub(super) const TRIAGE_RESPONSE: &str = "triage response";
 pub(super) const TRUSTED_DNS_SERVERS: &str = "trusted DNS servers";
 pub(super) const TRUSTED_USER_AGENTS: &str = "trusted user agents";
 
-pub(crate) const MAP_NAMES: [&str; 48] = [
+pub(crate) const MAP_NAMES: [&str; 49] = [
     AGENTS,
     BATCH_INFO,
     CATEGORY,
@@ -248,6 +253,7 @@ pub(crate) const MAP_NAMES: [&str; 48] = [
     SAMPLING_POLICY,
     SCORES,
     STATUSES,
+    SYSTEM_LOG_COLLECTORS,
     TEMPLATES,
     LABEL_DB,
     TIME_SERIES,
@@ -471,6 +477,16 @@ impl StateDb {
             .expect("table access requires a successfully opened StateDb");
         NetworkListTable::open(inner)
             .expect("StateDb::open initializes the network lists column family")
+    }
+
+    #[must_use]
+    pub(crate) fn system_log_collectors(&self) -> SystemLogCollectorTable<'_> {
+        let inner = self
+            .inner
+            .as_ref()
+            .expect("table access requires a successfully opened StateDb");
+        SystemLogCollectorTable::open(inner)
+            .expect("StateDb::open initializes the system log collectors column family")
     }
 
     #[must_use]

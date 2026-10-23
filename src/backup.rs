@@ -911,7 +911,7 @@ mod tests {
         crate::write_version_markers(
             data_dir.path(),
             backup_dir.path(),
-            env!("CARGO_PKG_VERSION"),
+            crate::migration::DATABASE_FORMAT_VERSION,
         )
         .unwrap();
         assert_eq!(event_count(data_dir.path(), backup_dir.path()), 1);

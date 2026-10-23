@@ -31,88 +31,23 @@ use crate::{
     },
 };
 
-/// The range of versions that use the current database format.
+/// The database format marker written to `VERSION`.
 ///
-/// The range should include all the earlier, released versions that use the
-/// current database format, and exclude the first future version that uses a
-/// new database format.
+/// It names the current database format and is independent of the crate
+/// package version: a release does not move it, and a format change does,
+/// whatever the crate version is at the time.
+pub(crate) const DATABASE_FORMAT_VERSION: &str = "0.56.0";
+
+/// The range of format markers that use the current database format.
 ///
-/// # Examples
-///
-/// ```rust
-/// // [Case 1: Stable Patch Version, No Format Change]
-/// // The current version is 0.4.1 and the database format hasn't been changed
-/// // since 0.3.0. This should include future patch versions such as 0.4.2,
-/// // 0.4.3, etc. since they won't change the database format.
-/// const COMPATIBLE_VERSION: &str = ">=0.3,<0.5.0-alpha";
-/// ```
-///
-/// ```rust
-/// // [Case 2: Alpha Patch Version, No RocksDB Format Change]
-/// // The current version is 3.4.6-alpha.2 and the database format hasn't been
-/// // changed since 1.0.0. Future pre-release versions such as 3.4.6-alpha.3
-/// // are compatible since they won't change the database format.
-/// const COMPATIBLE_VERSION: &str = ">=1.0.0,<3.5.0-alpha";
-/// ```
-///
-/// ```rust
-/// // [Case 3: Transition to New Alpha Version, No RocksDB Format Change]
-/// // The current version is 3.4.5 and the database format hasn't been changed
-/// // since 1.0.0. The next version to pre-release is 3.5.0-alpha.1, if no
-/// // database format change is involved, then compatible version should be
-/// // extended to 3.5.0-alpha.1.
-/// const COMPATIBLE_VERSION: &str = ">=1.0.0,<=3.5.0-alpha.1";
-/// ```
-///
-/// ```rust
-/// // [Case 4: Transition to Stable Major Version, No RocksDB Format Change]
-/// // The current version is 3.4.5 and the database format hasn't been changed
-/// // since 1.0.0. The next version to release is 3.5.0 (stable), if no
-/// // database format change is involved, then migration is not needed, while
-/// // compatible version should be extended to 3.5.0., including all future
-/// // patch versions.
-/// const COMPATIBLE_VERSION: &str = ">=1.0.0,<3.6.0-alpha";
-/// ```
-///
-/// ```rust
-/// // [Case 5: Transition from Alpha to Stable Version, No RocksDB Format Change]
-/// // The current version is 3.4.5-alpha.3 and the database format hasn't been
-/// // changed since 1.0.0. The next version to release is 3.5.0 (stable), with
-/// // compatibility extended to future patch versions.
-/// const COMPATIBLE_VERSION: &str = ">=1.0.0,<3.6.0-alpha";
-/// ```
-///
-/// ```rust
-/// // [Case 6: Transition to New Alpha Version, RocksDB Format Change]
-/// // The current version is 3.4.5 and the database format is changing in
-/// // 3.5.0-alpha.1. The compatibility is now restricted to 3.5.0-alpha.1,
-/// // requiring a migration from the 1.0.0 format.
-/// const COMPATIBLE_VERSION: &str = ">=3.5.0-alpha.1,<3.5.0-alpha.2";
-/// // Migration: `migrate_1_0_to_3_5` must handle changes from 1.0.0 to
-/// // 3.5.0-alpha.1.
-/// ```
-///
-/// ```rust
-/// // [Case 7: Transition Between Alpha Versions, RocksDB Format Change]
-/// // The current version is 3.5.0-alpha.2 and the database format is changing in
-/// // 3.5.0-alpha.3. The compatibility is now restricted to 3.5.0-alpha.3,
-/// // requiring a migration from the 1.0.0 format.
-/// const COMPATIBLE_VERSION: &str = ">=3.5.0-alpha.3,<3.5.0-alpha.4";
-/// // Migration: `migrate_1_0_to_3_5` must handle changes from 1.0.0 to
-/// // 3.5.0-alpha.3, including prior alpha changes.
-///```
-///
-/// ```rust
-/// // [Case 8: Transition from Alpha to Stable Version, RocksDB Format Finalized]
-/// // The current version is 3.5.0-alpha.2 and the database format is
-/// // finalized in 3.5.0. The compatibility is extended to all 3.5.0 versions,
-/// // requiring a migration from the 1.0.0 format.
-/// const COMPATIBLE_VERSION: &str = ">=3.5.0,<3.6.0-alpha";
-/// // Migration: `migrate_1_0_to_3_5` must handle changes from 1.0.0 (last
-/// // release that involves database format change) to 3.5.0, including
-/// // all alpha changes finalized in 3.5.0.
-/// ```
-const COMPATIBLE_VERSION_REQ: &str = ">=0.55.0,<0.56.0";
+/// The versions here, and in the migration table of [`migrate_data_dir`], are
+/// database format markers, independent of the crate version.
+/// [`DATABASE_FORMAT_VERSION`] names the current format as a stable `X.Y.0`.
+/// A format change moves it to the next minor, sets this requirement to
+/// `">=X.Y.0,<X.(Y+1).0"` and appends a step to the migration table. A
+/// release, or any change without a format change, leaves all three as they
+/// are. No build writes a prerelease marker.
+const COMPATIBLE_VERSION_REQ: &str = ">=0.56.0,<0.57.0";
 
 /// Number of event records applied in each atomic migration write.
 const EVENT_MIGRATION_BATCH_SIZE: usize = 100;
@@ -162,11 +97,15 @@ const VERSION_TMP_FILE_NAME: &str = "VERSION.tmp";
 
 /// Migrates the data directory to the up-to-date format if necessary.
 ///
-/// Migration is supported between released versions only. A prerelease marker,
-/// such as `0.46.0-alpha.1` or `0.47.0-alpha.6`, is refused with "migration
-/// from {version} is not supported": neither `COMPATIBLE_VERSION_REQ` nor any
-/// requirement in the migration table carries a prerelease, so under semver's
-/// matching rule none of them admits it.
+/// The versions this function reads, compares and writes are database format
+/// markers, independent of the crate version: `DATABASE_FORMAT_VERSION`
+/// names the current format.
+///
+/// Migration is supported between stable format markers only. A prerelease
+/// marker, such as `0.46.0-alpha.1` or `0.47.0-alpha.6`, is refused with
+/// "migration from {version} is not supported": neither
+/// `COMPATIBLE_VERSION_REQ` nor any requirement in the migration table carries
+/// a prerelease, so under semver's matching rule none of them admits it.
 ///
 /// Pass a shared `IP2Location` database handle when available so endpoint
 /// country-code fields can be resolved during the stored event schema
@@ -290,6 +229,11 @@ pub fn migrate_data_dir<P: AsRef<Path>>(
             Version::parse("0.55.0")?,
             |data_dir, _backup_dir, _locator| migrate_0_53_to_0_55(data_dir),
         ),
+        (
+            VersionReq::parse(">=0.55.0,<0.56.0")?,
+            Version::parse("0.56.0")?,
+            |data_dir, _backup_dir, _locator| migrate_0_55_to_0_56(data_dir),
+        ),
     ];
 
     while let Some((_req, to, m)) = migration
@@ -300,9 +244,9 @@ pub fn migrate_data_dir<P: AsRef<Path>>(
         m(data_dir, backup_dir, locator)?;
         version = to.clone();
         if compatible.matches(&version) {
-            create_version_file(&backup, env!("CARGO_PKG_VERSION"))
+            create_version_file(&backup, DATABASE_FORMAT_VERSION)
                 .context("failed to update VERSION")?;
-            return create_version_file(&data, env!("CARGO_PKG_VERSION"))
+            return create_version_file(&data, DATABASE_FORMAT_VERSION)
                 .context("failed to update VERSION");
         }
     }
@@ -688,6 +632,32 @@ fn migrate_0_53_to_0_55(data_dir: &Path) -> Result<()> {
         Err(e) => {
             return Err(e).with_context(|| format!("failed to remove {}", classifiers.display()));
         }
+    }
+    Ok(())
+}
+
+/// Migrates a database in the 0.55.x format to 0.56.0.
+///
+/// Creates the empty "system log collectors" column family. Nothing is copied
+/// into it, and no other column family is read or written.
+///
+/// A rerun is safe: the family is created only if it is missing, so a chain
+/// interrupted after this step finds it there and leaves it as it is.
+fn migrate_0_55_to_0_56(data_dir: &Path) -> Result<()> {
+    let db_path = data_dir.join("states.db");
+    let mut opts = rocksdb::Options::default();
+    opts.create_if_missing(false);
+    opts.create_missing_column_families(false);
+    let column_families = map_names_for_existing_format(&opts, &db_path)?;
+    let mut db: rocksdb::OptimisticTransactionDB<rocksdb::SingleThreaded> =
+        rocksdb::OptimisticTransactionDB::open_cf(&opts, &db_path, column_families)
+            .context("failed to open database for the 0.56.0 migration")?;
+
+    let name = crate::tables::SYSTEM_LOG_COLLECTORS;
+    if db.cf_handle(name).is_none() {
+        info!("Creating '{name}' column family");
+        db.create_cf(name, &rocksdb::Options::default())
+            .context("failed to create system log collectors column family")?;
     }
     Ok(())
 }
@@ -1350,6 +1320,60 @@ const MAP_NAMES_V0_53: [&str; 38] = [
     "time series",
     "Tor exit nodes",
     "traffic filter rules",
+    "triage response",
+    "trusted DNS servers",
+    "trusted user agents",
+];
+
+/// Lists column family names for database format 0.55, before
+/// [`migrate_0_55_to_0_56`] adds the system log collectors family.
+#[cfg(test)]
+const MAP_NAMES_V0_55: [&str; 48] = [
+    "agents",
+    "batch_info",
+    "category",
+    "cluster",
+    "column stats",
+    "configs",
+    "core components",
+    "csv column extras",
+    "customer deletion jobs",
+    "customer networks",
+    "data sources",
+    "engine instances",
+    "hosts",
+    "instance allocations",
+    "models",
+    "model indicators",
+    "meta",
+    "model runs",
+    "network lists",
+    "networks",
+    "nodes",
+    "operation attempts",
+    "operation attempt latest",
+    "outliers",
+    "port allocations",
+    "port allocations by attempt",
+    "port allocations by instance",
+    "previous batch_info",
+    "previous cluster",
+    "previous column stats",
+    "previous csv column extras",
+    "previous outliers",
+    "previous scores",
+    "previous time series",
+    "qualifiers",
+    "external services",
+    "sampling policy",
+    "scores",
+    "statuses",
+    "templates",
+    "label database",
+    "time series",
+    "Tor exit nodes",
+    "traffic filter rules",
+    "training definitions",
     "triage response",
     "trusted DNS servers",
     "trusted user agents",
@@ -2137,7 +2161,7 @@ fn retrieve_or_create_version<P: AsRef<Path>>(path: P) -> Result<(PathBuf, Versi
             Err(_) => true,
         });
     if !populated {
-        create_version_file(&file, env!("CARGO_PKG_VERSION"))?;
+        create_version_file(&file, DATABASE_FORMAT_VERSION)?;
     }
 
     let version = read_version_file(&file)?;
@@ -2152,7 +2176,7 @@ fn retrieve_or_create_version<P: AsRef<Path>>(path: P) -> Result<(PathBuf, Versi
 /// interrupted write cannot leave VERSION empty or partial.
 ///
 /// `version` is written verbatim, so every caller passes a string it has
-/// already validated: the current crate version during migration, and the
+/// already validated: `DATABASE_FORMAT_VERSION` during migration, and the
 /// canonical form of a parsed [`Version`] from [`write_version_markers`].
 ///
 /// # Errors
@@ -2304,10 +2328,10 @@ mod tests {
 
     use super::{
         COMPATIBLE_VERSION_REQ, COUNTRY_CODE_SWAP_CHECKPOINT_KEY, COUNTRY_CODE_SWAP_COMPLETED_KEY,
-        VERSION_FILE_NAME, VERSION_TMP_FILE_NAME, create_version_file, migrate_0_46_to_0_47,
-        migrate_country_code_placeholders_inner, migrate_data_dir, migrate_event_country_codes,
-        migrate_event_stored_schema_to_v0_46, read_version_file, retrieve_or_create_version,
-        write_version_markers,
+        DATABASE_FORMAT_VERSION, VERSION_FILE_NAME, VERSION_TMP_FILE_NAME, create_version_file,
+        migrate_0_46_to_0_47, migrate_country_code_placeholders_inner, migrate_data_dir,
+        migrate_event_country_codes, migrate_event_stored_schema_to_v0_46, read_version_file,
+        retrieve_or_create_version, write_version_markers,
     };
     use crate::event::{
         BlocklistConnFields, BlocklistConnFieldsStored, EventKind, EventMessage,
@@ -2693,7 +2717,7 @@ mod tests {
         let backup_dir = tempfile::tempdir().unwrap();
 
         // Write the current compatible version to both directories
-        let current_version = env!("CARGO_PKG_VERSION");
+        let current_version = DATABASE_FORMAT_VERSION;
         write_version(data_dir.path(), current_version);
         write_version(backup_dir.path(), current_version);
 
@@ -2712,7 +2736,7 @@ mod tests {
         let data_dir = tempfile::tempdir().unwrap();
         let backup_dir = tempfile::tempdir().unwrap();
 
-        let mut data_version = Version::parse(env!("CARGO_PKG_VERSION")).unwrap();
+        let mut data_version = Version::parse(DATABASE_FORMAT_VERSION).unwrap();
         if !data_version.pre.is_empty() {
             data_version = Version::new(data_version.major, data_version.minor, data_version.patch);
         }
@@ -2745,10 +2769,10 @@ mod tests {
         // Should succeed (empty dir gets current version)
         assert!(result.is_ok());
 
-        // VERSION should be created with current package version
+        // VERSION should be created with the current format marker
         let data_version = read_version_file(&data_dir.path().join("VERSION")).unwrap();
         let backup_version = read_version_file(&backup_dir.path().join("VERSION")).unwrap();
-        let current_version = Version::parse(env!("CARGO_PKG_VERSION")).unwrap();
+        let current_version = Version::parse(DATABASE_FORMAT_VERSION).unwrap();
         assert_eq!(data_version, current_version);
         assert_eq!(backup_version, current_version);
     }
@@ -2765,7 +2789,7 @@ mod tests {
         f.write_all(b"not-a-valid-version").unwrap();
 
         // Also need a file in backup to prevent it from being treated as empty
-        write_version(backup_dir.path(), env!("CARGO_PKG_VERSION"));
+        write_version(backup_dir.path(), DATABASE_FORMAT_VERSION);
 
         let result = migrate_data_dir(data_dir.path(), backup_dir.path(), None);
 
@@ -2845,6 +2869,7 @@ mod tests {
             "0.55.0-alpha.2",
             "0.55.0-alpha.3",
             "0.55.0-alpha.4",
+            "0.56.0-alpha.1",
         ] {
             let data_dir = tempfile::tempdir().unwrap();
             let backup_dir = tempfile::tempdir().unwrap();
@@ -2896,11 +2921,11 @@ mod tests {
         write_version(temp.path(), "0.45.0");
         let version_path = temp.path().join(VERSION_FILE_NAME);
 
-        create_version_file(&version_path, env!("CARGO_PKG_VERSION")).unwrap();
+        create_version_file(&version_path, DATABASE_FORMAT_VERSION).unwrap();
 
         assert_eq!(
             read_version_file(&version_path).unwrap(),
-            Version::parse(env!("CARGO_PKG_VERSION")).unwrap()
+            Version::parse(DATABASE_FORMAT_VERSION).unwrap()
         );
         assert!(!temp.path().join(VERSION_TMP_FILE_NAME).exists());
     }
@@ -2915,7 +2940,7 @@ mod tests {
         let (path, version) = retrieve_or_create_version(temp.path()).unwrap();
 
         assert_eq!(path, temp.path().join(VERSION_FILE_NAME));
-        assert_eq!(version, Version::parse(env!("CARGO_PKG_VERSION")).unwrap());
+        assert_eq!(version, Version::parse(DATABASE_FORMAT_VERSION).unwrap());
     }
 
     /// Test that a populated data directory without a `VERSION` file is still
@@ -3034,7 +3059,7 @@ mod tests {
         let data_dir = tempfile::tempdir().unwrap();
         let backup_dir = tempfile::tempdir().unwrap();
 
-        write_version(data_dir.path(), env!("CARGO_PKG_VERSION"));
+        write_version(data_dir.path(), DATABASE_FORMAT_VERSION);
         write_version(backup_dir.path(), "0.47.0\n");
 
         write_version_markers(data_dir.path(), backup_dir.path(), "0.46.0").unwrap();
@@ -3112,16 +3137,7 @@ mod tests {
     #[test]
     fn migration_from_supported_minors() {
         const START_VERSION: &str = "0.43.0";
-        let current_pkg_version = Version::parse(env!("CARGO_PKG_VERSION")).unwrap();
-        let current_base = if current_pkg_version.pre.is_empty() {
-            current_pkg_version.clone()
-        } else {
-            Version::new(
-                current_pkg_version.major,
-                current_pkg_version.minor,
-                current_pkg_version.patch,
-            )
-        };
+        let current_base = Version::parse(DATABASE_FORMAT_VERSION).unwrap();
 
         let start_version = Version::parse(START_VERSION).unwrap();
         assert!(
@@ -3135,11 +3151,7 @@ mod tests {
 
         let compatible = VersionReq::parse(COMPATIBLE_VERSION_REQ).unwrap();
         for minor in start_version.minor..=current_base.minor {
-            let version = if minor == current_base.minor {
-                current_pkg_version.clone()
-            } else {
-                Version::new(start_version.major, minor, 0)
-            };
+            let version = Version::new(start_version.major, minor, 0);
 
             let data_dir = tempfile::tempdir().unwrap();
             let backup_dir = tempfile::tempdir().unwrap();
@@ -3169,7 +3181,7 @@ mod tests {
             let expected = if compatible.matches(&version) {
                 version.clone()
             } else {
-                current_pkg_version.clone()
+                current_base.clone()
             };
             assert_eq!(data_version, expected);
             assert_eq!(backup_version, expected);
@@ -3227,11 +3239,14 @@ mod tests {
         crate::tables::ENGINE_INSTANCES,
     ];
 
+    /// The column families the 0.56.0 format adds to the 0.55 set.
+    const FAMILIES_ADDED_BY_V0_56: [&str; 1] = [crate::tables::SYSTEM_LOG_COLLECTORS];
+
     /// Migrates a database in the 0.43-through-0.46 layout, recorded as
     /// `version`, and asserts that it reaches the current format with its agent
     /// and external-service values converted.
     fn assert_migration_creates_new_column_families(version: &str) {
-        let current_version = Version::parse(env!("CARGO_PKG_VERSION")).unwrap();
+        let current_version = Version::parse(DATABASE_FORMAT_VERSION).unwrap();
 
         let data_dir = tempfile::tempdir().unwrap();
         let backup_dir = tempfile::tempdir().unwrap();
@@ -3270,6 +3285,7 @@ mod tests {
             .chain(FAMILIES_ADDED_BY_V0_50)
             .chain(FAMILIES_ADDED_BY_V0_53)
             .chain(FAMILIES_ADDED_BY_V0_55)
+            .chain(FAMILIES_ADDED_BY_V0_56)
         {
             assert!(db.cf_handle(name).is_some(), "{name} must exist");
         }
@@ -3278,6 +3294,7 @@ mod tests {
                 + FAMILIES_ADDED_BY_V0_50.len()
                 + FAMILIES_ADDED_BY_V0_53.len()
                 + FAMILIES_ADDED_BY_V0_55.len()
+                + FAMILIES_ADDED_BY_V0_56.len()
                 - FAMILIES_REMOVED_BY_V0_47.len()
                 - FAMILIES_REMOVED_BY_V0_52.len(),
             crate::tables::MAP_NAMES.len() - super::MAP_NAMES_V0_43_TO_V0_46.len()
@@ -3287,11 +3304,18 @@ mod tests {
                 + FAMILIES_ADDED_BY_V0_50.len()
                 + FAMILIES_ADDED_BY_V0_53.len()
                 + FAMILIES_ADDED_BY_V0_55.len()
+                + FAMILIES_ADDED_BY_V0_56.len()
                 - FAMILIES_REMOVED_BY_V0_52.len(),
             crate::tables::MAP_NAMES.len()
         );
         assert_eq!(
-            super::MAP_NAMES_V0_53.len() + FAMILIES_ADDED_BY_V0_55.len(),
+            super::MAP_NAMES_V0_53.len()
+                + FAMILIES_ADDED_BY_V0_55.len()
+                + FAMILIES_ADDED_BY_V0_56.len(),
+            crate::tables::MAP_NAMES.len()
+        );
+        assert_eq!(
+            super::MAP_NAMES_V0_55.len() + FAMILIES_ADDED_BY_V0_56.len(),
             crate::tables::MAP_NAMES.len()
         );
         drop(db);
@@ -3377,7 +3401,7 @@ mod tests {
     /// select the 0.46 migration rather than refuse the version.
     #[test]
     fn markers_written_for_rollback_let_migration_run_again() {
-        let current_version = Version::parse(env!("CARGO_PKG_VERSION")).unwrap();
+        let current_version = Version::parse(DATABASE_FORMAT_VERSION).unwrap();
 
         let data_dir = tempfile::tempdir().unwrap();
         let backup_dir = tempfile::tempdir().unwrap();
@@ -3400,8 +3424,8 @@ mod tests {
 
         // What the update left behind: both markers name the newer format even
         // though the restored `states.db` above is the older one.
-        write_version(data_dir.path(), env!("CARGO_PKG_VERSION"));
-        write_version(backup_dir.path(), env!("CARGO_PKG_VERSION"));
+        write_version(data_dir.path(), DATABASE_FORMAT_VERSION);
+        write_version(backup_dir.path(), DATABASE_FORMAT_VERSION);
 
         write_version_markers(data_dir.path(), backup_dir.path(), "0.46.0").unwrap();
 
@@ -3465,7 +3489,7 @@ mod tests {
 
     #[test]
     fn migration_retries_after_customer_deletion_jobs_cf_creation() {
-        let current_version = Version::parse(env!("CARGO_PKG_VERSION")).unwrap();
+        let current_version = Version::parse(DATABASE_FORMAT_VERSION).unwrap();
         let data_dir = tempfile::tempdir().unwrap();
         let backup_dir = tempfile::tempdir().unwrap();
         let db_path = data_dir.path().join("states.db");
@@ -3766,7 +3790,7 @@ mod tests {
         assert_eq!(stored.resp_country_code, crate::COUNTRY_CODE_UNRESOLVED);
         assert_eq!(
             read_version_file(&data_dir.path().join(VERSION_FILE_NAME)).unwrap(),
-            Version::parse(env!("CARGO_PKG_VERSION")).unwrap()
+            Version::parse(DATABASE_FORMAT_VERSION).unwrap()
         );
     }
 
@@ -3799,7 +3823,7 @@ mod tests {
     #[test]
     fn migration_from_v0_46_fills_install_state_defaults() {
         let permit = acquire_db_permit();
-        let current_version = Version::parse(env!("CARGO_PKG_VERSION")).unwrap();
+        let current_version = Version::parse(DATABASE_FORMAT_VERSION).unwrap();
         let data_dir = tempfile::tempdir().unwrap();
         let backup_dir = tempfile::tempdir().unwrap();
         let db_path = data_dir.path().join("states.db");
@@ -3932,7 +3956,7 @@ mod tests {
     /// of `0.45.0`. The retry must open exactly that set and complete.
     #[test]
     fn migration_retries_with_every_new_family() {
-        let current_version = Version::parse(env!("CARGO_PKG_VERSION")).unwrap();
+        let current_version = Version::parse(DATABASE_FORMAT_VERSION).unwrap();
         let data_dir = tempfile::tempdir().unwrap();
         let backup_dir = tempfile::tempdir().unwrap();
         let db_path = data_dir.path().join("states.db");
@@ -4020,7 +4044,7 @@ mod tests {
     #[test]
     fn migration_from_v0_46_drops_triage_families() {
         let _permit = acquire_db_permit();
-        let current_version = Version::parse(env!("CARGO_PKG_VERSION")).unwrap();
+        let current_version = Version::parse(DATABASE_FORMAT_VERSION).unwrap();
         let data_dir = tempfile::tempdir().unwrap();
         let backup_dir = tempfile::tempdir().unwrap();
         let db_path = data_dir.path().join("states.db");
@@ -4060,7 +4084,7 @@ mod tests {
     #[test]
     fn migration_from_v0_44_retried_after_triage_families_were_dropped() {
         let _permit = acquire_db_permit();
-        let current_version = Version::parse(env!("CARGO_PKG_VERSION")).unwrap();
+        let current_version = Version::parse(DATABASE_FORMAT_VERSION).unwrap();
         let data_dir = tempfile::tempdir().unwrap();
         let backup_dir = tempfile::tempdir().unwrap();
         let db_path = data_dir.path().join("states.db");
@@ -4090,7 +4114,7 @@ mod tests {
     #[test]
     fn migration_resumes_after_crash_before_the_version_was_written() {
         let permit = acquire_db_permit();
-        let current_version = Version::parse(env!("CARGO_PKG_VERSION")).unwrap();
+        let current_version = Version::parse(DATABASE_FORMAT_VERSION).unwrap();
 
         let clean_dir = tempfile::tempdir().unwrap();
         let resumed_dir = tempfile::tempdir().unwrap();
@@ -4254,7 +4278,7 @@ mod tests {
         (agents, expected_agents): (Entries, Entries),
         (external_services, expected_external_services): (Entries, Entries),
     ) {
-        let current_version = Version::parse(env!("CARGO_PKG_VERSION")).unwrap();
+        let current_version = Version::parse(DATABASE_FORMAT_VERSION).unwrap();
         let data_dir = tempfile::tempdir().unwrap();
         let backup_dir = tempfile::tempdir().unwrap();
         let db_path = data_dir.path().join("states.db");
@@ -4626,7 +4650,7 @@ mod tests {
     #[test]
     fn migration_from_v0_49_creates_empty_customer_networks() {
         let _permit = acquire_db_permit();
-        let current_version = Version::parse(env!("CARGO_PKG_VERSION")).unwrap();
+        let current_version = Version::parse(DATABASE_FORMAT_VERSION).unwrap();
         let data_dir = tempfile::tempdir().unwrap();
         let backup_dir = tempfile::tempdir().unwrap();
         let db_path = data_dir.path().join("states.db");
@@ -4829,7 +4853,7 @@ mod tests {
     /// second start then changes nothing.
     fn assert_migration_from_v0_51_store(version: &str, families: &[&str]) {
         let _permit = acquire_db_permit();
-        let current_version = Version::parse(env!("CARGO_PKG_VERSION")).unwrap();
+        let current_version = Version::parse(DATABASE_FORMAT_VERSION).unwrap();
         let data_dir = tempfile::tempdir().unwrap();
         let backup_dir = tempfile::tempdir().unwrap();
         let db_path = data_dir.path().join("states.db");
@@ -4939,7 +4963,7 @@ mod tests {
     #[test]
     fn migration_from_v0_46_retried_after_removed_families_were_dropped() {
         let _permit = acquire_db_permit();
-        let current_version = Version::parse(env!("CARGO_PKG_VERSION")).unwrap();
+        let current_version = Version::parse(DATABASE_FORMAT_VERSION).unwrap();
         let data_dir = tempfile::tempdir().unwrap();
         let backup_dir = tempfile::tempdir().unwrap();
         let db_path = data_dir.path().join("states.db");
@@ -4982,7 +5006,7 @@ mod tests {
     /// are absent succeeds with the same families present.
     fn assert_migration_discards_unconverted_rows(version: &str, families: &[&str]) {
         let _permit = acquire_db_permit();
-        let current_version = Version::parse(env!("CARGO_PKG_VERSION")).unwrap();
+        let current_version = Version::parse(DATABASE_FORMAT_VERSION).unwrap();
         let data_dir = tempfile::tempdir().unwrap();
         let backup_dir = tempfile::tempdir().unwrap();
         let db_path = data_dir.path().join("states.db");
@@ -5053,7 +5077,7 @@ mod tests {
     #[test]
     fn migration_from_v0_46_retried_after_customer_networks_was_created() {
         let _permit = acquire_db_permit();
-        let current_version = Version::parse(env!("CARGO_PKG_VERSION")).unwrap();
+        let current_version = Version::parse(DATABASE_FORMAT_VERSION).unwrap();
         let data_dir = tempfile::tempdir().unwrap();
         let backup_dir = tempfile::tempdir().unwrap();
         let db_path = data_dir.path().join("states.db");
@@ -5147,7 +5171,7 @@ mod tests {
     #[test]
     fn migration_from_v0_52_creates_empty_network_lists() {
         let _permit = acquire_db_permit();
-        let current_version = Version::parse(env!("CARGO_PKG_VERSION")).unwrap();
+        let current_version = Version::parse(DATABASE_FORMAT_VERSION).unwrap();
         let data_dir = tempfile::tempdir().unwrap();
         let backup_dir = tempfile::tempdir().unwrap();
         let db_path = data_dir.path().join("states.db");
@@ -5162,9 +5186,14 @@ mod tests {
         assert_eq!(v0_53, listed_v0_53);
         let mut v0_55: Vec<&str> = v0_53.into_iter().chain(FAMILIES_ADDED_BY_V0_55).collect();
         v0_55.sort_unstable();
+        let mut listed_v0_55 = super::MAP_NAMES_V0_55;
+        listed_v0_55.sort_unstable();
+        assert_eq!(v0_55, listed_v0_55);
+        let mut v0_56: Vec<&str> = v0_55.into_iter().chain(FAMILIES_ADDED_BY_V0_56).collect();
+        v0_56.sort_unstable();
         let mut current = crate::tables::MAP_NAMES;
         current.sort_unstable();
-        assert_eq!(v0_55, current);
+        assert_eq!(v0_56, current);
 
         create_v0_52_store(data_dir.path(), backup_dir.path(), &super::MAP_NAMES_V0_52);
         assert!(
@@ -5214,7 +5243,7 @@ mod tests {
     #[test]
     fn migration_from_v0_52_retried_after_network_lists_was_created() {
         let _permit = acquire_db_permit();
-        let current_version = Version::parse(env!("CARGO_PKG_VERSION")).unwrap();
+        let current_version = Version::parse(DATABASE_FORMAT_VERSION).unwrap();
         let data_dir = tempfile::tempdir().unwrap();
         let backup_dir = tempfile::tempdir().unwrap();
         let db_path = data_dir.path().join("states.db");
@@ -5250,6 +5279,144 @@ mod tests {
                 crate::tables::NETWORK_LISTS
             ),
             vec![(1u32.to_be_bytes().to_vec(), b"kept".to_vec())]
+        );
+        assert_eq!(kept_family_entries(&db_path), expected);
+    }
+
+    /// Creates a store over `families`, the 0.55 set or a superset of it,
+    /// marked `0.55.0`, with an entry in the default family and a row in
+    /// "network lists", "configs" and "meta".
+    fn create_v0_55_store(data_dir: &Path, backup_dir: &Path, families: &[&str]) {
+        let db_path = data_dir.join("states.db");
+        create_states_db(&db_path, families.iter().copied());
+        open_states_db(&db_path, families.iter().copied())
+            .put(b"default-key", b"default value")
+            .unwrap();
+        put_entries(
+            &db_path,
+            families.iter().copied(),
+            crate::tables::NETWORK_LISTS,
+            &[(1_u32.to_be_bytes().to_vec(), b"network lists row".to_vec())],
+        );
+        put_entries(
+            &db_path,
+            families.iter().copied(),
+            crate::tables::CONFIGS,
+            &[(
+                crate::tables::KEY_BACKUP_DURATION.as_bytes().to_vec(),
+                b"7".to_vec(),
+            )],
+        );
+        put_entries(
+            &db_path,
+            families.iter().copied(),
+            crate::tables::META,
+            &[(
+                crate::tables::EVENT_TAGS.to_vec(),
+                tag_index_bytes(&["event-tag"]),
+            )],
+        );
+        write_version(data_dir, "0.55.0");
+        write_version(backup_dir, "0.55.0");
+    }
+
+    /// A `0.55.0` store migrates to the current format with an empty "system
+    /// log collectors" family, every other family unchanged byte for byte,
+    /// and both markers naming the current format; a second start finds the
+    /// store current and touches nothing.
+    #[test]
+    fn migration_from_v0_55_creates_empty_system_log_collectors() {
+        let _permit = acquire_db_permit();
+        let current_version = Version::parse(DATABASE_FORMAT_VERSION).unwrap();
+        let data_dir = tempfile::tempdir().unwrap();
+        let backup_dir = tempfile::tempdir().unwrap();
+        let db_path = data_dir.path().join("states.db");
+
+        create_v0_55_store(data_dir.path(), backup_dir.path(), &super::MAP_NAMES_V0_55);
+        assert!(
+            !present_families(&db_path)
+                .iter()
+                .any(|name| name == crate::tables::SYSTEM_LOG_COLLECTORS)
+        );
+        let expected = kept_family_entries(&db_path);
+
+        migrate_data_dir(data_dir.path(), backup_dir.path(), None).unwrap();
+
+        assert_eq!(
+            read_version_file(&data_dir.path().join(VERSION_FILE_NAME)).unwrap(),
+            current_version
+        );
+        assert_eq!(
+            read_version_file(&backup_dir.path().join(VERSION_FILE_NAME)).unwrap(),
+            current_version
+        );
+        assert_eq!(present_families(&db_path), current_families());
+        assert_eq!(
+            cf_entries(
+                &db_path,
+                crate::tables::MAP_NAMES,
+                crate::tables::SYSTEM_LOG_COLLECTORS
+            ),
+            Entries::new()
+        );
+        assert_eq!(kept_family_entries(&db_path), expected);
+
+        // A second start is a no-op: nothing under either directory changes.
+        let before = (files_under(data_dir.path()), files_under(backup_dir.path()));
+        migrate_data_dir(data_dir.path(), backup_dir.path(), None).unwrap();
+        assert_eq!(
+            (files_under(data_dir.path()), files_under(backup_dir.path())),
+            before
+        );
+
+        let store = Store::new(data_dir.path(), backup_dir.path(), None).unwrap();
+        assert_eq!(store.system_log_collector_map().list().unwrap(), Vec::new());
+    }
+
+    /// `VERSION` is written only after the whole chain succeeds, so a
+    /// migration from `0.55.0` interrupted after the "system log collectors"
+    /// family was created retries from that marker with the family already
+    /// there. The retry must complete without creating it again, keeping its
+    /// rows.
+    #[test]
+    fn migration_from_v0_55_retried_after_system_log_collectors_was_created() {
+        let _permit = acquire_db_permit();
+        let current_version = Version::parse(DATABASE_FORMAT_VERSION).unwrap();
+        let data_dir = tempfile::tempdir().unwrap();
+        let backup_dir = tempfile::tempdir().unwrap();
+        let db_path = data_dir.path().join("states.db");
+
+        let families: Vec<&str> = super::MAP_NAMES_V0_55
+            .into_iter()
+            .chain(FAMILIES_ADDED_BY_V0_56)
+            .collect();
+        create_v0_55_store(data_dir.path(), backup_dir.path(), &families);
+        put_entries(
+            &db_path,
+            families.iter().copied(),
+            crate::tables::SYSTEM_LOG_COLLECTORS,
+            &[(b"host-a.example".to_vec(), b"kept".to_vec())],
+        );
+        let expected = kept_family_entries(&db_path);
+
+        migrate_data_dir(data_dir.path(), backup_dir.path(), None).unwrap();
+
+        assert_eq!(
+            read_version_file(&data_dir.path().join(VERSION_FILE_NAME)).unwrap(),
+            current_version
+        );
+        assert_eq!(
+            read_version_file(&backup_dir.path().join(VERSION_FILE_NAME)).unwrap(),
+            current_version
+        );
+        assert_eq!(present_families(&db_path), current_families());
+        assert_eq!(
+            cf_entries(
+                &db_path,
+                crate::tables::MAP_NAMES,
+                crate::tables::SYSTEM_LOG_COLLECTORS
+            ),
+            vec![(b"host-a.example".to_vec(), b"kept".to_vec())]
         );
         assert_eq!(kept_family_entries(&db_path), expected);
     }
@@ -5378,7 +5545,7 @@ mod tests {
         backup_dir: &Path,
         expected: &[(String, Entries)],
     ) {
-        let current_version = Version::parse(env!("CARGO_PKG_VERSION")).unwrap();
+        let current_version = Version::parse(DATABASE_FORMAT_VERSION).unwrap();
         let db_path = data_dir.join("states.db");
         assert_eq!(
             read_version_file(&data_dir.join(VERSION_FILE_NAME)).unwrap(),
@@ -5685,18 +5852,18 @@ mod tests {
             assert_eq!(lifecycle, 0, "{cf_name}");
         }
 
-        // Verify both VERSION files are updated to the current package version
+        // Verify both VERSION files are updated to the current format marker
         let data_version = read_version_file(&data_dir.path().join("VERSION")).unwrap();
         let backup_version = read_version_file(&backup_dir.path().join("VERSION")).unwrap();
 
-        let current_pkg_version = Version::parse(env!("CARGO_PKG_VERSION")).unwrap();
+        let current_version = Version::parse(DATABASE_FORMAT_VERSION).unwrap();
         assert_eq!(
-            data_version, current_pkg_version,
-            "Data VERSION should be updated to current package version"
+            data_version, current_version,
+            "Data VERSION should be updated to the current format marker"
         );
         assert_eq!(
-            backup_version, current_pkg_version,
-            "Backup VERSION should be updated to current package version"
+            backup_version, current_version,
+            "Backup VERSION should be updated to the current format marker"
         );
     }
 
@@ -5715,7 +5882,7 @@ mod tests {
         write_version(backup_dir, "0.42.0");
         migrate_data_dir(data_dir, backup_dir, None).unwrap();
 
-        let current_version = Version::parse(env!("CARGO_PKG_VERSION")).unwrap();
+        let current_version = Version::parse(DATABASE_FORMAT_VERSION).unwrap();
         assert_eq!(
             read_version_file(&data_dir.join("VERSION")).unwrap(),
             current_version
@@ -5945,30 +6112,16 @@ mod tests {
     #[test]
     fn version() {
         let compatible = VersionReq::parse(COMPATIBLE_VERSION_REQ).expect("valid semver");
-        let current = Version::parse(env!("CARGO_PKG_VERSION")).expect("valid semver");
+        let current = Version::parse(DATABASE_FORMAT_VERSION).expect("valid semver");
+        assert!(compatible.matches(&current));
 
-        // The current version must match the compatible version requirement.
-        if current.pre.is_empty() {
-            assert!(compatible.matches(&current));
-        } else if current.major == 0 && current.patch != 0 || current.major >= 1 {
-            // A pre-release for a backward-compatible version.
-            let non_pre = Version::new(current.major, current.minor, current.patch);
-            assert!(compatible.matches(&non_pre));
-        } else {
-            assert!(compatible.matches(&current));
-        }
+        // The next format must not be taken for the current one.
+        let next = Version::new(current.major, current.minor + 1, 0);
+        assert!(!compatible.matches(&next));
 
-        // A future, backward-incompatible version must not match the compatible version.
-        let breaking = {
-            let mut breaking = current;
-            if breaking.major == 0 {
-                breaking.minor += 1;
-            } else {
-                breaking.major += 1;
-            }
-            breaking
-        };
-        assert!(!compatible.matches(&breaking));
+        // A release built before this format must not take it for its own.
+        let previous = VersionReq::parse(">=0.55.0,<0.56.0").expect("valid semver");
+        assert!(!previous.matches(&current));
     }
 
     #[test]
@@ -7469,7 +7622,7 @@ mod tests {
 
         migrate_data_dir(data_dir.path(), backup_dir.path(), None).unwrap();
 
-        let current = Version::parse(env!("CARGO_PKG_VERSION")).unwrap();
+        let current = Version::parse(DATABASE_FORMAT_VERSION).unwrap();
         assert_eq!(
             read_version_file(&data_dir.path().join(VERSION_FILE_NAME)).unwrap(),
             current
@@ -7653,7 +7806,7 @@ mod tests {
 
         migrate_data_dir(data_dir.path(), backup_dir.path(), None).unwrap();
 
-        let current = Version::parse(env!("CARGO_PKG_VERSION")).unwrap();
+        let current = Version::parse(DATABASE_FORMAT_VERSION).unwrap();
         assert_eq!(
             read_version_file(&data_dir.path().join(VERSION_FILE_NAME)).unwrap(),
             current
@@ -7862,7 +8015,7 @@ mod tests {
 
         assert_eq!(
             read_version_file(&data_dir.path().join(VERSION_FILE_NAME)).unwrap(),
-            Version::parse(env!("CARGO_PKG_VERSION")).unwrap()
+            Version::parse(DATABASE_FORMAT_VERSION).unwrap()
         );
         assert_eq!(
             operation_attempt_families(&db_path),
@@ -7934,11 +8087,11 @@ mod tests {
 
         assert_eq!(
             read_version_file(&data_dir.path().join(VERSION_FILE_NAME)).unwrap(),
-            Version::parse(env!("CARGO_PKG_VERSION")).unwrap()
+            Version::parse(DATABASE_FORMAT_VERSION).unwrap()
         );
         assert_eq!(
             read_version_file(&backup_dir.path().join(VERSION_FILE_NAME)).unwrap(),
-            Version::parse(env!("CARGO_PKG_VERSION")).unwrap()
+            Version::parse(DATABASE_FORMAT_VERSION).unwrap()
         );
         assert_eq!(
             operation_attempt_families(&db_path),
@@ -7983,7 +8136,7 @@ mod tests {
                 Version::parse("0.47.0").unwrap()
             );
             migrate_data_dir(data_dir.path(), backup_dir.path(), None).unwrap();
-            let current = Version::parse(env!("CARGO_PKG_VERSION")).unwrap();
+            let current = Version::parse(DATABASE_FORMAT_VERSION).unwrap();
             assert_eq!(
                 read_version_file(&data_dir.path().join(VERSION_FILE_NAME)).unwrap(),
                 current

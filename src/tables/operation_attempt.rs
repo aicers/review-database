@@ -70,7 +70,7 @@
 //! rather than by convention.
 
 use std::borrow::Cow;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -83,7 +83,7 @@ use thiserror::Error;
 use super::core_component::is_core_component;
 use super::{
     CoreComponent, InstanceAllocation, InstanceAllocationError, ListenerBinding, ListenerTransport,
-    PortAllocation, PortAllocationError, PortOwner,
+    PortAllocation, PortAllocationError, PortOwner, SystemLogCollectorTable,
 };
 use crate::{EXCLUSIVE, Map, Table, types::FromKeyValue};
 
@@ -582,7 +582,7 @@ fn check_request(
 /// This is a shape check and nothing more. It does not stop a client sending
 /// a constant or replaying a stored value: not re-using a key is a client
 /// obligation, and the server cannot verify it.
-fn is_uuid_v4(key: &str) -> bool {
+pub(crate) fn is_uuid_v4(key: &str) -> bool {
     if key.len() != UUID_LEN {
         return false;
     }
@@ -2095,14 +2095,21 @@ impl<'d> Table<'d, OperationAttempt> {
     /// prune reads no wall clock and no configuration, so running it twice
     /// with the same arguments removes nothing the second time.
     ///
+    /// The same transaction also drops the idempotency key of every attempt it
+    /// removes from each system log collector row holding it, so the attempts
+    /// and those keys go together or not at all. A row is otherwise left as
+    /// it is, and a row left with no key stays.
+    ///
     /// # Errors
     ///
-    /// Returns an error if a stored value is invalid, if the latest-pointer
-    /// column family is not registered, or if the database operation fails.
+    /// Returns an error if a stored value is invalid, if the latest-pointer or
+    /// the system log collectors column family is not registered, or if the
+    /// database operation fails.
     pub fn prune(&self, bound: RetentionBound, instant: DateTime<Utc>) -> Result<usize> {
         loop {
             let txn = self.transaction();
             let mut removed = 0;
+            let mut removed_keys = HashSet::new();
             for attempt in self.prunable(bound, instant)? {
                 let Some(stored) = self.get_for_update(&attempt.idempotency_key, &txn)? else {
                     continue;
@@ -2121,7 +2128,11 @@ impl<'d> Table<'d, OperationAttempt> {
                 }
                 self.remove_with_transaction(&stored, &txn)?;
                 removed += 1;
+                removed_keys.insert(stored.idempotency_key);
             }
+            SystemLogCollectorTable::open(self.map.db)
+                .context("the system log collectors column family is not registered")?
+                .drop_install_keys(&txn, &removed_keys)?;
             match txn.commit() {
                 Ok(()) => return Ok(removed),
                 Err(e) => {
@@ -3858,6 +3869,94 @@ mod tests {
             keys(&table, Direction::Forward, None),
             ["op-live", "op-newest", "op-owing", "op-owing-newer"]
         );
+    }
+
+    /// Every system log collector row, raw, keyed by host.
+    fn raw_system_rows(test_db: &TestDb) -> Vec<(Vec<u8>, Vec<u8>)> {
+        let cf = test_db
+            .db
+            .cf_handle(super::super::SYSTEM_LOG_COLLECTORS)
+            .unwrap();
+        test_db
+            .db
+            .iterator_cf(cf, IteratorMode::Start)
+            .map(|entry| {
+                let (key, value) = entry.unwrap();
+                (key.to_vec(), value.to_vec())
+            })
+            .collect()
+    }
+
+    #[test]
+    fn retention_drops_the_keys_of_pruned_attempts_from_system_rows() {
+        const OTHER_HOST: &str = "host-b.example";
+        const UNRELATED_KEY: &str = "c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e5f";
+        let test_db = TestDb::new();
+        let table = test_db.table();
+        let system = SystemLogCollectorTable::open(&test_db.db).unwrap();
+
+        // `REQUEST_KEY` finalizes first and is pruned; `OTHER_REQUEST_KEY`
+        // is the one the latest pointer names, and is kept.
+        let pruned = terminal_attempt(REQUEST_KEY, HOST, TARGET, Some(1), 1_000, 9_000);
+        let kept = terminal_attempt(OTHER_REQUEST_KEY, HOST, TARGET, Some(1), 2_000, 9_000);
+        table.upsert(&pruned).unwrap();
+        table.upsert(&kept).unwrap();
+
+        system.append_install_key(HOST, REQUEST_KEY, None).unwrap();
+        system
+            .record_install(REQUEST_KEY, 1, "1.0.0", "c0ffee")
+            .unwrap();
+        system
+            .append_install_key(HOST, OTHER_REQUEST_KEY, None)
+            .unwrap();
+        system
+            .append_install_key(OTHER_HOST, UNRELATED_KEY, None)
+            .unwrap();
+        let other_before = system.get(OTHER_HOST).unwrap();
+        let raw_other_before = raw_system_rows(&test_db)
+            .into_iter()
+            .find(|(key, _)| key == OTHER_HOST.as_bytes())
+            .unwrap();
+
+        assert_eq!(table.prune(bound(0, 0), timestamp(10_000)).unwrap(), 1);
+        assert_eq!(keys(&table, Direction::Forward, None), [OTHER_REQUEST_KEY]);
+
+        // The pruned key went with its attempt; the row keeps everything else,
+        // its instance and build included.
+        let row = system.get(HOST).unwrap().unwrap();
+        assert_eq!(row.install_keys, [OTHER_REQUEST_KEY]);
+        assert_eq!(row.instance, Some(1));
+        assert_eq!(row.installed_version.as_deref(), Some("1.0.0"));
+        assert_eq!(row.installed_commit.as_deref(), Some("c0ffee"));
+        // A row holding none of the removed keys is untouched, byte for byte.
+        assert_eq!(system.get(OTHER_HOST).unwrap(), other_before);
+        let raw_after = raw_system_rows(&test_db);
+        assert!(raw_after.contains(&raw_other_before));
+
+        // A second prune with the same arguments changes nothing.
+        assert_eq!(table.prune(bound(0, 0), timestamp(10_000)).unwrap(), 0);
+        assert_eq!(raw_system_rows(&test_db), raw_after);
+        assert_eq!(keys(&table, Direction::Forward, None), [OTHER_REQUEST_KEY]);
+    }
+
+    #[test]
+    fn retention_leaves_a_system_row_with_no_key_in_place() {
+        let test_db = TestDb::new();
+        let table = test_db.table();
+        let system = SystemLogCollectorTable::open(&test_db.db).unwrap();
+
+        // The superseded attempt is pruned, and its key is the only key of
+        // the host's row.
+        let pruned = terminal_attempt(REQUEST_KEY, HOST, TARGET, Some(1), 1_000, 9_000);
+        let current = terminal_attempt("op-current", HOST, TARGET, Some(1), 2_000, 9_000);
+        table.upsert(&pruned).unwrap();
+        table.upsert(&current).unwrap();
+        system.append_install_key(HOST, REQUEST_KEY, None).unwrap();
+
+        assert_eq!(table.prune(bound(0, 0), timestamp(10_000)).unwrap(), 1);
+        let row = system.get(HOST).unwrap().unwrap();
+        assert_eq!(row.install_keys, Vec::<String>::new());
+        assert_eq!(system.list().unwrap(), [row]);
     }
 
     #[test]
