@@ -5,6 +5,26 @@ file is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), and
 this project adheres to [Semantic
 Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- `Store::system_log_collector_map` returns a `SystemLogCollectorTable` over a
+  new table holding one `SystemLogCollector` per host — the host's
+  operational-log collector instance, the install request keys used for it,
+  its installed build, its chosen Data Store, its configuration and the last
+  install refusal — with lookups by host and by host and instance, an atomic
+  install-key append, and setters, one of them conditional on the stored Data
+  Store; pruning an operation attempt also drops its key from these rows.
+
+### Changed
+
+- **BREAKING**: Bumped the database format to `0.56.0` (the database format
+  marker, not a crate version). The migration from `0.55.x`, and through the
+  earlier steps from every older supported format, creates the empty column
+  family of the system log collectors table and changes nothing else in the
+  store. An interrupted run can be retried.
+
 ## [0.55.0] - 2026-10-23
 
 ### Added
@@ -2135,6 +2155,7 @@ AsRef<[u8]>`). This change accommodates scenarios where the information stored
 - Modified `FtpBruteForce` by adding an `is_internal` field which is a boolean
   indicating whether it is internal or not.
 
+[Unreleased]: https://github.com/aicers/review-database/compare/0.55.0...main
 [0.55.0]: https://github.com/aicers/review-database/compare/0.54.0...0.55.0
 [0.54.0]: https://github.com/aicers/review-database/compare/0.53.0...0.54.0
 [0.53.0]: https://github.com/aicers/review-database/compare/0.52.0...0.53.0

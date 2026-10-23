@@ -69,11 +69,12 @@ pub use self::tables::{
     ReportedRunState, RequestKeyError, Response, ResponseKind, RetentionConfig,
     RetentionConfigUpdate, RoundOutcome, RunId, RunKind, RunState, SamplingInterval, SamplingKind,
     SamplingPeriod, SamplingPolicy, SamplingPolicyUpdate, SourceState, Structured,
-    StructuredClusteringAlgorithm, Table, Template, TimeSeries, TopColumnsOfCluster, TopMultimaps,
-    TorExitNode, TrafficFilter, TrainedWith, TrainingDefinition, TrainingDefinitionUpdate,
-    TriageExclusion, TriagePolicyInput, TriageResponse, TriageResponseUpdate, TrustedDomain,
-    TrustedUserAgent, UniqueKey, Unstructured, UnstructuredClusteringAlgorithm, UserAgent,
-    ValueKind,
+    StructuredClusteringAlgorithm, SystemInstallRecord, SystemLogCollector,
+    SystemLogCollectorRefusal, SystemLogCollectorTable, Table, Template, TimeSeries,
+    TopColumnsOfCluster, TopMultimaps, TorExitNode, TrafficFilter, TrainedWith, TrainingDefinition,
+    TrainingDefinitionUpdate, TriageExclusion, TriagePolicyInput, TriageResponse,
+    TriageResponseUpdate, TrustedDomain, TrustedUserAgent, UniqueKey, Unstructured,
+    UnstructuredClusteringAlgorithm, UserAgent, ValueKind,
 };
 pub use self::top_n::*;
 #[allow(deprecated)]
@@ -670,6 +671,13 @@ impl Store {
     #[must_use]
     pub fn network_lists_map(&self) -> NetworkListTable<'_> {
         self.states.network_lists()
+    }
+
+    /// Returns the table of the operational-log collector `REview` owns on each
+    /// host.
+    #[must_use]
+    pub fn system_log_collector_map(&self) -> SystemLogCollectorTable<'_> {
+        self.states.system_log_collectors()
     }
 
     #[must_use]
