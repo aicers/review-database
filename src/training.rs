@@ -15,7 +15,8 @@
 //! update, so a concurrent write of it makes the commit conflict instead of
 //! slipping past the check: the definition, the run, the model of the name,
 //! the instance's agent row and `engine instances` row, the node row for its
-//! applied profile, and the named indicator.
+//! applied profile, and the named indicator, which is also written back
+//! unchanged so that a removal of its model's customer conflicts.
 //!
 //! An engine runs one run at a time, so an instance performs at most one
 //! active run. "The instance has an active run" cannot be read from one
@@ -1219,26 +1220,28 @@ impl Store {
         Ok(())
     }
 
-    /// Refuses, within `txn`, an indicator no model indicator row has.
+    /// Refuses, within `txn`, an indicator no model indicator row has, and
+    /// writes an existing one back unchanged.
+    ///
+    /// The write makes a concurrent removal of the customer the indicator's
+    /// model belongs to conflict, which reads the indicator for update
+    /// before it looks for what names it.
     fn check_indicator(&self, txn: &Txn<'_>, indicator: Option<&str>) -> Result<()> {
         let Some(indicator) = indicator else {
             return Ok(());
         };
-        if txn
-            .get_for_update_cf(
-                column_family(self.states.db(), tables::MODEL_INDICATORS)?,
-                indicator.as_bytes(),
-                crate::EXCLUSIVE,
-            )
+        let cf = column_family(self.states.db(), tables::MODEL_INDICATORS)?;
+        let Some(value) = txn
+            .get_for_update_cf(cf, indicator.as_bytes(), crate::EXCLUSIVE)
             .context("cannot read model indicator")?
-            .is_none()
-        {
+        else {
             return Err(TrainingError::IndicatorNotFound {
                 indicator: indicator.to_string(),
             }
             .into());
-        }
-        Ok(())
+        };
+        txn.put_cf(cf, indicator.as_bytes(), &value)
+            .context("cannot write model indicator")
     }
 }
 

@@ -504,7 +504,7 @@ impl Store {
             self.check_model_unused(&txn, &record)?;
             models.remove_model_with_transaction(record.id, &txn)?;
             delete_model_rows(db, &txn, record.id)?;
-            self.remove_training_records(&txn, name)?;
+            self.remove_training_records(&txn, name, None)?;
             #[cfg(test)]
             self.run_model_files_hook(ModelFilesPoint::BeforeCommit)?;
             if txn.commit_or_retry()? {
@@ -534,31 +534,47 @@ impl Store {
     /// removes it: the record, its rows in every per-model and
     /// previous-result column family, its indicators, its training
     /// definition and every run record whose model is its name; after that
-    /// commits, its classifier directory. Then each remaining training
-    /// definition of the customer is removed in a transaction of its own,
-    /// with every run record whose model is its name. A model or definition
-    /// removed concurrently is skipped. An indicator removed with its model
-    /// may still be named by another definition of the customer until that
-    /// definition's transaction commits; the call removes every such
-    /// definition before it returns. Clone runs from a removed model that
-    /// created another customer's model stay with that model. Calling it
-    /// again, or for a customer without records, changes nothing.
+    /// commits, its classifier directory. A training definition of another
+    /// customer sharing the model's name, which [`Store::replace_model`]
+    /// does not prevent, stays instead, with those run records. Then each
+    /// remaining training definition of the customer is removed in a
+    /// transaction of its own, with every run record whose model is its
+    /// name. A model or definition removed concurrently is skipped. An
+    /// indicator removed with its model may still be named by another
+    /// definition of the customer until that definition's transaction
+    /// commits; the call removes every such definition before it returns.
+    /// Nothing outside the customer is left naming a removed indicator: a
+    /// definition of another customer or a detector naming one refuses the
+    /// model's removal, and a definition or detector written concurrently
+    /// either makes the model's transaction retry and refuse, or is refused
+    /// itself once the indicator is gone. Clone runs from a removed model
+    /// that created another customer's model stay with that model. Calling
+    /// it again, or for a customer without records, changes nothing.
     ///
     /// # Errors
     ///
     /// Returns a [`RemovalRefused`](crate::RemovalRefused) inside the error
     /// before the transaction of the model or definition it concerns
-    /// commits; what earlier transactions removed stays removed, and a later
-    /// call continues from there:
+    /// commits; that model or definition, its indicators and classifier
+    /// files, and the records of whatever refers to it stay unchanged, what
+    /// earlier transactions removed stays removed, and a later call
+    /// continues from there:
     ///
     /// - `ModelReferenced` while a detector of any instance's applied or
     ///   pending engine document names the model, naming the first such
     ///   detector in node id, agent key, then detector id order;
     /// - `RunActive` while a run that creates or replaces the model or
     ///   definition, or clones from the model, is active, such as a clone
-    ///   of another customer from the model.
+    ///   of another customer from the model;
+    /// - `IndicatorReferenced` while one of the model's indicators, in name
+    ///   order, is named by a detector of any instance's applied or pending
+    ///   engine document, the first in the order above, or else by a
+    ///   training definition of another customer, the first by name.
     ///
-    /// Neither can happen once the customer's nodes are removed. Returns an
+    /// `ModelReferenced` and `RunActive` cannot happen once the customer's
+    /// nodes are removed; `IndicatorReferenced` can, since another
+    /// customer's definition or detector can name the customer's indicator,
+    /// and the call succeeds once those references are removed. Returns an
     /// error if a database operation fails. A failure to remove a
     /// classifier directory is logged, not returned: the commit has already
     /// taken effect.
@@ -603,7 +619,7 @@ impl Store {
                     return Ok(false);
                 }
                 self.check_no_active_run_concerning(txn, &name)?;
-                self.remove_training_records(txn, &name)
+                self.remove_training_records(txn, &name, Some(customer_id))
             })?;
             if removed {
                 removed_definitions.insert(name);
@@ -618,8 +634,8 @@ impl Store {
 
     /// Removes the model `name` of `customer_id` for
     /// [`Store::remove_customer_unsupervised_records`], returning whether
-    /// its training definition existed, or `None` if no model of the
-    /// customer has the name.
+    /// a training definition of the customer with the name was removed with
+    /// it, or `None` if no model of the customer has the name.
     fn remove_customer_model(
         &self,
         files: &ModelFilesGuard<'_>,
@@ -637,10 +653,21 @@ impl Store {
             if record.customer_id != customer_id {
                 return Ok(None);
             }
-            self.check_model_unreferenced(&txn, &record)?;
+            let checked = self.check_model_unreferenced(&txn, &record)?;
+            #[cfg(test)]
+            self.run_model_files_hook(ModelFilesPoint::Checked)?;
             models.remove_model_with_transaction(record.id, &txn)?;
-            delete_model_rows(db, &txn, record.id)?;
-            let had_definition = self.remove_training_records(&txn, name)?;
+            let deleted = delete_model_rows(db, &txn, record.id)?;
+            if !deleted
+                .iter()
+                .map(AsRef::as_ref)
+                .eq(checked.iter().map(String::as_bytes))
+            {
+                // An indicator the model gained after the check may already
+                // be named; check it on the retry.
+                continue;
+            }
+            let had_definition = self.remove_training_records(&txn, name, Some(customer_id))?;
             #[cfg(test)]
             self.run_model_files_hook(ModelFilesPoint::BeforeCommit)?;
             if txn.commit_or_retry()? {
@@ -901,8 +928,13 @@ fn move_current_rows_to_previous(
 }
 
 /// Deletes every row of model `id`, current and previous, and its
-/// indicators; the record itself is left to the caller.
-fn delete_model_rows(db: &OptimisticTransactionDB, txn: &Txn<'_>, id: u32) -> Result<()> {
+/// indicators, returning the keys of the indicators in name order; the
+/// record itself is left to the caller.
+fn delete_model_rows(
+    db: &OptimisticTransactionDB,
+    txn: &Txn<'_>,
+    id: u32,
+) -> Result<Vec<Box<[u8]>>> {
     for (current, _) in ID_PREFIXED_FAMILIES {
         delete_prefix(txn, column_family(db, current)?, &id.to_be_bytes())?;
     }
@@ -920,11 +952,11 @@ fn delete_model_rows(db: &OptimisticTransactionDB, txn: &Txn<'_>, id: u32) -> Re
             owned.push(key);
         }
     }
-    for key in owned {
-        txn.get_for_update_cf(indicators, &key, EXCLUSIVE)?;
-        txn.delete_cf(indicators, &key)?;
+    for key in &owned {
+        txn.get_for_update_cf(indicators, key, EXCLUSIVE)?;
+        txn.delete_cf(indicators, key)?;
     }
-    Ok(())
+    Ok(owned)
 }
 
 /// A point at which the model-files test hook runs.
@@ -935,6 +967,8 @@ pub(crate) enum ModelFilesPoint {
     Locking,
     /// Right after taking the model-files lock.
     Locked,
+    /// After a customer removal's guard, before its writes.
+    Checked,
     /// After the classifier file write, before the commit.
     BeforeCommit,
     /// After the commit, before the post-commit file or directory removal.
