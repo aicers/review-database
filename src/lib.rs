@@ -826,9 +826,8 @@ impl Store {
     /// pending engine document whose model is a timeseries model, in node
     /// id, agent key, then detector id order, once per detector; and each
     /// timeseries model whose `trained_sources` names it, in name order. A
-    /// detector's model is a timeseries model if the model of its name has
-    /// the timeseries method or, while no model has the name, the training
-    /// definition of the name has. The policy is in use while the list is
+    /// detector's model is a timeseries model if the stored model of its
+    /// name has the timeseries kind. The policy is in use while the list is
     /// not empty; whether a policy has the ID is not checked.
     ///
     /// # Errors
