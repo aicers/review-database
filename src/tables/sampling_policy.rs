@@ -673,8 +673,9 @@ fn uses_in_transaction(
 /// decimal ID as a source.
 ///
 /// A detector's model is timeseries if the model record of its name has the
-/// timeseries method or, while no model of that name exists, the training
-/// definition of its name has.
+/// timeseries method. Engine documents name only stored models, and a model
+/// cannot be deleted while a detector names it, so every detector's model is
+/// among `models`.
 fn collect_uses(
     id: u32,
     definitions: &[TrainingDefinition],
@@ -683,11 +684,10 @@ fn collect_uses(
 ) -> Vec<PolicyUse> {
     let source = id.to_string();
     let timeseries_kind = ClusteringMethod::Timeseries.to_string();
-    let model_is_timeseries = |name: &str| match models.iter().find(|model| model.name == name) {
-        Some(model) => model.kind == timeseries_kind,
-        None => definitions.iter().any(|definition| {
-            definition.name == name && definition.method == ModelMethod::Timeseries
-        }),
+    let model_is_timeseries = |name: &str| {
+        models
+            .iter()
+            .any(|model| model.name == name && model.kind == timeseries_kind)
     };
 
     let mut uses: Vec<PolicyUse> = definitions
@@ -1655,48 +1655,6 @@ mod test {
         define(&f, "prefix", ModelMethod::Prefix, "3");
         assert_eq!(f.store.sampling_policy_uses(3).unwrap(), Vec::new());
         f.table().remove_unused(3).unwrap();
-    }
-
-    #[test]
-    fn a_detector_of_a_model_not_yet_trained_uses_its_definition_method() {
-        let f = setup();
-        let id = f.assigned("a");
-        let source = id.to_string();
-        let definitions = vec![TrainingDefinition {
-            name: "series".to_string(),
-            customer_id: CUSTOMER,
-            instance: None,
-            method: ModelMethod::Timeseries,
-            event_kind: "conn".to_string(),
-            sources: Vec::new(),
-            indicator: None,
-            definition: String::new(),
-            cloning: false,
-            last_run: None,
-            created_at: Utc::now(),
-            updated_at: Utc::now(),
-        }];
-        let row = EngineInstanceRow {
-            stopped: false,
-            applied: EngineDocumentRefs {
-                detectors: vec![
-                    detector(1, "series", &source),
-                    detector(2, "unknown", &source),
-                ],
-            },
-            pending: EngineDocumentRefs::default(),
-            statuses: BTreeMap::new(),
-        };
-        let engine = instance(f.node, ENGINE);
-        assert_eq!(
-            collect_uses(id, &definitions, &[(engine.clone(), row)], &[]),
-            vec![PolicyUse::Detector {
-                instance: engine,
-                detector_id: 1,
-                applied: true,
-                pending: false,
-            }]
-        );
     }
 
     #[test]
