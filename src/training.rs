@@ -770,10 +770,11 @@ impl Store {
     ///
     /// The model is stored for the customer and instance of the definition
     /// the run's model names, trained now, with the run's id and the
-    /// definition's text as the training it records. For a training run
-    /// that text is the one [`Store::start_training_run`] returned; for a
-    /// clone it is the target definition [`Store::start_clone_run`] stored,
-    /// which becomes both the clone's snapshot and its editable definition.
+    /// definition's text and sources as the training it records. For a
+    /// training run that text is the one [`Store::start_training_run`]
+    /// returned; for a clone it is the target definition
+    /// [`Store::start_clone_run`] stored, which becomes both the clone's
+    /// snapshot and its editable definition.
     /// The definition stops cloning.
     ///
     /// # Errors
@@ -846,6 +847,7 @@ impl Store {
             let trained = TrainedWith {
                 run_id,
                 definition: definition.definition.clone(),
+                sources: definition.sources.clone(),
             };
             let pending =
                 self.replace_model_with_transaction(&files, &txn, &model, &owner, now, &trained)?;
@@ -1714,6 +1716,7 @@ mod tests {
                 TrainedWith {
                     run_id: 0,
                     definition: eps("1.0"),
+                    sources: Vec::new(),
                 },
             )
             .unwrap();

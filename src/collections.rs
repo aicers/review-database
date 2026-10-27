@@ -257,28 +257,11 @@ pub trait Indexed {
     ///
     /// Returns an error if the database operation fails.
     fn deactivate(&self, id: u32) -> Result<Vec<u8>> {
-        let mut key;
         loop {
             let txn = self.db().transaction();
-            let mut index = self
-                .index_in_transaction(&txn)
-                .context("cannot read index")?;
-            key = index.deactivate(id).context("cannot deactivate key")?;
-            if key.is_empty() {
-                bail!("corrupt index");
-            }
-            txn.put_cf(
-                self.cf(),
-                [],
-                bincode::DefaultOptions::new()
-                    .serialize(&index)
-                    .context("failed to serialize index")?,
-            )
-            .context("failed to update database index")?;
-            txn.delete_cf(self.cf(), &key)
-                .context("failed to remove entry")?;
+            let key = self.deactivate_with_transaction(id, &txn)?;
             match txn.commit() {
-                Ok(()) => break,
+                Ok(()) => return Ok(key),
                 Err(e) => {
                     if !e.as_ref().starts_with("Resource busy:") {
                         return Err(e).context("failed to remove entry");
@@ -286,6 +269,35 @@ pub trait Indexed {
                 }
             }
         }
+    }
+
+    /// Deactivates a key-value pair with the given ID within a transaction.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database operation fails.
+    fn deactivate_with_transaction(
+        &self,
+        id: u32,
+        txn: &rocksdb::Transaction<rocksdb::OptimisticTransactionDB>,
+    ) -> Result<Vec<u8>> {
+        let mut index = self
+            .index_in_transaction(txn)
+            .context("cannot read index")?;
+        let key = index.deactivate(id).context("cannot deactivate key")?;
+        if key.is_empty() {
+            bail!("corrupt index");
+        }
+        txn.put_cf(
+            self.cf(),
+            [],
+            bincode::DefaultOptions::new()
+                .serialize(&index)
+                .context("failed to serialize index")?,
+        )
+        .context("failed to update database index")?;
+        txn.delete_cf(self.cf(), &key)
+            .context("failed to remove entry")?;
         Ok(key)
     }
 

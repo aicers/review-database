@@ -53,6 +53,7 @@ use anyhow::{Result, anyhow};
 use rocksdb::Direction;
 use serde::{Deserialize, Serialize};
 
+pub(crate) use self::agent::sensor_hostname;
 pub use self::agent::{Agent, AgentKind};
 pub use self::backup_config::{BackupConfig, BackupConfigUpdate};
 pub use self::cluster::Cluster;
@@ -114,7 +115,8 @@ pub use self::port_allocation::{
 pub use self::previous_training::PreviousTrainingResults;
 pub use self::retention_config::{RetentionConfig, RetentionConfigUpdate};
 pub use self::sampling_policy::{
-    Interval as SamplingInterval, Kind as SamplingKind, Period as SamplingPeriod, SamplingPolicy,
+    Interval as SamplingInterval, Kind as SamplingKind, NewSamplingPolicy,
+    Period as SamplingPeriod, PolicyState, PolicyUse, SamplingPolicy, SamplingPolicyError,
     Update as SamplingPolicyUpdate,
 };
 pub use self::system_log_collector::{
@@ -780,9 +782,10 @@ mod iteration {
 }
 
 /// The opt-in list of record types whose [`IndexedTable`] may be written
-/// through the generic methods `put`, `deactivate` and
-/// `update_with_transaction`, and, for the subset that also implements
-/// [`indexed_writes::Recycling`], `remove`.
+/// through the generic method `update_with_transaction`, and, for the subsets
+/// that also implement [`indexed_writes::Inserting`],
+/// [`indexed_writes::Deactivating`] or [`indexed_writes::Recycling`], `put`,
+/// `deactivate` or `remove`.
 ///
 /// `tables::Model` is deliberately absent: a model row is created, changed
 /// and removed only together with its per-model records and classifier files,
@@ -815,8 +818,8 @@ mod indexed_writes {
     /// is never reused, because the Data Store keeps a policy's time series
     /// and the Time Series Generator its checkpoint under that ID after the
     /// policy is deleted, and a new policy under a reused ID would inherit
-    /// both. A sampling policy is deleted with `deactivate` instead, which
-    /// retires its ID. Every other `Eligible` type recycles.
+    /// both. A sampling policy is deleted with the table's `remove_unused`
+    /// instead, which retires its ID. Every other `Eligible` type recycles.
     ///
     /// [`IndexedTable`]: super::IndexedTable
     pub trait Recycling: Eligible {}
@@ -829,6 +832,49 @@ mod indexed_writes {
     impl Recycling for types::Qualifier {}
     impl Recycling for types::Status {}
     impl Recycling for tables::TriageResponse {}
+
+    /// The opt-in list of [`Eligible`] record types whose [`IndexedTable`]
+    /// may be written through `put` and `put_with_transaction`, which store
+    /// a record exactly as the caller built it.
+    ///
+    /// `tables::SamplingPolicy` is deliberately absent: every new sampling
+    /// policy is a draft with no assignee and no Data Store, which the
+    /// table's own `insert` sets, so a caller cannot store one fixed or
+    /// assigned. Every other `Eligible` type is inserted freely.
+    ///
+    /// [`IndexedTable`]: super::IndexedTable
+    pub trait Inserting: Eligible {}
+
+    impl Inserting for crate::Category {}
+    impl Inserting for tables::CsvColumnExtra {}
+    impl Inserting for tables::DataSource {}
+    impl Inserting for tables::InnerNode {}
+    impl Inserting for tables::Network {}
+    impl Inserting for types::Qualifier {}
+    impl Inserting for types::Status {}
+    impl Inserting for tables::TriageResponse {}
+
+    /// The opt-in list of [`Eligible`] record types whose [`IndexedTable`]
+    /// may be written through `deactivate`, which deletes a record without
+    /// asking what still refers to it.
+    ///
+    /// `tables::SamplingPolicy` is deliberately absent: a sampling policy is
+    /// deleted only by the table's `remove_unused`, which refuses while a
+    /// training definition, a detector or a model uses it, or by
+    /// `remove_customer_policies`, for the deletion of its customer. Every
+    /// other `Eligible` type is deactivated freely.
+    ///
+    /// [`IndexedTable`]: super::IndexedTable
+    pub trait Deactivating: Eligible {}
+
+    impl Deactivating for crate::Category {}
+    impl Deactivating for tables::CsvColumnExtra {}
+    impl Deactivating for tables::DataSource {}
+    impl Deactivating for tables::InnerNode {}
+    impl Deactivating for tables::Network {}
+    impl Deactivating for types::Qualifier {}
+    impl Deactivating for types::Status {}
+    impl Deactivating for tables::TriageResponse {}
 }
 
 /// Represents a table that can be iterated over.
@@ -1098,7 +1144,7 @@ impl<'d, R> IndexedTable<'d, R> {
     /// Returns an error if the database operation fails.
     pub fn put(&self, entry: R) -> Result<u32>
     where
-        R: Indexable + indexed_writes::Eligible,
+        R: Indexable + indexed_writes::Inserting,
     {
         self.indexed_map.insert(entry)
     }
@@ -1114,7 +1160,7 @@ impl<'d, R> IndexedTable<'d, R> {
         txn: &rocksdb::Transaction<rocksdb::OptimisticTransactionDB>,
     ) -> Result<u32>
     where
-        R: Indexable + indexed_writes::Eligible,
+        R: Indexable + indexed_writes::Inserting,
     {
         self.indexed_map.insert_with_transaction(entry, txn)
     }
@@ -1122,8 +1168,8 @@ impl<'d, R> IndexedTable<'d, R> {
     /// Removes a record with the given ID.
     ///
     /// The ID goes on the free list, and the next insert reuses it. A table
-    /// whose IDs must not be reused deletes with
-    /// [`deactivate`](Self::deactivate) instead.
+    /// whose IDs must not be reused deletes in a way that retires the ID,
+    /// such as [`deactivate`](Self::deactivate).
     ///
     /// # Errors
     ///
@@ -1192,7 +1238,7 @@ impl<'d, R> IndexedTable<'d, R> {
     /// Returns an error if the database operation fails.
     pub fn deactivate(&self, id: u32) -> Result<Vec<u8>>
     where
-        R: indexed_writes::Eligible,
+        R: indexed_writes::Deactivating,
     {
         self.indexed_map.deactivate(id)
     }

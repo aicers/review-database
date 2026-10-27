@@ -7,22 +7,57 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- A sampling policy is now a draft until it is fixed. A draft's definition
+  (kind, interval, period, offset, source and destination IP, `node` and
+  column) and name can change; `IndexedTable<SamplingPolicy>::fix` makes it
+  `PolicyState::Fixed`, after which only its name can change, and nothing
+  makes it a draft again. A new policy is inserted with
+  `IndexedTable<SamplingPolicy>::insert`, which takes a `NewSamplingPolicy`
+  with its customer and stores it as an unassigned draft.
+- `IndexedTable<SamplingPolicy>::assign` assigns a fixed policy to a Time
+  Series Generator agent of its customer, provided its `node` is the sensor
+  name of one of the customer's sensors, recording the generator's
+  `giganto_name` as the policy's Data Store, or unassigns it; it can fix a
+  draft in the same step. `Store::sampling_policies_assigned_to` lists the
+  policies assigned to a generator. Removing a generator's agent leaves its
+  policies unassigned.
+- `Store::sampling_policy_uses` lists what uses a sampling policy: the
+  timeseries training definitions, the detectors of timeseries models and the
+  timeseries models that name its ID as a source. While a policy is in use it
+  cannot be unassigned, can be reassigned only to a generator with the same
+  Data Store, and cannot be deleted. Refusals are `SamplingPolicyError`s.
+- `IndexedTable<SamplingPolicy>::remove_unused` deletes a sampling policy
+  that is not in use, and `remove_customer_policies` deletes every policy of
+  a customer, for the customer's deletion.
+
 ### Changed
 
-- **BREAKING**: A sampling-policy ID is no longer reused once its policy is
-  deleted, because the Data Store and the Time Series Generator keep a
+- **BREAKING**: `SamplingPolicy` no longer has `immutable`, and has
+  `customer_id`, `state`, `assignee` and `data_store`; `SamplingPolicyUpdate`
+  no longer has `immutable`, and an update that changes a fixed policy's
+  definition is refused. The table `Store::sampling_policy_map` returns no
+  longer offers `put`, `put_with_transaction`, `deactivate`, `remove` or
+  `remove_with_transaction`: insert with `insert`, and delete with
+  `remove_unused`. A sampling-policy ID is no longer reused once its policy
+  is deleted, because the Data Store and the Time Series Generator keep a
   policy's time series and checkpoint under its ID, and a new policy given
-  the old ID inherited both. `remove` and `remove_with_transaction` are no
-  longer available on the table `Store::sampling_policy_map` returns; delete
-  a sampling policy with `deactivate`, which retires its ID. A deleted
-  policy's name can be used again, under a new ID. The other indexed tables
-  still reuse freed IDs.
+  the old ID inherited both. A deleted policy's name can be used again, under
+  a new ID. The other indexed tables still reuse freed IDs.
+- **BREAKING**: `Model` has `trained_sources`, the sources of the training
+  definition that produced its current classifier, and `TrainedWith` has the
+  `sources` it is written from.
 - **BREAKING**: Bumped the database format to `0.57.0` (the database format
   marker, not a crate version). The migration from `0.56.x`, and through the
   earlier steps from every older supported format, retires every
   sampling-policy ID freed before the upgrade, so the next policy inserted
-  takes an ID never used before. Records and other tables are not changed.
-  An interrupted run can be retried.
+  takes an ID never used before. It makes every stored sampling policy fixed
+  and unassigned, with no Data Store, and gives one whose `node` is the
+  sensor name of a customer's sensor that customer, and any other none. It
+  gives a stored timeseries model the sources of its training definition,
+  and every other model none. Other tables are not changed. An interrupted
+  run can be retried.
 
 ## [0.56.0] - 2026-10-23
 

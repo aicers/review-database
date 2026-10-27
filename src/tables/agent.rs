@@ -59,6 +59,16 @@ impl AgentKind {
     }
 }
 
+/// Returns the hostname a sensor name names, or `None` if `name` is not a
+/// sensor name: the [`AgentKind::Sensor`] package-id, a dot, then a
+/// non-empty hostname.
+pub(crate) fn sensor_hostname(name: &str) -> Option<&str> {
+    let package_id = AgentKind::Sensor.package_id()?;
+    name.strip_prefix(package_id)?
+        .strip_prefix('.')
+        .filter(|hostname| !hostname.is_empty())
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct Agent {
     pub node_id: u32,

@@ -2503,3 +2503,143 @@ pub(super) fn validate_event_stored_schema_v0_46(kind: EventKind, bytes: &[u8]) 
         EventKind::WindowsThreat => validate::<crate::event::WindowsThreatFieldsStoredV0_46>(bytes),
     }
 }
+
+// ============================================================================
+// Sampling policy, model, training definition and node structures of the
+// 0.56 format, which the 0.57.0 migration reads
+// ============================================================================
+
+/// The stored `SamplingPolicy` record up to database format 0.56, with
+/// `immutable` and without the customer, the state, the assignee and the
+/// Data Store.
+///
+/// It describes a released layout and must never be modified; the committed
+/// `sampling_policy_v0_56_literal_bytes.bin` fixture pins it to the release.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub(crate) struct SamplingPolicyV0_56 {
+    pub id: u32,
+    pub name: String,
+    pub kind: crate::SamplingKind,
+    pub interval: crate::SamplingInterval,
+    pub period: crate::SamplingPeriod,
+    pub offset: i32,
+    pub src_ip: Option<std::net::IpAddr>,
+    pub dst_ip: Option<std::net::IpAddr>,
+    pub node: Option<String>,
+    pub column: Option<u32>,
+    pub immutable: bool,
+    pub creation_time: DateTime<Utc>,
+}
+
+impl SamplingPolicyV0_56 {
+    /// Converts the record to the 0.57 layout: a `Fixed` policy of
+    /// `customer_id`, with no assignee and no Data Store. `immutable` is
+    /// dropped.
+    pub(crate) fn into_fixed(self, customer_id: Option<u32>) -> crate::SamplingPolicy {
+        crate::SamplingPolicy {
+            id: self.id,
+            name: self.name,
+            kind: self.kind,
+            interval: self.interval,
+            period: self.period,
+            offset: self.offset,
+            src_ip: self.src_ip,
+            dst_ip: self.dst_ip,
+            node: self.node,
+            column: self.column,
+            customer_id,
+            state: crate::PolicyState::Fixed,
+            assignee: None,
+            data_store: None,
+            creation_time: self.creation_time,
+        }
+    }
+}
+
+/// The stored `Model` record of database formats 0.55 and 0.56, before
+/// `trained_sources` was appended.
+///
+/// The field order is the wire order, and the 0.57 record appends one field,
+/// so an encoded value of this layout is a strict prefix of a 0.57 one.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub(crate) struct ModelV0_56 {
+    pub id: u32,
+    pub name: String,
+    pub version: i32,
+    pub kind: String,
+    pub max_event_id_num: i32,
+    pub classification_id: Option<i64>,
+    pub event_kind: String,
+    pub customer_id: u32,
+    pub instance: Option<crate::ModelInstance>,
+    pub trained_at: DateTime<Utc>,
+    pub classifier_generation: u64,
+    pub trained_run_id: u32,
+    pub trained_definition: String,
+    pub previous: Option<crate::PreviousTraining>,
+    pub clusters_applied: Option<i64>,
+}
+
+impl ModelV0_56 {
+    /// Converts the record to the 0.57 layout with `trained_sources`.
+    pub(crate) fn with_trained_sources(self, trained_sources: Vec<String>) -> crate::tables::Model {
+        crate::tables::Model {
+            id: self.id,
+            name: self.name,
+            version: self.version,
+            kind: self.kind,
+            max_event_id_num: self.max_event_id_num,
+            classification_id: self.classification_id,
+            event_kind: self.event_kind,
+            customer_id: self.customer_id,
+            instance: self.instance,
+            trained_at: self.trained_at,
+            classifier_generation: self.classifier_generation,
+            trained_run_id: self.trained_run_id,
+            trained_definition: self.trained_definition,
+            previous: self.previous,
+            clusters_applied: self.clusters_applied,
+            trained_sources,
+        }
+    }
+}
+
+/// The stored `TrainingDefinition` record of database formats 0.55 and 0.56,
+/// mirroring the live record with its component types.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub(crate) struct TrainingDefinitionV0_56 {
+    pub name: String,
+    pub customer_id: u32,
+    pub instance: Option<crate::ModelInstance>,
+    pub method: crate::ModelMethod,
+    pub event_kind: String,
+    pub sources: Vec<String>,
+    pub indicator: Option<String>,
+    pub definition: String,
+    pub cloning: bool,
+    pub last_run: Option<crate::RunId>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+/// The stored node profile of database format 0.56.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub(crate) struct NodeProfileV0_56 {
+    pub customer_id: u32,
+    pub description: String,
+    pub hostname: String,
+}
+
+/// The stored node record of database format 0.56, mirroring the live
+/// `tables::InnerNode`.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub(crate) struct NodeV0_56 {
+    pub id: u32,
+    pub name: String,
+    pub name_draft: Option<String>,
+    pub profile: Option<NodeProfileV0_56>,
+    pub profile_draft: Option<NodeProfileV0_56>,
+    pub creation_time: DateTime<Utc>,
+    pub agents: Vec<String>,
+    pub external_services: Vec<String>,
+}

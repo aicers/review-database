@@ -60,20 +60,20 @@ pub use self::tables::{
     LabelDbRuleKind, Lifecycle, ListenerBinding, ListenerTransport, Model as ModelDigest,
     ModelIndicator, ModelInstance, ModelMethod, ModelOwner, ModelRun, ModelUse, Network,
     NetworkFilter, NetworkListEntry, NetworkListReplaceOutcome, NetworkListSet, NetworkListTable,
-    NetworkUpdate, NewTrainingDefinition, Node, NodeProfile, NodeTable, NodeUpdate,
-    OperationAction, OperationAttempt, OperationCleanupState, OperationFailureKind,
+    NetworkUpdate, NewSamplingPolicy, NewTrainingDefinition, Node, NodeProfile, NodeTable,
+    NodeUpdate, OperationAction, OperationAttempt, OperationCleanupState, OperationFailureKind,
     OperationOnFailure, OperationOutcome, OperationPhase, OperationRetentionBound,
     OperationRetryPolicy, OutlierInfo, OutlierInfoKey, OutlierInfoValue, OwnedNetwork,
-    OwnedNetworkSet, OwnedNetworkTable, PacketAttr, PortAllocation, PortAllocationError, PortOwner,
-    PreviousTraining, PreviousTrainingResults, ProtocolPorts, ReplaceOutcome, ReplacedModel,
-    ReportedRunState, RequestKeyError, Response, ResponseKind, RetentionConfig,
-    RetentionConfigUpdate, RoundOutcome, RunId, RunKind, RunState, SamplingInterval, SamplingKind,
-    SamplingPeriod, SamplingPolicy, SamplingPolicyUpdate, SourceState, Structured,
-    StructuredClusteringAlgorithm, SystemInstallRecord, SystemLogCollector,
-    SystemLogCollectorRefusal, SystemLogCollectorTable, Table, Template, TimeSeries,
-    TopColumnsOfCluster, TopMultimaps, TorExitNode, TrafficFilter, TrainedWith, TrainingDefinition,
-    TrainingDefinitionUpdate, TriageExclusion, TriagePolicyInput, TriageResponse,
-    TriageResponseUpdate, TrustedDomain, TrustedUserAgent, UniqueKey, Unstructured,
+    OwnedNetworkSet, OwnedNetworkTable, PacketAttr, PolicyState, PolicyUse, PortAllocation,
+    PortAllocationError, PortOwner, PreviousTraining, PreviousTrainingResults, ProtocolPorts,
+    ReplaceOutcome, ReplacedModel, ReportedRunState, RequestKeyError, Response, ResponseKind,
+    RetentionConfig, RetentionConfigUpdate, RoundOutcome, RunId, RunKind, RunState,
+    SamplingInterval, SamplingKind, SamplingPeriod, SamplingPolicy, SamplingPolicyError,
+    SamplingPolicyUpdate, SourceState, Structured, StructuredClusteringAlgorithm,
+    SystemInstallRecord, SystemLogCollector, SystemLogCollectorRefusal, SystemLogCollectorTable,
+    Table, Template, TimeSeries, TopColumnsOfCluster, TopMultimaps, TorExitNode, TrafficFilter,
+    TrainedWith, TrainingDefinition, TrainingDefinitionUpdate, TriageExclusion, TriagePolicyInput,
+    TriageResponse, TriageResponseUpdate, TrustedDomain, TrustedUserAgent, UniqueKey, Unstructured,
     UnstructuredClusteringAlgorithm, UserAgent, ValueKind,
 };
 pub use self::top_n::*;
@@ -743,23 +743,42 @@ impl Store {
 
     /// Returns the table of sampling policies.
     ///
+    /// A policy is inserted only as a draft with no assignee, through the
+    /// table's `insert`; the generic `put` writers, which store a record as
+    /// the caller built it, are not available for this table:
+    ///
+    /// ```compile_fail,E0277
+    /// fn insert(store: &review_database::Store, policy: review_database::SamplingPolicy) {
+    ///     let _ = store.sampling_policy_map().put(policy);
+    /// }
+    /// ```
+    ///
+    /// ```compile_fail,E0277
+    /// fn insert(store: &review_database::Store, policy: review_database::SamplingPolicy) {
+    ///     let _ = store
+    ///         .sampling_policy_map()
+    ///         .put_with_transaction(policy, todo!());
+    /// }
+    /// ```
+    ///
     /// A sampling-policy ID is never reused. The Data Store keys a policy's
     /// time series by its ID, and the Time Series Generator its checkpoint,
     /// and neither deletes them when the policy is deleted; a new policy
     /// given a freed ID would show the old policy's series, and a generator
     /// still holding the old policy would keep producing it under the new
-    /// name. A policy is therefore deleted with `deactivate`, which retires
-    /// its ID:
+    /// name. A policy is therefore deleted with `remove_unused`, which
+    /// refuses while the policy is in use and retires its ID:
     ///
     /// ```
     /// fn delete(store: &review_database::Store, id: u32) -> anyhow::Result<()> {
-    ///     store.sampling_policy_map().deactivate(id)?;
+    ///     store.sampling_policy_map().remove_unused(id)?;
     ///     Ok(())
     /// }
     /// ```
     ///
     /// The `remove` writers, which put the ID on the free list for the next
-    /// insert, are not available for this table:
+    /// insert, and `deactivate`, which asks nothing about the policy's uses,
+    /// are not available for this table:
     ///
     /// ```compile_fail,E0277
     /// fn delete(store: &review_database::Store, id: u32) {
@@ -774,10 +793,49 @@ impl Store {
     ///         .remove_with_transaction(id, todo!());
     /// }
     /// ```
+    ///
+    /// ```compile_fail,E0277
+    /// fn delete(store: &review_database::Store, id: u32) {
+    ///     let _ = store.sampling_policy_map().deactivate(id);
+    /// }
+    /// ```
     #[must_use]
     #[allow(clippy::missing_panics_doc)]
     pub fn sampling_policy_map(&self) -> IndexedTable<'_, SamplingPolicy> {
         self.states.sampling_policies()
+    }
+
+    /// Returns the sampling policies assigned to the Time Series Generator
+    /// agent `instance`, in name order.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database operation fails.
+    pub fn sampling_policies_assigned_to(
+        &self,
+        instance: &ModelInstance,
+    ) -> Result<Vec<SamplingPolicy>> {
+        self.states.sampling_policies().assigned_to(instance)
+    }
+
+    /// Returns what uses the sampling policy `id`: what names its decimal ID
+    /// as a source.
+    ///
+    /// The uses are, in this order: each training definition with the
+    /// timeseries method, in name order; each detector of an applied or
+    /// pending engine document whose model is a timeseries model, in node
+    /// id, agent key, then detector id order, once per detector; and each
+    /// timeseries model whose `trained_sources` names it, in name order. A
+    /// detector's model is a timeseries model if the model of its name has
+    /// the timeseries method or, while no model has the name, the training
+    /// definition of the name has. The policy is in use while the list is
+    /// not empty; whether a policy has the ID is not checked.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database operation fails.
+    pub fn sampling_policy_uses(&self, id: u32) -> Result<Vec<PolicyUse>> {
+        self.states.sampling_policies().uses(id)
     }
 
     #[must_use]
