@@ -14,8 +14,8 @@ use serde::{Deserialize, Serialize};
 use strum_macros::EnumString;
 
 use super::{
-    EngineInstances, Model, ModelInstance, ModelRuns, SamplingPolicy, TableIter as TI,
-    TrainingDefinitions,
+    DetectorIdMarks, EngineInstances, Model, ModelInstance, ModelRuns, SamplingPolicy,
+    TableIter as TI, TrainingDefinitions,
     agent::sensor_hostname,
     engine_instance::{self, EngineDetectorRef, EngineDocumentError, EngineDocumentWrite},
 };
@@ -151,6 +151,7 @@ pub struct Table<'d> {
     agent: CrateTable<'d, Agent>,
     external_service: CrateTable<'d, ExternalService>,
     engine_instances: EngineInstances<'d>,
+    detector_id_marks: DetectorIdMarks<'d>,
     model: IndexedTable<'d, Model>,
     model_indicator: Map<'d>,
     model_runs: ModelRuns<'d>,
@@ -183,6 +184,7 @@ impl<'d> Table<'d> {
         let agent = Map::open(db, super::AGENTS).map(CrateTable::new)?;
         let external_service = Map::open(db, super::EXTERNAL_SERVICES).map(CrateTable::new)?;
         let engine_instances = EngineInstances::open(db)?;
+        let detector_id_marks = DetectorIdMarks::open(db)?;
         let model = IndexedTable::<Model>::open(db)?;
         let model_indicator = Map::open(db, super::MODEL_INDICATORS)?;
         let model_runs = ModelRuns::open(db)?;
@@ -193,6 +195,7 @@ impl<'d> Table<'d> {
             agent,
             external_service,
             engine_instances,
+            detector_id_marks,
             model,
             model_indicator,
             model_runs,
@@ -670,6 +673,16 @@ impl<'d> Table<'d> {
     /// so a concurrent removal of any of them, or a concurrent write of a
     /// listed agent's document, makes the update retry and check again.
     ///
+    /// A detector id is never reused on an engine instance. The instance's
+    /// `last_detector_id`, the highest id any of its documents has named, is
+    /// kept under its agent lookup key, `<agent_key>.<hostname>`, where the
+    /// hostname is that of the node's profile in `new`, or of its draft
+    /// profile when it has none. It survives the removal of the agent and of
+    /// the node, so an engine installed again on the same host with the same
+    /// key continues from it. Each listed agent's mark is raised, in the same
+    /// transaction, to every id its written slots name. A node with no
+    /// hostname keeps no mark.
+    ///
     /// # Errors
     ///
     /// Returns an error, and changes nothing, if [`Table::update`] would fail
@@ -689,7 +702,10 @@ impl<'d> Table<'d> {
     ///   the matching slot;
     /// - a written slot's document, the stored `config` for `applied` or the
     ///   stored `draft` for `pending` of an agent kept from `old`, is not the
-    ///   one in `old`.
+    ///   one in `old`;
+    /// - a written slot names a detector id that is at most the agent's
+    ///   `last_detector_id` and that neither of its stored slots names
+    ///   ([`EngineDocumentError::DetectorIdRetired`]).
     pub fn update_with_engine_documents(
         &mut self,
         id: u32,
@@ -701,16 +717,32 @@ impl<'d> Table<'d> {
         self.update_in_transaction(id, old, new, documents)
     }
 
+    /// Returns the highest detector id any document of `instance` has named,
+    /// as the detector id mark of its agent lookup key records it; 0 if there
+    /// is none, or if the instance's node does not exist or has no hostname.
+    pub(crate) fn last_detector_id(&self, instance: &ModelInstance) -> Result<i32> {
+        let Some(node) = self.node.get_by_id(instance.node_id)? else {
+            return Ok(0);
+        };
+        engine_hostname(node.profile.as_ref(), node.profile_draft.as_ref()).map_or(Ok(0), |host| {
+            self.detector_id_marks
+                .get(&engine_instance::lookup_key(&instance.agent_key, host))
+        })
+    }
+
     /// Checks, within `txn`, what the documents to write rely on in the
-    /// database: the stored row of each listed agent kept from `old`, and the
-    /// models and indicators of each written slot.
+    /// database: the stored row of each listed agent kept from `old`, the
+    /// models and indicators of each written slot, and the detector id mark
+    /// of each listed agent on the hostname the node has in `new`.
     fn check_engine_documents_in_transaction(
         &self,
         txn: &rocksdb::Transaction<OptimisticTransactionDB>,
         id: u32,
         old: &Update,
+        new: &Update,
         documents: &[EngineDocumentWrite],
     ) -> Result<()> {
+        let hostname = engine_hostname(new.profile.as_ref(), new.profile_draft.as_ref());
         for document in documents {
             let agent_key = &document.agent_key;
             if let Some(old_agent) = old.agents.iter().find(|a| a.key == *agent_key) {
@@ -776,18 +808,43 @@ impl<'d> Table<'d> {
                     .into());
                 }
             }
+            // An id the stored row still names is the same detector; any
+            // other id at most the mark was a detector's that is gone, and
+            // the engine may still hold that detector's state under it.
+            if let Some(hostname) = hostname {
+                let last_detector_id = self
+                    .detector_id_marks
+                    .get_for_update(txn, &engine_instance::lookup_key(agent_key, hostname))?;
+                let stored = self
+                    .engine_instances
+                    .get_for_update(txn, &engine_instance::key(id, agent_key))?
+                    .unwrap_or_default();
+                if let Some(detector) = written_detectors(document)
+                    .find(|d| d.id <= last_detector_id && !stored.names_detector(d.id))
+                {
+                    return Err(EngineDocumentError::DetectorIdRetired {
+                        agent_key: agent_key.clone(),
+                        detector_id: detector.id,
+                    }
+                    .into());
+                }
+            }
         }
         Ok(())
     }
 
     /// Writes, within `txn`, the references of each listed agent, dropping
-    /// the statuses of detector ids neither slot has afterwards.
+    /// the statuses of detector ids neither slot has afterwards, and raises
+    /// the detector id mark of the agent on the hostname the node has in
+    /// `new` to every id the written slots name.
     fn write_engine_documents(
         &self,
         txn: &rocksdb::Transaction<OptimisticTransactionDB>,
         id: u32,
+        new: &Update,
         documents: &[EngineDocumentWrite],
     ) -> Result<()> {
+        let hostname = engine_hostname(new.profile.as_ref(), new.profile_draft.as_ref());
         for document in documents {
             let key = engine_instance::key(id, &document.agent_key);
             let mut row = self
@@ -802,6 +859,16 @@ impl<'d> Table<'d> {
             }
             row.retain_named_statuses();
             self.engine_instances.put(txn, &key, &row)?;
+            if let Some(hostname) = hostname {
+                let lookup_key = engine_instance::lookup_key(&document.agent_key, hostname);
+                let last_detector_id = self.detector_id_marks.get_for_update(txn, &lookup_key)?;
+                let highest = written_detectors(document)
+                    .map(|d| d.id)
+                    .fold(last_detector_id, i32::max);
+                if highest > last_detector_id {
+                    self.detector_id_marks.put(txn, &lookup_key, highest)?;
+                }
+            }
         }
         Ok(())
     }
@@ -877,7 +944,7 @@ impl<'d> Table<'d> {
                 None => bail!("no such id"),
             };
 
-            self.check_engine_documents_in_transaction(&txn, id, old, documents)?;
+            self.check_engine_documents_in_transaction(&txn, id, old, new, documents)?;
 
             if let Err(e) = self
                 .node
@@ -1002,7 +1069,7 @@ impl<'d> Table<'d> {
                 }
             }
 
-            self.write_engine_documents(&txn, id, documents)?;
+            self.write_engine_documents(&txn, id, new, documents)?;
 
             #[cfg(test)]
             self.run_before_commit_hook()?;
@@ -1212,6 +1279,25 @@ fn kept_agents<'a>(
             .find(|a| a.key == new_agent.key)
             .map(|old_agent| (old_agent, new_agent))
     })
+}
+
+/// Returns the hostname of a node whose profiles are `profile` and
+/// `profile_draft` that its engine instances' agent lookup keys name: the
+/// applied profile's, or the draft's when there is no applied profile.
+/// Returns `None` if that profile is missing or its hostname is empty: no
+/// engine instance can be installed on such a node, so no detector id mark is
+/// kept for it.
+///
+/// A node with installed rows cannot change its hostname, so the hostname
+/// stays the one its installed engine instances' data directories are on.
+fn engine_hostname<'a>(
+    profile: Option<&'a Profile>,
+    profile_draft: Option<&'a Profile>,
+) -> Option<&'a str> {
+    profile
+        .or(profile_draft)
+        .map(|profile| profile.hostname.as_str())
+        .filter(|hostname| !hostname.is_empty())
 }
 
 /// Returns the detectors of the slots `document` writes.

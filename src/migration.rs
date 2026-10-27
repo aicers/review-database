@@ -21,11 +21,12 @@ use crate::{
     migration::migration_structures::{
         AgentValueV0_46, AgentValueV0_47, BlocklistDceRpcFieldsStoredV0_42,
         BlocklistDceRpcFieldsStoredV0_44, BlocklistDhcpFieldsStoredV0_42,
-        BlocklistDhcpFieldsStoredV0_44, ExternalServiceValueV0_46, ExternalServiceValueV0_47,
-        HttpThreatFieldsStoredV0_43, HttpThreatFieldsStoredV0_44, ModelV0_56, NodeV0_56,
-        OperationAttemptValueV0_47, OperationAttemptValueV0_48, OperationAttemptValueV0_49,
-        SamplingPolicyV0_56, TrainingDefinitionV0_56, V0_46_COUNTRY_CODE_LOOKUP_FAILED,
-        migrate_event_stored_schema_to_v0_46, validate_event_stored_schema_v0_46,
+        BlocklistDhcpFieldsStoredV0_44, EngineInstanceRefsV0_57, ExternalServiceValueV0_46,
+        ExternalServiceValueV0_47, HttpThreatFieldsStoredV0_43, HttpThreatFieldsStoredV0_44,
+        ModelV0_56, NodeV0_56, OperationAttemptValueV0_47, OperationAttemptValueV0_48,
+        OperationAttemptValueV0_49, SamplingPolicyV0_56, TrainingDefinitionV0_56,
+        V0_46_COUNTRY_CODE_LOOKUP_FAILED, migrate_event_stored_schema_to_v0_46,
+        validate_event_stored_schema_v0_46,
     },
     tables::{
         ACCESS_TOKENS, ACCOUNTS, ALLOW_NETWORKS, BLOCK_NETWORKS, CUSTOMERS, FILTERS, NETWORK_TAGS,
@@ -38,7 +39,7 @@ use crate::{
 /// It names the current database format and is independent of the crate
 /// package version: a release does not move it, and a format change does,
 /// whatever the crate version is at the time.
-pub(crate) const DATABASE_FORMAT_VERSION: &str = "0.57.0";
+pub(crate) const DATABASE_FORMAT_VERSION: &str = "0.58.0";
 
 /// The range of format markers that use the current database format.
 ///
@@ -49,7 +50,7 @@ pub(crate) const DATABASE_FORMAT_VERSION: &str = "0.57.0";
 /// `">=X.Y.0,<X.(Y+1).0"` and appends a step to the migration table. A
 /// release, or any change without a format change, leaves all three as they
 /// are. No build writes a prerelease marker.
-const COMPATIBLE_VERSION_REQ: &str = ">=0.57.0,<0.58.0";
+const COMPATIBLE_VERSION_REQ: &str = ">=0.58.0,<0.59.0";
 
 /// Number of event records applied in each atomic migration write.
 const EVENT_MIGRATION_BATCH_SIZE: usize = 100;
@@ -240,6 +241,11 @@ pub fn migrate_data_dir<P: AsRef<Path>>(
             VersionReq::parse(">=0.56.0,<0.57.0")?,
             Version::parse("0.57.0")?,
             |data_dir, _backup_dir, _locator| migrate_0_56_to_0_57(data_dir),
+        ),
+        (
+            VersionReq::parse(">=0.57.0,<0.58.0")?,
+            Version::parse("0.58.0")?,
+            |data_dir, _backup_dir, _locator| migrate_0_57_to_0_58(data_dir),
         ),
     ];
 
@@ -703,6 +709,112 @@ fn migrate_0_56_to_0_57(data_dir: &Path) -> Result<()> {
     migrate_retire_sampling_policy_ids(&db)?;
     migrate_sampling_policy_records_v0_57(&db)?;
     migrate_model_trained_sources_v0_57(&db)
+}
+
+/// Migrates a database in the 0.57.x format to 0.58.0.
+///
+/// Creates the "detector id marks" column family, and gives every stored
+/// "engine instances" row the mark of its agent lookup key,
+/// `<agent_key>.<hostname>`: the highest detector id of its applied and
+/// pending references, or 0. The hostname is that of the node's applied
+/// profile, or of its draft profile when it has none. A row whose node is
+/// missing or has no hostname has no lookup key and gets no mark.
+///
+/// No other family is written. A rerun is safe: the family is created only if
+/// it is missing, and a mark is never lowered, so a rerun over the same rows
+/// writes the same marks.
+fn migrate_0_57_to_0_58(data_dir: &Path) -> Result<()> {
+    let db_path = data_dir.join("states.db");
+    let mut opts = rocksdb::Options::default();
+    opts.create_if_missing(false);
+    opts.create_missing_column_families(false);
+    let column_families = map_names_for_existing_format(&opts, &db_path)?;
+    let mut db: rocksdb::OptimisticTransactionDB<rocksdb::SingleThreaded> =
+        rocksdb::OptimisticTransactionDB::open_cf(&opts, &db_path, column_families)
+            .context("failed to open database for the 0.58.0 migration")?;
+
+    let name = crate::tables::DETECTOR_ID_MARKS;
+    if db.cf_handle(name).is_none() {
+        info!("Creating '{name}' column family");
+        db.create_cf(name, &rocksdb::Options::default())
+            .with_context(|| format!("failed to create '{name}' column family"))?;
+    }
+    migrate_detector_id_marks_v0_58(&db)
+}
+
+/// Writes the detector id marks of the engine instance rows of `db`, as
+/// [`migrate_0_57_to_0_58`] describes.
+fn migrate_detector_id_marks_v0_58(
+    db: &rocksdb::OptimisticTransactionDB<rocksdb::SingleThreaded>,
+) -> Result<()> {
+    let marks_cf = db
+        .cf_handle(crate::tables::DETECTOR_ID_MARKS)
+        .context("detector id marks column family not found")?;
+    let rows = db
+        .cf_handle(crate::tables::ENGINE_INSTANCES)
+        .context("engine instances column family not found")?;
+    let nodes = db
+        .cf_handle(crate::tables::NODES)
+        .context("nodes column family not found")?;
+
+    let mut hostnames = std::collections::HashMap::new();
+    for entry in db.iterator_cf(nodes, rocksdb::IteratorMode::Start) {
+        let (key, value) = entry.context("failed to read a node record")?;
+        if key.is_empty() {
+            continue;
+        }
+        let node: NodeV0_56 = bincode::DefaultOptions::new()
+            .deserialize(&value)
+            .context("failed to read a node record in the 0.57 layout")?;
+        if let Some(profile) = node
+            .profile
+            .or(node.profile_draft)
+            .filter(|profile| !profile.hostname.is_empty())
+        {
+            hostnames.insert(node.id, profile.hostname);
+        }
+    }
+
+    let mut marks: std::collections::HashMap<String, i32> = std::collections::HashMap::new();
+    for entry in db.iterator_cf(rows, rocksdb::IteratorMode::Start) {
+        let (key, value) = entry.context("failed to read an engine instance record")?;
+        let (node_id, agent_key) = key
+            .split_at_checked(std::mem::size_of::<u32>())
+            .context("engine instance key is too short")?;
+        let node_id = u32::from_be_bytes(node_id.try_into()?);
+        let agent_key =
+            std::str::from_utf8(agent_key).context("engine instance key is not UTF-8")?;
+        let row: EngineInstanceRefsV0_57 = bincode::DefaultOptions::new()
+            .allow_trailing_bytes()
+            .deserialize(&value)
+            .context("failed to read an engine instance record in the 0.57 layout")?;
+        let Some(hostname) = hostnames.get(&node_id) else {
+            continue;
+        };
+        let mark = marks
+            .entry(crate::tables::agent_lookup_key(agent_key, hostname))
+            .or_default();
+        *mark = (*mark).max(row.last_detector_id());
+    }
+
+    let mut batch = rocksdb::WriteBatchWithTransaction::<true>::default();
+    for (lookup_key, mark) in &marks {
+        let stored: i32 = db
+            .get_cf(marks_cf, lookup_key.as_bytes())
+            .context("failed to read a detector id mark")?
+            .map(|value| bincode::DefaultOptions::new().deserialize(&value))
+            .transpose()
+            .context("failed to read a detector id mark")?
+            .unwrap_or_default();
+        batch.put_cf(
+            marks_cf,
+            lookup_key.as_bytes(),
+            bincode::DefaultOptions::new().serialize(&stored.max(*mark))?,
+        );
+    }
+    write_migration_batch(db, &mut batch, "detector id mark")?;
+    info!("Detector id marks written: count={}", marks.len());
+    Ok(())
 }
 
 /// Retires the free IDs of the "sampling policy" family in `db`.
@@ -2532,9 +2644,10 @@ mod tests {
     use super::{
         COMPATIBLE_VERSION_REQ, COUNTRY_CODE_SWAP_CHECKPOINT_KEY, COUNTRY_CODE_SWAP_COMPLETED_KEY,
         DATABASE_FORMAT_VERSION, VERSION_FILE_NAME, VERSION_TMP_FILE_NAME, create_version_file,
-        migrate_0_46_to_0_47, migrate_0_56_to_0_57, migrate_country_code_placeholders_inner,
-        migrate_data_dir, migrate_event_country_codes, migrate_event_stored_schema_to_v0_46,
-        read_version_file, retrieve_or_create_version, write_version_markers,
+        migrate_0_46_to_0_47, migrate_0_56_to_0_57, migrate_0_57_to_0_58,
+        migrate_country_code_placeholders_inner, migrate_data_dir, migrate_event_country_codes,
+        migrate_event_stored_schema_to_v0_46, read_version_file, retrieve_or_create_version,
+        write_version_markers,
     };
     use crate::event::{
         BlocklistConnFields, BlocklistConnFieldsStored, EventKind, EventMessage,
@@ -3446,6 +3559,9 @@ mod tests {
     /// The column families the 0.56.0 format adds to the 0.55 set.
     const FAMILIES_ADDED_BY_V0_56: [&str; 1] = [crate::tables::SYSTEM_LOG_COLLECTORS];
 
+    /// The column families the 0.58.0 format adds to the 0.57 set.
+    const FAMILIES_ADDED_BY_V0_58: [&str; 1] = [crate::tables::DETECTOR_ID_MARKS];
+
     /// Migrates a database in the 0.43-through-0.46 layout, recorded as
     /// `version`, and asserts that it reaches the current format with its agent
     /// and external-service values converted.
@@ -3490,6 +3606,7 @@ mod tests {
             .chain(FAMILIES_ADDED_BY_V0_53)
             .chain(FAMILIES_ADDED_BY_V0_55)
             .chain(FAMILIES_ADDED_BY_V0_56)
+            .chain(FAMILIES_ADDED_BY_V0_58)
         {
             assert!(db.cf_handle(name).is_some(), "{name} must exist");
         }
@@ -3499,6 +3616,7 @@ mod tests {
                 + FAMILIES_ADDED_BY_V0_53.len()
                 + FAMILIES_ADDED_BY_V0_55.len()
                 + FAMILIES_ADDED_BY_V0_56.len()
+                + FAMILIES_ADDED_BY_V0_58.len()
                 - FAMILIES_REMOVED_BY_V0_47.len()
                 - FAMILIES_REMOVED_BY_V0_52.len(),
             crate::tables::MAP_NAMES.len() - super::MAP_NAMES_V0_43_TO_V0_46.len()
@@ -3509,17 +3627,21 @@ mod tests {
                 + FAMILIES_ADDED_BY_V0_53.len()
                 + FAMILIES_ADDED_BY_V0_55.len()
                 + FAMILIES_ADDED_BY_V0_56.len()
+                + FAMILIES_ADDED_BY_V0_58.len()
                 - FAMILIES_REMOVED_BY_V0_52.len(),
             crate::tables::MAP_NAMES.len()
         );
         assert_eq!(
             super::MAP_NAMES_V0_53.len()
                 + FAMILIES_ADDED_BY_V0_55.len()
-                + FAMILIES_ADDED_BY_V0_56.len(),
+                + FAMILIES_ADDED_BY_V0_56.len()
+                + FAMILIES_ADDED_BY_V0_58.len(),
             crate::tables::MAP_NAMES.len()
         );
         assert_eq!(
-            super::MAP_NAMES_V0_55.len() + FAMILIES_ADDED_BY_V0_56.len(),
+            super::MAP_NAMES_V0_55.len()
+                + FAMILIES_ADDED_BY_V0_56.len()
+                + FAMILIES_ADDED_BY_V0_58.len(),
             crate::tables::MAP_NAMES.len()
         );
         drop(db);
@@ -5393,11 +5515,15 @@ mod tests {
         let mut listed_v0_55 = super::MAP_NAMES_V0_55;
         listed_v0_55.sort_unstable();
         assert_eq!(v0_55, listed_v0_55);
-        let mut v0_56: Vec<&str> = v0_55.into_iter().chain(FAMILIES_ADDED_BY_V0_56).collect();
-        v0_56.sort_unstable();
+        let mut v0_58: Vec<&str> = v0_55
+            .into_iter()
+            .chain(FAMILIES_ADDED_BY_V0_56)
+            .chain(FAMILIES_ADDED_BY_V0_58)
+            .collect();
+        v0_58.sort_unstable();
         let mut current = crate::tables::MAP_NAMES;
         current.sort_unstable();
-        assert_eq!(v0_56, current);
+        assert_eq!(v0_58, current);
 
         create_v0_52_store(data_dir.path(), backup_dir.path(), &super::MAP_NAMES_V0_52);
         assert!(
@@ -7312,6 +7438,182 @@ mod tests {
         migrate_0_56_to_0_57(data_dir.path()).unwrap();
         let after: Vec<Vec<u8>> = models.iter().map(|m| stored(&m.name)).collect();
         assert_eq!(after, snapshot);
+    }
+
+    /// The 0.58 step gives every engine instance row the detector id mark of
+    /// its agent lookup key: the highest id of its applied and pending
+    /// references, or 0. The hostname is the node's applied profile's, or its
+    /// draft's when it has none; a row whose node has no hostname gets no
+    /// mark. A rerun changes nothing.
+    #[test]
+    fn migration_from_v0_57_writes_detector_id_marks() {
+        use crate::tables::EngineInstanceRow;
+        use crate::{EngineDetectorRef, EngineDocumentRefs};
+
+        let permit = acquire_db_permit();
+        let data_dir = tempfile::tempdir().unwrap();
+        let backup_dir = tempfile::tempdir().unwrap();
+        let db_path = data_dir.path().join("states.db");
+        let families_v0_57: Vec<&str> = crate::tables::MAP_NAMES
+            .into_iter()
+            .filter(|name| !FAMILIES_ADDED_BY_V0_58.contains(name))
+            .collect();
+        create_states_db(&db_path, families_v0_57.iter().copied());
+        write_version(data_dir.path(), "0.57.0");
+        write_version(backup_dir.path(), "0.57.0");
+
+        let profile = |hostname: &str| NodeProfileV0_56 {
+            customer_id: 1,
+            description: String::new(),
+            hostname: hostname.to_string(),
+        };
+        let node = |id: u32, applied: Option<&str>, draft: Option<&str>| NodeV0_56 {
+            id,
+            name: format!("node-{id}"),
+            name_draft: None,
+            profile: applied.map(profile),
+            profile_draft: draft.map(profile),
+            creation_time: chrono::Utc::now(),
+            agents: vec!["reconverge".to_string()],
+            external_services: Vec::new(),
+        };
+        let nodes = [
+            node(0, Some("applied.example"), Some("draft.example")),
+            node(1, None, Some("drafted.example")),
+            node(2, None, None),
+        ];
+        // The index lets the store find each node by its id.
+        let index = KeyIndexV0_56 {
+            keys: nodes
+                .iter()
+                .map(|node| KeyIndexEntryV0_56::Key(node.name.as_bytes().to_vec()))
+                .collect(),
+            available: 3,
+            inactive: None,
+        };
+        let mut entries: Entries = vec![(
+            Vec::new(),
+            bincode::DefaultOptions::new().serialize(&index).unwrap(),
+        )];
+        entries.extend(nodes.iter().map(|node| {
+            (
+                node.name.as_bytes().to_vec(),
+                bincode::DefaultOptions::new().serialize(node).unwrap(),
+            )
+        }));
+        put_entries(
+            &db_path,
+            families_v0_57.iter().copied(),
+            crate::tables::NODES,
+            &entries,
+        );
+
+        let refs = |ids: &[i32]| EngineDocumentRefs {
+            detectors: ids
+                .iter()
+                .map(|id| EngineDetectorRef {
+                    id: *id,
+                    model: format!("m{id}"),
+                    sources: vec!["sensor-a".to_string()],
+                    indicator: None,
+                })
+                .collect(),
+        };
+        let status = crate::DetectorStatus {
+            state: crate::DetectorState::Running,
+            finished_at: None,
+            outcome: None,
+            reason: None,
+            events: 3,
+            sources: Vec::new(),
+            reported_at: chrono::Utc::now(),
+        };
+        let row = |node_id: u32, agent_key: &str, row: &EngineInstanceRow| {
+            (
+                crate::tables::engine_instance_key(node_id, agent_key),
+                bincode::DefaultOptions::new().serialize(row).unwrap(),
+            )
+        };
+        put_entries(
+            &db_path,
+            families_v0_57.iter().copied(),
+            crate::tables::ENGINE_INSTANCES,
+            &[
+                row(
+                    0,
+                    "reconverge",
+                    &EngineInstanceRow {
+                        stopped: true,
+                        applied: refs(&[1, 4]),
+                        pending: refs(&[1, 6]),
+                        statuses: [(1, status)].into_iter().collect(),
+                    },
+                ),
+                row(1, "reconverge", &EngineInstanceRow::default()),
+                row(
+                    2,
+                    "reconverge",
+                    &EngineInstanceRow {
+                        pending: refs(&[2]),
+                        ..EngineInstanceRow::default()
+                    },
+                ),
+                row(
+                    3,
+                    "reconverge",
+                    &EngineInstanceRow {
+                        pending: refs(&[3]),
+                        ..EngineInstanceRow::default()
+                    },
+                ),
+            ],
+        );
+
+        migrate_data_dir(data_dir.path(), backup_dir.path(), None).unwrap();
+
+        let marks = || -> Vec<(String, i32)> {
+            let db = open_states_db(&db_path, crate::tables::MAP_NAMES);
+            let cf = db.cf_handle(crate::tables::DETECTOR_ID_MARKS).unwrap();
+            db.iterator_cf(&cf, rocksdb::IteratorMode::Start)
+                .map(|entry| {
+                    let (key, value) = entry.unwrap();
+                    (
+                        String::from_utf8(key.to_vec()).unwrap(),
+                        bincode::DefaultOptions::new().deserialize(&value).unwrap(),
+                    )
+                })
+                .collect()
+        };
+        let expected = vec![
+            ("reconverge.applied.example".to_string(), 6),
+            ("reconverge.drafted.example".to_string(), 0),
+        ];
+        assert_eq!(marks(), expected);
+
+        // An interrupted chain runs the step again.
+        migrate_0_57_to_0_58(data_dir.path()).unwrap();
+        assert_eq!(marks(), expected);
+
+        let test_schema = TestSchema::new_with_dir(permit, data_dir, backup_dir);
+        let store = &test_schema.store;
+        let state = |node_id: u32| {
+            store
+                .engine_instance_state(&crate::ModelInstance {
+                    node_id,
+                    agent_key: "reconverge".to_string(),
+                })
+                .unwrap()
+        };
+        let migrated = state(0);
+        assert_eq!(migrated.last_detector_id, 6);
+        assert!(migrated.stopped);
+        assert_eq!(migrated.pending, refs(&[1, 6]));
+        assert_eq!(
+            store.detector_statuses(&migrated.instance).unwrap().len(),
+            1
+        );
+        assert_eq!(state(1).last_detector_id, 0);
+        assert_eq!(state(2).last_detector_id, 0);
     }
 
     #[test]

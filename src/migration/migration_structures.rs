@@ -2630,8 +2630,8 @@ pub(crate) struct NodeProfileV0_56 {
     pub hostname: String,
 }
 
-/// The stored node record of database format 0.56, mirroring the live
-/// `tables::InnerNode`.
+/// The stored node record of database formats 0.56 and 0.57, mirroring the
+/// live `tables::InnerNode`.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub(crate) struct NodeV0_56 {
     pub id: u32,
@@ -2642,4 +2642,45 @@ pub(crate) struct NodeV0_56 {
     pub creation_time: DateTime<Utc>,
     pub agents: Vec<String>,
     pub external_services: Vec<String>,
+}
+
+/// One `[[detectors]]` reference of an engine document, as the `engine
+/// instances` rows of database format 0.57 store it.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub(crate) struct EngineDetectorRefV0_57 {
+    pub id: i32,
+    pub model: String,
+    pub sources: Vec<String>,
+    pub indicator: Option<String>,
+}
+
+/// The references of one engine document, as the `engine instances` rows of
+/// database format 0.57 store them.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub(crate) struct EngineDocumentRefsV0_57 {
+    pub detectors: Vec<EngineDetectorRefV0_57>,
+}
+
+/// The leading fields of an `engine instances` row of database format 0.57:
+/// its stopped state and the references of its applied and pending
+/// documents. The detector statuses the row stores after them are not read,
+/// so a row is decoded with trailing bytes allowed.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub(crate) struct EngineInstanceRefsV0_57 {
+    pub stopped: bool,
+    pub applied: EngineDocumentRefsV0_57,
+    pub pending: EngineDocumentRefsV0_57,
+}
+
+impl EngineInstanceRefsV0_57 {
+    /// Returns the highest detector id either document names, or 0 if that
+    /// is lower or neither names one.
+    pub(crate) fn last_detector_id(&self) -> i32 {
+        self.applied
+            .detectors
+            .iter()
+            .chain(&self.pending.detectors)
+            .map(|detector| detector.id)
+            .fold(0, i32::max)
+    }
 }
