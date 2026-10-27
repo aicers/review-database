@@ -87,6 +87,33 @@ impl KeyIndex {
         Ok(())
     }
 
+    /// Retires every index on the free list, so that `insert` never hands one
+    /// out again, and returns how many were retired.
+    ///
+    /// Each free index becomes inactive, linked onto the inactive list, and
+    /// the next insert takes the first index never used.
+    fn retire_available(&mut self) -> Result<usize> {
+        let len = u32::try_from(self.keys.len()).context("corrupt index")?;
+        let mut retired = 0;
+        while self.available < len {
+            // A visited entry is no longer `Index`, so a cycle ends in the
+            // `bail!` below rather than looping.
+            let id = self.available;
+            let i = usize::try_from(id).context("invalid free list")?;
+            self.available = match self.keys.get(i) {
+                Some(KeyIndexEntry::Index(next)) => *next,
+                _ => bail!("invalid free list"),
+            };
+            self.keys[i] = KeyIndexEntry::Inactive(self.inactive);
+            self.inactive = Some(id);
+            retired += 1;
+        }
+        if self.available != len {
+            bail!("invalid free list");
+        }
+        Ok(retired)
+    }
+
     /// Inserts a new key and returns its index.
     pub(crate) fn insert(&mut self, key: &[u8]) -> Result<u32> {
         let id = self.available;
@@ -293,6 +320,45 @@ pub trait Indexed {
             }
         }
         Ok(())
+    }
+
+    /// Retires every index on the free list, so that none of them is handed
+    /// out again, and returns how many were retired.
+    ///
+    /// The index is not written when there is nothing to retire, so a table
+    /// without a free list, an empty one included, is left as it is.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the free list is corrupt or the database operation
+    /// fails.
+    fn retire_available(&self) -> Result<usize> {
+        loop {
+            let txn = self.db().transaction();
+            let mut index = self
+                .index_in_transaction(&txn)
+                .context("cannot read index")?;
+            let retired = index.retire_available()?;
+            if retired == 0 {
+                return Ok(0);
+            }
+            txn.put_cf(
+                self.cf(),
+                [],
+                bincode::DefaultOptions::new()
+                    .serialize(&index)
+                    .context("failed to serialize index")?,
+            )
+            .context("failed to update database index")?;
+            match txn.commit() {
+                Ok(()) => return Ok(retired),
+                Err(e) => {
+                    if !e.as_ref().starts_with("Resource busy:") {
+                        return Err(e).context("failed to retire free indices");
+                    }
+                }
+            }
+        }
     }
 
     /// Gets an entry corresponding to the given index.
@@ -680,9 +746,11 @@ pub trait IndexedMapUpdate {
 
 #[cfg(test)]
 mod tests {
+    use super::{KeyIndex, KeyIndexEntry};
+
     #[test]
     fn index_clear_inactive() {
-        let mut index = super::KeyIndex::default();
+        let mut index = KeyIndex::default();
         let id_a = index.insert(b"a").unwrap();
         assert_eq!(index.count(), 1);
 
@@ -692,5 +760,140 @@ mod tests {
 
         index.clear_inactive().unwrap();
         assert_eq!(index.count(), 0);
+    }
+
+    /// Returns `true` if every entry of `index` is inactive.
+    fn all_inactive(index: &KeyIndex) -> bool {
+        index
+            .keys
+            .iter()
+            .all(|entry| matches!(entry, KeyIndexEntry::Inactive(_)))
+    }
+
+    /// Walks the inactive list of `index` and returns the indices on it.
+    fn inactive_list(index: &KeyIndex) -> Vec<u32> {
+        let mut list = Vec::new();
+        let mut next = index.inactive;
+        while let Some(id) = next {
+            list.push(id);
+            next = match index.keys.get(usize::try_from(id).unwrap()) {
+                Some(KeyIndexEntry::Inactive(next)) => *next,
+                _ => panic!("inactive list reaches a non-inactive entry"),
+            };
+        }
+        list
+    }
+
+    #[test]
+    fn retire_available_on_empty_index() {
+        let mut index = KeyIndex::default();
+        assert_eq!(index.retire_available().unwrap(), 0);
+        assert!(index.keys.is_empty());
+        assert_eq!(index.available, 0);
+        assert_eq!(index.inactive, None);
+        assert_eq!(index.insert(b"a").unwrap(), 0);
+    }
+
+    #[test]
+    fn retire_available_without_free_list() {
+        let mut index = KeyIndex::default();
+        index.insert(b"a").unwrap();
+        index.insert(b"b").unwrap();
+        assert_eq!(index.retire_available().unwrap(), 0);
+        assert_eq!(index.count(), 2);
+        assert_eq!(index.available, 2);
+        assert_eq!(index.inactive, None);
+        assert_eq!(index.get(0).unwrap(), Some(b"a".as_slice()));
+        assert_eq!(index.get(1).unwrap(), Some(b"b".as_slice()));
+        assert_eq!(index.insert(b"c").unwrap(), 2);
+    }
+
+    #[test]
+    fn retire_available_with_chained_free_list() {
+        let mut index = KeyIndex::default();
+        for key in [b"a", b"b", b"c", b"d"] {
+            index.insert(key).unwrap();
+        }
+        // Free list: 2 -> 0 -> 3 -> 4 (= len).
+        index.remove(3).unwrap();
+        index.remove(0).unwrap();
+        index.remove(2).unwrap();
+        assert_eq!(index.available, 2);
+
+        assert_eq!(index.retire_available().unwrap(), 3);
+        assert_eq!(index.available, 4);
+        assert_eq!(index.count(), 1);
+        assert_eq!(index.get(1).unwrap(), Some(b"b".as_slice()));
+        for id in [0, 2, 3] {
+            assert!(matches!(
+                index.keys[usize::try_from(id).unwrap()],
+                KeyIndexEntry::Inactive(_)
+            ));
+            assert_eq!(index.get(id).unwrap(), None);
+        }
+        let mut retired = inactive_list(&index);
+        retired.sort_unstable();
+        assert_eq!(retired, vec![0, 2, 3]);
+
+        assert_eq!(index.insert(b"e").unwrap(), 4);
+        assert_eq!(index.insert(b"f").unwrap(), 5);
+    }
+
+    #[test]
+    fn retire_available_with_inactive_and_free_entries() {
+        let mut index = KeyIndex::default();
+        for key in [b"a", b"b", b"c", b"d", b"e"] {
+            index.insert(key).unwrap();
+        }
+        index.deactivate(1).unwrap();
+        index.remove(3).unwrap();
+        index.deactivate(4).unwrap();
+        index.remove(0).unwrap();
+
+        assert_eq!(index.retire_available().unwrap(), 2);
+        assert_eq!(index.available, 5);
+        assert_eq!(index.count(), 1);
+        assert_eq!(index.get(2).unwrap(), Some(b"c".as_slice()));
+        let mut inactive = inactive_list(&index);
+        inactive.sort_unstable();
+        assert_eq!(inactive, vec![0, 1, 3, 4]);
+
+        // A second call finds no free list and changes nothing.
+        assert_eq!(index.retire_available().unwrap(), 0);
+        assert_eq!(index.insert(b"f").unwrap(), 5);
+    }
+
+    #[test]
+    fn retire_available_of_pre_migration_index() {
+        let mut index = KeyIndex {
+            keys: vec![
+                KeyIndexEntry::Index(1),
+                KeyIndexEntry::Index(2),
+                KeyIndexEntry::Index(3),
+            ],
+            available: 0,
+            inactive: None,
+        };
+        assert_eq!(index.retire_available().unwrap(), 3);
+        assert!(all_inactive(&index));
+        assert_eq!(index.available, 3);
+        assert_eq!(index.count(), 0);
+    }
+
+    #[test]
+    fn retire_available_rejects_corrupt_free_list() {
+        let mut index = KeyIndex {
+            keys: vec![KeyIndexEntry::Key(b"a".to_vec()), KeyIndexEntry::Index(0)],
+            available: 1,
+            inactive: None,
+        };
+        assert!(index.retire_available().is_err());
+
+        let mut cyclic = KeyIndex {
+            keys: vec![KeyIndexEntry::Index(1), KeyIndexEntry::Index(0)],
+            available: 0,
+            inactive: None,
+        };
+        assert!(cyclic.retire_available().is_err());
     }
 }

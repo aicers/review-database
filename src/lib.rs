@@ -741,6 +741,39 @@ impl Store {
         self.states.external_service()
     }
 
+    /// Returns the table of sampling policies.
+    ///
+    /// A sampling-policy ID is never reused. The Data Store keys a policy's
+    /// time series by its ID, and the Time Series Generator its checkpoint,
+    /// and neither deletes them when the policy is deleted; a new policy
+    /// given a freed ID would show the old policy's series, and a generator
+    /// still holding the old policy would keep producing it under the new
+    /// name. A policy is therefore deleted with `deactivate`, which retires
+    /// its ID:
+    ///
+    /// ```
+    /// fn delete(store: &review_database::Store, id: u32) -> anyhow::Result<()> {
+    ///     store.sampling_policy_map().deactivate(id)?;
+    ///     Ok(())
+    /// }
+    /// ```
+    ///
+    /// The `remove` writers, which put the ID on the free list for the next
+    /// insert, are not available for this table:
+    ///
+    /// ```compile_fail,E0277
+    /// fn delete(store: &review_database::Store, id: u32) {
+    ///     let _ = store.sampling_policy_map().remove(id);
+    /// }
+    /// ```
+    ///
+    /// ```compile_fail,E0277
+    /// fn delete(store: &review_database::Store, id: u32) {
+    ///     let _ = store
+    ///         .sampling_policy_map()
+    ///         .remove_with_transaction(id, todo!());
+    /// }
+    /// ```
     #[must_use]
     #[allow(clippy::missing_panics_doc)]
     pub fn sampling_policy_map(&self) -> IndexedTable<'_, SamplingPolicy> {

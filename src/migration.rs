@@ -15,6 +15,7 @@ use semver::{Version, VersionReq};
 use tracing::{info, warn};
 
 use crate::{
+    collections::Indexed,
     event::{EventKind, resolve_stored_country_codes, swap_stored_country_code_placeholders},
     geo::{CountryLookup, Ip2LocationResolver},
     migration::migration_structures::{
@@ -36,7 +37,7 @@ use crate::{
 /// It names the current database format and is independent of the crate
 /// package version: a release does not move it, and a format change does,
 /// whatever the crate version is at the time.
-pub(crate) const DATABASE_FORMAT_VERSION: &str = "0.56.0";
+pub(crate) const DATABASE_FORMAT_VERSION: &str = "0.57.0";
 
 /// The range of format markers that use the current database format.
 ///
@@ -47,7 +48,7 @@ pub(crate) const DATABASE_FORMAT_VERSION: &str = "0.56.0";
 /// `">=X.Y.0,<X.(Y+1).0"` and appends a step to the migration table. A
 /// release, or any change without a format change, leaves all three as they
 /// are. No build writes a prerelease marker.
-const COMPATIBLE_VERSION_REQ: &str = ">=0.56.0,<0.57.0";
+const COMPATIBLE_VERSION_REQ: &str = ">=0.57.0,<0.58.0";
 
 /// Number of event records applied in each atomic migration write.
 const EVENT_MIGRATION_BATCH_SIZE: usize = 100;
@@ -233,6 +234,11 @@ pub fn migrate_data_dir<P: AsRef<Path>>(
             VersionReq::parse(">=0.55.0,<0.56.0")?,
             Version::parse("0.56.0")?,
             |data_dir, _backup_dir, _locator| migrate_0_55_to_0_56(data_dir),
+        ),
+        (
+            VersionReq::parse(">=0.56.0,<0.57.0")?,
+            Version::parse("0.57.0")?,
+            |data_dir, _backup_dir, _locator| migrate_0_56_to_0_57(data_dir),
         ),
     ];
 
@@ -658,6 +664,42 @@ fn migrate_0_55_to_0_56(data_dir: &Path) -> Result<()> {
         info!("Creating '{name}' column family");
         db.create_cf(name, &rocksdb::Options::default())
             .context("failed to create system log collectors column family")?;
+    }
+    Ok(())
+}
+
+/// Migrates a database in the 0.56.x format to 0.57.0.
+///
+/// Retires every ID on the free list of the "sampling policy" family, so that
+/// no ID a policy was deleted under before the upgrade is handed out again:
+/// the Data Store and the Time Series Generator keep data under it. Each such
+/// ID becomes inactive, and the next insert takes the first ID never used.
+/// No record and no other family is read or written, and an index without a
+/// free list, an empty table's included, is left as it is.
+///
+/// A rerun is safe: once retired, the free list is empty, and a second pass
+/// finds nothing to do.
+fn migrate_0_56_to_0_57(data_dir: &Path) -> Result<()> {
+    let db_path = data_dir.join("states.db");
+    let mut opts = rocksdb::Options::default();
+    opts.create_if_missing(false);
+    opts.create_missing_column_families(false);
+    let column_families = map_names_for_existing_format(&opts, &db_path)?;
+    let db: rocksdb::OptimisticTransactionDB =
+        rocksdb::OptimisticTransactionDB::open_cf(&opts, &db_path, column_families)
+            .context("failed to open database for the 0.57.0 migration")?;
+
+    migrate_retire_sampling_policy_ids(&db)
+}
+
+/// Retires the free IDs of the "sampling policy" family in `db`.
+fn migrate_retire_sampling_policy_ids(db: &rocksdb::OptimisticTransactionDB) -> Result<()> {
+    let name = crate::tables::SAMPLING_POLICY;
+    let retired = crate::IndexedMap::new(db, name)?
+        .retire_available()
+        .with_context(|| format!("failed to retire the free IDs of '{name}'"))?;
+    if retired > 0 {
+        info!("Retired {retired} free IDs of '{name}'");
     }
     Ok(())
 }
@@ -6582,6 +6624,197 @@ mod tests {
             ))
             .unwrap();
         assert_eq!(id2, 2, "Second available id should fill the gap at 2");
+    }
+
+    /// An entry of the sampling-policy index, in the layout the 0.56 format
+    /// serializes `KeyIndex` entries in.
+    #[derive(Debug, PartialEq, serde::Deserialize, serde::Serialize)]
+    enum KeyIndexEntryV0_56 {
+        Key(Vec<u8>),
+        Index(u32),
+        Inactive(Option<u32>),
+    }
+
+    /// The sampling-policy index, in the layout the 0.56 format serializes
+    /// `KeyIndex` in.
+    #[derive(Debug, PartialEq, serde::Deserialize, serde::Serialize)]
+    struct KeyIndexV0_56 {
+        keys: Vec<KeyIndexEntryV0_56>,
+        available: u32,
+        inactive: Option<u32>,
+    }
+
+    /// Creates a `0.56.0` store whose sampling-policy family holds `index`
+    /// under the empty key and `policies` as rows.
+    fn create_v0_56_sampling_policy_store(
+        data_dir: &Path,
+        backup_dir: &Path,
+        index: &KeyIndexV0_56,
+        policies: &[crate::SamplingPolicy],
+    ) {
+        use crate::Indexable;
+
+        let db_path = data_dir.join("states.db");
+        create_states_db(&db_path, crate::tables::MAP_NAMES);
+        let mut entries = vec![(
+            Vec::new(),
+            bincode::DefaultOptions::new().serialize(index).unwrap(),
+        )];
+        entries.extend(
+            policies
+                .iter()
+                .map(|policy| (policy.indexed_key().to_vec(), policy.value())),
+        );
+        put_entries(
+            &db_path,
+            crate::tables::MAP_NAMES,
+            crate::tables::SAMPLING_POLICY,
+            &entries,
+        );
+        write_version(data_dir, "0.56.0");
+        write_version(backup_dir, "0.56.0");
+    }
+
+    /// Reads back the sampling-policy index of the store at `db_path`.
+    fn sampling_policy_index(db_path: &Path) -> KeyIndexV0_56 {
+        let bytes = raw_value(
+            db_path,
+            crate::tables::MAP_NAMES,
+            crate::tables::SAMPLING_POLICY,
+            &[],
+        )
+        .unwrap();
+        bincode::DefaultOptions::new().deserialize(&bytes).unwrap()
+    }
+
+    fn sampling_policy_v0_56(id: u32, name: &str) -> crate::SamplingPolicy {
+        crate::SamplingPolicy {
+            id,
+            name: name.to_string(),
+            kind: crate::SamplingKind::Conn,
+            interval: crate::SamplingInterval::FiveMinutes,
+            period: crate::SamplingPeriod::OneDay,
+            offset: 0,
+            src_ip: None,
+            dst_ip: None,
+            node: None,
+            column: None,
+            immutable: false,
+            creation_time: chrono::Utc::now(),
+        }
+    }
+
+    /// The 0.57 step retires every free sampling-policy ID: an index whose
+    /// entries 0..=2 are all on the free list becomes all inactive, and the
+    /// next insert takes ID 3.
+    #[test]
+    fn migration_from_v0_56_retires_free_sampling_policy_ids() {
+        use KeyIndexEntryV0_56::{Inactive, Index};
+
+        let permit = acquire_db_permit();
+        let data_dir = tempfile::tempdir().unwrap();
+        let backup_dir = tempfile::tempdir().unwrap();
+        let db_path = data_dir.path().join("states.db");
+
+        let index = KeyIndexV0_56 {
+            keys: vec![Index(1), Index(2), Index(3)],
+            available: 0,
+            inactive: None,
+        };
+        create_v0_56_sampling_policy_store(data_dir.path(), backup_dir.path(), &index, &[]);
+
+        migrate_data_dir(data_dir.path(), backup_dir.path(), None).unwrap();
+
+        let migrated = sampling_policy_index(&db_path);
+        assert_eq!(migrated.available, 3);
+        assert_eq!(migrated.keys.len(), 3);
+        assert!(
+            migrated
+                .keys
+                .iter()
+                .all(|entry| matches!(entry, Inactive(_)))
+        );
+        assert!(migrated.inactive.is_some());
+        assert_eq!(
+            read_version_file(&data_dir.path().join(VERSION_FILE_NAME)).unwrap(),
+            Version::parse(DATABASE_FORMAT_VERSION).unwrap()
+        );
+
+        // A second start finds the store current and touches nothing.
+        let before = (files_under(data_dir.path()), files_under(backup_dir.path()));
+        migrate_data_dir(data_dir.path(), backup_dir.path(), None).unwrap();
+        assert_eq!(
+            (files_under(data_dir.path()), files_under(backup_dir.path())),
+            before
+        );
+
+        let test_schema = TestSchema::new_with_dir(permit, data_dir, backup_dir);
+        let table = test_schema.store.sampling_policy_map();
+        assert_eq!(table.count().unwrap(), 0);
+        for id in 0..=2 {
+            assert!(table.get_by_id(id).unwrap().is_none());
+        }
+        assert_eq!(table.put(sampling_policy_v0_56(0, "new")).unwrap(), 3);
+    }
+
+    /// Records survive the 0.57 step under their IDs, the freed IDs between
+    /// them are retired, and `count` and iteration skip the retired ones.
+    #[test]
+    fn migration_from_v0_56_keeps_sampling_policies_and_retires_gaps() {
+        use KeyIndexEntryV0_56::{Inactive, Index, Key};
+
+        use crate::Iterable;
+
+        let permit = acquire_db_permit();
+        let data_dir = tempfile::tempdir().unwrap();
+        let backup_dir = tempfile::tempdir().unwrap();
+        let db_path = data_dir.path().join("states.db");
+
+        // ID 1 is free, then ID 3; ID 4 was deactivated.
+        let index = KeyIndexV0_56 {
+            keys: vec![
+                Key(b"a".to_vec()),
+                Index(3),
+                Key(b"c".to_vec()),
+                Index(5),
+                Inactive(None),
+            ],
+            available: 1,
+            inactive: Some(4),
+        };
+        let policies = [sampling_policy_v0_56(0, "a"), sampling_policy_v0_56(2, "c")];
+        create_v0_56_sampling_policy_store(data_dir.path(), backup_dir.path(), &index, &policies);
+
+        migrate_data_dir(data_dir.path(), backup_dir.path(), None).unwrap();
+
+        let migrated = sampling_policy_index(&db_path);
+        assert_eq!(migrated.available, 5);
+        assert_eq!(migrated.keys[0], Key(b"a".to_vec()));
+        assert_eq!(migrated.keys[2], Key(b"c".to_vec()));
+        for i in [1, 3, 4] {
+            assert!(matches!(migrated.keys[i], Inactive(_)));
+        }
+
+        let test_schema = TestSchema::new_with_dir(permit, data_dir, backup_dir);
+        let table = test_schema.store.sampling_policy_map();
+        assert_eq!(table.count().unwrap(), 2);
+        assert_eq!(
+            table.get_by_id(0).unwrap().map(|policy| policy.name),
+            Some("a".to_string())
+        );
+        assert_eq!(
+            table.get_by_id(2).unwrap().map(|policy| policy.name),
+            Some("c".to_string())
+        );
+        for id in [1, 3, 4] {
+            assert!(table.get_by_id(id).unwrap().is_none());
+        }
+        let ids: Vec<u32> = table
+            .iter(rocksdb::Direction::Forward, None)
+            .map(|policy| policy.unwrap().id)
+            .collect();
+        assert_eq!(ids, vec![0, 2]);
+        assert_eq!(table.put(sampling_policy_v0_56(0, "d")).unwrap(), 5);
     }
 
     #[test]

@@ -93,6 +93,12 @@ pub enum Kind {
 }
 
 /// Functions for the `sampling_policy` indexed map.
+///
+/// A sampling-policy ID is never reused: the Data Store keeps a policy's time
+/// series, and the Time Series Generator its checkpoint, under that ID after
+/// the policy is deleted. A policy is deleted with
+/// [`deactivate`](IndexedTable::deactivate), which retires its ID, and the
+/// recycling `remove` writers are not available for this table.
 impl<'d> IndexedTable<'d, SamplingPolicy> {
     /// Opens the `sampling policy` table in the database.
     ///
@@ -226,11 +232,12 @@ mod test {
 
     use anyhow::Result;
     use chrono::DateTime;
+    use rocksdb::Direction;
 
     use crate::test::{DbGuard, acquire_db_permit};
     use crate::types::FromKeyValue;
     use crate::{
-        Indexable, SamplingInterval, SamplingKind, SamplingPeriod, SamplingPolicy,
+        Indexable, Iterable, SamplingInterval, SamplingKind, SamplingPeriod, SamplingPolicy,
         SamplingPolicyUpdate, Store,
     };
 
@@ -309,6 +316,72 @@ mod test {
         assert_eq!(table.count().unwrap(), 1);
         let entry = table.get_by_id(id).unwrap();
         assert_eq!(entry.map(|e| e.name), Some("b".to_string()));
+    }
+
+    #[test]
+    fn deleted_id_is_not_reused() {
+        let (_permit, store) = setup_store();
+        let table = store.sampling_policy_map();
+
+        let ids: Vec<u32> = ["a", "b", "c"]
+            .into_iter()
+            .map(|name| table.put(create_sampling_policy(name)).unwrap())
+            .collect();
+        assert_eq!(ids, vec![0, 1, 2]);
+
+        table.deactivate(1).unwrap();
+        assert!(table.get_by_id(1).unwrap().is_none());
+        assert_eq!(table.put(create_sampling_policy("d")).unwrap(), 3);
+    }
+
+    #[test]
+    fn insert_after_deleting_every_policy_takes_a_new_id() {
+        let (_permit, store) = setup_store();
+        let table = store.sampling_policy_map();
+
+        for name in ["a", "b", "c"] {
+            table.put(create_sampling_policy(name)).unwrap();
+        }
+        for id in [2, 0, 1] {
+            table.deactivate(id).unwrap();
+        }
+        assert_eq!(table.count().unwrap(), 0);
+        assert_eq!(table.put(create_sampling_policy("d")).unwrap(), 3);
+    }
+
+    #[test]
+    fn deleted_name_is_reusable_under_a_new_id() {
+        let (_permit, store) = setup_store();
+        let table = store.sampling_policy_map();
+
+        let old = table.put(create_sampling_policy("a")).unwrap();
+        table.deactivate(old).unwrap();
+
+        let new = table.put(create_sampling_policy("a")).unwrap();
+        assert_ne!(new, old);
+        assert!(table.get_by_id(old).unwrap().is_none());
+        assert_eq!(
+            table.get_by_id(new).unwrap().map(|p| p.name),
+            Some("a".to_string())
+        );
+    }
+
+    #[test]
+    fn count_and_iteration_skip_deleted_ids() {
+        let (_permit, store) = setup_store();
+        let table = store.sampling_policy_map();
+
+        for name in ["a", "b", "c"] {
+            table.put(create_sampling_policy(name)).unwrap();
+        }
+        table.deactivate(1).unwrap();
+
+        assert_eq!(table.count().unwrap(), 2);
+        let ids: Vec<u32> = table
+            .iter(Direction::Forward, None)
+            .map(|policy| policy.unwrap().id)
+            .collect();
+        assert_eq!(ids, vec![0, 2]);
     }
 
     fn setup_store() -> (DbGuard<'static>, Arc<Store>) {
