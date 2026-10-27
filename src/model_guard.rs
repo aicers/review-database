@@ -34,10 +34,11 @@ use std::{
 use anyhow::{Context, Result};
 use rocksdb::{ColumnFamily, IteratorMode, OptimisticTransactionDB, Transaction};
 use serde::{Deserialize, Serialize};
+use thiserror::Error;
 
 use crate::{
     AgentKind, EXCLUSIVE, EngineDetectorRef, IndexedTable, Iterable, ModelIndicator, ModelInstance,
-    RunState, Store, TrainingDefinition, TrainingError,
+    RunId, RunState, Store, TrainingDefinition, TrainingError,
     engine_instance::agent_for_update,
     model_lifecycle::column_family,
     tables::{
@@ -82,6 +83,34 @@ impl fmt::Display for Referrer {
 pub struct SourceReference {
     pub source: String,
     pub by: Referrer,
+}
+
+/// A refusal of
+/// [`Store::remove_customer_unsupervised_records`](crate::Store::remove_customer_unsupervised_records).
+///
+/// It is returned inside the `anyhow::Error` of the call, so a caller can
+/// `downcast_ref` it. Neither can happen once the customer's nodes are
+/// removed; each makes a removal called before that fail instead of leaving
+/// a detector without its model or a run that can never complete. The
+/// refused transaction changes nothing, but the models and definitions
+/// removed before it stay removed.
+#[derive(Clone, Debug, Eq, Error, PartialEq)]
+pub enum RemovalRefused {
+    /// A detector of an applied or pending engine document names the model.
+    #[error(
+        "model {model:?} is referenced by detector {detector_id} of agent {:?} of node {}",
+        instance.agent_key,
+        instance.node_id
+    )]
+    ModelReferenced {
+        model: String,
+        instance: ModelInstance,
+        detector_id: i32,
+    },
+    /// An active run creates or replaces the model or definition, or clones
+    /// from the model.
+    #[error("model run {run_id} is active")]
+    RunActive { run_id: RunId },
 }
 
 /// The tables the records of an engine instance live in, as the detach
@@ -180,14 +209,7 @@ struct References {
 
 impl References {
     fn read(store: &Store, txn: &Txn<'_>) -> Result<Self> {
-        let engine_instances = store.states.engine_instances();
-        let mut rows = Vec::new();
-        for (instance, _) in engine_instances.scan(txn)? {
-            let key = tables::engine_instance_key(instance.node_id, &instance.agent_key);
-            if let Some(row) = engine_instances.get_for_update(txn, &key)? {
-                rows.push((instance, row));
-            }
-        }
+        let rows = Self::read_rows(store, txn)?;
         let training_definitions = store.states.training_definitions();
         let mut definitions = Vec::new();
         for scanned in training_definitions.scan(txn)? {
@@ -196,6 +218,27 @@ impl References {
             }
         }
         Ok(Self { rows, definitions })
+    }
+
+    /// Reads only the `engine instances` rows, leaving the definitions
+    /// empty.
+    fn read_rows_only(store: &Store, txn: &Txn<'_>) -> Result<Self> {
+        Ok(Self {
+            rows: Self::read_rows(store, txn)?,
+            definitions: Vec::new(),
+        })
+    }
+
+    fn read_rows(store: &Store, txn: &Txn<'_>) -> Result<Vec<(ModelInstance, Row)>> {
+        let engine_instances = store.states.engine_instances();
+        let mut rows = Vec::new();
+        for (instance, _) in engine_instances.scan(txn)? {
+            let key = tables::engine_instance_key(instance.node_id, &instance.agent_key);
+            if let Some(row) = engine_instances.get_for_update(txn, &key)? {
+                rows.push((instance, row));
+            }
+        }
+        Ok(rows)
     }
 
     /// Returns the first detector of an applied or pending document that
@@ -539,15 +582,7 @@ impl Store {
     /// that [`Store::delete_model`] refuses.
     pub(crate) fn check_model_unused(&self, txn: &Txn<'_>, model: &Model) -> Result<()> {
         let name = &model.name;
-        if let Some(instance) = &model.instance {
-            // A document names only a model of its own instance, so reading
-            // this key, even while it is absent, makes that instance's first
-            // link to the model conflict with the delete.
-            self.states.engine_instances().get_for_update(
-                txn,
-                &tables::engine_instance_key(instance.node_id, &instance.agent_key),
-            )?;
-        }
+        self.hold_instance_row(txn, model)?;
         let references = References::read(self, txn)?;
         if let Some((instance, detector_id)) =
             references.first_detector(|detector| detector.model == *name)
@@ -560,18 +595,8 @@ impl Store {
             .into());
         }
 
-        let runs = self.states.model_runs();
-        runs.last_id_for_update(txn)?;
-        for scanned in runs.scan(txn)? {
-            if !scanned.state.is_active() || !scanned.concerns(name) {
-                continue;
-            }
-            if let Some(run) = runs.get_for_update(txn, scanned.id)?
-                && run.state.is_active()
-                && run.concerns(name)
-            {
-                return Err(TrainingError::RunInProgress { run_id: run.id }.into());
-            }
+        if let Some(run_id) = self.active_run_concerning(txn, name)? {
+            return Err(TrainingError::RunInProgress { run_id }.into());
         }
 
         let indicators = column_family(self.states.db(), tables::MODEL_INDICATORS)?;
@@ -592,11 +617,76 @@ impl Store {
         Ok(())
     }
 
+    /// Refuses, within `txn` and before any write, the removal of `model`
+    /// that [`Store::remove_customer_unsupervised_records`] refuses:
+    /// `ModelReferenced`, then `RunActive`.
+    pub(crate) fn check_model_unreferenced(&self, txn: &Txn<'_>, model: &Model) -> Result<()> {
+        let name = &model.name;
+        self.hold_instance_row(txn, model)?;
+        if let Some((instance, detector_id)) = References::read_rows_only(self, txn)?
+            .first_detector(|detector| detector.model == *name)
+        {
+            return Err(RemovalRefused::ModelReferenced {
+                model: name.clone(),
+                instance: instance.clone(),
+                detector_id,
+            }
+            .into());
+        }
+        self.check_no_active_run_concerning(txn, name)
+    }
+
+    /// Refuses, within `txn` and before any write, with `RunActive` while
+    /// an active run creates or replaces `name`, or clones from it.
+    pub(crate) fn check_no_active_run_concerning(&self, txn: &Txn<'_>, name: &str) -> Result<()> {
+        if let Some(run_id) = self.active_run_concerning(txn, name)? {
+            return Err(RemovalRefused::RunActive { run_id }.into());
+        }
+        Ok(())
+    }
+
+    /// Reads the `engine instances` row of `model`'s instance for update
+    /// within `txn`, if the model has an instance.
+    fn hold_instance_row(&self, txn: &Txn<'_>, model: &Model) -> Result<()> {
+        if let Some(instance) = &model.instance {
+            // A document names only a model of its own instance, so reading
+            // this key, even while it is absent, makes that instance's first
+            // link to the model conflict with the delete.
+            self.states.engine_instances().get_for_update(
+                txn,
+                &tables::engine_instance_key(instance.node_id, &instance.agent_key),
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Returns the first active run, in id order, that creates or replaces
+    /// `name`, or clones from it, reading the run id counter for update
+    /// before scanning the runs.
+    fn active_run_concerning(&self, txn: &Txn<'_>, name: &str) -> Result<Option<RunId>> {
+        let runs = self.states.model_runs();
+        runs.last_id_for_update(txn)?;
+        for scanned in runs.scan(txn)? {
+            if !scanned.state.is_active() || !scanned.concerns(name) {
+                continue;
+            }
+            if let Some(run) = runs.get_for_update(txn, scanned.id)?
+                && run.state.is_active()
+                && run.concerns(name)
+            {
+                return Ok(Some(run.id));
+            }
+        }
+        Ok(None)
+    }
+
     /// Removes, within `txn`, the training definition `name` and every run
-    /// record whose model is `name`, for the delete of the model.
-    pub(crate) fn remove_training_records(&self, txn: &Txn<'_>, name: &str) -> Result<()> {
+    /// record whose model is `name`, for the delete of the model, returning
+    /// whether the definition existed.
+    pub(crate) fn remove_training_records(&self, txn: &Txn<'_>, name: &str) -> Result<bool> {
         let definitions = self.states.training_definitions();
-        if definitions.get_for_update(txn, name)?.is_some() {
+        let existed = definitions.get_for_update(txn, name)?.is_some();
+        if existed {
             definitions.delete(txn, name)?;
         }
         let runs = self.states.model_runs();
@@ -604,7 +694,7 @@ impl Store {
             runs.get_for_update(txn, run.id)?;
             runs.delete(txn, run.id)?;
         }
-        Ok(())
+        Ok(existed)
     }
 }
 
