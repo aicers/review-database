@@ -747,18 +747,37 @@ impl Store {
     /// Removes, within `txn`, the training definition `name` and every run
     /// record whose model is `name`, for the delete of the model, returning
     /// whether the definition existed.
-    pub(crate) fn remove_training_records(&self, txn: &Txn<'_>, name: &str) -> Result<bool> {
+    ///
+    /// With `customer_id`, a definition of another customer, which can
+    /// share the name of a model [`Store::replace_model`] stored, stays
+    /// with its runs, and `false` is returned.
+    pub(crate) fn remove_training_records(
+        &self,
+        txn: &Txn<'_>,
+        name: &str,
+        customer_id: Option<u32>,
+    ) -> Result<bool> {
         let definitions = self.states.training_definitions();
-        let existed = definitions.get_for_update(txn, name)?.is_some();
-        if existed {
-            definitions.delete(txn, name)?;
+        let Some(definition) = definitions.get_for_update(txn, name)? else {
+            self.remove_runs_of(txn, name)?;
+            return Ok(false);
+        };
+        if customer_id.is_some_and(|id| id != definition.customer_id) {
+            return Ok(false);
         }
+        definitions.delete(txn, name)?;
+        self.remove_runs_of(txn, name)?;
+        Ok(true)
+    }
+
+    /// Removes, within `txn`, every run record whose model is `name`.
+    fn remove_runs_of(&self, txn: &Txn<'_>, name: &str) -> Result<()> {
         let runs = self.states.model_runs();
         for run in runs.scan(txn)?.into_iter().filter(|run| run.model == name) {
             runs.get_for_update(txn, run.id)?;
             runs.delete(txn, run.id)?;
         }
-        Ok(existed)
+        Ok(())
     }
 }
 
@@ -2556,12 +2575,15 @@ mod tests {
 
     /// Another customer's definition sharing the model's name, which
     /// `Store::replace_model` does not check, refuses the removal while it
-    /// names the model's indicator, and stays unchanged.
+    /// names the model's indicator, and stays unchanged, with its runs,
+    /// also once the removal completes after the reference is released.
     #[test]
     fn customer_removal_refuses_an_indicator_a_same_named_foreign_definition_names() {
         let f = setup();
         let store = f.store();
         define_foreign(store, NAMED, f.other_node, None);
+        let failed = store.start_training_run(NAMED).unwrap().run.id;
+        store.fail_run(failed, "unreachable").unwrap();
         store
             .replace_model(
                 body(NAMED),
@@ -2596,6 +2618,42 @@ mod tests {
         assert!(has_indicator(store, INDICATOR));
         assert_eq!(classifier_files(store, NAMED), classifiers);
         assert_no_dangling_indicator(store);
+
+        let stored = definition(store, NAMED);
+        store
+            .update_training_definition(
+                NAMED,
+                TrainingDefinitionUpdate {
+                    method: stored.method,
+                    event_kind: stored.event_kind,
+                    sources: stored.sources,
+                    indicator: None,
+                    definition: stored.definition,
+                },
+            )
+            .unwrap();
+        let released = definition(store, NAMED);
+        let runs = store.model_runs(NAMED).unwrap();
+        assert_eq!(runs, vec![run(store, failed)]);
+        assert_eq!(
+            store
+                .remove_customer_unsupervised_records(CUSTOMER)
+                .unwrap(),
+            removed(&[NAMED], &[])
+        );
+        assert!(!has_model(store, NAMED));
+        assert!(!has_indicator(store, INDICATOR));
+        assert_eq!(definition(store, NAMED), released);
+        assert_eq!(store.model_runs(NAMED).unwrap(), runs);
+        assert_no_dangling_indicator(store);
+        assert_eq!(
+            store
+                .remove_customer_unsupervised_records(CUSTOMER)
+                .unwrap(),
+            RemovedUnsupervisedRecords::default()
+        );
+        assert_eq!(definition(store, NAMED), released);
+        assert_eq!(store.model_runs(NAMED).unwrap(), runs);
     }
 
     /// A detector of the customer's own instance naming one of its
