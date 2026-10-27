@@ -640,9 +640,10 @@ impl Store {
     /// returns the names of the indicators it checked, in name order.
     ///
     /// A definition of the model's customer, which the removal also
-    /// removes, does not hold an indicator, nor does the model's own. An
-    /// indicator the model gains after the check is not covered: the
-    /// removal deletes only what it checked or retries.
+    /// removes, does not hold an indicator; another customer's does, even
+    /// one sharing the model's name. An indicator the model gains after
+    /// the check is not covered: the removal deletes only what it checked
+    /// or retries.
     pub(crate) fn check_model_unreferenced(
         &self,
         txn: &Txn<'_>,
@@ -668,7 +669,7 @@ impl Store {
         self.check_no_active_run_concerning(txn, name)?;
         for indicator in &indicators {
             if let Some(by) = references.indicator_holder(indicator, |definition| {
-                definition.customer_id != model.customer_id && definition.name != *name
+                definition.customer_id != model.customer_id
             }) {
                 return Err(RemovalRefused::IndicatorReferenced {
                     model: name.clone(),
@@ -2551,6 +2552,50 @@ mod tests {
                 RemovedUnsupervisedRecords::default()
             );
         }
+    }
+
+    /// Another customer's definition sharing the model's name, which
+    /// `Store::replace_model` does not check, refuses the removal while it
+    /// names the model's indicator, and stays unchanged.
+    #[test]
+    fn customer_removal_refuses_an_indicator_a_same_named_foreign_definition_names() {
+        let f = setup();
+        let store = f.store();
+        define_foreign(store, NAMED, f.other_node, None);
+        store
+            .replace_model(
+                body(NAMED),
+                ModelOwner {
+                    customer_id: CUSTOMER,
+                    instance: f.engine(),
+                },
+                Utc::now(),
+                TrainedWith {
+                    run_id: 0,
+                    definition: "eps = 1.0".to_string(),
+                    sources: Vec::new(),
+                },
+            )
+            .unwrap();
+        add_indicator(store, INDICATOR, model(store, NAMED).id);
+        set_definition_indicator(store, NAMED, INDICATOR);
+        let held = (model(store, NAMED), definition(store, NAMED));
+        let classifiers = classifier_files(store, NAMED);
+
+        let before = dump(store);
+        let error = store
+            .remove_customer_unsupervised_records(CUSTOMER)
+            .unwrap_err();
+        assert_eq!(
+            error.downcast_ref::<RemovalRefused>(),
+            Some(&indicator_referenced(by_definition(NAMED)))
+        );
+        assert_eq!(dump(store), before);
+        assert_eq!((model(store, NAMED), definition(store, NAMED)), held);
+        assert_eq!(definition(store, NAMED).customer_id, OTHER_CUSTOMER);
+        assert!(has_indicator(store, INDICATOR));
+        assert_eq!(classifier_files(store, NAMED), classifiers);
+        assert_no_dangling_indicator(store);
     }
 
     /// A detector of the customer's own instance naming one of its
