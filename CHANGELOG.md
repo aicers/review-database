@@ -17,6 +17,26 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   engine document still names one of the models or a run concerning one of
   them is active, which cannot happen once the customer's nodes are removed.
 
+### Changed
+
+- **BREAKING**: An engine instance's detector ids are never reused, also after
+  the engine is removed and installed again on the same host.
+  `EngineInstanceState` has `last_detector_id`, the highest detector id any
+  document of the instance has named, kept under the instance's agent lookup
+  key, `<agent_key>.<hostname>`, so that it outlives the removal of the agent
+  and of its node. `NodeTable::update_with_engine_documents` refuses, with the
+  new `EngineDocumentError::DetectorIdRetired`, a document naming an id at
+  most `last_detector_id` that neither stored document of the instance names.
+  The engine keeps a detector's state under its id, and a new detector given
+  a removed one's id inherited it.
+- **BREAKING**: Bumped the database format to `0.58.0` (the database format
+  marker, not a crate version). The migration from `0.57.x`, and through the
+  earlier steps from every older supported format, creates the column family
+  of the detector id marks and gives every stored engine instance on a node
+  with a hostname the mark of its agent lookup key: the highest detector id
+  its applied and pending documents name, or 0. Other tables are not changed.
+  An interrupted run can be retried.
+
 ## [0.57.0] - 2026-10-27
 
 ### Added

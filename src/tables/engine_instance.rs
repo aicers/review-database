@@ -6,6 +6,13 @@
 //! instance's records writes that one key, so RocksDB's optimistic conflict
 //! check orders them. An instance without a row is not stopped, references
 //! nothing and has no statuses.
+//!
+//! Also the `detector id marks` table: the highest detector id any document
+//! of an engine instance has named, keyed by the instance's agent lookup key,
+//! `<agent_key>.<hostname>`. That key names the instance's data directory on
+//! its host, where the engine keeps each detector's state under its id, so a
+//! mark outlives the instance's row, its agent and node rows and a reinstall
+//! under the same key, as that directory does. Nothing deletes a mark.
 
 use std::{collections::BTreeMap, mem::size_of};
 
@@ -66,6 +73,11 @@ pub struct EngineInstanceState {
     pub applied: EngineDocumentRefs,
     /// The references of the agent's `draft`.
     pub pending: EngineDocumentRefs,
+    /// The highest detector id any document of the instance's agent lookup
+    /// key has named, or 0 if none has. A new detector takes an id above it:
+    /// a written document naming an id at most this that neither stored
+    /// document names is refused.
+    pub last_detector_id: i32,
 }
 
 /// A detector of an engine instance whose applied or pending document names
@@ -189,6 +201,13 @@ pub enum EngineDocumentError {
         agent_key: String,
         detector_id: i32,
     },
+    /// A written document names a detector id that is at most the
+    /// instance's `last_detector_id` and that neither stored document names.
+    #[error(
+        "detector id {detector_id} of agent {agent_key:?} was used by a removed detector; a \
+         detector id is never reused"
+    )]
+    DetectorIdRetired { agent_key: String, detector_id: i32 },
 }
 
 /// The stored record of one engine instance.
@@ -218,12 +237,17 @@ impl Row {
         statuses.retain(|id, _| applied.names_detector(*id) || pending.names_detector(*id));
     }
 
-    pub(crate) fn into_state(self, instance: ModelInstance) -> EngineInstanceState {
+    pub(crate) fn into_state(
+        self,
+        instance: ModelInstance,
+        last_detector_id: i32,
+    ) -> EngineInstanceState {
         EngineInstanceState {
             instance,
             stopped: self.stopped,
             applied: self.applied,
             pending: self.pending,
+            last_detector_id,
         }
     }
 }
@@ -234,6 +258,12 @@ pub(crate) fn key(node_id: u32, agent_key: &str) -> Vec<u8> {
     let mut key = node_id.to_be_bytes().to_vec();
     key.extend(agent_key.as_bytes());
     key
+}
+
+/// Returns the agent lookup key of an engine instance, `<agent_key>.<hostname>`,
+/// which keys its detector id mark.
+pub(crate) fn lookup_key(agent_key: &str, hostname: &str) -> String {
+    format!("{agent_key}.{hostname}")
 }
 
 fn instance_of(key: &[u8]) -> Result<ModelInstance> {
@@ -324,5 +354,49 @@ impl<'d> EngineInstances<'d> {
                 Ok((instance_of(&key)?, super::deserialize(&value)?))
             })
             .collect()
+    }
+}
+
+/// The `detector id marks` column family.
+pub(crate) struct DetectorIdMarks<'d> {
+    map: Map<'d>,
+}
+
+impl<'d> DetectorIdMarks<'d> {
+    pub(crate) fn open(db: &'d OptimisticTransactionDB) -> Option<Self> {
+        Map::open(db, super::DETECTOR_ID_MARKS).map(|map| Self { map })
+    }
+
+    /// Returns the mark of `lookup_key`, read for update within `txn`; 0 if
+    /// there is none.
+    pub(crate) fn get_for_update(
+        &self,
+        txn: &Transaction<OptimisticTransactionDB>,
+        lookup_key: &str,
+    ) -> Result<i32> {
+        txn.get_for_update_cf(self.map.cf, lookup_key.as_bytes(), EXCLUSIVE)
+            .context("cannot read detector id mark")?
+            .map_or(Ok(0), |value| super::deserialize(&value))
+    }
+
+    /// Returns the mark of `lookup_key`; 0 if there is none.
+    pub(crate) fn get(&self, lookup_key: &str) -> Result<i32> {
+        self.map
+            .get(lookup_key.as_bytes())?
+            .map_or(Ok(0), |value| super::deserialize(value.as_ref()))
+    }
+
+    /// Writes the mark of `lookup_key` within `txn`.
+    pub(crate) fn put(
+        &self,
+        txn: &Transaction<OptimisticTransactionDB>,
+        lookup_key: &str,
+        last_detector_id: i32,
+    ) -> Result<()> {
+        self.map.put_with_transaction(
+            lookup_key.as_bytes(),
+            &super::serialize(&last_detector_id)?,
+            txn,
+        )
     }
 }

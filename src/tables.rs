@@ -69,13 +69,14 @@ pub use self::customer_data_deletion_job::{
     CustomerDataDeletionStatus,
 };
 pub use self::data_source::{DataSource, DataType, Update as DataSourceUpdate};
+pub(crate) use self::engine_instance::{
+    DetectorIdMarks, EngineInstances, Row as EngineInstanceRow, key as engine_instance_key,
+    lookup_key as agent_lookup_key,
+};
 pub use self::engine_instance::{
     DetectorSourceStatus, DetectorState, DetectorStatus, EngineDetectorRef, EngineDocumentError,
     EngineDocumentRefs, EngineDocumentWrite, EngineInstanceState, ModelUse, RoundOutcome,
     SourceState,
-};
-pub(crate) use self::engine_instance::{
-    EngineInstances, Row as EngineInstanceRow, key as engine_instance_key,
 };
 pub use self::external_service::{ExternalService, ExternalServiceKind};
 pub use self::hosts::{Host, UserAgent};
@@ -167,6 +168,7 @@ pub(crate) const CUSTOMERS: &str = "customers";
 pub(super) const CUSTOMER_DELETION_JOBS: &str = "customer deletion jobs";
 pub(super) const CUSTOMER_NETWORKS: &str = "customer networks";
 pub(super) const DATA_SOURCES: &str = "data sources";
+pub(super) const DETECTOR_ID_MARKS: &str = "detector id marks";
 pub(super) const ENGINE_INSTANCES: &str = "engine instances";
 pub(super) const FILTERS: &str = "filters";
 pub(super) const HOSTS: &str = "hosts";
@@ -215,7 +217,7 @@ pub(super) const TRIAGE_RESPONSE: &str = "triage response";
 pub(super) const TRUSTED_DNS_SERVERS: &str = "trusted DNS servers";
 pub(super) const TRUSTED_USER_AGENTS: &str = "trusted user agents";
 
-pub(crate) const MAP_NAMES: [&str; 49] = [
+pub(crate) const MAP_NAMES: [&str; 50] = [
     AGENTS,
     BATCH_INFO,
     CATEGORY,
@@ -227,6 +229,7 @@ pub(crate) const MAP_NAMES: [&str; 49] = [
     CUSTOMER_DELETION_JOBS,
     CUSTOMER_NETWORKS,
     DATA_SOURCES,
+    DETECTOR_ID_MARKS,
     ENGINE_INSTANCES,
     HOSTS,
     INSTANCE_ALLOCATIONS,

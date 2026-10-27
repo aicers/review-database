@@ -1180,7 +1180,7 @@ mod tests {
             store,
             f.node,
             ENGINE,
-            None,
+            Some(vec![detector(3, "n", None)]),
             Some(vec![detector(4, "n", None), detector(5, "m", None)]),
         )
         .unwrap();
@@ -1189,7 +1189,9 @@ mod tests {
             in_use("m", engine.clone(), 5)
         );
 
-        // The applied document's detector comes first by id.
+        // The applied document's detector comes first by id. Detector 3
+        // keeps its id, which the applied document already names, and now
+        // serves `m`.
         link(
             store,
             f.node,
@@ -1702,6 +1704,10 @@ mod tests {
         assert_eq!(failed.reason.as_deref(), Some(reason));
         assert_eq!(store.model_run(populated.clone).unwrap(), None);
         assert_eq!(store.training_definition("t").unwrap(), None);
+        // The detector id mark, 1 from the detector `populate` links,
+        // outlives the detach; it is read through the node's hostname, so it
+        // reads 0 once the node is gone.
+        let node_kept = store.node_map().get_by_id(f.node).unwrap().is_some();
         assert_eq!(
             store.engine_instance_state(&engine).unwrap(),
             EngineInstanceState {
@@ -1709,6 +1715,7 @@ mod tests {
                 stopped: false,
                 applied: EngineDocumentRefs::default(),
                 pending: EngineDocumentRefs::default(),
+                last_detector_id: i32::from(node_kept),
             }
         );
         assert!(

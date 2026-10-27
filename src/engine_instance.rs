@@ -9,6 +9,11 @@
 //! removes the agent. What is here reads them, and writes the statuses and
 //! the stopped state, each in a transaction that reads the instance's agent
 //! row, so a write racing an uninstall conflicts with it.
+//!
+//! The highest detector id an instance's documents have named is kept apart,
+//! under the instance's agent lookup key, and is never removed: a detector id
+//! is never reused on an instance, also after the engine is removed and
+//! installed again on the same host.
 
 use std::collections::BTreeMap;
 
@@ -25,18 +30,21 @@ use crate::{
 
 impl Store {
     /// Returns the stored state of an engine instance; an instance with no
-    /// record is not stopped and references nothing.
+    /// record is not stopped and references nothing. Its `last_detector_id`
+    /// is the detector id mark of its agent lookup key, which outlives the
+    /// record.
     ///
     /// # Errors
     ///
     /// Returns an error if the database operation fails.
     pub fn engine_instance_state(&self, instance: &ModelInstance) -> Result<EngineInstanceState> {
+        let last_detector_id = self.states.nodes().last_detector_id(instance)?;
         Ok(self
             .states
             .engine_instances()
             .get(instance)?
             .unwrap_or_default()
-            .into_state(instance.clone()))
+            .into_state(instance.clone(), last_detector_id))
     }
 
     /// Returns the state of every engine instance with a stored record,
@@ -46,13 +54,16 @@ impl Store {
     ///
     /// Returns an error if the database operation fails.
     pub fn engine_instance_states(&self) -> Result<Vec<EngineInstanceState>> {
-        Ok(self
-            .states
+        let nodes = self.states.nodes();
+        self.states
             .engine_instances()
             .all()?
             .into_iter()
-            .map(|(instance, row)| row.into_state(instance))
-            .collect())
+            .map(|(instance, row)| {
+                let last_detector_id = nodes.last_detector_id(&instance)?;
+                Ok(row.into_state(instance, last_detector_id))
+            })
+            .collect()
     }
 
     /// Returns the detectors whose applied or pending document names the
@@ -233,8 +244,8 @@ mod tests {
     use super::*;
     use crate::{
         AgentStatus, DetectorSourceStatus, DetectorState, EngineDetectorRef, EngineDocumentRefs,
-        EngineDocumentWrite, ModelIndicator, ModelOwner, Node, RoundOutcome, SourceState,
-        TrainedWith,
+        EngineDocumentWrite, ModelIndicator, ModelOwner, Node, NodeProfile, RoundOutcome,
+        SourceState, TrainedWith,
         test::{DbGuard, acquire_db_permit},
     };
 
@@ -289,12 +300,27 @@ mod tests {
 
     /// Inserts a node named `name` with `agents`, returning it as stored.
     fn insert_node(store: &Store, name: &str, agents: Vec<Agent>) -> Node {
+        insert_node_with_profiles(store, name, None, None, agents)
+    }
+
+    /// Inserts a node named `name` whose applied profile has `hostname`.
+    fn insert_node_at(store: &Store, name: &str, hostname: &str, agents: Vec<Agent>) -> Node {
+        insert_node_with_profiles(store, name, Some(profile(hostname)), None, agents)
+    }
+
+    fn insert_node_with_profiles(
+        store: &Store,
+        name: &str,
+        profile: Option<NodeProfile>,
+        profile_draft: Option<NodeProfile>,
+        agents: Vec<Agent>,
+    ) -> Node {
         let mut node = Node {
             id: 0,
             name: name.to_string(),
             name_draft: None,
-            profile: None,
-            profile_draft: None,
+            profile,
+            profile_draft,
             agents,
             external_services: Vec::new(),
             creation_time: at(0),
@@ -304,6 +330,14 @@ mod tests {
             agent.node_id = node.id;
         }
         node
+    }
+
+    fn profile(hostname: &str) -> NodeProfile {
+        NodeProfile {
+            customer_id: 1,
+            description: String::new(),
+            hostname: hostname.to_string(),
+        }
     }
 
     fn stored_node(store: &Store, id: u32) -> Node {
@@ -457,6 +491,7 @@ mod tests {
             stopped: false,
             applied: EngineDocumentRefs::default(),
             pending: EngineDocumentRefs::default(),
+            last_detector_id: 0,
         }
     }
 
@@ -580,7 +615,8 @@ mod tests {
             | EngineDocumentError::StaleDocument { agent_key }
             | EngineDocumentError::RequiresEngineDocuments { agent_key }
             | EngineDocumentError::DuplicateDetectorId { agent_key, .. }
-            | EngineDocumentError::UnknownDetector { agent_key, .. } => agent_key.as_str(),
+            | EngineDocumentError::UnknownDetector { agent_key, .. }
+            | EngineDocumentError::DetectorIdRetired { agent_key, .. } => agent_key.as_str(),
         }));
         assert_eq!(stored_node(store, node.id), *node);
         assert_eq!(store.engine_instance_states().unwrap(), states);
@@ -1100,6 +1136,157 @@ mod tests {
         );
     }
 
+    /// The references of the detectors `ids`, each serving the model
+    /// `<prefix><id>`.
+    fn detectors(prefix: &str, ids: &[i32]) -> EngineDocumentRefs {
+        refs(
+            ids.iter()
+                .map(|id| detector(*id, &format!("{prefix}{id}"), None))
+                .collect(),
+        )
+    }
+
+    /// Returns `node` with `ENGINE` applying, and drafting, the detectors
+    /// `ids`, each serving the model `<prefix><id>`.
+    fn apply_detectors(store: &Store, node: &Node, prefix: &str, ids: &[i32]) -> Result<Node> {
+        let detectors = detectors(prefix, ids);
+        let doc = format!("ids = {ids:?}");
+        let new = with_draft(&with_config(node, ENGINE, &doc), ENGINE, &doc);
+        update_with_documents(
+            store,
+            node,
+            &new,
+            &[write(ENGINE, Some(detectors.clone()), Some(detectors))],
+        )
+    }
+
+    /// Stores the models `<prefix><id>` of `ENGINE` of node `node_id`.
+    fn add_detector_models(store: &Store, node_id: u32, prefix: &str, ids: &[i32]) {
+        for id in ids {
+            add_model(store, &format!("{prefix}{id}"), instance(node_id, ENGINE));
+        }
+    }
+
+    fn last_detector_id(store: &Store, node_id: u32) -> i32 {
+        store
+            .engine_instance_state(&instance(node_id, ENGINE))
+            .unwrap()
+            .last_detector_id
+    }
+
+    /// An engine removed and installed again on the same host under the same
+    /// key, through a new node, continues from the detector id mark its
+    /// removed agent left, while the same key on another host has its own.
+    #[test]
+    fn a_reinstalled_engine_keeps_its_detector_id_mark() {
+        const HOST: &str = "node1.example.com";
+        let t = setup_store();
+        let store = &t.store;
+        let node = insert_node_at(store, "node", HOST, agents());
+        add_detector_models(store, node.id, "m", &[1, 2, 3, 4]);
+        let node = apply_detectors(store, &node, "m", &[1, 2, 3, 4]).unwrap();
+        assert_eq!(last_detector_id(store, node.id), 4);
+
+        // The removal finalizer's path: the agent row goes, with its record,
+        // then the node.
+        let removed = without_agent(&node, ENGINE);
+        update(store, &node, &removed).unwrap();
+        let engine = instance(node.id, ENGINE);
+        assert_eq!(
+            store.engine_instance_state(&engine).unwrap(),
+            EngineInstanceState {
+                last_detector_id: 4,
+                ..empty_state(engine.clone())
+            }
+        );
+        assert!(
+            store
+                .engine_instance_states()
+                .unwrap()
+                .iter()
+                .all(|state| state.instance != engine)
+        );
+        store.node_map().remove(node.id).unwrap();
+        assert_eq!(last_detector_id(store, node.id), 0, "the node is gone");
+
+        let other = insert_node_at(store, "other", "node2.example.com", agents());
+        let reinstalled = insert_node_at(store, "reinstalled", HOST, agents());
+        let engine = instance(reinstalled.id, ENGINE);
+        assert_eq!(
+            store.engine_instance_state(&engine).unwrap(),
+            EngineInstanceState {
+                last_detector_id: 4,
+                ..empty_state(engine.clone())
+            }
+        );
+        add_detector_models(store, reinstalled.id, "n", &[1, 5]);
+        assert_refused(
+            store,
+            &reinstalled,
+            &with_config(&reinstalled, ENGINE, "ids = [1]"),
+            &[write(ENGINE, Some(detectors("n", &[1])), None)],
+            &EngineDocumentError::DetectorIdRetired {
+                agent_key: ENGINE.to_string(),
+                detector_id: 1,
+            },
+        );
+        apply_detectors(store, &reinstalled, "n", &[5]).unwrap();
+        assert_eq!(last_detector_id(store, reinstalled.id), 5);
+
+        // The same key on another host has its own mark.
+        assert_eq!(last_detector_id(store, other.id), 0);
+        add_detector_models(store, other.id, "o", &[1]);
+        apply_detectors(store, &other, "o", &[1]).unwrap();
+        assert_eq!(last_detector_id(store, other.id), 1);
+        assert_eq!(last_detector_id(store, reinstalled.id), 5);
+    }
+
+    /// An agent added again under the same key on the same node continues
+    /// from its mark, kept under the draft hostname of a node with no applied
+    /// profile, and a node with no hostname keeps no mark.
+    #[test]
+    fn a_detector_id_mark_survives_reinstalling_the_agent() {
+        let t = setup_store();
+        let store = &t.store;
+        let node = insert_node_with_profiles(
+            store,
+            "node",
+            None,
+            Some(profile("draft.example.com")),
+            agents(),
+        );
+        add_detector_models(store, node.id, "m", &[1, 2]);
+        let node = apply_detectors(store, &node, "m", &[1, 2]).unwrap();
+        assert_eq!(last_detector_id(store, node.id), 2);
+
+        let removed = without_agent(&node, ENGINE);
+        update(store, &node, &removed).unwrap();
+        let mut readded = removed.clone();
+        readded
+            .agents
+            .push(agent(ENGINE, AgentKind::Unsupervised, None, None));
+        update(store, &removed, &readded).unwrap();
+        let readded = stored_node(store, node.id);
+        assert_eq!(last_detector_id(store, node.id), 2);
+        add_detector_models(store, node.id, "n", &[1, 3]);
+        let error = apply_detectors(store, &readded, "n", &[1, 3]).unwrap_err();
+        assert_eq!(
+            engine_error(&error),
+            &EngineDocumentError::DetectorIdRetired {
+                agent_key: ENGINE.to_string(),
+                detector_id: 1,
+            }
+        );
+        apply_detectors(store, &readded, "n", &[3]).unwrap();
+        assert_eq!(last_detector_id(store, node.id), 3);
+
+        let hostless = insert_node(store, "hostless", agents());
+        add_detector_models(store, hostless.id, "h", &[1, 2]);
+        let hostless = apply_detectors(store, &hostless, "h", &[2]).unwrap();
+        apply_detectors(store, &hostless, "h", &[1]).unwrap();
+        assert_eq!(last_detector_id(store, hostless.id), 0);
+    }
+
     /// An uninstall whose cleanup deleted the record, and a stop recorded
     /// for the instance before the uninstall commits, conflict: the
     /// uninstall retries and no record is left.
@@ -1239,6 +1426,104 @@ mod tests {
             store.engine_instance_state(&engine).unwrap().pending,
             refs(vec![detector(1, "m1", None)])
         );
+    }
+
+    #[test]
+    fn a_detector_id_is_never_reused() {
+        let t = setup_store();
+        let store = &t.store;
+        let node = insert_node_at(store, "node", "node1.example.com", agents());
+        add_detector_models(store, node.id, "m", &[1, 2, 3, 4, 5]);
+        let engine = instance(node.id, ENGINE);
+        let applied = |ids: &[i32]| detectors("m", ids);
+
+        let node = apply_detectors(store, &node, "m", &[1, 2, 3]).unwrap();
+        let node = apply_detectors(store, &node, "m", &[1, 2]).unwrap();
+        assert_eq!(last_detector_id(store, node.id), 3);
+
+        // A new detector 3 is refused, in either slot.
+        let retired = EngineDocumentError::DetectorIdRetired {
+            agent_key: ENGINE.to_string(),
+            detector_id: 3,
+        };
+        let configured = with_config(&node, ENGINE, "ids = [1, 2, 3]");
+        assert_refused(
+            store,
+            &node,
+            &configured,
+            &[write(ENGINE, Some(applied(&[1, 2, 3])), None)],
+            &retired,
+        );
+        let drafted = with_draft(&node, ENGINE, "ids = [3]");
+        assert_refused(
+            store,
+            &node,
+            &drafted,
+            &[write(ENGINE, None, Some(applied(&[3])))],
+            &retired,
+        );
+        let error = update_with_documents(
+            store,
+            &node,
+            &drafted,
+            &[write(ENGINE, None, Some(applied(&[3])))],
+        )
+        .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "detector id 3 of agent {ENGINE:?} was used by a removed detector; a detector \
+                 id is never reused"
+            )
+        );
+
+        let node = apply_detectors(store, &node, "m", &[1, 2, 4]).unwrap();
+        assert_eq!(last_detector_id(store, node.id), 4);
+        let state = store.engine_instance_state(&engine).unwrap();
+        assert_eq!(state.applied, applied(&[1, 2, 4]));
+        assert_eq!(
+            store
+                .engine_instance_states()
+                .unwrap()
+                .iter()
+                .find(|state| state.instance == engine)
+                .unwrap()
+                .last_detector_id,
+            4
+        );
+
+        // The mark counts drafts too.
+        let draft = |node: &Node, ids: &[i32]| {
+            let new = with_draft(node, ENGINE, &format!("ids = {ids:?}"));
+            update_with_documents(
+                store,
+                node,
+                &new,
+                &[write(ENGINE, None, Some(applied(ids)))],
+            )
+        };
+        let node = draft(&node, &[1, 2, 4, 5]).unwrap();
+        assert_eq!(last_detector_id(store, node.id), 5);
+        let node = draft(&node, &[1, 2, 4]).unwrap();
+        assert_eq!(last_detector_id(store, node.id), 5);
+        let error = draft(&node, &[1, 2, 4, 5]).unwrap_err();
+        assert_eq!(
+            engine_error(&error),
+            &EngineDocumentError::DetectorIdRetired {
+                agent_key: ENGINE.to_string(),
+                detector_id: 5,
+            }
+        );
+
+        // Detector 2 leaves the draft but stays in the config: it is the same
+        // detector, and the draft can name it again.
+        let node = draft(&node, &[1, 4]).unwrap();
+        let node = draft(&node, &[1, 2, 4]).unwrap();
+        assert_eq!(
+            store.engine_instance_state(&engine).unwrap().pending,
+            applied(&[1, 2, 4])
+        );
+        assert_eq!(last_detector_id(store, node.id), 5);
     }
 
     #[test]
