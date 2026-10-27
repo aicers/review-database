@@ -1462,6 +1462,40 @@ mod test {
         assert_eq!(policy.data_store.as_deref(), Some("ds-b"));
     }
 
+    /// An assignment committed while the removal of its generator is in
+    /// flight, after the removal found the policies to clear, makes the
+    /// removal retry and clear it too.
+    #[test]
+    fn an_assignment_racing_the_generator_removal_is_cleared() {
+        use std::cell::Cell;
+
+        let f = setup();
+        let id = f.insert("a");
+        f.table().fix(id).unwrap();
+        let stored = f.store.node_map().get_by_id(f.node).unwrap().unwrap().0;
+        let mut without = stored.clone();
+        without.agents.retain(|agent| agent.key != GENERATOR);
+
+        let attempts = Cell::new(0);
+        let mut nodes = f.store.node_map();
+        nodes.set_before_commit_hook(Some(Box::new(|| {
+            attempts.set(attempts.get() + 1);
+            if attempts.get() == 1 {
+                f.table().assign(id, Some(&f.generator()), false)?;
+            }
+            Ok(())
+        })));
+        nodes
+            .update(f.node, &stored.into(), &without.into())
+            .unwrap();
+        drop(nodes);
+
+        assert_eq!(attempts.get(), 2);
+        let policy = f.policy(id);
+        assert_eq!(policy.assignee, None);
+        assert_eq!(policy.data_store.as_deref(), Some("ds-a"));
+    }
+
     /// Stores a training definition `name` on the Unsupervised Engine of
     /// `node` that lists `source`.
     fn define(f: &Fixture, name: &str, method: ModelMethod, source: &str) {

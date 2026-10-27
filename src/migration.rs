@@ -721,8 +721,10 @@ fn migrate_retire_sampling_policy_ids(db: &rocksdb::OptimisticTransactionDB) -> 
 /// into the 0.57 one, as step 2 of [`migrate_0_56_to_0_57`] describes.
 ///
 /// A record is read as the 0.57 layout first. A 0.56 record never decodes as
-/// one: the 0.57 `state` is read where the 0.56 `creation_time` string's
-/// length is, and no RFC 3339 timestamp is short enough to be a variant.
+/// one: the 0.57 `customer_id` is read from the 0.56 `immutable`, and the
+/// `state` after it from the `creation_time` string's length if `immutable`
+/// is false, or from its first character if it is true. No RFC 3339
+/// timestamp's length or leading digit is small enough to be a variant.
 fn migrate_sampling_policy_records_v0_57(db: &rocksdb::OptimisticTransactionDB) -> Result<()> {
     use crate::Indexable;
 
