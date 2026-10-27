@@ -44,7 +44,8 @@ pub use self::column_statistics::*;
 pub use self::event::{Event, EventDb, EventKind, EventMessage, PutOutcome, ThreatLevel};
 pub use self::migration::{migrate_data_dir, write_version_markers};
 pub use self::model::{Digest, Model};
-pub use self::model_guard::{Referrer, SourceReference};
+pub use self::model_guard::{Referrer, RemovalRefused, SourceReference};
+pub use self::model_lifecycle::RemovedUnsupervisedRecords;
 pub use self::scores::Scores;
 use self::tables::StateDb;
 pub use self::tables::{

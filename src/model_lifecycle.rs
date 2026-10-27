@@ -54,6 +54,7 @@
 //! file is gone.
 
 use std::{
+    collections::BTreeSet,
     ops::Deref,
     sync::{MutexGuard, PoisonError},
 };
@@ -67,9 +68,9 @@ use rocksdb::{
 use tracing::warn;
 
 use crate::{
-    BatchInfo, CsvColumnExtraConfig as CsvColumnExtra, EXCLUSIVE, IndexedMap, ModelIndicator,
-    ModelOwner, PreviousTraining, PreviousTrainingResults, ReplacedModel, Scores, Store,
-    TrainedWith, UniqueKey, UpdateClusterRequest, classifier_fs, collections::Indexed,
+    BatchInfo, CsvColumnExtraConfig as CsvColumnExtra, EXCLUSIVE, IndexedMap, Iterable,
+    ModelIndicator, ModelOwner, PreviousTraining, PreviousTrainingResults, ReplacedModel, Scores,
+    Store, TrainedWith, UniqueKey, UpdateClusterRequest, classifier_fs, collections::Indexed,
     model::ClusteringMethod, tables, types::FromKeyValue,
 };
 
@@ -128,6 +129,17 @@ impl<'a> Deref for ModelTransaction<'a> {
     fn deref(&self) -> &Txn<'a> {
         &self.0
     }
+}
+
+/// The models and training definitions
+/// [`Store::remove_customer_unsupervised_records`] removed.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct RemovedUnsupervisedRecords {
+    /// The names of the removed models, ascending.
+    pub models: Vec<String>,
+    /// The names of the removed training definitions, ascending, those
+    /// removed with their models included.
+    pub definitions: Vec<String>,
 }
 
 /// The work left after the transaction of a replace commits.
@@ -507,6 +519,141 @@ impl Store {
         }
     }
 
+    /// Removes every Unsupervised Engine model and training definition of a
+    /// customer, with everything stored for them.
+    ///
+    /// It is for the deletion of the customer only, called after the
+    /// customer's nodes are removed, and skips guards that hold a model or
+    /// a definition in use: [`Store::delete_model`]'s `IndicatorInUse`, and
+    /// [`Store::remove_training_definition`]'s `HasModel`. Within one
+    /// customer those can hold each other, so that no order of guarded calls
+    /// is sure to finish.
+    ///
+    /// Each model whose `customer_id` is `customer_id`, in name order, is
+    /// removed in a transaction of its own, as [`Store::delete_model`]
+    /// removes it: the record, its rows in every per-model and
+    /// previous-result column family, its indicators, its training
+    /// definition and every run record whose model is its name; after that
+    /// commits, its classifier directory. Then each remaining training
+    /// definition of the customer is removed in a transaction of its own,
+    /// with every run record whose model is its name. A model or definition
+    /// removed concurrently is skipped. An indicator removed with its model
+    /// may still be named by another definition of the customer until that
+    /// definition's transaction commits; the call removes every such
+    /// definition before it returns. Clone runs from a removed model that
+    /// created another customer's model stay with that model. Calling it
+    /// again, or for a customer without records, changes nothing.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`RemovalRefused`](crate::RemovalRefused) inside the error
+    /// before the transaction of the model or definition it concerns
+    /// commits; what earlier transactions removed stays removed, and a later
+    /// call continues from there:
+    ///
+    /// - `ModelReferenced` while a detector of any instance's applied or
+    ///   pending engine document names the model, naming the first such
+    ///   detector in node id, agent key, then detector id order;
+    /// - `RunActive` while a run that creates or replaces the model or
+    ///   definition, or clones from the model, is active, such as a clone
+    ///   of another customer from the model.
+    ///
+    /// Neither can happen once the customer's nodes are removed. Returns an
+    /// error if a database operation fails. A failure to remove a
+    /// classifier directory is logged, not returned: the commit has already
+    /// taken effect.
+    pub fn remove_customer_unsupervised_records(
+        &self,
+        customer_id: u32,
+    ) -> Result<RemovedUnsupervisedRecords> {
+        let mut models = BTreeSet::new();
+        for model in self.model_map().iter(rocksdb::Direction::Forward, None) {
+            let model = model?;
+            if model.customer_id == customer_id {
+                models.insert(model.name);
+            }
+        }
+
+        let mut removed_models = Vec::new();
+        let mut removed_definitions = BTreeSet::new();
+        let files = self.lock_model_files();
+        for name in models {
+            let Some(had_definition) = self.remove_customer_model(&files, &name, customer_id)?
+            else {
+                continue;
+            };
+            if had_definition {
+                removed_definitions.insert(name.clone());
+            }
+            removed_models.push(name);
+        }
+        drop(files);
+
+        let definitions = self.states.training_definitions();
+        for definition in definitions.all()? {
+            if definition.customer_id != customer_id {
+                continue;
+            }
+            let name = definition.name;
+            let removed = self.write_training(|txn| {
+                let Some(definition) = definitions.get_for_update(txn, &name)? else {
+                    return Ok(false);
+                };
+                if definition.customer_id != customer_id {
+                    return Ok(false);
+                }
+                self.check_no_active_run_concerning(txn, &name)?;
+                self.remove_training_records(txn, &name)
+            })?;
+            if removed {
+                removed_definitions.insert(name);
+            }
+        }
+
+        Ok(RemovedUnsupervisedRecords {
+            models: removed_models,
+            definitions: removed_definitions.into_iter().collect(),
+        })
+    }
+
+    /// Removes the model `name` of `customer_id` for
+    /// [`Store::remove_customer_unsupervised_records`], returning whether
+    /// its training definition existed, or `None` if no model of the
+    /// customer has the name.
+    fn remove_customer_model(
+        &self,
+        files: &ModelFilesGuard<'_>,
+        name: &str,
+        customer_id: u32,
+    ) -> Result<Option<bool>> {
+        files.check(self)?;
+        let models = self.model_map();
+        let db = self.states.db();
+        loop {
+            let txn = self.model_transaction();
+            let Some(record) = models.load_model_by_name_in_transaction(name, &txn)? else {
+                return Ok(None);
+            };
+            if record.customer_id != customer_id {
+                return Ok(None);
+            }
+            self.check_model_unreferenced(&txn, &record)?;
+            models.remove_model_with_transaction(record.id, &txn)?;
+            delete_model_rows(db, &txn, record.id)?;
+            let had_definition = self.remove_training_records(&txn, name)?;
+            #[cfg(test)]
+            self.run_model_files_hook(ModelFilesPoint::BeforeCommit)?;
+            if txn.commit_or_retry()? {
+                #[cfg(test)]
+                self.run_model_files_hook(ModelFilesPoint::AfterCommit)?;
+                if let Err(e) = self.classifier_fm.delete_model_dir(record.id) {
+                    warn!("model {name:?} is deleted, but its classifier files remain: {e}");
+                }
+                return Ok(Some(had_definition));
+            }
+        }
+    }
+
     /// Applies an analysis round's cluster updates to the model with the
     /// given id, once per classification.
     ///
@@ -833,7 +980,9 @@ mod tests {
 
     use super::*;
     use crate::{
-        ColumnTimeSeries, ModelInstance, OutlierInfo,
+        ColumnTimeSeries, EngineDetectorRef, EngineDocumentRefs, ModelInstance, ModelMethod,
+        ModelRun, OutlierInfo, RemovalRefused, RunId, RunKind, RunState, TrainingDefinition,
+        TrainingError,
         test::{DbGuard, acquire_db_permit},
         types::{ModelBatchInfo, ModelScores},
     };
@@ -1960,6 +2109,387 @@ mod tests {
         assert!(dir.is_file());
     }
 
+    /// The customer [`owner`] does not belong to.
+    const OTHER_CUSTOMER: u32 = 2;
+
+    fn other_owner() -> ModelOwner {
+        ModelOwner {
+            customer_id: OTHER_CUSTOMER,
+            instance: ModelInstance {
+                node_id: 3,
+                agent_key: "unsupervised@host-b".to_string(),
+            },
+        }
+    }
+
+    fn insert_for(store: &Store, name: &str, classifier: &[u8], owner: ModelOwner) -> u32 {
+        let replaced = store
+            .replace_model(
+                body(name, classifier, 1),
+                owner,
+                at(100),
+                trained(1, "eps = 5.0"),
+            )
+            .unwrap();
+        assert!(replaced.inserted);
+        replaced.id
+    }
+
+    fn insert_indicator(store: &Store, name: &str, model_id: u32) {
+        store
+            .model_indicator_map()
+            .insert(ModelIndicator {
+                name: name.to_string(),
+                model_id,
+                ..ModelIndicator::default()
+            })
+            .unwrap();
+    }
+
+    /// Commits the writes of `write` in one transaction, past every guard.
+    fn write_raw(store: &Store, write: impl FnOnce(&Txn<'_>)) {
+        let txn = store.states.db().transaction();
+        write(&txn);
+        txn.commit().unwrap();
+    }
+
+    fn put_definition(store: &Store, name: &str, owner: &ModelOwner, indicator: Option<&str>) {
+        let definition = TrainingDefinition {
+            name: name.to_string(),
+            customer_id: owner.customer_id,
+            instance: Some(owner.instance.clone()),
+            method: ModelMethod::Multidimension,
+            event_kind: "http".to_string(),
+            sources: vec!["piglet.host".to_string()],
+            indicator: indicator.map(str::to_string),
+            definition: "eps = 5.0".to_string(),
+            cloning: false,
+            last_run: None,
+            created_at: at(10),
+            updated_at: at(10),
+        };
+        write_raw(store, |txn| {
+            store
+                .states
+                .training_definitions()
+                .put(txn, &definition)
+                .unwrap();
+        });
+    }
+
+    fn put_run(
+        store: &Store,
+        id: RunId,
+        kind: RunKind,
+        model: &str,
+        instance: &ModelInstance,
+        state: RunState,
+    ) {
+        let run = ModelRun {
+            id,
+            kind,
+            model: model.to_string(),
+            instance: instance.clone(),
+            state,
+            reason: None,
+            requested_at: at(20),
+            updated_at: at(20),
+        };
+        write_raw(store, |txn| {
+            store.states.model_runs().put(txn, &run).unwrap();
+        });
+    }
+
+    fn clone_from(source: &str) -> RunKind {
+        RunKind::Clone {
+            source: source.to_string(),
+            strip_events: true,
+        }
+    }
+
+    /// Every entry of every model family but the key index of an indexed
+    /// one, which keeps the ids a removal frees.
+    fn model_records(store: &Store) -> Vec<(&'static str, Entries)> {
+        model_families(store)
+            .into_iter()
+            .map(|(family, entries)| {
+                let records = entries.into_iter().filter(|(key, _)| !key.is_empty());
+                (family, records.collect())
+            })
+            .collect()
+    }
+
+    /// Every record of an Unsupervised Engine model or training definition:
+    /// the model families, the training definitions, the runs and the
+    /// classifier files.
+    type UnsupervisedRecords = (
+        Vec<(&'static str, Entries)>,
+        Entries,
+        Entries,
+        Vec<(PathBuf, Vec<u8>)>,
+    );
+
+    fn unsupervised_records(store: &Store) -> UnsupervisedRecords {
+        (
+            model_records(store),
+            entries(store, tables::TRAINING_DEFINITIONS),
+            entries(store, tables::MODEL_RUNS),
+            classifier_files(store),
+        )
+    }
+
+    fn removed(models: &[&str], definitions: &[&str]) -> RemovedUnsupervisedRecords {
+        RemovedUnsupervisedRecords {
+            models: models.iter().map(ToString::to_string).collect(),
+            definitions: definitions.iter().map(ToString::to_string).collect(),
+        }
+    }
+
+    fn refusal(error: &anyhow::Error) -> &RemovalRefused {
+        error.downcast_ref::<RemovalRefused>().unwrap()
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn customer_removal_removes_models_and_definitions_that_hold_each_other() {
+        let ts = setup_store();
+        let store = &ts.store;
+
+        // Another customer's model, cloned from alpha, with its definition,
+        // indicator, training run and the clone run.
+        let other = insert_for(store, "other", b"other", other_owner());
+        add_round_rows(store, other, 40);
+        insert_indicator(store, "other indicator", other);
+        put_definition(store, "other", &other_owner(), Some("other indicator"));
+        put_run(
+            store,
+            1,
+            clone_from("alpha"),
+            "other",
+            &owner().instance,
+            RunState::Succeeded,
+        );
+        put_run(
+            store,
+            2,
+            RunKind::Train,
+            "other",
+            &other_owner().instance,
+            RunState::Succeeded,
+        );
+        let before = unsupervised_records(store);
+
+        // Alpha has every per-model row, current and previous, and
+        // classifier files of two generations; its definition names beta's
+        // indicator, and beta's definition names alpha's.
+        let alpha = insert(store, "alpha", b"first");
+        add_round_rows(store, alpha, 10);
+        replace(store, "alpha", b"second", 3).unwrap();
+        add_round_rows(store, alpha, 20);
+        insert_indicator(store, "alpha indicator", alpha);
+        let beta = insert(store, "beta", b"beta");
+        insert_indicator(store, "beta indicator", beta);
+        put_definition(store, "alpha", &owner(), Some("beta indicator"));
+        put_definition(store, "beta", &owner(), Some("alpha indicator"));
+        put_definition(store, "gamma", &owner(), None);
+        put_run(
+            store,
+            3,
+            RunKind::Train,
+            "gamma",
+            &owner().instance,
+            RunState::Failed,
+        );
+        put_run(
+            store,
+            4,
+            RunKind::Train,
+            "alpha",
+            &owner().instance,
+            RunState::Succeeded,
+        );
+        for family in MODEL_FAMILIES {
+            if family == tables::MODELS || family == tables::MODEL_INDICATORS {
+                continue;
+            }
+            assert_ne!(rows_of(store, family, alpha), Entries::new(), "{family}");
+        }
+        assert_eq!(generations(store, alpha), HashSet::from([1, 2]));
+        assert_eq!(generations(store, beta), HashSet::from([1]));
+
+        // The guarded calls hold each other.
+        assert!(matches!(
+            store
+                .delete_model("alpha")
+                .unwrap_err()
+                .downcast_ref::<TrainingError>(),
+            Some(TrainingError::IndicatorInUse { .. })
+        ));
+        assert!(matches!(
+            store
+                .remove_training_definition("beta")
+                .unwrap_err()
+                .downcast_ref::<TrainingError>(),
+            Some(TrainingError::HasModel { .. })
+        ));
+
+        assert_eq!(
+            store.remove_customer_unsupervised_records(1).unwrap(),
+            removed(&["alpha", "beta"], &["alpha", "beta", "gamma"])
+        );
+        for id in [alpha, beta] {
+            for family in MODEL_FAMILIES {
+                assert_eq!(rows_of(store, family, id), Entries::new(), "{family}");
+            }
+            assert!(!model_dir(store, id).exists());
+        }
+        assert_eq!(unsupervised_records(store), before);
+
+        assert_eq!(
+            store.remove_customer_unsupervised_records(1).unwrap(),
+            RemovedUnsupervisedRecords::default()
+        );
+        assert_eq!(unsupervised_records(store), before);
+    }
+
+    #[test]
+    fn customer_removal_refuses_a_model_an_engine_document_references() {
+        let ts = setup_store();
+        let store = &ts.store;
+        insert(store, "alpha", b"alpha");
+        insert(store, "beta", b"beta");
+        put_definition(store, "beta", &owner(), None);
+        put_definition(store, "gamma", &owner(), None);
+        let key =
+            tables::engine_instance_key(owner().instance.node_id, &owner().instance.agent_key);
+        let row = tables::EngineInstanceRow {
+            pending: EngineDocumentRefs {
+                detectors: vec![EngineDetectorRef {
+                    id: 7,
+                    model: "beta".to_string(),
+                    sources: Vec::new(),
+                    indicator: None,
+                }],
+            },
+            ..tables::EngineInstanceRow::default()
+        };
+        write_raw(store, |txn| {
+            store
+                .states
+                .engine_instances()
+                .put(txn, &key, &row)
+                .unwrap();
+        });
+
+        let error = store.remove_customer_unsupervised_records(1).unwrap_err();
+        assert_eq!(
+            refusal(&error),
+            &RemovalRefused::ModelReferenced {
+                model: "beta".to_string(),
+                instance: owner().instance,
+                detector_id: 7,
+            }
+        );
+        assert!(store.model_map().load_model_by_name("alpha").is_err());
+        assert!(store.model_map().load_model_by_name("beta").is_ok());
+        assert!(store.training_definition("beta").unwrap().is_some());
+        assert!(store.training_definition("gamma").unwrap().is_some());
+
+        write_raw(store, |txn| {
+            store.states.engine_instances().delete(txn, &key).unwrap();
+        });
+        assert_eq!(
+            store.remove_customer_unsupervised_records(1).unwrap(),
+            removed(&["beta"], &["beta", "gamma"])
+        );
+        for (family, records) in model_records(store) {
+            assert_eq!(records, Entries::new(), "{family}");
+        }
+        assert_eq!(classifier_files(store), Vec::new());
+    }
+
+    #[test]
+    fn customer_removal_refuses_while_a_run_concerning_a_record_is_active() {
+        let ts = setup_store();
+        let store = &ts.store;
+        insert(store, "alpha", b"alpha");
+        put_definition(store, "gamma", &owner(), None);
+        // Another customer's clone from alpha, performed by alpha's
+        // instance, and a training run of gamma.
+        put_definition(store, "target", &other_owner(), None);
+        put_run(
+            store,
+            1,
+            clone_from("alpha"),
+            "target",
+            &owner().instance,
+            RunState::Requested,
+        );
+        put_run(
+            store,
+            2,
+            RunKind::Train,
+            "gamma",
+            &owner().instance,
+            RunState::Started,
+        );
+
+        let error = store.remove_customer_unsupervised_records(1).unwrap_err();
+        assert_eq!(refusal(&error), &RemovalRefused::RunActive { run_id: 1 });
+        assert!(store.model_map().load_model_by_name("alpha").is_ok());
+
+        put_run(
+            store,
+            1,
+            clone_from("alpha"),
+            "target",
+            &owner().instance,
+            RunState::Failed,
+        );
+        let error = store.remove_customer_unsupervised_records(1).unwrap_err();
+        assert_eq!(refusal(&error), &RemovalRefused::RunActive { run_id: 2 });
+        assert!(store.model_map().load_model_by_name("alpha").is_err());
+        assert!(store.training_definition("gamma").unwrap().is_some());
+
+        put_run(
+            store,
+            2,
+            RunKind::Train,
+            "gamma",
+            &owner().instance,
+            RunState::Failed,
+        );
+        assert_eq!(
+            store.remove_customer_unsupervised_records(1).unwrap(),
+            removed(&[], &["gamma"])
+        );
+        let runs = store.states.model_runs().all().unwrap();
+        assert_eq!(
+            runs.iter()
+                .map(|run| (run.id, run.model.as_str()))
+                .collect::<Vec<_>>(),
+            vec![(1, "target")]
+        );
+        assert!(store.training_definition("target").unwrap().is_some());
+    }
+
+    #[test]
+    fn customer_removal_logs_a_failed_directory_removal() {
+        let ts = setup_store();
+        let store = &ts.store;
+        let id = insert(store, "alpha", b"alpha");
+        let dir = model_dir(store, id);
+        std::fs::remove_dir_all(&dir).unwrap();
+        std::fs::write(&dir, b"blocker").unwrap();
+
+        assert_eq!(
+            store.remove_customer_unsupervised_records(1).unwrap(),
+            removed(&["alpha"], &[])
+        );
+        assert!(store.model_map().load_model_by_name("alpha").is_err());
+        assert!(dir.is_file());
+    }
+
     #[test]
     fn load_model_by_name_returns_the_stored_scores() {
         let ts = setup_store();
@@ -2258,6 +2788,36 @@ mod tests {
         assert_eq!(classifier(store, alpha, 2).unwrap(), b"two");
         assert!(store.model_map().load_model_by_name("beta").is_err());
         assert!(!model_dir(store, beta).exists());
+    }
+
+    #[test]
+    fn customer_removal_skips_a_model_deleted_while_it_waits() {
+        let ts = setup_store();
+        let store = &ts.store;
+        let alpha = insert(store, "alpha", b"alpha");
+        let beta = insert(store, "beta", b"beta");
+        put_definition(store, "alpha", &owner(), None);
+        put_definition(store, "beta", &owner(), None);
+
+        // The removal reads both models before it waits for the lock the
+        // delete of alpha holds.
+        let (held, waiting) = run_while_held(
+            store,
+            ModelFilesPoint::BeforeCommit,
+            false,
+            || store.delete_model("alpha"),
+            || store.remove_customer_unsupervised_records(1),
+        );
+        held.unwrap();
+        assert_eq!(waiting.unwrap(), removed(&["beta"], &["beta"]));
+
+        for id in [alpha, beta] {
+            assert!(!model_dir(store, id).exists());
+        }
+        for (family, records) in model_records(store) {
+            assert_eq!(records, Entries::new(), "{family}");
+        }
+        assert_eq!(entries(store, tables::TRAINING_DEFINITIONS), Entries::new());
     }
 
     #[test]
