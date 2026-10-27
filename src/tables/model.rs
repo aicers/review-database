@@ -57,6 +57,11 @@ pub struct Model {
     /// The `classification_id` whose cluster updates were last applied by
     /// [`Store::update_clusters`](crate::Store::update_clusters).
     pub clusters_applied: Option<i64>,
+    /// The `sources` of the training definition of the run that produced
+    /// the current classifier, a snapshot taken with `trained_definition`.
+    /// A timeseries model's sources are sampling-policy IDs, and naming one
+    /// here keeps that policy in use.
+    pub trained_sources: Vec<String>,
 }
 
 /// The engine instance a model belongs to, named as the agents table keys an
@@ -75,11 +80,13 @@ pub struct ModelOwner {
 }
 
 /// The run that produced a classifier, and that run's exact training
-/// definition text.
+/// definition text and sources.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TrainedWith {
     pub run_id: u32,
     pub definition: String,
+    /// The `sources` of the run's training definition.
+    pub sources: Vec<String>,
 }
 
 /// The outcome of [`Store::replace_model`](crate::Store::replace_model).
@@ -453,6 +460,7 @@ mod tests {
             trained_definition: "eps = 5.0".to_string(),
             previous: None,
             clusters_applied: None,
+            trained_sources: vec!["3".to_string()],
         }
     }
 

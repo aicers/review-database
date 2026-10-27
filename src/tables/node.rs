@@ -14,7 +14,9 @@ use serde::{Deserialize, Serialize};
 use strum_macros::EnumString;
 
 use super::{
-    EngineInstances, Model, ModelInstance, ModelRuns, TableIter as TI, TrainingDefinitions,
+    EngineInstances, Model, ModelInstance, ModelRuns, SamplingPolicy, TableIter as TI,
+    TrainingDefinitions,
+    agent::sensor_hostname,
     engine_instance::{self, EngineDetectorRef, EngineDocumentError, EngineDocumentWrite},
 };
 use crate::{
@@ -152,6 +154,7 @@ pub struct Table<'d> {
     model: IndexedTable<'d, Model>,
     model_indicator: Map<'d>,
     model_runs: ModelRuns<'d>,
+    sampling_policies: IndexedTable<'d, SamplingPolicy>,
     training_definitions: TrainingDefinitions<'d>,
     /// Run by every writer after its checks and before its commit.
     #[cfg(test)]
@@ -183,6 +186,7 @@ impl<'d> Table<'d> {
         let model = IndexedTable::<Model>::open(db)?;
         let model_indicator = Map::open(db, super::MODEL_INDICATORS)?;
         let model_runs = ModelRuns::open(db)?;
+        let sampling_policies = IndexedTable::<SamplingPolicy>::open(db)?;
         let training_definitions = TrainingDefinitions::open(db)?;
         Some(Self {
             node,
@@ -192,6 +196,7 @@ impl<'d> Table<'d> {
             model,
             model_indicator,
             model_runs,
+            sampling_policies,
             training_definitions,
             #[cfg(test)]
             before_commit_hook: None,
@@ -217,8 +222,11 @@ impl<'d> Table<'d> {
     /// the reason "instance removed", a clone among them removing the target
     /// definition it reserved, as does a clone creating a definition on the
     /// instance; its models and training definitions are left with no
-    /// instance; and its `engine instances` row, with its references,
-    /// detector statuses and stopped state, is deleted.
+    /// instance; its `engine instances` row, with its references, detector
+    /// statuses and stopped state, is deleted; and every sampling policy
+    /// assigned to it is left unassigned, its `data_store` unchanged, since
+    /// a later agent of a reused node id and the same key would otherwise
+    /// inherit the assignment.
     ///
     /// Every writer that removes an agent calls this for each agent key it
     /// removes, whatever the agent's kind: the agent row may already be
@@ -234,20 +242,69 @@ impl<'d> Table<'d> {
         node_id: u32,
         agent_key: &str,
     ) -> Result<()> {
+        let instance = ModelInstance {
+            node_id,
+            agent_key: agent_key.to_string(),
+        };
         InstanceRecords {
             runs: &self.model_runs,
             definitions: &self.training_definitions,
             models: &self.model,
             engine_instances: &self.engine_instances,
         }
-        .detach(
-            txn,
-            &ModelInstance {
-                node_id,
-                agent_key: agent_key.to_string(),
-            },
-            INSTANCE_REMOVED,
-        )
+        .detach(txn, &instance, INSTANCE_REMOVED)?;
+        self.sampling_policies
+            .unassign_in_transaction(txn, &instance)
+    }
+
+    /// Returns whether `name` is a sensor name of customer `customer_id` as
+    /// `txn` sees the nodes: the [`AgentKind::Sensor`] package-id, a dot and
+    /// the non-empty hostname of the applied profile of a node of the
+    /// customer that carries an [`AgentKind::Sensor`] agent.
+    ///
+    /// The node and agent rows that decide it are read for update, so a
+    /// concurrent change of one conflicts with `txn`; the scan that finds
+    /// the node is not tracked.
+    pub(crate) fn is_sensor_name_in_transaction(
+        &self,
+        txn: &rocksdb::Transaction<OptimisticTransactionDB>,
+        customer_id: u32,
+        name: &str,
+    ) -> Result<bool> {
+        let Some(hostname) = sensor_hostname(name) else {
+            return Ok(false);
+        };
+        let of_customer = |inner: &Inner| {
+            inner
+                .profile
+                .as_ref()
+                .is_some_and(|p| p.customer_id == customer_id && p.hostname == hostname)
+        };
+        for item in txn.iterator_cf(self.node.raw().cf(), rocksdb::IteratorMode::Start) {
+            let (key, value) = item.context("cannot read nodes")?;
+            if key.is_empty() {
+                continue;
+            }
+            let scanned: Inner = super::deserialize(&value)?;
+            if !of_customer(&scanned) {
+                continue;
+            }
+            let Some(inner) = self.node.get_by_id_in_transaction(scanned.id, txn)? else {
+                continue;
+            };
+            if !of_customer(&inner) {
+                continue;
+            }
+            for agent_key in &inner.agents {
+                let key = engine_instance::key(inner.id, agent_key);
+                if crate::engine_instance::agent_for_update(txn, self.agent.raw().cf, &key)?
+                    .is_some_and(|agent| agent.kind == AgentKind::Sensor)
+                {
+                    return Ok(true);
+                }
+            }
+        }
+        Ok(false)
     }
 
     /// Returns the applied profile of node `id`, read for update within

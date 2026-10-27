@@ -342,6 +342,7 @@ mod tests {
                 TrainedWith {
                     run_id: 1,
                     definition: "eps = 5.0".to_string(),
+                    sources: Vec::new(),
                 },
             )
             .unwrap();

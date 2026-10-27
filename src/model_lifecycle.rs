@@ -183,10 +183,10 @@ impl Store {
     /// `model.name`; `model.id` is ignored.
     ///
     /// - If no model has that name, a record is inserted for `owner` with
-    ///   the body's method and event kind, `trained_at`, `trained`'s run id
-    ///   and definition text, its first classifier generation and no previous
-    ///   result, and the body's classifier, batch information and scores are
-    ///   stored.
+    ///   the body's method and event kind, `trained_at`, `trained`'s run id,
+    ///   definition text and sources, its first classifier generation and no
+    ///   previous result, and the body's classifier, batch information and
+    ///   scores are stored.
     /// - If one does, it keeps its id. Its current batch information,
     ///   scores, clusters, column statistics, CSV column extras, time series
     ///   and outliers become its previous training result, read through
@@ -278,6 +278,7 @@ impl Store {
                 trained_definition: trained.definition.clone(),
                 previous: None,
                 clusters_applied: None,
+                trained_sources: trained.sources.clone(),
             };
             let id = models.add_model_with_transaction(record, txn)?;
             self.classifier_fm.store_classifier(
@@ -328,6 +329,7 @@ impl Store {
             classifier_generation: generation,
             trained_run_id: trained.run_id,
             trained_definition: trained.definition.clone(),
+            trained_sources: trained.sources.clone(),
             previous: Some(PreviousTraining {
                 trained_at: record.trained_at,
                 version: record.version,
@@ -893,6 +895,7 @@ mod tests {
         TrainedWith {
             run_id,
             definition: definition.to_string(),
+            sources: vec!["piglet.host".to_string()],
         }
     }
 
@@ -1175,6 +1178,7 @@ mod tests {
                 trained_definition: "[model]\neps = 5.0\n".to_string(),
                 previous: None,
                 clusters_applied: None,
+                trained_sources: vec!["piglet.host".to_string()],
             }
         );
         assert_eq!(
@@ -1288,7 +1292,10 @@ mod tests {
                 },
                 owner(),
                 at(2_000),
-                trained(2, "eps = 2.0"),
+                TrainedWith {
+                    sources: vec!["piglet.other".to_string()],
+                    ..trained(2, "eps = 2.0")
+                },
             )
             .unwrap();
         assert_eq!(
@@ -1390,6 +1397,7 @@ mod tests {
                     trained_definition: "eps = 5.0".to_string(),
                 }),
                 clusters_applied: None,
+                trained_sources: vec!["piglet.other".to_string()],
                 ..first.clone()
             }
         );

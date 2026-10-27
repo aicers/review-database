@@ -22,8 +22,9 @@ use crate::{
         AgentValueV0_46, AgentValueV0_47, BlocklistDceRpcFieldsStoredV0_42,
         BlocklistDceRpcFieldsStoredV0_44, BlocklistDhcpFieldsStoredV0_42,
         BlocklistDhcpFieldsStoredV0_44, ExternalServiceValueV0_46, ExternalServiceValueV0_47,
-        HttpThreatFieldsStoredV0_43, HttpThreatFieldsStoredV0_44, OperationAttemptValueV0_47,
-        OperationAttemptValueV0_48, OperationAttemptValueV0_49, V0_46_COUNTRY_CODE_LOOKUP_FAILED,
+        HttpThreatFieldsStoredV0_43, HttpThreatFieldsStoredV0_44, ModelV0_56, NodeV0_56,
+        OperationAttemptValueV0_47, OperationAttemptValueV0_48, OperationAttemptValueV0_49,
+        SamplingPolicyV0_56, TrainingDefinitionV0_56, V0_46_COUNTRY_CODE_LOOKUP_FAILED,
         migrate_event_stored_schema_to_v0_46, validate_event_stored_schema_v0_46,
     },
     tables::{
@@ -670,15 +671,25 @@ fn migrate_0_55_to_0_56(data_dir: &Path) -> Result<()> {
 
 /// Migrates a database in the 0.56.x format to 0.57.0.
 ///
-/// Retires every ID on the free list of the "sampling policy" family, so that
-/// no ID a policy was deleted under before the upgrade is handed out again:
-/// the Data Store and the Time Series Generator keep data under it. Each such
-/// ID becomes inactive, and the next insert takes the first ID never used.
-/// No record and no other family is read or written, and an index without a
-/// free list, an empty table's included, is left as it is.
+/// 1. Retires every ID on the free list of the "sampling policy" family, so
+///    that no ID a policy was deleted under before the upgrade is handed out
+///    again: the Data Store and the Time Series Generator keep data under
+///    it. Each such ID becomes inactive, and the next insert takes the first
+///    ID never used. An index without a free list, an empty table's
+///    included, is left as it is.
+/// 2. Rewrites every sampling-policy record in the 0.56 layout into the 0.57
+///    one: `immutable` is dropped, every policy becomes `Fixed`, since a
+///    policy of either kind may already have series stored under its ID,
+///    with no assignee and no Data Store, and its customer is the one whose
+///    node its `node` is the sensor name of, or `None` if it names no sensor.
+/// 3. Rewrites every model record in the 0.56 layout into the 0.57 one,
+///    whose `trained_sources` is the `sources` of the training definition of
+///    the model's name for a timeseries model, and empty otherwise.
 ///
-/// A rerun is safe: once retired, the free list is empty, and a second pass
-/// finds nothing to do.
+/// No other family is written. A rerun is safe: once retired, the free list
+/// is empty; a record already in the 0.57 layout is recognized by decoding
+/// and left as it is; and each family's records are rewritten in one atomic
+/// batch.
 fn migrate_0_56_to_0_57(data_dir: &Path) -> Result<()> {
     let db_path = data_dir.join("states.db");
     let mut opts = rocksdb::Options::default();
@@ -689,7 +700,9 @@ fn migrate_0_56_to_0_57(data_dir: &Path) -> Result<()> {
         rocksdb::OptimisticTransactionDB::open_cf(&opts, &db_path, column_families)
             .context("failed to open database for the 0.57.0 migration")?;
 
-    migrate_retire_sampling_policy_ids(&db)
+    migrate_retire_sampling_policy_ids(&db)?;
+    migrate_sampling_policy_records_v0_57(&db)?;
+    migrate_model_trained_sources_v0_57(&db)
 }
 
 /// Retires the free IDs of the "sampling policy" family in `db`.
@@ -701,6 +714,154 @@ fn migrate_retire_sampling_policy_ids(db: &rocksdb::OptimisticTransactionDB) -> 
     if retired > 0 {
         info!("Retired {retired} free IDs of '{name}'");
     }
+    Ok(())
+}
+
+/// Rewrites the sampling-policy records of `db` still in the 0.56 layout
+/// into the 0.57 one, as step 2 of [`migrate_0_56_to_0_57`] describes.
+///
+/// A record is read as the 0.57 layout first. A 0.56 record never decodes as
+/// one: the 0.57 `customer_id` is read from the 0.56 `immutable`, and the
+/// `state` after it from the `creation_time` string's length if `immutable`
+/// is false, or from its first character if it is true. No RFC 3339
+/// timestamp's length or leading digit is small enough to be a variant.
+fn migrate_sampling_policy_records_v0_57(db: &rocksdb::OptimisticTransactionDB) -> Result<()> {
+    use crate::Indexable;
+
+    let name = crate::tables::SAMPLING_POLICY;
+    let cf = db
+        .cf_handle(name)
+        .with_context(|| format!("{name} column family not found"))?;
+    let customers = sensor_customers_v0_56(db)?;
+    let mut batch = rocksdb::WriteBatchWithTransaction::<true>::default();
+    let mut converted = 0usize;
+    for entry in db.iterator_cf(cf, rocksdb::IteratorMode::Start) {
+        let (key, value) = entry.context("failed to read a sampling policy record")?;
+        if key.is_empty()
+            || bincode::DefaultOptions::new()
+                .deserialize::<crate::SamplingPolicy>(&value)
+                .is_ok()
+        {
+            continue;
+        }
+        let old: SamplingPolicyV0_56 = bincode::DefaultOptions::new()
+            .deserialize(&value)
+            .with_context(|| {
+                format!(
+                    "sampling policy record with key {} matches neither the 0.57 nor the 0.56 layout",
+                    data_encoding::HEXLOWER.encode(&key)
+                )
+            })?;
+        let customer_id = old
+            .node
+            .as_deref()
+            .and_then(crate::tables::sensor_hostname)
+            .and_then(|hostname| customers.get(hostname).copied());
+        batch.put_cf(cf, &key, old.into_fixed(customer_id).value());
+        converted += 1;
+    }
+    write_migration_batch(db, &mut batch, "sampling policy")?;
+    info!("Layout migration of sampling policy records complete: converted_count={converted}");
+    Ok(())
+}
+
+/// Returns the customer of each hostname that the applied profile of a node
+/// carrying an [`AgentKind::Sensor`](crate::AgentKind::Sensor) agent has, as
+/// the 0.56 layout of `db` stores them; an empty hostname is left out.
+fn sensor_customers_v0_56(
+    db: &rocksdb::OptimisticTransactionDB,
+) -> Result<std::collections::HashMap<String, u32>> {
+    let nodes = db
+        .cf_handle(crate::tables::NODES)
+        .context("nodes column family not found")?;
+    let agents = db
+        .cf_handle(crate::tables::AGENTS)
+        .context("agents column family not found")?;
+    let mut customers = std::collections::HashMap::new();
+    for entry in db.iterator_cf(nodes, rocksdb::IteratorMode::Start) {
+        let (key, value) = entry.context("failed to read a node record")?;
+        if key.is_empty() {
+            continue;
+        }
+        let node: NodeV0_56 = bincode::DefaultOptions::new()
+            .deserialize(&value)
+            .context("failed to read a node record in the 0.56 layout")?;
+        let Some(profile) = node.profile.filter(|profile| !profile.hostname.is_empty()) else {
+            continue;
+        };
+        for agent_key in &node.agents {
+            let mut key = node.id.to_be_bytes().to_vec();
+            key.extend(agent_key.as_bytes());
+            let Some(value) = db.get_cf(agents, &key).context("failed to read an agent")? else {
+                continue;
+            };
+            let agent: AgentValueV0_47 = bincode::DefaultOptions::new()
+                .deserialize(&value)
+                .context("failed to read an agent record in the 0.47 layout")?;
+            if agent.kind == crate::AgentKind::Sensor {
+                customers.insert(profile.hostname.clone(), profile.customer_id);
+                break;
+            }
+        }
+    }
+    Ok(customers)
+}
+
+/// Rewrites the model records of `db` still in the 0.56 layout into the 0.57
+/// one, as step 3 of [`migrate_0_56_to_0_57`] describes.
+///
+/// A record is read as the 0.57 layout first. The 0.57 layout appends
+/// `trained_sources` to the 0.56 one, so neither decodes the other's
+/// records.
+fn migrate_model_trained_sources_v0_57(db: &rocksdb::OptimisticTransactionDB) -> Result<()> {
+    use crate::Indexable;
+
+    let name = crate::tables::MODELS;
+    let cf = db
+        .cf_handle(name)
+        .with_context(|| format!("{name} column family not found"))?;
+    let definitions = db
+        .cf_handle(crate::tables::TRAINING_DEFINITIONS)
+        .context("training definitions column family not found")?;
+    let timeseries = crate::model::ClusteringMethod::Timeseries.to_string();
+    let mut batch = rocksdb::WriteBatchWithTransaction::<true>::default();
+    let mut converted = 0usize;
+    for entry in db.iterator_cf(cf, rocksdb::IteratorMode::Start) {
+        let (key, value) = entry.context("failed to read a model record")?;
+        if key.is_empty()
+            || bincode::DefaultOptions::new()
+                .deserialize::<crate::tables::Model>(&value)
+                .is_ok()
+        {
+            continue;
+        }
+        let old: ModelV0_56 = bincode::DefaultOptions::new()
+            .deserialize(&value)
+            .with_context(|| {
+                format!(
+                    "model record with key {} matches neither the 0.57 nor the 0.56 layout",
+                    data_encoding::HEXLOWER.encode(&key)
+                )
+            })?;
+        let trained_sources = if old.kind == timeseries {
+            db.get_cf(definitions, old.name.as_bytes())
+                .context("failed to read a training definition")?
+                .map(|value| {
+                    bincode::DefaultOptions::new()
+                        .deserialize::<TrainingDefinitionV0_56>(&value)
+                        .context("failed to read a training definition in the 0.56 layout")
+                })
+                .transpose()?
+                .map(|definition| definition.sources)
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+        batch.put_cf(cf, &key, old.with_trained_sources(trained_sources).value());
+        converted += 1;
+    }
+    write_migration_batch(db, &mut batch, "model")?;
+    info!("Layout migration of model records complete: converted_count={converted}");
     Ok(())
 }
 
@@ -2371,9 +2532,9 @@ mod tests {
     use super::{
         COMPATIBLE_VERSION_REQ, COUNTRY_CODE_SWAP_CHECKPOINT_KEY, COUNTRY_CODE_SWAP_COMPLETED_KEY,
         DATABASE_FORMAT_VERSION, VERSION_FILE_NAME, VERSION_TMP_FILE_NAME, create_version_file,
-        migrate_0_46_to_0_47, migrate_country_code_placeholders_inner, migrate_data_dir,
-        migrate_event_country_codes, migrate_event_stored_schema_to_v0_46, read_version_file,
-        retrieve_or_create_version, write_version_markers,
+        migrate_0_46_to_0_47, migrate_0_56_to_0_57, migrate_country_code_placeholders_inner,
+        migrate_data_dir, migrate_event_country_codes, migrate_event_stored_schema_to_v0_46,
+        read_version_file, retrieve_or_create_version, write_version_markers,
     };
     use crate::event::{
         BlocklistConnFields, BlocklistConnFieldsStored, EventKind, EventMessage,
@@ -2382,9 +2543,10 @@ mod tests {
     use crate::geo::CountryLookup;
     use crate::migration::migration_structures::{
         AgentValueV0_46, AgentValueV0_47, BlocklistConnFieldsStoredV0_42,
-        ExternalServiceValueV0_46, ExternalServiceValueV0_47, MultiHostPortScanFieldsStoredV0_42,
+        ExternalServiceValueV0_46, ExternalServiceValueV0_47, ModelV0_56,
+        MultiHostPortScanFieldsStoredV0_42, NodeProfileV0_56, NodeV0_56,
         OperationAttemptValueV0_47, OperationAttemptValueV0_48, OperationAttemptValueV0_49,
-        V0_46_COUNTRY_CODE_UNRESOLVED,
+        SamplingPolicyV0_56, TrainingDefinitionV0_56, V0_46_COUNTRY_CODE_UNRESOLVED,
     };
     use crate::tables::NETWORK_TAGS;
     use crate::test::{DbGuard, acquire_db_permit};
@@ -6650,21 +6812,20 @@ mod tests {
         data_dir: &Path,
         backup_dir: &Path,
         index: &KeyIndexV0_56,
-        policies: &[crate::SamplingPolicy],
+        policies: &[SamplingPolicyV0_56],
     ) {
-        use crate::Indexable;
-
         let db_path = data_dir.join("states.db");
         create_states_db(&db_path, crate::tables::MAP_NAMES);
         let mut entries = vec![(
             Vec::new(),
             bincode::DefaultOptions::new().serialize(index).unwrap(),
         )];
-        entries.extend(
-            policies
-                .iter()
-                .map(|policy| (policy.indexed_key().to_vec(), policy.value())),
-        );
+        entries.extend(policies.iter().map(|policy| {
+            (
+                policy.name.as_bytes().to_vec(),
+                bincode::DefaultOptions::new().serialize(policy).unwrap(),
+            )
+        }));
         put_entries(
             &db_path,
             crate::tables::MAP_NAMES,
@@ -6687,8 +6848,8 @@ mod tests {
         bincode::DefaultOptions::new().deserialize(&bytes).unwrap()
     }
 
-    fn sampling_policy_v0_56(id: u32, name: &str) -> crate::SamplingPolicy {
-        crate::SamplingPolicy {
+    fn sampling_policy_v0_56(id: u32, name: &str) -> SamplingPolicyV0_56 {
+        SamplingPolicyV0_56 {
             id,
             name: name.to_string(),
             kind: crate::SamplingKind::Conn,
@@ -6701,6 +6862,22 @@ mod tests {
             column: None,
             immutable: false,
             creation_time: chrono::Utc::now(),
+        }
+    }
+
+    /// A new sampling policy named `name` of customer 1.
+    fn new_sampling_policy(name: &str) -> crate::NewSamplingPolicy {
+        crate::NewSamplingPolicy {
+            name: name.to_string(),
+            kind: crate::SamplingKind::Conn,
+            interval: crate::SamplingInterval::FiveMinutes,
+            period: crate::SamplingPeriod::OneDay,
+            offset: 0,
+            src_ip: None,
+            dst_ip: None,
+            node: None,
+            column: None,
+            customer_id: 1,
         }
     }
 
@@ -6754,7 +6931,7 @@ mod tests {
         for id in 0..=2 {
             assert!(table.get_by_id(id).unwrap().is_none());
         }
-        assert_eq!(table.put(sampling_policy_v0_56(0, "new")).unwrap(), 3);
+        assert_eq!(table.insert(new_sampling_policy("new")).unwrap(), 3);
     }
 
     /// Records survive the 0.57 step under their IDs, the freed IDs between
@@ -6814,7 +6991,327 @@ mod tests {
             .map(|policy| policy.unwrap().id)
             .collect();
         assert_eq!(ids, vec![0, 2]);
-        assert_eq!(table.put(sampling_policy_v0_56(0, "d")).unwrap(), 5);
+        assert_eq!(table.insert(new_sampling_policy("d")).unwrap(), 5);
+    }
+
+    /// Locks the 0.56 layout of a stored sampling policy, which the 0.57 step
+    /// reads, to the committed literal bytes of the released format.
+    #[test]
+    fn sampling_policy_v0_56_literal_bytes_contract() {
+        const FIXTURE_BYTES: &[u8] =
+            include_bytes!("../tests/fixtures/sampling_policy_v0_56_literal_bytes.bin");
+
+        let expected = SamplingPolicyV0_56 {
+            id: 42,
+            name: "fixture-policy".to_string(),
+            kind: crate::SamplingKind::Http,
+            interval: crate::SamplingInterval::ThirtyMinutes,
+            period: crate::SamplingPeriod::OneDay,
+            offset: -300,
+            src_ip: Some(IpAddr::V4(std::net::Ipv4Addr::new(192, 168, 1, 10))),
+            dst_ip: Some(IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 5))),
+            node: Some("sensor-node-1".to_string()),
+            column: Some(7),
+            immutable: true,
+            creation_time: chrono::DateTime::from_timestamp(1_700_000_000, 123_456_789).unwrap(),
+        };
+        let decoded: SamplingPolicyV0_56 = bincode::DefaultOptions::new()
+            .deserialize(FIXTURE_BYTES)
+            .unwrap();
+        assert_eq!(decoded, expected);
+        assert_eq!(
+            bincode::DefaultOptions::new().serialize(&expected).unwrap(),
+            FIXTURE_BYTES
+        );
+        assert!(
+            bincode::DefaultOptions::new()
+                .deserialize::<crate::SamplingPolicy>(FIXTURE_BYTES)
+                .is_err(),
+            "a 0.56 record must not decode as the 0.57 layout"
+        );
+    }
+
+    const SENSOR_HOST: &str = "sensor.example";
+    const PLAIN_HOST: &str = "plain.example";
+    const SENSOR_CUSTOMER: u32 = 7;
+
+    /// Writes, in the 0.56 layout, a node of [`SENSOR_CUSTOMER`] at
+    /// [`SENSOR_HOST`] carrying a sensor, and a node of customer 8 at
+    /// [`PLAIN_HOST`] carrying only a Time Series Generator.
+    fn put_v0_56_nodes(db_path: &Path) {
+        let node = |id: u32, name: &str, customer_id: u32, hostname: &str, agent: &str| NodeV0_56 {
+            id,
+            name: name.to_string(),
+            name_draft: None,
+            profile: Some(NodeProfileV0_56 {
+                customer_id,
+                description: String::new(),
+                hostname: hostname.to_string(),
+            }),
+            profile_draft: None,
+            creation_time: chrono::Utc::now(),
+            agents: vec![agent.to_string()],
+            external_services: Vec::new(),
+        };
+        let nodes = [
+            node(
+                0,
+                "sensor-node",
+                SENSOR_CUSTOMER,
+                SENSOR_HOST,
+                "piglet@sensor",
+            ),
+            node(1, "plain-node", 8, PLAIN_HOST, "crusher@plain"),
+        ];
+        let entries: Entries = nodes
+            .iter()
+            .map(|node| {
+                (
+                    node.name.as_bytes().to_vec(),
+                    bincode::DefaultOptions::new().serialize(node).unwrap(),
+                )
+            })
+            .collect();
+        put_entries(
+            db_path,
+            crate::tables::MAP_NAMES,
+            crate::tables::NODES,
+            &entries,
+        );
+        let agent = |node_id: u32, key: &str, kind: AgentKind| {
+            let mut stored = node_id.to_be_bytes().to_vec();
+            stored.extend(key.as_bytes());
+            let value = AgentValueV0_47 {
+                kind,
+                status: AgentStatus::Enabled,
+                config: None,
+                draft: None,
+                installed_version: None,
+                installed_commit: None,
+                lifecycle: 0,
+                bound_addrs: Vec::new(),
+                instance: Some(1),
+            };
+            (
+                stored,
+                bincode::DefaultOptions::new().serialize(&value).unwrap(),
+            )
+        };
+        put_entries(
+            db_path,
+            crate::tables::MAP_NAMES,
+            crate::tables::AGENTS,
+            &[
+                agent(0, "piglet@sensor", AgentKind::Sensor),
+                agent(1, "crusher@plain", AgentKind::TimeSeriesGenerator),
+            ],
+        );
+    }
+
+    /// The 0.57 step makes every policy `Fixed`, `immutable` or not, with no
+    /// assignee and no Data Store; gives a sensor-named policy its sensor's
+    /// customer and every other policy none; and drops `immutable`. A rerun
+    /// changes nothing.
+    #[test]
+    fn migration_from_v0_56_rewrites_sampling_policies() {
+        use KeyIndexEntryV0_56::Key;
+
+        let permit = acquire_db_permit();
+        let data_dir = tempfile::tempdir().unwrap();
+        let backup_dir = tempfile::tempdir().unwrap();
+        let db_path = data_dir.path().join("states.db");
+
+        let policy =
+            |id: u32, name: &str, node: Option<String>, immutable: bool| SamplingPolicyV0_56 {
+                node,
+                immutable,
+                ..sampling_policy_v0_56(id, name)
+            };
+        let policies = [
+            policy(
+                0,
+                "sensor-named",
+                Some(format!("piglet.{SENSOR_HOST}")),
+                true,
+            ),
+            policy(1, "mutable", Some(format!("piglet.{SENSOR_HOST}")), false),
+            policy(2, "hostname", Some(SENSOR_HOST.to_string()), true),
+            policy(3, "node-less", None, false),
+            policy(4, "no-sensor", Some(format!("piglet.{PLAIN_HOST}")), true),
+        ];
+        let index = KeyIndexV0_56 {
+            keys: policies
+                .iter()
+                .map(|policy| Key(policy.name.as_bytes().to_vec()))
+                .collect(),
+            available: 5,
+            inactive: None,
+        };
+        create_v0_56_sampling_policy_store(data_dir.path(), backup_dir.path(), &index, &policies);
+        put_v0_56_nodes(&db_path);
+
+        migrate_data_dir(data_dir.path(), backup_dir.path(), None).unwrap();
+
+        let stored = |name: &str| {
+            raw_value(
+                &db_path,
+                crate::tables::MAP_NAMES,
+                crate::tables::SAMPLING_POLICY,
+                name.as_bytes(),
+            )
+            .unwrap()
+        };
+        for old in &policies {
+            let bytes = stored(&old.name);
+            assert!(
+                bincode::DefaultOptions::new()
+                    .deserialize::<SamplingPolicyV0_56>(&bytes)
+                    .is_err(),
+                "`immutable` is gone from {:?}",
+                old.name
+            );
+            let migrated: crate::SamplingPolicy =
+                bincode::DefaultOptions::new().deserialize(&bytes).unwrap();
+            let customer_id =
+                matches!(old.name.as_str(), "sensor-named" | "mutable").then_some(SENSOR_CUSTOMER);
+            assert_eq!(migrated, old.clone().into_fixed(customer_id));
+            assert_eq!(migrated.state, crate::PolicyState::Fixed);
+            assert_eq!(migrated.assignee, None);
+            assert_eq!(migrated.data_store, None);
+        }
+
+        // An interrupted chain runs the step again over migrated records.
+        let snapshot: Vec<Vec<u8>> = policies.iter().map(|p| stored(&p.name)).collect();
+        migrate_0_56_to_0_57(data_dir.path()).unwrap();
+        let after: Vec<Vec<u8>> = policies.iter().map(|p| stored(&p.name)).collect();
+        assert_eq!(after, snapshot);
+
+        let test_schema = TestSchema::new_with_dir(permit, data_dir, backup_dir);
+        let table = test_schema.store.sampling_policy_map();
+        assert_eq!(table.count().unwrap(), 5);
+        assert_eq!(
+            table.get_by_id(0).unwrap().unwrap().customer_id,
+            Some(SENSOR_CUSTOMER)
+        );
+    }
+
+    /// The 0.57 step gives a timeseries model the sources of its training
+    /// definition, and every other model an empty `trained_sources`. A rerun
+    /// changes nothing.
+    #[test]
+    fn migration_from_v0_56_adds_trained_sources() {
+        let _permit = acquire_db_permit();
+        let data_dir = tempfile::tempdir().unwrap();
+        let backup_dir = tempfile::tempdir().unwrap();
+        let db_path = data_dir.path().join("states.db");
+        create_states_db(&db_path, crate::tables::MAP_NAMES);
+        write_version(data_dir.path(), "0.56.0");
+        write_version(backup_dir.path(), "0.56.0");
+
+        let model = |id: u32, name: &str, kind: &str| ModelV0_56 {
+            id,
+            name: name.to_string(),
+            version: 1,
+            kind: kind.to_string(),
+            max_event_id_num: 10,
+            classification_id: Some(1),
+            event_kind: "conn".to_string(),
+            customer_id: 1,
+            instance: None,
+            trained_at: chrono::Utc::now(),
+            classifier_generation: 1,
+            trained_run_id: 1,
+            trained_definition: "eps = 5.0".to_string(),
+            previous: None,
+            clusters_applied: None,
+        };
+        let models = [
+            model(0, "multi", "Multifield"),
+            model(1, "series", "Timeseries"),
+            model(2, "orphan-series", "Timeseries"),
+        ];
+        let entries: Entries = models
+            .iter()
+            .map(|model| {
+                (
+                    model.name.as_bytes().to_vec(),
+                    bincode::DefaultOptions::new().serialize(model).unwrap(),
+                )
+            })
+            .collect();
+        put_entries(
+            &db_path,
+            crate::tables::MAP_NAMES,
+            crate::tables::MODELS,
+            &entries,
+        );
+        let definition = |name: &str, method: crate::ModelMethod, sources: &[&str]| {
+            let definition = TrainingDefinitionV0_56 {
+                name: name.to_string(),
+                customer_id: 1,
+                instance: None,
+                method,
+                event_kind: "conn".to_string(),
+                sources: sources.iter().map(ToString::to_string).collect(),
+                indicator: None,
+                definition: "eps = 5.0".to_string(),
+                cloning: false,
+                last_run: Some(1),
+                created_at: chrono::Utc::now(),
+                updated_at: chrono::Utc::now(),
+            };
+            (
+                name.as_bytes().to_vec(),
+                bincode::DefaultOptions::new()
+                    .serialize(&definition)
+                    .unwrap(),
+            )
+        };
+        put_entries(
+            &db_path,
+            crate::tables::MAP_NAMES,
+            crate::tables::TRAINING_DEFINITIONS,
+            &[
+                definition("multi", crate::ModelMethod::Multidimension, &["piglet.a"]),
+                definition("series", crate::ModelMethod::Timeseries, &["3", "5"]),
+            ],
+        );
+
+        migrate_data_dir(data_dir.path(), backup_dir.path(), None).unwrap();
+
+        let stored = |name: &str| {
+            raw_value(
+                &db_path,
+                crate::tables::MAP_NAMES,
+                crate::tables::MODELS,
+                name.as_bytes(),
+            )
+            .unwrap()
+        };
+        let migrated = |name: &str| -> crate::tables::Model {
+            bincode::DefaultOptions::new()
+                .deserialize(&stored(name))
+                .unwrap()
+        };
+        assert_eq!(
+            migrated("multi"),
+            models[0].clone().with_trained_sources(Vec::new())
+        );
+        assert_eq!(
+            migrated("series"),
+            models[1]
+                .clone()
+                .with_trained_sources(vec!["3".to_string(), "5".to_string()])
+        );
+        assert_eq!(
+            migrated("orphan-series"),
+            models[2].clone().with_trained_sources(Vec::new())
+        );
+
+        let snapshot: Vec<Vec<u8>> = models.iter().map(|m| stored(&m.name)).collect();
+        migrate_0_56_to_0_57(data_dir.path()).unwrap();
+        let after: Vec<Vec<u8>> = models.iter().map(|m| stored(&m.name)).collect();
+        assert_eq!(after, snapshot);
     }
 
     #[test]
