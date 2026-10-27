@@ -15,7 +15,11 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   `Store::remove_training_definition`, it removes models and definitions that
   name each other's indicators. It refuses with a `RemovalRefused` while an
   engine document still names one of the models or a run concerning one of
-  them is active, which cannot happen once the customer's nodes are removed.
+  them is active, which cannot happen once the customer's nodes are removed,
+  and while an engine document or another customer's training definition
+  names one of the models' indicators, which can happen after that too. It
+  can be called again once the references are removed, and continues where
+  it stopped.
 
 ### Changed
 

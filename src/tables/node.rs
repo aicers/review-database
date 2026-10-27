@@ -671,7 +671,10 @@ impl<'d> Table<'d> {
     /// The models and indicators the written slots name, and the stored rows
     /// of the listed agents kept from `old`, are read within the transaction,
     /// so a concurrent removal of any of them, or a concurrent write of a
-    /// listed agent's document, makes the update retry and check again.
+    /// listed agent's document, makes the update retry and check again. Each
+    /// named indicator is also written back unchanged, so that a concurrent
+    /// [`Store::remove_customer_unsupervised_records`](crate::Store::remove_customer_unsupervised_records)
+    /// that would delete it conflicts and finds the detector on its retry.
     ///
     /// A detector id is never reused on an engine instance. The instance's
     /// `last_detector_id`, the highest id any of its documents has named, is
@@ -733,7 +736,8 @@ impl<'d> Table<'d> {
     /// Checks, within `txn`, what the documents to write rely on in the
     /// database: the stored row of each listed agent kept from `old`, the
     /// models and indicators of each written slot, and the detector id mark
-    /// of each listed agent on the hostname the node has in `new`.
+    /// of each listed agent on the hostname the node has in `new`; writes
+    /// each named indicator back unchanged.
     fn check_engine_documents_in_transaction(
         &self,
         txn: &rocksdb::Transaction<OptimisticTransactionDB>,
@@ -795,17 +799,23 @@ impl<'d> Table<'d> {
                     }
                     .into());
                 }
-                if let Some(indicator) = &detector.indicator
-                    && txn
+                if let Some(indicator) = &detector.indicator {
+                    let Some(value) = txn
                         .get_for_update_cf(self.model_indicator.cf, indicator.as_bytes(), EXCLUSIVE)
                         .context("cannot read model indicator")?
-                        .is_none()
-                {
-                    return Err(EngineDocumentError::IndicatorNotFound {
-                        agent_key: agent_key.clone(),
-                        indicator: indicator.clone(),
-                    }
-                    .into());
+                    else {
+                        return Err(EngineDocumentError::IndicatorNotFound {
+                            agent_key: agent_key.clone(),
+                            indicator: indicator.clone(),
+                        }
+                        .into());
+                    };
+                    // Written back unchanged so that a concurrent removal of
+                    // the customer of the indicator's model, which reads it
+                    // for update before it looks for what names it,
+                    // conflicts.
+                    txn.put_cf(self.model_indicator.cf, indicator.as_bytes(), &value)
+                        .context("cannot write model indicator")?;
                 }
             }
             // An id the stored row still names is the same detector; any

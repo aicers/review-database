@@ -20,6 +20,16 @@
 //! aicers/review-web's engine configuration lock covers. Active runs are
 //! found through the run id counter, as in `training`.
 //!
+//! The removal of a customer's records closes that gap for the indicators
+//! it deletes. Every writer that names an indicator, in a training
+//! definition or a detector, reads it for update and writes it back
+//! unchanged, and the removal reads each indicator of a model for update
+//! before it scans the holders: a reference committed after that read
+//! makes the removal conflict, one committed before it is in the scan, and
+//! one committing after the removal conflicts on the deleted indicator and
+//! is refused on its retry. An indicator the model gains after that read
+//! was not checked, so the removal retries if it would delete one.
+//!
 //! The detach has no such gap. Every record that gains an instance does so
 //! in a transaction that either writes a key the detach reads (the run id
 //! counter, a run) or writes the instance's agent row back unchanged, which
@@ -89,11 +99,14 @@ pub struct SourceReference {
 /// [`Store::remove_customer_unsupervised_records`](crate::Store::remove_customer_unsupervised_records).
 ///
 /// It is returned inside the `anyhow::Error` of the call, so a caller can
-/// `downcast_ref` it. Neither can happen once the customer's nodes are
-/// removed; each makes a removal called before that fail instead of leaving
-/// a detector without its model or a run that can never complete. The
-/// refused transaction changes nothing, but the models and definitions
-/// removed before it stay removed.
+/// `downcast_ref` it. `ModelReferenced` and `RunActive` cannot happen once
+/// the customer's nodes are removed; each makes a removal called before that
+/// fail instead of leaving a detector without its model or a run that can
+/// never complete. `IndicatorReferenced` can happen after that too, since
+/// another customer's definition or detector can name one of the customer's
+/// indicators; it makes the removal fail instead of leaving that holder
+/// naming an indicator that is gone. The refused transaction changes
+/// nothing, but the models and definitions removed before it stay removed.
 #[derive(Clone, Debug, Eq, Error, PartialEq)]
 pub enum RemovalRefused {
     /// A detector of an applied or pending engine document names the model.
@@ -111,6 +124,14 @@ pub enum RemovalRefused {
     /// from the model.
     #[error("model run {run_id} is active")]
     RunActive { run_id: RunId },
+    /// A detector of an applied or pending engine document, or a training
+    /// definition of another customer, names an indicator of the model.
+    #[error("model indicator {indicator:?} of model {model:?} is used by {by}")]
+    IndicatorReferenced {
+        model: String,
+        indicator: String,
+        by: Referrer,
+    },
 }
 
 /// The tables the records of an engine instance live in, as the detach
@@ -220,15 +241,6 @@ impl References {
         Ok(Self { rows, definitions })
     }
 
-    /// Reads only the `engine instances` rows, leaving the definitions
-    /// empty.
-    fn read_rows_only(store: &Store, txn: &Txn<'_>) -> Result<Self> {
-        Ok(Self {
-            rows: Self::read_rows(store, txn)?,
-            definitions: Vec::new(),
-        })
-    }
-
     fn read_rows(store: &Store, txn: &Txn<'_>) -> Result<Vec<(ModelInstance, Row)>> {
         let engine_instances = store.states.engine_instances();
         let mut rows = Vec::new();
@@ -260,9 +272,13 @@ impl References {
     }
 
     /// Returns the first holder of the indicator: a detector, in the order
-    /// of [`References::first_detector`], then a definition other than
-    /// `except`, in name order.
-    fn indicator_holder(&self, indicator: &str, except: Option<&str>) -> Option<Referrer> {
+    /// of [`References::first_detector`], then a definition `holds`
+    /// accepts, in name order.
+    fn indicator_holder(
+        &self,
+        indicator: &str,
+        holds: impl Fn(&TrainingDefinition) -> bool,
+    ) -> Option<Referrer> {
         if let Some((instance, detector_id)) =
             self.first_detector(|detector| detector.indicator.as_deref() == Some(indicator))
         {
@@ -274,8 +290,7 @@ impl References {
         self.definitions
             .iter()
             .find(|definition| {
-                definition.indicator.as_deref() == Some(indicator)
-                    && Some(definition.name.as_str()) != except
+                definition.indicator.as_deref() == Some(indicator) && holds(definition)
             })
             .map(|definition| Referrer::Definition {
                 name: definition.name.clone(),
@@ -345,7 +360,7 @@ impl Store {
                 }
                 .into());
             }
-            if let Some(by) = References::read(self, txn)?.indicator_holder(&name, None) {
+            if let Some(by) = References::read(self, txn)?.indicator_holder(&name, |_| true) {
                 return Err(TrainingError::IndicatorInUse {
                     indicator: name.clone(),
                     by,
@@ -377,7 +392,7 @@ impl Store {
                 if indicator_for_update(txn, cf, name)?.is_none() {
                     continue;
                 }
-                if let Some(by) = references.indicator_holder(name, None) {
+                if let Some(by) = references.indicator_holder(name, |_| true) {
                     return Err(TrainingError::IndicatorInUse {
                         indicator: name.clone(),
                         by,
@@ -606,7 +621,9 @@ impl Store {
             if indicator.model_id != model.id {
                 continue;
             }
-            if let Some(by) = references.indicator_holder(&indicator.name, Some(name)) {
+            if let Some(by) =
+                references.indicator_holder(&indicator.name, |definition| definition.name != *name)
+            {
                 return Err(TrainingError::IndicatorInUse {
                     indicator: indicator.name,
                     by,
@@ -619,12 +636,27 @@ impl Store {
 
     /// Refuses, within `txn` and before any write, the removal of `model`
     /// that [`Store::remove_customer_unsupervised_records`] refuses:
-    /// `ModelReferenced`, then `RunActive`.
-    pub(crate) fn check_model_unreferenced(&self, txn: &Txn<'_>, model: &Model) -> Result<()> {
+    /// `ModelReferenced`, then `RunActive`, then `IndicatorReferenced`;
+    /// returns the names of the indicators it checked, in name order.
+    ///
+    /// A definition of the model's customer, which the removal also
+    /// removes, does not hold an indicator, nor does the model's own. An
+    /// indicator the model gains after the check is not covered: the
+    /// removal deletes only what it checked or retries.
+    pub(crate) fn check_model_unreferenced(
+        &self,
+        txn: &Txn<'_>,
+        model: &Model,
+    ) -> Result<Vec<String>> {
         let name = &model.name;
         self.hold_instance_row(txn, model)?;
-        if let Some((instance, detector_id)) = References::read_rows_only(self, txn)?
-            .first_detector(|detector| detector.model == *name)
+        // Read before the holders: a writer that names an indicator writes
+        // it back, so one committing after this read makes the removal
+        // conflict, and one committing before it is in the scan below.
+        let indicators = self.indicators_for_update(txn, model.id)?;
+        let references = References::read(self, txn)?;
+        if let Some((instance, detector_id)) =
+            references.first_detector(|detector| detector.model == *name)
         {
             return Err(RemovalRefused::ModelReferenced {
                 model: name.clone(),
@@ -633,7 +665,38 @@ impl Store {
             }
             .into());
         }
-        self.check_no_active_run_concerning(txn, name)
+        self.check_no_active_run_concerning(txn, name)?;
+        for indicator in &indicators {
+            if let Some(by) = references.indicator_holder(indicator, |definition| {
+                definition.customer_id != model.customer_id && definition.name != *name
+            }) {
+                return Err(RemovalRefused::IndicatorReferenced {
+                    model: name.clone(),
+                    indicator: indicator.clone(),
+                    by,
+                }
+                .into());
+            }
+        }
+        Ok(indicators)
+    }
+
+    /// Returns the names of the indicators of model `id`, in name order,
+    /// each read for update within `txn`.
+    fn indicators_for_update(&self, txn: &Txn<'_>, id: u32) -> Result<Vec<String>> {
+        let cf = column_family(self.states.db(), tables::MODEL_INDICATORS)?;
+        let mut names = Vec::new();
+        for entry in txn.iterator_cf(cf, IteratorMode::Start) {
+            let (key, value) = entry.context("cannot read model indicators")?;
+            let indicator = ModelIndicator::from_key_value(&key, &value)?;
+            if indicator.model_id != id {
+                continue;
+            }
+            if indicator_for_update(txn, cf, &indicator.name)?.is_some_and(|i| i.model_id == id) {
+                names.push(indicator.name);
+            }
+        }
+        Ok(names)
     }
 
     /// Refuses, within `txn` and before any write, with `RunActive` while
@@ -724,9 +787,10 @@ mod tests {
 
     use super::*;
     use crate::{
-        Agent, AgentStatus, EngineDocumentRefs, EngineDocumentWrite, EngineInstanceState,
-        ModelMethod, ModelOwner, ModelRun, NewTrainingDefinition, Node, NodeProfile, RunId,
-        TrainedWith, TrainingDefinitionState, TrainingDefinitionUpdate,
+        Agent, AgentStatus, EngineDocumentError, EngineDocumentRefs, EngineDocumentWrite,
+        EngineInstanceState, ModelMethod, ModelOwner, ModelRun, NewTrainingDefinition, Node,
+        NodeProfile, NodeTable, RemovedUnsupervisedRecords, RunId, TrainedWith,
+        TrainingDefinitionState, TrainingDefinitionUpdate,
         model_lifecycle::ModelFilesPoint,
         test::{DbGuard, acquire_db_permit},
         training::{INSTANCE_REMOVED, TrainingHook},
@@ -975,8 +1039,19 @@ mod tests {
         applied: Option<Vec<EngineDetectorRef>>,
         pending: Option<Vec<EngineDetectorRef>>,
     ) -> Result<()> {
-        let node = store.node_map().get_by_id(node_id)?.unwrap().0;
-        store.node_map().update_with_engine_documents(
+        link_in(&mut store.node_map(), node_id, agent_key, applied, pending)
+    }
+
+    /// Writes the references as [`link`] does, through `nodes`.
+    fn link_in(
+        nodes: &mut NodeTable<'_>,
+        node_id: u32,
+        agent_key: &str,
+        applied: Option<Vec<EngineDetectorRef>>,
+        pending: Option<Vec<EngineDetectorRef>>,
+    ) -> Result<()> {
+        let node = nodes.get_by_id(node_id)?.unwrap().0;
+        nodes.update_with_engine_documents(
             node_id,
             &node.clone().into(),
             &node.into(),
@@ -2165,5 +2240,455 @@ mod tests {
                 agent_key: ENGINE.to_string(),
             }
         );
+    }
+
+    /// The model whose indicator [`INDICATOR`] another customer's holder
+    /// names.
+    const NAMED: &str = "m";
+    /// The model of [`OTHER_CUSTOMER`] a holder's detector names.
+    const FOREIGN: &str = "o";
+    /// The definition of [`OTHER_CUSTOMER`] that names [`INDICATOR`].
+    const HOLDER: &str = "x";
+
+    /// What names an indicator of a customer being removed, written
+    /// through the public writers.
+    #[derive(Clone, Copy, Debug)]
+    enum Holder {
+        /// A definition of another customer, created naming it.
+        NewDefinition,
+        /// A definition of another customer, updated to name it.
+        UpdatedDefinition,
+        /// A detector of another customer's applied document.
+        Applied,
+        /// A detector of another customer's pending document.
+        Pending,
+    }
+
+    impl Holder {
+        const ALL: [Self; 4] = [
+            Self::NewDefinition,
+            Self::UpdatedDefinition,
+            Self::Applied,
+            Self::Pending,
+        ];
+
+        /// Writes, before the reference, what it is written to.
+        fn prepare(self, f: &Fixture) {
+            if let Self::UpdatedDefinition = self {
+                define_foreign(f.store(), HOLDER, f.other_node, None);
+            }
+        }
+
+        /// Writes the reference to [`INDICATOR`].
+        fn write(self, store: &Store, other_node: u32) -> Result<()> {
+            self.write_in(store, &mut store.node_map(), other_node, Some(INDICATOR))
+        }
+
+        /// Writes the reference to `indicator`, or removes it if `None`, a
+        /// detector through `nodes`.
+        fn write_in(
+            self,
+            store: &Store,
+            nodes: &mut NodeTable<'_>,
+            other_node: u32,
+            indicator: Option<&str>,
+        ) -> Result<()> {
+            let detectors = vec![detector(1, FOREIGN, indicator)];
+            match self {
+                Self::NewDefinition => {
+                    if indicator.is_none() {
+                        return store.remove_training_definition(HOLDER);
+                    }
+                    store.insert_training_definition(foreign_definition(
+                        HOLDER, other_node, indicator,
+                    ))
+                }
+                Self::UpdatedDefinition => {
+                    let stored = definition(store, HOLDER);
+                    store.update_training_definition(
+                        HOLDER,
+                        TrainingDefinitionUpdate {
+                            method: stored.method,
+                            event_kind: stored.event_kind,
+                            sources: stored.sources,
+                            indicator: indicator.map(ToString::to_string),
+                            definition: stored.definition,
+                        },
+                    )
+                }
+                Self::Applied => link_in(nodes, other_node, ENGINE, Some(detectors), None),
+                Self::Pending => link_in(nodes, other_node, ENGINE, None, Some(detectors)),
+            }
+        }
+
+        /// Removes the reference.
+        fn release(self, store: &Store, other_node: u32) {
+            self.write_in(store, &mut store.node_map(), other_node, None)
+                .unwrap();
+        }
+
+        fn referrer(self, f: &Fixture) -> Referrer {
+            match self {
+                Self::NewDefinition | Self::UpdatedDefinition => by_definition(HOLDER),
+                Self::Applied | Self::Pending => by_detector(instance(f.other_node, ENGINE), 1),
+            }
+        }
+
+        /// Writes the reference with `action` run once after the writer's
+        /// checks and before its first commit, returning what the writer
+        /// returns.
+        fn write_racing(
+            self,
+            f: &Fixture,
+            action: impl Fn(&Store) + Send + Sync + 'static,
+        ) -> Result<()> {
+            let store = f.store();
+            match self {
+                Self::NewDefinition | Self::UpdatedDefinition => {
+                    store.set_training_hook(Some(once(action)));
+                    let written = self.write(store, f.other_node);
+                    store.set_training_hook(None);
+                    written
+                }
+                Self::Applied | Self::Pending => {
+                    let fired = Cell::new(0);
+                    let mut nodes = store.node_map();
+                    nodes.set_before_commit_hook(Some(Box::new(|| {
+                        fired.set(fired.get() + 1);
+                        if fired.get() == 1 {
+                            action(store);
+                        }
+                        Ok(())
+                    })));
+                    let written = self.write_in(store, &mut nodes, f.other_node, Some(INDICATOR));
+                    drop(nodes);
+                    assert_eq!(fired.get(), 1, "the retry refuses before its commit");
+                    written
+                }
+            }
+        }
+    }
+
+    fn foreign_definition(
+        name: &str,
+        other_node: u32,
+        indicator: Option<&str>,
+    ) -> NewTrainingDefinition {
+        NewTrainingDefinition {
+            customer_id: OTHER_CUSTOMER,
+            indicator: indicator.map(ToString::to_string),
+            ..new_definition(name, &instance(other_node, ENGINE))
+        }
+    }
+
+    fn define_foreign(store: &Store, name: &str, other_node: u32, indicator: Option<&str>) {
+        store
+            .insert_training_definition(foreign_definition(name, other_node, indicator))
+            .unwrap();
+    }
+
+    /// A store where [`CUSTOMER`] has the trained model [`NAMED`] with the
+    /// indicator [`INDICATOR`] and, if `earlier`, the trained model `a`
+    /// before it in name order, and the definition `d` naming
+    /// [`INDICATOR`]; [`OTHER_CUSTOMER`] has the trained model [`FOREIGN`].
+    fn removal_fixture(earlier: bool) -> Fixture {
+        let f = setup();
+        let store = f.store();
+        if earlier {
+            trained_model(store, "a", &f.engine());
+        }
+        trained_model(store, NAMED, &f.engine());
+        add_indicator(store, INDICATOR, model(store, NAMED).id);
+        define(store, "d", &f.engine());
+        set_definition_indicator(store, "d", INDICATOR);
+        let other = instance(f.other_node, ENGINE);
+        define_foreign(store, FOREIGN, f.other_node, None);
+        train(store, FOREIGN, &other);
+        f
+    }
+
+    fn indicator_referenced(by: Referrer) -> RemovalRefused {
+        RemovalRefused::IndicatorReferenced {
+            model: NAMED.to_string(),
+            indicator: INDICATOR.to_string(),
+            by,
+        }
+    }
+
+    fn removed(models: &[&str], definitions: &[&str]) -> RemovedUnsupervisedRecords {
+        RemovedUnsupervisedRecords {
+            models: models.iter().map(ToString::to_string).collect(),
+            definitions: definitions.iter().map(ToString::to_string).collect(),
+        }
+    }
+
+    /// Every classifier file of model `name`, with its contents.
+    fn classifier_files(store: &Store, name: &str) -> Vec<(std::path::PathBuf, Vec<u8>)> {
+        let dir = store.classifier_fm.model_dir(model(store, name).id);
+        let mut files: Vec<_> = std::fs::read_dir(dir)
+            .unwrap()
+            .map(|entry| {
+                let path = entry.unwrap().path();
+                let contents = std::fs::read(&path).unwrap();
+                (path, contents)
+            })
+            .collect();
+        files.sort_unstable();
+        files
+    }
+
+    /// Asserts that every indicator a definition or a detector names
+    /// exists.
+    fn assert_no_dangling_indicator(store: &Store) {
+        for definition in store.states.training_definitions().all().unwrap() {
+            if let Some(indicator) = &definition.indicator {
+                assert!(has_indicator(store, indicator), "{definition:?}");
+            }
+        }
+        for (instance, row) in store.states.engine_instances().all().unwrap() {
+            for detector in row.applied.detectors.iter().chain(&row.pending.detectors) {
+                if let Some(indicator) = &detector.indicator {
+                    assert!(
+                        has_indicator(store, indicator),
+                        "{instance:?}: {detector:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// A definition of another customer or a detector naming the
+    /// customer's indicator, accepted by its public writer, refuses the
+    /// removal of the indicator's model until it is removed; the
+    /// customer's own definition naming it does not.
+    #[test]
+    fn customer_removal_refuses_an_indicator_another_holder_names() {
+        for holder in Holder::ALL {
+            let f = removal_fixture(true);
+            let store = f.store();
+            holder.prepare(&f);
+            holder.write(store, f.other_node).unwrap();
+            let classifiers = classifier_files(store, NAMED);
+            let held = (
+                store.training_definition(HOLDER).unwrap(),
+                store
+                    .engine_instance_state(&instance(f.other_node, ENGINE))
+                    .unwrap(),
+                model(store, FOREIGN),
+                definition(store, FOREIGN),
+                model(store, NAMED),
+                definition(store, NAMED),
+                definition(store, "d"),
+                store
+                    .model_indicator_map()
+                    .get(INDICATOR)
+                    .unwrap()
+                    .map(|indicator| indicator.model_id),
+            );
+
+            let error = store
+                .remove_customer_unsupervised_records(CUSTOMER)
+                .unwrap_err();
+            assert_eq!(
+                error.downcast_ref::<RemovalRefused>(),
+                Some(&indicator_referenced(holder.referrer(&f))),
+                "{holder:?}"
+            );
+            // The model before it stays removed; the refused one, its
+            // records and the holder's stay.
+            assert!(!has_model(store, "a"));
+            assert!(store.training_definition("a").unwrap().is_none());
+            assert_eq!(
+                (
+                    store.training_definition(HOLDER).unwrap(),
+                    store
+                        .engine_instance_state(&instance(f.other_node, ENGINE))
+                        .unwrap(),
+                    model(store, FOREIGN),
+                    definition(store, FOREIGN),
+                    model(store, NAMED),
+                    definition(store, NAMED),
+                    definition(store, "d"),
+                    store
+                        .model_indicator_map()
+                        .get(INDICATOR)
+                        .unwrap()
+                        .map(|indicator| indicator.model_id),
+                ),
+                held,
+                "{holder:?}"
+            );
+            assert_eq!(classifier_files(store, NAMED), classifiers);
+
+            // A refusal with nothing before it changes nothing.
+            let before = dump(store);
+            let error = store
+                .remove_customer_unsupervised_records(CUSTOMER)
+                .unwrap_err();
+            assert_eq!(
+                error.downcast_ref::<RemovalRefused>(),
+                Some(&indicator_referenced(holder.referrer(&f))),
+                "{holder:?}"
+            );
+            assert_eq!(dump(store), before, "{holder:?}");
+            assert_eq!(classifier_files(store, NAMED), classifiers);
+
+            holder.release(store, f.other_node);
+            assert_eq!(
+                store
+                    .remove_customer_unsupervised_records(CUSTOMER)
+                    .unwrap(),
+                removed(&[NAMED], &["d", NAMED]),
+                "{holder:?}"
+            );
+            assert!(!has_indicator(store, INDICATOR));
+            assert!(has_model(store, FOREIGN));
+            assert_no_dangling_indicator(store);
+            assert_eq!(
+                store
+                    .remove_customer_unsupervised_records(CUSTOMER)
+                    .unwrap(),
+                RemovedUnsupervisedRecords::default()
+            );
+        }
+    }
+
+    /// A detector of the customer's own instance naming one of its
+    /// indicators survives the removal too, and refuses it.
+    #[test]
+    fn customer_removal_refuses_an_indicator_its_own_detector_names() {
+        let f = removal_fixture(false);
+        let store = f.store();
+        trained_model(store, "n", &f.engine());
+        link(
+            store,
+            f.node,
+            ENGINE,
+            None,
+            Some(vec![detector(2, "n", Some(INDICATOR))]),
+        )
+        .unwrap();
+        let error = store
+            .remove_customer_unsupervised_records(CUSTOMER)
+            .unwrap_err();
+        assert_eq!(
+            error.downcast_ref::<RemovalRefused>(),
+            Some(&indicator_referenced(by_detector(f.engine(), 2)))
+        );
+        assert!(has_model(store, NAMED));
+        assert!(has_indicator(store, INDICATOR));
+    }
+
+    /// A reference committed after the removal's guard read and before its
+    /// commit makes the removal retry and refuse, also one that creates a
+    /// definition or an `engine instances` row the guard did not see.
+    #[test]
+    fn a_reference_committed_before_a_customer_removal_refuses_it() {
+        for holder in Holder::ALL {
+            let f = removal_fixture(false);
+            let store = f.store();
+            holder.prepare(&f);
+            let other_node = f.other_node;
+            let reached = once_before_commit(&f, move |store| {
+                holder.write(store, other_node).unwrap();
+            });
+            let error = store
+                .remove_customer_unsupervised_records(CUSTOMER)
+                .unwrap_err();
+            store.set_model_files_hook(None);
+            assert_eq!(
+                reached.load(Ordering::SeqCst),
+                1,
+                "{holder:?}: the retry refuses"
+            );
+            assert_eq!(
+                error.downcast_ref::<RemovalRefused>(),
+                Some(&indicator_referenced(holder.referrer(&f))),
+                "{holder:?}"
+            );
+            assert!(has_model(store, NAMED));
+            assert!(has_indicator(store, INDICATOR));
+            assert_no_dangling_indicator(store);
+        }
+    }
+
+    /// An indicator the model gains after the removal's guard read its
+    /// indicators, named by another customer's definition before the
+    /// removal deletes it, makes the removal retry and refuse.
+    #[test]
+    fn an_indicator_added_after_a_customer_removal_guard_refuses_it() {
+        const LATE: &str = "late";
+        let f = removal_fixture(false);
+        let store = f.store();
+        let model_id = model(store, NAMED).id;
+        let other_node = f.other_node;
+        let reached = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&reached);
+        let weak = Arc::downgrade(&f.store);
+        store.set_model_files_hook(Some(Arc::new(move |point| {
+            if point == ModelFilesPoint::Checked
+                && counter.fetch_add(1, Ordering::SeqCst) == 0
+                && let Some(store) = weak.upgrade()
+            {
+                add_indicator(&store, LATE, model_id);
+                define_foreign(&store, HOLDER, other_node, Some(LATE));
+            }
+            Ok(())
+        })));
+        let error = store
+            .remove_customer_unsupervised_records(CUSTOMER)
+            .unwrap_err();
+        store.set_model_files_hook(None);
+        assert_eq!(reached.load(Ordering::SeqCst), 1, "the retry refuses");
+        assert_eq!(
+            error.downcast_ref::<RemovalRefused>(),
+            Some(&RemovalRefused::IndicatorReferenced {
+                model: NAMED.to_string(),
+                indicator: LATE.to_string(),
+                by: by_definition(HOLDER),
+            })
+        );
+        assert!(has_model(store, NAMED));
+        assert!(has_indicator(store, LATE));
+        assert_no_dangling_indicator(store);
+    }
+
+    /// A removal committed after a reference's checks and before its commit
+    /// makes the reference retry and refuse the indicator that is gone.
+    #[test]
+    fn a_customer_removal_committed_before_a_reference_refuses_it() {
+        for holder in Holder::ALL {
+            let f = removal_fixture(false);
+            let store = f.store();
+            holder.prepare(&f);
+            let error = holder
+                .write_racing(&f, |store| {
+                    assert_eq!(
+                        store
+                            .remove_customer_unsupervised_records(CUSTOMER)
+                            .unwrap(),
+                        removed(&[NAMED], &["d", NAMED])
+                    );
+                })
+                .unwrap_err();
+            match holder {
+                Holder::NewDefinition | Holder::UpdatedDefinition => assert_eq!(
+                    error.downcast_ref::<TrainingError>(),
+                    Some(&TrainingError::IndicatorNotFound {
+                        indicator: INDICATOR.to_string(),
+                    })
+                ),
+                Holder::Applied | Holder::Pending => assert_eq!(
+                    error.downcast_ref::<EngineDocumentError>(),
+                    Some(&EngineDocumentError::IndicatorNotFound {
+                        agent_key: ENGINE.to_string(),
+                        indicator: INDICATOR.to_string(),
+                    })
+                ),
+            }
+            assert!(!has_model(store, NAMED), "{holder:?}");
+            assert!(!has_indicator(store, INDICATOR));
+            assert_no_dangling_indicator(store);
+        }
     }
 }
