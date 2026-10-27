@@ -1704,8 +1704,9 @@ mod tests {
         assert_eq!(failed.reason.as_deref(), Some(reason));
         assert_eq!(store.model_run(populated.clone).unwrap(), None);
         assert_eq!(store.training_definition("t").unwrap(), None);
-        // The detector id mark outlives the detach; it is read through the
-        // node's hostname, so it reads 0 once the node is gone.
+        // The detector id mark, 1 from the detector `populate` links,
+        // outlives the detach; it is read through the node's hostname, so it
+        // reads 0 once the node is gone.
         let node_kept = store.node_map().get_by_id(f.node).unwrap().is_some();
         assert_eq!(
             store.engine_instance_state(&engine).unwrap(),

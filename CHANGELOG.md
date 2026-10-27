@@ -29,6 +29,13 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   most `last_detector_id` that neither stored document of the instance names.
   The engine keeps a detector's state under its id, and a new detector given
   a removed one's id inherited it.
+- **BREAKING**: Bumped the database format to `0.58.0` (the database format
+  marker, not a crate version). The migration from `0.57.x`, and through the
+  earlier steps from every older supported format, creates the column family
+  of the detector id marks and gives every stored engine instance on a node
+  with a hostname the mark of its agent lookup key: the highest detector id
+  its applied and pending documents name, or 0. Other tables are not changed.
+  An interrupted run can be retried.
 
 ## [0.57.0] - 2026-10-27
 
