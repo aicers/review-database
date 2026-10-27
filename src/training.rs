@@ -2324,6 +2324,7 @@ mod tests {
         assert_eq!(record.instance, Some(engine.clone()));
         assert_eq!(record.trained_run_id, first.run.id);
         assert_eq!(record.trained_definition, first.definition);
+        assert_eq!(record.trained_sources, vec!["sensor-a".to_string()]);
         assert!(record.trained_at >= before);
         assert_eq!(record.previous, None);
         let succeeded = run(store, first.run.id);
@@ -2331,9 +2332,9 @@ mod tests {
         assert!(succeeded.updated_at >= before);
         assert_eq!(state(store, "d"), TrainingDefinitionState::Ready);
 
-        store
-            .update_training_definition("d", update_with(&eps("2.0")))
-            .unwrap();
+        let mut update = update_with(&eps("2.0"));
+        update.sources = vec!["sensor-b".to_string()];
+        store.update_training_definition("d", update).unwrap();
         let second = store.start_training_run("d").unwrap();
         assert_eq!(second.definition, eps("2.0"));
         assert_eq!(state(store, "d"), TrainingDefinitionState::Training);
@@ -2345,6 +2346,7 @@ mod tests {
         assert_eq!(record.id, replaced.id);
         assert_eq!(record.trained_run_id, second.run.id);
         assert_eq!(record.trained_definition, eps("2.0"));
+        assert_eq!(record.trained_sources, vec!["sensor-b".to_string()]);
         let previous = record.previous.unwrap();
         assert_eq!(previous.trained_run_id, first.run.id);
         assert_eq!(previous.trained_definition, eps("5.0"));
@@ -2555,6 +2557,7 @@ mod tests {
         // (b)
         let mut target = new_definition("clone", instance(f.node, OTHER_ENGINE));
         target.definition.clone_from(&record.trained_definition);
+        target.sources = vec!["sensor-c".to_string()];
         let clone = store
             .start_clone_run("source", record.trained_run_id, target)
             .unwrap();
@@ -2564,6 +2567,7 @@ mod tests {
             .unwrap();
         let cloned = model(store, "clone");
         assert_eq!(cloned.trained_definition, eps("5.0"));
+        assert_eq!(cloned.trained_sources, vec!["sensor-c".to_string()]);
         assert_eq!(cloned.trained_run_id, clone.id);
         assert_eq!(cloned.instance, Some(instance(f.node, OTHER_ENGINE)));
         let target = definition(store, "clone");

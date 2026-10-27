@@ -1292,7 +1292,10 @@ mod tests {
                 },
                 owner(),
                 at(2_000),
-                trained(2, "eps = 2.0"),
+                TrainedWith {
+                    sources: vec!["piglet.other".to_string()],
+                    ..trained(2, "eps = 2.0")
+                },
             )
             .unwrap();
         assert_eq!(
@@ -1394,6 +1397,7 @@ mod tests {
                     trained_definition: "eps = 5.0".to_string(),
                 }),
                 clusters_applied: None,
+                trained_sources: vec!["piglet.other".to_string()],
                 ..first.clone()
             }
         );
