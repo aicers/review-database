@@ -338,6 +338,22 @@ mod test {
     }
 
     #[test]
+    fn removed_id_is_reused() {
+        let (_permit, store) = setup_store();
+        let table = store.network_map();
+
+        for name in ["Network1", "Network2", "Network3"] {
+            table.insert(create_network(name, "Description")).unwrap();
+        }
+        table.remove(1).unwrap();
+
+        let id = table
+            .insert(create_network("Network4", "Description"))
+            .unwrap();
+        assert_eq!(id, 1);
+    }
+
+    #[test]
     fn update() {
         let (_permit, store) = setup_store();
         let mut table = store.network_map();

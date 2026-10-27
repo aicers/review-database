@@ -5,6 +5,25 @@ file is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), and
 this project adheres to [Semantic
 Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- **BREAKING**: A sampling-policy ID is no longer reused once its policy is
+  deleted, because the Data Store and the Time Series Generator keep a
+  policy's time series and checkpoint under its ID, and a new policy given
+  the old ID inherited both. `remove` and `remove_with_transaction` are no
+  longer available on the table `Store::sampling_policy_map` returns; delete
+  a sampling policy with `deactivate`, which retires its ID. A deleted
+  policy's name can be used again, under a new ID. The other indexed tables
+  still reuse freed IDs.
+- **BREAKING**: Bumped the database format to `0.57.0` (the database format
+  marker, not a crate version). The migration from `0.56.x`, and through the
+  earlier steps from every older supported format, retires every
+  sampling-policy ID freed before the upgrade, so the next policy inserted
+  takes an ID never used before. Records and other tables are not changed.
+  An interrupted run can be retried.
+
 ## [0.56.0] - 2026-10-23
 
 ### Added
@@ -2155,6 +2174,7 @@ AsRef<[u8]>`). This change accommodates scenarios where the information stored
 - Modified `FtpBruteForce` by adding an `is_internal` field which is a boolean
   indicating whether it is internal or not.
 
+[Unreleased]: https://github.com/aicers/review-database/compare/0.56.0...main
 [0.56.0]: https://github.com/aicers/review-database/compare/0.55.0...0.56.0
 [0.55.0]: https://github.com/aicers/review-database/compare/0.54.0...0.55.0
 [0.54.0]: https://github.com/aicers/review-database/compare/0.53.0...0.54.0

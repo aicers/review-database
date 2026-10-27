@@ -780,8 +780,9 @@ mod iteration {
 }
 
 /// The opt-in list of record types whose [`IndexedTable`] may be written
-/// through the generic methods `put`, `remove`, `deactivate` and
-/// `update_with_transaction`.
+/// through the generic methods `put`, `deactivate` and
+/// `update_with_transaction`, and, for the subset that also implements
+/// [`indexed_writes::Recycling`], `remove`.
 ///
 /// `tables::Model` is deliberately absent: a model row is created, changed
 /// and removed only together with its per-model records and classifier files,
@@ -805,6 +806,29 @@ mod indexed_writes {
     impl Eligible for tables::SamplingPolicy {}
     impl Eligible for types::Status {}
     impl Eligible for tables::TriageResponse {}
+
+    /// The opt-in list of [`Eligible`] record types whose [`IndexedTable`]
+    /// may be written through `remove` and `remove_with_transaction`, which
+    /// put the freed ID on the free list for the next insert to reuse.
+    ///
+    /// `tables::SamplingPolicy` is deliberately absent: a sampling-policy ID
+    /// is never reused, because the Data Store keeps a policy's time series
+    /// and the Time Series Generator its checkpoint under that ID after the
+    /// policy is deleted, and a new policy under a reused ID would inherit
+    /// both. A sampling policy is deleted with `deactivate` instead, which
+    /// retires its ID. Every other `Eligible` type recycles.
+    ///
+    /// [`IndexedTable`]: super::IndexedTable
+    pub trait Recycling: Eligible {}
+
+    impl Recycling for crate::Category {}
+    impl Recycling for tables::CsvColumnExtra {}
+    impl Recycling for tables::DataSource {}
+    impl Recycling for tables::InnerNode {}
+    impl Recycling for tables::Network {}
+    impl Recycling for types::Qualifier {}
+    impl Recycling for types::Status {}
+    impl Recycling for tables::TriageResponse {}
 }
 
 /// Represents a table that can be iterated over.
@@ -1097,17 +1121,23 @@ impl<'d, R> IndexedTable<'d, R> {
 
     /// Removes a record with the given ID.
     ///
+    /// The ID goes on the free list, and the next insert reuses it. A table
+    /// whose IDs must not be reused deletes with
+    /// [`deactivate`](Self::deactivate) instead.
+    ///
     /// # Errors
     ///
     /// Returns an error if the database operation fails.
     pub fn remove(&self, id: u32) -> Result<Vec<u8>>
     where
-        R: Indexable + indexed_writes::Eligible,
+        R: Indexable + indexed_writes::Recycling,
     {
         self.indexed_map.remove::<R>(id)
     }
 
     /// Removes a record with the given ID within a transaction.
+    ///
+    /// The ID goes on the free list, as with [`remove`](Self::remove).
     ///
     /// # Errors
     ///
@@ -1118,7 +1148,7 @@ impl<'d, R> IndexedTable<'d, R> {
         txn: &rocksdb::Transaction<rocksdb::OptimisticTransactionDB>,
     ) -> Result<Vec<u8>>
     where
-        R: Indexable + indexed_writes::Eligible,
+        R: Indexable + indexed_writes::Recycling,
     {
         self.indexed_map.remove_with_transaction::<R>(id, txn)
     }
@@ -1153,6 +1183,9 @@ impl<'d, R> IndexedTable<'d, R> {
     }
 
     /// Deactivates a key-value pair with the given ID.
+    ///
+    /// The record is deleted and its ID marked inactive, so no later insert
+    /// is given it.
     ///
     /// # Errors
     ///
