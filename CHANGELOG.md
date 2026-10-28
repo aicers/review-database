@@ -5,6 +5,25 @@ file is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), and
 this project adheres to [Semantic
 Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- **BREAKING**: Bumped the database format to `0.60.0` (the database format
+  marker, not a crate version). The migration from `0.59.x`, and through the
+  earlier steps from every older supported format, deletes the `data sources`
+  column family and every row in it. Those rows survive only in backups taken
+  before the migration; such a backup can be restored with
+  `backup::restore_states_offline` followed by `write_version_markers` naming
+  the format the backup was taken at, for use with a `0.59.x` build, not with
+  `Store::restore_from_backup` or `Store::restore_from_latest_backup`. Nothing
+  else in the store changes, and an interrupted run can be retried.
+
+### Removed
+
+- **BREAKING**: Removed data sources: `Store::data_source_map`, `DataSource`,
+  `DataType` and `DataSourceUpdate` no longer exist.
+
 ## [0.59.0] - 2026-10-28
 
 ### Added
@@ -2284,6 +2303,7 @@ AsRef<[u8]>`). This change accommodates scenarios where the information stored
 - Modified `FtpBruteForce` by adding an `is_internal` field which is a boolean
   indicating whether it is internal or not.
 
+[Unreleased]: https://github.com/aicers/review-database/compare/0.59.0...main
 [0.59.0]: https://github.com/aicers/review-database/compare/0.58.0...0.59.0
 [0.58.0]: https://github.com/aicers/review-database/compare/0.57.0...0.58.0
 [0.57.0]: https://github.com/aicers/review-database/compare/0.56.0...0.57.0

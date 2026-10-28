@@ -45,7 +45,6 @@ mod private {
     impl Sealed for tables::CoreComponent {}
     impl Sealed for tables::CsvColumnExtra {}
     impl Sealed for tables::CustomerDataDeletionJob {}
-    impl Sealed for tables::DataSource {}
     impl Sealed for tables::Host {}
     impl Sealed for tables::InnerNode {}
     impl Sealed for tables::InstanceAllocation {}
