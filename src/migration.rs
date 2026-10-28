@@ -21,12 +21,12 @@ use crate::{
     migration::migration_structures::{
         AgentValueV0_46, AgentValueV0_47, BlocklistDceRpcFieldsStoredV0_42,
         BlocklistDceRpcFieldsStoredV0_44, BlocklistDhcpFieldsStoredV0_42,
-        BlocklistDhcpFieldsStoredV0_44, EngineInstanceRefsV0_57, ExternalServiceValueV0_46,
-        ExternalServiceValueV0_47, HttpThreatFieldsStoredV0_43, HttpThreatFieldsStoredV0_44,
-        ModelV0_56, NodeV0_56, OperationAttemptValueV0_47, OperationAttemptValueV0_48,
-        OperationAttemptValueV0_49, SamplingPolicyV0_56, TrainingDefinitionV0_56,
-        V0_46_COUNTRY_CODE_LOOKUP_FAILED, migrate_event_stored_schema_to_v0_46,
-        validate_event_stored_schema_v0_46,
+        BlocklistDhcpFieldsStoredV0_44, CustomerDataDeletionJobValueV0_58, EngineInstanceRefsV0_57,
+        ExternalServiceValueV0_46, ExternalServiceValueV0_47, HttpThreatFieldsStoredV0_43,
+        HttpThreatFieldsStoredV0_44, ModelV0_56, NodeV0_56, OperationAttemptValueV0_47,
+        OperationAttemptValueV0_48, OperationAttemptValueV0_49, SamplingPolicyV0_56,
+        TrainingDefinitionV0_56, V0_46_COUNTRY_CODE_LOOKUP_FAILED,
+        migrate_event_stored_schema_to_v0_46, validate_event_stored_schema_v0_46,
     },
     tables::{
         ACCESS_TOKENS, ACCOUNTS, ALLOW_NETWORKS, BLOCK_NETWORKS, CUSTOMERS, FILTERS, NETWORK_TAGS,
@@ -39,7 +39,7 @@ use crate::{
 /// It names the current database format and is independent of the crate
 /// package version: a release does not move it, and a format change does,
 /// whatever the crate version is at the time.
-pub(crate) const DATABASE_FORMAT_VERSION: &str = "0.58.0";
+pub(crate) const DATABASE_FORMAT_VERSION: &str = "0.59.0";
 
 /// The range of format markers that use the current database format.
 ///
@@ -50,7 +50,7 @@ pub(crate) const DATABASE_FORMAT_VERSION: &str = "0.58.0";
 /// `">=X.Y.0,<X.(Y+1).0"` and appends a step to the migration table. A
 /// release, or any change without a format change, leaves all three as they
 /// are. No build writes a prerelease marker.
-const COMPATIBLE_VERSION_REQ: &str = ">=0.58.0,<0.59.0";
+const COMPATIBLE_VERSION_REQ: &str = ">=0.59.0,<0.60.0";
 
 /// Number of event records applied in each atomic migration write.
 const EVENT_MIGRATION_BATCH_SIZE: usize = 100;
@@ -246,6 +246,11 @@ pub fn migrate_data_dir<P: AsRef<Path>>(
             VersionReq::parse(">=0.57.0,<0.58.0")?,
             Version::parse("0.58.0")?,
             |data_dir, _backup_dir, _locator| migrate_0_57_to_0_58(data_dir),
+        ),
+        (
+            VersionReq::parse(">=0.58.0,<0.59.0")?,
+            Version::parse("0.59.0")?,
+            |data_dir, _backup_dir, _locator| migrate_0_58_to_0_59(data_dir),
         ),
     ];
 
@@ -740,6 +745,61 @@ fn migrate_0_57_to_0_58(data_dir: &Path) -> Result<()> {
             .with_context(|| format!("failed to create '{name}' column family"))?;
     }
     migrate_detector_id_marks_v0_58(&db)
+}
+
+/// Migrates a database in the 0.58.x format to 0.59.0.
+///
+/// Rewrites every stored customer deletion job, whose value in the 0.58
+/// layout is its service results alone, into the 0.59 layout: its service
+/// results, no periodic time series IDs and no abandoned hosts.
+///
+/// No other family is written. A rerun is safe: a value is read as the 0.59
+/// layout first and left as it is if it decodes. Bincode rejects trailing
+/// bytes, so neither layout decodes as the other, and a value matching
+/// neither fails the migration.
+fn migrate_0_58_to_0_59(data_dir: &Path) -> Result<()> {
+    let db_path = data_dir.join("states.db");
+    let mut opts = rocksdb::Options::default();
+    opts.create_if_missing(false);
+    opts.create_missing_column_families(false);
+    let column_families = map_names_for_existing_format(&opts, &db_path)?;
+    let db: rocksdb::OptimisticTransactionDB<rocksdb::SingleThreaded> =
+        rocksdb::OptimisticTransactionDB::open_cf(&opts, &db_path, column_families)
+            .context("failed to open database for the 0.59.0 migration")?;
+
+    let cf = db
+        .cf_handle(crate::tables::CUSTOMER_DELETION_JOBS)
+        .context("customer deletion jobs column family not found")?;
+    let mut batch = rocksdb::WriteBatchWithTransaction::<true>::default();
+    let mut converted = 0usize;
+    for entry in db.iterator_cf(cf, rocksdb::IteratorMode::Start) {
+        let (key, value) = entry.context("failed to read a customer deletion job")?;
+        if bincode::DefaultOptions::new()
+            .deserialize::<crate::tables::StoredCustomerDataDeletionJob>(&value)
+            .is_ok()
+        {
+            continue;
+        }
+        let service_results: CustomerDataDeletionJobValueV0_58 = bincode::DefaultOptions::new()
+            .deserialize(&value)
+            .with_context(|| {
+                format!(
+                    "customer deletion job with key {} matches neither the 0.59 nor the 0.58 layout",
+                    data_encoding::HEXLOWER.encode(&key)
+                )
+            })?;
+        let migrated: crate::tables::StoredCustomerDataDeletionJob =
+            (service_results, Vec::new(), Vec::new());
+        batch.put_cf(
+            cf,
+            &key,
+            bincode::DefaultOptions::new().serialize(&migrated)?,
+        );
+        converted += 1;
+    }
+    write_migration_batch(&db, &mut batch, "customer deletion job")?;
+    info!("Layout migration of customer deletion jobs complete: converted_count={converted}");
+    Ok(())
 }
 
 /// Writes the detector id marks of the engine instance rows of `db`, as
@@ -2644,7 +2704,7 @@ mod tests {
     use super::{
         COMPATIBLE_VERSION_REQ, COUNTRY_CODE_SWAP_CHECKPOINT_KEY, COUNTRY_CODE_SWAP_COMPLETED_KEY,
         DATABASE_FORMAT_VERSION, VERSION_FILE_NAME, VERSION_TMP_FILE_NAME, create_version_file,
-        migrate_0_46_to_0_47, migrate_0_56_to_0_57, migrate_0_57_to_0_58,
+        migrate_0_46_to_0_47, migrate_0_56_to_0_57, migrate_0_57_to_0_58, migrate_0_58_to_0_59,
         migrate_country_code_placeholders_inner, migrate_data_dir, migrate_event_country_codes,
         migrate_event_stored_schema_to_v0_46, read_version_file, retrieve_or_create_version,
         write_version_markers,
@@ -6378,10 +6438,20 @@ mod tests {
         let db: rocksdb::OptimisticTransactionDB =
             rocksdb::OptimisticTransactionDB::open_cf(&opts, &db_path, crate::tables::MAP_NAMES)
                 .unwrap();
+        let service_results = vec![crate::CustomerDataDeletionServiceResult {
+            service: crate::CustomerDataDeletionService::Review,
+            host_fqdns: vec!["review.example".to_string()],
+            status: crate::CustomerDataDeletionStatus::InProgress,
+            requested_at: 1,
+            completed_at: None,
+            error: None,
+        }];
         db.put_cf(
             db.cf_handle(crate::tables::CUSTOMER_DELETION_JOBS).unwrap(),
-            b"job-key",
-            b"job-value",
+            1_u32.to_be_bytes(),
+            bincode::DefaultOptions::new()
+                .serialize(&service_results)
+                .unwrap(),
         )
         .unwrap();
         drop(db);
@@ -6390,8 +6460,10 @@ mod tests {
         assert_current_cf_value(
             &db_path,
             crate::tables::CUSTOMER_DELETION_JOBS,
-            b"job-key",
-            b"job-value",
+            &1_u32.to_be_bytes(),
+            &bincode::DefaultOptions::new()
+                .serialize(&(service_results, Vec::<String>::new(), Vec::<String>::new()))
+                .unwrap(),
         );
     }
 
@@ -7614,6 +7686,132 @@ mod tests {
         );
         assert_eq!(state(1).last_detector_id, 0);
         assert_eq!(state(2).last_detector_id, 0);
+    }
+
+    /// The 0.59 step rewrites every customer deletion job stored as its
+    /// service results alone into its service results, no periodic time
+    /// series IDs and no abandoned hosts. A job already in the 0.59 layout is
+    /// left as it is, and a rerun changes nothing.
+    #[test]
+    fn migration_from_v0_58_adds_job_lists() {
+        use crate::{
+            CustomerDataDeletionJob, CustomerDataDeletionService,
+            CustomerDataDeletionServiceResult, CustomerDataDeletionStatus,
+        };
+
+        let permit = acquire_db_permit();
+        let data_dir = tempfile::tempdir().unwrap();
+        let backup_dir = tempfile::tempdir().unwrap();
+        let db_path = data_dir.path().join("states.db");
+        create_states_db(&db_path, crate::tables::MAP_NAMES);
+        write_version(data_dir.path(), "0.58.0");
+        write_version(backup_dir.path(), "0.58.0");
+
+        let result = |service, host: &str, status| CustomerDataDeletionServiceResult {
+            service,
+            host_fqdns: vec![host.to_string()],
+            status,
+            requested_at: 10,
+            completed_at: Some(20),
+            error: None,
+        };
+        let old_results = vec![
+            result(
+                CustomerDataDeletionService::Review,
+                "a.example",
+                CustomerDataDeletionStatus::Succeeded,
+            ),
+            result(
+                CustomerDataDeletionService::Sensor,
+                "a.example",
+                CustomerDataDeletionStatus::Failed,
+            ),
+        ];
+        let current = CustomerDataDeletionJob {
+            customer_id: 2,
+            service_results: vec![result(
+                CustomerDataDeletionService::Review,
+                "b.example",
+                CustomerDataDeletionStatus::InProgress,
+            )],
+            periodic_time_series_ids: vec!["3".to_string()],
+            abandoned_hosts: vec!["b.example".to_string()],
+        };
+        let current_value = bincode::DefaultOptions::new()
+            .serialize(&(
+                &current.service_results,
+                &current.periodic_time_series_ids,
+                &current.abandoned_hosts,
+            ))
+            .unwrap();
+        put_entries(
+            &db_path,
+            crate::tables::MAP_NAMES,
+            crate::tables::CUSTOMER_DELETION_JOBS,
+            &[
+                (
+                    1_u32.to_be_bytes().to_vec(),
+                    bincode::DefaultOptions::new()
+                        .serialize(&old_results)
+                        .unwrap(),
+                ),
+                (current.customer_id.to_be_bytes().to_vec(), current_value),
+            ],
+        );
+
+        migrate_data_dir(data_dir.path(), backup_dir.path(), None).unwrap();
+        let jobs = || -> Entries {
+            let db = open_states_db(&db_path, crate::tables::MAP_NAMES);
+            all_entries(&db, crate::tables::CUSTOMER_DELETION_JOBS)
+        };
+        let migrated = jobs();
+
+        // An interrupted chain runs the step again.
+        migrate_0_58_to_0_59(data_dir.path()).unwrap();
+        assert_eq!(jobs(), migrated);
+
+        let test_schema = TestSchema::new_with_dir(permit, data_dir, backup_dir);
+        let table = test_schema.store.customer_data_deletion_map();
+        assert_eq!(
+            table.get(1).unwrap(),
+            Some(CustomerDataDeletionJob::new(1, old_results))
+        );
+        assert_eq!(table.get(current.customer_id).unwrap(), Some(current));
+    }
+
+    /// A customer deletion job matching neither the 0.59 nor the 0.58 layout
+    /// fails the 0.59 step and is left as it is.
+    #[test]
+    fn migration_from_v0_58_rejects_a_job_matching_neither_layout() {
+        let data_dir = tempfile::tempdir().unwrap();
+        let backup_dir = tempfile::tempdir().unwrap();
+        let db_path = data_dir.path().join("states.db");
+        create_states_db(&db_path, crate::tables::MAP_NAMES);
+        write_version(data_dir.path(), "0.58.0");
+        write_version(backup_dir.path(), "0.58.0");
+        put_entries(
+            &db_path,
+            crate::tables::MAP_NAMES,
+            crate::tables::CUSTOMER_DELETION_JOBS,
+            &[(1_u32.to_be_bytes().to_vec(), b"job-value".to_vec())],
+        );
+
+        let error = migrate_data_dir(data_dir.path(), backup_dir.path(), None).unwrap_err();
+
+        assert!(
+            format!("{error:#}").contains("matches neither the 0.59 nor the 0.58 layout"),
+            "{error:#}"
+        );
+        assert_eq!(
+            read_version_file(&data_dir.path().join(VERSION_FILE_NAME)).unwrap(),
+            Version::parse("0.58.0").unwrap()
+        );
+        assert_current_cf_value(
+            &db_path,
+            crate::tables::CUSTOMER_DELETION_JOBS,
+            &1_u32.to_be_bytes(),
+            b"job-value",
+        );
     }
 
     #[test]

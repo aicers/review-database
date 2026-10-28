@@ -5,6 +5,44 @@ file is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), and
 this project adheres to [Semantic
 Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- `CustomerDataDeletionService::DataStore` records the deletion of a
+  customer's data in the Data Store; its result names the Data Store's server
+  name, `<instance:03>.giganto.<hostname>`, as its only host FQDN.
+  `CustomerDataDeletionService::ModuleRemoval` records the uninstall of the
+  modules installed on one of the customer's hosts, one result per host, which
+  names that host as its only host FQDN. An exhaustive match on
+  `CustomerDataDeletionService` must handle the new variants.
+- `CustomerDataDeletionJob` has `periodic_time_series_ids`, the decimal IDs of
+  the sampling policies whose periodic time series the Data Store deletes,
+  kept with the job because the policies are removed in the Review stage, and
+  `abandoned_hosts`, the hosts a System Administrator gave up on, sorted,
+  without duplicates, and each a host FQDN of the job's `Review` result.
+  `add_service` and `update_service` leave both unchanged, and `update`
+  compares and writes them with the results; it refuses abandoned hosts that
+  break those rules. A struct literal of `CustomerDataDeletionJob` must name
+  both fields, or be replaced by `CustomerDataDeletionJob::new`.
+- `Table<CustomerDataDeletionJob>::give_up` writes a job whole, as `update`
+  does, when giving up on hosts: the abandoned hosts, which keep every host
+  already given up, the service results with the retry's status reset, and
+  the policy IDs, in one write. It refuses a stale job, and service results
+  whose services or host FQDNs differ from the stored job's at any position.
+- `CustomerDataDeletionJob::new` creates a job with no policy IDs and no
+  abandoned hosts.
+
+### Changed
+
+- A customer deletion job's `Review` result may have no host FQDN, for a
+  customer with no node left that still has records in the Central Manager.
+- **BREAKING**: Bumped the database format to `0.59.0` (the database format
+  marker, not a crate version). The migration from `0.58.x`, and through the
+  earlier steps from every older supported format, rewrites every stored
+  customer deletion job with no periodic time series IDs and no abandoned
+  hosts. Other tables are not changed. An interrupted run can be retried.
+
 ## [0.58.0] - 2026-10-28
 
 ### Added
@@ -2246,6 +2284,7 @@ AsRef<[u8]>`). This change accommodates scenarios where the information stored
 - Modified `FtpBruteForce` by adding an `is_internal` field which is a boolean
   indicating whether it is internal or not.
 
+[Unreleased]: https://github.com/aicers/review-database/compare/0.58.0...main
 [0.58.0]: https://github.com/aicers/review-database/compare/0.57.0...0.58.0
 [0.57.0]: https://github.com/aicers/review-database/compare/0.56.0...0.57.0
 [0.56.0]: https://github.com/aicers/review-database/compare/0.55.0...0.56.0
