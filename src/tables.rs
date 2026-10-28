@@ -8,7 +8,6 @@ mod config;
 mod core_component;
 mod csv_column_extra;
 mod customer_data_deletion_job;
-mod data_source;
 mod engine_instance;
 mod external_service;
 mod hosts;
@@ -69,7 +68,6 @@ pub use self::customer_data_deletion_job::{
     CustomerDataDeletionJob, CustomerDataDeletionService, CustomerDataDeletionServiceResult,
     CustomerDataDeletionStatus,
 };
-pub use self::data_source::{DataSource, DataType, Update as DataSourceUpdate};
 pub(crate) use self::engine_instance::{
     DetectorIdMarks, EngineInstances, Row as EngineInstanceRow, key as engine_instance_key,
     lookup_key as agent_lookup_key,
@@ -218,7 +216,7 @@ pub(super) const TRIAGE_RESPONSE: &str = "triage response";
 pub(super) const TRUSTED_DNS_SERVERS: &str = "trusted DNS servers";
 pub(super) const TRUSTED_USER_AGENTS: &str = "trusted user agents";
 
-pub(crate) const MAP_NAMES: [&str; 50] = [
+pub(crate) const MAP_NAMES: [&str; 49] = [
     AGENTS,
     BATCH_INFO,
     CATEGORY,
@@ -229,7 +227,6 @@ pub(crate) const MAP_NAMES: [&str; 50] = [
     CSV_COLUMN_EXTRAS,
     CUSTOMER_DELETION_JOBS,
     CUSTOMER_NETWORKS,
-    DATA_SOURCES,
     DETECTOR_ID_MARKS,
     ENGINE_INSTANCES,
     HOSTS,
@@ -545,12 +542,6 @@ impl StateDb {
             .expect("StateDb::open initializes the instance allocation column family")
     }
 
-    #[must_use]
-    pub(crate) fn data_sources(&self) -> IndexedTable<'_, DataSource> {
-        let inner = self.inner.as_ref().expect("database must be open");
-        IndexedTable::<DataSource>::open(inner).expect("{DATA_SOURCES} table must be present")
-    }
-
     pub(crate) fn engine_instances(&self) -> EngineInstances<'_> {
         EngineInstances::open(self.db()).expect("StateDb::open creates the engine instances family")
     }
@@ -763,7 +754,6 @@ mod iteration {
     impl Eligible for tables::CoreComponent {}
     impl Eligible for tables::CsvColumnExtra {}
     impl Eligible for tables::CustomerDataDeletionJob {}
-    impl Eligible for tables::DataSource {}
     impl Eligible for tables::ExternalService {}
     impl Eligible for tables::Host {}
     impl Eligible for tables::InstanceAllocation {}
@@ -806,7 +796,6 @@ mod indexed_writes {
 
     impl Eligible for crate::Category {}
     impl Eligible for tables::CsvColumnExtra {}
-    impl Eligible for tables::DataSource {}
     impl Eligible for tables::InnerNode {}
     impl Eligible for tables::Network {}
     impl Eligible for types::Qualifier {}
@@ -830,7 +819,6 @@ mod indexed_writes {
 
     impl Recycling for crate::Category {}
     impl Recycling for tables::CsvColumnExtra {}
-    impl Recycling for tables::DataSource {}
     impl Recycling for tables::InnerNode {}
     impl Recycling for tables::Network {}
     impl Recycling for types::Qualifier {}
@@ -851,7 +839,6 @@ mod indexed_writes {
 
     impl Inserting for crate::Category {}
     impl Inserting for tables::CsvColumnExtra {}
-    impl Inserting for tables::DataSource {}
     impl Inserting for tables::InnerNode {}
     impl Inserting for tables::Network {}
     impl Inserting for types::Qualifier {}
@@ -873,7 +860,6 @@ mod indexed_writes {
 
     impl Deactivating for crate::Category {}
     impl Deactivating for tables::CsvColumnExtra {}
-    impl Deactivating for tables::DataSource {}
     impl Deactivating for tables::InnerNode {}
     impl Deactivating for tables::Network {}
     impl Deactivating for types::Qualifier {}

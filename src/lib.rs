@@ -53,22 +53,21 @@ pub use self::tables::{
     BackupConfigUpdate, BuildSelector, Cluster, ClusterTimeSeries, ColumnStats, ColumnTimeSeries,
     Confidence, CoreComponent, CsvColumnExtra as CsvColumnExtraConfig, CustomerDataDeletionJob,
     CustomerDataDeletionService, CustomerDataDeletionServiceResult, CustomerDataDeletionStatus,
-    DataSource, DataSourceUpdate, DataType, DetectorSourceStatus, DetectorState, DetectorStatus,
-    EngineDetectorRef, EngineDocumentError, EngineDocumentRefs, EngineDocumentWrite,
-    EngineInstanceState, ExclusionReason, ExternalService, ExternalServiceConfig,
-    ExternalServiceKind, ExternalServiceStatus, Host, IndexedTable, InstallIntent,
-    InstanceAllocation, InstanceAllocationError, Iterable, LabelDb, LabelDbKind, LabelDbRule,
-    LabelDbRuleKind, Lifecycle, ListenerBinding, ListenerTransport, Model as ModelDigest,
-    ModelIndicator, ModelInstance, ModelMethod, ModelOwner, ModelRun, ModelUse, Network,
-    NetworkFilter, NetworkListEntry, NetworkListReplaceOutcome, NetworkListSet, NetworkListTable,
-    NetworkUpdate, NewSamplingPolicy, NewTrainingDefinition, Node, NodeProfile, NodeTable,
-    NodeUpdate, OperationAction, OperationAttempt, OperationCleanupState, OperationFailureKind,
-    OperationOnFailure, OperationOutcome, OperationPhase, OperationRetentionBound,
-    OperationRetryPolicy, OutlierInfo, OutlierInfoKey, OutlierInfoValue, OwnedNetwork,
-    OwnedNetworkSet, OwnedNetworkTable, PacketAttr, PolicyState, PolicyUse, PortAllocation,
-    PortAllocationError, PortOwner, PreviousTraining, PreviousTrainingResults, ProtocolPorts,
-    ReplaceOutcome, ReplacedModel, ReportedRunState, RequestKeyError, Response, ResponseKind,
-    RetentionConfig, RetentionConfigUpdate, RoundOutcome, RunId, RunKind, RunState,
+    DetectorSourceStatus, DetectorState, DetectorStatus, EngineDetectorRef, EngineDocumentError,
+    EngineDocumentRefs, EngineDocumentWrite, EngineInstanceState, ExclusionReason, ExternalService,
+    ExternalServiceConfig, ExternalServiceKind, ExternalServiceStatus, Host, IndexedTable,
+    InstallIntent, InstanceAllocation, InstanceAllocationError, Iterable, LabelDb, LabelDbKind,
+    LabelDbRule, LabelDbRuleKind, Lifecycle, ListenerBinding, ListenerTransport,
+    Model as ModelDigest, ModelIndicator, ModelInstance, ModelMethod, ModelOwner, ModelRun,
+    ModelUse, Network, NetworkFilter, NetworkListEntry, NetworkListReplaceOutcome, NetworkListSet,
+    NetworkListTable, NetworkUpdate, NewSamplingPolicy, NewTrainingDefinition, Node, NodeProfile,
+    NodeTable, NodeUpdate, OperationAction, OperationAttempt, OperationCleanupState,
+    OperationFailureKind, OperationOnFailure, OperationOutcome, OperationPhase,
+    OperationRetentionBound, OperationRetryPolicy, OutlierInfo, OutlierInfoKey, OutlierInfoValue,
+    OwnedNetwork, OwnedNetworkSet, OwnedNetworkTable, PacketAttr, PolicyState, PolicyUse,
+    PortAllocation, PortAllocationError, PortOwner, PreviousTraining, PreviousTrainingResults,
+    ProtocolPorts, ReplaceOutcome, ReplacedModel, ReportedRunState, RequestKeyError, Response,
+    ResponseKind, RetentionConfig, RetentionConfigUpdate, RoundOutcome, RunId, RunKind, RunState,
     SamplingInterval, SamplingKind, SamplingPeriod, SamplingPolicy, SamplingPolicyError,
     SamplingPolicyUpdate, SourceState, Structured, StructuredClusteringAlgorithm,
     SystemInstallRecord, SystemLogCollector, SystemLogCollectorRefusal, SystemLogCollectorTable,
@@ -684,12 +683,6 @@ impl Store {
     #[must_use]
     pub fn customer_data_deletion_map(&self) -> Table<'_, CustomerDataDeletionJob> {
         self.states.customer_data_deletion_jobs()
-    }
-
-    #[must_use]
-    #[allow(clippy::missing_panics_doc)]
-    pub fn data_source_map(&self) -> IndexedTable<'_, DataSource> {
-        self.states.data_sources()
     }
 
     /// Returns the tag set for event.

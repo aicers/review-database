@@ -29,8 +29,8 @@ use crate::{
         migrate_event_stored_schema_to_v0_46, validate_event_stored_schema_v0_46,
     },
     tables::{
-        ACCESS_TOKENS, ACCOUNTS, ALLOW_NETWORKS, BLOCK_NETWORKS, CUSTOMERS, FILTERS, NETWORK_TAGS,
-        TRIAGE_EXCLUSION_REASON, TRIAGE_POLICY,
+        ACCESS_TOKENS, ACCOUNTS, ALLOW_NETWORKS, BLOCK_NETWORKS, CUSTOMERS, DATA_SOURCES, FILTERS,
+        NETWORK_TAGS, TRIAGE_EXCLUSION_REASON, TRIAGE_POLICY,
     },
 };
 
@@ -39,7 +39,7 @@ use crate::{
 /// It names the current database format and is independent of the crate
 /// package version: a release does not move it, and a format change does,
 /// whatever the crate version is at the time.
-pub(crate) const DATABASE_FORMAT_VERSION: &str = "0.59.0";
+pub(crate) const DATABASE_FORMAT_VERSION: &str = "0.60.0";
 
 /// The range of format markers that use the current database format.
 ///
@@ -50,7 +50,7 @@ pub(crate) const DATABASE_FORMAT_VERSION: &str = "0.59.0";
 /// `">=X.Y.0,<X.(Y+1).0"` and appends a step to the migration table. A
 /// release, or any change without a format change, leaves all three as they
 /// are. No build writes a prerelease marker.
-const COMPATIBLE_VERSION_REQ: &str = ">=0.59.0,<0.60.0";
+const COMPATIBLE_VERSION_REQ: &str = ">=0.60.0,<0.61.0";
 
 /// Number of event records applied in each atomic migration write.
 const EVENT_MIGRATION_BATCH_SIZE: usize = 100;
@@ -252,6 +252,11 @@ pub fn migrate_data_dir<P: AsRef<Path>>(
             Version::parse("0.59.0")?,
             |data_dir, _backup_dir, _locator| migrate_0_58_to_0_59(data_dir),
         ),
+        (
+            VersionReq::parse(">=0.59.0,<0.60.0")?,
+            Version::parse("0.60.0")?,
+            |data_dir, _backup_dir, _locator| migrate_0_59_to_0_60(data_dir),
+        ),
     ];
 
     while let Some((_req, to, m)) = migration
@@ -295,6 +300,9 @@ fn migrate_0_45_to_0_46(data_dir: &Path, locator: Option<&dyn CountryLookup>) ->
 /// `block networks`, `customers` and `filters` families, so a retry after
 /// [`migrate_0_50_to_0_52`] dropped them recreates them empty as well, and
 /// that step, which every chain through this one ends with, drops them again.
+/// It names the "data sources" family too, which [`migrate_0_59_to_0_60`]
+/// drops, so a retry after that step recreates it empty here and that step
+/// drops it again.
 ///
 /// Agent and external-service values are in the 0.46 layout, or already in the
 /// 0.47 one where an interrupted run converted them. Each row is read as
@@ -799,6 +807,33 @@ fn migrate_0_58_to_0_59(data_dir: &Path) -> Result<()> {
     }
     write_migration_batch(&db, &mut batch, "customer deletion job")?;
     info!("Layout migration of customer deletion jobs complete: converted_count={converted}");
+    Ok(())
+}
+
+/// Migrates a database in the 0.59.x format to 0.60.0.
+///
+/// Drops the "data sources" family, with every row in it. Nothing reads it any
+/// more, and its rows are discarded rather than converted. No other family is
+/// read or written.
+///
+/// A rerun is safe: the family is dropped only if it is still there, so a
+/// chain interrupted after this step, or a retried chain whose 0.47 step
+/// recreated the family empty, completes on the next start.
+fn migrate_0_59_to_0_60(data_dir: &Path) -> Result<()> {
+    let db_path = data_dir.join("states.db");
+    let mut opts = rocksdb::Options::default();
+    opts.create_if_missing(false);
+    opts.create_missing_column_families(false);
+    let column_families = map_names_for_existing_format(&opts, &db_path)?;
+    let mut db: rocksdb::OptimisticTransactionDB<rocksdb::SingleThreaded> =
+        rocksdb::OptimisticTransactionDB::open_cf(&opts, &db_path, column_families)
+            .context("failed to open database for the 0.60.0 migration")?;
+
+    if db.cf_handle(DATA_SOURCES).is_some() {
+        info!("Dropping '{DATA_SOURCES}' column family");
+        db.drop_cf(DATA_SOURCES)
+            .with_context(|| format!("failed to drop '{DATA_SOURCES}' column family"))?;
+    }
     Ok(())
 }
 
@@ -3622,6 +3657,10 @@ mod tests {
     /// The column families the 0.58.0 format adds to the 0.57 set.
     const FAMILIES_ADDED_BY_V0_58: [&str; 1] = [crate::tables::DETECTOR_ID_MARKS];
 
+    /// The column families the 0.60.0 format removes from the 0.59 set and
+    /// the migration drops from every migrated store.
+    const FAMILIES_REMOVED_BY_V0_60: [&str; 1] = [crate::tables::DATA_SOURCES];
+
     /// Migrates a database in the 0.43-through-0.46 layout, recorded as
     /// `version`, and asserts that it reaches the current format with its agent
     /// and external-service values converted.
@@ -3678,7 +3717,8 @@ mod tests {
                 + FAMILIES_ADDED_BY_V0_56.len()
                 + FAMILIES_ADDED_BY_V0_58.len()
                 - FAMILIES_REMOVED_BY_V0_47.len()
-                - FAMILIES_REMOVED_BY_V0_52.len(),
+                - FAMILIES_REMOVED_BY_V0_52.len()
+                - FAMILIES_REMOVED_BY_V0_60.len(),
             crate::tables::MAP_NAMES.len() - super::MAP_NAMES_V0_43_TO_V0_46.len()
         );
         assert_eq!(
@@ -3688,20 +3728,23 @@ mod tests {
                 + FAMILIES_ADDED_BY_V0_55.len()
                 + FAMILIES_ADDED_BY_V0_56.len()
                 + FAMILIES_ADDED_BY_V0_58.len()
-                - FAMILIES_REMOVED_BY_V0_52.len(),
+                - FAMILIES_REMOVED_BY_V0_52.len()
+                - FAMILIES_REMOVED_BY_V0_60.len(),
             crate::tables::MAP_NAMES.len()
         );
         assert_eq!(
             super::MAP_NAMES_V0_53.len()
                 + FAMILIES_ADDED_BY_V0_55.len()
                 + FAMILIES_ADDED_BY_V0_56.len()
-                + FAMILIES_ADDED_BY_V0_58.len(),
+                + FAMILIES_ADDED_BY_V0_58.len()
+                - FAMILIES_REMOVED_BY_V0_60.len(),
             crate::tables::MAP_NAMES.len()
         );
         assert_eq!(
             super::MAP_NAMES_V0_55.len()
                 + FAMILIES_ADDED_BY_V0_56.len()
-                + FAMILIES_ADDED_BY_V0_58.len(),
+                + FAMILIES_ADDED_BY_V0_58.len()
+                - FAMILIES_REMOVED_BY_V0_60.len(),
             crate::tables::MAP_NAMES.len()
         );
         drop(db);
@@ -5385,6 +5428,76 @@ mod tests {
         assert_eq!(present_families(&db_path), current_families());
     }
 
+    /// A `0.59.0` store loses the "data sources" family, keeps every other row
+    /// byte for byte, and is marked with the current version; a second start
+    /// and a rerun of the 0.60 step change nothing.
+    #[test]
+    fn migration_from_v0_59_drops_data_sources() {
+        let _permit = acquire_db_permit();
+        let current_version = Version::parse(DATABASE_FORMAT_VERSION).unwrap();
+        let data_dir = tempfile::tempdir().unwrap();
+        let backup_dir = tempfile::tempdir().unwrap();
+        let db_path = data_dir.path().join("states.db");
+
+        let families: Vec<&str> = crate::tables::MAP_NAMES
+            .into_iter()
+            .chain(FAMILIES_REMOVED_BY_V0_60)
+            .collect();
+        create_states_db(&db_path, families.iter().copied());
+        put_entries(
+            &db_path,
+            families.iter().copied(),
+            crate::tables::DATA_SOURCES,
+            &[(b"data-source".to_vec(), b"data sources row".to_vec())],
+        );
+        put_entries(
+            &db_path,
+            families.iter().copied(),
+            crate::tables::CONFIGS,
+            &[(
+                crate::tables::KEY_BACKUP_DURATION.as_bytes().to_vec(),
+                b"7".to_vec(),
+            )],
+        );
+        write_version(data_dir.path(), "0.59.0");
+        write_version(backup_dir.path(), "0.59.0");
+        assert!(
+            present_families(&db_path)
+                .iter()
+                .any(|name| name == crate::tables::DATA_SOURCES)
+        );
+        let expected = kept_family_entries(&db_path);
+
+        migrate_data_dir(data_dir.path(), backup_dir.path(), None).unwrap();
+
+        assert_eq!(
+            read_version_file(&data_dir.path().join(VERSION_FILE_NAME)).unwrap(),
+            current_version
+        );
+        assert_eq!(
+            read_version_file(&backup_dir.path().join(VERSION_FILE_NAME)).unwrap(),
+            current_version
+        );
+        assert_eq!(present_families(&db_path), current_families());
+        assert_eq!(kept_family_entries(&db_path), expected);
+
+        let store = Store::new(data_dir.path(), backup_dir.path(), None).unwrap();
+        drop(store);
+
+        // A second start is a no-op: nothing under either directory changes.
+        let before = (files_under(data_dir.path()), files_under(backup_dir.path()));
+        migrate_data_dir(data_dir.path(), backup_dir.path(), None).unwrap();
+        assert_eq!(
+            (files_under(data_dir.path()), files_under(backup_dir.path())),
+            before
+        );
+
+        // Running the step again on the migrated store finds nothing to do.
+        super::migrate_0_59_to_0_60(data_dir.path()).unwrap();
+        assert_eq!(present_families(&db_path), current_families());
+        assert_eq!(kept_family_entries(&db_path), expected);
+    }
+
     /// A store marked `version` over `families` holds bytes no layout decodes
     /// in "customers", "allow networks" and "block networks", and an
     /// unprefixed network tag index. It migrates to the current format with
@@ -5575,15 +5688,16 @@ mod tests {
         let mut listed_v0_55 = super::MAP_NAMES_V0_55;
         listed_v0_55.sort_unstable();
         assert_eq!(v0_55, listed_v0_55);
-        let mut v0_58: Vec<&str> = v0_55
+        let mut v0_60: Vec<&str> = v0_55
             .into_iter()
             .chain(FAMILIES_ADDED_BY_V0_56)
             .chain(FAMILIES_ADDED_BY_V0_58)
+            .filter(|name| !FAMILIES_REMOVED_BY_V0_60.contains(name))
             .collect();
-        v0_58.sort_unstable();
+        v0_60.sort_unstable();
         let mut current = crate::tables::MAP_NAMES;
         current.sort_unstable();
-        assert_eq!(v0_58, current);
+        assert_eq!(v0_60, current);
 
         create_v0_52_store(data_dir.path(), backup_dir.path(), &super::MAP_NAMES_V0_52);
         assert!(
