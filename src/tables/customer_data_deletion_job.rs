@@ -1459,6 +1459,48 @@ mod tests {
     }
 
     #[test]
+    fn stores_abandoned_hosts_outside_review_without_job_check() {
+        let (_permit, _db_dir, _backup_dir, store) = setup_store();
+        let table = store.customer_data_deletion_map();
+        let mut job = job_with_data_store(29);
+        job.abandoned_hosts = vec!["c.example".to_owned(), "a.example".to_owned()];
+
+        table.insert(&job).unwrap();
+        assert_eq!(table.get(job.customer_id).unwrap(), Some(job.clone()));
+        table.put(&job).unwrap();
+        assert_eq!(table.get(job.customer_id).unwrap(), Some(job.clone()));
+
+        // `add_service` skips the job-level check but still validates the result.
+        let sensor = service_result(
+            CustomerDataDeletionService::Sensor,
+            &["a.example"],
+            CustomerDataDeletionStatus::InProgress,
+            5,
+        );
+        table.add_service(job.customer_id, &sensor).unwrap();
+        assert!(
+            table
+                .add_service(
+                    job.customer_id,
+                    &service_result(
+                        CustomerDataDeletionService::Sensor,
+                        &[],
+                        CustomerDataDeletionStatus::InProgress,
+                        6,
+                    ),
+                )
+                .is_err()
+        );
+        job.service_results.push(sensor);
+        assert_eq!(table.get(job.customer_id).unwrap(), Some(job.clone()));
+
+        // `update` and `give_up` run it.
+        assert!(table.update(&job, &job).is_err());
+        assert!(table.give_up(&job, &job).is_err());
+        assert_eq!(table.get(job.customer_id).unwrap(), Some(job));
+    }
+
+    #[test]
     fn gives_up_hosts_with_results_and_policy_ids_in_one_write() {
         let (_permit, _db_dir, _backup_dir, store) = setup_store();
         let table = store.customer_data_deletion_map();
