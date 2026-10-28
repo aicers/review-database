@@ -64,6 +64,7 @@ pub use self::config::{
 };
 pub use self::core_component::CoreComponent;
 pub use self::csv_column_extra::CsvColumnExtra;
+pub(crate) use self::customer_data_deletion_job::StoredCustomerDataDeletionJob;
 pub use self::customer_data_deletion_job::{
     CustomerDataDeletionJob, CustomerDataDeletionService, CustomerDataDeletionServiceResult,
     CustomerDataDeletionStatus,

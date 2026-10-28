@@ -8,10 +8,25 @@ use crate::{EXCLUSIVE, Map, Table, UniqueKey, tables::Value as ValueTrait, types
 
 const RESOURCE_BUSY_PREFIX: &str = "Resource busy:";
 
+/// The stored value of a customer deletion job: its service results, its
+/// periodic time series IDs and its abandoned hosts.
+pub(crate) type StoredCustomerDataDeletionJob = (
+    Vec<CustomerDataDeletionServiceResult>,
+    Vec<String>,
+    Vec<String>,
+);
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CustomerDataDeletionJob {
     pub customer_id: u32,
     pub service_results: Vec<CustomerDataDeletionServiceResult>,
+    /// The decimal IDs of the customer's sampling policies whose periodic time series the Data
+    /// Store deletes. They are kept here because the policies themselves are removed in the
+    /// Review stage.
+    pub periodic_time_series_ids: Vec<String>,
+    /// The hosts a System Administrator gave up on, sorted and without duplicates. Each one is a
+    /// host FQDN of the job's `Review` result.
+    pub abandoned_hosts: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -33,6 +48,12 @@ pub enum CustomerDataDeletionService {
     Review,
     Sensor,
     SemiSupervised,
+    /// The deletion of the customer's data in the Data Store. Its result names the Data Store's
+    /// server name, `<instance:03>.giganto.<hostname>`, as its only host FQDN.
+    DataStore,
+    /// The uninstall of the modules installed on one of the customer's hosts. Its result names
+    /// that host as its only host FQDN.
+    ModuleRemoval,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -42,6 +63,63 @@ pub enum CustomerDataDeletionStatus {
     Failed,
 }
 
+impl CustomerDataDeletionJob {
+    /// Creates a job with the given service results, no periodic time series IDs and no
+    /// abandoned hosts.
+    #[must_use]
+    pub fn new(customer_id: u32, service_results: Vec<CustomerDataDeletionServiceResult>) -> Self {
+        Self {
+            customer_id,
+            service_results,
+            periodic_time_series_ids: Vec::new(),
+            abandoned_hosts: Vec::new(),
+        }
+    }
+
+    /// Validates every service result and the abandoned hosts.
+    fn validate(&self) -> Result<()> {
+        for (index, result) in self.service_results.iter().enumerate() {
+            result.validate().with_context(|| {
+                format!("invalid customer deletion service result at index {index}")
+            })?;
+        }
+        self.validate_abandoned_hosts()
+    }
+
+    /// Checks that the abandoned hosts are sorted, without duplicates, and each a host FQDN of
+    /// the `Review` result.
+    fn validate_abandoned_hosts(&self) -> Result<()> {
+        if self
+            .abandoned_hosts
+            .windows(2)
+            .any(|pair| pair.first() >= pair.last())
+        {
+            bail!("abandoned hosts must be sorted and without duplicates");
+        }
+        let review_hosts = self
+            .service_results
+            .iter()
+            .find(|result| result.service == CustomerDataDeletionService::Review)
+            .map_or(&[][..], |result| result.host_fqdns.as_slice());
+        if let Some(host) = self
+            .abandoned_hosts
+            .iter()
+            .find(|host| !review_hosts.contains(host))
+        {
+            bail!("abandoned host {host} is not a host of the Review service result");
+        }
+        Ok(())
+    }
+
+    fn stored_value(&self) -> Result<Vec<u8>> {
+        super::serialize(&(
+            &self.service_results,
+            &self.periodic_time_series_ids,
+            &self.abandoned_hosts,
+        ))
+    }
+}
+
 impl CustomerDataDeletionServiceResult {
     fn validate(&self) -> Result<()> {
         if self.host_fqdns.iter().any(String::is_empty) {
@@ -49,15 +127,15 @@ impl CustomerDataDeletionServiceResult {
         }
 
         match self.service {
-            CustomerDataDeletionService::Review => {
-                if self.host_fqdns.is_empty() {
-                    bail!("Review service result requires at least one host FQDN");
-                }
-            }
-            CustomerDataDeletionService::Sensor | CustomerDataDeletionService::SemiSupervised => {
+            CustomerDataDeletionService::Review => {}
+            CustomerDataDeletionService::Sensor
+            | CustomerDataDeletionService::SemiSupervised
+            | CustomerDataDeletionService::DataStore
+            | CustomerDataDeletionService::ModuleRemoval => {
                 if self.host_fqdns.len() != 1 {
                     bail!(
-                        "Sensor and SemiSupervised service results require exactly one host FQDN"
+                        "{:?} service result requires exactly one host FQDN",
+                        self.service
                     );
                 }
             }
@@ -70,7 +148,10 @@ impl CustomerDataDeletionServiceResult {
             CustomerDataDeletionService::Review => {
                 existing.service == CustomerDataDeletionService::Review
             }
-            CustomerDataDeletionService::Sensor | CustomerDataDeletionService::SemiSupervised => {
+            CustomerDataDeletionService::Sensor
+            | CustomerDataDeletionService::SemiSupervised
+            | CustomerDataDeletionService::DataStore
+            | CustomerDataDeletionService::ModuleRemoval => {
                 existing.service == self.service && existing.host_fqdns == self.host_fqdns
             }
         }
@@ -89,8 +170,8 @@ impl ValueTrait for CustomerDataDeletionJob {
     type AsBytes<'a> = Vec<u8>;
 
     fn value(&self) -> Self::AsBytes<'_> {
-        super::serialize(&self.service_results)
-            .expect("derived service-result fields serialize infallibly into an in-memory Vec")
+        self.stored_value()
+            .expect("derived job fields serialize infallibly into an in-memory Vec")
     }
 }
 
@@ -100,10 +181,13 @@ impl FromKeyValue for CustomerDataDeletionJob {
             key.try_into()
                 .context("customer deletion job key must be four bytes")?,
         );
-        let service_results = super::deserialize(value)?;
+        let (service_results, periodic_time_series_ids, abandoned_hosts): StoredCustomerDataDeletionJob =
+            super::deserialize(value)?;
         Ok(Self {
             customer_id,
             service_results,
+            periodic_time_series_ids,
+            abandoned_hosts,
         })
     }
 }
@@ -133,29 +217,64 @@ impl<'d> Table<'d, CustomerDataDeletionJob> {
         )?))
     }
 
-    /// Replaces a deletion job if its service results have not changed.
+    /// Replaces a deletion job if its stored value has not changed.
+    ///
+    /// The service results, the periodic time series IDs and the abandoned hosts are compared and
+    /// written together.
     ///
     /// # Errors
     ///
-    /// Returns an error if the customer IDs differ, a new service result is invalid, the job does
-    /// not exist, the stored value does not match the serialized service results of `old`, or a
-    /// database operation fails.
+    /// Returns an error if the customer IDs differ, a new service result is invalid, the new
+    /// abandoned hosts are not sorted, have duplicates or name a host outside the `Review` result,
+    /// the job does not exist, the stored value does not match `old`, or a database operation
+    /// fails.
     pub fn update(
         &self,
         old: &CustomerDataDeletionJob,
         new: &CustomerDataDeletionJob,
     ) -> Result<()> {
-        if old.customer_id != new.customer_id {
-            bail!(
-                "customer ID mismatch: old customer ID {} does not match new customer ID {}",
-                old.customer_id,
-                new.customer_id
-            );
+        check_same_customer(old, new)?;
+        new.validate()?;
+
+        let key = old.unique_key();
+        self.map.update((&key, &old.value()), (&key, &new.value()))
+    }
+
+    /// Gives up on hosts of a deletion job, replacing the job if its stored value has not changed.
+    ///
+    /// `new` is written whole: its service results, which carry the retry's status reset, its
+    /// periodic time series IDs, which may have been read again, and its abandoned hosts, which
+    /// must keep every host of `old` and may add more.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the customer IDs differ, a new service result is invalid, the new
+    /// abandoned hosts are not sorted, have duplicates, name a host outside the `Review` result or
+    /// leave out one of `old`'s, the service results of `new` differ from those of `old` in length
+    /// or in the service or host FQDNs at any position, the job does not exist, the stored value
+    /// does not match `old`, or a database operation fails.
+    pub fn give_up(
+        &self,
+        old: &CustomerDataDeletionJob,
+        new: &CustomerDataDeletionJob,
+    ) -> Result<()> {
+        check_same_customer(old, new)?;
+        new.validate()?;
+        let same_results = old.service_results.len() == new.service_results.len()
+            && old
+                .service_results
+                .iter()
+                .zip(&new.service_results)
+                .all(|(old, new)| old.service == new.service && old.host_fqdns == new.host_fqdns);
+        if !same_results {
+            bail!("service results must keep the services and host FQDNs of the stored job");
         }
-        for (index, result) in new.service_results.iter().enumerate() {
-            result.validate().with_context(|| {
-                format!("invalid customer deletion service result at index {index}")
-            })?;
+        if let Some(host) = old
+            .abandoned_hosts
+            .iter()
+            .find(|host| new.abandoned_hosts.binary_search(host).is_err())
+        {
+            bail!("abandoned host {host} must remain abandoned");
         }
 
         let key = old.unique_key();
@@ -163,6 +282,8 @@ impl<'d> Table<'d, CustomerDataDeletionJob> {
     }
 
     /// Adds a service result to an existing customer deletion job.
+    ///
+    /// The job's periodic time series IDs and abandoned hosts are left unchanged.
     ///
     /// # Errors
     ///
@@ -184,7 +305,7 @@ impl<'d> Table<'d, CustomerDataDeletionJob> {
             else {
                 bail!("customer deletion job does not exist");
             };
-            let mut service_results: Vec<CustomerDataDeletionServiceResult> =
+            let (mut service_results, periodic_time_series_ids, abandoned_hosts): StoredCustomerDataDeletionJob =
                 super::deserialize(value.as_ref())?;
             if service_results
                 .iter()
@@ -194,7 +315,11 @@ impl<'d> Table<'d, CustomerDataDeletionJob> {
             }
             service_results.push(result.clone());
 
-            let value = super::serialize(&service_results)?;
+            let value = super::serialize(&(
+                &service_results,
+                &periodic_time_series_ids,
+                &abandoned_hosts,
+            ))?;
             txn.put_cf(self.map.cf, key, value)
                 .context("failed to write customer deletion job")?;
             match txn.commit() {
@@ -208,6 +333,8 @@ impl<'d> Table<'d, CustomerDataDeletionJob> {
     }
 
     /// Updates a service result in an existing customer deletion job.
+    ///
+    /// The job's periodic time series IDs and abandoned hosts are left unchanged.
     ///
     /// # Errors
     ///
@@ -229,7 +356,7 @@ impl<'d> Table<'d, CustomerDataDeletionJob> {
             else {
                 bail!("customer deletion job does not exist");
             };
-            let mut service_results: Vec<CustomerDataDeletionServiceResult> =
+            let (mut service_results, periodic_time_series_ids, abandoned_hosts): StoredCustomerDataDeletionJob =
                 super::deserialize(value.as_ref())?;
             let Some(existing) = service_results
                 .iter_mut()
@@ -242,7 +369,11 @@ impl<'d> Table<'d, CustomerDataDeletionJob> {
             existing.completed_at = result.completed_at;
             existing.error.clone_from(&result.error);
 
-            let value = super::serialize(&service_results)?;
+            let value = super::serialize(&(
+                &service_results,
+                &periodic_time_series_ids,
+                &abandoned_hosts,
+            ))?;
             txn.put_cf(self.map.cf, key, value)
                 .context("failed to write customer deletion job")?;
             match txn.commit() {
@@ -254,6 +385,17 @@ impl<'d> Table<'d, CustomerDataDeletionJob> {
             }
         }
     }
+}
+
+fn check_same_customer(old: &CustomerDataDeletionJob, new: &CustomerDataDeletionJob) -> Result<()> {
+    if old.customer_id != new.customer_id {
+        bail!(
+            "customer ID mismatch: old customer ID {} does not match new customer ID {}",
+            old.customer_id,
+            new.customer_id
+        );
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -308,23 +450,17 @@ mod tests {
             CustomerDataDeletionStatus::InProgress,
             10,
         );
-        let first = CustomerDataDeletionJob {
-            customer_id: 0x0102_0304,
-            service_results: vec![review.clone()],
-        };
-        let second = CustomerDataDeletionJob {
-            customer_id: 7,
-            service_results: Vec::new(),
-        };
+        let first = CustomerDataDeletionJob::new(0x0102_0304, vec![review.clone()]);
+        let second = CustomerDataDeletionJob::new(7, Vec::new());
 
         assert_eq!(table.get(first.customer_id).unwrap(), None);
         table.insert(&first).unwrap();
         assert!(table.insert(&first).is_err());
         table.put(&second).unwrap();
 
-        let overwritten = CustomerDataDeletionJob {
-            customer_id: first.customer_id,
-            service_results: vec![
+        let overwritten = CustomerDataDeletionJob::new(
+            first.customer_id,
+            vec![
                 review,
                 service_result(
                     CustomerDataDeletionService::Sensor,
@@ -333,7 +469,7 @@ mod tests {
                     20,
                 ),
             ],
-        };
+        );
         table.put(&overwritten).unwrap();
         assert_eq!(
             table.get(first.customer_id).unwrap(),
@@ -351,13 +487,20 @@ mod tests {
         let stored = table.map.db.get_cf(table.map.cf, key).unwrap().unwrap();
         assert_eq!(
             stored,
-            super::super::serialize(&overwritten.service_results).unwrap()
+            super::super::serialize(&(
+                &overwritten.service_results,
+                Vec::<String>::new(),
+                Vec::<String>::new(),
+            ))
+            .unwrap()
         );
     }
 
     #[test]
     fn validates_host_fqdns_for_each_service() {
+        // A customer with no node left may still have records in the Central Manager.
         for host_fqdns in [
+            &[][..],
             &["review.example"][..],
             &["review.example", "review-2.example"][..],
         ] {
@@ -373,7 +516,7 @@ mod tests {
             );
         }
 
-        for host_fqdns in [&[][..], &[""][..], &["review.example", ""][..]] {
+        for host_fqdns in [&[""][..], &["review.example", ""][..]] {
             assert!(
                 service_result(
                     CustomerDataDeletionService::Review,
@@ -389,6 +532,8 @@ mod tests {
         for service in [
             CustomerDataDeletionService::Sensor,
             CustomerDataDeletionService::SemiSupervised,
+            CustomerDataDeletionService::DataStore,
+            CustomerDataDeletionService::ModuleRemoval,
         ] {
             assert!(
                 service_result(
@@ -427,10 +572,7 @@ mod tests {
         let table = store.customer_data_deletion_map();
         let customer_id = 1;
         table
-            .insert(&CustomerDataDeletionJob {
-                customer_id,
-                service_results: Vec::new(),
-            })
+            .insert(&CustomerDataDeletionJob::new(customer_id, Vec::new()))
             .unwrap();
 
         let review = service_result(
@@ -529,10 +671,10 @@ mod tests {
             3,
         );
         table
-            .insert(&CustomerDataDeletionJob {
+            .insert(&CustomerDataDeletionJob::new(
                 customer_id,
-                service_results: vec![review.clone(), sensor, semi_supervised.clone()],
-            })
+                vec![review.clone(), sensor, semi_supervised.clone()],
+            ))
             .unwrap();
 
         let update = CustomerDataDeletionServiceResult {
@@ -556,9 +698,9 @@ mod tests {
     fn conditionally_updates_matching_job() {
         let (_permit, _db_dir, _backup_dir, store) = setup_store();
         let table = store.customer_data_deletion_map();
-        let old = CustomerDataDeletionJob {
-            customer_id: 6,
-            service_results: vec![
+        let old = CustomerDataDeletionJob::new(
+            6,
+            vec![
                 service_result(
                     CustomerDataDeletionService::Review,
                     &["review.example", "review-2.example"],
@@ -572,7 +714,7 @@ mod tests {
                     20,
                 ),
             ],
-        };
+        );
         let mut new = old.clone();
         new.service_results = vec![
             CustomerDataDeletionServiceResult {
@@ -603,15 +745,15 @@ mod tests {
     fn rejects_stale_job_after_single_service_update() {
         let (_permit, _db_dir, _backup_dir, store) = setup_store();
         let table = store.customer_data_deletion_map();
-        let old = CustomerDataDeletionJob {
-            customer_id: 7,
-            service_results: vec![service_result(
+        let old = CustomerDataDeletionJob::new(
+            7,
+            vec![service_result(
                 CustomerDataDeletionService::Sensor,
                 &["sensor.example"],
                 CustomerDataDeletionStatus::InProgress,
                 10,
             )],
-        };
+        );
         table.insert(&old).unwrap();
         let saved_result = CustomerDataDeletionServiceResult {
             service: CustomerDataDeletionService::Sensor,
@@ -700,14 +842,8 @@ mod tests {
         .enumerate()
         {
             let customer_id = 100 + u32::try_from(offset).unwrap();
-            let old = CustomerDataDeletionJob {
-                customer_id,
-                service_results: expected.clone(),
-            };
-            let current = CustomerDataDeletionJob {
-                customer_id,
-                service_results: current_service_results,
-            };
+            let old = CustomerDataDeletionJob::new(customer_id, expected.clone());
+            let current = CustomerDataDeletionJob::new(customer_id, current_service_results);
             let mut new = old.clone();
             new.service_results.first_mut().unwrap().requested_at = 99;
             table.insert(&current).unwrap();
@@ -727,36 +863,36 @@ mod tests {
     fn concurrent_conditional_updates_allow_only_one_winner() {
         let (_permit, _db_dir, _backup_dir, store) = setup_store();
         let store = Arc::new(store);
-        let old = CustomerDataDeletionJob {
-            customer_id: 8,
-            service_results: vec![service_result(
+        let old = CustomerDataDeletionJob::new(
+            8,
+            vec![service_result(
                 CustomerDataDeletionService::Review,
                 &["review.example"],
                 CustomerDataDeletionStatus::InProgress,
                 10,
             )],
-        };
+        );
         store.customer_data_deletion_map().insert(&old).unwrap();
         let candidates = [
-            CustomerDataDeletionJob {
-                customer_id: old.customer_id,
-                service_results: vec![CustomerDataDeletionServiceResult {
+            CustomerDataDeletionJob::new(
+                old.customer_id,
+                vec![CustomerDataDeletionServiceResult {
                     status: CustomerDataDeletionStatus::Succeeded,
                     requested_at: 20,
                     completed_at: Some(30),
                     ..old.service_results.first().unwrap().clone()
                 }],
-            },
-            CustomerDataDeletionJob {
-                customer_id: old.customer_id,
-                service_results: vec![CustomerDataDeletionServiceResult {
+            ),
+            CustomerDataDeletionJob::new(
+                old.customer_id,
+                vec![CustomerDataDeletionServiceResult {
                     status: CustomerDataDeletionStatus::Failed,
                     requested_at: 40,
                     completed_at: Some(50),
                     error: Some("competing failure".to_owned()),
                     ..old.service_results.first().unwrap().clone()
                 }],
-            },
+            ),
         ];
         let barrier = Arc::new(Barrier::new(3));
         let handles = candidates
@@ -806,15 +942,15 @@ mod tests {
     fn validates_conditional_update_inputs_without_modifying_database() {
         let (_permit, _db_dir, _backup_dir, store) = setup_store();
         let table = store.customer_data_deletion_map();
-        let stored = CustomerDataDeletionJob {
-            customer_id: 9,
-            service_results: vec![service_result(
+        let stored = CustomerDataDeletionJob::new(
+            9,
+            vec![service_result(
                 CustomerDataDeletionService::Review,
                 &["review.example"],
                 CustomerDataDeletionStatus::InProgress,
                 10,
             )],
-        };
+        );
         table.insert(&stored).unwrap();
 
         let mut wrong_customer = stored.clone();
@@ -829,10 +965,7 @@ mod tests {
         assert_eq!(table.get(wrong_customer.customer_id).unwrap(), None);
         assert_eq!(table.get(stored.customer_id).unwrap(), Some(stored.clone()));
 
-        let missing = CustomerDataDeletionJob {
-            customer_id: 11,
-            service_results: Vec::new(),
-        };
+        let missing = CustomerDataDeletionJob::new(11, Vec::new());
         assert_eq!(
             table.update(&missing, &missing).unwrap_err().to_string(),
             "no such entry"
@@ -865,10 +998,7 @@ mod tests {
         let customer_id = 3;
         store
             .customer_data_deletion_map()
-            .insert(&CustomerDataDeletionJob {
-                customer_id,
-                service_results: Vec::new(),
-            })
+            .insert(&CustomerDataDeletionJob::new(customer_id, Vec::new()))
             .unwrap();
         let barrier = Arc::new(Barrier::new(3));
 
@@ -925,9 +1055,9 @@ mod tests {
         let customer_id = 4;
         store
             .customer_data_deletion_map()
-            .insert(&CustomerDataDeletionJob {
+            .insert(&CustomerDataDeletionJob::new(
                 customer_id,
-                service_results: vec![
+                vec![
                     service_result(
                         CustomerDataDeletionService::Sensor,
                         &["sensor.example"],
@@ -941,7 +1071,7 @@ mod tests {
                         0,
                     ),
                 ],
-            })
+            ))
             .unwrap();
         let barrier = Arc::new(Barrier::new(3));
         let services = [
@@ -994,15 +1124,15 @@ mod tests {
         let permit = acquire_db_permit();
         let db_dir = tempfile::tempdir().unwrap();
         let backup_dir = tempfile::tempdir().unwrap();
-        let job = CustomerDataDeletionJob {
-            customer_id: 5,
-            service_results: vec![service_result(
+        let job = CustomerDataDeletionJob::new(
+            5,
+            vec![service_result(
                 CustomerDataDeletionService::Review,
                 &["review.example", "review-2.example"],
                 CustomerDataDeletionStatus::Succeeded,
                 10,
             )],
-        };
+        );
         {
             let store = Store::new(db_dir.path(), backup_dir.path(), None).unwrap();
             store.customer_data_deletion_map().put(&job).unwrap();
@@ -1017,5 +1147,440 @@ mod tests {
             Some(job)
         );
         drop(permit);
+    }
+
+    #[test]
+    fn new_job_has_no_policy_ids_or_abandoned_hosts() {
+        let job = CustomerDataDeletionJob::new(
+            1,
+            vec![service_result(
+                CustomerDataDeletionService::Review,
+                &[],
+                CustomerDataDeletionStatus::InProgress,
+                1,
+            )],
+        );
+
+        assert_eq!(job.customer_id, 1);
+        assert_eq!(job.service_results.len(), 1);
+        assert_eq!(job.periodic_time_series_ids, Vec::<String>::new());
+        assert_eq!(job.abandoned_hosts, Vec::<String>::new());
+    }
+
+    #[test]
+    fn stores_module_removal_results_one_per_host() {
+        let (_permit, _db_dir, _backup_dir, store) = setup_store();
+        let table = store.customer_data_deletion_map();
+        let customer_id = 20;
+        let first = service_result(
+            CustomerDataDeletionService::ModuleRemoval,
+            &["a.example"],
+            CustomerDataDeletionStatus::InProgress,
+            1,
+        );
+        let second = service_result(
+            CustomerDataDeletionService::ModuleRemoval,
+            &["b.example"],
+            CustomerDataDeletionStatus::InProgress,
+            2,
+        );
+        table
+            .insert(&CustomerDataDeletionJob::new(customer_id, Vec::new()))
+            .unwrap();
+        table.add_service(customer_id, &first).unwrap();
+        table.add_service(customer_id, &second).unwrap();
+
+        let same_host = service_result(
+            CustomerDataDeletionService::ModuleRemoval,
+            &["a.example"],
+            CustomerDataDeletionStatus::Failed,
+            3,
+        );
+        assert!(same_host.matches(&first));
+        assert!(!same_host.matches(&second));
+        assert!(table.add_service(customer_id, &same_host).is_err());
+        for host_fqdns in [&[][..], &["a.example", "b.example"][..]] {
+            assert!(
+                table
+                    .add_service(
+                        customer_id,
+                        &service_result(
+                            CustomerDataDeletionService::ModuleRemoval,
+                            host_fqdns,
+                            CustomerDataDeletionStatus::InProgress,
+                            4,
+                        ),
+                    )
+                    .is_err()
+            );
+        }
+
+        let job = CustomerDataDeletionJob::new(customer_id, vec![first, second]);
+        assert_eq!(table.get(customer_id).unwrap(), Some(job.clone()));
+        table.put(&job).unwrap();
+        assert_eq!(table.get(customer_id).unwrap(), Some(job));
+    }
+
+    #[test]
+    fn accepts_a_review_result_without_hosts() {
+        let (_permit, _db_dir, _backup_dir, store) = setup_store();
+        let table = store.customer_data_deletion_map();
+        let customer_id = 21;
+        let review = service_result(
+            CustomerDataDeletionService::Review,
+            &[],
+            CustomerDataDeletionStatus::InProgress,
+            1,
+        );
+        table
+            .insert(&CustomerDataDeletionJob::new(customer_id, Vec::new()))
+            .unwrap();
+
+        table.add_service(customer_id, &review).unwrap();
+
+        assert_eq!(
+            table.get(customer_id).unwrap(),
+            Some(CustomerDataDeletionJob::new(customer_id, vec![review]))
+        );
+    }
+
+    #[test]
+    fn identifies_data_store_results_by_server_name() {
+        let (_permit, _db_dir, _backup_dir, store) = setup_store();
+        let table = store.customer_data_deletion_map();
+        let customer_id = 22;
+        table
+            .insert(&CustomerDataDeletionJob::new(customer_id, Vec::new()))
+            .unwrap();
+        let first = service_result(
+            CustomerDataDeletionService::DataStore,
+            &["001.giganto.a.example"],
+            CustomerDataDeletionStatus::InProgress,
+            1,
+        );
+        let second = service_result(
+            CustomerDataDeletionService::DataStore,
+            &["002.giganto.a.example"],
+            CustomerDataDeletionStatus::InProgress,
+            2,
+        );
+        table.add_service(customer_id, &first).unwrap();
+        table.add_service(customer_id, &second).unwrap();
+
+        let same_server = service_result(
+            CustomerDataDeletionService::DataStore,
+            &["001.giganto.a.example"],
+            CustomerDataDeletionStatus::Succeeded,
+            3,
+        );
+        assert!(same_server.matches(&first));
+        assert!(!same_server.matches(&second));
+        assert!(table.add_service(customer_id, &same_server).is_err());
+        // A Sensor result for the same name is a different result.
+        assert!(
+            !service_result(
+                CustomerDataDeletionService::Sensor,
+                &["001.giganto.a.example"],
+                CustomerDataDeletionStatus::InProgress,
+                1,
+            )
+            .matches(&first)
+        );
+        for host_fqdns in [
+            &[][..],
+            &["001.giganto.a.example", "002.giganto.a.example"][..],
+        ] {
+            assert!(
+                table
+                    .add_service(
+                        customer_id,
+                        &service_result(
+                            CustomerDataDeletionService::DataStore,
+                            host_fqdns,
+                            CustomerDataDeletionStatus::InProgress,
+                            4,
+                        ),
+                    )
+                    .is_err()
+            );
+        }
+
+        assert_eq!(
+            table.get(customer_id).unwrap().unwrap().service_results,
+            vec![first, second]
+        );
+    }
+
+    fn job_with_data_store(customer_id: u32) -> CustomerDataDeletionJob {
+        CustomerDataDeletionJob {
+            customer_id,
+            service_results: vec![
+                service_result(
+                    CustomerDataDeletionService::Review,
+                    &["a.example", "b.example"],
+                    CustomerDataDeletionStatus::Succeeded,
+                    1,
+                ),
+                service_result(
+                    CustomerDataDeletionService::DataStore,
+                    &["001.giganto.b.example"],
+                    CustomerDataDeletionStatus::InProgress,
+                    2,
+                ),
+                service_result(
+                    CustomerDataDeletionService::ModuleRemoval,
+                    &["a.example"],
+                    CustomerDataDeletionStatus::Failed,
+                    3,
+                ),
+                service_result(
+                    CustomerDataDeletionService::ModuleRemoval,
+                    &["b.example"],
+                    CustomerDataDeletionStatus::Failed,
+                    4,
+                ),
+            ],
+            periodic_time_series_ids: vec!["3".to_owned(), "10".to_owned()],
+            abandoned_hosts: vec!["a.example".to_owned()],
+        }
+    }
+
+    #[test]
+    fn stores_policy_ids_and_abandoned_hosts_with_the_results() {
+        let (_permit, _db_dir, _backup_dir, store) = setup_store();
+        let table = store.customer_data_deletion_map();
+        let job = job_with_data_store(23);
+        table.insert(&job).unwrap();
+        assert_eq!(table.get(job.customer_id).unwrap(), Some(job.clone()));
+
+        let key = job.customer_id.to_be_bytes();
+        let stored = table.map.db.get_cf(table.map.cf, key).unwrap().unwrap();
+        assert_eq!(
+            stored,
+            super::super::serialize(&(
+                &job.service_results,
+                &job.periodic_time_series_ids,
+                &job.abandoned_hosts,
+            ))
+            .unwrap()
+        );
+
+        let data_store = CustomerDataDeletionServiceResult {
+            status: CustomerDataDeletionStatus::Succeeded,
+            requested_at: 20,
+            completed_at: Some(30),
+            ..job.service_results.get(1).unwrap().clone()
+        };
+        table.update_service(job.customer_id, &data_store).unwrap();
+        let mut expected = job.clone();
+        *expected.service_results.get_mut(1).unwrap() = data_store;
+        assert_eq!(table.get(job.customer_id).unwrap(), Some(expected.clone()));
+
+        table
+            .add_service(
+                job.customer_id,
+                &service_result(
+                    CustomerDataDeletionService::Sensor,
+                    &["b.example"],
+                    CustomerDataDeletionStatus::InProgress,
+                    40,
+                ),
+            )
+            .unwrap();
+        let stored = table.get(job.customer_id).unwrap().unwrap();
+        assert_eq!(
+            stored.periodic_time_series_ids,
+            job.periodic_time_series_ids
+        );
+        assert_eq!(stored.abandoned_hosts, job.abandoned_hosts);
+        assert_eq!(
+            stored.service_results.get(..4),
+            Some(expected.service_results.as_slice())
+        );
+    }
+
+    #[test]
+    fn conditionally_updates_policy_ids() {
+        let (_permit, _db_dir, _backup_dir, store) = setup_store();
+        let table = store.customer_data_deletion_map();
+        let old = job_with_data_store(24);
+        table.insert(&old).unwrap();
+
+        let mut new = old.clone();
+        new.periodic_time_series_ids = vec!["3".to_owned(), "10".to_owned(), "12".to_owned()];
+        table.update(&old, &new).unwrap();
+        assert_eq!(table.get(old.customer_id).unwrap(), Some(new.clone()));
+
+        // The stored lists are no longer `old`'s.
+        let mut stale_ids = new.clone();
+        stale_ids.periodic_time_series_ids = vec!["3".to_owned()];
+        assert_eq!(
+            table.update(&old, &stale_ids).unwrap_err().to_string(),
+            "old value mismatch"
+        );
+        let mut stale_hosts = new.clone();
+        stale_hosts.abandoned_hosts = Vec::new();
+        assert_eq!(
+            table.update(&stale_hosts, &new).unwrap_err().to_string(),
+            "old value mismatch"
+        );
+        assert_eq!(table.get(old.customer_id).unwrap(), Some(new));
+    }
+
+    #[test]
+    fn validates_abandoned_hosts_on_update() {
+        let (_permit, _db_dir, _backup_dir, store) = setup_store();
+        let table = store.customer_data_deletion_map();
+        let old = job_with_data_store(25);
+        table.insert(&old).unwrap();
+
+        for abandoned_hosts in [
+            &["b.example", "a.example"][..],
+            &["a.example", "a.example"][..],
+            &["c.example"][..],
+            &["001.giganto.b.example"][..],
+        ] {
+            let mut new = old.clone();
+            new.abandoned_hosts = abandoned_hosts
+                .iter()
+                .map(|host| (*host).to_owned())
+                .collect();
+            assert!(table.update(&old, &new).is_err(), "{abandoned_hosts:?}");
+            assert!(table.give_up(&old, &new).is_err(), "{abandoned_hosts:?}");
+        }
+
+        // Without a Review result no host can be given up.
+        let mut no_review = old.clone();
+        no_review.service_results.remove(0);
+        assert!(table.update(&old, &no_review).is_err());
+        no_review.abandoned_hosts.clear();
+        table.update(&old, &no_review).unwrap();
+        assert_eq!(table.get(old.customer_id).unwrap(), Some(no_review));
+    }
+
+    #[test]
+    fn gives_up_hosts_with_results_and_policy_ids_in_one_write() {
+        let (_permit, _db_dir, _backup_dir, store) = setup_store();
+        let table = store.customer_data_deletion_map();
+        let old = job_with_data_store(26);
+        table.insert(&old).unwrap();
+
+        let mut new = old.clone();
+        new.abandoned_hosts = vec!["a.example".to_owned(), "b.example".to_owned()];
+        new.periodic_time_series_ids = vec!["3".to_owned(), "10".to_owned(), "11".to_owned()];
+        for (index, result) in new.service_results.iter_mut().enumerate() {
+            result.status = CustomerDataDeletionStatus::InProgress;
+            result.requested_at = 100 + i64::try_from(index).unwrap();
+            result.completed_at = None;
+            result.error = None;
+        }
+        table.give_up(&old, &new).unwrap();
+        assert_eq!(table.get(old.customer_id).unwrap(), Some(new.clone()));
+
+        // `old` is now stale.
+        assert_eq!(
+            table.give_up(&old, &new).unwrap_err().to_string(),
+            "old value mismatch"
+        );
+        assert_eq!(table.get(old.customer_id).unwrap(), Some(new));
+    }
+
+    #[test]
+    fn refuses_invalid_give_ups_without_modifying_database() {
+        let (_permit, _db_dir, _backup_dir, store) = setup_store();
+        let table = store.customer_data_deletion_map();
+        let old = job_with_data_store(27);
+        table.insert(&old).unwrap();
+        let give_up_b = || {
+            let mut new = old.clone();
+            new.abandoned_hosts = vec!["a.example".to_owned(), "b.example".to_owned()];
+            new
+        };
+
+        let mut stale = old.clone();
+        stale.periodic_time_series_ids.push("11".to_owned());
+        let mut outside_review = old.clone();
+        outside_review.abandoned_hosts = vec!["a.example".to_owned(), "c.example".to_owned()];
+        let mut dropped_host = old.clone();
+        dropped_host.abandoned_hosts = vec!["b.example".to_owned()];
+        let mut wrong_customer = give_up_b();
+        wrong_customer.customer_id += 1;
+        let mut other_service = give_up_b();
+        other_service.service_results.get_mut(1).unwrap().service =
+            CustomerDataDeletionService::Sensor;
+        let mut other_host = give_up_b();
+        other_host.service_results.get_mut(3).unwrap().host_fqdns = vec!["c.example".to_owned()];
+        let mut reordered = give_up_b();
+        reordered.service_results.swap(2, 3);
+        let mut removed = give_up_b();
+        removed.service_results.pop();
+        let mut added_module_removal = give_up_b();
+        added_module_removal.service_results.push(service_result(
+            CustomerDataDeletionService::ModuleRemoval,
+            &["c.example"],
+            CustomerDataDeletionStatus::InProgress,
+            5,
+        ));
+
+        for (case, given_old, new) in [
+            ("stale", &stale, give_up_b()),
+            ("outside_review", &old, outside_review),
+            ("dropped_host", &old, dropped_host),
+            ("wrong_customer", &old, wrong_customer),
+            ("other_service", &old, other_service),
+            ("other_host", &old, other_host),
+            ("reordered", &old, reordered),
+            ("removed", &old, removed),
+            ("added_module_removal", &old, added_module_removal),
+        ] {
+            assert!(
+                table.give_up(given_old, &new).is_err(),
+                "{case} must be refused"
+            );
+            assert_eq!(
+                table.get(old.customer_id).unwrap().as_ref(),
+                Some(&old),
+                "{case} must change nothing"
+            );
+            assert_eq!(table.get(old.customer_id + 1).unwrap(), None);
+        }
+    }
+
+    #[test]
+    fn give_up_adds_no_module_removal_results() {
+        let (_permit, _db_dir, _backup_dir, store) = setup_store();
+        let table = store.customer_data_deletion_map();
+        let old = CustomerDataDeletionJob::new(
+            28,
+            vec![
+                service_result(
+                    CustomerDataDeletionService::Review,
+                    &["a.example", "b.example"],
+                    CustomerDataDeletionStatus::Succeeded,
+                    1,
+                ),
+                service_result(
+                    CustomerDataDeletionService::Sensor,
+                    &["a.example"],
+                    CustomerDataDeletionStatus::Failed,
+                    2,
+                ),
+            ],
+        );
+        table.insert(&old).unwrap();
+
+        let mut new = old.clone();
+        new.abandoned_hosts = vec!["a.example".to_owned()];
+        for host in ["a.example", "b.example"] {
+            new.service_results.push(service_result(
+                CustomerDataDeletionService::ModuleRemoval,
+                &[host],
+                CustomerDataDeletionStatus::InProgress,
+                3,
+            ));
+        }
+
+        assert!(table.give_up(&old, &new).is_err());
+        assert_eq!(table.get(old.customer_id).unwrap(), Some(old));
     }
 }

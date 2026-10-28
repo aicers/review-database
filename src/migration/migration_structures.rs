@@ -2684,3 +2684,8 @@ impl EngineInstanceRefsV0_57 {
             .fold(0, i32::max)
     }
 }
+
+/// The stored value of a customer deletion job in database formats 0.47
+/// through 0.58: its service results alone, without the periodic time series
+/// IDs and abandoned hosts that the 0.59 layout appends.
+pub(crate) type CustomerDataDeletionJobValueV0_58 = Vec<crate::CustomerDataDeletionServiceResult>;
