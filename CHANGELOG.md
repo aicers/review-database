@@ -9,22 +9,6 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
-- `CustomerDataDeletionService::DataStore` records the deletion of a
-  customer's data in the Data Store; its result names the Data Store's server
-  name, `<instance:03>.giganto.<hostname>`, as its only host FQDN.
-  `CustomerDataDeletionService::ModuleRemoval` records the uninstall of the
-  modules installed on one of the customer's hosts, one result per host, which
-  names that host as its only host FQDN. An exhaustive match on
-  `CustomerDataDeletionService` must handle the new variants.
-- `CustomerDataDeletionJob` has `periodic_time_series_ids`, the decimal IDs of
-  the sampling policies whose periodic time series the Data Store deletes,
-  kept with the job because the policies are removed in the Review stage, and
-  `abandoned_hosts`, the hosts a System Administrator gave up on, sorted,
-  without duplicates, and each a host FQDN of the job's `Review` result.
-  `add_service` and `update_service` leave both unchanged, and `update`
-  compares and writes them with the results; it refuses abandoned hosts that
-  break those rules. A struct literal of `CustomerDataDeletionJob` must name
-  both fields, or be replaced by `CustomerDataDeletionJob::new`.
 - `Table<CustomerDataDeletionJob>::give_up` writes a job whole, as `update`
   does, when giving up on hosts: the abandoned hosts, which keep every host
   already given up, the service results with the retry's status reset, and
@@ -35,6 +19,22 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **BREAKING**: `CustomerDataDeletionService::DataStore` records the deletion of
+  a customer's data in the Data Store; its result names the Data Store's server
+  name, `<instance:03>.giganto.<hostname>`, as its only host FQDN.
+  `CustomerDataDeletionService::ModuleRemoval` records the uninstall of the
+  modules installed on one of the customer's hosts, one result per host, which
+  names that host as its only host FQDN. An exhaustive match on
+  `CustomerDataDeletionService` must handle the new variants.
+- **BREAKING**: `CustomerDataDeletionJob` has `periodic_time_series_ids`, the
+  decimal IDs of the sampling policies whose periodic time series the Data Store
+  deletes, kept with the job because the policies are removed in the Review
+  stage, and `abandoned_hosts`, the hosts a System Administrator gave up on,
+  sorted, without duplicates, and each a host FQDN of the job's `Review` result.
+  `add_service` and `update_service` leave both unchanged, and `update` compares
+  and writes them with the results; it refuses abandoned hosts that break those
+  rules. A struct literal of `CustomerDataDeletionJob` must name both fields, or
+  be replaced by `CustomerDataDeletionJob::new`.
 - A customer deletion job's `Review` result may have no host FQDN, for a
   customer with no node left that still has records in the Central Manager.
 - **BREAKING**: Bumped the database format to `0.59.0` (the database format
