@@ -42,6 +42,7 @@ mod trusted_domain;
 mod trusted_user_agent;
 
 use std::{
+    collections::BTreeSet,
     io,
     os::unix::fs::MetadataExt,
     path::{Path, PathBuf},
@@ -146,6 +147,7 @@ use crate::{
     batch_info::BatchInfo,
     category::Category,
     collections::{Indexed, IndexedSet},
+    migration::DATABASE_FORMAT_VERSION,
     scores::Scores,
     types::{FromKeyValue, Qualifier, Status},
 };
@@ -656,21 +658,62 @@ impl StateDb {
             .or_else(|_| self.reboot())
     }
 
+    /// Restores the latest backup over the database and reopens it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error, before closing anything, if there is no backup, or
+    /// if the format of the latest backup cannot be determined or is not the
+    /// current one. Only the latest backup is checked; an older one is never
+    /// restored in its place. A refused call leaves `states.db`, the backups
+    /// and the `VERSION` markers unchanged, and the database stays open. A
+    /// backup taken at another format is restored offline with
+    /// [`crate::backup::restore_states_offline`] followed by
+    /// [`crate::write_version_markers`].
+    ///
+    /// Returns an error if the backup engine fails to restore the backup or
+    /// the restored database cannot be reopened, in which case the database
+    /// is left closed.
     pub fn restore_from_latest_backup(&mut self) -> Result<()> {
         let mut engine = open_rocksdb_backup_engine(self.backup.as_path())?;
+
+        let latest = engine
+            .get_backup_info()
+            .iter()
+            .map(|info| info.backup_id)
+            .max()
+            .ok_or_else(|| anyhow!("no backup to restore; nothing was restored"))?;
+        check_backup_format(&engine, &self.backup, latest)?;
 
         let mut opts = rocksdb::backup::RestoreOptions::default();
         opts.set_keep_log_files(true);
 
         self.close();
 
-        engine.restore_from_latest_backup(&self.db, &self.db, &opts)?;
+        engine.restore_from_backup(&self.db, &self.db, &opts, latest)?;
 
         self.reboot()
     }
 
+    /// Restores backup `id` over the database and reopens it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error, before closing anything, if no backup has id `id`,
+    /// or if the backup's format cannot be determined or is not the current
+    /// one. A refused call leaves `states.db`, the backups and the `VERSION`
+    /// markers unchanged, and the database stays open. A backup taken at
+    /// another format is restored offline with
+    /// [`crate::backup::restore_states_offline`] followed by
+    /// [`crate::write_version_markers`].
+    ///
+    /// Returns an error if the backup engine fails to restore the backup or
+    /// the restored database cannot be reopened, in which case the database
+    /// is left closed.
     pub fn restore_from_backup(&mut self, id: u32) -> Result<()> {
         let mut engine = open_rocksdb_backup_engine(self.backup.as_path())?;
+
+        check_backup_format(&engine, &self.backup, id)?;
 
         self.close();
 
@@ -1406,6 +1449,63 @@ pub(crate) fn open_rocksdb_backup_engine(
     let opts = rocksdb::backup::BackupEngineOptions::new(path)?;
     let db_env = rocksdb::Env::new()?;
     rocksdb::backup::BackupEngine::open(&opts, &db_env)
+}
+
+/// Checks that backup `id` in the backup engine directory `backup` exists and
+/// is in the current database format, without restoring it.
+///
+/// A backup is taken to be in [`DATABASE_FORMAT_VERSION`] exactly when its
+/// column families other than `default` are [`MAP_NAMES`]. The backup engine
+/// keeps each backup's `CURRENT` and `MANIFEST` in `private/<id>`, which is
+/// where RocksDB opens a backup from, so the families are listed from there.
+/// Listing them reads those two files only and writes nothing.
+///
+/// Every message is the error's own `Display` text, with no context layered
+/// on, because callers such as review-web show only the outermost one.
+fn check_backup_format(
+    engine: &rocksdb::backup::BackupEngine,
+    backup: &Path,
+    id: u32,
+) -> Result<()> {
+    fn quoted<'a>(names: impl Iterator<Item = &'a &'a str>) -> String {
+        names
+            .map(|name| format!("\"{name}\""))
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+
+    if !engine
+        .get_backup_info()
+        .iter()
+        .any(|info| info.backup_id == id)
+    {
+        return Err(anyhow!("no backup with id {id}; nothing was restored"));
+    }
+
+    let families = rocksdb::DB::list_cf(
+        &rocksdb::Options::default(),
+        backup.join("private").join(id.to_string()),
+    )
+    .map_err(|e| {
+        anyhow!("cannot determine the database format of backup {id}: {e}; nothing was restored")
+    })?;
+
+    let found: BTreeSet<&str> = families
+        .iter()
+        .map(String::as_str)
+        .filter(|name| *name != "default")
+        .collect();
+    let expected: BTreeSet<&str> = MAP_NAMES.into_iter().collect();
+    if found == expected {
+        return Ok(());
+    }
+
+    Err(anyhow!(
+        "backup {id} is not in database format {DATABASE_FORMAT_VERSION}: unexpected column \
+         families [{}], missing column families [{}]; nothing was restored",
+        quoted(found.difference(&expected)),
+        quoted(expected.difference(&found)),
+    ))
 }
 
 /// Restores backup `id` into the closed database at `db`.

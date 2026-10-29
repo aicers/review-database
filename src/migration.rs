@@ -39,6 +39,12 @@ use crate::{
 /// It names the current database format and is independent of the crate
 /// package version: a release does not move it, and a format change does,
 /// whatever the crate version is at the time.
+///
+/// The online restore (`StateDb::restore_from_backup`) recognizes a backup in
+/// this format by its column families, which must be exactly `MAP_NAMES`. A
+/// format change that leaves the set of column families unchanged makes
+/// backups of the two formats indistinguishable to that check, so it must give
+/// the check another way to tell them apart.
 pub(crate) const DATABASE_FORMAT_VERSION: &str = "0.60.0";
 
 /// The range of format markers that use the current database format.

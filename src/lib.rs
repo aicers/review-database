@@ -979,7 +979,16 @@ impl Store {
     ///
     /// # Errors
     ///
-    /// Returns an error when backup engine fails or restoration fails.
+    /// Returns an error, before closing anything, if no backup has id
+    /// `backup_id`, or if the backup's database format cannot be determined
+    /// or is not the current one. A refused call leaves `states.db`, the
+    /// backups and the `VERSION` markers unchanged, and the database stays
+    /// open. A backup taken at another format is restored offline with
+    /// [`backup::restore_states_offline`] followed by
+    /// [`write_version_markers`].
+    ///
+    /// Returns an error when backup engine fails or restoration fails after
+    /// the check has passed, in which case the database is left closed.
     pub fn restore_from_backup(&mut self, backup_id: u32) -> Result<()> {
         self.states.restore_from_backup(backup_id)
     }
@@ -988,7 +997,17 @@ impl Store {
     ///
     /// # Errors
     ///
-    /// Returns an error when backup engine fails or restoration fails.
+    /// Returns an error, before closing anything, if there is no backup, or
+    /// if the latest backup's database format cannot be determined or is not
+    /// the current one. Only the latest backup is checked; an older one is
+    /// never restored in its place. A refused call leaves `states.db`, the
+    /// backups and the `VERSION` markers unchanged, and the database stays
+    /// open. A backup taken at another format is restored offline with
+    /// [`backup::restore_states_offline`] followed by
+    /// [`write_version_markers`].
+    ///
+    /// Returns an error when backup engine fails or restoration fails after
+    /// the check has passed, in which case the database is left closed.
     pub fn restore_from_latest_backup(&mut self) -> Result<()> {
         self.states.restore_from_latest_backup()
     }

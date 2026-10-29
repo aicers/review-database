@@ -93,9 +93,21 @@ pub fn list(store: &Arc<RwLock<Store>>) -> Result<Vec<BackupInfo>> {
 
 /// Restores the database from a backup with the specified ID.
 ///
+/// With `None`, the latest backup is restored.
+///
 /// # Errors
 ///
-/// Returns an error if the restore operation fails.
+/// Returns an error, before closing anything, if no backup has the specified
+/// ID, if `backup_id` is `None` and there is no backup, or if the backup's
+/// database format cannot be determined or is not the current one. With
+/// `None`, only the latest backup is checked; an older one is never restored
+/// in its place. A refused call leaves `states.db`, the backups and the
+/// `VERSION` markers unchanged, and the database stays open. A backup taken
+/// at another format is restored offline with [`restore_states_offline`]
+/// followed by [`crate::write_version_markers`].
+///
+/// Returns an error if the restore operation fails after the check has
+/// passed, in which case the database is left closed.
 ///
 /// # Panics
 ///
@@ -602,12 +614,14 @@ mod tests {
     use chrono::{DateTime, TimeZone, Utc};
     use jiff::Timestamp;
 
-    use super::{OfflineRestoreError, create, list, restore_states_offline};
+    use super::{OfflineRestoreError, create, list, restore, restore_states_offline};
     use crate::event::timestamp;
     use crate::test::acquire_db_permit;
     use crate::{
         DEFAULT_STATES, Store,
         event::{DnsEventFields, EventKind, EventMessage},
+        migration::DATABASE_FORMAT_VERSION,
+        tables::{DATA_SOURCES, MAP_NAMES, open_rocksdb_backup_engine},
     };
 
     fn msg_time(time: DateTime<Utc>) -> Timestamp {
@@ -1192,6 +1206,347 @@ mod tests {
         writeln!(stdout, "{LOCK_HELD_LINE}").unwrap();
         stdout.flush().unwrap();
         std::io::stdin().read_to_end(&mut Vec::new()).unwrap();
+    }
+
+    /// What a refused online restore must leave as it was.
+    #[derive(Debug, PartialEq)]
+    struct RestoreState {
+        backup_ids: Vec<u32>,
+        families: BTreeSet<String>,
+        data_version: Vec<u8>,
+        backup_version: Vec<u8>,
+    }
+
+    impl RestoreState {
+        fn read(store: &Arc<RwLock<Store>>, data_dir: &Path, backup_dir: &Path) -> Self {
+            let families =
+                rocksdb::DB::list_cf(&rocksdb::Options::default(), data_dir.join(DEFAULT_STATES))
+                    .unwrap();
+            Self {
+                backup_ids: list(store).unwrap().iter().map(|b| b.id).collect(),
+                families: families.into_iter().collect(),
+                data_version: std::fs::read(data_dir.join("VERSION")).unwrap(),
+                backup_version: std::fs::read(backup_dir.join("VERSION")).unwrap(),
+            }
+        }
+    }
+
+    /// Writes both `VERSION` markers at the current format and opens a store
+    /// on them.
+    fn open_current_store(data_dir: &Path, backup_dir: &Path) -> Arc<RwLock<Store>> {
+        crate::write_version_markers(data_dir, backup_dir, DATABASE_FORMAT_VERSION).unwrap();
+        open_store(data_dir, backup_dir)
+    }
+
+    fn live_event_count(store: &Arc<RwLock<Store>>) -> usize {
+        let store = store.read().expect("test holds no other locks");
+        store.events().iter_forward().count()
+    }
+
+    /// Asserts that a refused online restore left `store` open and serving,
+    /// and everything in `before` unchanged.
+    fn assert_still_open(
+        store: &Arc<RwLock<Store>>,
+        data_dir: &Path,
+        backup_dir: &Path,
+        before: &RestoreState,
+    ) {
+        let count = live_event_count(store);
+        put_event(store);
+        assert_eq!(live_event_count(store), count + 1);
+        assert_eq!(&RestoreState::read(store, data_dir, backup_dir), before);
+    }
+
+    /// Adds to the backup engine in `backup_dir` a backup of a plain database
+    /// holding exactly `families`.
+    fn add_backup_with_families(backup_dir: &Path, families: &[&str]) {
+        let source = tempfile::tempdir().unwrap();
+        let mut opts = rocksdb::Options::default();
+        opts.create_if_missing(true);
+        opts.create_missing_column_families(true);
+        let db = rocksdb::DB::open_cf(&opts, source.path(), families).unwrap();
+        db.put(b"key", b"value").unwrap();
+        let mut engine = open_rocksdb_backup_engine(&backup_dir.join(DEFAULT_STATES)).unwrap();
+        engine.create_new_backup_flush(&db, true).unwrap();
+    }
+
+    /// The column families of a `0.59` database: the current ones and
+    /// `data sources`.
+    fn older_format_families() -> Vec<&'static str> {
+        MAP_NAMES.into_iter().chain([DATA_SOURCES]).collect()
+    }
+
+    fn private_dir(backup_dir: &Path, id: u32) -> std::path::PathBuf {
+        backup_dir
+            .join(DEFAULT_STATES)
+            .join("private")
+            .join(id.to_string())
+    }
+
+    fn refuses_an_older_format_backup_by_id(
+        restore_by_id: impl FnOnce(&Arc<RwLock<Store>>, u32) -> anyhow::Result<()>,
+    ) {
+        let _permit = acquire_db_permit();
+        let data_dir = tempfile::tempdir().unwrap();
+        let backup_dir = tempfile::tempdir().unwrap();
+        let store = open_current_store(data_dir.path(), backup_dir.path());
+        put_event(&store);
+        add_backup_with_families(backup_dir.path(), &older_format_families());
+        let before = RestoreState::read(&store, data_dir.path(), backup_dir.path());
+        assert_eq!(before.backup_ids, [1]);
+        let private_before = dir_entries(&private_dir(backup_dir.path(), 1));
+
+        let err = restore_by_id(&store, 1).unwrap_err();
+
+        assert_eq!(
+            err.to_string(),
+            format!(
+                "backup 1 is not in database format {DATABASE_FORMAT_VERSION}: unexpected \
+                 column families [\"data sources\"], missing column families []; nothing \
+                 was restored"
+            )
+        );
+        assert_eq!(
+            dir_entries(&private_dir(backup_dir.path(), 1)),
+            private_before
+        );
+        assert_eq!(live_event_count(&store), 1);
+        assert_still_open(&store, data_dir.path(), backup_dir.path(), &before);
+        drop(store);
+        assert_eq!(event_count(data_dir.path(), backup_dir.path()), 2);
+    }
+
+    fn latest_refuses_without_falling_back(
+        restore_latest: impl FnOnce(&Arc<RwLock<Store>>) -> anyhow::Result<()>,
+    ) {
+        let _permit = acquire_db_permit();
+        let data_dir = tempfile::tempdir().unwrap();
+        let backup_dir = tempfile::tempdir().unwrap();
+        let store = open_current_store(data_dir.path(), backup_dir.path());
+        put_event(&store);
+        create(&store, true, 3).unwrap();
+        put_event(&store);
+        add_backup_with_families(backup_dir.path(), &older_format_families());
+        let before = RestoreState::read(&store, data_dir.path(), backup_dir.path());
+        assert_eq!(before.backup_ids, [1, 2]);
+
+        let err = restore_latest(&store).unwrap_err();
+
+        assert_eq!(
+            err.to_string(),
+            format!(
+                "backup 2 is not in database format {DATABASE_FORMAT_VERSION}: unexpected \
+                 column families [\"data sources\"], missing column families []; nothing \
+                 was restored"
+            )
+        );
+        assert_eq!(live_event_count(&store), 2);
+        assert_still_open(&store, data_dir.path(), backup_dir.path(), &before);
+
+        store
+            .write()
+            .expect("test holds no other locks")
+            .restore_from_backup(1)
+            .unwrap();
+        assert_eq!(live_event_count(&store), 1);
+        drop(store);
+        assert_eq!(event_count(data_dir.path(), backup_dir.path()), 1);
+    }
+
+    #[test]
+    fn online_restore_refuses_an_older_format_backup_by_id() {
+        refuses_an_older_format_backup_by_id(|store, id| {
+            store
+                .write()
+                .expect("test holds no other locks")
+                .restore_from_backup(id)
+        });
+    }
+
+    #[test]
+    fn online_restore_refuses_a_backup_lacking_a_family() {
+        let _permit = acquire_db_permit();
+        let data_dir = tempfile::tempdir().unwrap();
+        let backup_dir = tempfile::tempdir().unwrap();
+        let store = open_current_store(data_dir.path(), backup_dir.path());
+        put_event(&store);
+        let (missing, families) = MAP_NAMES.split_last().unwrap();
+        add_backup_with_families(backup_dir.path(), families);
+        let before = RestoreState::read(&store, data_dir.path(), backup_dir.path());
+
+        let err = store
+            .write()
+            .expect("test holds no other locks")
+            .restore_from_backup(1)
+            .unwrap_err();
+
+        assert_eq!(
+            err.to_string(),
+            format!(
+                "backup 1 is not in database format {DATABASE_FORMAT_VERSION}: unexpected \
+                 column families [], missing column families [\"{missing}\"]; nothing was \
+                 restored"
+            )
+        );
+        assert_eq!(live_event_count(&store), 1);
+        assert_still_open(&store, data_dir.path(), backup_dir.path(), &before);
+        drop(store);
+        assert_eq!(event_count(data_dir.path(), backup_dir.path()), 2);
+    }
+
+    #[test]
+    fn online_restore_of_the_latest_refuses_without_falling_back() {
+        latest_refuses_without_falling_back(|store| {
+            store
+                .write()
+                .expect("test holds no other locks")
+                .restore_from_latest_backup()
+        });
+    }
+
+    #[test]
+    fn online_restore_refuses_a_missing_backup_id() {
+        let _permit = acquire_db_permit();
+        let data_dir = tempfile::tempdir().unwrap();
+        let backup_dir = tempfile::tempdir().unwrap();
+        let store = open_current_store(data_dir.path(), backup_dir.path());
+        put_event(&store);
+        create(&store, true, 3).unwrap();
+        let before = RestoreState::read(&store, data_dir.path(), backup_dir.path());
+        assert_eq!(before.backup_ids, [1]);
+
+        let err = store
+            .write()
+            .expect("test holds no other locks")
+            .restore_from_backup(7)
+            .unwrap_err();
+
+        assert_eq!(err.to_string(), "no backup with id 7; nothing was restored");
+        assert_eq!(live_event_count(&store), 1);
+        assert_still_open(&store, data_dir.path(), backup_dir.path(), &before);
+        drop(store);
+        assert_eq!(event_count(data_dir.path(), backup_dir.path()), 2);
+    }
+
+    #[test]
+    fn online_restore_of_the_latest_refuses_when_there_is_no_backup() {
+        let _permit = acquire_db_permit();
+        let data_dir = tempfile::tempdir().unwrap();
+        let backup_dir = tempfile::tempdir().unwrap();
+        let store = open_current_store(data_dir.path(), backup_dir.path());
+        put_event(&store);
+        let before = RestoreState::read(&store, data_dir.path(), backup_dir.path());
+        assert_eq!(before.backup_ids, Vec::<u32>::new());
+
+        let err = store
+            .write()
+            .expect("test holds no other locks")
+            .restore_from_latest_backup()
+            .unwrap_err();
+
+        assert_eq!(
+            err.to_string(),
+            "no backup to restore; nothing was restored"
+        );
+        assert_eq!(live_event_count(&store), 1);
+        assert_still_open(&store, data_dir.path(), backup_dir.path(), &before);
+        drop(store);
+        assert_eq!(event_count(data_dir.path(), backup_dir.path()), 2);
+    }
+
+    #[test]
+    fn online_restore_refuses_a_backup_whose_format_cannot_be_read() {
+        let _permit = acquire_db_permit();
+        let data_dir = tempfile::tempdir().unwrap();
+        let backup_dir = tempfile::tempdir().unwrap();
+        let store = open_current_store(data_dir.path(), backup_dir.path());
+        put_event(&store);
+        create(&store, true, 3).unwrap();
+
+        // Keep the size, which is all the backup engine checks when it opens,
+        // so backup 1 stays listed while its `CURRENT` names no manifest.
+        let current = private_dir(backup_dir.path(), 1).join("CURRENT");
+        let len = usize::try_from(std::fs::metadata(&current).unwrap().len()).unwrap();
+        let mut garbage = vec![b'X'; len - 1];
+        garbage.push(b'\n');
+        std::fs::write(&current, garbage).unwrap();
+        let before = RestoreState::read(&store, data_dir.path(), backup_dir.path());
+        assert_eq!(before.backup_ids, [1]);
+
+        let err = store
+            .write()
+            .expect("test holds no other locks")
+            .restore_from_backup(1)
+            .unwrap_err()
+            .to_string();
+
+        assert!(
+            err.starts_with("cannot determine the database format of backup 1: "),
+            "{err}"
+        );
+        assert!(err.ends_with("; nothing was restored"), "{err}");
+        assert_eq!(live_event_count(&store), 1);
+        assert_still_open(&store, data_dir.path(), backup_dir.path(), &before);
+
+        // Without `CURRENT`, the engine takes backup 1 for corrupt and no
+        // longer lists it.
+        std::fs::remove_file(&current).unwrap();
+        let before = RestoreState::read(&store, data_dir.path(), backup_dir.path());
+        assert_eq!(before.backup_ids, Vec::<u32>::new());
+
+        let err = store
+            .write()
+            .expect("test holds no other locks")
+            .restore_from_backup(1)
+            .unwrap_err();
+
+        assert_eq!(err.to_string(), "no backup with id 1; nothing was restored");
+        assert_still_open(&store, data_dir.path(), backup_dir.path(), &before);
+        drop(store);
+        assert_eq!(event_count(data_dir.path(), backup_dir.path()), 3);
+    }
+
+    #[test]
+    fn online_restore_of_a_current_format_backup_still_works() {
+        let _permit = acquire_db_permit();
+        let data_dir = tempfile::tempdir().unwrap();
+        let backup_dir = tempfile::tempdir().unwrap();
+        let store = open_current_store(data_dir.path(), backup_dir.path());
+        put_event(&store);
+        create(&store, true, 3).unwrap();
+        put_event(&store);
+        create(&store, true, 3).unwrap();
+        put_event(&store);
+        let private_before = [1, 2].map(|id| dir_entries(&private_dir(backup_dir.path(), id)));
+
+        store
+            .write()
+            .expect("test holds no other locks")
+            .restore_from_backup(1)
+            .unwrap();
+        assert_eq!(live_event_count(&store), 1);
+
+        store
+            .write()
+            .expect("test holds no other locks")
+            .restore_from_latest_backup()
+            .unwrap();
+        assert_eq!(live_event_count(&store), 2);
+
+        let private_after = [1, 2].map(|id| dir_entries(&private_dir(backup_dir.path(), id)));
+        assert_eq!(private_after, private_before);
+        drop(store);
+        assert_eq!(event_count(data_dir.path(), backup_dir.path()), 2);
+    }
+
+    #[test]
+    fn restore_refuses_an_older_format_backup_by_id() {
+        refuses_an_older_format_backup_by_id(|store, id| restore(store, Some(id)));
+    }
+
+    #[test]
+    fn restore_of_the_latest_refuses_without_falling_back() {
+        latest_refuses_without_falling_back(|store| restore(store, None));
     }
 
     #[test]

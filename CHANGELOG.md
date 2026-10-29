@@ -5,6 +5,23 @@ file is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), and
 this project adheres to [Semantic
 Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- `Store::restore_from_backup`, `Store::restore_from_latest_backup` and
+  `backup::restore` refuse a backup whose database format is not the current
+  one, such as one taken before the `0.60.0` or `0.52.0` migration, and leave
+  the open database in place and serving. They used to restore it over
+  `states.db` and then fail to reopen it with "Column families not opened",
+  after which every use of the `Store` panicked and the next `Store::new` failed
+  as well. A backup taken at another format is restored with
+  `backup::restore_states_offline` followed by `write_version_markers`. They now
+  also refuse a backup id that does not exist, and a latest restore when there
+  are no backups, before closing the database, which these used to leave closed.
+  The latest restore checks only the latest backup and never falls back to an
+  older one.
+
 ## [0.60.0] - 2026-10-29
 
 ### Changed
@@ -2303,6 +2320,7 @@ AsRef<[u8]>`). This change accommodates scenarios where the information stored
 - Modified `FtpBruteForce` by adding an `is_internal` field which is a boolean
   indicating whether it is internal or not.
 
+[Unreleased]: https://github.com/aicers/review-database/compare/0.60.0...main
 [0.60.0]: https://github.com/aicers/review-database/compare/0.59.0...0.60.0
 [0.59.0]: https://github.com/aicers/review-database/compare/0.58.0...0.59.0
 [0.58.0]: https://github.com/aicers/review-database/compare/0.57.0...0.58.0
