@@ -145,6 +145,13 @@ const ABSENT_BIND_ADDRS: u32 = u32::MAX;
 /// An id this long is refused rather than allowed to read back as `None`.
 const ABSENT_CONFIG_TEMPLATE: u32 = u32::MAX;
 
+/// The byte the install intent's transcript ends with when the operator asked
+/// for the Sensor to run as root.
+///
+/// The transcript ends with nothing when the operator did not, so every digest
+/// computed before the switch existed stays what it was.
+const RUN_AS_ROOT_TAG: u8 = 0x01;
+
 /// The operator's intent for an attempt.
 ///
 /// This is recorded for display and audit; it is not a wire distinction,
@@ -304,6 +311,11 @@ pub struct InstallIntent {
     ///
     /// `None` and `Some("")` are distinct requests.
     pub config_template: Option<String>,
+    /// Whether the operator asked for the Sensor to run as root.
+    ///
+    /// It is part of what the client submitted, so a resubmission under the
+    /// same request key with a different switch is a different request.
+    pub run_as_root: bool,
 }
 
 impl InstallIntent {
@@ -379,6 +391,9 @@ impl InstallIntent {
             push_segment(&mut transcript, id)?;
         } else {
             transcript.extend_from_slice(&ABSENT_CONFIG_TEMPLATE.to_be_bytes());
+        }
+        if self.run_as_root {
+            transcript.push(RUN_AS_ROOT_TAG);
         }
 
         Ok(transcript)
@@ -510,6 +525,11 @@ impl From<PortAllocationError> for AddressAllocationError {
 /// must also agree with the request: it is used to rebuild a re-sent install,
 /// and a digest alone cannot prove that the column holds what it hashed.
 ///
+/// The attempt's `privilege_profile` is not compared: it depends on the build
+/// the selector resolves to, not on the request alone. The request's
+/// `run_as_root` needs no column of its own, because the digest already holds
+/// it.
+///
 /// The transport is not part of the tie. `bind_addrs` carries
 /// `(listener key, address)` and nothing else, because which transport a
 /// listener binds on is the component's to say and not the operator's, so
@@ -626,7 +646,9 @@ pub(crate) fn is_uuid_v4(key: &str) -> bool {
 /// guess which absent encoding a given field uses. `backup_id` and
 /// `pre_update_version` are core-update-scoped rather than package-scoped, and
 /// use `Option` as each other does. `config_template` is absent for an install
-/// submitted without a template and for every other action. `install_intent`,
+/// submitted without a template and for every other action.
+/// `privilege_profile` is absent for an install or update that carries no
+/// profile and for every other action. `install_intent`,
 /// `failure_kind` and `finalized_at` are neither: each is absent for a state
 /// the row is genuinely in — an operation that dedupes on something other
 /// than a request digest, an attempt that did not fail, and an attempt that
@@ -809,6 +831,16 @@ pub struct OperationAttempt {
     /// The database format version in effect before the swap, set only for a
     /// core-component update of `REview`.
     pub pre_update_version: Option<String>,
+    /// The privilege profile name the attempt's sends carry, stored verbatim
+    /// without validation.
+    ///
+    /// A recovery re-send carries the same profile as the send it repeats.
+    /// [`Table::upsert`] refuses it under any action other than
+    /// [`Action::Install`] and [`Action::Update`]; an update can carry one
+    /// because a re-apply of the installed build with a new profile is recorded
+    /// as an update attempt. `None` on the wire means keeping the profile last
+    /// applied.
+    pub privilege_profile: Option<String>,
 }
 
 impl OperationAttempt {
@@ -862,6 +894,7 @@ impl OperationAttempt {
             pre_update_version: self.pre_update_version.as_deref().map(Cow::Borrowed),
             failure_kind: self.failure_kind,
             config_template: self.config_template.as_deref().map(Cow::Borrowed),
+            privilege_profile: self.privilege_profile.as_deref().map(Cow::Borrowed),
         };
         super::serialize(&value).expect("serializable")
     }
@@ -896,6 +929,7 @@ impl FromKeyValue for OperationAttempt {
             expires_at: value.expires_at,
             backup_id: value.backup_id,
             pre_update_version: value.pre_update_version.map(Cow::into_owned),
+            privilege_profile: value.privilege_profile.map(Cow::into_owned),
         })
     }
 }
@@ -935,6 +969,28 @@ struct Value<'a> {
     pre_update_version: Option<Cow<'a, str>>,
     failure_kind: Option<FailureKind>,
     config_template: Option<Cow<'a, str>>,
+    privilege_profile: Option<Cow<'a, str>>,
+}
+
+/// Refuses a row carrying what its sends carry under an action that sends none
+/// of it: a configuration template is an install's alone, and a privilege
+/// profile an install's or an update's.
+fn check_send_fields(attempt: &OperationAttempt) -> Result<()> {
+    if attempt.config_template.is_some() && attempt.action != Action::Install {
+        bail!(
+            "operation attempt {} carries a configuration template under an action other than install",
+            attempt.idempotency_key
+        );
+    }
+    if attempt.privilege_profile.is_some()
+        && !matches!(attempt.action, Action::Install | Action::Update)
+    {
+        bail!(
+            "operation attempt {} carries a privilege profile under an action other than install or update",
+            attempt.idempotency_key
+        );
+    }
+    Ok(())
 }
 
 /// What a [`Table::prune`] call keeps.
@@ -1431,7 +1487,8 @@ impl<'d> Table<'d, OperationAttempt> {
     /// outcome is not `Failed` or unset for one whose outcome is, if an
     /// install carries no `install_intent` or an `install_intent` is carried
     /// by an attempt that is not an install, if a `config_template` is carried
-    /// by an attempt that is not an install, if
+    /// by an attempt that is not an install, if a `privilege_profile` is
+    /// carried by an attempt that is neither an install nor an update, if
     /// the attempt carries an `install_intent` and no row is held under its
     /// key, which is [`Table::create_or_resolve`]'s decision to make, if
     /// the attempt is non-terminal and a different
@@ -2318,12 +2375,7 @@ impl<'d> Table<'d, OperationAttempt> {
                 "an install records the digest of the request it was submitted with, and no other action does"
             );
         }
-        if new.config_template.is_some() && new.action != Action::Install {
-            bail!(
-                "operation attempt {} carries a configuration template under an action other than install",
-                new.idempotency_key
-            );
-        }
+        check_send_fields(new)?;
         // An install is keyed by the request key the client supplied, and that
         // is the only shape `resolve_request_key` can reach a row under: a key
         // it refuses as malformed leaves the row unfindable.
@@ -2570,6 +2622,10 @@ mod tests {
 
     /// The digest of [`golden_intent`], which pins the transcript.
     const GOLDEN_DIGEST: &str = "f1fe59cef4eeb87894277683a26db53d8aabec6be67533df78c4cc64d805f654";
+    /// The digest of [`golden_intent`] asking to run as root, which pins the
+    /// byte that adds to the transcript.
+    const GOLDEN_RUN_AS_ROOT_DIGEST: &str =
+        "ebccc4febcb188dd3dde6af87d29536a0f04ba978d3375d1beeaaa7e8a8c467b";
 
     const ACTIONS: [Action; 4] = [
         Action::Install,
@@ -2695,6 +2751,7 @@ mod tests {
             expires_at: timestamp(1_700_086_400),
             backup_id: None,
             pre_update_version: None,
+            privilege_profile: None,
         }
     }
 
@@ -2725,6 +2782,7 @@ mod tests {
             expires_at: timestamp(1_700_100_000),
             backup_id: None,
             pre_update_version: None,
+            privilege_profile: None,
         }
     }
 
@@ -2756,6 +2814,7 @@ mod tests {
             expires_at: timestamp(1_700_003_800),
             backup_id: None,
             pre_update_version: None,
+            privilege_profile: None,
         }
     }
 
@@ -2849,6 +2908,7 @@ mod tests {
         InstallIntent {
             host: "host-a.example".to_string(),
             target: "giganto".to_string(),
+            run_as_root: false,
             selector: BuildSelector::Version("1.2.3".to_string()),
             on_failure: OnFailure::Rollback,
             config_template: Some("baseline".to_string()),
@@ -4426,6 +4486,87 @@ mod tests {
         assert_eq!(reordered.digest().unwrap(), intent.digest().unwrap());
     }
 
+    /// Asking to run as root appends the one pinned byte to the transcript and
+    /// nothing else, so every digest computed before the switch still holds.
+    #[test]
+    fn the_run_as_root_install_intent_digest_matches_its_golden_vector() {
+        let mut intent = golden_intent();
+        assert!(!intent.run_as_root);
+        let mut expected = intent.transcript().unwrap();
+        assert_eq!(
+            data_encoding::HEXLOWER.encode(&intent.digest().unwrap()),
+            GOLDEN_DIGEST
+        );
+
+        intent.run_as_root = true;
+        expected.push(0x01);
+        assert_eq!(RUN_AS_ROOT_TAG, 0x01);
+        assert_eq!(intent.transcript().unwrap(), expected);
+        assert_eq!(
+            data_encoding::HEXLOWER.encode(&intent.digest().unwrap()),
+            GOLDEN_RUN_AS_ROOT_DIGEST
+        );
+        assert_ne!(GOLDEN_RUN_AS_ROOT_DIGEST, GOLDEN_DIGEST);
+
+        // The byte follows an absent template the same way.
+        intent.config_template = None;
+        intent.bind_addrs = None;
+        let transcript = intent.transcript().unwrap();
+        intent.run_as_root = false;
+        assert_eq!(
+            transcript.strip_prefix(intent.transcript().unwrap().as_slice()),
+            Some(&[0x01][..])
+        );
+    }
+
+    /// A resubmission differing only in the switch is a different request,
+    /// whichever way the switch moved.
+    #[test]
+    fn a_request_key_is_refused_for_a_different_run_as_root() {
+        let test_db = TestDb::new();
+        let table = test_db.table();
+        for run_as_root in [false, true] {
+            let mut request = golden_intent();
+            request.bind_addrs = None;
+            request.run_as_root = run_as_root;
+            let mut attempt = install_attempt(REQUEST_KEY, &request.host, &request.target, None);
+            attempt.install_intent = Some(request.digest().unwrap());
+            let stored = table.allocate_instance(&attempt, &request).unwrap();
+            assert_eq!(
+                table
+                    .resolve_request_key(REQUEST_KEY, &request.digest().unwrap())
+                    .unwrap(),
+                Some(stored)
+            );
+
+            let mut changed = request.clone();
+            changed.run_as_root = !run_as_root;
+            assert!(matches!(
+                table.resolve_request_key(REQUEST_KEY, &changed.digest().unwrap()).unwrap_err(),
+                RequestKeyError::RequestKeyReused { request_key } if request_key == REQUEST_KEY
+            ));
+            table.delete(REQUEST_KEY).unwrap();
+        }
+    }
+
+    /// The profile depends on the build the selector resolves to and not on the
+    /// request alone, so a fresh allocation has nothing to compare it against.
+    #[test]
+    fn a_fresh_allocation_does_not_compare_the_privilege_profile() {
+        let test_db = TestDb::new();
+        let table = test_db.table();
+        let mut request = golden_intent();
+        request.bind_addrs = None;
+        for privilege_profile in [Some("af-packet".to_string()), None] {
+            let mut attempt = install_attempt(REQUEST_KEY, &request.host, &request.target, None);
+            attempt.install_intent = Some(request.digest().unwrap());
+            attempt.privilege_profile = privilege_profile.clone();
+            let stored = table.allocate_instance(&attempt, &request).unwrap();
+            assert_eq!(stored.privilege_profile, privilege_profile);
+            table.delete(REQUEST_KEY).unwrap();
+        }
+    }
+
     #[test]
     fn no_two_requests_share_an_install_intent_digest() {
         let intent = golden_intent();
@@ -4456,6 +4597,8 @@ mod tests {
         let mut shifted = intent.clone();
         shifted.host = "host-a.exampl".to_string();
         shifted.target = "egiganto".to_string();
+        let mut as_root = intent.clone();
+        as_root.run_as_root = true;
 
         let mut absent_template = intent.clone();
         absent_template.config_template = None;
@@ -4481,6 +4624,7 @@ mod tests {
             other_listener,
             other_addr,
             shifted,
+            as_root,
         ] {
             assert_ne!(other.digest().unwrap(), digest);
         }
@@ -5119,6 +5263,51 @@ mod tests {
     }
 
     #[test]
+    fn privilege_profiles_round_trip_verbatim_for_installs_and_updates() {
+        let test_db = TestDb::new();
+        let table = test_db.table();
+        for privilege_profile in [
+            Some("af-packet".to_string()),
+            Some("not a profile".to_string()),
+            Some(String::new()),
+            None,
+        ] {
+            let mut install = install_attempt(REQUEST_KEY, HOST, TARGET, Some(7));
+            install.privilege_profile = privilege_profile.clone();
+            table.create_or_resolve(&install).unwrap();
+            table.upsert(&install).unwrap();
+            assert_eq!(table.get(REQUEST_KEY).unwrap(), Some(install));
+            table.delete(REQUEST_KEY).unwrap();
+
+            let mut update = module_attempt("op-update");
+            assert_eq!(update.action, Action::Update);
+            update.privilege_profile = privilege_profile;
+            table.upsert(&update).unwrap();
+            assert_eq!(table.get("op-update").unwrap(), Some(update));
+            table.delete("op-update").unwrap();
+        }
+    }
+
+    #[test]
+    fn privilege_profiles_are_carried_only_by_installs_and_updates() {
+        let test_db = TestDb::new();
+        let table = test_db.table();
+        for action in [Action::Remove, Action::Onboard] {
+            let mut attempt = module_attempt("op-profile");
+            attempt.action = action;
+            table.upsert(&attempt).unwrap();
+            let before = snapshot(&test_db, "op-profile");
+
+            attempt.privilege_profile = Some("root".to_string());
+            let error = table.upsert(&attempt).unwrap_err().to_string();
+            assert!(error.contains("op-profile"), "{error}");
+            assert!(error.contains("privilege profile"), "{error}");
+            assert_eq!(snapshot(&test_db, "op-profile"), before);
+            table.delete("op-profile").unwrap();
+        }
+    }
+
+    #[test]
     fn configuration_templates_are_carried_only_by_installs() {
         let test_db = TestDb::new();
         let table = test_db.table();
@@ -5264,16 +5453,16 @@ mod tests {
         assert_no_allocations(&test_db);
     }
 
-    /// Holds the pinned 0.49 layout the migration writes to the live `Value`:
+    /// Holds the pinned 0.61 layout the migration writes to the live `Value`:
     /// it must decode a live encoding and re-encode it to the very same bytes.
     /// The options the table reads with refuse a short value and trailing
     /// bytes alike, so a field added to either side and not the other fails
     /// here.
     #[test]
-    fn pinned_v0_49_layout_matches_the_live_value() {
+    fn pinned_v0_61_layout_matches_the_live_value() {
         use bincode::Options;
 
-        use crate::migration::migration_structures::OperationAttemptValueV0_49;
+        use crate::migration::migration_structures::OperationAttemptValueV0_61;
 
         let mut attempt = install_attempt(REQUEST_KEY, HOST, TARGET, Some(7));
         attempt.cleanup_state = Some(CleanupState::PendingDeregister);
@@ -5283,22 +5472,26 @@ mod tests {
         attempt.backup_id = Some(9);
         attempt.pre_update_version = Some("0.47.0".to_string());
 
-        for config_template in [Some("baseline".to_string()), None] {
-            attempt.config_template = config_template.clone();
-            for failure_kind in [Some(FailureKind::TrustAnchorRefused), None] {
-                attempt.failure_kind = failure_kind;
-                let live = attempt.record_value();
-                let pinned: OperationAttemptValueV0_49 =
-                    bincode::DefaultOptions::new().deserialize(&live).unwrap();
-                assert_eq!(pinned.failure_kind, failure_kind);
-                assert_eq!(pinned.config_template, config_template);
-                assert_eq!(pinned.host, attempt.host);
-                assert_eq!(pinned.install_intent, attempt.install_intent);
-                assert_eq!(pinned.pre_update_version, attempt.pre_update_version);
-                assert_eq!(
-                    bincode::DefaultOptions::new().serialize(&pinned).unwrap(),
-                    live
-                );
+        for privilege_profile in [Some("replay".to_string()), None] {
+            attempt.privilege_profile = privilege_profile.clone();
+            for config_template in [Some("baseline".to_string()), None] {
+                attempt.config_template = config_template.clone();
+                for failure_kind in [Some(FailureKind::TrustAnchorRefused), None] {
+                    attempt.failure_kind = failure_kind;
+                    let live = attempt.record_value();
+                    let pinned: OperationAttemptValueV0_61 =
+                        bincode::DefaultOptions::new().deserialize(&live).unwrap();
+                    assert_eq!(pinned.failure_kind, failure_kind);
+                    assert_eq!(pinned.config_template, config_template);
+                    assert_eq!(pinned.privilege_profile, privilege_profile);
+                    assert_eq!(pinned.host, attempt.host);
+                    assert_eq!(pinned.install_intent, attempt.install_intent);
+                    assert_eq!(pinned.pre_update_version, attempt.pre_update_version);
+                    assert_eq!(
+                        bincode::DefaultOptions::new().serialize(&pinned).unwrap(),
+                        live
+                    );
+                }
             }
         }
     }

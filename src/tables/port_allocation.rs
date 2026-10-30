@@ -943,6 +943,7 @@ mod tests {
     fn request_for(host: &str, target: &str, bindings: &[ListenerBinding]) -> InstallIntent {
         InstallIntent {
             config_template: None,
+            run_as_root: false,
             host: host.to_string(),
             target: target.to_string(),
             selector: BuildSelector::Version("1.2.3".to_string()),
@@ -992,6 +993,7 @@ mod tests {
             expires_at: timestamp(1_700_086_400),
             backup_id: None,
             pre_update_version: None,
+            privilege_profile: None,
             install_intent: Some(request_for(HOST, COMPONENT, &[]).digest().unwrap()),
             config_template: None,
             finalized_at: None,

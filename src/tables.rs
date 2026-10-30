@@ -172,6 +172,13 @@ pub(super) const DATA_SOURCES: &str = "data sources";
 pub(super) const DETECTOR_ID_MARKS: &str = "detector id marks";
 pub(super) const ENGINE_INSTANCES: &str = "engine instances";
 pub(super) const FILTERS: &str = "filters";
+/// An empty column family that exists only so that `check_backup_format` can
+/// tell a 0.61 backup from an older one.
+///
+/// The 0.61 format changes row layouts and no family otherwise, and an online
+/// restore recognizes a backup's format by its column families alone. Nothing
+/// reads or writes rows in it.
+pub(super) const FORMAT_0_61: &str = "format 0.61";
 pub(super) const HOSTS: &str = "hosts";
 pub(super) const INSTANCE_ALLOCATIONS: &str = "instance allocations";
 pub(super) const MODELS: &str = "models";
@@ -218,7 +225,7 @@ pub(super) const TRIAGE_RESPONSE: &str = "triage response";
 pub(super) const TRUSTED_DNS_SERVERS: &str = "trusted DNS servers";
 pub(super) const TRUSTED_USER_AGENTS: &str = "trusted user agents";
 
-pub(crate) const MAP_NAMES: [&str; 49] = [
+pub(crate) const MAP_NAMES: [&str; 50] = [
     AGENTS,
     BATCH_INFO,
     CATEGORY,
@@ -255,6 +262,7 @@ pub(crate) const MAP_NAMES: [&str; 49] = [
     PREVIOUS_TIME_SERIES,
     QUALIFIERS,
     EXTERNAL_SERVICES,
+    FORMAT_0_61,
     SAMPLING_POLICY,
     SCORES,
     STATUSES,

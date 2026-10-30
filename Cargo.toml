@@ -21,7 +21,7 @@ num-derive = "0.5"
 num-traits = "0.2"
 rand = "0.10"
 regex = "1"
-review-protocol = { git = "https://github.com/aicers/review-protocol.git", tag = "0.23.0" }
+review-protocol = { git = "https://github.com/aicers/review-protocol.git", tag = "0.24.0" }
 rocksdb = "0.25"
 semver = "1"
 serde = { version = "1", features = ["derive"] }

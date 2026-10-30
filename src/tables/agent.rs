@@ -108,6 +108,25 @@ pub struct Agent {
     /// written when the row is created for an allocated instance, and a
     /// configuration edit never changes it.
     pub instance: Option<u32>,
+    /// Whether the operator has this Sensor run as root.
+    ///
+    /// This is the applied switch, and it is `false` by default.
+    pub run_as_root: bool,
+    /// An unapplied change to [`run_as_root`](Self::run_as_root), on the same
+    /// terms as `draft` is to `config`.
+    ///
+    /// `None` means no change is pending. Applying the node copies `Some(v)`
+    /// into `run_as_root` and clears this to `None`; that copy is the caller's,
+    /// and this crate only stores the field. `Some(false)` while `run_as_root`
+    /// is `false` is a legal no-op draft, which nothing here normalizes.
+    pub run_as_root_draft: Option<bool>,
+    /// The privilege profile the host last confirmed applied, as its serialized
+    /// name.
+    ///
+    /// It is `None` for an agent whose package declares no profiles and for one
+    /// never confirmed. Like `installed_version`, this is observed state, and a
+    /// configuration edit never changes it.
+    pub privilege_profile: Option<String>,
 }
 
 impl Agent {
@@ -119,6 +138,9 @@ impl Agent {
     /// state is written afterwards by assigning to the fields of a record read
     /// back from the database, and `instance` on the same terms: it starts
     /// `None` and is set by whoever creates the row for an allocated instance.
+    /// The Sensor runs as its product account until the operator says otherwise
+    /// and no privilege profile has been confirmed, so `run_as_root` starts
+    /// `false` and `run_as_root_draft` and `privilege_profile` start `None`.
     ///
     /// # Errors
     ///
@@ -145,6 +167,9 @@ impl Agent {
             lifecycle: Lifecycle::NotInstalled,
             bound_addrs: Vec::new(),
             instance: None,
+            run_as_root: false,
+            run_as_root_draft: None,
+            privilege_profile: None,
         })
     }
 }
@@ -171,6 +196,9 @@ impl FromKeyValue for Agent {
             lifecycle: Lifecycle::from_stored_index(value.lifecycle),
             bound_addrs: value.bound_addrs,
             instance: value.instance,
+            run_as_root: value.run_as_root,
+            run_as_root_draft: value.run_as_root_draft,
+            privilege_profile: value.privilege_profile,
         })
     }
 }
@@ -199,6 +227,9 @@ impl ValueTrait for Agent {
             lifecycle: self.lifecycle.to_stored_index(),
             bound_addrs: self.bound_addrs.clone(),
             instance: self.instance,
+            run_as_root: self.run_as_root,
+            run_as_root_draft: self.run_as_root_draft,
+            privilege_profile: self.privilege_profile.clone(),
         };
         super::serialize(&value).expect("serializable")
     }
@@ -221,6 +252,9 @@ struct Value {
     lifecycle: u8,
     bound_addrs: Vec<(String, String)>,
     instance: Option<u32>,
+    run_as_root: bool,
+    run_as_root_draft: Option<bool>,
+    privilege_profile: Option<String>,
 }
 
 /// Functions for the agents table.
@@ -566,6 +600,51 @@ mod test {
     }
 
     #[test]
+    fn new_agent_runs_as_its_product_account_with_no_profile() {
+        let agent = create_agent(1, "001.piglet", AgentKind::Sensor, Some(VALID_TOML), None);
+        assert!(!agent.run_as_root);
+        assert_eq!(agent.run_as_root_draft, None);
+        assert_eq!(agent.privilege_profile, None);
+    }
+
+    /// The switch, its draft and the confirmed profile survive the store with
+    /// values set and unset, a no-op draft included, and a configuration edit
+    /// carries them forward.
+    #[test]
+    fn run_as_root_and_privilege_profile_round_trip_through_the_store() {
+        let (_permit, store) = setup_store();
+        let table = store.agents_map();
+
+        let cases = [
+            (false, None, None),
+            (false, Some(false), None),
+            (false, Some(true), Some("replay")),
+            (true, None, Some("root")),
+            (true, Some(false), Some("")),
+        ];
+        for (index, (run_as_root, run_as_root_draft, privilege_profile)) in
+            cases.into_iter().enumerate()
+        {
+            let key = format!("{index:03}.piglet");
+            let mut agent = create_agent(1, &key, AgentKind::Sensor, Some(VALID_TOML), None);
+            agent.run_as_root = run_as_root;
+            agent.run_as_root_draft = run_as_root_draft;
+            agent.privilege_profile = privilege_profile.map(ToString::to_string);
+            table.insert(&agent).unwrap();
+            let stored = table.get(1, &key).unwrap().unwrap();
+            assert_eq!(stored, agent);
+
+            let mut edited = stored.clone();
+            edited.config = Some(r#"edited = "true""#.to_string().try_into().unwrap());
+            table.update(&stored, &edited).unwrap();
+            let stored = table.get(1, &key).unwrap().unwrap();
+            assert_eq!(stored.run_as_root, run_as_root);
+            assert_eq!(stored.run_as_root_draft, run_as_root_draft);
+            assert_eq!(stored.privilege_profile.as_deref(), privilege_profile);
+        }
+    }
+
+    #[test]
     fn install_state_round_trips() {
         let empty = create_agent(1, "test_key", AgentKind::Sensor, Some(VALID_TOML), None);
         let restored = Agent::from_key_value(&empty.unique_key(), &empty.value()).unwrap();
@@ -657,6 +736,9 @@ mod test {
             lifecycle: 9,
             bound_addrs: vec![("addr".to_string(), "127.0.0.1:1111".to_string())],
             instance: Some(2),
+            run_as_root: true,
+            run_as_root_draft: Some(false),
+            privilege_profile: Some("af-packet".to_string()),
         };
         let serialized = super::super::serialize(&forged).unwrap();
 
@@ -677,6 +759,9 @@ mod test {
             vec![("addr".to_string(), "127.0.0.1:1111".to_string())]
         );
         assert_eq!(agent.instance, Some(2));
+        assert!(agent.run_as_root);
+        assert_eq!(agent.run_as_root_draft, Some(false));
+        assert_eq!(agent.privilege_profile.as_deref(), Some("af-packet"));
     }
 
     /// Storing the variant index in a `u8` is a representation choice, not a
@@ -694,6 +779,9 @@ mod test {
             lifecycle: Lifecycle,
             bound_addrs: Vec<(String, String)>,
             instance: Option<u32>,
+            run_as_root: bool,
+            run_as_root_draft: Option<bool>,
+            privilege_profile: Option<String>,
         }
 
         for lifecycle in [
@@ -715,6 +803,9 @@ mod test {
                 lifecycle: lifecycle.to_stored_index(),
                 bound_addrs: vec![("addr".to_string(), "127.0.0.1:1111".to_string())],
                 instance: Some(3),
+                run_as_root: true,
+                run_as_root_draft: Some(true),
+                privilege_profile: Some("dpdk".to_string()),
             };
             let with_enum = ValueWithEnum {
                 kind: raw.kind,
@@ -726,6 +817,9 @@ mod test {
                 lifecycle,
                 bound_addrs: raw.bound_addrs.clone(),
                 instance: raw.instance,
+                run_as_root: raw.run_as_root,
+                run_as_root_draft: raw.run_as_root_draft,
+                privilege_profile: raw.privilege_profile.clone(),
             };
             assert_eq!(
                 super::super::serialize(&raw).unwrap(),

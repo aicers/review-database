@@ -19,13 +19,13 @@ use crate::{
     event::{EventKind, resolve_stored_country_codes, swap_stored_country_code_placeholders},
     geo::{CountryLookup, Ip2LocationResolver},
     migration::migration_structures::{
-        AgentValueV0_46, AgentValueV0_47, BlocklistDceRpcFieldsStoredV0_42,
+        AgentValueV0_46, AgentValueV0_47, AgentValueV0_61, BlocklistDceRpcFieldsStoredV0_42,
         BlocklistDceRpcFieldsStoredV0_44, BlocklistDhcpFieldsStoredV0_42,
         BlocklistDhcpFieldsStoredV0_44, CustomerDataDeletionJobValueV0_58, EngineInstanceRefsV0_57,
         ExternalServiceValueV0_46, ExternalServiceValueV0_47, HttpThreatFieldsStoredV0_43,
         HttpThreatFieldsStoredV0_44, ModelV0_56, NodeV0_56, OperationAttemptValueV0_47,
-        OperationAttemptValueV0_48, OperationAttemptValueV0_49, SamplingPolicyV0_56,
-        TrainingDefinitionV0_56, V0_46_COUNTRY_CODE_LOOKUP_FAILED,
+        OperationAttemptValueV0_48, OperationAttemptValueV0_49, OperationAttemptValueV0_61,
+        SamplingPolicyV0_56, TrainingDefinitionV0_56, V0_46_COUNTRY_CODE_LOOKUP_FAILED,
         migrate_event_stored_schema_to_v0_46, validate_event_stored_schema_v0_46,
     },
     tables::{
@@ -44,8 +44,10 @@ use crate::{
 /// this format by its column families, which must be exactly `MAP_NAMES`. A
 /// format change that leaves the set of column families unchanged makes
 /// backups of the two formats indistinguishable to that check, so it must give
-/// the check another way to tell them apart.
-pub(crate) const DATABASE_FORMAT_VERSION: &str = "0.60.0";
+/// the check another way to tell them apart. The empty `format 0.61` family is
+/// the precedent: 0.61 changes row layouts only, and that family is what a 0.60
+/// backup lacks.
+pub(crate) const DATABASE_FORMAT_VERSION: &str = "0.61.0";
 
 /// The range of format markers that use the current database format.
 ///
@@ -56,7 +58,7 @@ pub(crate) const DATABASE_FORMAT_VERSION: &str = "0.60.0";
 /// `">=X.Y.0,<X.(Y+1).0"` and appends a step to the migration table. A
 /// release, or any change without a format change, leaves all three as they
 /// are. No build writes a prerelease marker.
-const COMPATIBLE_VERSION_REQ: &str = ">=0.60.0,<0.61.0";
+const COMPATIBLE_VERSION_REQ: &str = ">=0.61.0,<0.62.0";
 
 /// Number of event records applied in each atomic migration write.
 const EVENT_MIGRATION_BATCH_SIZE: usize = 100;
@@ -91,6 +93,16 @@ const OPERATION_ATTEMPT_RESERVED_V0_47: u8 = 0xf8;
 /// [`migrate_0_48_to_0_49`] describes the layout it migrates, and a later
 /// change to the live layout must not change what it walks.
 const OPERATION_ATTEMPT_RESERVED_V0_48: u8 = 0xf8;
+
+/// The first key byte the 0.49 layout of the "operation attempts" column
+/// family reserves for its index entries.
+///
+/// Every record key, an idempotency key and so a non-empty UTF-8 string, sorts
+/// below it, and every index entry starts at or above it. This is the 0.49
+/// layout's reserved byte, written out rather than taken from the live table:
+/// [`migrate_0_60_to_0_61`] describes the layout it migrates, and a later
+/// change to the live layout must not change what it walks.
+const OPERATION_ATTEMPT_RESERVED_V0_49: u8 = 0xf8;
 
 /// The name of the temporary file that [`create_version_file`] renames over
 /// [`VERSION_FILE_NAME`].
@@ -263,6 +275,11 @@ pub fn migrate_data_dir<P: AsRef<Path>>(
             Version::parse("0.60.0")?,
             |data_dir, _backup_dir, _locator| migrate_0_59_to_0_60(data_dir),
         ),
+        (
+            VersionReq::parse(">=0.60.0,<0.61.0")?,
+            Version::parse("0.61.0")?,
+            |data_dir, _backup_dir, _locator| migrate_0_60_to_0_61(data_dir),
+        ),
     ];
 
     while let Some((_req, to, m)) = migration
@@ -311,8 +328,9 @@ fn migrate_0_45_to_0_46(data_dir: &Path, locator: Option<&dyn CountryLookup>) ->
 /// drops it again.
 ///
 /// Agent and external-service values are in the 0.46 layout, or already in the
-/// 0.47 one where an interrupted run converted them. Each row is read as
-/// whichever layout decodes it and rewritten only if it is in the 0.46 one.
+/// 0.47 one where an interrupted run converted them, or, for an agent, in the
+/// 0.61 one where [`migrate_0_60_to_0_61`] did. Each row is read as whichever
+/// layout decodes it and rewritten only if it is in the 0.46 one.
 ///
 /// Event placeholder rewrites commit a last-processed key in the `meta` column
 /// family atomically with each event batch. Retries resume strictly after that
@@ -347,7 +365,11 @@ fn migrate_0_46_to_0_47(data_dir: &Path) -> Result<()> {
                 .deserialize::<AgentValueV0_46>(bytes)
                 .map(AgentValueV0_47::from)
         })],
-        &[],
+        &[|bytes| {
+            bincode::DefaultOptions::new()
+                .deserialize::<AgentValueV0_61>(bytes)
+                .map(|_| ())
+        }],
     )?;
     migrate_record_layout(
         &db,
@@ -386,9 +408,10 @@ fn migrate_0_46_to_0_47(data_dir: &Path) -> Result<()> {
 ///
 /// A rerun is safe. `VERSION` is written only after the whole chain succeeds,
 /// so a run interrupted after some batches committed restarts from `0.47.0`.
-/// Each value is probed as the 0.48 layout and the later 0.49 layout, so a row
-/// already in either is left byte for byte, including after a partial or
-/// complete 0.49 step. A store with no attempts has nothing to do.
+/// Each value is probed as the 0.48 layout and the later 0.49 and 0.61 layouts,
+/// so a row already in any of them is left byte for byte, including after a
+/// partial or complete 0.49 or 0.61 step. A store with no attempts has nothing
+/// to do.
 fn migrate_0_47_to_0_48(data_dir: &Path) -> Result<()> {
     let db_path = data_dir.join("states.db");
     let mut opts = rocksdb::Options::default();
@@ -409,11 +432,18 @@ fn migrate_0_47_to_0_48(data_dir: &Path) -> Result<()> {
                 .deserialize::<OperationAttemptValueV0_47>(bytes)
                 .map(OperationAttemptValueV0_48::from)
         })],
-        &[|bytes| {
-            bincode::DefaultOptions::new()
-                .deserialize::<OperationAttemptValueV0_49>(bytes)
-                .map(|_| ())
-        }],
+        &[
+            |bytes| {
+                bincode::DefaultOptions::new()
+                    .deserialize::<OperationAttemptValueV0_49>(bytes)
+                    .map(|_| ())
+            },
+            |bytes| {
+                bincode::DefaultOptions::new()
+                    .deserialize::<OperationAttemptValueV0_61>(bytes)
+                    .map(|_| ())
+            },
+        ],
     )
 }
 
@@ -425,7 +455,8 @@ fn migrate_0_47_to_0_48(data_dir: &Path) -> Result<()> {
 /// walked. Every other field, record key, index entry, latest pointer and
 /// other family is untouched; no column family is created or dropped.
 ///
-/// A rerun is safe: rows already decoding as 0.49 are left byte for byte.
+/// A rerun is safe: rows already decoding as 0.49, or as the 0.61 layout a
+/// later step of an interrupted chain wrote, are left byte for byte.
 /// `VERSION` is written only after the whole chain succeeds, so interrupted
 /// batches can be retried. A store without attempts has nothing to do.
 fn migrate_0_48_to_0_49(data_dir: &Path) -> Result<()> {
@@ -448,7 +479,11 @@ fn migrate_0_48_to_0_49(data_dir: &Path) -> Result<()> {
                 .deserialize::<OperationAttemptValueV0_48>(bytes)
                 .map(OperationAttemptValueV0_49::from)
         })],
-        &[],
+        &[|bytes| {
+            bincode::DefaultOptions::new()
+                .deserialize::<OperationAttemptValueV0_61>(bytes)
+                .map(|_| ())
+        }],
     )
 }
 
@@ -843,6 +878,70 @@ fn migrate_0_59_to_0_60(data_dir: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Migrates a database in the 0.60.x format to 0.61.0.
+///
+/// Appends `run_as_root = false`, `run_as_root_draft = None` and
+/// `privilege_profile = None` to every agent record, and `privilege_profile =
+/// None` to every operation attempt record: no earlier row recorded any of
+/// them, and an attempt without a profile keeps the one last applied. Only keys
+/// below [`OPERATION_ATTEMPT_RESERVED_V0_49`] in the operation attempts family
+/// are walked, so index entries and the latest-pointer family are untouched.
+///
+/// Creates the empty `format 0.61` column family if it is missing, which is
+/// what lets the online restore tell a 0.61 backup from an older one. Nothing
+/// else is read or written.
+///
+/// A rerun is safe: rows already decoding as 0.61 are left byte for byte, and
+/// the family is created only if it is missing. `VERSION` is written only after
+/// the whole chain succeeds, so interrupted batches can be retried.
+fn migrate_0_60_to_0_61(data_dir: &Path) -> Result<()> {
+    let db_path = data_dir.join("states.db");
+    let mut opts = rocksdb::Options::default();
+    opts.create_if_missing(false);
+    opts.create_missing_column_families(false);
+    let column_families = map_names_for_existing_format(&opts, &db_path)?;
+    let mut db: rocksdb::OptimisticTransactionDB<rocksdb::SingleThreaded> =
+        rocksdb::OptimisticTransactionDB::open_cf(&opts, &db_path, column_families)
+            .context("failed to open database for the 0.61.0 migration")?;
+
+    migrate_record_layout(
+        &db,
+        crate::tables::AGENTS,
+        "agent",
+        None,
+        &[("0.47", |bytes| {
+            bincode::DefaultOptions::new()
+                .deserialize::<AgentValueV0_47>(bytes)
+                .map(AgentValueV0_61::from)
+        })],
+        &[],
+    )?;
+    migrate_record_layout(
+        &db,
+        crate::tables::OPERATION_ATTEMPTS,
+        "operation attempt",
+        Some(&[OPERATION_ATTEMPT_RESERVED_V0_49]),
+        &[("0.49", |bytes| {
+            bincode::DefaultOptions::new()
+                .deserialize::<OperationAttemptValueV0_49>(bytes)
+                .map(OperationAttemptValueV0_61::from)
+        })],
+        &[],
+    )?;
+
+    if db.cf_handle(crate::tables::FORMAT_0_61).is_none() {
+        info!("Creating '{}' column family", crate::tables::FORMAT_0_61);
+        db.create_cf(crate::tables::FORMAT_0_61, &rocksdb::Options::default())
+            .with_context(|| {
+                format!(
+                    "failed to create '{}' column family",
+                    crate::tables::FORMAT_0_61
+                )
+            })?;
+    }
+    Ok(())
+}
+
 /// Writes the detector id marks of the engine instance rows of `db`, as
 /// [`migrate_0_57_to_0_58`] describes.
 fn migrate_detector_id_marks_v0_58(
@@ -981,6 +1080,10 @@ fn migrate_sampling_policy_records_v0_57(db: &rocksdb::OptimisticTransactionDB) 
 /// Returns the customer of each hostname that the applied profile of a node
 /// carrying an [`AgentKind::Sensor`](crate::AgentKind::Sensor) agent has, as
 /// the 0.56 layout of `db` stores them; an empty hostname is left out.
+///
+/// An agent row is in the 0.47 layout, or in the 0.61 one where a chain was
+/// interrupted after that later step converted it. Only `kind` is read, and a
+/// row matching neither layout fails.
 fn sensor_customers_v0_56(
     db: &rocksdb::OptimisticTransactionDB,
 ) -> Result<std::collections::HashMap<String, u32>> {
@@ -1008,10 +1111,21 @@ fn sensor_customers_v0_56(
             let Some(value) = db.get_cf(agents, &key).context("failed to read an agent")? else {
                 continue;
             };
-            let agent: AgentValueV0_47 = bincode::DefaultOptions::new()
-                .deserialize(&value)
-                .context("failed to read an agent record in the 0.47 layout")?;
-            if agent.kind == crate::AgentKind::Sensor {
+            let kind = bincode::DefaultOptions::new()
+                .deserialize::<AgentValueV0_47>(&value)
+                .map(|agent| agent.kind)
+                .or_else(|_| {
+                    bincode::DefaultOptions::new()
+                        .deserialize::<AgentValueV0_61>(&value)
+                        .map(|agent| agent.kind)
+                })
+                .with_context(|| {
+                    format!(
+                        "failed to read the agent record with key {} in the 0.47 or the 0.61 layout",
+                        data_encoding::HEXLOWER.encode(&key)
+                    )
+                })?;
+            if kind == crate::AgentKind::Sensor {
                 customers.insert(profile.hostname.clone(), profile.customer_id);
                 break;
             }
@@ -2756,11 +2870,12 @@ mod tests {
     };
     use crate::geo::CountryLookup;
     use crate::migration::migration_structures::{
-        AgentValueV0_46, AgentValueV0_47, BlocklistConnFieldsStoredV0_42,
+        AgentValueV0_46, AgentValueV0_47, AgentValueV0_61, BlocklistConnFieldsStoredV0_42,
         ExternalServiceValueV0_46, ExternalServiceValueV0_47, ModelV0_56,
         MultiHostPortScanFieldsStoredV0_42, NodeProfileV0_56, NodeV0_56,
         OperationAttemptValueV0_47, OperationAttemptValueV0_48, OperationAttemptValueV0_49,
-        SamplingPolicyV0_56, TrainingDefinitionV0_56, V0_46_COUNTRY_CODE_UNRESOLVED,
+        OperationAttemptValueV0_61, SamplingPolicyV0_56, TrainingDefinitionV0_56,
+        V0_46_COUNTRY_CODE_UNRESOLVED,
     };
     use crate::tables::NETWORK_TAGS;
     use crate::test::{DbGuard, acquire_db_permit};
@@ -3667,6 +3782,9 @@ mod tests {
     /// the migration drops from every migrated store.
     const FAMILIES_REMOVED_BY_V0_60: [&str; 1] = [crate::tables::DATA_SOURCES];
 
+    /// The column families the 0.61.0 format adds to the 0.60 set.
+    const FAMILIES_ADDED_BY_V0_61: [&str; 1] = [crate::tables::FORMAT_0_61];
+
     /// Migrates a database in the 0.43-through-0.46 layout, recorded as
     /// `version`, and asserts that it reaches the current format with its agent
     /// and external-service values converted.
@@ -3712,6 +3830,7 @@ mod tests {
             .chain(FAMILIES_ADDED_BY_V0_55)
             .chain(FAMILIES_ADDED_BY_V0_56)
             .chain(FAMILIES_ADDED_BY_V0_58)
+            .chain(FAMILIES_ADDED_BY_V0_61)
         {
             assert!(db.cf_handle(name).is_some(), "{name} must exist");
         }
@@ -3722,6 +3841,7 @@ mod tests {
                 + FAMILIES_ADDED_BY_V0_55.len()
                 + FAMILIES_ADDED_BY_V0_56.len()
                 + FAMILIES_ADDED_BY_V0_58.len()
+                + FAMILIES_ADDED_BY_V0_61.len()
                 - FAMILIES_REMOVED_BY_V0_47.len()
                 - FAMILIES_REMOVED_BY_V0_52.len()
                 - FAMILIES_REMOVED_BY_V0_60.len(),
@@ -3734,6 +3854,7 @@ mod tests {
                 + FAMILIES_ADDED_BY_V0_55.len()
                 + FAMILIES_ADDED_BY_V0_56.len()
                 + FAMILIES_ADDED_BY_V0_58.len()
+                + FAMILIES_ADDED_BY_V0_61.len()
                 - FAMILIES_REMOVED_BY_V0_52.len()
                 - FAMILIES_REMOVED_BY_V0_60.len(),
             crate::tables::MAP_NAMES.len()
@@ -3743,6 +3864,7 @@ mod tests {
                 + FAMILIES_ADDED_BY_V0_55.len()
                 + FAMILIES_ADDED_BY_V0_56.len()
                 + FAMILIES_ADDED_BY_V0_58.len()
+                + FAMILIES_ADDED_BY_V0_61.len()
                 - FAMILIES_REMOVED_BY_V0_60.len(),
             crate::tables::MAP_NAMES.len()
         );
@@ -3750,6 +3872,7 @@ mod tests {
             super::MAP_NAMES_V0_55.len()
                 + FAMILIES_ADDED_BY_V0_56.len()
                 + FAMILIES_ADDED_BY_V0_58.len()
+                + FAMILIES_ADDED_BY_V0_61.len()
                 - FAMILIES_REMOVED_BY_V0_60.len(),
             crate::tables::MAP_NAMES.len()
         );
@@ -3774,12 +3897,15 @@ mod tests {
                 key,
             )
             .unwrap();
-            let value: AgentValueV0_47 = bincode::DefaultOptions::new()
+            let value: AgentValueV0_61 = bincode::DefaultOptions::new()
                 .deserialize(&migrated)
                 .unwrap();
             assert_eq!(value.lifecycle, 0);
             assert_eq!(value.bound_addrs, Vec::<(String, String)>::new());
             assert_eq!(value.instance, None);
+            assert!(!value.run_as_root);
+            assert_eq!(value.run_as_root_draft, None);
+            assert_eq!(value.privilege_profile, None);
         }
         for (key, _) in &external_services {
             let migrated = raw_value(
@@ -3889,12 +4015,15 @@ mod tests {
                 key,
             )
             .unwrap();
-            let value: AgentValueV0_47 = bincode::DefaultOptions::new()
+            let value: AgentValueV0_61 = bincode::DefaultOptions::new()
                 .deserialize(&migrated)
                 .unwrap();
             assert_eq!(value.lifecycle, 0);
             assert_eq!(value.bound_addrs, Vec::<(String, String)>::new());
             assert_eq!(value.instance, None);
+            assert!(!value.run_as_root);
+            assert_eq!(value.run_as_root_draft, None);
+            assert_eq!(value.privilege_profile, None);
         }
         for (key, _) in &external_services {
             let migrated = raw_value(
@@ -4438,11 +4567,12 @@ mod tests {
             .get_cf(&cf, record_key(1, "sensor@host1"))
             .unwrap()
             .unwrap();
-        let value: AgentValueV0_47 = bincode::DefaultOptions::new()
+        let value: AgentValueV0_61 = bincode::DefaultOptions::new()
             .deserialize(&migrated)
             .unwrap();
         assert_eq!(value.lifecycle, 0);
         assert_eq!(value.instance, None);
+        assert!(!value.run_as_root);
     }
 
     /// Creates a `0.46.0` store holding one row in each of the two triage
@@ -4632,7 +4762,7 @@ mod tests {
     /// Builds a family of `total` rows, keyed in order, as a conversion that
     /// committed its first `converted` rows and stopped leaves it: those rows
     /// in the 0.47 layout and the rest still in the 0.46 one. Returns the rows
-    /// as stored and every row as the finished migration must leave it.
+    /// as stored and every row as the 0.47 step must leave it.
     fn partly_converted_rows(
         total: usize,
         converted: usize,
@@ -4654,8 +4784,10 @@ mod tests {
         (stored, expected)
     }
 
+    /// The agents of [`partly_converted_rows`], and every one of them as the
+    /// finished chain leaves it, which is one layout on from the 0.47 step.
     fn partly_converted_agents(total: usize, converted: usize) -> (Entries, Entries) {
-        partly_converted_rows(
+        let (stored, expected) = partly_converted_rows(
             total,
             converted,
             |index| {
@@ -4675,7 +4807,23 @@ mod tests {
                     ))
                     .unwrap()
             },
-        )
+        );
+        let expected = expected
+            .into_iter()
+            .map(|(key, value)| (key, v0_61_agent_encoding(&value)))
+            .collect();
+        (stored, expected)
+    }
+
+    /// Converts an encoded 0.47 agent value to the encoded 0.61 one.
+    fn v0_61_agent_encoding(v0_47: &[u8]) -> Vec<u8> {
+        bincode::DefaultOptions::new()
+            .serialize(&AgentValueV0_61::from(
+                bincode::DefaultOptions::new()
+                    .deserialize::<AgentValueV0_47>(v0_47)
+                    .unwrap(),
+            ))
+            .unwrap()
     }
 
     fn partly_converted_external_services(total: usize, converted: usize) -> (Entries, Entries) {
@@ -4922,9 +5070,12 @@ mod tests {
             lifecycle: Lifecycle::Running,
             bound_addrs: vec![("addr".to_string(), "host:1234".to_string())],
             instance: Some(7),
+            run_as_root: true,
+            run_as_root_draft: Some(false),
+            privilege_profile: Some("replay".to_string()),
         };
         let stored = agent.value();
-        let pinned: AgentValueV0_47 = bincode::DefaultOptions::new()
+        let pinned: AgentValueV0_61 = bincode::DefaultOptions::new()
             .deserialize(stored.as_ref())
             .unwrap();
         assert_eq!(pinned.kind, agent.kind);
@@ -4936,6 +5087,9 @@ mod tests {
         assert_eq!(pinned.lifecycle, agent.lifecycle.to_stored_index());
         assert_eq!(pinned.bound_addrs, agent.bound_addrs);
         assert_eq!(pinned.instance, agent.instance);
+        assert_eq!(pinned.run_as_root, agent.run_as_root);
+        assert_eq!(pinned.run_as_root_draft, agent.run_as_root_draft);
+        assert_eq!(pinned.privilege_profile, agent.privilege_profile);
         assert_eq!(
             bincode::DefaultOptions::new().serialize(&pinned).unwrap(),
             stored,
@@ -5694,16 +5848,17 @@ mod tests {
         let mut listed_v0_55 = super::MAP_NAMES_V0_55;
         listed_v0_55.sort_unstable();
         assert_eq!(v0_55, listed_v0_55);
-        let mut v0_60: Vec<&str> = v0_55
+        let v0_60: Vec<&str> = v0_55
             .into_iter()
             .chain(FAMILIES_ADDED_BY_V0_56)
             .chain(FAMILIES_ADDED_BY_V0_58)
             .filter(|name| !FAMILIES_REMOVED_BY_V0_60.contains(name))
             .collect();
-        v0_60.sort_unstable();
+        let mut v0_61: Vec<&str> = v0_60.into_iter().chain(FAMILIES_ADDED_BY_V0_61).collect();
+        v0_61.sort_unstable();
         let mut current = crate::tables::MAP_NAMES;
         current.sort_unstable();
-        assert_eq!(v0_60, current);
+        assert_eq!(v0_61, current);
 
         create_v0_52_store(data_dir.path(), backup_dir.path(), &super::MAP_NAMES_V0_52);
         assert!(
@@ -6348,9 +6503,10 @@ mod tests {
                 raw_value(&db_path, crate::tables::MAP_NAMES, cf_name, &key).expect("{cf_name}");
             let lifecycle = if cf_name == crate::tables::AGENTS {
                 let value = bincode::DefaultOptions::new()
-                    .deserialize::<AgentValueV0_47>(&migrated)
+                    .deserialize::<AgentValueV0_61>(&migrated)
                     .unwrap();
                 assert_eq!(value.instance, None, "{cf_name}");
+                assert_eq!(value.privilege_profile, None, "{cf_name}");
                 value.lifecycle
             } else {
                 let value = bincode::DefaultOptions::new()
@@ -8513,6 +8669,7 @@ mod tests {
             expires_at: attempt_timestamp(1_700_086_400),
             backup_id: Some(instance),
             pre_update_version: Some("0.47.0".to_string()),
+            privilege_profile: None,
         }
     }
 
@@ -8561,6 +8718,7 @@ mod tests {
             expires_at: attempt_timestamp(1_700_003_800),
             backup_id: None,
             pre_update_version: None,
+            privilege_profile: None,
         };
         vec![
             terminated(failed_owing, OperationOutcome::Failed),
@@ -8576,7 +8734,7 @@ mod tests {
     /// The 0.47 encoding of a value the live table wrote: the same fields,
     /// without the `failure_kind` and `config_template` 0.47 does not have.
     fn v0_47_encoding(live: &[u8]) -> Vec<u8> {
-        let current: OperationAttemptValueV0_49 =
+        let current: OperationAttemptValueV0_61 =
             bincode::DefaultOptions::new().deserialize(live).unwrap();
         let old = OperationAttemptValueV0_47 {
             host: current.host,
@@ -8857,9 +9015,55 @@ mod tests {
         );
     }
 
+    /// Pins the released 0.49 layout to a fixture produced once at the base
+    /// commit of the 0.61 format, before `privilege_profile` was added: the
+    /// 0.48 fixture's row with a template. The fixture is never regenerated.
+    #[test]
+    fn operation_attempt_v0_49_matches_literal_fixture() {
+        const FIXTURE_BYTES: &[u8] =
+            include_bytes!("../tests/fixtures/operation_attempt_v0_49_literal.bin");
+        const V0_48_FIXTURE_BYTES: &[u8] =
+            include_bytes!("../tests/fixtures/operation_attempt_v0_48_literal.bin");
+
+        let old: OperationAttemptValueV0_48 = bincode::DefaultOptions::new()
+            .deserialize(V0_48_FIXTURE_BYTES)
+            .unwrap();
+        let mut expected = OperationAttemptValueV0_49::from(old);
+        expected.config_template = Some("baseline".to_string());
+        let decoded: OperationAttemptValueV0_49 = bincode::DefaultOptions::new()
+            .deserialize(FIXTURE_BYTES)
+            .unwrap();
+        assert_eq!(decoded, expected);
+        assert_eq!(
+            bincode::DefaultOptions::new().serialize(&decoded).unwrap(),
+            FIXTURE_BYTES
+        );
+        // The 0.49 encoding is the 0.48 one followed by the template alone.
+        let template = FIXTURE_BYTES.strip_prefix(V0_48_FIXTURE_BYTES).unwrap();
+        assert_eq!(template.split_at(2), (&[1, 8][..], &b"baseline"[..]));
+        assert!(
+            bincode::DefaultOptions::new()
+                .deserialize::<OperationAttemptValueV0_61>(FIXTURE_BYTES)
+                .is_err()
+        );
+
+        let converted = OperationAttemptValueV0_61::from(decoded);
+        assert_eq!(converted.config_template.as_deref(), Some("baseline"));
+        assert_eq!(converted.privilege_profile, None);
+        let encoded = bincode::DefaultOptions::new()
+            .serialize(&converted)
+            .unwrap();
+        assert_eq!(encoded.strip_prefix(FIXTURE_BYTES), Some(&[0][..]));
+        assert!(
+            bincode::DefaultOptions::new()
+                .deserialize::<OperationAttemptValueV0_49>(&encoded)
+                .is_err()
+        );
+    }
+
     /// The released 0.48 encoding, removing only the final template field.
     fn v0_48_encoding(live: &[u8]) -> Vec<u8> {
-        let current: OperationAttemptValueV0_49 =
+        let current: OperationAttemptValueV0_61 =
             bincode::DefaultOptions::new().deserialize(live).unwrap();
         let old = OperationAttemptValueV0_48 {
             host: current.host,
@@ -9500,5 +9704,587 @@ mod tests {
                 expected
             );
         }
+    }
+
+    /// The column families of a `0.60.0` store: the current ones without the
+    /// marker family.
+    fn map_names_v0_60() -> Vec<&'static str> {
+        crate::tables::MAP_NAMES
+            .into_iter()
+            .filter(|name| !FAMILIES_ADDED_BY_V0_61.contains(name))
+            .collect()
+    }
+
+    /// The released 0.49 encoding, removing only the final profile field.
+    fn v0_49_encoding(live: &[u8]) -> Vec<u8> {
+        let current: OperationAttemptValueV0_61 =
+            bincode::DefaultOptions::new().deserialize(live).unwrap();
+        let old = OperationAttemptValueV0_49 {
+            host: current.host,
+            target: current.target,
+            instance: current.instance,
+            action: current.action,
+            install_intent: current.install_intent,
+            package_digest: current.package_digest,
+            resolved_version: current.resolved_version,
+            resolved_commit: current.resolved_commit,
+            phase: current.phase,
+            cleanup_state: current.cleanup_state,
+            started_at: current.started_at,
+            retry_policy: current.retry_policy,
+            outcome: current.outcome,
+            finalized_at: current.finalized_at,
+            expires_at: current.expires_at,
+            backup_id: current.backup_id,
+            pre_update_version: current.pre_update_version,
+            failure_kind: current.failure_kind,
+            config_template: current.config_template,
+        };
+        bincode::DefaultOptions::new().serialize(&old).unwrap()
+    }
+
+    /// An agent row in the 0.47 layout, every field of which `index` makes
+    /// distinct from the defaults the conversion must not touch.
+    fn agent_row_v0_47(index: u32) -> (Vec<u8>, Vec<u8>) {
+        let value = AgentValueV0_47 {
+            kind: AgentKind::Sensor,
+            status: AgentStatus::ReloadFailed,
+            config: Some(AgentConfig::try_from(format!("a = {index}")).unwrap()),
+            draft: Some(AgentConfig::try_from(format!("b = {index}")).unwrap()),
+            installed_version: Some(format!("1.{index}.0")),
+            installed_commit: Some(format!("c0ffee{index}")),
+            lifecycle: Lifecycle::Running.to_stored_index(),
+            bound_addrs: vec![("addr".to_string(), format!("host:{index}"))],
+            instance: Some(index),
+        };
+        (
+            record_key(index, &format!("{index:03}.piglet")),
+            bincode::DefaultOptions::new().serialize(&value).unwrap(),
+        )
+    }
+
+    /// Converts an encoded 0.47 agent value to a 0.61 one no conversion would
+    /// write, so that a test can tell it was left alone.
+    fn agent_value_v0_61_set(v0_47: &[u8]) -> Vec<u8> {
+        let mut value = AgentValueV0_61::from(
+            bincode::DefaultOptions::new()
+                .deserialize::<AgentValueV0_47>(v0_47)
+                .unwrap(),
+        );
+        value.run_as_root = true;
+        value.run_as_root_draft = Some(false);
+        value.privilege_profile = Some("af-packet".to_string());
+        bincode::DefaultOptions::new().serialize(&value).unwrap()
+    }
+
+    /// The rows of [`operation_attempt_rows_v0_48`], with `privilege_profile`
+    /// and `config_template` left as a 0.60 row can hold them.
+    fn operation_attempt_rows_v0_60() -> Vec<OperationAttempt> {
+        let mut rows = operation_attempt_rows_v0_48();
+        let install = rows
+            .iter_mut()
+            .find(|row| row.idempotency_key == INSTALL)
+            .unwrap();
+        install.config_template = Some("baseline".to_string());
+        rows
+    }
+
+    /// Builds a `0.60.0` store: `rows` written through the live table, so every
+    /// index entry and latest pointer is the one the table writes, with the
+    /// record of each row outside `keep_current` in the released 0.49 layout;
+    /// `agents` as given; and no marker family. Both directories read `0.60.0`.
+    fn store_v0_60(
+        data_dir: &Path,
+        backup_dir: &Path,
+        rows: &[OperationAttempt],
+        keep_current: &[&str],
+        agents: &[(Vec<u8>, Vec<u8>)],
+    ) {
+        {
+            let store = Store::new(data_dir, backup_dir, None).unwrap();
+            let table = store.operation_attempt_map();
+            for row in rows {
+                if row.action == OperationAction::Install {
+                    table.create_or_resolve(row).unwrap();
+                } else {
+                    table.upsert(row).unwrap();
+                }
+            }
+        }
+        let db_path = data_dir.join("states.db");
+        let mut db = open_states_db(&db_path, crate::tables::MAP_NAMES);
+        {
+            let cf = db.cf_handle(crate::tables::OPERATION_ATTEMPTS).unwrap();
+            for row in rows {
+                if !keep_current.contains(&row.idempotency_key.as_str()) {
+                    let key = row.idempotency_key.as_bytes();
+                    let live = db.get_cf(&cf, key).unwrap().unwrap();
+                    db.put_cf(&cf, key, v0_49_encoding(&live)).unwrap();
+                }
+            }
+            let cf = db.cf_handle(crate::tables::AGENTS).unwrap();
+            for (key, value) in agents {
+                db.put_cf(&cf, key, value).unwrap();
+            }
+        }
+        db.drop_cf(crate::tables::FORMAT_0_61).unwrap();
+        drop(db);
+        write_version(data_dir, "0.60.0");
+        write_version(backup_dir, "0.60.0");
+    }
+
+    /// Every record of the "operation attempts" family, without its index
+    /// entries.
+    fn operation_attempt_records(db_path: &Path) -> Entries {
+        operation_attempt_families(db_path)
+            .0
+            .into_iter()
+            .filter(|(key, _)| key.first() < Some(&super::OPERATION_ATTEMPT_RESERVED_V0_49))
+            .collect()
+    }
+
+    /// Asserts that the `format 0.61` family of the store exists and is empty.
+    fn assert_marker_family_is_empty(db_path: &Path) {
+        let db = open_states_db(db_path, crate::tables::MAP_NAMES);
+        assert_eq!(all_entries(&db, crate::tables::FORMAT_0_61), Entries::new());
+    }
+
+    /// A `0.60.0` store gets the switch off with no draft and no profile on
+    /// every agent, no profile on every attempt, and the empty marker family.
+    /// Nothing else changes, and a second start and a rerun change nothing.
+    #[test]
+    fn migration_from_v0_60_adds_the_switch_and_the_profile() {
+        let _permit = acquire_db_permit();
+        let data_dir = tempfile::tempdir().unwrap();
+        let backup_dir = tempfile::tempdir().unwrap();
+        let db_path = data_dir.path().join("states.db");
+        let rows = operation_attempt_rows_v0_60();
+        let agents: Entries = (1..=3).map(agent_row_v0_47).collect();
+        store_v0_60(data_dir.path(), backup_dir.path(), &rows, &[], &agents);
+        put_entries(
+            &db_path,
+            map_names_v0_60(),
+            crate::tables::NETWORKS,
+            &[(b"unrelated-key".to_vec(), FOREIGN_VALUE.to_vec())],
+        );
+        assert!(
+            !present_families(&db_path)
+                .iter()
+                .any(|name| name == crate::tables::FORMAT_0_61)
+        );
+
+        let records_before = operation_attempt_records(&db_path);
+        assert_eq!(records_before.len(), rows.len());
+        let indexes_before = operation_attempt_index_entries(&db_path);
+        assert_ne!(indexes_before.0.len(), 0);
+        assert_ne!(indexes_before.1.len(), 0);
+        let others_before = {
+            let db = open_states_db(&db_path, map_names_v0_60());
+            map_names_v0_60()
+                .into_iter()
+                .filter(|name| {
+                    ![
+                        crate::tables::AGENTS,
+                        crate::tables::OPERATION_ATTEMPTS,
+                        crate::tables::OPERATION_ATTEMPT_LATEST,
+                    ]
+                    .contains(name)
+                })
+                .map(|name| (name, all_entries(&db, name)))
+                .collect::<Vec<_>>()
+        };
+
+        migrate_data_dir(data_dir.path(), backup_dir.path(), None).unwrap();
+
+        let current = Version::parse(DATABASE_FORMAT_VERSION).unwrap();
+        assert_eq!(current, Version::parse("0.61.0").unwrap());
+        assert_eq!(
+            read_version_file(&data_dir.path().join(VERSION_FILE_NAME)).unwrap(),
+            current
+        );
+        assert_eq!(
+            read_version_file(&backup_dir.path().join(VERSION_FILE_NAME)).unwrap(),
+            current
+        );
+        assert_eq!(present_families(&db_path), current_families());
+        assert_marker_family_is_empty(&db_path);
+        assert_eq!(operation_attempt_index_entries(&db_path), indexes_before);
+        {
+            let db = open_states_db(&db_path, crate::tables::MAP_NAMES);
+            let others = others_before
+                .iter()
+                .map(|(name, _)| (*name, all_entries(&db, name)))
+                .collect::<Vec<_>>();
+            assert_eq!(others, others_before);
+        }
+
+        // Each new encoding is the old one followed by the new fields' defaults
+        // and nothing else, so every other field is what it was.
+        for ((key, old), (new_key, new)) in records_before
+            .iter()
+            .zip(operation_attempt_records(&db_path))
+        {
+            assert_eq!(*key, new_key);
+            assert_eq!(new.strip_prefix(old.as_slice()), Some(&[0][..]));
+        }
+        for (key, old) in &agents {
+            let new = raw_value(
+                &db_path,
+                crate::tables::MAP_NAMES,
+                crate::tables::AGENTS,
+                key,
+            )
+            .unwrap();
+            assert_eq!(new.strip_prefix(old.as_slice()), Some(&[0, 0, 0][..]));
+        }
+
+        let snapshot = (
+            operation_attempt_families(&db_path),
+            cf_entries(&db_path, crate::tables::MAP_NAMES, crate::tables::AGENTS),
+        );
+        {
+            let store = Store::new(data_dir.path(), backup_dir.path(), None).unwrap();
+            let table = store.operation_attempt_map();
+            for row in &rows {
+                assert_eq!(
+                    table.get(&row.idempotency_key).unwrap(),
+                    Some(row.clone()),
+                    "{}",
+                    row.idempotency_key
+                );
+            }
+            let table = store.agents_map();
+            for index in 1..=3 {
+                let agent = table
+                    .get(index, &format!("{index:03}.piglet"))
+                    .unwrap()
+                    .unwrap();
+                assert!(!agent.run_as_root);
+                assert_eq!(agent.run_as_root_draft, None);
+                assert_eq!(agent.privilege_profile, None);
+                assert_eq!(agent.kind, AgentKind::Sensor);
+                assert_eq!(agent.status, AgentStatus::ReloadFailed);
+                assert_eq!(agent.lifecycle, Lifecycle::Running);
+                assert_eq!(agent.instance, Some(index));
+                assert_eq!(agent.installed_version, Some(format!("1.{index}.0")));
+            }
+        }
+
+        // A rerun over the migrated store changes no row.
+        super::migrate_0_60_to_0_61(data_dir.path()).unwrap();
+        assert_eq!(
+            (
+                operation_attempt_families(&db_path),
+                cf_entries(&db_path, crate::tables::MAP_NAMES, crate::tables::AGENTS),
+            ),
+            snapshot
+        );
+        assert_eq!(present_families(&db_path), current_families());
+    }
+
+    /// A run interrupted part-way leaves some rows in each layout. The retry
+    /// converts the old ones and leaves the others byte for byte, a value no
+    /// conversion would write included, and a rerun leaves them all.
+    #[test]
+    fn migration_from_a_partly_migrated_v0_60_store_rewrites_only_old_rows() {
+        let _permit = acquire_db_permit();
+        let data_dir = tempfile::tempdir().unwrap();
+        let backup_dir = tempfile::tempdir().unwrap();
+        let db_path = data_dir.path().join("states.db");
+
+        let mut rows = operation_attempt_rows_v0_60();
+        let kept = rows
+            .iter_mut()
+            .find(|row| row.idempotency_key == LIVE)
+            .unwrap();
+        kept.privilege_profile = Some("replay".to_string());
+        let old_agents: Entries = (1..=4).map(agent_row_v0_47).collect();
+        let agents: Entries = old_agents
+            .iter()
+            .enumerate()
+            .map(|(index, (key, value))| {
+                let value = if index < 2 {
+                    agent_value_v0_61_set(value)
+                } else {
+                    value.clone()
+                };
+                (key.clone(), value)
+            })
+            .collect();
+        store_v0_60(data_dir.path(), backup_dir.path(), &rows, &[LIVE], &agents);
+
+        let records_before = operation_attempt_records(&db_path);
+        migrate_data_dir(data_dir.path(), backup_dir.path(), None).unwrap();
+
+        let records = operation_attempt_records(&db_path);
+        assert_eq!(records.len(), records_before.len());
+        for ((key, old), (_, new)) in records_before.iter().zip(&records) {
+            if key.as_slice() == LIVE.as_bytes() {
+                assert_eq!(new, old, "a row in the 0.61 layout is left as it was");
+            } else {
+                assert_eq!(new.strip_prefix(old.as_slice()), Some(&[0][..]));
+            }
+        }
+        for (index, (key, stored)) in agents.iter().enumerate() {
+            let new = raw_value(
+                &db_path,
+                crate::tables::MAP_NAMES,
+                crate::tables::AGENTS,
+                key,
+            )
+            .unwrap();
+            if index < 2 {
+                assert_eq!(&new, stored, "a row in the 0.61 layout is left as it was");
+            } else {
+                assert_eq!(new, v0_61_agent_encoding(stored));
+            }
+        }
+        assert_marker_family_is_empty(&db_path);
+
+        let snapshot = (
+            operation_attempt_families(&db_path),
+            cf_entries(&db_path, crate::tables::MAP_NAMES, crate::tables::AGENTS),
+        );
+        super::migrate_0_60_to_0_61(data_dir.path()).unwrap();
+        assert_eq!(
+            (
+                operation_attempt_families(&db_path),
+                cf_entries(&db_path, crate::tables::MAP_NAMES, crate::tables::AGENTS),
+            ),
+            snapshot
+        );
+
+        let store = Store::new(data_dir.path(), backup_dir.path(), None).unwrap();
+        let table = store.operation_attempt_map();
+        assert_eq!(
+            table
+                .get(LIVE)
+                .unwrap()
+                .unwrap()
+                .privilege_profile
+                .as_deref(),
+            Some("replay")
+        );
+        assert_eq!(
+            table
+                .get(INSTALL)
+                .unwrap()
+                .unwrap()
+                .config_template
+                .as_deref(),
+            Some("baseline")
+        );
+    }
+
+    /// A chain retried from an older marker finds every agent and attempt row
+    /// already in the 0.61 layout, the state an interruption after the new step
+    /// leaves. Each earlier step that walks those rows leaves them byte for
+    /// byte, the 0.57 step reads the agents' kinds out of them, and the chain
+    /// completes.
+    #[test]
+    fn migration_retried_over_rows_already_in_the_v0_61_layout() {
+        use KeyIndexEntryV0_56::Key;
+
+        let _permit = acquire_db_permit();
+        for marker in ["0.46.0", "0.47.0", "0.48.0", "0.56.0"] {
+            let data_dir = tempfile::tempdir().unwrap();
+            let backup_dir = tempfile::tempdir().unwrap();
+            let db_path = data_dir.path().join("states.db");
+
+            let mut rows = operation_attempt_rows_v0_60();
+            let kept = rows
+                .iter_mut()
+                .find(|row| row.idempotency_key == LIVE)
+                .unwrap();
+            kept.privilege_profile = Some("replay".to_string());
+            {
+                let store = Store::new(data_dir.path(), backup_dir.path(), None).unwrap();
+                let table = store.operation_attempt_map();
+                for row in &rows {
+                    if row.action == OperationAction::Install {
+                        table.create_or_resolve(row).unwrap();
+                    } else {
+                        table.upsert(row).unwrap();
+                    }
+                }
+            }
+
+            let policy = SamplingPolicyV0_56 {
+                node: Some(format!("piglet.{SENSOR_HOST}")),
+                ..sampling_policy_v0_56(0, "sensor-named")
+            };
+            let index = KeyIndexV0_56 {
+                keys: vec![Key(policy.name.as_bytes().to_vec())],
+                available: 1,
+                inactive: None,
+            };
+            create_v0_56_sampling_policy_store(
+                data_dir.path(),
+                backup_dir.path(),
+                &index,
+                std::slice::from_ref(&policy),
+            );
+            put_v0_56_nodes(&db_path);
+            let agents: Entries =
+                cf_entries(&db_path, crate::tables::MAP_NAMES, crate::tables::AGENTS)
+                    .into_iter()
+                    .map(|(key, value)| (key, agent_value_v0_61_set(&value)))
+                    .collect();
+            assert_eq!(agents.len(), 2);
+            put_entries(
+                &db_path,
+                crate::tables::MAP_NAMES,
+                crate::tables::AGENTS,
+                &agents,
+            );
+            write_version(data_dir.path(), marker);
+            write_version(backup_dir.path(), marker);
+            let attempts = operation_attempt_families(&db_path);
+
+            migrate_data_dir(data_dir.path(), backup_dir.path(), None)
+                .unwrap_or_else(|error| panic!("retry from {marker}: {error:#}"));
+
+            assert_eq!(
+                read_version_file(&data_dir.path().join(VERSION_FILE_NAME)).unwrap(),
+                Version::parse(DATABASE_FORMAT_VERSION).unwrap()
+            );
+            assert_eq!(present_families(&db_path), current_families());
+            assert_eq!(operation_attempt_families(&db_path), attempts, "{marker}");
+            assert_eq!(
+                cf_entries(&db_path, crate::tables::MAP_NAMES, crate::tables::AGENTS),
+                agents,
+                "{marker}"
+            );
+            assert_marker_family_is_empty(&db_path);
+            let migrated: crate::SamplingPolicy = bincode::DefaultOptions::new()
+                .deserialize(
+                    &raw_value(
+                        &db_path,
+                        crate::tables::MAP_NAMES,
+                        crate::tables::SAMPLING_POLICY,
+                        policy.name.as_bytes(),
+                    )
+                    .unwrap(),
+                )
+                .unwrap();
+            assert_eq!(migrated.customer_id, Some(SENSOR_CUSTOMER), "{marker}");
+        }
+    }
+
+    /// The 0.57 step reads an agent's kind from the 0.47 or the 0.61 layout and
+    /// fails a row in neither, rather than taking it for something other than a
+    /// sensor.
+    #[test]
+    fn migration_from_v0_56_rejects_an_agent_matching_neither_layout() {
+        let _permit = acquire_db_permit();
+        let data_dir = tempfile::tempdir().unwrap();
+        let backup_dir = tempfile::tempdir().unwrap();
+        let db_path = data_dir.path().join("states.db");
+        let index = KeyIndexV0_56 {
+            keys: Vec::new(),
+            available: 0,
+            inactive: None,
+        };
+        create_v0_56_sampling_policy_store(data_dir.path(), backup_dir.path(), &index, &[]);
+        put_v0_56_nodes(&db_path);
+        put_entries(
+            &db_path,
+            crate::tables::MAP_NAMES,
+            crate::tables::AGENTS,
+            &[(record_key(0, "piglet@sensor"), FOREIGN_VALUE.to_vec())],
+        );
+
+        let error = migrate_data_dir(data_dir.path(), backup_dir.path(), None).unwrap_err();
+
+        let message = format!("{error:#}");
+        assert!(
+            message.contains(&format!(
+                "failed to read the agent record with key {} in the 0.47 or the 0.61 layout",
+                data_encoding::HEXLOWER.encode(&record_key(0, "piglet@sensor"))
+            )),
+            "{message}"
+        );
+        assert_eq!(
+            read_version_file(&data_dir.path().join(VERSION_FILE_NAME)).unwrap(),
+            Version::parse("0.56.0").unwrap()
+        );
+    }
+
+    /// A value matching no layout aborts the step with its key and leaves the
+    /// value and the markers as they were.
+    fn assert_v0_60_migration_rejects_foreign_value(cf_name: &str, record: &str, layout: &str) {
+        let _permit = acquire_db_permit();
+        let data_dir = tempfile::tempdir().unwrap();
+        let backup_dir = tempfile::tempdir().unwrap();
+        let db_path = data_dir.path().join("states.db");
+        store_v0_60(data_dir.path(), backup_dir.path(), &[], &[], &[]);
+        let key = b"op-foreign".to_vec();
+        put_entries(
+            &db_path,
+            map_names_v0_60(),
+            cf_name,
+            &[(key.clone(), FOREIGN_VALUE.to_vec())],
+        );
+
+        let error = migrate_data_dir(data_dir.path(), backup_dir.path(), None).unwrap_err();
+
+        let message = format!("{error:#}");
+        assert!(message.contains(record), "{message}");
+        assert!(
+            message.contains(&data_encoding::HEXLOWER.encode(&key)),
+            "{message}"
+        );
+        assert!(message.contains("current schema error"), "{message}");
+        assert!(
+            message.contains(&format!("previous schema error ({layout})")),
+            "{message}"
+        );
+        let marker = Version::parse("0.60.0").unwrap();
+        assert_eq!(
+            read_version_file(&data_dir.path().join(VERSION_FILE_NAME)).unwrap(),
+            marker
+        );
+        assert_eq!(
+            read_version_file(&backup_dir.path().join(VERSION_FILE_NAME)).unwrap(),
+            marker
+        );
+        let families = present_families(&db_path);
+        assert_eq!(
+            raw_value(&db_path, families.iter().map(String::as_str), cf_name, &key),
+            Some(FOREIGN_VALUE.to_vec()),
+            "the unreadable value must be left as it was"
+        );
+    }
+
+    #[test]
+    fn migration_from_v0_60_rejects_an_agent_matching_neither_layout() {
+        assert_v0_60_migration_rejects_foreign_value(crate::tables::AGENTS, "agent", "0.47");
+    }
+
+    #[test]
+    fn migration_from_v0_60_rejects_an_operation_attempt_matching_neither_layout() {
+        assert_v0_60_migration_rejects_foreign_value(
+            crate::tables::OPERATION_ATTEMPTS,
+            "operation attempt",
+            "0.49",
+        );
+    }
+
+    /// A store created by this build has the marker family through `MAP_NAMES`,
+    /// and the step finds it there and creates nothing.
+    #[test]
+    fn fresh_store_has_the_marker_family_and_the_step_creates_nothing() {
+        let _permit = acquire_db_permit();
+        let data_dir = tempfile::tempdir().unwrap();
+        let backup_dir = tempfile::tempdir().unwrap();
+        let db_path = data_dir.path().join("states.db");
+        drop(Store::new(data_dir.path(), backup_dir.path(), None).unwrap());
+        assert_eq!(present_families(&db_path), current_families());
+        assert_marker_family_is_empty(&db_path);
+
+        super::migrate_0_60_to_0_61(data_dir.path()).unwrap();
+
+        assert_eq!(present_families(&db_path), current_families());
+        assert_marker_family_is_empty(&db_path);
     }
 }

@@ -1363,6 +1363,55 @@ mod tests {
         });
     }
 
+    /// A backup taken by a 0.60 build has every family of the current format
+    /// but the marker, whose row layouts it does not share. It is refused
+    /// by id and as the latest, and the database stays open and serving, while
+    /// a backup taken at the current format restores.
+    #[test]
+    fn online_restore_refuses_a_backup_without_the_format_marker_family() {
+        let _permit = acquire_db_permit();
+        let data_dir = tempfile::tempdir().unwrap();
+        let backup_dir = tempfile::tempdir().unwrap();
+        let store = open_current_store(data_dir.path(), backup_dir.path());
+        put_event(&store);
+        create(&store, true, 3).unwrap();
+        put_event(&store);
+        let families: Vec<&str> = MAP_NAMES
+            .into_iter()
+            .filter(|name| *name != crate::tables::FORMAT_0_61)
+            .collect();
+        add_backup_with_families(backup_dir.path(), &families);
+        let before = RestoreState::read(&store, data_dir.path(), backup_dir.path());
+        assert_eq!(before.backup_ids, [1, 2]);
+
+        let expected = format!(
+            "backup 2 is not in database format {DATABASE_FORMAT_VERSION}: unexpected column \
+             families [], missing column families [\"format 0.61\"]; nothing was restored"
+        );
+        let err = store
+            .write()
+            .expect("test holds no other locks")
+            .restore_from_backup(2)
+            .unwrap_err();
+        assert_eq!(err.to_string(), expected);
+        assert_still_open(&store, data_dir.path(), backup_dir.path(), &before);
+        let err = store
+            .write()
+            .expect("test holds no other locks")
+            .restore_from_latest_backup()
+            .unwrap_err();
+        assert_eq!(err.to_string(), expected);
+
+        let count = live_event_count(&store);
+        assert!(count > 1);
+        store
+            .write()
+            .expect("test holds no other locks")
+            .restore_from_backup(1)
+            .unwrap();
+        assert_eq!(live_event_count(&store), 1);
+    }
+
     #[test]
     fn online_restore_refuses_a_backup_lacking_a_family() {
         let _permit = acquire_db_permit();
