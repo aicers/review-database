@@ -122,9 +122,7 @@ pub(crate) struct AgentValueV0_46 {
 /// because a row written by a newer build may carry an index this build does
 /// not recognize and must still read back.
 ///
-/// This mirrors the private `Value` of the live agents table, whose component
-/// types it deliberately reuses, and the drift test in
-/// [`super`](crate::migration) holds the two together.
+/// It describes a released layout and must never be modified.
 #[derive(Deserialize, Serialize)]
 pub(crate) struct AgentValueV0_47 {
     pub kind: AgentKind,
@@ -160,6 +158,50 @@ impl From<AgentValueV0_46> for AgentValueV0_47 {
             lifecycle: 0,
             bound_addrs: Vec::new(),
             instance: None,
+        }
+    }
+}
+
+/// The stored `Agent` value as of database format 0.61.
+///
+/// It is [`AgentValueV0_47`] with `run_as_root`, `run_as_root_draft` and
+/// `privilege_profile` appended last, so an encoded [`AgentValueV0_47`] is a
+/// strict prefix of one of these. It mirrors the private `Value` of the live
+/// agents table, whose component types it deliberately reuses, and the drift
+/// test in [`super`](crate::migration) holds the two together.
+#[derive(Deserialize, Serialize)]
+pub(crate) struct AgentValueV0_61 {
+    pub kind: AgentKind,
+    pub status: AgentStatus,
+    pub config: Option<AgentConfig>,
+    pub draft: Option<AgentConfig>,
+    pub installed_version: Option<String>,
+    pub installed_commit: Option<String>,
+    pub lifecycle: u8,
+    pub bound_addrs: Vec<(String, String)>,
+    pub instance: Option<u32>,
+    pub run_as_root: bool,
+    pub run_as_root_draft: Option<bool>,
+    pub privilege_profile: Option<String>,
+}
+
+impl From<AgentValueV0_47> for AgentValueV0_61 {
+    /// Copies every field, with the switch off, no pending change to it and no
+    /// confirmed profile: no earlier row recorded any of them.
+    fn from(old: AgentValueV0_47) -> Self {
+        Self {
+            kind: old.kind,
+            status: old.status,
+            config: old.config,
+            draft: old.draft,
+            installed_version: old.installed_version,
+            installed_commit: old.installed_commit,
+            lifecycle: old.lifecycle,
+            bound_addrs: old.bound_addrs,
+            instance: old.instance,
+            run_as_root: false,
+            run_as_root_draft: None,
+            privilege_profile: None,
         }
     }
 }
@@ -311,9 +353,7 @@ impl From<OperationAttemptValueV0_47> for OperationAttemptValueV0_48 {
 /// The stored `OperationAttempt` value as of database format 0.49.
 ///
 /// It is [`OperationAttemptValueV0_48`] with `config_template` appended
-/// last. It mirrors the private `Value` of the live operation attempts
-/// table, whose component types it deliberately reuses, and the drift test
-/// beside that table holds the two together.
+/// last. It describes a released layout and must never be modified.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub(crate) struct OperationAttemptValueV0_49 {
     pub host: String,
@@ -361,6 +401,65 @@ impl From<OperationAttemptValueV0_48> for OperationAttemptValueV0_49 {
             pre_update_version: old.pre_update_version,
             failure_kind: old.failure_kind,
             config_template: None,
+        }
+    }
+}
+
+/// The stored `OperationAttempt` value as of database format 0.61.
+///
+/// It is [`OperationAttemptValueV0_49`] with `privilege_profile` appended
+/// last. It mirrors the private `Value` of the live operation attempts
+/// table, whose component types it deliberately reuses, and the drift test
+/// beside that table holds the two together.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub(crate) struct OperationAttemptValueV0_61 {
+    pub host: String,
+    pub target: String,
+    pub instance: Option<u32>,
+    pub action: OperationAction,
+    pub install_intent: Option<[u8; OPERATION_ATTEMPT_DIGEST_LEN]>,
+    pub package_digest: String,
+    pub resolved_version: String,
+    pub resolved_commit: String,
+    pub phase: OperationPhase,
+    pub cleanup_state: Option<OperationCleanupState>,
+    pub started_at: DateTime<Utc>,
+    pub retry_policy: OperationRetryPolicy,
+    pub outcome: Option<OperationOutcome>,
+    pub finalized_at: Option<DateTime<Utc>>,
+    pub expires_at: DateTime<Utc>,
+    pub backup_id: Option<u32>,
+    pub pre_update_version: Option<String>,
+    pub failure_kind: Option<OperationFailureKind>,
+    pub config_template: Option<String>,
+    pub privilege_profile: Option<String>,
+}
+
+impl From<OperationAttemptValueV0_49> for OperationAttemptValueV0_61 {
+    /// Copies every field and records no profile: no earlier attempt carried
+    /// one, and on the wire `None` means keeping the profile last applied.
+    fn from(old: OperationAttemptValueV0_49) -> Self {
+        Self {
+            host: old.host,
+            target: old.target,
+            instance: old.instance,
+            action: old.action,
+            install_intent: old.install_intent,
+            package_digest: old.package_digest,
+            resolved_version: old.resolved_version,
+            resolved_commit: old.resolved_commit,
+            phase: old.phase,
+            cleanup_state: old.cleanup_state,
+            started_at: old.started_at,
+            retry_policy: old.retry_policy,
+            outcome: old.outcome,
+            finalized_at: old.finalized_at,
+            expires_at: old.expires_at,
+            backup_id: old.backup_id,
+            pre_update_version: old.pre_update_version,
+            failure_kind: old.failure_kind,
+            config_template: old.config_template,
+            privilege_profile: None,
         }
     }
 }

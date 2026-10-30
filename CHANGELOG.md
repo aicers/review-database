@@ -5,6 +5,47 @@ file is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), and
 this project adheres to [Semantic
 Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- `Agent::run_as_root` is the operator's applied switch for running a Sensor as
+  root, `false` by default.
+- `Agent::run_as_root_draft` is an unapplied change to that switch, with the
+  semantics of `Agent::draft`: `None` means no change is pending, and applying
+  the node copies `Some(v)` into `run_as_root` and clears it to `None`.
+- `Agent::privilege_profile` is the privilege profile the host last confirmed
+  applied, as its serialized name, and `None` for an agent whose package
+  declares no profiles and for one never confirmed.
+- `OperationAttempt::privilege_profile` is the profile name the attempt's sends
+  carry, stored verbatim; an attempt carries one only under an install or an
+  update, and `Table<OperationAttempt>::upsert` refuses it under any other
+  action.
+- `InstallIntent::run_as_root` is whether the operator asked for the Sensor to
+  run as root; a resubmission under the same request key with a different switch
+  is refused as `RequestKeyError::RequestKeyReused`, and every digest computed
+  for a request not asking for root is unchanged.
+
+### Changed
+
+- **BREAKING**: Bumped the database format to `0.61.0` (the database format
+  marker, not a crate version). The migration from `0.60.x`, and through the
+  earlier steps from every older supported format, gives every agent
+  `run_as_root = false` with no draft and no profile, gives every operation
+  attempt no profile, and adds the empty `format 0.61` column family. Nothing
+  else in the store changes, and an interrupted run can be retried. A backup
+  taken before the migration is refused by `Store::restore_from_backup` and
+  `Store::restore_from_latest_backup`, and is restored offline with
+  `backup::restore_states_offline` followed by `write_version_markers`. `Agent`,
+  `OperationAttempt` and `InstallIntent` gained public fields, which breaks
+  struct literals.
+- **BREAKING**: Updated review-protocol to `0.24.0`, taken from
+  `https://github.com/aicers/review-protocol.git` at that tag instead of tag
+  `0.23.0`. The re-exported `review_database::ThreatLevel` is now the type from
+  that release, so a crate that also depends on `review-protocol` directly must
+  use the same Git source and tag for its `ThreatLevel` to be interchangeable
+  with this crate's.
+
 ## [0.60.1] - 2026-10-29
 
 ### Fixed
@@ -2320,6 +2361,7 @@ AsRef<[u8]>`). This change accommodates scenarios where the information stored
 - Modified `FtpBruteForce` by adding an `is_internal` field which is a boolean
   indicating whether it is internal or not.
 
+[Unreleased]: https://github.com/aicers/review-database/compare/0.60.1...main
 [0.60.1]: https://github.com/aicers/review-database/compare/0.60.0...0.60.1
 [0.60.0]: https://github.com/aicers/review-database/compare/0.59.0...0.60.0
 [0.59.0]: https://github.com/aicers/review-database/compare/0.58.0...0.59.0
