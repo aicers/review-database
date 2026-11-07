@@ -1,12 +1,11 @@
 use std::{fmt, net::IpAddr};
 
-use aho_corasick::AhoCorasickBuilder;
 use attrievent::attribute::{HttpAttr, RawEventAttrKind};
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
 use super::timestamp::{self, ts_nanoseconds as jiff_ts_nanoseconds};
-use super::{EventCategory, EventFilter, LearningMethod, ThreatLevel, TriageScore, common::Match};
+use super::{EventCategory, LearningMethod, ThreatLevel, TriageScore, common::Match};
 use crate::{
     TriageExclusion,
     event::common::{AttrValue, triage_scores_to_string},
@@ -875,32 +874,6 @@ impl Match for HttpThreat {
 
     fn find_attr_by_kind(&self, raw_event_attr: RawEventAttrKind) -> Option<AttrValue<'_>> {
         find_http_attr_by_kind!(self, raw_event_attr)
-    }
-
-    fn kind_matches(&self, filter: &EventFilter) -> bool {
-        if let Some(kinds) = &filter.kinds {
-            let patterns = self
-                .attack_kind
-                .split_whitespace()
-                .filter(|s| s.chars().any(char::is_alphanumeric))
-                .map(ToString::to_string)
-                .collect::<Vec<String>>();
-            let ac = AhoCorasickBuilder::new()
-                .ascii_case_insensitive(true)
-                .build(patterns)
-                .expect("automatic build should not fail");
-            if kinds.iter().all(|kind| {
-                let words = kind
-                    .split_whitespace()
-                    .filter(|s| s.chars().any(char::is_alphanumeric))
-                    .map(ToString::to_string)
-                    .collect::<Vec<String>>();
-                !words.iter().all(|w| ac.is_match(w))
-            }) {
-                return false;
-            }
-        }
-        true
     }
 
     fn score_by_triage_exclusion(&self, triage_exclusion: &[TriageExclusion]) -> f64 {

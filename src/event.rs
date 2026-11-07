@@ -36,7 +36,6 @@ use std::{
     net::IpAddr,
 };
 
-use aho_corasick::AhoCorasickBuilder;
 use anyhow::{Context, Result, bail};
 use jiff::Timestamp;
 use num_derive::{FromPrimitive, ToPrimitive};
@@ -632,11 +631,20 @@ impl Event {
     /// Returns whether the event matches the given filter. If the event matches, returns the
     /// triage score for the event.
     ///
+    /// The `kinds` constraint of the filter selects an event exactly when its
+    /// own [`EventKind`] is listed.
+    ///
     /// # Errors
     ///
     /// Returns an error if triage-policy scoring fails while evaluating a
     /// matching event.
     pub fn matches(&self, filter: &EventFilter) -> Result<(bool, Option<Vec<TriageScore>>)> {
+        if let Some(kinds) = &filter.kinds {
+            let (kind, _category) = self.kind_and_category();
+            if !kinds.contains(&kind) {
+                return Ok((false, None));
+            }
+        }
         match self {
             Event::DnsCovertChannel(event) => event.matches(filter),
             Event::HttpThreat(event) => event.matches(filter),
@@ -807,218 +815,61 @@ impl Event {
         }
     }
 
+    /// Returns the display label of the event if it matches `filter`.
     fn kind(&self, filter: &EventFilter) -> Result<Option<&'static str>> {
-        let mut kind = None;
-        match self {
-            Event::DnsCovertChannel(event) => {
-                if event.matches(filter)?.0 {
-                    kind = Some(DNS_COVERT_CHANNEL);
-                }
-            }
-            Event::HttpThreat(event) => {
-                if event.matches(filter)?.0 {
-                    kind = Some(HTTP_THREAT);
-                }
-            }
-            Event::RdpBruteForce(event) => {
-                if event.matches(filter)?.0 {
-                    kind = Some(RDP_BRUTE_FORCE);
-                }
-            }
-            Event::RepeatedHttpSessions(event) => {
-                if event.matches(filter)?.0 {
-                    kind = Some(REPEATED_HTTP_SESSIONS);
-                }
-            }
-            Event::TorConnection(event) => {
-                if event.matches(filter)?.0 {
-                    kind = Some(TOR_CONNECTION);
-                }
-            }
-            Event::TorConnectionConn(event) => {
-                if event.matches(filter)?.0 {
-                    kind = Some(TOR_CONNECTION_CONN);
-                }
-            }
-            Event::DomainGenerationAlgorithm(event) => {
-                if event.matches(filter)?.0 {
-                    kind = Some(DOMAIN_GENERATION_ALGORITHM);
-                }
-            }
-            Event::FtpBruteForce(event) => {
-                if event.matches(filter)?.0 {
-                    kind = Some(FTP_BRUTE_FORCE);
-                }
-            }
-            Event::FtpPlainText(event) => {
-                if event.matches(filter)?.0 {
-                    kind = Some(FTP_PLAIN_TEXT);
-                }
-            }
-            Event::PortScan(event) => {
-                if event.matches(filter)?.0 {
-                    kind = Some(PORT_SCAN);
-                }
-            }
-            Event::MultiHostPortScan(event) => {
-                if event.matches(filter)?.0 {
-                    kind = Some(MULTI_HOST_PORT_SCAN);
-                }
-            }
-            Event::ExternalDdos(event) => {
-                if event.matches(filter)?.0 {
-                    kind = Some(EXTERNAL_DDOS);
-                }
-            }
-            Event::NonBrowser(event) => {
-                if event.matches(filter)?.0 {
-                    kind = Some(NON_BROWSER);
-                }
-            }
-            Event::LdapBruteForce(event) => {
-                if event.matches(filter)?.0 {
-                    kind = Some(LDAP_BRUTE_FORCE);
-                }
-            }
-            Event::LdapPlainText(event) => {
-                if event.matches(filter)?.0 {
-                    kind = Some(LDAP_PLAIN_TEXT);
-                }
-            }
-            Event::CryptocurrencyMiningPool(event) => {
-                if event.matches(filter)?.0 {
-                    kind = Some(CRYPTOCURRENCY_MINING_POOL);
-                }
-            }
-            Event::Blocklist(record_type) => match record_type {
-                RecordType::Bootp(bootp_event) => {
-                    if bootp_event.matches(filter)?.0 {
-                        kind = Some(BLOCKLIST);
-                    }
-                }
-                RecordType::Conn(conn_event) => {
-                    if conn_event.matches(filter)?.0 {
-                        kind = Some(BLOCKLIST);
-                    }
-                }
-                RecordType::DceRpc(dcerpc_event) => {
-                    if dcerpc_event.matches(filter)?.0 {
-                        kind = Some(BLOCKLIST);
-                    }
-                }
-                RecordType::Dhcp(dhcp_event) => {
-                    if dhcp_event.matches(filter)?.0 {
-                        kind = Some(BLOCKLIST);
-                    }
-                }
-                RecordType::Dns(dns_event) => {
-                    if dns_event.matches(filter)?.0 {
-                        kind = Some(BLOCKLIST);
-                    }
-                }
-                RecordType::Ftp(ftp_event) => {
-                    if ftp_event.matches(filter)?.0 {
-                        kind = Some(BLOCKLIST);
-                    }
-                }
-                RecordType::Http(http_event) => {
-                    if http_event.matches(filter)?.0 {
-                        kind = Some(BLOCKLIST);
-                    }
-                }
-                RecordType::Kerberos(kerberos_event) => {
-                    if kerberos_event.matches(filter)?.0 {
-                        kind = Some(BLOCKLIST);
-                    }
-                }
-                RecordType::Ldap(ldap_event) => {
-                    if ldap_event.matches(filter)?.0 {
-                        kind = Some(BLOCKLIST);
-                    }
-                }
-                RecordType::MalformedDns(malformed_dns_event) => {
-                    if malformed_dns_event.matches(filter)?.0 {
-                        kind = Some(BLOCKLIST);
-                    }
-                }
-                RecordType::Mqtt(mqtt_event) => {
-                    if mqtt_event.matches(filter)?.0 {
-                        kind = Some(BLOCKLIST);
-                    }
-                }
-                RecordType::Nfs(nfs_event) => {
-                    if nfs_event.matches(filter)?.0 {
-                        kind = Some(BLOCKLIST);
-                    }
-                }
-                RecordType::Ntlm(ntlm_event) => {
-                    if ntlm_event.matches(filter)?.0 {
-                        kind = Some(BLOCKLIST);
-                    }
-                }
-                RecordType::Radius(radius_event) => {
-                    if radius_event.matches(filter)?.0 {
-                        kind = Some(BLOCKLIST);
-                    }
-                }
-                RecordType::Rdp(rdp_event) => {
-                    if rdp_event.matches(filter)?.0 {
-                        kind = Some(BLOCKLIST);
-                    }
-                }
-                RecordType::Smb(smb_event) => {
-                    if smb_event.matches(filter)?.0 {
-                        kind = Some(BLOCKLIST);
-                    }
-                }
-                RecordType::Smtp(smtp_event) => {
-                    if smtp_event.matches(filter)?.0 {
-                        kind = Some(BLOCKLIST);
-                    }
-                }
-                RecordType::Ssh(ssh_event) => {
-                    if ssh_event.matches(filter)?.0 {
-                        kind = Some(BLOCKLIST);
-                    }
-                }
-                RecordType::Tls(tls_event) => {
-                    if tls_event.matches(filter)?.0 {
-                        kind = Some(BLOCKLIST);
-                    }
-                }
-                RecordType::UnusualDestinationPattern(event) => {
-                    if event.matches(filter)?.0 {
-                        kind = Some(UNUSUAL_DESTINATION_PATTERN);
-                    }
-                }
-            },
-            Event::WindowsThreat(event) => {
-                if event.matches(filter)?.0 {
-                    kind = Some(WINDOWS_THREAT_EVENT);
-                }
-            }
-            Event::NetworkThreat(event) => {
-                if event.matches(filter)?.0 {
-                    kind = Some(NETWORK_THREAT_EVENT);
-                }
-            }
-            Event::ExtraThreat(event) => {
-                if event.matches(filter)?.0 {
-                    kind = Some(MISC_LOG_THREAT);
-                }
-            }
-            Event::LockyRansomware(event) => {
-                if event.matches(filter)?.0 {
-                    kind = Some(LOCKY_RANSOMWARE);
-                }
-            }
-            Event::SuspiciousTlsTraffic(event) => {
-                if event.matches(filter)?.0 {
-                    kind = Some(SUSPICIOUS_TLS_TRAFFIC);
-                }
-            }
+        if !self.matches(filter)?.0 {
+            return Ok(None);
         }
-        Ok(kind)
+        Ok(Some(self.kind_label()))
+    }
+
+    /// Returns the display label of the event's kind. All Blocklist kinds
+    /// except `UnusualDestinationPattern` share one label.
+    fn kind_label(&self) -> &'static str {
+        let (kind, _category) = self.kind_and_category();
+        match kind {
+            EventKind::DnsCovertChannel => DNS_COVERT_CHANNEL,
+            EventKind::HttpThreat => HTTP_THREAT,
+            EventKind::RdpBruteForce => RDP_BRUTE_FORCE,
+            EventKind::RepeatedHttpSessions => REPEATED_HTTP_SESSIONS,
+            EventKind::TorConnection => TOR_CONNECTION,
+            EventKind::TorConnectionConn => TOR_CONNECTION_CONN,
+            EventKind::DomainGenerationAlgorithm => DOMAIN_GENERATION_ALGORITHM,
+            EventKind::FtpBruteForce => FTP_BRUTE_FORCE,
+            EventKind::FtpPlainText => FTP_PLAIN_TEXT,
+            EventKind::PortScan => PORT_SCAN,
+            EventKind::MultiHostPortScan => MULTI_HOST_PORT_SCAN,
+            EventKind::ExternalDdos => EXTERNAL_DDOS,
+            EventKind::NonBrowser => NON_BROWSER,
+            EventKind::LdapBruteForce => LDAP_BRUTE_FORCE,
+            EventKind::LdapPlainText => LDAP_PLAIN_TEXT,
+            EventKind::CryptocurrencyMiningPool => CRYPTOCURRENCY_MINING_POOL,
+            EventKind::BlocklistBootp
+            | EventKind::BlocklistConn
+            | EventKind::BlocklistDceRpc
+            | EventKind::BlocklistDhcp
+            | EventKind::BlocklistDns
+            | EventKind::BlocklistFtp
+            | EventKind::BlocklistHttp
+            | EventKind::BlocklistKerberos
+            | EventKind::BlocklistLdap
+            | EventKind::BlocklistMalformedDns
+            | EventKind::BlocklistMqtt
+            | EventKind::BlocklistNfs
+            | EventKind::BlocklistNtlm
+            | EventKind::BlocklistRadius
+            | EventKind::BlocklistRdp
+            | EventKind::BlocklistSmb
+            | EventKind::BlocklistSmtp
+            | EventKind::BlocklistSsh
+            | EventKind::BlocklistTls => BLOCKLIST,
+            EventKind::UnusualDestinationPattern => UNUSUAL_DESTINATION_PATTERN,
+            EventKind::WindowsThreat => WINDOWS_THREAT_EVENT,
+            EventKind::NetworkThreat => NETWORK_THREAT_EVENT,
+            EventKind::ExtraThreat => MISC_LOG_THREAT,
+            EventKind::LockyRansomware => LOCKY_RANSOMWARE,
+            EventKind::SuspiciousTlsTraffic => SUSPICIOUS_TLS_TRAFFIC,
+        }
     }
 
     fn kind_and_category(&self) -> (EventKind, Option<EventCategory>) {
@@ -1524,29 +1375,27 @@ impl Event {
         Ok(())
     }
 
-    /// Counts the number of events per event kind.
+    /// Counts each matching event under its own [`EventKind`].
+    ///
+    /// Every kind has its own bucket: Blocklist kinds are not merged, and all
+    /// `HttpThreat` events share one bucket whatever their attack kind. The
+    /// keys can be passed back as the `kinds` argument to
+    /// [`EventFilter::new`] to select the events counted in each bucket.
     ///
     /// # Errors
     ///
     /// Returns an error if matching the event against the filter fails.
     pub fn count_kind(
         &self,
-        counter: &mut HashMap<String, usize>,
+        counter: &mut HashMap<EventKind, usize>,
         filter: &EventFilter,
     ) -> Result<()> {
-        let kind = if let Event::HttpThreat(event) = self {
-            if event.matches(filter)?.0 {
-                Some(event.attack_kind.clone())
-            } else {
-                None
-            }
-        } else {
-            self.kind(filter)?.map(ToString::to_string)
-        };
-
-        if let Some(kind) = kind {
-            counter.entry(kind).and_modify(|e| *e += 1).or_insert(1);
+        if !self.matches(filter)?.0 {
+            return Ok(());
         }
+
+        let (kind, _category) = self.kind_and_category();
+        *counter.entry(kind).or_insert(0) += 1;
 
         Ok(())
     }
@@ -1799,7 +1648,9 @@ fn find_network(ip: IpAddr, networks: &[Network]) -> Option<u32> {
     None
 }
 
-#[derive(Serialize, Clone, Copy, Debug, Deserialize, Eq, FromPrimitive, PartialEq, ToPrimitive)]
+#[derive(
+    Serialize, Clone, Copy, Debug, Deserialize, Eq, FromPrimitive, Hash, PartialEq, ToPrimitive,
+)]
 #[repr(u32)]
 #[non_exhaustive]
 #[allow(clippy::module_name_repetitions)]
@@ -1940,6 +1791,9 @@ impl InternalNetworks {
 /// `countries` compares stored two-byte codes directly. This includes the
 /// [`crate::COUNTRY_CODE_UNKNOWN`] and [`crate::COUNTRY_CODE_UNRESOLVED`]
 /// placeholders, which callers may filter explicitly.
+///
+/// `kinds` selects an event exactly when its own [`EventKind`] is listed, so
+/// several kinds select their union and an empty list selects no event.
 #[allow(clippy::module_name_repetitions)]
 pub struct EventFilter {
     endpoints: Option<Vec<Endpoint>>,
@@ -1949,7 +1803,7 @@ pub struct EventFilter {
     countries: Option<Vec<[u8; 2]>>,
     categories: Option<Vec<Option<EventCategory>>>,
     levels: Option<Vec<ThreatLevel>>,
-    kinds: Option<Vec<String>>,
+    kinds: Option<Vec<EventKind>>,
     learning_methods: Option<Vec<LearningMethod>>,
     sensors: Option<Vec<String>>,
     confidence_min: Option<f32>,
@@ -1969,7 +1823,7 @@ impl EventFilter {
         countries: Option<Vec<[u8; 2]>>,
         categories: Option<Vec<Option<EventCategory>>>,
         levels: Option<Vec<ThreatLevel>>,
-        kinds: Option<Vec<String>>,
+        kinds: Option<Vec<EventKind>>,
         learning_methods: Option<Vec<LearningMethod>>,
         sensors: Option<Vec<String>>,
         confidence_min: Option<f32>,
@@ -1996,162 +1850,6 @@ impl EventFilter {
     #[must_use]
     pub fn has_country(&self) -> bool {
         self.countries.is_some()
-    }
-
-    pub fn moderate_kinds(&mut self) {
-        if let Some(kinds) = self.kinds.as_mut() {
-            moderate_kinds_by(kinds, &["dns", "covert", "channel"], "dns covert channel");
-            moderate_kinds_by(
-                kinds,
-                &["http", "covert", "channel", "repeated", "http", "sessions"],
-                "repeated http sessions",
-            );
-            moderate_kinds_by(kinds, &["rdp", "brute", "force"], "rdp brute force");
-            moderate_kinds_by(kinds, &["tor", "connection"], "tor exit nodes");
-            moderate_kinds_by(kinds, &["tor", "connection", "conn"], "tor exit nodes");
-            moderate_kinds_by(kinds, &["domain", "generation", "algorithm"], "dga");
-            moderate_kinds_by(kinds, &["ftp", "brute", "force"], "ftp brute force");
-            moderate_kinds_by(kinds, &["ftp", "plain", "text"], "ftp plain text");
-            moderate_kinds_by(kinds, &["ldap", "brute", "force"], "ldap brute force");
-            moderate_kinds_by(kinds, &["ldap", "plain", "text"], "ldap plain text");
-            moderate_kinds_by(
-                kinds,
-                &["multi", "host", "port", "scan"],
-                "multi host port scan",
-            );
-            moderate_kinds_by(kinds, &["external", "ddos", "dos"], "external ddos");
-            moderate_kinds_by(kinds, &["port", "scan"], "port scan");
-            moderate_kinds_by(
-                kinds,
-                &["non", "browser", "non-browser", "connection"],
-                "non browser",
-            );
-            moderate_kinds_by(
-                kinds,
-                &["cryptocurrency", "mining", "pool", "network", "connection"],
-                "cryptocurrency mining pool",
-            );
-            moderate_kinds_by(
-                kinds,
-                &["block", "list", "blocklist", "bootp"],
-                "blocklist bootp",
-            );
-            moderate_kinds_by(
-                kinds,
-                &["block", "list", "blocklist", "conn"],
-                "blocklist conn",
-            );
-            moderate_kinds_by(
-                kinds,
-                &["block", "list", "blocklist", "dcerpc", "dce/rpc"],
-                "blocklist dcerpc",
-            );
-            moderate_kinds_by(
-                kinds,
-                &["block", "list", "blocklist", "dhcp"],
-                "blocklist dhcp",
-            );
-            moderate_kinds_by(
-                kinds,
-                &["block", "list", "blocklist", "dns"],
-                "blocklist dns",
-            );
-            moderate_kinds_by(
-                kinds,
-                &["block", "list", "blocklist", "ftp"],
-                "blocklist ftp",
-            );
-            moderate_kinds_by(
-                kinds,
-                &["block", "list", "blocklist", "http"],
-                "blocklist http",
-            );
-            moderate_kinds_by(
-                kinds,
-                &["block", "list", "blocklist", "kerberos"],
-                "blocklist kerberos",
-            );
-            moderate_kinds_by(
-                kinds,
-                &["block", "list", "blocklist", "ldap"],
-                "blocklist ldap",
-            );
-            moderate_kinds_by(
-                kinds,
-                &["block", "list", "blocklist", "malformed", "dns"],
-                "blocklist malformed dns",
-            );
-            moderate_kinds_by(
-                kinds,
-                &["block", "list", "blocklist", "mqtt"],
-                "blocklist mqtt",
-            );
-            moderate_kinds_by(
-                kinds,
-                &["block", "list", "blocklist", "nfs"],
-                "blocklist nfs",
-            );
-            moderate_kinds_by(
-                kinds,
-                &["block", "list", "blocklist", "ntlm"],
-                "blocklist ntlm",
-            );
-            moderate_kinds_by(
-                kinds,
-                &["block", "list", "blocklist", "radius"],
-                "blocklist radius",
-            );
-            moderate_kinds_by(
-                kinds,
-                &["block", "list", "blocklist", "rdp"],
-                "blocklist rdp",
-            );
-            moderate_kinds_by(
-                kinds,
-                &["block", "list", "blocklist", "smb"],
-                "blocklist smb",
-            );
-            moderate_kinds_by(
-                kinds,
-                &["block", "list", "blocklist", "smtp"],
-                "blocklist smtp",
-            );
-            moderate_kinds_by(
-                kinds,
-                &["block", "list", "blocklist", "ssh"],
-                "blocklist ssh",
-            );
-            moderate_kinds_by(
-                kinds,
-                &["block", "list", "blocklist", "tls"],
-                "blocklist tls",
-            );
-            moderate_kinds_by(kinds, &["windows", "threat"], "windows threat");
-            moderate_kinds_by(kinds, &["network", "threat"], "network threat");
-            moderate_kinds_by(kinds, &["extra", "threat"], "extra threat");
-            moderate_kinds_by(kinds, &["locky", "ransomware"], "locky ransomware");
-            moderate_kinds_by(
-                kinds,
-                &["suspicious", "tls", "traffic"],
-                "suspicious tls traffic",
-            );
-        }
-    }
-}
-
-fn moderate_kinds_by(kinds: &mut Vec<String>, patterns: &[&str], full_name: &str) {
-    let ac = AhoCorasickBuilder::new()
-        .ascii_case_insensitive(true)
-        .build(patterns)
-        .expect("automatic build should not fail");
-    if kinds.iter().any(|kind| {
-        let words = kind
-            .split_whitespace()
-            .map(ToString::to_string)
-            .collect::<Vec<String>>();
-        words.iter().all(|w| ac.is_match(w))
-    }) {
-        kinds.push(full_name.to_string());
     }
 }
 
@@ -3798,7 +3496,7 @@ mod tests {
     use chrono::{DateTime, TimeZone, Utc};
     use jiff::Timestamp;
 
-    use super::{COUNTRY_COUNT_STACK_DEDUP_LIMIT, EXTERNAL_DDOS, timestamp};
+    use super::{COUNTRY_COUNT_STACK_DEDUP_LIMIT, timestamp};
     use crate::test::{DbGuard, acquire_db_permit};
     use crate::{
         PutOutcome, Store,
@@ -5042,7 +4740,7 @@ mod tests {
             countries: None,
             categories: None,
             levels: None,
-            kinds: Some(vec!["locky ransomware".to_string()]),
+            kinds: Some(vec![EventKind::LockyRansomware]),
             learning_methods: None,
             sensors: Some(vec!["collector1".to_string()]),
             confidence_min: Some(0.5),
@@ -5056,7 +4754,7 @@ mod tests {
 
         let mut counter = HashMap::new();
         event.count_kind(&mut counter, &filter).unwrap();
-        assert_eq!(counter.get(LOCKY_RANSOMWARE), Some(&1));
+        assert_eq!(counter, HashMap::from([(EventKind::LockyRansomware, 1)]));
 
         let mut counter = HashMap::new();
         event.count_category(&mut counter, &filter).unwrap();
@@ -5726,7 +5424,7 @@ mod tests {
             countries: None,
             categories: None,
             levels: Some(vec![ThreatLevel::Medium]),
-            kinds: Some(vec!["blocklist bootp".to_string()]),
+            kinds: Some(vec![EventKind::BlocklistBootp]),
             learning_methods: None,
             sensors: Some(vec!["collector1".to_string()]),
             confidence_min: None,
@@ -5740,7 +5438,7 @@ mod tests {
 
         let mut counter = HashMap::new();
         event.count_kind(&mut counter, &filter).unwrap();
-        assert_eq!(counter.get(BLOCKLIST), Some(&1));
+        assert_eq!(counter, HashMap::from([(EventKind::BlocklistBootp, 1)]));
 
         let mut counter = HashMap::new();
         event.count_category(&mut counter, &filter).unwrap();
@@ -6010,7 +5708,7 @@ mod tests {
             countries: None,
             categories: None,
             levels: Some(vec![ThreatLevel::Medium]),
-            kinds: Some(vec!["blocklist dhcp".to_string()]),
+            kinds: Some(vec![EventKind::BlocklistDhcp]),
             learning_methods: None,
             sensors: Some(vec!["collector1".to_string()]),
             confidence_min: None,
@@ -6024,7 +5722,7 @@ mod tests {
 
         let mut counter = HashMap::new();
         event.count_kind(&mut counter, &filter).unwrap();
-        assert_eq!(counter.get(BLOCKLIST), Some(&1));
+        assert_eq!(counter, HashMap::from([(EventKind::BlocklistDhcp, 1)]));
 
         let mut counter = HashMap::new();
         event.count_category(&mut counter, &filter).unwrap();
@@ -6441,7 +6139,7 @@ mod tests {
             countries: None,
             categories: None,
             levels: Some(vec![ThreatLevel::Medium]),
-            kinds: Some(vec!["blocklist ftp".to_string()]),
+            kinds: Some(vec![EventKind::BlocklistFtp]),
             learning_methods: None,
             sensors: Some(vec!["collector1".to_string()]),
             confidence_min: Some(0.5),
@@ -6455,7 +6153,7 @@ mod tests {
 
         let mut counter = HashMap::new();
         event.count_kind(&mut counter, &filter).unwrap();
-        assert_eq!(counter.get(BLOCKLIST), Some(&1));
+        assert_eq!(counter, HashMap::from([(EventKind::BlocklistFtp, 1)]));
 
         let mut counter = HashMap::new();
         event.count_category(&mut counter, &filter).unwrap();
@@ -6768,7 +6466,7 @@ mod tests {
             countries: None,
             categories: None,
             levels: Some(vec![ThreatLevel::Medium]),
-            kinds: Some(vec!["blocklist ldap".to_string()]),
+            kinds: Some(vec![EventKind::BlocklistLdap]),
             learning_methods: None,
             sensors: Some(vec!["collector1".to_string()]),
             confidence_min: Some(0.5),
@@ -6782,7 +6480,7 @@ mod tests {
 
         let mut counter = HashMap::new();
         event.count_kind(&mut counter, &filter).unwrap();
-        assert_eq!(counter.get(BLOCKLIST), Some(&1));
+        assert_eq!(counter, HashMap::from([(EventKind::BlocklistLdap, 1)]));
 
         let mut counter = HashMap::new();
         event.count_category(&mut counter, &filter).unwrap();
@@ -6858,7 +6556,7 @@ mod tests {
             countries: None,
             categories: None,
             levels: Some(vec![ThreatLevel::Medium]),
-            kinds: Some(vec!["blocklist radius".to_string()]),
+            kinds: Some(vec![EventKind::BlocklistRadius]),
             learning_methods: None,
             sensors: Some(vec!["collector1".to_string()]),
             confidence_min: Some(0.5),
@@ -6872,7 +6570,7 @@ mod tests {
 
         let mut counter = HashMap::new();
         event.count_kind(&mut counter, &filter).unwrap();
-        assert_eq!(counter.get(BLOCKLIST), Some(&1));
+        assert_eq!(counter, HashMap::from([(EventKind::BlocklistRadius, 1)]));
 
         let mut counter = HashMap::new();
         event.count_category(&mut counter, &filter).unwrap();
@@ -7219,7 +6917,7 @@ mod tests {
             countries: None,
             categories: None,
             levels: Some(vec![ThreatLevel::Medium]),
-            kinds: Some(vec!["blocklist malformed dns".to_string()]),
+            kinds: Some(vec![EventKind::BlocklistMalformedDns]),
             learning_methods: None,
             sensors: Some(vec!["collector1".to_string()]),
             confidence_min: Some(0.5),
@@ -7233,7 +6931,10 @@ mod tests {
 
         let mut counter = HashMap::new();
         event.count_kind(&mut counter, &filter).unwrap();
-        assert_eq!(counter.get(BLOCKLIST), Some(&1));
+        assert_eq!(
+            counter,
+            HashMap::from([(EventKind::BlocklistMalformedDns, 1)])
+        );
 
         let mut counter = HashMap::new();
         event.count_category(&mut counter, &filter).unwrap();
@@ -7786,7 +7487,7 @@ mod tests {
             countries: None,
             categories: None,
             levels: Some(vec![ThreatLevel::Medium]),
-            kinds: Some(vec!["tor exit nodes".to_string()]),
+            kinds: Some(vec![EventKind::TorConnection]),
             learning_methods: None,
             sensors: Some(vec!["collector1".to_string()]),
             confidence_min: Some(0.5),
@@ -7800,7 +7501,7 @@ mod tests {
 
         let mut counter = HashMap::new();
         event.count_kind(&mut counter, &filter).unwrap();
-        assert_eq!(counter.get(TOR_CONNECTION), Some(&1));
+        assert_eq!(counter, HashMap::from([(EventKind::TorConnection, 1)]));
 
         let mut counter = HashMap::new();
         event.count_category(&mut counter, &filter).unwrap();
@@ -7907,7 +7608,7 @@ mod tests {
             assert!(filtered_counter.is_empty());
 
             let mut filter = category_filter(None);
-            filter.kinds = Some(vec!["locky ransomware".to_string()]);
+            filter.kinds = Some(vec![EventKind::LockyRansomware]);
             assert!(!event.matches(&filter).unwrap().0);
             let mut filtered_counter = HashMap::new();
             event
@@ -8012,7 +7713,7 @@ mod tests {
             countries: None,
             categories: None,
             levels: Some(vec![ThreatLevel::Medium]),
-            kinds: Some(vec!["suspicious tls traffic".to_string()]),
+            kinds: Some(vec![EventKind::SuspiciousTlsTraffic]),
             learning_methods: None,
             sensors: Some(vec!["collector1".to_string()]),
             confidence_min: Some(0.5),
@@ -8026,7 +7727,10 @@ mod tests {
 
         let mut counter = HashMap::new();
         event.count_kind(&mut counter, &filter).unwrap();
-        assert_eq!(counter.get(SUSPICIOUS_TLS_TRAFFIC), Some(&1));
+        assert_eq!(
+            counter,
+            HashMap::from([(EventKind::SuspiciousTlsTraffic, 1)])
+        );
 
         let mut counter = HashMap::new();
         event.count_category(&mut counter, &filter).unwrap();
@@ -8112,7 +7816,7 @@ mod tests {
         assert_country_round_trip(&event, &[("US", 1), ("KR", 1), ("JP", 1)]);
 
         let mut filter = country_filter(None);
-        filter.kinds = Some(vec![EXTERNAL_DDOS.to_string()]);
+        filter.kinds = Some(vec![EventKind::ExternalDdos]);
         let mut counter = HashMap::new();
         event.count_country(&mut counter, &filter).unwrap();
         assert!(counter.is_empty());

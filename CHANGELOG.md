@@ -5,6 +5,35 @@ file is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), and
 this project adheres to [Semantic
 Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- `EventKind` implements `Hash`, so it can key a `HashMap` such as the counter
+  `Event::count_kind` fills.
+
+### Changed
+
+- **BREAKING**: `EventFilter::new` takes `kinds` as `Option<Vec<EventKind>>`
+  instead of `Option<Vec<String>>`, and an event matches when its own
+  `EventKind` is in the list. `EventFilter::moderate_kinds`, which expanded
+  kind names into display labels, is removed. `kinds` no longer selects
+  `HttpThreat` events by their attack kind: `EventKind::HttpThreat` selects
+  every `HttpThreat` event.
+- **BREAKING**: `Event::count_kind` counts into `HashMap<EventKind, usize>`, one
+  bucket per kind, instead of `HashMap<String, usize>` keyed by display label.
+  Blocklist kinds are no longer merged into one `"Blocklist"` bucket, and
+  `HttpThreat` events are no longer split by attack kind. The keys can be
+  passed back as `kinds` to select the events counted under them.
+
+### Fixed
+
+- A `kinds` filter selects only events of the listed kinds. Words shared
+  between kind names used to pull in other kinds as well: FTP Plain Text also
+  selected LDAP Plain Text, Blocklist Conn selected both Tor kinds, and Tor
+  Connection and Tor Connection (Conn) could not be selected apart. Some kinds,
+  such as Unusual Destination Pattern, could not be selected at all.
+
 ## [0.61.0] - 2026-10-30
 
 ### Added
@@ -2361,6 +2390,7 @@ AsRef<[u8]>`). This change accommodates scenarios where the information stored
 - Modified `FtpBruteForce` by adding an `is_internal` field which is a boolean
   indicating whether it is internal or not.
 
+[Unreleased]: https://github.com/aicers/review-database/compare/0.61.0...main
 [0.61.0]: https://github.com/aicers/review-database/compare/0.60.1...0.61.0
 [0.60.1]: https://github.com/aicers/review-database/compare/0.60.0...0.60.1
 [0.60.0]: https://github.com/aicers/review-database/compare/0.59.0...0.60.0
