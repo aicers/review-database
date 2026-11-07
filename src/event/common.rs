@@ -62,27 +62,12 @@ pub(super) trait Match {
 
     /// Returns whether the event matches the filter and the triage scores. The triage scores are
     /// only returned if the event matches the filter.
-    fn matches(&self, filter: &EventFilter) -> Result<(bool, Option<Vec<TriageScore>>)> {
-        if !self.kind_matches(filter) {
-            return Ok((false, None));
-        }
-        self.other_matches(filter)
-    }
-
-    fn kind_matches(&self, filter: &EventFilter) -> bool {
-        if let Some(kinds) = &filter.kinds
-            && kinds.iter().all(|k| k != self.kind())
-        {
-            return false;
-        }
-
-        true
-    }
-
-    /// Returns whether the event matches the filter (excluding `kinds`) and the triage scores. The
-    /// triage scores are only returned if the event matches the filter.
+    ///
+    /// `EventFilter::kinds` is not checked here: it is matched against the
+    /// event's `EventKind` by `Event::matches`, which every public caller goes
+    /// through.
     #[allow(clippy::too_many_lines)]
-    fn other_matches(&self, filter: &EventFilter) -> Result<(bool, Option<Vec<TriageScore>>)> {
+    fn matches(&self, filter: &EventFilter) -> Result<(bool, Option<Vec<TriageScore>>)> {
         if let Some(endpoints) = &filter.endpoints
             && endpoints.iter().all(|endpoint| match endpoint.direction {
                 Some(TrafficDirection::From) => self
@@ -626,8 +611,8 @@ pub(crate) mod tests {
             BlocklistSmtpFieldsStored, BlocklistSsh, BlocklistSshFieldsStored, BlocklistTls,
             BlocklistTlsFieldsStored, CryptocurrencyMiningPool,
             CryptocurrencyMiningPoolFieldsStored, DgaFieldsStored, DnsCovertChannel,
-            DnsEventFieldsStored, DomainGenerationAlgorithm, Event, EventFilter, ExternalDdos,
-            ExternalDdosFieldsStored, ExtraThreat, ExtraThreatFieldsStored, FlowKind,
+            DnsEventFieldsStored, DomainGenerationAlgorithm, Event, EventFilter, EventKind,
+            ExternalDdos, ExternalDdosFieldsStored, ExtraThreat, ExtraThreatFieldsStored, FlowKind,
             FtpBruteForce, FtpBruteForceFieldsStored, FtpEventFieldsStored, FtpPlainText,
             HttpEventFieldsStored, HttpThreat, HttpThreatFieldsStored, InternalNetworks,
             LdapBruteForce, LdapBruteForceFieldsStored, LdapEventFieldsStored, LdapPlainText,
@@ -635,8 +620,8 @@ pub(crate) mod tests {
             NetworkThreat, NetworkThreatFieldsStored, NonBrowser, PortScan, PortScanFieldsStored,
             RdpBruteForce, RdpBruteForceFieldsStored, RecordType, RepeatedHttpSessions,
             RepeatedHttpSessionsFieldsStored, SuspiciousTlsTraffic, TorConnection,
-            UnusualDestinationPattern, UnusualDestinationPatternFieldsStored, WindowsThreat,
-            WindowsThreatFieldsStored,
+            TorConnectionConn, UnusualDestinationPattern, UnusualDestinationPatternFieldsStored,
+            WindowsThreat, WindowsThreatFieldsStored,
         },
         types::Endpoint,
     };
@@ -4118,5 +4103,451 @@ pub(crate) mod tests {
         let event = Event::MultiHostPortScan(MultiHostPortScan::new(time, &fields));
         let filter = country_filter(*b"DE");
         assert!(event.matches(&filter).unwrap().0);
+    }
+
+    /// Returns every `EventKind`, driven by the discriminants rather than a
+    /// hand-written list, so that a kind added later is exercised as well.
+    fn all_event_kinds() -> Vec<EventKind> {
+        use num_traits::FromPrimitive;
+
+        (0..=255_u32).filter_map(EventKind::from_u32).collect()
+    }
+
+    /// Builds one event of `kind` from the fixtures above.
+    #[allow(clippy::too_many_lines)] // one arm per kind
+    fn event_of_kind(kind: EventKind) -> Event {
+        let time = stored_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap());
+        match kind {
+            EventKind::DnsCovertChannel => {
+                Event::DnsCovertChannel(DnsCovertChannel::new(time, dns_event_fields()))
+            }
+            EventKind::HttpThreat => Event::HttpThreat(HttpThreat::new(time, http_threat_fields())),
+            EventKind::RdpBruteForce => {
+                Event::RdpBruteForce(RdpBruteForce::new(time, &rdp_brute_force_fields()))
+            }
+            EventKind::RepeatedHttpSessions => Event::RepeatedHttpSessions(
+                RepeatedHttpSessions::new(time, &repeated_http_sessions_fiedls()),
+            ),
+            EventKind::ExtraThreat => Event::ExtraThreat(extra_threat()),
+            EventKind::TorConnection => {
+                Event::TorConnection(TorConnection::new(time, &http_event_fields()))
+            }
+            EventKind::TorConnectionConn => {
+                Event::TorConnectionConn(TorConnectionConn::new(time, blocklist_conn_fields()))
+            }
+            EventKind::DomainGenerationAlgorithm => {
+                Event::DomainGenerationAlgorithm(DomainGenerationAlgorithm::new(time, dga_fields()))
+            }
+            EventKind::FtpBruteForce => {
+                Event::FtpBruteForce(FtpBruteForce::new(time, &ftp_brute_force_fields()))
+            }
+            EventKind::FtpPlainText => {
+                Event::FtpPlainText(FtpPlainText::new(time, ftp_event_fields()))
+            }
+            EventKind::PortScan => Event::PortScan(PortScan::new(time, &port_scan_fields())),
+            EventKind::MultiHostPortScan => Event::MultiHostPortScan(MultiHostPortScan::new(
+                time,
+                &multi_host_port_scan_fields(),
+            )),
+            EventKind::NonBrowser => Event::NonBrowser(NonBrowser::new(time, &http_event_fields())),
+            EventKind::LdapBruteForce => {
+                Event::LdapBruteForce(LdapBruteForce::new(time, &ldap_brute_force_fields()))
+            }
+            EventKind::LdapPlainText => {
+                Event::LdapPlainText(LdapPlainText::new(time, ldap_event_fields()))
+            }
+            EventKind::ExternalDdos => {
+                Event::ExternalDdos(ExternalDdos::new(time, &external_ddos_fields()))
+            }
+            EventKind::CryptocurrencyMiningPool => Event::CryptocurrencyMiningPool(
+                CryptocurrencyMiningPool::new(time, crypto_miining_pool_fields()),
+            ),
+            EventKind::BlocklistConn => Event::Blocklist(RecordType::Conn(BlocklistConn::new(
+                time,
+                blocklist_conn_fields(),
+            ))),
+            EventKind::BlocklistDns => Event::Blocklist(RecordType::Dns(BlocklistDns::new(
+                time,
+                blocklist_dns_fields(),
+            ))),
+            EventKind::BlocklistDceRpc => Event::Blocklist(RecordType::DceRpc(
+                BlocklistDceRpc::new(time, blocklist_dcerpc_fields()),
+            )),
+            EventKind::BlocklistFtp => {
+                Event::Blocklist(RecordType::Ftp(BlocklistFtp::new(time, ftp_event_fields())))
+            }
+            EventKind::BlocklistHttp => Event::Blocklist(RecordType::Http(BlocklistHttp::new(
+                time,
+                blocklist_http_fields(),
+            ))),
+            EventKind::BlocklistKerberos => Event::Blocklist(RecordType::Kerberos(
+                BlocklistKerberos::new(time, blocklist_kerberos_fields()),
+            )),
+            EventKind::BlocklistLdap => Event::Blocklist(RecordType::Ldap(BlocklistLdap::new(
+                time,
+                ldap_event_fields(),
+            ))),
+            EventKind::BlocklistMqtt => Event::Blocklist(RecordType::Mqtt(BlocklistMqtt::new(
+                time,
+                blocklist_mqtt_fields(),
+            ))),
+            EventKind::BlocklistNfs => Event::Blocklist(RecordType::Nfs(BlocklistNfs::new(
+                time,
+                blocklist_nfs_fields(),
+            ))),
+            EventKind::BlocklistNtlm => Event::Blocklist(RecordType::Ntlm(BlocklistNtlm::new(
+                time,
+                blocklist_ntlm_fields(),
+            ))),
+            EventKind::BlocklistRdp => Event::Blocklist(RecordType::Rdp(BlocklistRdp::new(
+                time,
+                blocklist_rdp_fields(),
+            ))),
+            EventKind::BlocklistSmb => Event::Blocklist(RecordType::Smb(BlocklistSmb::new(
+                time,
+                blocklist_smb_fields(),
+            ))),
+            EventKind::BlocklistSmtp => Event::Blocklist(RecordType::Smtp(BlocklistSmtp::new(
+                time,
+                blocklist_smtp_fields(),
+            ))),
+            EventKind::BlocklistSsh => Event::Blocklist(RecordType::Ssh(BlocklistSsh::new(
+                time,
+                blocklist_ssh_fields(),
+            ))),
+            EventKind::BlocklistTls => Event::Blocklist(RecordType::Tls(BlocklistTls::new(
+                time,
+                blocklist_tls_fields(),
+            ))),
+            EventKind::WindowsThreat => Event::WindowsThreat(windows_threat()),
+            EventKind::NetworkThreat => Event::NetworkThreat(network_threat()),
+            EventKind::LockyRansomware => {
+                Event::LockyRansomware(LockyRansomware::new(time, dns_event_fields()))
+            }
+            EventKind::SuspiciousTlsTraffic => {
+                Event::SuspiciousTlsTraffic(SuspiciousTlsTraffic::new(time, blocklist_tls_fields()))
+            }
+            EventKind::BlocklistBootp => Event::Blocklist(RecordType::Bootp(BlocklistBootp::new(
+                time,
+                blocklist_bootp_fields(),
+            ))),
+            EventKind::BlocklistDhcp => Event::Blocklist(RecordType::Dhcp(BlocklistDhcp::new(
+                time,
+                blocklist_dhcp_fields(),
+            ))),
+            EventKind::BlocklistRadius => Event::Blocklist(RecordType::Radius(
+                BlocklistRadius::new(time, blocklist_radius_fields()),
+            )),
+            EventKind::BlocklistMalformedDns => Event::Blocklist(RecordType::MalformedDns(
+                BlocklistMalformedDns::new(time, blocklist_malformed_dns_fields()),
+            )),
+            EventKind::UnusualDestinationPattern => {
+                Event::Blocklist(RecordType::UnusualDestinationPattern(
+                    UnusualDestinationPattern::new(time, unusual_destination_pattern_fields()),
+                ))
+            }
+        }
+    }
+
+    /// Returns one event per `EventKind`, each paired with its kind.
+    fn one_event_per_kind() -> Vec<(EventKind, Event)> {
+        all_event_kinds()
+            .into_iter()
+            .map(|kind| {
+                let event = event_of_kind(kind);
+                assert_eq!(event.kind_and_category().0, kind);
+                (kind, event)
+            })
+            .collect()
+    }
+
+    fn kind_filter(kinds: Option<Vec<EventKind>>) -> EventFilter {
+        EventFilter {
+            kinds,
+            ..event_filter()
+        }
+    }
+
+    /// Returns the kinds of the events in `one_event_per_kind` that `kinds`
+    /// selects, in discriminant order.
+    fn kinds_selected_by(kinds: &[EventKind]) -> Vec<EventKind> {
+        let filter = kind_filter(Some(kinds.to_vec()));
+        one_event_per_kind()
+            .into_iter()
+            .filter(|(_, event)| event.matches(&filter).unwrap().0)
+            .map(|(kind, _)| kind)
+            .collect()
+    }
+
+    #[test]
+    fn kind_filter_selects_exactly_its_own_kind() {
+        let events = one_event_per_kind();
+        assert_eq!(events.len(), 41);
+        for (wanted, _) in &events {
+            let filter = kind_filter(Some(vec![*wanted]));
+            for (kind, event) in &events {
+                assert_eq!(
+                    event.matches(&filter).unwrap().0,
+                    kind == wanted,
+                    "filter {wanted:?} against event {kind:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn kind_filter_ftp_plain_text_excludes_ldap_plain_text() {
+        assert_eq!(
+            kinds_selected_by(&[EventKind::FtpPlainText]),
+            vec![EventKind::FtpPlainText]
+        );
+    }
+
+    #[test]
+    fn kind_filter_ldap_plain_text_excludes_ftp_plain_text() {
+        assert_eq!(
+            kinds_selected_by(&[EventKind::LdapPlainText]),
+            vec![EventKind::LdapPlainText]
+        );
+    }
+
+    #[test]
+    fn kind_filter_blocklist_conn_excludes_tor_kinds() {
+        assert_eq!(
+            kinds_selected_by(&[EventKind::BlocklistConn]),
+            vec![EventKind::BlocklistConn]
+        );
+    }
+
+    #[test]
+    fn kind_filter_rdp_brute_force_excludes_other_brute_force_kinds() {
+        assert_eq!(
+            kinds_selected_by(&[EventKind::RdpBruteForce]),
+            vec![EventKind::RdpBruteForce]
+        );
+    }
+
+    #[test]
+    fn kind_filter_selects_unusual_destination_pattern() {
+        assert_eq!(
+            kinds_selected_by(&[EventKind::UnusualDestinationPattern]),
+            vec![EventKind::UnusualDestinationPattern]
+        );
+    }
+
+    #[test]
+    fn kind_filter_separates_tor_connection_kinds() {
+        assert_eq!(
+            kinds_selected_by(&[EventKind::TorConnection]),
+            vec![EventKind::TorConnection]
+        );
+        assert_eq!(
+            kinds_selected_by(&[EventKind::TorConnectionConn]),
+            vec![EventKind::TorConnectionConn]
+        );
+        assert_eq!(
+            kinds_selected_by(&[EventKind::TorConnectionConn, EventKind::TorConnection]),
+            vec![EventKind::TorConnection, EventKind::TorConnectionConn]
+        );
+    }
+
+    #[test]
+    fn kind_filter_http_threat_ignores_attack_kind() {
+        let time = stored_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap());
+        let filter = kind_filter(Some(vec![EventKind::HttpThreat]));
+        for attack_kind in ["", "ftp plain text", "SQL Injection", "tor exit nodes"] {
+            let mut fields = http_threat_fields();
+            fields.attack_kind = attack_kind.to_string();
+            let event = Event::HttpThreat(HttpThreat::new(time, fields));
+            assert!(
+                event.matches(&filter).unwrap().0,
+                "attack kind {attack_kind:?}"
+            );
+        }
+
+        // An attack kind is not a kind: it selects nothing.
+        let mut fields = http_threat_fields();
+        fields.attack_kind = "Port Scan".to_string();
+        let event = Event::HttpThreat(HttpThreat::new(time, fields));
+        assert!(
+            !event
+                .matches(&kind_filter(Some(vec![EventKind::PortScan])))
+                .unwrap()
+                .0
+        );
+    }
+
+    #[test]
+    fn kind_filter_none_selects_every_kind_and_empty_selects_none() {
+        let events = one_event_per_kind();
+        let any_kind = kind_filter(None);
+        let no_kind = kind_filter(Some(Vec::new()));
+        for (kind, event) in &events {
+            assert!(event.matches(&any_kind).unwrap().0, "{kind:?}");
+            assert!(!event.matches(&no_kind).unwrap().0, "{kind:?}");
+        }
+    }
+
+    #[test]
+    fn kind_filter_selects_union_of_listed_kinds() {
+        assert_eq!(
+            kinds_selected_by(&[EventKind::BlocklistDns, EventKind::FtpPlainText]),
+            vec![EventKind::FtpPlainText, EventKind::BlocklistDns]
+        );
+    }
+
+    #[test]
+    fn kind_filter_duplicate_kind_behaves_like_single() {
+        assert_eq!(
+            kinds_selected_by(&[EventKind::LdapPlainText, EventKind::LdapPlainText]),
+            kinds_selected_by(&[EventKind::LdapPlainText])
+        );
+    }
+
+    #[test]
+    fn count_kind_keys_each_kind_separately() {
+        use std::collections::HashMap;
+
+        let filter = event_filter();
+        let mut counter = HashMap::new();
+        for kind in [
+            EventKind::BlocklistConn,
+            EventKind::BlocklistDns,
+            EventKind::TorConnection,
+            EventKind::TorConnectionConn,
+        ] {
+            event_of_kind(kind)
+                .count_kind(&mut counter, &filter)
+                .unwrap();
+        }
+        let time = stored_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap());
+        for attack_kind in ["SQL Injection", "Cross Site Scripting"] {
+            let mut fields = http_threat_fields();
+            fields.attack_kind = attack_kind.to_string();
+            Event::HttpThreat(HttpThreat::new(time, fields))
+                .count_kind(&mut counter, &filter)
+                .unwrap();
+        }
+        assert_eq!(
+            counter,
+            HashMap::from([
+                (EventKind::BlocklistConn, 1),
+                (EventKind::BlocklistDns, 1),
+                (EventKind::TorConnection, 1),
+                (EventKind::TorConnectionConn, 1),
+                (EventKind::HttpThreat, 2),
+            ])
+        );
+    }
+
+    #[test]
+    fn count_kind_counts_every_kind_under_itself() {
+        use std::collections::HashMap;
+
+        let events = one_event_per_kind();
+        let mut counter = HashMap::new();
+        for (_, event) in &events {
+            event.count_kind(&mut counter, &event_filter()).unwrap();
+        }
+        assert_eq!(counter, events.iter().map(|(kind, _)| (*kind, 1)).collect());
+
+        for (wanted, _) in &events {
+            let mut counter = HashMap::new();
+            for (_, event) in &events {
+                event
+                    .count_kind(&mut counter, &kind_filter(Some(vec![*wanted])))
+                    .unwrap();
+            }
+            assert_eq!(counter, HashMap::from([(*wanted, 1)]));
+        }
+    }
+
+    /// Returns, per `count_*` method, whether `event` contributed a bucket
+    /// under `filter`.
+    fn counted_by_each_method(event: &Event, filter: &EventFilter) -> Vec<(&'static str, bool)> {
+        use std::collections::HashMap;
+
+        let mut network = crate::Network::new(
+            String::new(),
+            String::new(),
+            HostNetworkGroup::new(Vec::new(), vec!["127.0.0.0/8".parse().unwrap()], Vec::new()),
+        );
+        network.id = 1;
+
+        let mut country = HashMap::new();
+        event.count_country(&mut country, filter).unwrap();
+        let mut category = HashMap::new();
+        event.count_category(&mut category, filter).unwrap();
+        let mut ip = HashMap::new();
+        event.count_ip_address(&mut ip, filter).unwrap();
+        let mut pair = HashMap::new();
+        event.count_ip_address_pair(&mut pair, filter).unwrap();
+        let mut pair_and_kind = HashMap::new();
+        event
+            .count_ip_address_pair_and_kind(&mut pair_and_kind, filter)
+            .unwrap();
+        let mut orig = HashMap::new();
+        event
+            .count_originator_ip_address(&mut orig, filter)
+            .unwrap();
+        let mut resp = HashMap::new();
+        event.count_responder_ip_address(&mut resp, filter).unwrap();
+        let mut kind = HashMap::new();
+        event.count_kind(&mut kind, filter).unwrap();
+        let mut level = HashMap::new();
+        event.count_level(&mut level, filter).unwrap();
+        let mut networks = HashMap::new();
+        event
+            .count_network(&mut networks, std::slice::from_ref(&network), filter)
+            .unwrap();
+
+        vec![
+            ("count_country", !country.is_empty()),
+            ("count_category", !category.is_empty()),
+            ("count_ip_address", !ip.is_empty()),
+            ("count_ip_address_pair", !pair.is_empty()),
+            ("count_ip_address_pair_and_kind", !pair_and_kind.is_empty()),
+            ("count_originator_ip_address", !orig.is_empty()),
+            ("count_responder_ip_address", !resp.is_empty()),
+            ("count_kind", !kind.is_empty()),
+            ("count_level", !level.is_empty()),
+            ("count_network", !networks.is_empty()),
+        ]
+    }
+
+    #[test]
+    fn every_count_method_honours_exact_kind_filter() {
+        let tor = event_of_kind(EventKind::TorConnection);
+        let tor_conn = event_of_kind(EventKind::TorConnectionConn);
+        let tor_only = kind_filter(Some(vec![EventKind::TorConnection]));
+        let tor_conn_only = kind_filter(Some(vec![EventKind::TorConnectionConn]));
+
+        for (method, counted) in counted_by_each_method(&tor, &tor_only) {
+            assert!(counted, "{method} must count the selected kind");
+        }
+        for (method, counted) in counted_by_each_method(&tor_conn, &tor_only) {
+            assert!(!counted, "{method} must not count another kind");
+        }
+        for (method, counted) in counted_by_each_method(&tor_conn, &tor_conn_only) {
+            assert!(counted, "{method} must count the selected kind");
+        }
+        for (method, counted) in counted_by_each_method(&tor, &tor_conn_only) {
+            assert!(!counted, "{method} must not count another kind");
+        }
+    }
+
+    #[test]
+    fn count_level_honours_exact_kind_filter_across_kinds() {
+        use std::collections::HashMap;
+
+        let events = one_event_per_kind();
+        for (wanted, _) in &events {
+            let filter = kind_filter(Some(vec![*wanted]));
+            let mut counter = HashMap::new();
+            for (_, event) in &events {
+                event.count_level(&mut counter, &filter).unwrap();
+            }
+            assert_eq!(counter.values().sum::<usize>(), 1, "filter {wanted:?}");
+        }
     }
 }
