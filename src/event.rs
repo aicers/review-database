@@ -2968,6 +2968,7 @@ pub struct EventIterator<'i> {
     snapshot: PhysicalEventSnapshot<'i>,
     next_region: Option<EventKeyRegion>,
     direction: Direction,
+    failed: bool,
 }
 
 impl<'i> EventIterator<'i> {
@@ -2985,6 +2986,7 @@ impl<'i> EventIterator<'i> {
             snapshot,
             next_region,
             direction,
+            failed: false,
         }
     }
 
@@ -3026,11 +3028,18 @@ impl Iterator for EventIterator<'_> {
     type Item = Result<(i128, Event), InvalidEvent>;
 
     fn next(&mut self) -> Option<Self::Item> {
+        if self.failed {
+            return None;
+        }
         let (key, kind, time, v) = loop {
             let (k, v) = match self.inner.next() {
                 Some(Ok(item)) => item,
                 None if self.advance_region() => continue,
-                Some(Err(_)) | None => return None,
+                Some(Err(error)) => {
+                    self.failed = true;
+                    return Some(Err(InvalidEvent::Iteration(error)));
+                }
+                None => return None,
             };
 
             let key: [u8; 16] = if let Ok(key) = k.as_ref().try_into() {
@@ -3455,6 +3464,7 @@ impl Iterator for EventIterator<'_> {
 #[derive(Debug)]
 #[allow(clippy::module_name_repetitions)]
 pub enum InvalidEvent {
+    Iteration(rocksdb::Error),
     Key(Box<[u8]>),
     Value(Box<[u8]>),
 }
@@ -3769,6 +3779,56 @@ mod tests {
         (key >> 64)
             .try_into()
             .expect("the upper half of an event key is an i64 timestamp")
+    }
+
+    #[test]
+    fn iteration_stops_on_corrupt_sst() {
+        let _permit = acquire_db_permit();
+        let dir = tempfile::tempdir().unwrap();
+        let mut options = rocksdb::Options::default();
+        options.create_if_missing(true);
+        {
+            let raw = rocksdb::OptimisticTransactionDB::open(&options, dir.path()).unwrap();
+            let db = super::EventDb::new(&raw);
+            for nanos in -3..0 {
+                db.put(&message_at_nanos(nanos)).unwrap();
+            }
+            for nanos in 0..20_000 {
+                db.put(&message_at_nanos(nanos)).unwrap();
+            }
+            let before = crate::test::sst_files(dir.path());
+            raw.flush().unwrap();
+            drop(raw);
+            crate::test::corrupt_new_sst(dir.path(), &before);
+        }
+        let raw = rocksdb::OptimisticTransactionDB::open(&options, dir.path()).unwrap();
+        let db = super::EventDb::new(&raw);
+        let mut forward = db.iter_forward();
+        for nanos in -3..0 {
+            assert_eq!(key_timestamp(forward.next().unwrap().unwrap().0), nanos);
+        }
+        let error = loop {
+            match forward.next().expect("corrupt block must be reached") {
+                Ok((key, _)) => assert!(key_timestamp(key) >= 0),
+                Err(error) => break error,
+            }
+        };
+        assert!(
+            matches!(error, super::InvalidEvent::Iteration(ref e) if e.kind() == rocksdb::ErrorKind::Corruption)
+        );
+        assert!(forward.next().is_none());
+
+        let mut reverse = db.iter_reverse();
+        let error = loop {
+            match reverse.next().expect("corrupt block must be reached") {
+                Ok((key, _)) => assert!(key_timestamp(key) >= 0),
+                Err(error) => break error,
+            }
+        };
+        assert!(
+            matches!(error, super::InvalidEvent::Iteration(ref e) if e.kind() == rocksdb::ErrorKind::Corruption)
+        );
+        assert!(reverse.next().is_none());
     }
 
     #[test]

@@ -136,7 +136,8 @@ impl<'a> Map<'a> {
         loop {
             let txn = self.db.transaction();
 
-            for (old_key, _) in self.inner_iterator(IteratorMode::Start) {
+            for entry in self.db.iterator_cf(self.cf, IteratorMode::Start) {
+                let (old_key, _) = entry.context("failed to read entries for replacement")?;
                 txn.delete_cf(self.cf, old_key)
                     .context("failed to delete entries")?;
             }
@@ -313,27 +314,5 @@ impl<'a> Map<'a> {
             }
         }
         Ok(())
-    }
-
-    fn inner_iterator(&self, mode: IteratorMode) -> MapIterator<'_> {
-        let iter = self.db.iterator_cf(self.cf, mode);
-
-        MapIterator { inner: iter }
-    }
-}
-
-#[allow(clippy::module_name_repetitions)]
-pub struct MapIterator<'i> {
-    inner: rocksdb::DBIteratorWithThreadMode<
-        'i,
-        rocksdb::OptimisticTransactionDB<rocksdb::SingleThreaded>,
-    >,
-}
-
-impl Iterator for MapIterator<'_> {
-    type Item = (Box<[u8]>, Box<[u8]>);
-
-    fn next(&mut self) -> Option<Self::Item> {
-        self.inner.next().transpose().ok().flatten()
     }
 }
