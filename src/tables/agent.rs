@@ -176,6 +176,7 @@ impl Agent {
 
 impl FromKeyValue for Agent {
     fn from_key_value(key: &[u8], value: &[u8]) -> Result<Self> {
+        anyhow::ensure!(key.len() >= 4, "invalid Agent key length: {}", key.len());
         let value: Value = super::deserialize(value)?;
 
         let (node_id, key) = key.split_at(size_of::<u32>());
@@ -325,6 +326,19 @@ impl<'d> Table<'d, Agent> {
 
 #[cfg(test)]
 mod test {
+    #[test]
+    fn rejects_short_keys() {
+        use crate::types::FromKeyValue;
+        for len in [0, 3] {
+            let error = super::Agent::from_key_value(&vec![0; len], &[]).unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains(&format!("Agent key length: {len}"))
+            );
+        }
+    }
+
     use std::sync::Arc;
 
     use super::*;

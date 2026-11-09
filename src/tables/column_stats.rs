@@ -63,17 +63,17 @@ impl<'d> Table<'d, ColumnStats> {
     ///
     /// Returns an error if the database operation fails.
     pub fn remove_by_model(&self, model_id: u32) -> Result<()> {
-        let iter = self.prefix_iter(Direction::Forward, None, &model_id.to_be_bytes());
-        let to_deletes: Vec<_> = iter
-            .filter_map(|result| {
-                let stats = result.ok()?;
-                Some(stats.unique_key())
-            })
-            .collect();
-        for to_delete in to_deletes {
-            self.map.delete(&to_delete)?;
+        let prefix = model_id.to_be_bytes();
+        let mut options = rocksdb::ReadOptions::default();
+        options.set_iterate_range(rocksdb::PrefixRange(&prefix));
+        let iter = self
+            .map
+            .db
+            .iterator_cf_opt(self.map.cf, options, rocksdb::IteratorMode::Start);
+        for item in iter {
+            let (key, _) = item?;
+            self.map.delete(&key)?;
         }
-
         Ok(())
     }
 
@@ -89,7 +89,7 @@ impl<'d> Table<'d, ColumnStats> {
     /// # Errors
     ///
     /// Returns an error if the cutoff is outside the i64 nanosecond range,
-    /// iteration fails to decode an entry, or a database operation fails.
+    /// iteration fails to decode a key, or a database operation fails.
     pub fn remove_older_than(&self, cutoff: NaiveDateTime) -> Result<usize> {
         const BATCH_SIZE: usize = 1024;
 
@@ -97,10 +97,18 @@ impl<'d> Table<'d, ColumnStats> {
         let mut total = 0;
         let mut batch: Vec<Vec<u8>> = Vec::with_capacity(BATCH_SIZE);
 
-        for result in self.iter(Direction::Forward, None) {
-            let stats = result?;
-            if stats.batch_ts < cutoff_ts {
-                batch.push(stats.unique_key());
+        for result in self
+            .map
+            .db
+            .iterator_cf(self.map.cf, rocksdb::IteratorMode::Start)
+        {
+            let (key, _) = result?;
+            if key.is_empty() {
+                continue;
+            }
+            let decoded = Key::from_be_bytes(&key)?;
+            if decoded.batch_ts < cutoff_ts {
+                batch.push(key.to_vec());
                 if batch.len() >= BATCH_SIZE {
                     self.delete_keys_in_transaction(&batch)?;
                     total += batch.len();
@@ -562,20 +570,15 @@ impl<'d> Table<'d, ColumnStats> {
     ///
     /// # Errors
     ///
-    /// Returns an error if the database operation fails.
+    /// Returns an error if the database operation fails or a stored record cannot be decoded.
     pub fn count_rounds_by_cluster(&self, model_id: u32, cluster_id: u32) -> Result<i64> {
         let mut prefix = model_id.to_be_bytes().to_vec();
         prefix.extend(cluster_id.to_be_bytes());
         let iter = self.prefix_iter(Direction::Forward, None, &prefix);
-        i64::try_from(
-            iter.filter_map(|result| {
-                let column_stats = result.ok()?;
-                Some(column_stats.batch_ts)
-            })
-            .collect::<HashSet<_>>()
-            .len(),
-        )
-        .map_err(|_| anyhow::anyhow!("Failed to convert count to i64"))
+        let rounds = iter
+            .map(|result| result.map(|stats| stats.batch_ts))
+            .collect::<Result<HashSet<_>>>()?;
+        i64::try_from(rounds.len()).map_err(|_| anyhow::anyhow!("Failed to convert count to i64"))
     }
 
     /// Returns a page of distinct round timestamps for the given cluster.
@@ -874,7 +877,7 @@ pub struct ColumnStats {
 
 impl FromKeyValue for ColumnStats {
     fn from_key_value(key: &[u8], value: &[u8]) -> Result<Self> {
-        let key = Key::from_be_bytes(key);
+        let key = Key::from_be_bytes(key)?;
 
         let value: Value = super::deserialize(value)?;
 
@@ -944,7 +947,12 @@ impl Key {
         buf
     }
 
-    pub fn from_be_bytes(buf: &[u8]) -> Self {
+    pub fn from_be_bytes(buf: &[u8]) -> Result<Self> {
+        anyhow::ensure!(
+            buf.len() == 20,
+            "invalid ColumnStats key length: {}",
+            buf.len()
+        );
         let (val, rest) = buf.split_at(size_of::<i32>());
 
         let mut buf = [0; size_of::<u32>()];
@@ -965,12 +973,12 @@ impl Key {
         buf.copy_from_slice(rest);
         let column_index = u32::from_be_bytes(buf);
 
-        Self {
+        Ok(Self {
             model_id,
             cluster_id,
             batch_ts,
             column_index,
-        }
+        })
     }
 }
 
@@ -982,6 +990,57 @@ struct Value {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn malformed_records_are_reported_or_removed_by_key() {
+        for len in [0, 19, 21] {
+            assert!(Key::from_be_bytes(&vec![0; len]).is_err());
+        }
+        assert!(Key::from_be_bytes(&[0; 20]).is_ok());
+        let (_permit, store) = setup_store();
+        let table = store.column_stats_map();
+        let stats = ColumnStats {
+            model_id: 1,
+            cluster_id: 1,
+            batch_ts: 1,
+            column_index: 0,
+            description: Description::default(),
+            n_largest_count: NLargestCount::default(),
+        };
+        table.insert(&stats).unwrap();
+        let corrupt = Key {
+            model_id: 1,
+            cluster_id: 1,
+            batch_ts: 2,
+            column_index: 0,
+        }
+        .to_bytes();
+        table.map.put(&corrupt, &[0; 3]).unwrap();
+        assert!(table.count_rounds_by_cluster(1, 1).is_err());
+        let mut short = 1_u32.to_be_bytes().to_vec();
+        short.extend([0; 9]);
+        table.map.put(&short, &[0; 3]).unwrap();
+        let results: Vec<_> = table.iter(Direction::Forward, None).collect();
+        assert_eq!(results.iter().filter(|item| item.is_ok()).count(), 1);
+        assert_eq!(results.iter().filter(|item| item.is_err()).count(), 2);
+        let cutoff = chrono::DateTime::from_timestamp(1, 0).unwrap().naive_utc();
+        assert!(table.remove_older_than(cutoff).is_err());
+        table.map.delete(&short).unwrap();
+        let future = ColumnStats {
+            model_id: 2,
+            batch_ts: 2_000_000_000,
+            ..stats.clone()
+        };
+        table.insert(&future).unwrap();
+        assert_eq!(table.remove_older_than(cutoff).unwrap(), 2);
+        assert!(table.map.get(&future.unique_key()).unwrap().is_some());
+        table.insert(&stats).unwrap();
+        table.map.put(&short, &[0; 3]).unwrap();
+        table.remove_by_model(1).unwrap();
+        assert!(table.map.get(&short).unwrap().is_none());
+        assert!(table.map.get(&stats.unique_key()).unwrap().is_none());
+        assert!(table.map.get(&future.unique_key()).unwrap().is_some());
+    }
+
     use std::collections::HashMap;
     use std::sync::Arc;
 
@@ -1469,7 +1528,7 @@ mod tests {
             model_id: 99,
         };
         let bytes = original.to_bytes();
-        let parsed = Key::from_be_bytes(&bytes);
+        let parsed = Key::from_be_bytes(&bytes).unwrap();
         assert_eq!(parsed.cluster_id, original.cluster_id);
         assert_eq!(parsed.batch_ts, original.batch_ts);
         assert_eq!(parsed.column_index, original.column_index);
@@ -2426,7 +2485,7 @@ mod tests {
                     "batch_ts must be big-endian i64 nanoseconds at offset {BATCH_TS_KEY_OFFSET}"
                 );
 
-                let parsed = Key::from_be_bytes(&bytes);
+                let parsed = Key::from_be_bytes(&bytes).unwrap();
                 assert_eq!(parsed.batch_ts, expected_nanos);
             }
         }

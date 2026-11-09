@@ -1329,23 +1329,22 @@ impl Iterator for TableIter<'_> {
 
     fn next(&mut self) -> Option<Self::Item> {
         self.node.next().map(|res| {
-            res.map(|inner| {
+            res.and_then(|inner| {
                 let mut agents = vec![];
                 for aid in inner.agents {
-                    if let Ok(Some(agent)) = self.agent.get(inner.id, &aid) {
+                    if let Some(agent) = self.agent.get(inner.id, &aid)? {
                         agents.push(agent);
                     }
                 }
 
                 let mut external_services = vec![];
                 for es_id in inner.external_services {
-                    if let Ok(Some(external_service)) = self.external_service.get(inner.id, &es_id)
-                    {
+                    if let Some(external_service) = self.external_service.get(inner.id, &es_id)? {
                         external_services.push(external_service);
                     }
                 }
 
-                Node {
+                Ok(Node {
                     id: inner.id,
                     name: inner.name,
                     name_draft: inner.name_draft,
@@ -1354,7 +1353,7 @@ impl Iterator for TableIter<'_> {
                     agents,
                     external_services,
                     creation_time: inner.creation_time,
-                }
+                })
             })
         })
     }
@@ -1479,6 +1478,27 @@ impl IndexedMapUpdate for InnerUpdate {
 
 #[cfg(test)]
 mod test {
+    #[test]
+    fn iteration_reports_corrupt_associated_agent() {
+        let (_permit, store) = setup_store();
+        let kinds = [AgentKind::Sensor];
+        let agents = create_agents(0, &kinds, &[None], &[None]);
+        let node = create_node(0, "corrupt-agent", None, None, None, agents, vec![]);
+        let table = store.node_map();
+        let id = table.put(&node).unwrap();
+        let mut key = id.to_be_bytes().to_vec();
+        key.extend(node.agents[0].key.as_bytes());
+        table.agent.map.put(&key, &[0; 3]).unwrap();
+        assert!(
+            table
+                .iter(Direction::Forward, None)
+                .next()
+                .unwrap()
+                .is_err()
+        );
+        assert!(table.get_by_id(id).is_err());
+    }
+
     use std::{
         net::{IpAddr, SocketAddr},
         sync::Arc,

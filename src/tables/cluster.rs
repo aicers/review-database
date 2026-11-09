@@ -40,7 +40,7 @@ impl<'d> Table<'d, Cluster> {
     ///
     /// # Errors
     ///
-    /// Returns an error if a database operation fails.
+    /// Returns an error if a database operation fails or a stored record cannot be decoded.
     pub fn count_clusters(
         &self,
         model: u32,
@@ -52,7 +52,7 @@ impl<'d> Table<'d, Cluster> {
         let prefix = model.to_be_bytes();
         let iter = self.prefix_iter(Direction::Forward, None, &prefix);
 
-        Ok(filter_cluster(iter, categories, detectors, qualifiers, statuses).count())
+        Ok(filter_cluster(iter, categories, detectors, qualifiers, statuses)?.count())
     }
 
     /// Updates the cluster with the given ID.
@@ -204,7 +204,7 @@ impl<'d> Table<'d, Cluster> {
     ///
     /// # Errors
     ///
-    /// Returns an error if a database operation fails.
+    /// Returns an error if a database operation fails or a stored record cannot be decoded.
     #[allow(clippy::too_many_arguments)]
     pub fn load_clusters(
         &self,
@@ -221,7 +221,7 @@ impl<'d> Table<'d, Cluster> {
         let prefix = model.to_be_bytes();
         let direction = Direction::Forward;
         let iter = self.prefix_iter(direction, None, &prefix);
-        let mut clusters = filter_cluster(iter, categories, detectors, qualifiers, statuses)
+        let mut clusters = filter_cluster(iter, categories, detectors, qualifiers, statuses)?
             .filter(|c| {
                 if let Some((id, size)) = after
                     && is_first
@@ -252,9 +252,9 @@ fn filter_cluster(
     detectors: Option<&[i32]>,
     qualifiers: Option<&[i32]>,
     statuses: Option<&[i32]>,
-) -> impl Iterator<Item = Cluster> {
-    iter.filter_map(move |res| {
-        let cluster = res.ok()?;
+) -> Result<impl Iterator<Item = Cluster>> {
+    let clusters = iter.collect::<Result<Vec<_>>>()?;
+    Ok(clusters.into_iter().filter_map(move |cluster| {
         if let Some(categories) = categories
             && !categories.contains(&cluster.category_id)
         {
@@ -276,7 +276,7 @@ fn filter_cluster(
             return None;
         }
         Some(cluster)
-    })
+    }))
 }
 
 #[derive(Deserialize, Serialize)]
@@ -321,7 +321,7 @@ struct Key {
 
 impl FromKeyValue for Cluster {
     fn from_key_value(key: &[u8], value: &[u8]) -> Result<Self> {
-        let key = Key::from_be_bytes(key);
+        let key = Key::from_be_bytes(key)?;
 
         let value: Value = super::deserialize(value)?;
 
@@ -367,7 +367,8 @@ impl Key {
         buf
     }
 
-    pub fn from_be_bytes(buf: &[u8]) -> Self {
+    pub fn from_be_bytes(buf: &[u8]) -> Result<Self> {
+        anyhow::ensure!(buf.len() == 8, "invalid Cluster key length: {}", buf.len());
         let (val, rest) = buf.split_at(size_of::<u32>());
         let mut buf = [0; size_of::<u32>()];
         buf.copy_from_slice(val);
@@ -377,15 +378,43 @@ impl Key {
         buf.copy_from_slice(rest);
         let cluster_id = u32::from_be_bytes(buf);
 
-        Self {
+        Ok(Self {
             model_id,
             cluster_id,
-        }
+        })
     }
 }
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn malformed_keys_and_cluster_values_return_errors() {
+        for len in [0, 7, 9] {
+            assert!(Key::from_be_bytes(&vec![0; len]).is_err());
+        }
+        assert!(Key::from_be_bytes(&[0; 8]).is_ok());
+        let (_permit, store) = setup_store();
+        let table = store.cluster_map();
+        table.insert(&make_cluster(1, 1)).unwrap();
+        table
+            .map
+            .put(
+                &Key {
+                    model_id: 1,
+                    cluster_id: 2,
+                }
+                .to_bytes(),
+                &[0; 3],
+            )
+            .unwrap();
+        assert!(table.count_clusters(1, None, None, None, None).is_err());
+        assert!(
+            table
+                .load_clusters(1, None, None, None, None, &None, &None, true, 10)
+                .is_err()
+        );
+    }
+
     use std::sync::Arc;
 
     use super::*;
@@ -399,7 +428,7 @@ mod tests {
             cluster_id: 456,
         };
         let bytes = key.to_bytes();
-        let decoded = Key::from_be_bytes(&bytes);
+        let decoded = Key::from_be_bytes(&bytes).unwrap();
 
         assert_eq!(decoded.model_id, 123);
         assert_eq!(decoded.cluster_id, 456);

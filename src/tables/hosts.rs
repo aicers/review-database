@@ -8,12 +8,11 @@ use std::{
 
 use anyhow::Result;
 use chrono::Utc;
-use rocksdb::{Direction, OptimisticTransactionDB};
+use rocksdb::OptimisticTransactionDB;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    Iterable, LabelDbRuleKind, Map, Table, UniqueKey, tables::Value as ValueTrait,
-    types::FromKeyValue,
+    LabelDbRuleKind, Map, Table, UniqueKey, tables::Value as ValueTrait, types::FromKeyValue,
 };
 
 // IpAddr: (port, proto), used count
@@ -140,10 +139,15 @@ impl<'d> Table<'d, Host> {
     /// * Returns an error if it failes to remove value from database
     pub fn remove_by_customer_id(&self, customer_id: u32) -> Result<()> {
         let prefix = customer_id.to_be_bytes();
-        let iter = self.prefix_iter(Direction::Forward, None, &prefix);
-        for result in iter {
-            let hosts = result?;
-            self.map.delete(&hosts.unique_key())?;
+        let mut options = rocksdb::ReadOptions::default();
+        options.set_iterate_range(rocksdb::PrefixRange(&prefix));
+        let iter = self
+            .map
+            .db
+            .iterator_cf_opt(self.map.cf, options, rocksdb::IteratorMode::Start);
+        for item in iter {
+            let (key, _) = item?;
+            self.map.delete(&key)?;
         }
         Ok(())
     }
@@ -188,7 +192,7 @@ struct Key {
 
 impl FromKeyValue for Host {
     fn from_key_value(key: &[u8], value: &[u8]) -> Result<Self> {
-        let key = Key::from_be_bytes(key);
+        let key = Key::from_be_bytes(key)?;
         let host: Value = super::deserialize(value)?;
         Ok(Self {
             customer_id: key.customer_id,
@@ -233,7 +237,12 @@ impl Key {
         buf
     }
 
-    pub fn from_be_bytes(buf: &[u8]) -> Self {
+    pub fn from_be_bytes(buf: &[u8]) -> Result<Self> {
+        anyhow::ensure!(
+            matches!(buf.len(), 8 | 20),
+            "invalid Host key length: {}",
+            buf.len()
+        );
         let (val, rest) = buf.split_at(size_of::<u32>());
         let mut buf_u32 = [0; size_of::<u32>()];
         buf_u32.copy_from_slice(val);
@@ -250,12 +259,46 @@ impl Key {
             buf_ipv4.copy_from_slice(&rest[..size_of::<Ipv4Addr>()]);
             IpAddr::V4(Ipv4Addr::from(buf_ipv4))
         };
-        Self { customer_id, ip }
+        Ok(Self { customer_id, ip })
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use rocksdb::Direction;
+
+    use crate::Iterable;
+    #[test]
+    fn host_key_lengths_and_prefix_deletion() {
+        for len in [0, 3, 7, 12, 19, 21] {
+            assert!(Key::from_be_bytes(&vec![0; len]).is_err());
+        }
+        for len in [8, 20] {
+            assert!(Key::from_be_bytes(&vec![0; len]).is_ok());
+        }
+        let (_permit, store) = setup_store();
+        let table = store.hosts_map();
+        let mut ports = HashMap::new();
+        ports.insert(Ipv4Addr::LOCALHOST.into(), HashMap::new());
+        table.update_opened_ports(1, &ports).unwrap();
+        table.update_opened_ports(2, &ports).unwrap();
+        let valid = Key::new(1, Ipv4Addr::LOCALHOST.into()).to_bytes();
+        let value = table.map.get(&valid).unwrap().unwrap();
+        for suffix in [vec![0; 1], vec![0; 8]] {
+            let mut key = 1_u32.to_be_bytes().to_vec();
+            key.extend(suffix);
+            table.map.put(&key, value.as_ref()).unwrap();
+        }
+        table.remove_by_customer_id(1).unwrap();
+        assert_eq!(
+            table
+                .prefix_iter(Direction::Forward, None, &1_u32.to_be_bytes())
+                .count(),
+            0
+        );
+        assert!(table.get(2, Ipv4Addr::LOCALHOST.into()).unwrap().is_some());
+    }
+
     use std::collections::HashMap;
     use std::net::{IpAddr, Ipv4Addr};
     use std::sync::Arc;

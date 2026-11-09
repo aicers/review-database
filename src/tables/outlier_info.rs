@@ -91,6 +91,11 @@ impl Key {
     ///
     /// Returns an error if deserialization from bytes fails.
     pub fn from_be_bytes(buf: &[u8]) -> Result<Self> {
+        anyhow::ensure!(
+            buf.len() >= 28,
+            "invalid OutlierInfo key length: {}",
+            buf.len()
+        );
         let (val, rest) = buf.split_at(size_of::<u32>());
 
         let mut buf = [0; size_of::<u32>()];
@@ -190,6 +195,14 @@ impl<'d> Table<'d, OutlierInfo> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn rejects_short_outlier_keys() {
+        for len in [0, 27] {
+            assert!(super::Key::from_be_bytes(&vec![0; len]).is_err());
+        }
+        assert!(super::Key::from_be_bytes(&[0; 28]).is_ok());
+    }
+
     use std::sync::Arc;
 
     use rocksdb::Direction;
