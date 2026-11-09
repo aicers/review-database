@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 
-use anyhow::{Context, Result, anyhow};
-use chrono::Utc;
+use anyhow::{Result, anyhow};
 use rocksdb::OptimisticTransactionDB;
 
 use crate::Iterable;
@@ -69,64 +68,36 @@ impl<'d> Table<'d, TimeSeries> {
             })
     }
 
-    fn get_range(
-        &self,
-        prefix: &[u8],
-        start: Option<i64>,
-        end: Option<i64>,
-    ) -> Result<(TimeRange, (i64, i64))> {
-        const TWO_HOURS_NANOS: i64 = 2 * 60 * 60 * 1_000_000_000;
-
-        use rocksdb::Direction;
-        let mut iter = self.prefix_iter(Direction::Forward, None, prefix);
-        let (earliest, latest) = iter
-            .try_fold(None, |range: Option<(i64, i64)>, item| {
-                let ts = item?;
-                let value = ts.value;
-                let new_range = match range {
-                    Some((min, max)) => (min.min(value), max.max(value)),
-                    None => (value, value),
-                };
-                Ok::<std::option::Option<(i64, i64)>, anyhow::Error>(Some(new_range))
-            })?
-            .map_or((None, None), |(min, max)| (Some(min), Some(max)));
-
-        let recent = latest.unwrap_or(
-            Utc::now()
-                .timestamp_nanos_opt()
-                .ok_or(anyhow!("illegal time stamp"))?,
-        );
-        let (start, end) = match (start, end) {
-            (Some(s), Some(e)) => (s, e),
-            (Some(s), None) => (s, s.saturating_add(TWO_HOURS_NANOS)),
-            (None, Some(e)) => (e.saturating_sub(TWO_HOURS_NANOS), e),
-            (None, None) => {
-                let prev = chrono::DateTime::<chrono::Utc>::from_timestamp_nanos(recent)
-                    - chrono::Duration::hours(2);
-                (
-                    prev.timestamp_nanos_opt()
-                        .ok_or(anyhow!("illegal time stamp"))?,
-                    recent,
-                )
-            }
-        };
-        Ok(((earliest, latest), (start, end)))
-    }
-
-    /// Gets the top time series of the given cluster,
-    /// extrapolation is performed to fill vacant slots.
-    ///
-    /// `start` and `end` are nanosecond timestamps defining an inclusive range.
-    /// With only `start`, the range ends two hours afterward; with only `end`,
-    /// it begins two hours beforehand. Calculated endpoints are clamped to the
-    /// `i64` range. With neither bound, the range covers the two hours ending
-    /// at the latest stored value for the cluster, or the current time if empty.
+    /// Returns the earliest and latest stored values for the given cluster,
+    /// across all columns and batches, or `None` if the cluster is empty.
     ///
     /// # Errors
     ///
-    /// Returns an error if an underlying database error occurs, count summation
-    /// overflows, an adjacent slot difference or the filled series length
-    /// overflows, or reserving capacity for the filled series fails.
+    /// Returns an error if an underlying database error occurs.
+    pub fn get_time_range_of_cluster(
+        &self,
+        model_id: u32,
+        cluster_id: u32,
+    ) -> Result<Option<(i64, i64)>> {
+        let mut prefix = model_id.to_be_bytes().to_vec();
+        prefix.extend(cluster_id.to_be_bytes());
+        self.prefix_iter(rocksdb::Direction::Forward, None, &prefix)
+            .try_fold(None, |range, item| {
+                let value = item?.value;
+                Ok(Some(extend_range(range, value)))
+            })
+    }
+
+    /// Gets the top time series of the given cluster.
+    ///
+    /// `start` and `end` are inclusive nanosecond timestamp bounds. An omitted
+    /// bound leaves that side unbounded. The returned earliest and latest values
+    /// cover the entire cluster, independent of these bounds.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if an underlying database error occurs or count summation
+    /// overflows.
     pub fn get_top_time_series_of_cluster(
         &self,
         model_id: u32,
@@ -138,11 +109,12 @@ impl<'d> Table<'d, TimeSeries> {
 
         let mut prefix = model_id.to_be_bytes().to_vec();
         prefix.extend(cluster_id.to_be_bytes());
-        let ((earliest, latest), (start, end)) = self.get_range(&prefix, start, end)?;
+        let mut range = None;
         let mut columns: HashMap<Option<i32>, HashMap<i64, usize>> = HashMap::new();
         for item in self.prefix_iter(Direction::Forward, None, &prefix) {
             let ts = item?;
-            if ts.value >= start && ts.value <= end {
+            range = Some(extend_range(range, ts.value));
+            if in_range(ts.value, start, end) {
                 let count = columns
                     .entry(ts.count_index)
                     .or_default()
@@ -163,29 +135,24 @@ impl<'d> Table<'d, TimeSeries> {
             .filter(|(_, v)| !v.is_empty())
             .map(|(column, top_n)| {
                 let mut top_n = top_n.into_iter().collect::<Vec<_>>();
-                top_n.sort_by_key(|t| t.0);
-                let top_n = fill_vacant_time_slots(&top_n)
-                    .with_context(|| format!("filling time slots for column {column:?}"))?;
-                Ok(Column {
+                top_n.sort_unstable_by_key(|t| t.0);
+                Column {
                     index: column,
                     time_counts: top_n,
-                })
+                }
             })
-            .collect::<Result<Vec<_>>>()?;
-        columns.sort_by_key(|c| c.index);
+            .collect::<Vec<_>>();
+        columns.sort_unstable_by_key(|c| c.index);
 
+        let (earliest, latest) = range.map_or((None, None), |(min, max)| (Some(min), Some(max)));
         Ok((earliest, latest, columns))
     }
 
     /// Returns the top trends of a model.
     ///
     /// When `time` is `Some`, selects that batch and ignores `start` and `end`.
-    /// Otherwise, `start` and `end` are nanosecond timestamps defining an
-    /// inclusive range. With only `start`, the range ends two hours afterward;
-    /// with only `end`, it begins two hours beforehand. Calculated endpoints
-    /// are clamped to the `i64` range. With neither bound, the range covers the
-    /// two hours ending at the latest stored value for the model, or the
-    /// current time if empty.
+    /// Otherwise, `start` and `end` are inclusive nanosecond timestamp bounds.
+    /// An omitted bound leaves that side unbounded.
     ///
     /// # Errors
     ///
@@ -262,13 +229,11 @@ impl<'d> Table<'d, TimeSeries> {
                 })
                 .collect::<Result<Vec<_>>>()
         } else {
-            let ((_, _), (start, end)) = self.get_range(&prefix, start, end)?;
-
             Ok(self
                 .prefix_iter(rocksdb::Direction::Forward, None, &prefix)
                 .filter_map(|item| match item {
                     Ok(ts) => {
-                        if ts.value >= start && ts.value <= end {
+                        if in_range(ts.value, start, end) {
                             Some(Ok::<_, anyhow::Error>(ts))
                         } else {
                             None
@@ -281,53 +246,14 @@ impl<'d> Table<'d, TimeSeries> {
     }
 }
 
-type TimeRange = (Option<i64>, Option<i64>);
+fn extend_range(range: Option<(i64, i64)>, value: i64) -> (i64, i64) {
+    range.map_or((value, value), |(min, max)| {
+        (min.min(value), max.max(value))
+    })
+}
 
-// The input has sorted, distinct values, as collected by the cluster query.
-fn fill_vacant_time_slots(series: &[(i64, usize)]) -> Result<Vec<(i64, usize)>> {
-    if series.len() <= 2 {
-        return Ok(series.to_vec());
-    }
-    let differences = series.windows(2).map(|pair| {
-        pair[1].0.checked_sub(pair[0].0).ok_or_else(|| {
-            anyhow!(
-                "adjacent slot difference overflow between {} and {}",
-                pair[0].0,
-                pair[1].0
-            )
-        })
-    });
-    let min_diff = differences
-        .clone()
-        .try_fold(i64::MAX, |min, diff| Ok::<_, anyhow::Error>(min.min(diff?)))?;
-    let length = differences.clone().try_fold(1usize, |length, diff| {
-        let slots = diff?
-            .checked_div(min_diff)
-            .ok_or_else(|| anyhow!("slot count division overflow"))?;
-        let slots = usize::try_from(slots).context("filled series length overflow")?;
-        length
-            .checked_add(slots)
-            .ok_or_else(|| anyhow!("filled series length overflow"))
-    })?;
-    let mut filled_series = Vec::new();
-    filled_series
-        .try_reserve_exact(length)
-        .with_context(|| format!("reserving capacity for filled series of length {length}"))?;
-    filled_series.push(series[0]);
-    for (pair, diff) in series.windows(2).zip(differences) {
-        let (prev, cur) = (pair[0], pair[1]);
-        let slots = diff? / min_diff;
-        for d in 1..slots {
-            let value = d
-                .checked_mul(min_diff)
-                .and_then(|offset| prev.0.checked_add(offset))
-                .ok_or_else(|| anyhow!("interpolated slot value overflow"))?;
-            filled_series.push((value, 0));
-        }
-        filled_series.push(cur);
-    }
-
-    Ok(filled_series)
+fn in_range(value: i64, start: Option<i64>, end: Option<i64>) -> bool {
+    start.is_none_or(|start| value >= start) && end.is_none_or(|end| value <= end)
 }
 
 pub type TimeCount = (i64, usize); // (utc_timestamp_nano, count)
@@ -558,45 +484,75 @@ mod tests {
             )
             .unwrap();
 
+        let (earliest, latest, _) = table
+            .get_top_time_series_of_cluster(1, 1, Some(T + HOUR), Some(T + 3 * HOUR))
+            .unwrap();
+        assert_eq!((earliest, latest), (Some(T), Some(T + 6 * HOUR)));
+
         for (start, end, expected) in [
-            (Some(T), None, &values[..2]),
-            (None, Some(T + 3 * HOUR), &values[1..3]),
+            (Some(T + HOUR), None, &values[1..]),
+            (None, Some(T + 3 * HOUR), &values[..3]),
             (Some(T + HOUR), Some(T + 3 * HOUR), &values[1..3]),
-            (None, None, &values[3..]),
+            (None, None, &values[..]),
         ] {
             assert_top_time_series_range(&table, 1, start, end, expected);
         }
     }
 
     #[test]
-    fn test_get_top_time_series_clamps_lone_bounds() {
-        const HOUR: i64 = 60 * 60 * 1_000_000_000;
-
+    fn test_get_top_time_series_unbounded_extremes() {
         let (_permit, store) = setup_store();
         let table = store.time_series_map();
-        for (model_id, start, end, values) in [
-            (
-                1,
-                Some(i64::MAX - HOUR),
-                None,
-                [(i64::MAX - HOUR / 2, 10), (i64::MAX, 20)],
-            ),
-            (
+        let values = [(i64::MIN, 1), (i64::MAX, 2)];
+        table
+            .add_time_series(
                 2,
-                None,
-                Some(i64::MIN + HOUR),
-                [(i64::MIN, 30), (i64::MIN + HOUR / 2, 40)],
-            ),
-        ] {
-            table
-                .add_time_series(
-                    model_id,
-                    0,
-                    vec![(1, vec![create_test_column(0, values.to_vec())])],
-                )
-                .unwrap();
-            assert_top_time_series_range(&table, model_id, start, end, &values);
-        }
+                0,
+                vec![(1, vec![create_test_column(0, values.to_vec())])],
+            )
+            .unwrap();
+        assert_top_time_series_range(&table, 2, Some(i64::MIN), None, &values);
+        assert_top_time_series_range(&table, 2, None, Some(i64::MAX), &values);
+    }
+
+    #[test]
+    fn test_cluster_range_across_columns_and_batches() {
+        const HOUR: i64 = 60 * 60 * 1_000_000_000;
+        const T: i64 = 1_640_995_200_000_000_000;
+        let (_permit, store) = setup_store();
+        let table = store.time_series_map();
+        table
+            .add_time_series(
+                1,
+                0,
+                vec![
+                    (
+                        1,
+                        vec![
+                            create_test_column(0, vec![(T, 1)]),
+                            create_test_column(1, vec![(T - HOUR, 2)]),
+                        ],
+                    ),
+                    (2, vec![create_test_column(0, vec![(T - 2 * HOUR, 3)])]),
+                ],
+            )
+            .unwrap();
+        table
+            .add_time_series(
+                1,
+                1,
+                vec![(1, vec![create_test_column(0, vec![(T + 7 * HOUR, 4)])])],
+            )
+            .unwrap();
+        assert_eq!(
+            table.get_time_range_of_cluster(1, 1).unwrap(),
+            Some((T - HOUR, T + 7 * HOUR))
+        );
+        assert_eq!(
+            table.get_time_range_of_cluster(1, 2).unwrap(),
+            Some((T - 2 * HOUR, T - 2 * HOUR))
+        );
+        assert_eq!(table.get_time_range_of_cluster(1, 3).unwrap(), None);
     }
 
     #[test]
@@ -882,104 +838,24 @@ mod tests {
     }
 
     #[test]
-    fn test_fill_vacant_time_slots() {
-        let series = vec![(1000, 10), (2000, 15), (4000, 20)];
-        let filled = fill_vacant_time_slots(&series).unwrap();
-
-        assert_eq!(filled.len(), 4);
-        assert_eq!(filled[0], (1000, 10));
-        assert_eq!(filled[1], (2000, 15)); // Original value
-        assert_eq!(filled[2], (3000, 0)); // Filled slot
-        assert_eq!(filled[3], (4000, 20));
-    }
-
-    #[test]
-    fn test_fill_vacant_time_slots_short_series() {
-        let series = vec![(1000, 10)];
-        let filled = fill_vacant_time_slots(&series).unwrap();
-        assert_eq!(filled, series);
-
-        let series = vec![(1000, 10), (2000, 15)];
-        let filled = fill_vacant_time_slots(&series).unwrap();
-        assert_eq!(filled, series);
-
-        let series = [(i64::MIN, 1), (i64::MAX, 2)];
-        assert_eq!(fill_vacant_time_slots(&series).unwrap(), series);
-        assert_eq!(fill_vacant_time_slots(&[]).unwrap(), Vec::new());
-    }
-
-    #[test]
-    fn test_fill_vacant_time_slots_irregular_spacing() {
-        let series = [(0, 10), (2, 15), (5, 20), (8, 25)];
-        assert_eq!(fill_vacant_time_slots(&series).unwrap(), series);
-    }
-
-    #[test]
-    fn test_fill_vacant_time_slots_difference_overflow() {
-        let series = [(i64::MIN, 1), (0, 2), (i64::MAX, 3)];
-        let error = fill_vacant_time_slots(&series).unwrap_err();
-        assert!(
-            error
-                .to_string()
-                .contains("adjacent slot difference overflow")
-        );
-    }
-
-    #[test]
-    fn test_fill_vacant_time_slots_length_overflow() {
-        let series = [(i64::MIN, 1), (i64::MIN + 1, 2), (0, 3), (i64::MAX, 4)];
-        let error = fill_vacant_time_slots(&series).unwrap_err();
-        assert!(error.to_string().contains("filled series length overflow"));
-    }
-
-    #[test]
-    fn test_fill_vacant_time_slots_reservation_failure() {
-        let series = [(0, 1), (1, 2), (1_000_000_000_000_000_000, 3)];
-        let error = fill_vacant_time_slots(&series).unwrap_err();
-        assert!(
-            error
-                .to_string()
-                .contains("reserving capacity for filled series")
-        );
-        assert!(
-            error
-                .downcast_ref::<std::collections::TryReserveError>()
-                .is_some()
-        );
-    }
-
-    #[test]
-    fn test_get_top_time_series_of_cluster_reservation_failure() {
+    fn test_top_time_series_sums_matching_values() {
         let (_permit, store) = setup_store();
         let table = store.time_series_map();
-        let end = 1_000_000_000_000_000_000;
-        table
-            .add_time_series(
-                1,
-                0,
-                vec![(
+        for (batch, count) in [(0, 2), (1, 3)] {
+            table
+                .add_time_series(
                     1,
-                    vec![create_test_column(0, vec![(0, 1), (1, 2), (end, 3)])],
-                )],
-            )
+                    batch,
+                    vec![(1, vec![create_test_column(0, vec![(10, count)])])],
+                )
+                .unwrap();
+        }
+        assert_top_time_series_range(&table, 1, None, None, &[(10, 5)]);
+        let (earliest, latest, columns) = table
+            .get_top_time_series_of_cluster(1, 1, Some(11), None)
             .unwrap();
-
-        let error = table
-            .get_top_time_series_of_cluster(1, 1, Some(0), Some(end))
-            .err()
-            .unwrap();
-        assert!(
-            error
-                .downcast_ref::<std::collections::TryReserveError>()
-                .is_some()
-        );
-
-        let model_series = table
-            .get_top_time_series_of_model(1, None, Some(0), Some(end))
-            .unwrap();
-        assert_eq!(model_series.len(), 1);
-        assert_eq!(model_series[0].1.len(), 1);
-        assert_eq!(model_series[0].1[0].time_counts, [(0, 1), (1, 2), (end, 3)]);
+        assert_eq!((earliest, latest), (Some(10), Some(10)));
+        assert!(columns.is_empty());
     }
 
     #[test]
