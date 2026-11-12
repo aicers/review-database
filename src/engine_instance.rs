@@ -141,8 +141,7 @@ impl Store {
             .states
             .engine_instances()
             .get(instance)?
-            .map(|row| row.statuses.into_iter().collect())
-            .unwrap_or_default())
+            .map_or_default(|row| row.statuses.into_iter().collect()))
     }
 
     /// Records whether an engine instance is stopped.

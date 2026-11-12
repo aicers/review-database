@@ -754,8 +754,7 @@ impl Store {
         let scores = self
             .scores_map()
             .get(record.id)?
-            .map(Scores::into_inner)
-            .unwrap_or_default();
+            .map_or_default(Scores::into_inner);
         drop(files);
 
         Ok(crate::model::Model {
