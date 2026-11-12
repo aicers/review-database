@@ -101,3 +101,36 @@ impl Store {
         IndexedSet::new(&self.db, "test_cf", b"indexed set").unwrap()
     }
 }
+
+pub(crate) fn sst_files(path: &std::path::Path) -> std::collections::HashSet<std::path::PathBuf> {
+    std::fs::read_dir(path)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| path.extension().is_some_and(|ext| ext == "sst"))
+        .collect()
+}
+
+pub(crate) fn corrupt_new_sst(
+    path: &std::path::Path,
+    before: &std::collections::HashSet<std::path::PathBuf>,
+) {
+    use std::io::{Read, Seek, SeekFrom, Write};
+
+    let after = sst_files(path);
+    let new: Vec<_> = after.difference(before).collect();
+    assert_eq!(new.len(), 1);
+    let mut file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(new[0])
+        .unwrap();
+    let offset = file.metadata().unwrap().len() / 2;
+    file.seek(SeekFrom::Start(offset)).unwrap();
+    let mut bytes = [0; 32];
+    file.read_exact(&mut bytes).unwrap();
+    for byte in &mut bytes {
+        *byte ^= 0xff;
+    }
+    file.seek(SeekFrom::Start(offset)).unwrap();
+    file.write_all(&bytes).unwrap();
+}

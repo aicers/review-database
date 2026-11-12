@@ -86,6 +86,54 @@ mod tests {
     }
 
     #[test]
+    fn replacement_does_not_commit_after_corrupt_iteration() {
+        let _permit = acquire_db_permit();
+        let dir = tempfile::tempdir().unwrap();
+        let mut options = rocksdb::Options::default();
+        options.create_if_missing(true);
+        options.create_missing_column_families(true);
+        {
+            let db: rocksdb::OptimisticTransactionDB = rocksdb::OptimisticTransactionDB::open_cf(
+                &options,
+                dir.path(),
+                [super::super::TOR_EXIT_NODES],
+            )
+            .unwrap();
+            let cf = db.cf_handle(super::super::TOR_EXIT_NODES).unwrap();
+            for i in 0..20_000 {
+                db.put_cf(
+                    cf,
+                    format!("{i:08}"),
+                    format!("{}-{i:08}", "value".repeat(30)),
+                )
+                .unwrap();
+            }
+            let before = crate::test::sst_files(dir.path());
+            db.flush_cf(cf).unwrap();
+            drop(db);
+            crate::test::corrupt_new_sst(dir.path(), &before);
+        }
+        let db: rocksdb::OptimisticTransactionDB = rocksdb::OptimisticTransactionDB::open_cf(
+            &options,
+            dir.path(),
+            [super::super::TOR_EXIT_NODES],
+        )
+        .unwrap();
+        let table = crate::Table::<TorExitNode>::open(&db).unwrap();
+        let result = table.replace_all(std::iter::once(TorExitNode {
+            ip_address: "zzzzzzzz".to_owned(),
+            updated_at: Utc::now(),
+        }));
+        let error = result.unwrap_err();
+        assert_eq!(
+            error.downcast_ref::<rocksdb::Error>().unwrap().kind(),
+            rocksdb::ErrorKind::Corruption
+        );
+        assert!(table.map.get(b"zzzzzzzz").unwrap().is_none());
+        assert!(table.map.get(b"00000000").unwrap().is_some());
+    }
+
+    #[test]
     fn operations() {
         let (_permit, store) = setup_store();
         let table = store.tor_exit_node_map();
