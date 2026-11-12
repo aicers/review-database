@@ -127,7 +127,9 @@ pub use self::template::{
     Structured, StructuredClusteringAlgorithm, Template, Unstructured,
     UnstructuredClusteringAlgorithm,
 };
-pub use self::time_series::{Cluster as ClusterTimeSeries, Column as ColumnTimeSeries, TimeSeries};
+pub use self::time_series::{
+    Cluster as ClusterTimeSeries, Column as ColumnTimeSeries, TimeSeries, TimeSeriesRange,
+};
 pub use self::tor_exit_node::TorExitNode;
 pub use self::traffic_filter::{ProtocolPorts, TrafficFilter};
 pub(crate) use self::training_definition::TrainingDefinitions;

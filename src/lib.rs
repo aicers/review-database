@@ -71,10 +71,10 @@ pub use self::tables::{
     SamplingInterval, SamplingKind, SamplingPeriod, SamplingPolicy, SamplingPolicyError,
     SamplingPolicyUpdate, SourceState, Structured, StructuredClusteringAlgorithm,
     SystemInstallRecord, SystemLogCollector, SystemLogCollectorRefusal, SystemLogCollectorTable,
-    Table, Template, TimeSeries, TopColumnsOfCluster, TopMultimaps, TorExitNode, TrafficFilter,
-    TrainedWith, TrainingDefinition, TrainingDefinitionUpdate, TriageExclusion, TriagePolicyInput,
-    TriageResponse, TriageResponseUpdate, TrustedDomain, TrustedUserAgent, UniqueKey, Unstructured,
-    UnstructuredClusteringAlgorithm, UserAgent, ValueKind,
+    Table, Template, TimeSeries, TimeSeriesRange, TopColumnsOfCluster, TopMultimaps, TorExitNode,
+    TrafficFilter, TrainedWith, TrainingDefinition, TrainingDefinitionUpdate, TriageExclusion,
+    TriagePolicyInput, TriageResponse, TriageResponseUpdate, TrustedDomain, TrustedUserAgent,
+    UniqueKey, Unstructured, UnstructuredClusteringAlgorithm, UserAgent, ValueKind,
 };
 pub use self::top_n::*;
 #[allow(deprecated)]

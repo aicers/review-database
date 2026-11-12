@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use anyhow::{Result, anyhow};
 use rocksdb::OptimisticTransactionDB;
@@ -68,181 +68,177 @@ impl<'d> Table<'d, TimeSeries> {
             })
     }
 
-    /// Returns the earliest and latest stored values for the given cluster,
-    /// across all columns and batches, or `None` if the cluster is empty.
+    /// Gets the top time series of the given cluster, returning only stored points.
     ///
-    /// # Errors
-    ///
-    /// Returns an error if an underlying database error occurs.
-    pub fn get_time_range_of_cluster(
-        &self,
-        model_id: u32,
-        cluster_id: u32,
-    ) -> Result<Option<(i64, i64)>> {
-        let mut prefix = model_id.to_be_bytes().to_vec();
-        prefix.extend(cluster_id.to_be_bytes());
-        self.prefix_iter(rocksdb::Direction::Forward, None, &prefix)
-            .try_fold(None, |range, item| {
-                let value = item?.value;
-                Ok(Some(extend_range(range, value)))
-            })
-    }
-
-    /// Gets the top time series of the given cluster.
-    ///
-    /// `start` and `end` are inclusive nanosecond timestamp bounds. An omitted
-    /// bound leaves that side unbounded. The returned earliest and latest values
-    /// cover the entire cluster, independent of these bounds.
+    /// `range` selects values according to [`TimeSeriesRange`]. The returned
+    /// earliest and latest values cover the entire cluster, independent of the range.
+    /// Columns are ordered by index, and points within each column by value.
     ///
     /// # Errors
     ///
     /// Returns an error if an underlying database error occurs or count summation
-    /// overflows.
+    /// overflows for a value remaining in the result.
     pub fn get_top_time_series_of_cluster(
         &self,
         model_id: u32,
         cluster_id: u32,
-        start: Option<i64>,
-        end: Option<i64>,
+        range: TimeSeriesRange,
     ) -> Result<(Option<i64>, Option<i64>, Vec<Column>)> {
-        use rocksdb::Direction;
-
-        let mut prefix = model_id.to_be_bytes().to_vec();
-        prefix.extend(cluster_id.to_be_bytes());
-        let mut range = None;
-        let mut columns: HashMap<Option<i32>, HashMap<i64, usize>> = HashMap::new();
-        for item in self.prefix_iter(Direction::Forward, None, &prefix) {
+        let mut prefix = [0; 8];
+        prefix[..4].copy_from_slice(&model_id.to_be_bytes());
+        prefix[4..].copy_from_slice(&cluster_id.to_be_bytes());
+        let mut stored_range = None;
+        let mut points = RangePoints::new(range);
+        for item in self.prefix_iter(rocksdb::Direction::Forward, None, &prefix) {
             let ts = item?;
-            range = Some(extend_range(range, ts.value));
-            if in_range(ts.value, start, end) {
-                let count = columns
-                    .entry(ts.count_index)
-                    .or_default()
-                    .entry(ts.value)
-                    .or_default();
-                *count = count.checked_add(ts.count).ok_or_else(|| {
-                    anyhow!(
-                        "count summation overflow for column {:?}, value {}",
-                        ts.count_index,
-                        ts.value
-                    )
-                })?;
-            }
+            stored_range = Some(extend_range(stored_range, ts.value));
+            points.insert(&ts);
         }
 
-        let mut columns = columns
+        let mut columns: BTreeMap<_, Vec<_>> = BTreeMap::new();
+        for ((value, column, _), count) in points.counts {
+            let count = count.ok_or_else(|| {
+                anyhow!("count summation overflow for column {column:?}, value {value}")
+            })?;
+            columns.entry(column).or_default().push((value, count));
+        }
+        let columns = columns
             .into_iter()
-            .filter(|(_, v)| !v.is_empty())
-            .map(|(column, top_n)| {
-                let mut top_n = top_n.into_iter().collect::<Vec<_>>();
-                top_n.sort_unstable_by_key(|t| t.0);
-                Column {
-                    index: column,
-                    time_counts: top_n,
-                }
-            })
-            .collect::<Vec<_>>();
-        columns.sort_unstable_by_key(|c| c.index);
-
-        let (earliest, latest) = range.map_or((None, None), |(min, max)| (Some(min), Some(max)));
+            .map(|(index, time_counts)| Column { index, time_counts })
+            .collect();
+        let (earliest, latest) =
+            stored_range.map_or((None, None), |(min, max)| (Some(min), Some(max)));
         Ok((earliest, latest, columns))
     }
 
     /// Returns the top trends of a model.
     ///
-    /// When `time` is `Some`, selects that batch and ignores `start` and `end`.
-    /// Otherwise, `start` and `end` are inclusive nanosecond timestamp bounds.
-    /// An omitted bound leaves that side unbounded.
+    /// When `time` is `Some`, selects that batch and ignores `range`.
+    /// Otherwise, `range` selects values according to [`TimeSeriesRange`], with
+    /// the latest value taken across all columns and clusters of the model.
+    /// Points are ordered by value, and clusters by descending number of points.
+    /// Column order is unspecified. Empty columns and clusters are omitted.
     ///
     /// # Errors
     ///
     /// Returns an error if an underlying database operation fails or count
-    /// summation overflows or a stored record cannot be decoded.
+    /// summation overflows for a value remaining in the result, or a stored
+    /// record cannot be decoded.
     pub fn get_top_time_series_of_model(
         &self,
         model_id: u32,
         time: Option<i64>,
-        start: Option<i64>,
-        end: Option<i64>,
+        range: TimeSeriesRange,
     ) -> Result<Vec<(Option<i32>, Vec<Cluster>)>> {
-        let series = self.time_series_of_model(model_id, time, start, end)?;
-        let mut columns: HashMap<Option<i32>, HashMap<u32, HashMap<i64, usize>>> = HashMap::new();
-        for ts in series {
-            let count = columns
-                .entry(ts.count_index)
-                .or_default()
-                .entry(ts.cluster_id)
-                .or_default()
-                .entry(ts.value)
-                .or_default();
-            *count = count.checked_add(ts.count).ok_or_else(|| {
+        let mut points = RangePoints::new(if time.is_some() {
+            TimeSeriesRange::Between {
+                start: None,
+                end: None,
+            }
+        } else {
+            range
+        });
+        let prefix = model_id.to_be_bytes();
+        for item in self.prefix_iter(rocksdb::Direction::Forward, None, &prefix) {
+            let ts = item?;
+            if time.is_some_and(|time| ts.time != time) {
+                continue;
+            }
+            points.insert(&ts);
+        }
+
+        let mut columns: HashMap<_, HashMap<_, Vec<_>>> = HashMap::new();
+        for ((value, column, cluster), count) in points.counts {
+            let count = count.ok_or_else(|| {
                 anyhow!(
-                    "count summation overflow for cluster {}, column {:?}, value {}",
-                    ts.cluster_id,
-                    ts.count_index,
-                    ts.value
+                    "count summation overflow for cluster {cluster}, column {column:?}, value {value}"
                 )
             })?;
+            columns
+                .entry(column)
+                .or_default()
+                .entry(cluster)
+                .or_default()
+                .push((value, count));
         }
-        let mut res: Vec<_> = columns
+        Ok(columns
             .into_iter()
-            .map(|(column, cluster_series)| {
-                let trends: Vec<_> = cluster_series
+            .map(|(column, clusters)| {
+                let mut clusters: Vec<_> = clusters
                     .into_iter()
-                    .filter_map(|(cluster_id, series)| {
-                        if series.is_empty() {
-                            None
-                        } else {
-                            let mut series: Vec<_> = series.into_iter().collect();
-                            series.sort_by_key(|v| v.0);
-                            Some(Cluster {
-                                id: cluster_id,
-                                time_counts: series,
-                            })
-                        }
-                    })
+                    .map(|(id, time_counts)| Cluster { id, time_counts })
                     .collect();
-                (column, trends)
+                clusters.sort_unstable_by_key(|c| std::cmp::Reverse(c.time_counts.len()));
+                (column, clusters)
             })
-            .collect();
-        for s in &mut res {
-            s.1.sort_by_key(|v| std::cmp::Reverse(v.time_counts.len()));
-        }
-        Ok(res)
+            .collect())
     }
+}
 
-    fn time_series_of_model(
-        &self,
-        model_id: u32,
-        time: Option<i64>,
+/// Selects stored time-series values, measured in nanoseconds.
+///
+/// Queries return only stored points, summing duplicate values separately for
+/// each column and cluster. No default window or vacant-slot filling is applied.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TimeSeriesRange {
+    /// Includes values at or between the inclusive bounds. An omitted bound
+    /// leaves that direction unbounded; omitting both includes all stored values.
+    Between {
         start: Option<i64>,
         end: Option<i64>,
-    ) -> Result<Vec<TimeSeries>> {
-        let prefix = model_id.to_be_bytes().to_vec();
+    },
+    /// Includes values from `L - width` through `L`, where `L` is the latest
+    /// stored value across the query target's columns (and, for a model, clusters).
+    /// The lower bound saturates at `i64::MIN`. An empty target returns no points.
+    Latest { width: u64 },
+}
 
-        if let Some(time) = time {
-            self.prefix_iter(rocksdb::Direction::Forward, None, &prefix)
-                .filter_map(|item| match item {
-                    Ok(ts) if ts.time == time => Some(Ok(ts)),
-                    Ok(_) => None,
-                    Err(e) => Some(Err(e)),
-                })
-                .collect::<Result<Vec<_>>>()
-        } else {
-            Ok(self
-                .prefix_iter(rocksdb::Direction::Forward, None, &prefix)
-                .filter_map(|item| match item {
-                    Ok(ts) => {
-                        if in_range(ts.value, start, end) {
-                            Some(Ok::<_, anyhow::Error>(ts))
-                        } else {
-                            None
-                        }
-                    }
-                    Err(e) => Some(Err(e)),
-                })
-                .collect::<Result<Vec<_>>>()?)
+struct RangePoints {
+    range: TimeSeriesRange,
+    maximum: Option<i64>,
+    // Value comes first so every expired point can be removed once, without
+    // rescanning retained columns or clusters. None marks a sum that overflowed;
+    // it is only an error if the point survives the final window.
+    counts: BTreeMap<(i64, Option<i32>, u32), Option<usize>>,
+}
+
+impl RangePoints {
+    fn new(range: TimeSeriesRange) -> Self {
+        Self {
+            range,
+            maximum: None,
+            counts: BTreeMap::new(),
         }
+    }
+
+    fn insert(&mut self, ts: &TimeSeries) {
+        match self.range {
+            TimeSeriesRange::Between { start, end } => {
+                if !in_range(ts.value, start, end) {
+                    return;
+                }
+            }
+            TimeSeriesRange::Latest { width } => {
+                let maximum = self.maximum.map_or(ts.value, |m| m.max(ts.value));
+                self.maximum = Some(maximum);
+                let lower = maximum.saturating_sub_unsigned(width);
+                while self
+                    .counts
+                    .first_key_value()
+                    .is_some_and(|(key, _)| key.0 < lower)
+                {
+                    self.counts.pop_first();
+                }
+                if ts.value < lower {
+                    return;
+                }
+            }
+        }
+        let count = self
+            .counts
+            .entry((ts.value, ts.count_index, ts.cluster_id))
+            .or_insert(Some(0));
+        *count = count.and_then(|count| count.checked_add(ts.count));
     }
 }
 
@@ -407,12 +403,26 @@ mod tests {
         table.map.put(&key, &[0; 3]).unwrap();
         assert!(
             table
-                .get_top_time_series_of_model(1, Some(1), None, None)
+                .get_top_time_series_of_model(
+                    1,
+                    Some(1),
+                    TimeSeriesRange::Between {
+                        start: None,
+                        end: None
+                    },
+                )
                 .is_err()
         );
         assert!(
             table
-                .get_top_time_series_of_model(1, None, Some(0), Some(2))
+                .get_top_time_series_of_model(
+                    1,
+                    None,
+                    TimeSeriesRange::Between {
+                        start: Some(0),
+                        end: Some(2)
+                    },
+                )
                 .is_err()
         );
     }
@@ -446,14 +456,14 @@ mod tests {
         expected: &[(i64, usize)],
     ) {
         let (_, _, columns) = table
-            .get_top_time_series_of_cluster(model_id, 1, start, end)
+            .get_top_time_series_of_cluster(model_id, 1, TimeSeriesRange::Between { start, end })
             .unwrap();
         assert_eq!(columns.len(), 1);
         assert_eq!(columns[0].index, Some(0));
         assert_eq!(columns[0].time_counts, expected);
 
         let columns = table
-            .get_top_time_series_of_model(model_id, None, start, end)
+            .get_top_time_series_of_model(model_id, None, TimeSeriesRange::Between { start, end })
             .unwrap();
         assert_eq!(columns.len(), 1);
         let (index, clusters) = &columns[0];
@@ -461,6 +471,255 @@ mod tests {
         assert_eq!(clusters.len(), 1);
         assert_eq!(clusters[0].id, 1);
         assert_eq!(clusters[0].time_counts, expected);
+    }
+
+    type ExpectedPoints<'a> = (i32, u32, &'a [TimeCount]);
+
+    fn assert_query_points(
+        table: &Table<'_, TimeSeries>,
+        model: u32,
+        range: TimeSeriesRange,
+        expected: &[ExpectedPoints<'_>],
+    ) {
+        let expected_model: BTreeMap<_, _> = expected
+            .iter()
+            .map(|(column, cluster, points)| ((Some(*column), *cluster), points.to_vec()))
+            .collect();
+        let columns = table
+            .get_top_time_series_of_model(model, None, range)
+            .unwrap();
+        assert!(columns.iter().all(|(_, clusters)| !clusters.is_empty()));
+        for (_, clusters) in &columns {
+            assert!(
+                clusters
+                    .windows(2)
+                    .all(|pair| pair[0].time_counts.len() >= pair[1].time_counts.len())
+            );
+            assert!(clusters.iter().all(|c| !c.time_counts.is_empty()));
+        }
+        let actual: BTreeMap<_, _> = columns
+            .into_iter()
+            .flat_map(|(column, clusters)| {
+                clusters
+                    .into_iter()
+                    .map(move |cluster| ((column, cluster.id), cluster.time_counts))
+            })
+            .collect();
+        assert_eq!(actual, expected_model);
+        let (_, _, columns) = table
+            .get_top_time_series_of_cluster(model, 1, range)
+            .unwrap();
+        let actual: Vec<_> = columns
+            .into_iter()
+            .map(|c| (c.index, c.time_counts))
+            .collect();
+        let expected: Vec<_> = expected_model
+            .into_iter()
+            .filter_map(|((column, cluster), points)| (cluster == 1).then_some((column, points)))
+            .collect();
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn latest_accepts_later_batches_below_the_maximum() {
+        let (_permit, store) = setup_store();
+        let table = store.time_series_map();
+        table
+            .add_time_series(1, 0, vec![(1, vec![create_test_column(0, vec![(6, 1)])])])
+            .unwrap();
+        table
+            .add_time_series(
+                1,
+                1,
+                vec![(1, vec![create_test_column(0, vec![(1, 2), (4, 3)])])],
+            )
+            .unwrap();
+        assert_query_points(
+            &table,
+            1,
+            TimeSeriesRange::Latest { width: 2 },
+            &[(0, 1, &[(4, 3), (6, 1)])],
+        );
+    }
+
+    #[test]
+    fn latest_uses_all_columns_and_omits_expired_columns() {
+        let (_permit, store) = setup_store();
+        let table = store.time_series_map();
+        for (model, early) in [(1, 0), (2, 5)] {
+            table
+                .add_time_series(
+                    model,
+                    0,
+                    vec![(
+                        1,
+                        vec![
+                            create_test_column(0, vec![(early, 1)]),
+                            create_test_column(1, vec![(6, 2)]),
+                        ],
+                    )],
+                )
+                .unwrap();
+        }
+        assert_query_points(
+            &table,
+            1,
+            TimeSeriesRange::Latest { width: 2 },
+            &[(1, 1, &[(6, 2)])],
+        );
+        assert_query_points(
+            &table,
+            2,
+            TimeSeriesRange::Latest { width: 2 },
+            &[(0, 1, &[(5, 1)]), (1, 1, &[(6, 2)])],
+        );
+    }
+
+    #[test]
+    fn latest_uses_the_query_target_and_omits_expired_clusters() {
+        let (_permit, store) = setup_store();
+        let table = store.time_series_map();
+        table
+            .add_time_series(
+                1,
+                0,
+                vec![
+                    (1, vec![create_test_column(0, vec![(0, 1), (6, 2)])]),
+                    (2, vec![create_test_column(0, vec![(10, 3)])]),
+                ],
+            )
+            .unwrap();
+        let (_, _, columns) = table
+            .get_top_time_series_of_cluster(1, 1, TimeSeriesRange::Latest { width: 2 })
+            .unwrap();
+        assert_eq!(columns.len(), 1);
+        assert_eq!(columns[0].time_counts, [(6, 2)]);
+        let columns = table
+            .get_top_time_series_of_model(1, None, TimeSeriesRange::Latest { width: 2 })
+            .unwrap();
+        assert_eq!(columns.len(), 1);
+        assert_eq!(columns[0].1.len(), 1);
+        assert_eq!(columns[0].1[0].id, 2);
+        assert_eq!(columns[0].1[0].time_counts, [(10, 3)]);
+    }
+
+    #[test]
+    fn ranges_keep_counts_separate_per_column_and_cluster() {
+        let (_permit, store) = setup_store();
+        let table = store.time_series_map();
+        table
+            .add_time_series(
+                1,
+                0,
+                vec![
+                    (
+                        1,
+                        vec![
+                            create_test_column(0, vec![(5, 1), (6, 2)]),
+                            create_test_column(1, vec![(6, 3)]),
+                        ],
+                    ),
+                    (2, vec![create_test_column(0, vec![(6, 4)])]),
+                ],
+            )
+            .unwrap();
+        for range in [
+            TimeSeriesRange::Latest { width: 2 },
+            TimeSeriesRange::Between {
+                start: None,
+                end: None,
+            },
+        ] {
+            assert_query_points(
+                &table,
+                1,
+                range,
+                &[
+                    (0, 1, &[(5, 1), (6, 2)]),
+                    (1, 1, &[(6, 3)]),
+                    (0, 2, &[(6, 4)]),
+                ],
+            );
+        }
+    }
+
+    #[test]
+    fn latest_handles_empty_targets_and_saturating_bounds() {
+        let (_permit, store) = setup_store();
+        let table = store.time_series_map();
+        assert_query_points(&table, 1, TimeSeriesRange::Latest { width: 0 }, &[]);
+        let (earliest, latest, _) = table
+            .get_top_time_series_of_cluster(1, 1, TimeSeriesRange::Latest { width: 0 })
+            .unwrap();
+        assert_eq!((earliest, latest), (None, None));
+        table
+            .add_time_series(
+                1,
+                0,
+                vec![(1, vec![create_test_column(0, vec![(i64::MIN, 1)])])],
+            )
+            .unwrap();
+        assert_query_points(
+            &table,
+            1,
+            TimeSeriesRange::Latest {
+                width: 7_200_000_000_000,
+            },
+            &[(0, 1, &[(i64::MIN, 1)])],
+        );
+    }
+
+    #[test]
+    fn overflow_is_an_error_only_for_retained_values() {
+        let (_permit, store) = setup_store();
+        let table = store.time_series_map();
+        for (batch, value, count) in [
+            (0, 0, usize::MAX),
+            (1, 0, 1),
+            (2, 3, usize::MAX - 1),
+            (3, 3, 1),
+        ] {
+            table
+                .add_time_series(
+                    1,
+                    batch,
+                    vec![(1, vec![create_test_column(0, vec![(value, count)])])],
+                )
+                .unwrap();
+        }
+        assert_query_points(
+            &table,
+            1,
+            TimeSeriesRange::Latest { width: 2 },
+            &[(0, 1, &[(3, usize::MAX)])],
+        );
+        assert_query_points(
+            &table,
+            1,
+            TimeSeriesRange::Between {
+                start: Some(1),
+                end: None,
+            },
+            &[(0, 1, &[(3, usize::MAX)])],
+        );
+        for range in [
+            TimeSeriesRange::Latest { width: 3 },
+            TimeSeriesRange::Between {
+                start: None,
+                end: None,
+            },
+        ] {
+            let cluster = table
+                .get_top_time_series_of_cluster(1, 1, range)
+                .err()
+                .unwrap();
+            let model = table
+                .get_top_time_series_of_model(1, None, range)
+                .err()
+                .unwrap();
+            assert!(cluster.to_string().contains("count summation overflow"));
+            assert!(model.to_string().contains("count summation overflow"));
+        }
     }
 
     #[test]
@@ -476,16 +735,52 @@ mod tests {
             (T + 3 * HOUR, 30),
             (T + 6 * HOUR, 40),
         ];
-        table
-            .add_time_series(
+        for (batch, points) in [
+            (0, vec![values[0], values[2]]),
+            (1, vec![values[1], values[3]]),
+        ] {
+            table
+                .add_time_series(1, batch, vec![(1, vec![create_test_column(0, points)])])
+                .unwrap();
+        }
+        assert_query_points(
+            &table,
+            1,
+            TimeSeriesRange::Latest {
+                width: u64::try_from(3 * HOUR).unwrap(),
+            },
+            &[(0, 1, &values[2..])],
+        );
+        assert_query_points(
+            &table,
+            1,
+            TimeSeriesRange::Latest { width: u64::MAX },
+            &[(0, 1, &values)],
+        );
+        let (earliest, latest, _) = table
+            .get_top_time_series_of_cluster(
                 1,
-                T,
-                vec![(1, vec![create_test_column(0, values.to_vec())])],
+                1,
+                TimeSeriesRange::Latest {
+                    width: u64::try_from(3 * HOUR).unwrap(),
+                },
             )
             .unwrap();
+        assert_eq!((earliest, latest), (Some(T), Some(T + 6 * HOUR)));
+        let batch = table
+            .get_top_time_series_of_model(1, Some(0), TimeSeriesRange::Latest { width: 0 })
+            .unwrap();
+        assert_eq!(batch[0].1[0].time_counts, [values[0], values[2]]);
 
         let (earliest, latest, _) = table
-            .get_top_time_series_of_cluster(1, 1, Some(T + HOUR), Some(T + 3 * HOUR))
+            .get_top_time_series_of_cluster(
+                1,
+                1,
+                TimeSeriesRange::Between {
+                    start: Some(T + HOUR),
+                    end: Some(T + 3 * HOUR),
+                },
+            )
             .unwrap();
         assert_eq!((earliest, latest), (Some(T), Some(T + 6 * HOUR)));
 
@@ -511,48 +806,8 @@ mod tests {
                 vec![(1, vec![create_test_column(0, values.to_vec())])],
             )
             .unwrap();
-        assert_top_time_series_range(&table, 2, Some(i64::MIN), None, &values);
-        assert_top_time_series_range(&table, 2, None, Some(i64::MAX), &values);
-    }
-
-    #[test]
-    fn test_cluster_range_across_columns_and_batches() {
-        const HOUR: i64 = 60 * 60 * 1_000_000_000;
-        const T: i64 = 1_640_995_200_000_000_000;
-        let (_permit, store) = setup_store();
-        let table = store.time_series_map();
-        table
-            .add_time_series(
-                1,
-                0,
-                vec![
-                    (
-                        1,
-                        vec![
-                            create_test_column(0, vec![(T, 1)]),
-                            create_test_column(1, vec![(T - HOUR, 2)]),
-                        ],
-                    ),
-                    (2, vec![create_test_column(0, vec![(T - 2 * HOUR, 3)])]),
-                ],
-            )
-            .unwrap();
-        table
-            .add_time_series(
-                1,
-                1,
-                vec![(1, vec![create_test_column(0, vec![(T + 7 * HOUR, 4)])])],
-            )
-            .unwrap();
-        assert_eq!(
-            table.get_time_range_of_cluster(1, 1).unwrap(),
-            Some((T - HOUR, T + 7 * HOUR))
-        );
-        assert_eq!(
-            table.get_time_range_of_cluster(1, 2).unwrap(),
-            Some((T - 2 * HOUR, T - 2 * HOUR))
-        );
-        assert_eq!(table.get_time_range_of_cluster(1, 3).unwrap(), None);
+        assert_top_time_series_range(&table, 2, Some(0), None, &values[1..]);
+        assert_top_time_series_range(&table, 2, None, Some(0), &values[..1]);
     }
 
     #[test]
@@ -686,7 +941,14 @@ mod tests {
         table.add_time_series(model_id, batch_ts, series).unwrap();
 
         let result = table
-            .get_top_time_series_of_cluster(model_id, cluster_id, None, None)
+            .get_top_time_series_of_cluster(
+                model_id,
+                cluster_id,
+                TimeSeriesRange::Between {
+                    start: None,
+                    end: None,
+                },
+            )
             .unwrap();
         let (earliest, latest, columns) = result;
 
@@ -719,7 +981,11 @@ mod tests {
         let end = Some(1_640_995_260);
 
         let result = table
-            .get_top_time_series_of_cluster(model_id, cluster_id, start, end)
+            .get_top_time_series_of_cluster(
+                model_id,
+                cluster_id,
+                TimeSeriesRange::Between { start, end },
+            )
             .unwrap();
         let (earliest, latest, columns) = result;
 
@@ -757,7 +1023,14 @@ mod tests {
         table.add_time_series(model_id, batch_ts, series).unwrap();
 
         let result = table
-            .get_top_time_series_of_model(model_id, None, None, None)
+            .get_top_time_series_of_model(
+                model_id,
+                None,
+                TimeSeriesRange::Between {
+                    start: None,
+                    end: None,
+                },
+            )
             .unwrap();
         assert!(!result.is_empty());
 
@@ -785,10 +1058,24 @@ mod tests {
         table.add_time_series(model_id, batch_ts, series).unwrap();
 
         let result = table
-            .get_top_time_series_of_model(model_id, Some(batch_ts), None, None)
+            .get_top_time_series_of_model(
+                model_id,
+                Some(batch_ts),
+                TimeSeriesRange::Between {
+                    start: None,
+                    end: None,
+                },
+            )
             .unwrap();
         let bounded_result = table
-            .get_top_time_series_of_model(model_id, Some(batch_ts), Some(0), Some(1))
+            .get_top_time_series_of_model(
+                model_id,
+                Some(batch_ts),
+                TimeSeriesRange::Between {
+                    start: Some(0),
+                    end: Some(1),
+                },
+            )
             .unwrap();
         assert_eq!(result.len(), 1);
         assert_eq!(bounded_result.len(), 1);
@@ -806,38 +1093,6 @@ mod tests {
     }
 
     #[test]
-    fn test_time_series_of_model() {
-        let (_permit, store) = setup_store();
-        let table = store.time_series_map();
-
-        let model_id = 1;
-        let batch_ts = 1_640_995_200_000_000_000;
-
-        // Add time series data
-        let series = vec![(
-            1,
-            vec![create_test_column(
-                0,
-                vec![(1_640_995_200, 10), (1_640_995_260, 15)],
-            )],
-        )];
-
-        table.add_time_series(model_id, batch_ts, series).unwrap();
-
-        // Test with specific time
-        let result = table
-            .time_series_of_model(model_id, Some(batch_ts), None, None)
-            .unwrap();
-        assert_ne!(result, Vec::new());
-
-        // Test with time range
-        let result = table
-            .time_series_of_model(model_id, None, Some(1_640_995_200), Some(1_640_995_260))
-            .unwrap();
-        assert_ne!(result, Vec::new());
-    }
-
-    #[test]
     fn test_top_time_series_sums_matching_values() {
         let (_permit, store) = setup_store();
         let table = store.time_series_map();
@@ -852,7 +1107,14 @@ mod tests {
         }
         assert_top_time_series_range(&table, 1, None, None, &[(10, 5)]);
         let (earliest, latest, columns) = table
-            .get_top_time_series_of_cluster(1, 1, Some(11), None)
+            .get_top_time_series_of_cluster(
+                1,
+                1,
+                TimeSeriesRange::Between {
+                    start: Some(11),
+                    end: None,
+                },
+            )
             .unwrap();
         assert_eq!((earliest, latest), (Some(10), Some(10)));
         assert!(columns.is_empty());
@@ -873,7 +1135,14 @@ mod tests {
         }
 
         let cluster_error = table
-            .get_top_time_series_of_cluster(1, 1, Some(0), Some(0))
+            .get_top_time_series_of_cluster(
+                1,
+                1,
+                TimeSeriesRange::Between {
+                    start: Some(0),
+                    end: Some(0),
+                },
+            )
             .err()
             .unwrap();
         assert!(
@@ -882,7 +1151,14 @@ mod tests {
                 .contains("count summation overflow")
         );
         let model_error = table
-            .get_top_time_series_of_model(1, None, Some(0), Some(0))
+            .get_top_time_series_of_model(
+                1,
+                None,
+                TimeSeriesRange::Between {
+                    start: Some(0),
+                    end: Some(0),
+                },
+            )
             .err()
             .unwrap();
         assert!(model_error.to_string().contains("count summation overflow"));
@@ -1057,7 +1333,14 @@ mod tests {
         assert!(time_range.is_some());
 
         let top_series = table
-            .get_top_time_series_of_model(model_id, None, None, None)
+            .get_top_time_series_of_model(
+                model_id,
+                None,
+                TimeSeriesRange::Between {
+                    start: None,
+                    end: None,
+                },
+            )
             .unwrap();
         assert_eq!(top_series.len(), 3); // One for each count_index
     }
@@ -1084,7 +1367,14 @@ mod tests {
         table.add_time_series(model_id, batch_ts, series).unwrap();
 
         let result = table
-            .get_top_time_series_of_cluster(model_id, cluster_id, None, None)
+            .get_top_time_series_of_cluster(
+                model_id,
+                cluster_id,
+                TimeSeriesRange::Between {
+                    start: None,
+                    end: None,
+                },
+            )
             .unwrap();
         let (_, _, columns) = result;
 

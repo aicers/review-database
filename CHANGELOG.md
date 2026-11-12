@@ -9,6 +9,12 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **BREAKING**: `get_top_time_series_of_cluster` and
+  `get_top_time_series_of_model` take `TimeSeriesRange` instead of separate
+  start and end bounds. Use `Between` for inclusive optional bounds or
+  `Latest` for a window relative to the latest stored value. Queries no longer
+  apply a default two-hour window, and cluster queries return only stored
+  points without filling vacant slots.
 - **BREAKING**: `InvalidEvent` has a new `Iteration` variant; downstream
   exhaustive matches must handle it.
 
