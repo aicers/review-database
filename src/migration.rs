@@ -1179,8 +1179,7 @@ fn migrate_model_trained_sources_v0_57(db: &rocksdb::OptimisticTransactionDB) ->
                         .context("failed to read a training definition in the 0.56 layout")
                 })
                 .transpose()?
-                .map(|definition| definition.sources)
-                .unwrap_or_default()
+                .map_or_default(|definition| definition.sources)
         } else {
             Vec::new()
         };
