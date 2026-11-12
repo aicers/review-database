@@ -108,7 +108,7 @@ impl<'d> Table<'d, ColumnStats> {
             }
             let decoded = Key::from_be_bytes(&key)?;
             if decoded.batch_ts < cutoff_ts {
-                batch.push(key.to_vec());
+                batch.push(key.into_vec());
                 if batch.len() >= BATCH_SIZE {
                     self.delete_keys_in_transaction(&batch)?;
                     total += batch.len();
