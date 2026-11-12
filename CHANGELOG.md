@@ -18,6 +18,9 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   silently ending iteration.
 - `TorExitNode::replace_all` reports RocksDB iteration errors without
   committing a partial replacement.
+- Malformed database records now return errors instead of being misinterpreted,
+  skipped, counted as valid, or causing a panic. Prefix-based deletion also
+  removes malformed records.
 
 ## [0.62.0] - 2026-11-08
 

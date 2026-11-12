@@ -5,11 +5,7 @@ use chrono::NaiveDateTime;
 use rocksdb::{Direction, OptimisticTransactionDB};
 use serde::{Deserialize, Serialize};
 
-use crate::{
-    Iterable, Map, Table, UniqueKey,
-    tables::{TableIter, Value as ValueTrait},
-    types::FromKeyValue,
-};
+use crate::{Iterable, Map, Table, UniqueKey, tables::Value as ValueTrait, types::FromKeyValue};
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 pub struct Cluster {
@@ -50,9 +46,14 @@ impl<'d> Table<'d, Cluster> {
         statuses: Option<&[i32]>,
     ) -> Result<usize> {
         let prefix = model.to_be_bytes();
-        let iter = self.prefix_iter(Direction::Forward, None, &prefix);
-
-        Ok(filter_cluster(iter, categories, detectors, qualifiers, statuses)?.count())
+        self.prefix_iter(Direction::Forward, None, &prefix)
+            .try_fold(0, |count, item| {
+                let cluster = item?;
+                Ok(count
+                    + usize::from(matches_cluster(
+                        &cluster, categories, detectors, qualifiers, statuses,
+                    )))
+            })
     }
 
     /// Updates the cluster with the given ID.
@@ -221,22 +222,29 @@ impl<'d> Table<'d, Cluster> {
         let prefix = model.to_be_bytes();
         let direction = Direction::Forward;
         let iter = self.prefix_iter(direction, None, &prefix);
-        let mut clusters = filter_cluster(iter, categories, detectors, qualifiers, statuses)?
-            .filter(|c| {
-                if let Some((id, size)) = after
-                    && is_first
-                {
-                    return c.size < *size || (c.id < *id && c.size == *size);
-                }
-                if let Some((id, size)) = before
-                    && !is_first
-                {
-                    return c.size > *size || (c.id > *id && c.size == *size);
-                }
-                true
-            })
-            .take(limit)
-            .collect::<Vec<_>>();
+        let mut clusters = Vec::new();
+        for item in iter {
+            let cluster = item?;
+            // Keep scanning after the limit so malformed records still return errors.
+            if clusters.len() >= limit
+                || !matches_cluster(&cluster, categories, detectors, qualifiers, statuses)
+            {
+                continue;
+            }
+            if let Some((id, size)) = after
+                && is_first
+                && !(cluster.size < *size || (cluster.id < *id && cluster.size == *size))
+            {
+                continue;
+            }
+            if let Some((id, size)) = before
+                && !is_first
+                && !(cluster.size > *size || (cluster.id > *id && cluster.size == *size))
+            {
+                continue;
+            }
+            clusters.push(cluster);
+        }
         if is_first {
             clusters.sort_unstable_by_key(|c| (std::cmp::Reverse(c.size), std::cmp::Reverse(c.id)));
         } else {
@@ -246,37 +254,34 @@ impl<'d> Table<'d, Cluster> {
     }
 }
 
-fn filter_cluster(
-    iter: TableIter<'_, Cluster>,
+fn matches_cluster(
+    cluster: &Cluster,
     categories: Option<&[i32]>,
     detectors: Option<&[i32]>,
     qualifiers: Option<&[i32]>,
     statuses: Option<&[i32]>,
-) -> Result<impl Iterator<Item = Cluster>> {
-    let clusters = iter.collect::<Result<Vec<_>>>()?;
-    Ok(clusters.into_iter().filter_map(move |cluster| {
-        if let Some(categories) = categories
-            && !categories.contains(&cluster.category_id)
-        {
-            return None;
-        }
-        if let Some(detectors) = detectors
-            && !detectors.contains(&cluster.detector_id)
-        {
-            return None;
-        }
-        if let Some(qualifiers) = qualifiers
-            && !qualifiers.contains(&cluster.qualifier_id)
-        {
-            return None;
-        }
-        if let Some(statuses) = statuses
-            && !statuses.contains(&cluster.status_id)
-        {
-            return None;
-        }
-        Some(cluster)
-    }))
+) -> bool {
+    if let Some(categories) = categories
+        && !categories.contains(&cluster.category_id)
+    {
+        return false;
+    }
+    if let Some(detectors) = detectors
+        && !detectors.contains(&cluster.detector_id)
+    {
+        return false;
+    }
+    if let Some(qualifiers) = qualifiers
+        && !qualifiers.contains(&cluster.qualifier_id)
+    {
+        return false;
+    }
+    if let Some(statuses) = statuses
+        && !statuses.contains(&cluster.status_id)
+    {
+        return false;
+    }
+    true
 }
 
 #[derive(Deserialize, Serialize)]
@@ -408,9 +413,21 @@ mod tests {
             )
             .unwrap();
         assert!(table.count_clusters(1, None, None, None, None).is_err());
+        for limit in [0, 1, 10] {
+            assert!(
+                table
+                    .load_clusters(1, None, None, None, None, &None, &None, true, limit)
+                    .is_err()
+            );
+        }
         assert!(
             table
-                .load_clusters(1, None, None, None, None, &None, &None, true, 10)
+                .count_clusters(1, Some(&[]), None, None, None)
+                .is_err()
+        );
+        assert!(
+            table
+                .load_clusters(1, Some(&[]), None, None, None, &None, &None, true, 10)
                 .is_err()
         );
     }

@@ -97,11 +97,34 @@ impl<'d> Table<'d, crate::batch_info::BatchInfo> {
 #[cfg(test)]
 mod tests {
     #[test]
-    fn malformed_keys_and_values_are_counted_and_deleted_correctly() {
-        use crate::{UniqueKey, types::FromKeyValue};
+    fn decoding_validates_key_length() {
+        use crate::{UniqueKey, tables::Value, types::FromKeyValue};
+
+        let entry = entries().remove(0);
+        let value = entry.value();
         for len in [0, 11, 13] {
-            assert!(BatchInfo::from_key_value(&vec![0; len], &[0; 3]).is_err());
+            let error = BatchInfo::from_key_value(&vec![0; len], &value).unwrap_err();
+            assert_eq!(
+                error.to_string(),
+                format!("invalid BatchInfo key length: {len}")
+            );
         }
+        let key = entry.unique_key();
+        assert_eq!(key.len(), 12);
+        assert_eq!(BatchInfo::from_key_value(&key, &value).unwrap(), entry);
+    }
+
+    #[test]
+    fn decoding_rejects_malformed_value() {
+        use crate::{UniqueKey, types::FromKeyValue};
+
+        let entry = entries().remove(0);
+        assert!(BatchInfo::from_key_value(&entry.unique_key(), &[0; 3]).is_err());
+    }
+
+    #[test]
+    fn malformed_keys_and_values_are_counted_and_deleted_correctly() {
+        use crate::UniqueKey;
         let (_permit, store) = setup_store();
         let table = store.batch_info_map();
         let entries = entries();
