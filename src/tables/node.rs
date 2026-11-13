@@ -1329,23 +1329,22 @@ impl Iterator for TableIter<'_> {
 
     fn next(&mut self) -> Option<Self::Item> {
         self.node.next().map(|res| {
-            res.map(|inner| {
+            res.and_then(|inner| {
                 let mut agents = vec![];
                 for aid in inner.agents {
-                    if let Ok(Some(agent)) = self.agent.get(inner.id, &aid) {
+                    if let Some(agent) = self.agent.get(inner.id, &aid)? {
                         agents.push(agent);
                     }
                 }
 
                 let mut external_services = vec![];
                 for es_id in inner.external_services {
-                    if let Ok(Some(external_service)) = self.external_service.get(inner.id, &es_id)
-                    {
+                    if let Some(external_service) = self.external_service.get(inner.id, &es_id)? {
                         external_services.push(external_service);
                     }
                 }
 
-                Node {
+                Ok(Node {
                     id: inner.id,
                     name: inner.name,
                     name_draft: inner.name_draft,
@@ -1354,7 +1353,7 @@ impl Iterator for TableIter<'_> {
                     agents,
                     external_services,
                     creation_time: inner.creation_time,
-                }
+                })
             })
         })
     }
@@ -1479,6 +1478,87 @@ impl IndexedMapUpdate for InnerUpdate {
 
 #[cfg(test)]
 mod test {
+    #[test]
+    fn iteration_reports_corrupt_associated_agent() {
+        let (_permit, store) = setup_store();
+        let kinds = [AgentKind::Sensor];
+        let agents = create_agents(0, &kinds, &[None], &[None]);
+        let node = create_node(0, "corrupt-agent", None, None, None, agents, vec![]);
+        let table = store.node_map();
+        let id = table.put(&node).unwrap();
+        let mut key = id.to_be_bytes().to_vec();
+        key.extend(node.agents[0].key.as_bytes());
+        table.agent.map.put(&key, &[0; 3]).unwrap();
+        let valid = create_node(0, "valid-node", None, None, None, vec![], vec![]);
+        let valid_id = table.put(&valid).unwrap();
+        let mut iter = table.iter(Direction::Forward, None);
+        assert!(iter.next().unwrap().is_err());
+        assert_eq!(iter.next().unwrap().unwrap().id, valid_id);
+        assert!(iter.next().is_none());
+        assert!(table.get_by_id(id).is_err());
+    }
+
+    #[test]
+    fn iteration_reports_corrupt_associated_external_service() {
+        let (_permit, store) = setup_store();
+        let services = create_external_services(0, &[ExternalServiceKind::DataStore], &[None]);
+        let node = create_node(0, "corrupt-service", None, None, None, vec![], services);
+        let table = store.node_map();
+        let id = table.put(&node).unwrap();
+        let mut key = id.to_be_bytes().to_vec();
+        key.extend(node.external_services[0].key.as_bytes());
+        table.external_service.map.put(&key, &[0; 3]).unwrap();
+
+        let valid = create_node(0, "valid-node", None, None, None, vec![], vec![]);
+        let valid_id = table.put(&valid).unwrap();
+        let mut iter = table.iter(Direction::Forward, None);
+        assert!(iter.next().unwrap().is_err());
+        assert_eq!(iter.next().unwrap().unwrap().id, valid_id);
+        assert!(iter.next().is_none());
+        assert!(table.get_by_id(id).is_err());
+    }
+
+    #[test]
+    fn iteration_omits_missing_associated_records() {
+        let (_permit, store) = setup_store();
+        let agents = create_agents(
+            0,
+            &[AgentKind::Sensor, AgentKind::Unsupervised],
+            &[None, None],
+            &[None, None],
+        );
+        let services = create_external_services(
+            0,
+            &[
+                ExternalServiceKind::DataStore,
+                ExternalServiceKind::TiContainer,
+            ],
+            &[None, None],
+        );
+        let mut node = create_node(0, "missing-records", None, None, None, agents, services);
+        let table = store.node_map();
+        let id = table.put(&node).unwrap();
+        let mut agent_key = id.to_be_bytes().to_vec();
+        agent_key.extend(node.agents[0].key.as_bytes());
+        table.agent.map.delete(&agent_key).unwrap();
+        let mut service_key = id.to_be_bytes().to_vec();
+        service_key.extend(node.external_services[0].key.as_bytes());
+        table.external_service.map.delete(&service_key).unwrap();
+
+        node.id = id;
+        node.agents.remove(0);
+        node.external_services.remove(0);
+        for agent in &mut node.agents {
+            agent.node_id = id;
+        }
+        for service in &mut node.external_services {
+            service.node_id = id;
+        }
+        let mut iter = table.iter(Direction::Forward, None);
+        assert_eq!(iter.next().unwrap().unwrap(), node);
+        assert!(iter.next().is_none());
+    }
+
     use std::{
         net::{IpAddr, SocketAddr},
         sync::Arc,

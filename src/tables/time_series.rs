@@ -190,7 +190,7 @@ impl<'d> Table<'d, TimeSeries> {
     /// # Errors
     ///
     /// Returns an error if an underlying database operation fails or count
-    /// summation overflows.
+    /// summation overflows or a stored record cannot be decoded.
     pub fn get_top_time_series_of_model(
         &self,
         model_id: u32,
@@ -255,9 +255,10 @@ impl<'d> Table<'d, TimeSeries> {
 
         if let Some(time) = time {
             self.prefix_iter(rocksdb::Direction::Forward, None, &prefix)
-                .filter_map(|item| {
-                    let ts = item.ok()?;
-                    if ts.time == time { Some(Ok(ts)) } else { None }
+                .filter_map(|item| match item {
+                    Ok(ts) if ts.time == time => Some(Ok(ts)),
+                    Ok(_) => None,
+                    Err(e) => Some(Err(e)),
                 })
                 .collect::<Result<Vec<_>>>()
         } else {
@@ -375,7 +376,7 @@ impl Value for TimeSeries {
 
 impl FromKeyValue for TimeSeries {
     fn from_key_value(key: &[u8], value: &[u8]) -> Result<Self> {
-        let key = Key::from_bytes(key);
+        let key = Key::from_bytes(key)?;
 
         let value = usize::from_be_bytes(value.try_into()?);
 
@@ -411,7 +412,12 @@ impl Key {
         buf
     }
 
-    pub fn from_bytes(buf: &[u8]) -> Self {
+    pub fn from_bytes(buf: &[u8]) -> Result<Self> {
+        anyhow::ensure!(
+            matches!(buf.len(), 24 | 28),
+            "invalid TimeSeries key length: {}",
+            buf.len()
+        );
         let (val, rest) = buf.split_at(size_of::<u32>());
         let mut buf = [0; size_of::<u32>()];
         buf.copy_from_slice(val);
@@ -439,18 +445,52 @@ impl Key {
             Some(i32::from_be_bytes(buf))
         };
 
-        Self {
+        Ok(Self {
             model_id,
             cluster_id,
             time,
             value,
             count_index,
-        }
+        })
     }
 }
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn malformed_keys_and_model_records_return_errors() {
+        for len in [0, 23, 25, 27, 29] {
+            assert!(super::Key::from_bytes(&vec![0; len]).is_err());
+        }
+        for len in [24, 28] {
+            assert!(super::Key::from_bytes(&vec![0; len]).is_ok());
+        }
+        let (_permit, store) = setup_store();
+        let table = store.time_series_map();
+        table
+            .add_time_series(1, 1, vec![(1, vec![create_test_column(0, vec![(1, 1)])])])
+            .unwrap();
+        let key = super::Key {
+            model_id: 1,
+            cluster_id: 2,
+            time: 2,
+            value: 100,
+            count_index: None,
+        }
+        .to_bytes();
+        table.map.put(&key, &[0; 3]).unwrap();
+        assert!(
+            table
+                .get_top_time_series_of_model(1, Some(1), None, None)
+                .is_err()
+        );
+        assert!(
+            table
+                .get_top_time_series_of_model(1, None, Some(0), Some(2))
+                .is_err()
+        );
+    }
+
     use std::sync::Arc;
 
     use super::*;
@@ -1023,7 +1063,7 @@ mod tests {
         };
 
         let bytes = key.to_bytes();
-        let reconstructed = Key::from_bytes(&bytes);
+        let reconstructed = Key::from_bytes(&bytes).unwrap();
 
         assert_eq!(key.model_id, reconstructed.model_id);
         assert_eq!(key.cluster_id, reconstructed.cluster_id);
@@ -1043,7 +1083,7 @@ mod tests {
         };
 
         let bytes = key.to_bytes();
-        let reconstructed = Key::from_bytes(&bytes);
+        let reconstructed = Key::from_bytes(&bytes).unwrap();
 
         assert_eq!(key.model_id, reconstructed.model_id);
         assert_eq!(key.cluster_id, reconstructed.cluster_id);

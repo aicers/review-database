@@ -5,10 +5,15 @@ use std::mem::size_of;
 use anyhow::Result;
 use rocksdb::OptimisticTransactionDB;
 
-use crate::{Iterable, Map, Table, UniqueKey, batch_info::BatchInfo, types::FromKeyValue};
+use crate::{Iterable, Map, Table, batch_info::BatchInfo, types::FromKeyValue};
 
 impl FromKeyValue for BatchInfo {
     fn from_key_value(key: &[u8], value: &[u8]) -> Result<Self> {
+        anyhow::ensure!(
+            key.len() == 12,
+            "invalid BatchInfo key length: {}",
+            key.len()
+        );
         let mut model = [0; size_of::<u32>()];
         model.copy_from_slice(&key[..size_of::<u32>()]);
         let model = u32::from_be_bytes(model);
@@ -43,13 +48,11 @@ impl<'d> Table<'d, crate::batch_info::BatchInfo> {
     ///
     /// # Errors
     ///
-    /// Returns an error if the record with given model id does not exist
-    /// or the database operation fails.
+    /// Returns an error if the database operation fails or a stored record cannot be decoded.
     pub fn count(&self, model: u32) -> Result<usize> {
         let prefix = model.to_be_bytes();
-        Ok(self
-            .prefix_iter(rocksdb::Direction::Forward, None, &prefix)
-            .count())
+        self.prefix_iter(rocksdb::Direction::Forward, None, &prefix)
+            .try_fold(0, |count, item| item.map(|_| count + 1))
     }
 
     /// Returns the `batch_info` with the given `model_id` and `batch_ts`.
@@ -74,18 +77,18 @@ impl<'d> Table<'d, crate::batch_info::BatchInfo> {
     ///
     /// Returns an error if any of deletion operation fails.
     pub fn delete_all_for(&self, model: u32) -> Result<usize> {
-        let mut deleted = 0;
         let prefix = model.to_be_bytes();
-        for res in self.prefix_iter(rocksdb::Direction::Reverse, None, &prefix) {
-            let entry = res?;
-            match self.map.delete(&entry.unique_key()) {
-                Ok(()) => deleted += 1,
-                Err(e) => {
-                    return Err(anyhow::anyhow!(
-                        "Deleted: {deleted}\nDeletion ended due to: {e}"
-                    ));
-                }
-            }
+        let mut options = rocksdb::ReadOptions::default();
+        options.set_iterate_range(rocksdb::PrefixRange(&prefix));
+        let iter = self
+            .map
+            .db
+            .iterator_cf_opt(self.map.cf, options, rocksdb::IteratorMode::Start);
+        let mut deleted = 0;
+        for item in iter {
+            let (key, _) = item?;
+            self.map.delete(&key)?;
+            deleted += 1;
         }
         Ok(deleted)
     }
@@ -93,6 +96,53 @@ impl<'d> Table<'d, crate::batch_info::BatchInfo> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn decoding_validates_key_length() {
+        use crate::{UniqueKey, tables::Value, types::FromKeyValue};
+
+        let entry = entries().remove(0);
+        let value = entry.value();
+        for len in [0, 11, 13] {
+            let error = BatchInfo::from_key_value(&vec![0; len], &value).unwrap_err();
+            assert_eq!(
+                error.to_string(),
+                format!("invalid BatchInfo key length: {len}")
+            );
+        }
+        let key = entry.unique_key();
+        assert_eq!(key.len(), 12);
+        assert_eq!(BatchInfo::from_key_value(&key, &value).unwrap(), entry);
+    }
+
+    #[test]
+    fn decoding_rejects_malformed_value() {
+        use crate::{UniqueKey, types::FromKeyValue};
+
+        let entry = entries().remove(0);
+        assert!(BatchInfo::from_key_value(&entry.unique_key(), &[0; 3]).is_err());
+    }
+
+    #[test]
+    fn malformed_keys_and_values_are_counted_and_deleted_correctly() {
+        use crate::UniqueKey;
+        let (_permit, store) = setup_store();
+        let table = store.batch_info_map();
+        let entries = entries();
+        for entry in &entries {
+            table.put(entry).unwrap();
+        }
+        let mut corrupt = 1_u32.to_be_bytes().to_vec();
+        corrupt.extend(123_i64.to_be_bytes());
+        table.map.put(&corrupt, &[0; 3]).unwrap();
+        assert!(table.count(1).is_err());
+        let mut short = 1_u32.to_be_bytes().to_vec();
+        short.push(7);
+        table.map.put(&short, &[0; 3]).unwrap();
+        assert_eq!(table.delete_all_for(1).unwrap(), 4);
+        assert!(table.map.get(&short).unwrap().is_none());
+        assert!(table.map.get(&entries[2].unique_key()).unwrap().is_some());
+    }
+
     use std::sync::Arc;
 
     use crate::test::{DbGuard, acquire_db_permit};

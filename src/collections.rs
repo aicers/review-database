@@ -131,9 +131,8 @@ impl KeyIndex {
             Ordering::Greater => {
                 let i = usize::try_from(id).context("too many keys")?;
                 self.available = match self.keys.get(i) {
-                    Some(KeyIndexEntry::Key(_)) => bail!("corrupt index"),
                     Some(KeyIndexEntry::Index(i)) => *i,
-                    _ => unreachable!(),
+                    _ => bail!("corrupt index"),
                 };
                 self.keys[i] = KeyIndexEntry::Key(key.to_vec());
             }
@@ -758,6 +757,16 @@ pub trait IndexedMapUpdate {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn insert_rejects_inactive_available_entry() {
+        let mut index = KeyIndex {
+            keys: vec![KeyIndexEntry::Inactive(None)],
+            available: 0,
+            inactive: None,
+        };
+        assert!(index.insert(b"key").is_err());
+    }
+
     use super::{KeyIndex, KeyIndexEntry};
 
     #[test]

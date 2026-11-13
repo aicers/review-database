@@ -141,6 +141,11 @@ impl ExternalService {
 
 impl FromKeyValue for ExternalService {
     fn from_key_value(key: &[u8], value: &[u8]) -> Result<Self> {
+        anyhow::ensure!(
+            key.len() >= 4,
+            "invalid ExternalService key length: {}",
+            key.len()
+        );
         let value: Value = super::deserialize(value)?;
 
         let (node_id, key) = key.split_at(size_of::<u32>());
@@ -266,6 +271,19 @@ impl<'d> Table<'d, ExternalService> {
 
 #[cfg(test)]
 mod test {
+    #[test]
+    fn rejects_short_keys() {
+        use crate::types::FromKeyValue;
+        for len in [0, 3] {
+            let error = super::ExternalService::from_key_value(&vec![0; len], &[]).unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains(&format!("ExternalService key length: {len}"))
+            );
+        }
+    }
+
     use std::sync::Arc;
 
     use super::*;
