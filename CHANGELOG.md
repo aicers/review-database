@@ -17,6 +17,19 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   points without filling vacant slots.
 - **BREAKING**: `InvalidEvent` has a new `Iteration` variant; downstream
   exhaustive matches must handle it.
+- **BREAKING**: Updated `structured` to 0.17, which uses Apache Arrow 57.3.2
+  instead of Arrow 56. The `structured` types in this crate's public API, such
+  as `ColumnStatistics`, `Description`, `Element` and `NLargestCount`, are now
+  the types from that release, so a crate that passes them to or from this
+  crate must use `structured` 0.17 as well. Arrow 57.3.2 fixes the
+  out-of-bounds read on RunEndEncoded arrays in `arrow-data` 56.2.1
+  (RUSTSEC-2026-0442).
+- **BREAKING**: Updated review-protocol to `0.26.0`, taken from
+  `https://github.com/aicers/review-protocol.git` at that tag instead of tag
+  `0.24.0`. The re-exported `review_database::ThreatLevel` is now the type from
+  that release, so a crate that also depends on `review-protocol` directly must
+  use the same Git source and tag for its `ThreatLevel` to be interchangeable
+  with this crate's.
 
 ### Fixed
 
