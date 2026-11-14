@@ -5,7 +5,7 @@ file is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), and
 this project adheres to [Semantic
 Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.63.0] - 2026-11-14
 
 ### Changed
 
@@ -2426,7 +2426,7 @@ AsRef<[u8]>`). This change accommodates scenarios where the information stored
 - Modified `FtpBruteForce` by adding an `is_internal` field which is a boolean
   indicating whether it is internal or not.
 
-[Unreleased]: https://github.com/aicers/review-database/compare/0.62.0...main
+[0.63.0]: https://github.com/aicers/review-database/compare/0.62.0...0.63.0
 [0.62.0]: https://github.com/aicers/review-database/compare/0.61.0...0.62.0
 [0.61.0]: https://github.com/aicers/review-database/compare/0.60.1...0.61.0
 [0.60.1]: https://github.com/aicers/review-database/compare/0.60.0...0.60.1
