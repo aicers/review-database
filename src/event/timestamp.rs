@@ -291,6 +291,40 @@ mod tests {
         );
     }
 
+    /// RFC 3339 text captured with jiff 0.2 for each epoch-nanosecond value.
+    const RFC3339_PINS: [(i64, &str); 8] = [
+        (1_592_224_245_100_000_000, "2020-06-15T12:30:45.1+00:00"),
+        (1_592_224_245_120_000_000, "2020-06-15T12:30:45.12+00:00"),
+        (1_592_224_245_123_000_000, "2020-06-15T12:30:45.123+00:00"),
+        (1_592_224_245_000_000_000, "2020-06-15T12:30:45+00:00"),
+        (-1, "1969-12-31T23:59:59.999999999+00:00"),
+        (
+            -1_592_224_245_987_654_321,
+            "1919-07-19T11:29:14.012345679+00:00",
+        ),
+        (i64::MIN, "1677-09-21T00:12:43.145224192+00:00"),
+        (i64::MAX, "2262-04-11T23:47:16.854775807+00:00"),
+    ];
+
+    #[test]
+    fn format_rfc3339_matches_pinned_text() {
+        for (nanos, expected) in RFC3339_PINS {
+            let time = Timestamp::from_nanosecond(i128::from(nanos)).expect("valid timestamp");
+            assert_eq!(format_rfc3339(time).expect("format"), expected, "{nanos}");
+        }
+    }
+
+    #[test]
+    fn format_i64_nanos_rfc3339_matches_pinned_text() {
+        for (nanos, expected) in RFC3339_PINS {
+            assert_eq!(
+                format_i64_nanos_rfc3339(nanos).expect("format"),
+                expected,
+                "{nanos}"
+            );
+        }
+    }
+
     #[test]
     fn from_chrono_rejects_out_of_i64_range() {
         let out_of_range = NaiveDate::from_ymd_opt(2263, 1, 1)
