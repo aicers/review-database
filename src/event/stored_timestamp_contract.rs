@@ -422,6 +422,66 @@ fn extra_threat_production_bytes_match_stored_fixture() {
     assert_eq!(decoded.time, time);
 }
 
+/// Stored `ExtraThreatFieldsStored` bytes for `2026-03-15T15:00:04.12Z`,
+/// captured with jiff 0.2.
+const EXTRA_THREAT_2026_FRACTIONAL_STORED: [u8; 97] = [
+    0, 150, 228, 45, 205, 11, 157, 24, // time: 1_773_586_804_120_000_000 ns
+    6, 0, 0, 0, 0, 0, 0, 0, 115, 101, 110, 115, 111, 114, // sensor
+    7, 0, 0, 0, 0, 0, 0, 0, 115, 101, 114, 118, 105, 99, 101, // service
+    7, 0, 0, 0, 0, 0, 0, 0, 99, 111, 110, 116, 101, 110, 116, // content
+    2, 0, 0, 0, 0, 0, 0, 0, 100, 98, // db_name
+    1, 0, 0, 0, // rule_id
+    4, 0, 0, 0, 0, 0, 0, 0, 114, 117, 108, 101, // matched_to
+    0,   // cluster_id
+    4, 0, 0, 0, 0, 0, 0, 0, 107, 105, 110, 100, // attack_kind
+    0, 0, 128, 63, // confidence
+    0,  // category
+    0,  // triage_scores
+];
+
+/// Stored `ExtraThreatFieldsStored` bytes for `2026-03-15T15:00:04Z`,
+/// captured with jiff 0.2.
+const EXTRA_THREAT_2026_WHOLE_SECOND_STORED: [u8; 97] = [
+    0, 136, 189, 38, 205, 11, 157, 24, // time: 1_773_586_804_000_000_000 ns
+    6, 0, 0, 0, 0, 0, 0, 0, 115, 101, 110, 115, 111, 114, // sensor
+    7, 0, 0, 0, 0, 0, 0, 0, 115, 101, 114, 118, 105, 99, 101, // service
+    7, 0, 0, 0, 0, 0, 0, 0, 99, 111, 110, 116, 101, 110, 116, // content
+    2, 0, 0, 0, 0, 0, 0, 0, 100, 98, // db_name
+    1, 0, 0, 0, // rule_id
+    4, 0, 0, 0, 0, 0, 0, 0, 114, 117, 108, 101, // matched_to
+    0,   // cluster_id
+    4, 0, 0, 0, 0, 0, 0, 0, 107, 105, 110, 100, // attack_kind
+    0, 0, 128, 63, // confidence
+    0,  // category
+    0,  // triage_scores
+];
+
+#[test]
+fn extra_threat_production_bytes_match_pinned_literals() {
+    let cases = [
+        (
+            Timestamp::new(1_773_586_804, 120_000_000).expect("valid timestamp"),
+            &EXTRA_THREAT_2026_FRACTIONAL_STORED,
+        ),
+        (
+            Timestamp::new(1_773_586_804, 0).expect("valid timestamp"),
+            &EXTRA_THREAT_2026_WHOLE_SECOND_STORED,
+        ),
+    ];
+
+    for (time, expected) in cases {
+        let producer_bytes =
+            bincode::serialize(&extra_threat_fields(time)).expect("serializable producer fields");
+        let bytes = convert_for_storage(EventKind::ExtraThreat, &producer_bytes, None)
+            .expect("convertible to stored fields");
+        assert_eq!(bytes, expected, "stored bytes for {time}");
+
+        let decoded: ExtraThreatFieldsStored =
+            bincode::deserialize(expected).expect("pinned bytes decode as stored fields");
+        assert_eq!(decoded.time, time);
+    }
+}
+
 #[test]
 #[ignore = "rewrites the checked-in binary fixture; run only when intentionally replacing this baseline fixture"]
 fn regenerate_extra_threat_pre_1970_stored_fixture() {
