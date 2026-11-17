@@ -1496,7 +1496,7 @@ mod tests {
             (Element::Text("text".into()), 4),
             (Element::IpAddr("127.0.0.1".parse().unwrap()), 5),
             (
-                Element::DateTime(jiff::civil::DateTime::new(2024, 1, 1, 0, 0, 0, 0).unwrap()),
+                Element::DateTime(structured::DateTime::new(2024, 1, 1, 0, 0, 0, 0).unwrap()),
                 6,
             ),
             (Element::Binary(vec![1, 2, 3]), 7),
@@ -2701,7 +2701,7 @@ mod tests {
                 .unwrap()
                 .and_hms_nano_opt(10, 30, 45, 123_000_000)
                 .unwrap();
-            let jiff_dt = jiff::civil::DateTime::new(2024, 6, 15, 10, 30, 45, 123_000_000).unwrap();
+            let jiff_dt = structured::DateTime::new(2024, 6, 15, 10, 30, 45, 123_000_000).unwrap();
             let element = Element::DateTime(jiff_dt);
 
             let statistics = ColumnStatistics {

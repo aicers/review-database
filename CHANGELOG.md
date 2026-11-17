@@ -5,6 +5,20 @@ file is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), and
 this project adheres to [Semantic
 Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- **BREAKING**: Bumped `jiff` to 1.0. The `jiff` types in this crate's public
+  API, such as the `time` fields of the event types and the argument of
+  `EventDb::remove_before`, are now jiff 1 types, so a crate that names them
+  must use jiff 1 as well. `structured::Element::DateTime`, from `structured`
+  0.17, still carries jiff 0.2's `civil::DateTime`. Updated review-protocol to
+  `0.27.0`, taken from `https://github.com/aicers/review-protocol.git` at that
+  tag instead of tag `0.26.0`; it also moves to jiff 1, and the re-exported
+  `review_database::ThreatLevel` is now the type from that release. The
+  storage format is unchanged, so there is no migration.
+
 ## [0.63.0] - 2026-11-14
 
 ### Changed
@@ -2426,6 +2440,7 @@ AsRef<[u8]>`). This change accommodates scenarios where the information stored
 - Modified `FtpBruteForce` by adding an `is_internal` field which is a boolean
   indicating whether it is internal or not.
 
+[Unreleased]: https://github.com/aicers/review-database/compare/0.63.0...main
 [0.63.0]: https://github.com/aicers/review-database/compare/0.62.0...0.63.0
 [0.62.0]: https://github.com/aicers/review-database/compare/0.61.0...0.62.0
 [0.61.0]: https://github.com/aicers/review-database/compare/0.60.1...0.61.0
