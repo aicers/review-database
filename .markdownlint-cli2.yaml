@@ -1,2 +1,4 @@
 globs: ["**/*.md"]
-ignores: ["target/**"]
+# release-plz writes CHANGELOG.md and expands each `(#N)` into a link
+# that runs past the line-length limit.
+ignores: ["target/**", "CHANGELOG.md"]
