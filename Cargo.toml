@@ -2,6 +2,7 @@
 name = "review-database"
 version = "0.64.0"
 edition = "2024"
+publish = false
 
 [dependencies]
 anyhow = "1"
@@ -36,6 +37,15 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"], optional = tr
 
 [dev-dependencies]
 tempfile = "3"
+
+# release-plz runs cargo-semver-checks before each release. It reads the
+# `update` methods of the separate `impl IndexedTable<'_, T>` blocks as one
+# method, so the ones taking `&mut self` (`Category`, `Network`, ...) look
+# like a receiver change from those taking `&self` (`CsvColumnExtra`) even
+# when nothing changed, and every release would raise the minor. Only that
+# lint is turned off; a real receiver change still takes a `!` title.
+[package.metadata.cargo-semver-checks.lints]
+method_receiver_ref_became_mut = "allow"
 
 [[bin]]
 name = "review-migrate"
