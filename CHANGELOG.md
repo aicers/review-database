@@ -7,13 +7,27 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [0.65.0](https://github.com/aicers/review-database/compare/0.64.0...0.65.0) - 2026-11-21
 
+### Changed
+
+- **BREAKING**: The public API uses `jiff` in place of `chrono`. Every
+  `DateTime<Utc>` or `NaiveDateTime` field, parameter and return type is now
+  `jiff::Timestamp`, or `Option<jiff::Timestamp>` where it is optional, and
+  `RetentionBound.max_age` is a `jiff::SignedDuration`. Field names are
+  unchanged. Public structs that are not stored, such as `Node`,
+  `tables::Cluster` and `Statistics`, serialize their timestamps in jiff's
+  default RFC 3339 form (`…Z`).
+- **BREAKING**: The database format is 0.62. `migrate_data_dir` converts a 0.61
+  database by rewriting every timestamp stored as a chrono string as an `i64`
+  count of Unix-epoch nanoseconds; a value outside 1677-09-21 to 2262-04-11 is
+  stored saturated to the nearer end. There is no migration back, so an earlier
+  release cannot open a 0.62 database: to go back, restore a copy of the
+  database taken before the upgrade and set both `VERSION` files to `0.61.0`.
+  Online restore rejects a backup taken in format 0.61.
+
 ### Added
 
-- [**breaking**] replace chrono with jiff and store timestamps as i64 nanoseconds ([#1076](https://github.com/aicers/review-database/pull/1076))
-
-### Other
-
-- automate releases with release-plz ([#1072](https://github.com/aicers/review-database/pull/1072))
+- `review_database::timestamp` converts between `jiff::Timestamp` and `i64`
+  nanoseconds (`to_i64_nanos`, `from_i64_nanos`, `TimestampError`).
 
 ## [0.64.0] - 2026-11-18
 
