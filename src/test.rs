@@ -134,3 +134,95 @@ pub(crate) fn corrupt_new_sst(
     file.seek(SeekFrom::Start(offset)).unwrap();
     file.write_all(&bytes).unwrap();
 }
+
+/// Returns the UTC timestamp of the given civil date and time.
+pub(crate) fn utc(
+    year: i16,
+    month: i8,
+    day: i8,
+    hour: i8,
+    minute: i8,
+    second: i8,
+) -> jiff::Timestamp {
+    jiff::tz::TimeZone::UTC
+        .to_timestamp(jiff::civil::datetime(
+            year, month, day, hour, minute, second, 0,
+        ))
+        .expect("test date and time must be a valid UTC timestamp")
+}
+
+/// Returns the `i64` Unix-epoch nanoseconds of the given civil date and time
+/// in UTC.
+pub(crate) fn utc_nanos(year: i16, month: i8, day: i8, hour: i8, minute: i8, second: i8) -> i64 {
+    crate::timestamp::to_i64_nanos(utc(year, month, day, hour, minute, second))
+        .expect("test date and time must fit i64 nanoseconds")
+}
+
+/// Returns the timestamp `seconds` and `nanos` after the Unix epoch.
+pub(crate) fn from_second(seconds: i64, nanos: i32) -> jiff::Timestamp {
+    jiff::Timestamp::new(seconds, nanos).expect("test timestamp must be valid")
+}
+
+/// Returns the UTC timestamp of the given civil date and time with
+/// nanoseconds.
+pub(crate) fn utc_nano(
+    year: i16,
+    month: i8,
+    day: i8,
+    hour: i8,
+    minute: i8,
+    second: i8,
+    nanosecond: i32,
+) -> jiff::Timestamp {
+    jiff::tz::TimeZone::UTC
+        .to_timestamp(jiff::civil::datetime(
+            year, month, day, hour, minute, second, nanosecond,
+        ))
+        .expect("test date and time must be a valid UTC timestamp")
+}
+
+/// Returns the subsecond part of `time` the way the 0.61 format wrote it:
+/// nothing for a whole second, else three, six or nine digits, whichever is
+/// the fewest that holds the value.
+fn v0_61_fraction(time: jiff::Timestamp) -> String {
+    let nanos = time.as_nanosecond().rem_euclid(1_000_000_000);
+    if nanos == 0 {
+        String::new()
+    } else if nanos % 1_000_000 == 0 {
+        format!(".{:03}", nanos / 1_000_000)
+    } else if nanos % 1_000 == 0 {
+        format!(".{:06}", nanos / 1_000)
+    } else {
+        format!(".{nanos:09}")
+    }
+}
+
+/// Returns `time` as the 0.61 format stored a `DateTime<Utc>` with chrono's
+/// default serde, such as `2026-03-15T15:00:04.100Z`.
+pub(crate) fn v0_61_serde_string(time: jiff::Timestamp) -> String {
+    format!(
+        "{}{}Z",
+        time.strftime("%Y-%m-%dT%H:%M:%S"),
+        v0_61_fraction(time)
+    )
+}
+
+/// Returns `time` as the 0.61 format stored a `NaiveDateTime` with chrono's
+/// default serde, such as `2026-03-15T15:00:04.100`.
+pub(crate) fn v0_61_naive_string(time: jiff::Timestamp) -> String {
+    format!(
+        "{}{}",
+        time.strftime("%Y-%m-%dT%H:%M:%S"),
+        v0_61_fraction(time)
+    )
+}
+
+/// Returns `time` as the 0.61 format stored a `DateTime<Utc>` as chrono's
+/// `Display` text, such as `2026-03-15 15:00:04.100 UTC`.
+pub(crate) fn v0_61_display_string(time: jiff::Timestamp) -> String {
+    format!(
+        "{}{} UTC",
+        time.strftime("%Y-%m-%d %H:%M:%S"),
+        v0_61_fraction(time)
+    )
+}

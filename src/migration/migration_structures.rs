@@ -5,7 +5,6 @@
 //! old formats to new formats.
 
 use anyhow::{Context, Result};
-use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -28,7 +27,7 @@ pub(crate) struct NetworkValueV0_43 {
     pub(crate) networks: HostNetworkGroup,
     pub(crate) customer_ids: Vec<u32>,
     pub(crate) tag_ids: Vec<u32>,
-    pub(crate) creation_time: DateTime<Utc>,
+    pub(crate) creation_time: String,
 }
 
 // ============================================================================
@@ -59,7 +58,7 @@ pub(crate) struct TriagePolicyV0_44 {
     pub(crate) packet_attr: Vec<PacketAttr>,
     pub(crate) confidence: Vec<ConfidenceV0_44>,
     pub(crate) response: Vec<Response>,
-    pub(crate) creation_time: DateTime<Utc>,
+    pub(crate) creation_time: String,
     pub(crate) customer_id: Option<u32>,
 }
 
@@ -73,7 +72,7 @@ pub(crate) struct TriagePolicyV0_45 {
     pub(crate) packet_attr: Vec<PacketAttr>,
     pub(crate) confidence: Vec<crate::Confidence>,
     pub(crate) response: Vec<Response>,
-    pub(crate) creation_time: DateTime<Utc>,
+    pub(crate) creation_time: String,
     pub(crate) customer_id: Option<u32>,
 }
 
@@ -277,11 +276,11 @@ pub(crate) struct OperationAttemptValueV0_47 {
     pub resolved_commit: String,
     pub phase: OperationPhase,
     pub cleanup_state: Option<OperationCleanupState>,
-    pub started_at: DateTime<Utc>,
+    pub started_at: String,
     pub retry_policy: OperationRetryPolicy,
     pub outcome: Option<OperationOutcome>,
-    pub finalized_at: Option<DateTime<Utc>>,
-    pub expires_at: DateTime<Utc>,
+    pub finalized_at: Option<String>,
+    pub expires_at: String,
     pub backup_id: Option<u32>,
     pub pre_update_version: Option<String>,
 }
@@ -306,11 +305,11 @@ pub(crate) struct OperationAttemptValueV0_48 {
     pub resolved_commit: String,
     pub phase: OperationPhase,
     pub cleanup_state: Option<OperationCleanupState>,
-    pub started_at: DateTime<Utc>,
+    pub started_at: String,
     pub retry_policy: OperationRetryPolicy,
     pub outcome: Option<OperationOutcome>,
-    pub finalized_at: Option<DateTime<Utc>>,
-    pub expires_at: DateTime<Utc>,
+    pub finalized_at: Option<String>,
+    pub expires_at: String,
     pub backup_id: Option<u32>,
     pub pre_update_version: Option<String>,
     pub failure_kind: Option<OperationFailureKind>,
@@ -366,11 +365,11 @@ pub(crate) struct OperationAttemptValueV0_49 {
     pub resolved_commit: String,
     pub phase: OperationPhase,
     pub cleanup_state: Option<OperationCleanupState>,
-    pub started_at: DateTime<Utc>,
+    pub started_at: String,
     pub retry_policy: OperationRetryPolicy,
     pub outcome: Option<OperationOutcome>,
-    pub finalized_at: Option<DateTime<Utc>>,
-    pub expires_at: DateTime<Utc>,
+    pub finalized_at: Option<String>,
+    pub expires_at: String,
     pub backup_id: Option<u32>,
     pub pre_update_version: Option<String>,
     pub failure_kind: Option<OperationFailureKind>,
@@ -405,14 +404,18 @@ impl From<OperationAttemptValueV0_48> for OperationAttemptValueV0_49 {
     }
 }
 
-/// The stored `OperationAttempt` value as of database format 0.61.
+/// The stored `OperationAttempt` value of database formats 0.61 and 0.62,
+/// generic over how a timestamp is stored.
 ///
 /// It is [`OperationAttemptValueV0_49`] with `privilege_profile` appended
-/// last. It mirrors the private `Value` of the live operation attempts
-/// table, whose component types it deliberately reuses, and the drift test
-/// beside that table holds the two together.
+/// last. 0.61 stores each timestamp as chrono's default serde string, which
+/// [`OperationAttemptValueV0_61`] reads, and 0.62 as `i64` Unix-epoch
+/// nanoseconds, which [`OperationAttemptValueV0_62`] reads. It mirrors the
+/// private `Value` of the live operation attempts table, whose component
+/// types it deliberately reuses, and the drift test beside that table holds
+/// the two together.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-pub(crate) struct OperationAttemptValueV0_61 {
+pub(crate) struct OperationAttemptValue<Ts> {
     pub host: String,
     pub target: String,
     pub instance: Option<u32>,
@@ -423,16 +426,54 @@ pub(crate) struct OperationAttemptValueV0_61 {
     pub resolved_commit: String,
     pub phase: OperationPhase,
     pub cleanup_state: Option<OperationCleanupState>,
-    pub started_at: DateTime<Utc>,
+    pub started_at: Ts,
     pub retry_policy: OperationRetryPolicy,
     pub outcome: Option<OperationOutcome>,
-    pub finalized_at: Option<DateTime<Utc>>,
-    pub expires_at: DateTime<Utc>,
+    pub finalized_at: Option<Ts>,
+    pub expires_at: Ts,
     pub backup_id: Option<u32>,
     pub pre_update_version: Option<String>,
     pub failure_kind: Option<OperationFailureKind>,
     pub config_template: Option<String>,
     pub privilege_profile: Option<String>,
+}
+
+/// The stored `OperationAttempt` value as of database format 0.61.
+pub(crate) type OperationAttemptValueV0_61 = OperationAttemptValue<String>;
+
+/// The stored `OperationAttempt` value as of database format 0.62.
+#[cfg(test)]
+pub(crate) type OperationAttemptValueV0_62 = OperationAttemptValue<i64>;
+
+impl<Ts> OperationAttemptValue<Ts> {
+    /// Converts every timestamp of the record with `ts`.
+    pub(crate) fn map_timestamps<U>(
+        self,
+        ts: &mut TimestampConverter<'_, Ts, U>,
+    ) -> Result<OperationAttemptValue<U>> {
+        Ok(OperationAttemptValue {
+            host: self.host,
+            target: self.target,
+            instance: self.instance,
+            action: self.action,
+            install_intent: self.install_intent,
+            package_digest: self.package_digest,
+            resolved_version: self.resolved_version,
+            resolved_commit: self.resolved_commit,
+            phase: self.phase,
+            cleanup_state: self.cleanup_state,
+            started_at: ts(self.started_at)?,
+            retry_policy: self.retry_policy,
+            outcome: self.outcome,
+            finalized_at: self.finalized_at.map(&mut *ts).transpose()?,
+            expires_at: ts(self.expires_at)?,
+            backup_id: self.backup_id,
+            pre_update_version: self.pre_update_version,
+            failure_kind: self.failure_kind,
+            config_template: self.config_template,
+            privilege_profile: self.privilege_profile,
+        })
+    }
 }
 
 impl From<OperationAttemptValueV0_49> for OperationAttemptValueV0_61 {
@@ -475,8 +516,6 @@ pub(crate) const V0_46_COUNTRY_CODE_UNRESOLVED: [u8; 2] = *b"ZZ";
 pub(crate) const V0_46_COUNTRY_CODE_LOOKUP_FAILED: [u8; 2] = *b"XX";
 
 use std::net::IpAddr;
-
-use chrono::serde::ts_nanoseconds;
 
 use crate::EventCategory;
 
@@ -540,8 +579,7 @@ pub(crate) struct BlocklistDhcpFieldsStoredV0_42 {
 
 #[derive(Debug, Deserialize, Serialize)]
 pub(crate) struct HttpThreatFieldsStoredV0_43 {
-    #[serde(with = "ts_nanoseconds")]
-    pub time: DateTime<Utc>,
+    pub time: i64,
     pub sensor: String,
     pub orig_addr: IpAddr,
     pub orig_port: u16,
@@ -1134,8 +1172,7 @@ pub(crate) struct RepeatedHttpSessionsFieldsStoredV0_42 {
 
 #[derive(Deserialize, Serialize)]
 pub(crate) struct HttpThreatFieldsStoredV0_44 {
-    #[serde(with = "ts_nanoseconds")]
-    pub time: DateTime<Utc>,
+    pub time: i64,
     pub sensor: String,
     pub orig_addr: IpAddr,
     pub orig_port: u16,
@@ -1321,8 +1358,7 @@ pub(crate) struct BlocklistKerberosFieldsStoredV0_42 {
 
 #[derive(Deserialize, Serialize)]
 pub(crate) struct NetworkThreatFieldsStoredV0_45 {
-    #[serde(with = "ts_nanoseconds")]
-    pub time: DateTime<Utc>,
+    pub time: i64,
     pub sensor: String,
     pub orig_addr: IpAddr,
     pub orig_port: u16,
@@ -1330,8 +1366,7 @@ pub(crate) struct NetworkThreatFieldsStoredV0_45 {
     pub resp_port: u16,
     pub proto: u8,
     pub service: String,
-    #[serde(with = "ts_nanoseconds")]
-    pub start_time: DateTime<Utc>,
+    pub start_time: i64,
     pub duration: i64,
     pub orig_pkts: u64,
     pub resp_pkts: u64,
@@ -2121,7 +2156,7 @@ impl TryFrom<HttpThreatFieldsStoredV0_44> for crate::event::HttpThreatFieldsStor
 
     fn try_from(old: HttpThreatFieldsStoredV0_44) -> Result<Self> {
         Ok(Self {
-            time: chrono_to_jiff_timestamp(old.time)?,
+            time: i64_nanos_to_timestamp(old.time)?,
             sensor: old.sensor,
             orig_addr: old.orig_addr,
             orig_port: old.orig_port,
@@ -2210,7 +2245,7 @@ impl TryFrom<NetworkThreatFieldsStoredV0_45> for crate::event::NetworkThreatFiel
 
     fn try_from(old: NetworkThreatFieldsStoredV0_45) -> Result<Self> {
         Ok(Self {
-            time: chrono_to_jiff_timestamp(old.time)?,
+            time: i64_nanos_to_timestamp(old.time)?,
             sensor: old.sensor,
             orig_addr: old.orig_addr,
             orig_port: old.orig_port,
@@ -2220,7 +2255,7 @@ impl TryFrom<NetworkThreatFieldsStoredV0_45> for crate::event::NetworkThreatFiel
             resp_country_code: V0_46_COUNTRY_CODE_UNRESOLVED,
             proto: old.proto,
             service: old.service,
-            start_time: chrono_to_i64_nanos(old.start_time)?,
+            start_time: old.start_time,
             duration: old.duration,
             orig_pkts: old.orig_pkts,
             resp_pkts: old.resp_pkts,
@@ -2360,13 +2395,8 @@ impl From<UnusualDestinationPatternFieldsStoredV0_45>
     }
 }
 
-fn chrono_to_i64_nanos(time: DateTime<Utc>) -> Result<i64> {
-    time.timestamp_nanos_opt()
-        .ok_or_else(|| anyhow::anyhow!("timestamp is outside the i64 nanosecond range"))
-}
-
-fn chrono_to_jiff_timestamp(time: DateTime<Utc>) -> Result<jiff::Timestamp> {
-    crate::event::timestamp::from_i64_nanos(chrono_to_i64_nanos(time)?)
+fn i64_nanos_to_timestamp(nanos: i64) -> Result<jiff::Timestamp> {
+    crate::timestamp::from_i64_nanos(nanos)
         .context("failed to convert i64 nanoseconds to Jiff timestamp")
 }
 
@@ -2627,15 +2657,15 @@ pub(crate) struct SamplingPolicyV0_56 {
     pub node: Option<String>,
     pub column: Option<u32>,
     pub immutable: bool,
-    pub creation_time: DateTime<Utc>,
+    pub creation_time: String,
 }
 
 impl SamplingPolicyV0_56 {
     /// Converts the record to the 0.57 layout: a `Fixed` policy of
     /// `customer_id`, with no assignee and no Data Store. `immutable` is
     /// dropped.
-    pub(crate) fn into_fixed(self, customer_id: Option<u32>) -> crate::SamplingPolicy {
-        crate::SamplingPolicy {
+    pub(crate) fn into_fixed(self, customer_id: Option<u32>) -> SamplingPolicyV0_61 {
+        SamplingPolicyValue {
             id: self.id,
             name: self.name,
             kind: self.kind,
@@ -2655,6 +2685,71 @@ impl SamplingPolicyV0_56 {
     }
 }
 
+/// The stored `SamplingPolicy` record of database formats 0.57 through
+/// 0.62, generic over how a timestamp is stored: chrono's default serde
+/// string through 0.61, `i64` Unix-epoch nanoseconds in 0.62.
+///
+/// It describes released layouts and must never be modified; the committed
+/// `sampling_policy_literal_bytes_v0_61.bin` and
+/// `sampling_policy_literal_bytes_v0_62.bin` fixtures pin them to the releases.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub(crate) struct SamplingPolicyValue<Ts> {
+    pub id: u32,
+    pub name: String,
+    pub kind: crate::SamplingKind,
+    pub interval: crate::SamplingInterval,
+    pub period: crate::SamplingPeriod,
+    pub offset: i32,
+    pub src_ip: Option<std::net::IpAddr>,
+    pub dst_ip: Option<std::net::IpAddr>,
+    pub node: Option<String>,
+    pub column: Option<u32>,
+    pub customer_id: Option<u32>,
+    pub state: crate::PolicyState,
+    pub assignee: Option<crate::ModelInstance>,
+    pub data_store: Option<String>,
+    pub creation_time: Ts,
+}
+
+/// The stored `SamplingPolicy` record of database formats 0.57 through 0.61.
+pub(crate) type SamplingPolicyV0_61 = SamplingPolicyValue<String>;
+
+impl SamplingPolicyV0_61 {
+    /// Returns the stored bytes of the record.
+    pub(crate) fn value(&self) -> Vec<u8> {
+        use bincode::Options;
+        bincode::DefaultOptions::new()
+            .serialize(self)
+            .expect("serializable")
+    }
+}
+
+impl<Ts> SamplingPolicyValue<Ts> {
+    /// Converts every timestamp of the record with `ts`.
+    pub(crate) fn map_timestamps<U>(
+        self,
+        ts: &mut TimestampConverter<'_, Ts, U>,
+    ) -> Result<SamplingPolicyValue<U>> {
+        Ok(SamplingPolicyValue {
+            id: self.id,
+            name: self.name,
+            kind: self.kind,
+            interval: self.interval,
+            period: self.period,
+            offset: self.offset,
+            src_ip: self.src_ip,
+            dst_ip: self.dst_ip,
+            node: self.node,
+            column: self.column,
+            customer_id: self.customer_id,
+            state: self.state,
+            assignee: self.assignee,
+            data_store: self.data_store,
+            creation_time: ts(self.creation_time)?,
+        })
+    }
+}
+
 /// The stored `Model` record of database formats 0.55 and 0.56, before
 /// `trained_sources` was appended.
 ///
@@ -2671,18 +2766,18 @@ pub(crate) struct ModelV0_56 {
     pub event_kind: String,
     pub customer_id: u32,
     pub instance: Option<crate::ModelInstance>,
-    pub trained_at: DateTime<Utc>,
+    pub trained_at: String,
     pub classifier_generation: u64,
     pub trained_run_id: u32,
     pub trained_definition: String,
-    pub previous: Option<crate::PreviousTraining>,
+    pub previous: Option<PreviousTrainingV0_61>,
     pub clusters_applied: Option<i64>,
 }
 
 impl ModelV0_56 {
     /// Converts the record to the 0.57 layout with `trained_sources`.
-    pub(crate) fn with_trained_sources(self, trained_sources: Vec<String>) -> crate::tables::Model {
-        crate::tables::Model {
+    pub(crate) fn with_trained_sources(self, trained_sources: Vec<String>) -> ModelV0_61 {
+        ModelValue {
             id: self.id,
             name: self.name,
             version: self.version,
@@ -2703,6 +2798,106 @@ impl ModelV0_56 {
     }
 }
 
+/// The stored summary of a model's previous training result in database
+/// formats 0.55 through 0.62, generic over how a timestamp is stored:
+/// chrono's default serde string through 0.61, `i64` Unix-epoch nanoseconds
+/// in 0.62.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub(crate) struct PreviousTrainingValue<Ts> {
+    pub trained_at: Ts,
+    pub version: i32,
+    pub classifier_generation: u64,
+    pub trained_run_id: u32,
+    pub trained_definition: String,
+}
+
+/// The stored summary of a model's previous training result in database
+/// formats 0.55 through 0.61.
+pub(crate) type PreviousTrainingV0_61 = PreviousTrainingValue<String>;
+
+impl<Ts> PreviousTrainingValue<Ts> {
+    fn map_timestamps<U>(
+        self,
+        ts: &mut TimestampConverter<'_, Ts, U>,
+    ) -> Result<PreviousTrainingValue<U>> {
+        Ok(PreviousTrainingValue {
+            trained_at: ts(self.trained_at)?,
+            version: self.version,
+            classifier_generation: self.classifier_generation,
+            trained_run_id: self.trained_run_id,
+            trained_definition: self.trained_definition,
+        })
+    }
+}
+
+/// The stored `Model` record of database formats 0.57 through 0.62, generic
+/// over how a timestamp is stored: chrono's default serde string through
+/// 0.61, `i64` Unix-epoch nanoseconds in 0.62.
+///
+/// It describes released layouts and must never be modified.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub(crate) struct ModelValue<Ts> {
+    pub id: u32,
+    pub name: String,
+    pub version: i32,
+    pub kind: String,
+    pub max_event_id_num: i32,
+    pub classification_id: Option<i64>,
+    pub event_kind: String,
+    pub customer_id: u32,
+    pub instance: Option<crate::ModelInstance>,
+    pub trained_at: Ts,
+    pub classifier_generation: u64,
+    pub trained_run_id: u32,
+    pub trained_definition: String,
+    pub previous: Option<PreviousTrainingValue<Ts>>,
+    pub clusters_applied: Option<i64>,
+    pub trained_sources: Vec<String>,
+}
+
+/// The stored `Model` record of database formats 0.57 through 0.61.
+pub(crate) type ModelV0_61 = ModelValue<String>;
+
+impl ModelV0_61 {
+    /// Returns the stored bytes of the record.
+    pub(crate) fn value(&self) -> Vec<u8> {
+        use bincode::Options;
+        bincode::DefaultOptions::new()
+            .serialize(self)
+            .expect("serializable")
+    }
+}
+
+impl<Ts> ModelValue<Ts> {
+    /// Converts every timestamp of the record with `ts`.
+    pub(crate) fn map_timestamps<U>(
+        self,
+        ts: &mut TimestampConverter<'_, Ts, U>,
+    ) -> Result<ModelValue<U>> {
+        Ok(ModelValue {
+            id: self.id,
+            name: self.name,
+            version: self.version,
+            kind: self.kind,
+            max_event_id_num: self.max_event_id_num,
+            classification_id: self.classification_id,
+            event_kind: self.event_kind,
+            customer_id: self.customer_id,
+            instance: self.instance,
+            trained_at: ts(self.trained_at)?,
+            classifier_generation: self.classifier_generation,
+            trained_run_id: self.trained_run_id,
+            trained_definition: self.trained_definition,
+            previous: self
+                .previous
+                .map(|previous| previous.map_timestamps(ts))
+                .transpose()?,
+            clusters_applied: self.clusters_applied,
+            trained_sources: self.trained_sources,
+        })
+    }
+}
+
 /// The stored `TrainingDefinition` record of database formats 0.55 and 0.56,
 /// mirroring the live record with its component types.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -2717,8 +2912,8 @@ pub(crate) struct TrainingDefinitionV0_56 {
     pub definition: String,
     pub cloning: bool,
     pub last_run: Option<crate::RunId>,
-    pub created_at: DateTime<Utc>,
-    pub updated_at: DateTime<Utc>,
+    pub created_at: String,
+    pub updated_at: String,
 }
 
 /// The stored node profile of database format 0.56.
@@ -2738,7 +2933,7 @@ pub(crate) struct NodeV0_56 {
     pub name_draft: Option<String>,
     pub profile: Option<NodeProfileV0_56>,
     pub profile_draft: Option<NodeProfileV0_56>,
-    pub creation_time: DateTime<Utc>,
+    pub creation_time: String,
     pub agents: Vec<String>,
     pub external_services: Vec<String>,
 }
@@ -2788,3 +2983,437 @@ impl EngineInstanceRefsV0_57 {
 /// through 0.58: its service results alone, without the periodic time series
 /// IDs and abandoned hosts that the 0.59 layout appends.
 pub(crate) type CustomerDataDeletionJobValueV0_58 = Vec<crate::CustomerDataDeletionServiceResult>;
+
+// ============================================================================
+// Table values of the 0.61 format, which the 0.62.0 migration reads, and of
+// the 0.62 format it writes
+// ============================================================================
+
+/// Converts one timestamp of a record from one stored form to another, such
+/// as a 0.61 string to 0.62 `i64` nanoseconds.
+pub(crate) type TimestampConverter<'a, Ts, U> = dyn FnMut(Ts) -> Result<U> + 'a;
+
+/// The stored `TriageResponse` record of database formats 0.61 (`String`
+/// timestamps) and 0.62 (`i64` nanoseconds).
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub(crate) struct TriageResponseValue<Ts> {
+    pub id: u32,
+    pub key: Vec<u8>,
+    pub sensor: String,
+    pub time: Ts,
+    pub tag_ids: Vec<u32>,
+    pub remarks: String,
+    pub creation_time: Ts,
+    pub last_modified_time: Ts,
+}
+
+/// The stored `TriageResponse` record of database format 0.61.
+pub(crate) type TriageResponseV0_61 = TriageResponseValue<String>;
+
+impl<Ts> TriageResponseValue<Ts> {
+    /// Converts every timestamp of the record with `ts`.
+    pub(crate) fn map_timestamps<U>(
+        self,
+        ts: &mut TimestampConverter<'_, Ts, U>,
+    ) -> Result<TriageResponseValue<U>> {
+        Ok(TriageResponseValue {
+            id: self.id,
+            key: self.key,
+            sensor: self.sensor,
+            time: ts(self.time)?,
+            tag_ids: self.tag_ids,
+            remarks: self.remarks,
+            creation_time: ts(self.creation_time)?,
+            last_modified_time: ts(self.last_modified_time)?,
+        })
+    }
+}
+
+/// The stored value of a `cluster` or `previous cluster` row of database
+/// formats 0.61 (chrono `NaiveDateTime` strings) and 0.62 (`i64`
+/// nanoseconds).
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub(crate) struct ClusterValue<Ts> {
+    pub category_id: i32,
+    pub detector_id: i32,
+    pub event_ids: Vec<i64>,
+    pub sensors: Vec<String>,
+    pub labels: Option<Vec<String>>,
+    pub qualifier_id: i32,
+    pub status_id: i32,
+    pub signature: String,
+    pub size: i64,
+    pub score: Option<f64>,
+    pub last_modification_time: Option<Ts>,
+}
+
+/// The stored cluster value of database format 0.61.
+pub(crate) type ClusterValueV0_61 = ClusterValue<String>;
+
+impl<Ts> ClusterValue<Ts> {
+    /// Converts every timestamp of the record with `ts`.
+    pub(crate) fn map_timestamps<U>(
+        self,
+        ts: &mut TimestampConverter<'_, Ts, U>,
+    ) -> Result<ClusterValue<U>> {
+        Ok(ClusterValue {
+            category_id: self.category_id,
+            detector_id: self.detector_id,
+            event_ids: self.event_ids,
+            sensors: self.sensors,
+            labels: self.labels,
+            qualifier_id: self.qualifier_id,
+            status_id: self.status_id,
+            signature: self.signature,
+            size: self.size,
+            score: self.score,
+            last_modification_time: self.last_modification_time.map(ts).transpose()?,
+        })
+    }
+}
+
+/// The stored node record of database formats 0.61 (`String` timestamps)
+/// and 0.62 (`i64` nanoseconds), mirroring the live `tables::InnerNode`.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub(crate) struct NodeValue<Ts> {
+    pub id: u32,
+    pub name: String,
+    pub name_draft: Option<String>,
+    pub profile: Option<crate::NodeProfile>,
+    pub profile_draft: Option<crate::NodeProfile>,
+    pub creation_time: Ts,
+    pub agents: Vec<String>,
+    pub external_services: Vec<String>,
+}
+
+/// The stored node record of database format 0.61.
+pub(crate) type NodeV0_61 = NodeValue<String>;
+
+impl<Ts> NodeValue<Ts> {
+    /// Converts every timestamp of the record with `ts`.
+    pub(crate) fn map_timestamps<U>(
+        self,
+        ts: &mut TimestampConverter<'_, Ts, U>,
+    ) -> Result<NodeValue<U>> {
+        Ok(NodeValue {
+            id: self.id,
+            name: self.name,
+            name_draft: self.name_draft,
+            profile: self.profile,
+            profile_draft: self.profile_draft,
+            creation_time: ts(self.creation_time)?,
+            agents: self.agents,
+            external_services: self.external_services,
+        })
+    }
+}
+
+/// The stored network record of database formats 0.61 (`String`
+/// timestamps) and 0.62 (`i64` nanoseconds).
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub(crate) struct NetworkValue<Ts> {
+    pub id: u32,
+    pub description: String,
+    pub networks: HostNetworkGroup,
+    pub tag_ids: Vec<u32>,
+    pub creation_time: Ts,
+}
+
+/// The stored network record of database format 0.61.
+pub(crate) type NetworkValueV0_61 = NetworkValue<String>;
+
+impl<Ts> NetworkValue<Ts> {
+    /// Converts every timestamp of the record with `ts`.
+    pub(crate) fn map_timestamps<U>(
+        self,
+        ts: &mut TimestampConverter<'_, Ts, U>,
+    ) -> Result<NetworkValue<U>> {
+        Ok(NetworkValue {
+            id: self.id,
+            description: self.description,
+            networks: self.networks,
+            tag_ids: self.tag_ids,
+            creation_time: ts(self.creation_time)?,
+        })
+    }
+}
+
+/// The stored `NetworkListSet` of database formats 0.61 (`String`
+/// timestamps) and 0.62 (`i64` nanoseconds).
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub(crate) struct NetworkListSetValue<Ts> {
+    pub revision: u64,
+    pub allowlist: Vec<crate::NetworkListEntry>,
+    pub blocklist: Vec<crate::NetworkListEntry>,
+    pub updated_at: Ts,
+}
+
+/// The stored `NetworkListSet` of database format 0.61.
+pub(crate) type NetworkListSetV0_61 = NetworkListSetValue<String>;
+
+impl<Ts> NetworkListSetValue<Ts> {
+    /// Converts every timestamp of the record with `ts`.
+    pub(crate) fn map_timestamps<U>(
+        self,
+        ts: &mut TimestampConverter<'_, Ts, U>,
+    ) -> Result<NetworkListSetValue<U>> {
+        Ok(NetworkListSetValue {
+            revision: self.revision,
+            allowlist: self.allowlist,
+            blocklist: self.blocklist,
+            updated_at: ts(self.updated_at)?,
+        })
+    }
+}
+
+/// The stored `OwnedNetworkSet` of database formats 0.61 (`String`
+/// timestamps) and 0.62 (`i64` nanoseconds).
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub(crate) struct OwnedNetworkSetValue<Ts> {
+    pub revision: u64,
+    pub networks: Vec<crate::OwnedNetwork>,
+    pub updated_at: Ts,
+}
+
+/// The stored `OwnedNetworkSet` of database format 0.61.
+pub(crate) type OwnedNetworkSetV0_61 = OwnedNetworkSetValue<String>;
+
+impl<Ts> OwnedNetworkSetValue<Ts> {
+    /// Converts every timestamp of the record with `ts`.
+    pub(crate) fn map_timestamps<U>(
+        self,
+        ts: &mut TimestampConverter<'_, Ts, U>,
+    ) -> Result<OwnedNetworkSetValue<U>> {
+        Ok(OwnedNetworkSetValue {
+            revision: self.revision,
+            networks: self.networks,
+            updated_at: ts(self.updated_at)?,
+        })
+    }
+}
+
+/// The stored `TrafficFilter` of database formats 0.61 (`String`
+/// timestamps) and 0.62 (`i64` nanoseconds).
+///
+/// `rules` is a map in the live struct. Bincode encodes a map exactly as a
+/// sequence of key-value pairs, so it is read here as one, which keeps the
+/// rules in their stored order instead of a hash map's.
+#[derive(Clone, Deserialize, Serialize)]
+pub(crate) struct TrafficFilterValue<Ts> {
+    pub host_fqdn: String,
+    pub rules: Vec<(ipnet::IpNet, crate::ProtocolPorts)>,
+    pub last_modification_time: Ts,
+    pub update_time: Option<Ts>,
+    pub description: Option<String>,
+}
+
+/// The stored `TrafficFilter` of database format 0.61.
+pub(crate) type TrafficFilterV0_61 = TrafficFilterValue<String>;
+
+impl<Ts> TrafficFilterValue<Ts> {
+    /// Converts every timestamp of the record with `ts`.
+    pub(crate) fn map_timestamps<U>(
+        self,
+        ts: &mut TimestampConverter<'_, Ts, U>,
+    ) -> Result<TrafficFilterValue<U>> {
+        Ok(TrafficFilterValue {
+            host_fqdn: self.host_fqdn,
+            rules: self.rules,
+            last_modification_time: ts(self.last_modification_time)?,
+            update_time: self.update_time.map(&mut *ts).transpose()?,
+            description: self.description,
+        })
+    }
+}
+
+/// The stored `TrainingDefinition` record of database formats 0.61
+/// (`String` timestamps) and 0.62 (`i64` nanoseconds).
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub(crate) struct TrainingDefinitionValue<Ts> {
+    pub name: String,
+    pub customer_id: u32,
+    pub instance: Option<crate::ModelInstance>,
+    pub method: crate::ModelMethod,
+    pub event_kind: String,
+    pub sources: Vec<String>,
+    pub indicator: Option<String>,
+    pub definition: String,
+    pub cloning: bool,
+    pub last_run: Option<crate::RunId>,
+    pub created_at: Ts,
+    pub updated_at: Ts,
+}
+
+/// The stored `TrainingDefinition` record of database format 0.61.
+pub(crate) type TrainingDefinitionV0_61 = TrainingDefinitionValue<String>;
+
+impl<Ts> TrainingDefinitionValue<Ts> {
+    /// Converts every timestamp of the record with `ts`.
+    pub(crate) fn map_timestamps<U>(
+        self,
+        ts: &mut TimestampConverter<'_, Ts, U>,
+    ) -> Result<TrainingDefinitionValue<U>> {
+        Ok(TrainingDefinitionValue {
+            name: self.name,
+            customer_id: self.customer_id,
+            instance: self.instance,
+            method: self.method,
+            event_kind: self.event_kind,
+            sources: self.sources,
+            indicator: self.indicator,
+            definition: self.definition,
+            cloning: self.cloning,
+            last_run: self.last_run,
+            created_at: ts(self.created_at)?,
+            updated_at: ts(self.updated_at)?,
+        })
+    }
+}
+
+/// The stored `ModelRun` record of database formats 0.61 (`String`
+/// timestamps) and 0.62 (`i64` nanoseconds).
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub(crate) struct ModelRunValue<Ts> {
+    pub id: crate::RunId,
+    pub kind: crate::RunKind,
+    pub model: String,
+    pub instance: crate::ModelInstance,
+    pub state: crate::RunState,
+    pub reason: Option<String>,
+    pub requested_at: Ts,
+    pub updated_at: Ts,
+}
+
+/// The stored `ModelRun` record of database format 0.61.
+pub(crate) type ModelRunV0_61 = ModelRunValue<String>;
+
+impl<Ts> ModelRunValue<Ts> {
+    /// Converts every timestamp of the record with `ts`.
+    pub(crate) fn map_timestamps<U>(
+        self,
+        ts: &mut TimestampConverter<'_, Ts, U>,
+    ) -> Result<ModelRunValue<U>> {
+        Ok(ModelRunValue {
+            id: self.id,
+            kind: self.kind,
+            model: self.model,
+            instance: self.instance,
+            state: self.state,
+            reason: self.reason,
+            requested_at: ts(self.requested_at)?,
+            updated_at: ts(self.updated_at)?,
+        })
+    }
+}
+
+/// The stored `DetectorStatus` of database formats 0.61 (`String`
+/// timestamps) and 0.62 (`i64` nanoseconds).
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub(crate) struct DetectorStatusValue<Ts> {
+    pub state: crate::DetectorState,
+    pub finished_at: Option<Ts>,
+    pub outcome: Option<crate::RoundOutcome>,
+    pub reason: Option<String>,
+    pub events: u64,
+    pub sources: Vec<crate::DetectorSourceStatus>,
+    pub reported_at: Ts,
+}
+
+/// The stored `engine instances` row of database formats 0.61 (`String`
+/// timestamps) and 0.62 (`i64` nanoseconds), mirroring the live
+/// `tables::EngineInstanceRow`.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub(crate) struct EngineInstanceRowValue<Ts> {
+    pub stopped: bool,
+    pub applied: crate::EngineDocumentRefs,
+    pub pending: crate::EngineDocumentRefs,
+    pub statuses: std::collections::BTreeMap<i32, DetectorStatusValue<Ts>>,
+}
+
+/// The stored `engine instances` row of database format 0.61.
+pub(crate) type EngineInstanceRowV0_61 = EngineInstanceRowValue<String>;
+
+impl<Ts> EngineInstanceRowValue<Ts> {
+    /// Converts every timestamp of the record with `ts`.
+    pub(crate) fn map_timestamps<U>(
+        self,
+        ts: &mut TimestampConverter<'_, Ts, U>,
+    ) -> Result<EngineInstanceRowValue<U>> {
+        let statuses = self
+            .statuses
+            .into_iter()
+            .map(|(id, status)| {
+                Ok((
+                    id,
+                    DetectorStatusValue {
+                        state: status.state,
+                        finished_at: status.finished_at.map(&mut *ts).transpose()?,
+                        outcome: status.outcome,
+                        reason: status.reason,
+                        events: status.events,
+                        sources: status.sources,
+                        reported_at: ts(status.reported_at)?,
+                    },
+                ))
+            })
+            .collect::<Result<_>>()?;
+        Ok(EngineInstanceRowValue {
+            stopped: self.stopped,
+            applied: self.applied,
+            pending: self.pending,
+            statuses,
+        })
+    }
+}
+
+/// The stored `SystemLogCollectorRefusal` of database formats 0.61
+/// (`String` timestamps) and 0.62 (`i64` nanoseconds).
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub(crate) struct SystemLogCollectorRefusalValue<Ts> {
+    pub at: Ts,
+    pub message: String,
+}
+
+/// The stored `SystemLogCollector` of database formats 0.61 (`String`
+/// timestamps) and 0.62 (`i64` nanoseconds).
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub(crate) struct SystemLogCollectorValue<Ts> {
+    pub host: String,
+    pub instance: Option<u32>,
+    pub install_keys: Vec<String>,
+    pub installed_version: Option<String>,
+    pub installed_commit: Option<String>,
+    pub data_store: Option<String>,
+    pub config: Option<String>,
+    pub last_refusal: Option<SystemLogCollectorRefusalValue<Ts>>,
+}
+
+/// The stored `SystemLogCollector` of database format 0.61.
+pub(crate) type SystemLogCollectorV0_61 = SystemLogCollectorValue<String>;
+
+impl<Ts> SystemLogCollectorValue<Ts> {
+    /// Converts every timestamp of the record with `ts`.
+    pub(crate) fn map_timestamps<U>(
+        self,
+        ts: &mut TimestampConverter<'_, Ts, U>,
+    ) -> Result<SystemLogCollectorValue<U>> {
+        Ok(SystemLogCollectorValue {
+            host: self.host,
+            instance: self.instance,
+            install_keys: self.install_keys,
+            installed_version: self.installed_version,
+            installed_commit: self.installed_commit,
+            data_store: self.data_store,
+            config: self.config,
+            last_refusal: self
+                .last_refusal
+                .map(|refusal| {
+                    Ok::<_, anyhow::Error>(SystemLogCollectorRefusalValue {
+                        at: ts(refusal.at)?,
+                        message: refusal.message,
+                    })
+                })
+                .transpose()?,
+        })
+    }
+}

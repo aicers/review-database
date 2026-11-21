@@ -4,7 +4,6 @@ use attrievent::attribute::{DhcpAttr, RawEventAttrKind};
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
-use super::timestamp;
 use super::{
     EventCategory, LearningMethod, ThreatLevel, TriageScore,
     common::{AttrValue, Match},
@@ -12,6 +11,7 @@ use super::{
 use crate::event::common::{
     dhcp_options_to_string, to_hardware_address, triage_scores_to_string, vector_to_string,
 };
+use crate::timestamp;
 
 macro_rules! find_dhcp_attr_by_kind {
     ($event: expr, $raw_event_attr: expr) => {{
@@ -452,10 +452,8 @@ mod tests {
     };
 
     use attrievent::attribute::{DhcpAttr, RawEventAttrKind, RawEventKind};
-    use chrono::{TimeZone, Utc};
 
     use super::{BlocklistDhcp, BlocklistDhcpFieldsStored};
-    use crate::event::timestamp;
     use crate::{
         AttrCmpKind, PacketAttr, ValueKind,
         event::common::{AttrValue, Match},
@@ -471,11 +469,7 @@ mod tests {
             resp_port: 67,
             resp_country_code: crate::util::COUNTRY_CODE_UNRESOLVED,
             proto: 17,
-            start_time: Utc
-                .with_ymd_and_hms(1970, 1, 1, 0, 0, 0)
-                .unwrap()
-                .timestamp_nanos_opt()
-                .unwrap(),
+            start_time: crate::test::utc_nanos(1970, 1, 1, 0, 0, 0),
             duration: 0,
             orig_pkts: 0,
             resp_pkts: 0,
@@ -507,8 +501,7 @@ mod tests {
 
     #[test]
     fn dhcp_option_code_attr_mapping() {
-        let time = timestamp::from_chrono(Utc.with_ymd_and_hms(1970, 1, 1, 0, 0, 0).unwrap())
-            .expect(timestamp::I64_NANOS_JIFF_INVARIANT);
+        let time = crate::test::utc(1970, 1, 1, 0, 0, 0);
         let event = BlocklistDhcp::new(time, dhcp_fields_with_options());
         let attr = RawEventAttrKind::Dhcp(DhcpAttr::OptionCode);
 
@@ -520,8 +513,7 @@ mod tests {
 
     #[test]
     fn dhcp_option_data_attr_mapping() {
-        let time = timestamp::from_chrono(Utc.with_ymd_and_hms(1970, 1, 1, 0, 0, 0).unwrap())
-            .expect(timestamp::I64_NANOS_JIFF_INVARIANT);
+        let time = crate::test::utc(1970, 1, 1, 0, 0, 0);
         let event = BlocklistDhcp::new(time, dhcp_fields_with_options());
         let attr = RawEventAttrKind::Dhcp(DhcpAttr::OptionData);
 
@@ -533,8 +525,7 @@ mod tests {
 
     #[test]
     fn dhcp_option_data_score_by_attr() {
-        let time = timestamp::from_chrono(Utc.with_ymd_and_hms(1970, 1, 1, 0, 0, 0).unwrap())
-            .expect(timestamp::I64_NANOS_JIFF_INVARIANT);
+        let time = crate::test::utc(1970, 1, 1, 0, 0, 0);
         let event = BlocklistDhcp::new(time, dhcp_fields_with_options());
 
         let match_attr = vec![PacketAttr {

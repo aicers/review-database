@@ -17,7 +17,7 @@
 use std::{collections::BTreeMap, mem::size_of};
 
 use anyhow::{Context, Result, anyhow};
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 use rocksdb::{IteratorMode, OptimisticTransactionDB, Transaction};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -97,7 +97,8 @@ pub struct ModelUse {
 pub struct DetectorStatus {
     pub state: DetectorState,
     /// When the detector's last round finished.
-    pub finished_at: Option<DateTime<Utc>>,
+    #[serde(with = "crate::timestamp::ts_nanoseconds_saturating_option")]
+    pub finished_at: Option<Timestamp>,
     /// The outcome of the detector's last round.
     pub outcome: Option<RoundOutcome>,
     pub reason: Option<String>,
@@ -105,7 +106,8 @@ pub struct DetectorStatus {
     pub events: u64,
     pub sources: Vec<DetectorSourceStatus>,
     /// When the Central Manager stored the report.
-    pub reported_at: DateTime<Utc>,
+    #[serde(with = "crate::timestamp::ts_nanoseconds_saturating")]
+    pub reported_at: Timestamp,
 }
 
 /// The state of a detector.

@@ -181,6 +181,13 @@ pub(super) const FILTERS: &str = "filters";
 /// restore recognizes a backup's format by its column families alone. Nothing
 /// reads or writes rows in it.
 pub(super) const FORMAT_0_61: &str = "format 0.61";
+/// An empty column family that exists only so that `check_backup_format` can
+/// tell a 0.62 backup from an older one.
+///
+/// The 0.62 format changes how table values store timestamps and no family
+/// otherwise, and an online restore recognizes a backup's format by its column
+/// families alone. Nothing reads or writes rows in it.
+pub(super) const FORMAT_0_62: &str = "format 0.62";
 pub(super) const HOSTS: &str = "hosts";
 pub(super) const INSTANCE_ALLOCATIONS: &str = "instance allocations";
 pub(super) const MODELS: &str = "models";
@@ -227,7 +234,7 @@ pub(super) const TRIAGE_RESPONSE: &str = "triage response";
 pub(super) const TRUSTED_DNS_SERVERS: &str = "trusted DNS servers";
 pub(super) const TRUSTED_USER_AGENTS: &str = "trusted user agents";
 
-pub(crate) const MAP_NAMES: [&str; 50] = [
+pub(crate) const MAP_NAMES: [&str; 51] = [
     AGENTS,
     BATCH_INFO,
     CATEGORY,
@@ -265,6 +272,7 @@ pub(crate) const MAP_NAMES: [&str; 50] = [
     QUALIFIERS,
     EXTERNAL_SERVICES,
     FORMAT_0_61,
+    FORMAT_0_62,
     SAMPLING_POLICY,
     SCORES,
     STATUSES,

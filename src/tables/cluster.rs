@@ -1,11 +1,14 @@
 use std::{cmp::Reverse, mem::size_of};
 
 use anyhow::{Result, anyhow, bail};
-use chrono::NaiveDateTime;
+use jiff::Timestamp;
 use rocksdb::{Direction, OptimisticTransactionDB};
 use serde::{Deserialize, Serialize};
 
-use crate::{Iterable, Map, Table, UniqueKey, tables::Value as ValueTrait, types::FromKeyValue};
+use crate::{
+    Iterable, Map, Table, UniqueKey, tables::Value as ValueTrait,
+    timestamp::ts_nanoseconds_saturating_option, types::FromKeyValue,
+};
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 pub struct Cluster {
@@ -21,7 +24,7 @@ pub struct Cluster {
     pub signature: String,
     pub size: i64,
     pub score: Option<f64>,
-    pub last_modification_time: Option<NaiveDateTime>,
+    pub last_modification_time: Option<Timestamp>,
 }
 
 impl<'d> Table<'d, Cluster> {
@@ -92,7 +95,7 @@ impl<'d> Table<'d, Cluster> {
             entry.status_id = status;
         }
 
-        entry.last_modification_time = Some(chrono::Utc::now().naive_utc());
+        entry.last_modification_time = Some(Timestamp::now());
         self.put(&entry)
     }
 
@@ -131,7 +134,7 @@ impl<'d> Table<'d, Cluster> {
         max_event_id_num: usize,
         txn: &rocksdb::Transaction<OptimisticTransactionDB>,
     ) -> Result<()> {
-        let now = chrono::Utc::now().naive_utc();
+        let now = Timestamp::now();
         for update in updates {
             let key = Key {
                 model_id,
@@ -296,7 +299,8 @@ struct Value {
     signature: String,
     size: i64,
     score: Option<f64>,
-    last_modification_time: Option<NaiveDateTime>,
+    #[serde(with = "ts_nanoseconds_saturating_option")]
+    last_modification_time: Option<Timestamp>,
 }
 
 impl ValueTrait for Cluster {
@@ -534,7 +538,7 @@ mod tests {
     #[test]
     fn test_value_with_last_modification_time_roundtrip() -> anyhow::Result<()> {
         // Verify last_modification_time serializes & deserializes correctly too.
-        let ts = chrono::DateTime::from_timestamp(1_600_000_000, 0).map(|dt| dt.naive_utc());
+        let ts = Some(crate::test::from_second(1_600_000_000, 0));
         let original = Cluster {
             model_id: 11,
             id: 22,
@@ -752,52 +756,49 @@ mod tests {
     const FIXTURE_MODEL_ID: u32 = 1;
     const FIXTURE_CLUSTER_ID: u32 = 2;
 
-    // Generated once locally from the production `Cluster::value()` path using
-    // `fixture_cluster` below. Embedded as literals so these tests fail if the
-    // serializer changes.
-    const FIXTURE_OPTION_NAIVEDATETIME_SOME: &[u8] = &[
+    // The 0.62 bytes of the production `Cluster::value()` path for
+    // `fixture_cluster` below: `last_modification_time` is an optional varint
+    // `i64` of Unix-epoch nanoseconds. Embedded as literals so these tests fail
+    // if the serializer changes.
+    const FIXTURE_OPTION_TIMESTAMP_SOME: &[u8] = &[
         0x14, 0x28, 0x02, 0xfb, 0xd2, 0x07, 0xfb, 0xd4, 0x07, 0x02, 0x04, 0x73, 0x72, 0x63, 0x31,
         0x04, 0x73, 0x72, 0x63, 0x32, 0x00, 0x06, 0x08, 0x06, 0x61, 0x62, 0x63, 0x64, 0x65, 0x66,
-        0xfb, 0xa4, 0x09, 0x01, 0x3d, 0x0a, 0xd7, 0xa3, 0x70, 0xbd, 0x23, 0x40, 0x01, 0x1d, 0x32,
-        0x30, 0x30, 0x30, 0x2d, 0x30, 0x32, 0x2d, 0x32, 0x39, 0x54, 0x31, 0x32, 0x3a, 0x33, 0x34,
-        0x3a, 0x35, 0x36, 0x2e, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37, 0x38, 0x39,
+        0xfb, 0xa4, 0x09, 0x01, 0x3d, 0x0a, 0xd7, 0xa3, 0x70, 0xbd, 0x23, 0x40, 0x01, 0xfd, 0x2a,
+        0x5a, 0xa2, 0x45, 0x7e, 0x24, 0x6b, 0x1a,
     ];
 
-    const FIXTURE_OPTION_NAIVEDATETIME_NONE: &[u8] = &[
+    const FIXTURE_OPTION_TIMESTAMP_NONE: &[u8] = &[
         0x14, 0x28, 0x02, 0xfb, 0xd2, 0x07, 0xfb, 0xd4, 0x07, 0x02, 0x04, 0x73, 0x72, 0x63, 0x31,
         0x04, 0x73, 0x72, 0x63, 0x32, 0x00, 0x06, 0x08, 0x06, 0x61, 0x62, 0x63, 0x64, 0x65, 0x66,
         0xfb, 0xa4, 0x09, 0x01, 0x3d, 0x0a, 0xd7, 0xa3, 0x70, 0xbd, 0x23, 0x40, 0x00,
     ];
 
-    // Generated once locally from `bincode::DefaultOptions` serialization of
-    // `fixture_cluster` below. Pins the public `Cluster` serde payload, which
-    // includes `model_id` and `id` absent from the stored `Value` bytes.
-    const PUBLIC_SERDE_FIXTURE_OPTION_NAIVEDATETIME_SOME: &[u8] = &[
+    // The `bincode::DefaultOptions` serialization of `fixture_cluster` below.
+    // Pins the public `Cluster` serde payload, which includes `model_id` and
+    // `id` absent from the stored `Value` bytes, and writes
+    // `last_modification_time` as jiff's default serde string.
+    const PUBLIC_SERDE_FIXTURE_OPTION_TIMESTAMP_SOME: &[u8] = &[
         0x01, 0x02, 0x14, 0x28, 0x02, 0xfb, 0xd2, 0x07, 0xfb, 0xd4, 0x07, 0x02, 0x04, 0x73, 0x72,
         0x63, 0x31, 0x04, 0x73, 0x72, 0x63, 0x32, 0x00, 0x06, 0x08, 0x06, 0x61, 0x62, 0x63, 0x64,
         0x65, 0x66, 0xfb, 0xa4, 0x09, 0x01, 0x3d, 0x0a, 0xd7, 0xa3, 0x70, 0xbd, 0x23, 0x40, 0x01,
-        0x1d, 0x32, 0x30, 0x30, 0x30, 0x2d, 0x30, 0x32, 0x2d, 0x32, 0x39, 0x54, 0x31, 0x32, 0x3a,
+        0x1e, 0x32, 0x30, 0x30, 0x30, 0x2d, 0x30, 0x32, 0x2d, 0x32, 0x39, 0x54, 0x31, 0x32, 0x3a,
         0x33, 0x34, 0x3a, 0x35, 0x36, 0x2e, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37, 0x38, 0x39,
+        0x5a,
     ];
 
-    const PUBLIC_SERDE_FIXTURE_OPTION_NAIVEDATETIME_NONE: &[u8] = &[
+    const PUBLIC_SERDE_FIXTURE_OPTION_TIMESTAMP_NONE: &[u8] = &[
         0x01, 0x02, 0x14, 0x28, 0x02, 0xfb, 0xd2, 0x07, 0xfb, 0xd4, 0x07, 0x02, 0x04, 0x73, 0x72,
         0x63, 0x31, 0x04, 0x73, 0x72, 0x63, 0x32, 0x00, 0x06, 0x08, 0x06, 0x61, 0x62, 0x63, 0x64,
         0x65, 0x66, 0xfb, 0xa4, 0x09, 0x01, 0x3d, 0x0a, 0xd7, 0xa3, 0x70, 0xbd, 0x23, 0x40, 0x00,
     ];
 
     /// Returns a leap-day timestamp with full nanosecond precision to pin
-    /// chrono string formatting in serialized cluster values.
-    fn fixture_naive_datetime() -> NaiveDateTime {
-        use chrono::NaiveDate;
-
-        NaiveDate::from_ymd_opt(2000, 2, 29)
-            .unwrap()
-            .and_hms_nano_opt(12, 34, 56, 123_456_789)
-            .unwrap()
+    /// the serialized cluster values.
+    fn fixture_timestamp() -> jiff::Timestamp {
+        crate::test::from_second(951_827_696, 123_456_789)
     }
 
-    fn fixture_cluster(last_modification_time: Option<NaiveDateTime>) -> Cluster {
+    fn fixture_cluster(last_modification_time: Option<jiff::Timestamp>) -> Cluster {
         Cluster {
             model_id: FIXTURE_MODEL_ID,
             id: FIXTURE_CLUSTER_ID,
@@ -840,50 +841,50 @@ mod tests {
     }
 
     #[test]
-    fn test_cluster_literal_fixture_option_naivedatetime_some() -> anyhow::Result<()> {
+    fn test_cluster_literal_fixture_option_timestamp_some() -> anyhow::Result<()> {
         let key_bytes = fixture_key_bytes();
-        let decoded = Cluster::from_key_value(&key_bytes, FIXTURE_OPTION_NAIVEDATETIME_SOME)?;
-        let expected = fixture_cluster(Some(fixture_naive_datetime()));
+        let decoded = Cluster::from_key_value(&key_bytes, FIXTURE_OPTION_TIMESTAMP_SOME)?;
+        let expected = fixture_cluster(Some(fixture_timestamp()));
 
         assert_eq!(decoded, expected);
-        assert_eq!(expected.value(), FIXTURE_OPTION_NAIVEDATETIME_SOME);
+        assert_eq!(expected.value(), FIXTURE_OPTION_TIMESTAMP_SOME);
 
         Ok(())
     }
 
     #[test]
-    fn test_cluster_literal_fixture_option_naivedatetime_none() -> anyhow::Result<()> {
+    fn test_cluster_literal_fixture_option_timestamp_none() -> anyhow::Result<()> {
         let key_bytes = fixture_key_bytes();
-        let decoded = Cluster::from_key_value(&key_bytes, FIXTURE_OPTION_NAIVEDATETIME_NONE)?;
+        let decoded = Cluster::from_key_value(&key_bytes, FIXTURE_OPTION_TIMESTAMP_NONE)?;
         let expected = fixture_cluster(None);
 
         assert_eq!(decoded, expected);
-        assert_eq!(expected.value(), FIXTURE_OPTION_NAIVEDATETIME_NONE);
+        assert_eq!(expected.value(), FIXTURE_OPTION_TIMESTAMP_NONE);
 
         Ok(())
     }
 
     #[test]
-    fn test_cluster_public_serde_literal_fixture_option_naivedatetime_some() {
-        let decoded = deserialize_public_cluster(PUBLIC_SERDE_FIXTURE_OPTION_NAIVEDATETIME_SOME);
-        let expected = fixture_cluster(Some(fixture_naive_datetime()));
+    fn test_cluster_public_serde_literal_fixture_option_timestamp_some() {
+        let decoded = deserialize_public_cluster(PUBLIC_SERDE_FIXTURE_OPTION_TIMESTAMP_SOME);
+        let expected = fixture_cluster(Some(fixture_timestamp()));
 
         assert_eq!(decoded, expected);
         assert_eq!(
             serialize_public_cluster(&expected),
-            PUBLIC_SERDE_FIXTURE_OPTION_NAIVEDATETIME_SOME
+            PUBLIC_SERDE_FIXTURE_OPTION_TIMESTAMP_SOME
         );
     }
 
     #[test]
-    fn test_cluster_public_serde_literal_fixture_option_naivedatetime_none() {
-        let decoded = deserialize_public_cluster(PUBLIC_SERDE_FIXTURE_OPTION_NAIVEDATETIME_NONE);
+    fn test_cluster_public_serde_literal_fixture_option_timestamp_none() {
+        let decoded = deserialize_public_cluster(PUBLIC_SERDE_FIXTURE_OPTION_TIMESTAMP_NONE);
         let expected = fixture_cluster(None);
 
         assert_eq!(decoded, expected);
         assert_eq!(
             serialize_public_cluster(&expected),
-            PUBLIC_SERDE_FIXTURE_OPTION_NAIVEDATETIME_NONE
+            PUBLIC_SERDE_FIXTURE_OPTION_TIMESTAMP_NONE
         );
     }
 }

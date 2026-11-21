@@ -1,7 +1,7 @@
 //! Baseline contract tests for event stored-field timestamps.
 //!
 //! Event `*FieldsStored` `time` fields persist [`jiff::Timestamp`] values with
-//! the [`timestamp::ts_nanoseconds`](super::timestamp::ts_nanoseconds) adapter,
+//! the [`timestamp::ts_nanoseconds`](crate::timestamp::ts_nanoseconds) adapter,
 //! which writes a signed 64-bit Unix-epoch nanosecond count. With
 //! `bincode::serialize` (fixint encoding) each such field occupies eight
 //! little-endian bytes on disk.

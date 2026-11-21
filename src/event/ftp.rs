@@ -5,9 +5,9 @@ use attrievent::attribute::{FtpAttr, RawEventAttrKind};
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
-use super::timestamp::{self, ts_nanoseconds as jiff_ts_nanoseconds};
 use super::{EventCategory, LearningMethod, ThreatLevel, TriageScore, common::Match};
 use crate::event::common::{AttrValue, triage_scores_to_string};
+use crate::timestamp::{self, ts_nanoseconds as jiff_ts_nanoseconds};
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct FtpCommand {

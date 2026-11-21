@@ -21,7 +21,6 @@ mod smb;
 mod smtp;
 mod ssh;
 mod sysmon;
-pub(crate) mod timestamp;
 mod tls;
 mod tor;
 mod unusual_destination_pattern;
@@ -154,6 +153,7 @@ use super::{
     migration::migration_structures::{
         V0_46_COUNTRY_CODE_LOOKUP_FAILED, V0_46_COUNTRY_CODE_UNRESOLVED,
     },
+    timestamp,
     types::{Endpoint, HostNetworkGroup},
 };
 
@@ -3503,7 +3503,6 @@ mod tests {
         sync::Arc,
     };
 
-    use chrono::{DateTime, TimeZone, Utc};
     use jiff::Timestamp;
 
     use super::{COUNTRY_COUNT_STACK_DEDUP_LIMIT, timestamp};
@@ -3587,10 +3586,6 @@ mod tests {
     struct FakeCountryLookup {
         codes: HashMap<IpAddr, [u8; 2]>,
         failures: HashSet<IpAddr>,
-    }
-
-    fn msg_time(time: DateTime<Utc>) -> Timestamp {
-        timestamp::from_chrono(time).expect("test event message time must fit i64 nanoseconds")
     }
 
     impl crate::geo::CountryLookup for FakeCountryLookup {
@@ -3714,11 +3709,7 @@ mod tests {
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
             resp_port: 53,
             proto: 17,
-            start_time: Utc
-                .with_ymd_and_hms(1970, 1, 1, 0, 1, 1)
-                .unwrap()
-                .timestamp_nanos_opt()
-                .unwrap(),
+            start_time: crate::test::utc_nanos(1970, 1, 1, 0, 1, 1),
             duration: 0,
             orig_pkts: 0,
             resp_pkts: 0,
@@ -3740,13 +3731,13 @@ mod tests {
             category: Some(category),
         };
         EventMessage {
-            time: msg_time(Utc::now()),
+            time: jiff::Timestamp::now(),
             kind,
             fields: bincode::serialize(&fields).expect("serializable"),
         }
     }
 
-    fn dns_message(sensor: &str, time: DateTime<Utc>) -> EventMessage {
+    fn dns_message(sensor: &str, time: jiff::Timestamp) -> EventMessage {
         let mut message = example_message(
             EventKind::DnsCovertChannel,
             EventCategory::CommandAndControl,
@@ -3754,7 +3745,7 @@ mod tests {
         let mut fields: DnsEventFields =
             bincode::deserialize(&message.fields).expect("example fields should be valid");
         fields.sensor = sensor.to_string();
-        message.time = msg_time(time);
+        message.time = time;
         message.fields = bincode::serialize(&fields).expect("DNS fields should be serializable");
         message
     }
@@ -3872,7 +3863,7 @@ mod tests {
     fn event_db_put_unless_stored_stores_an_event_once() {
         let (_permit, store) = setup_store();
         let db = store.events();
-        let time = Utc.with_ymd_and_hms(2026, 1, 2, 3, 4, 5).unwrap();
+        let time = crate::test::utc(2026, 1, 2, 3, 4, 5);
         let msg = dns_message("sensor-a", time);
 
         let PutOutcome::Stored(key) = db.put_unless_stored(&msg).unwrap() else {
@@ -3901,7 +3892,11 @@ mod tests {
             db.put_unless_stored(&msg).unwrap(),
             PutOutcome::AlreadyStored
         );
-        let later = dns_message("sensor-a", time + chrono::Duration::seconds(1));
+        let later = dns_message(
+            "sensor-a",
+            time.checked_add(jiff::SignedDuration::from_secs(1))
+                .unwrap(),
+        );
         assert!(matches!(
             db.put_unless_stored(&later).unwrap(),
             PutOutcome::Stored(_)
@@ -3925,7 +3920,7 @@ mod tests {
         const CALLERS: usize = 8;
 
         let (_permit, store) = setup_store();
-        let time = Utc.with_ymd_and_hms(2026, 1, 2, 3, 4, 5).unwrap();
+        let time = crate::test::utc(2026, 1, 2, 3, 4, 5);
         store.events().put(&dns_message("sensor-a", time)).unwrap();
         let msg = dns_message("sensor-b", time);
 
@@ -4202,7 +4197,7 @@ mod tests {
             category: Some(EventCategory::Reconnaissance),
         };
         db.put(&EventMessage {
-            time: msg_time(Utc::now()),
+            time: jiff::Timestamp::now(),
             kind: EventKind::MultiHostPortScan,
             fields: bincode::serialize(&fields).unwrap(),
         })
@@ -4534,7 +4529,7 @@ mod tests {
 
     fn extra_threat_message() -> EventMessage {
         let fields = ExtraThreatFields {
-            time: msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap()),
+            time: crate::test::utc(1970, 1, 1, 1, 1, 1),
             sensor: "collector1".to_string(),
             service: "service".to_string(),
             content: "content".to_string(),
@@ -4548,7 +4543,7 @@ mod tests {
             triage_scores: None,
         };
         EventMessage {
-            time: msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap()),
+            time: crate::test::utc(1970, 1, 1, 1, 1, 1),
             kind: EventKind::ExtraThreat,
             fields: bincode::serialize(&fields).expect("serializable"),
         }
@@ -4556,7 +4551,7 @@ mod tests {
 
     fn network_threat_message() -> EventMessage {
         let fields = NetworkThreatFields {
-            time: msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap()),
+            time: crate::test::utc(1970, 1, 1, 1, 1, 1),
             sensor: "collector1".to_string(),
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             orig_port: 10000,
@@ -4564,11 +4559,7 @@ mod tests {
             resp_port: 80,
             proto: 6,
             service: "http".to_string(),
-            start_time: Utc
-                .with_ymd_and_hms(1970, 1, 1, 0, 0, 0)
-                .unwrap()
-                .timestamp_nanos_opt()
-                .unwrap(),
+            start_time: crate::test::utc_nanos(1970, 1, 1, 0, 0, 0),
             duration: 0,
             orig_pkts: 0,
             resp_pkts: 0,
@@ -4585,7 +4576,7 @@ mod tests {
             triage_scores: None,
         };
         EventMessage {
-            time: msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap()),
+            time: crate::test::utc(1970, 1, 1, 1, 1, 1),
             kind: EventKind::NetworkThreat,
             fields: bincode::serialize(&fields).expect("serializable"),
         }
@@ -4593,7 +4584,7 @@ mod tests {
 
     fn windows_threat_message() -> EventMessage {
         let fields = WindowsThreatFields {
-            time: msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap()),
+            time: crate::test::utc(1970, 1, 1, 0, 1, 1),
             sensor: "collector1".to_string(),
             service: "notepad".to_string(),
             agent_name: "win64".to_string(),
@@ -4613,7 +4604,7 @@ mod tests {
             triage_scores: None,
         };
         EventMessage {
-            time: msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap()),
+            time: crate::test::utc(1970, 1, 1, 0, 1, 1),
             kind: EventKind::WindowsThreat,
             fields: bincode::serialize(&fields).expect("serializable"),
         }
@@ -4697,7 +4688,7 @@ mod tests {
         // produced from `*Fields` deserialize as `*FieldsStored`, and the
         // runtime constructor copies through unchanged.
         let extra_fields = ExtraThreatFields {
-            time: msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 0, 0).unwrap()),
+            time: crate::test::utc(1970, 1, 1, 0, 0, 0),
             sensor: "s".to_string(),
             service: "svc".to_string(),
             content: "c".to_string(),
@@ -4711,15 +4702,12 @@ mod tests {
             triage_scores: None,
         };
         let stored: super::ExtraThreatFieldsStored = extra_fields.into();
-        let runtime = ExtraThreat::new(
-            msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 0, 0).unwrap()),
-            stored,
-        );
+        let runtime = ExtraThreat::new(crate::test::utc(1970, 1, 1, 0, 0, 0), stored);
         assert_eq!(runtime.sensor, "s");
         assert!((runtime.confidence - 0.5).abs() < f32::EPSILON);
 
         let net_fields = NetworkThreatFields {
-            time: msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 0, 0).unwrap()),
+            time: crate::test::utc(1970, 1, 1, 0, 0, 0),
             sensor: "s".to_string(),
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             orig_port: 1,
@@ -4727,11 +4715,7 @@ mod tests {
             resp_port: 2,
             proto: 6,
             service: "http".to_string(),
-            start_time: Utc
-                .with_ymd_and_hms(1970, 1, 1, 0, 0, 0)
-                .unwrap()
-                .timestamp_nanos_opt()
-                .unwrap(),
+            start_time: crate::test::utc_nanos(1970, 1, 1, 0, 0, 0),
             duration: 0,
             orig_pkts: 0,
             resp_pkts: 0,
@@ -4748,14 +4732,11 @@ mod tests {
             triage_scores: None,
         };
         let net_stored: super::NetworkThreatFieldsStored = net_fields.into();
-        let net_runtime = NetworkThreat::new(
-            msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 0, 0).unwrap()),
-            net_stored,
-        );
+        let net_runtime = NetworkThreat::new(crate::test::utc(1970, 1, 1, 0, 0, 0), net_stored);
         assert_eq!(net_runtime.service, "http");
 
         let win_fields = WindowsThreatFields {
-            time: msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 0, 0).unwrap()),
+            time: crate::test::utc(1970, 1, 1, 0, 0, 0),
             sensor: "s".to_string(),
             service: "svc".to_string(),
             agent_name: "an".to_string(),
@@ -4775,10 +4756,7 @@ mod tests {
             triage_scores: None,
         };
         let win_stored: super::WindowsThreatFieldsStored = win_fields.into();
-        let win_runtime = WindowsThreat::new(
-            msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 0, 0).unwrap()),
-            win_stored,
-        );
+        let win_runtime = WindowsThreat::new(crate::test::utc(1970, 1, 1, 0, 0, 0), win_stored);
         assert_eq!(win_runtime.process_id, 1);
     }
 
@@ -4840,11 +4818,7 @@ mod tests {
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
             resp_port: 80,
             proto: 6,
-            start_time: Utc
-                .with_ymd_and_hms(1970, 1, 1, 0, 0, 0)
-                .unwrap()
-                .timestamp_nanos_opt()
-                .unwrap(),
+            start_time: crate::test::utc_nanos(1970, 1, 1, 0, 0, 0),
             duration: 0,
             orig_pkts: 0,
             resp_pkts: 0,
@@ -4874,7 +4848,7 @@ mod tests {
             category: Some(EventCategory::CommandAndControl),
         };
         let message = EventMessage {
-            time: msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap()),
+            time: crate::test::utc(1970, 1, 1, 0, 1, 1),
             kind: EventKind::DomainGenerationAlgorithm,
             fields: bincode::serialize(&fields).expect("serializable"),
         };
@@ -4886,10 +4860,8 @@ mod tests {
             r#"time="1970-01-01T00:01:01+00:00" event_kind="DomainGenerationAlgorithm" category="CommandAndControl" sensor="collector1" orig_addr="127.0.0.1" orig_port="10000" resp_addr="127.0.0.2" resp_port="80" proto="6" start_time="1970-01-01T00:00:00+00:00" duration="0" orig_pkts="0" resp_pkts="0" orig_l2_bytes="0" resp_l2_bytes="0" method="GET" host="example.com" uri="/uri/path" referer="-" version="1.1" user_agent="browser" request_len="100" response_len="100" status_code="200" status_msg="-" username="-" password="-" cookie="cookie" content_encoding="encoding type" content_type="content type" cache_control="no cache" filenames="a1,a2" mime_types="b1,b2" body="1234567890..." state="" confidence="0.8""#
         );
 
-        let dga = DomainGenerationAlgorithm::new(
-            msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap()),
-            fields.into(),
-        );
+        let dga =
+            DomainGenerationAlgorithm::new(crate::test::utc(1970, 1, 1, 0, 1, 1), fields.into());
         let event = Event::DomainGenerationAlgorithm(dga);
         let dga_display = format!("{event}");
         assert_eq!(
@@ -4985,18 +4957,14 @@ mod tests {
     #[test]
     fn syslog_for_httpthreat() {
         let fields = HttpThreatFields {
-            time: msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap()),
+            time: crate::test::utc(1970, 1, 1, 0, 1, 1),
             sensor: "collector1".to_string(),
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             orig_port: 10000,
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
             resp_port: 80,
             proto: 6,
-            start_time: Utc
-                .with_ymd_and_hms(1970, 1, 1, 0, 0, 0)
-                .unwrap()
-                .timestamp_nanos_opt()
-                .unwrap(),
+            start_time: crate::test::utc_nanos(1970, 1, 1, 0, 0, 0),
             duration: 0,
             orig_pkts: 0,
             resp_pkts: 0,
@@ -5031,7 +4999,7 @@ mod tests {
             category: Some(EventCategory::Reconnaissance),
         };
         let message = EventMessage {
-            time: msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap()),
+            time: crate::test::utc(1970, 1, 1, 0, 1, 1),
             kind: EventKind::HttpThreat,
             fields: bincode::serialize(&fields).expect("serializable"),
         };
@@ -5046,10 +5014,7 @@ mod tests {
             )
         );
 
-        let http_threat = HttpThreat::new(
-            msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap()),
-            fields.into(),
-        );
+        let http_threat = HttpThreat::new(crate::test::utc(1970, 1, 1, 0, 1, 1), fields.into());
         let event = Event::HttpThreat(http_threat);
         let http_threat_display = format!("{event}");
         assert!(http_threat_display.contains("body=\"1234567890...\""));
@@ -5065,11 +5030,7 @@ mod tests {
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
             resp_port: 80,
             proto: 6,
-            start_time: Utc
-                .with_ymd_and_hms(1970, 1, 1, 0, 1, 1)
-                .unwrap()
-                .timestamp_nanos_opt()
-                .unwrap(),
+            start_time: crate::test::utc_nanos(1970, 1, 1, 0, 1, 1),
             duration: 0,
             orig_pkts: 0,
             resp_pkts: 0,
@@ -5100,7 +5061,7 @@ mod tests {
         };
 
         let message = EventMessage {
-            time: msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap()),
+            time: crate::test::utc(1970, 1, 1, 0, 1, 1),
             kind: EventKind::NonBrowser,
             fields: bincode::serialize(&fields).expect("serializable"),
         };
@@ -5114,7 +5075,7 @@ mod tests {
         );
 
         let non_browser = Event::NonBrowser(NonBrowser::new(
-            msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap()),
+            crate::test::utc(1970, 1, 1, 0, 1, 1),
             &fields.into(),
         ))
         .to_string();
@@ -5131,11 +5092,7 @@ mod tests {
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
             resp_port: 80,
             proto: 6,
-            start_time: Utc
-                .with_ymd_and_hms(1970, 1, 1, 0, 0, 0)
-                .unwrap()
-                .timestamp_nanos_opt()
-                .unwrap(),
+            start_time: crate::test::utc_nanos(1970, 1, 1, 0, 0, 0),
             duration: 0,
             orig_pkts: 0,
             resp_pkts: 0,
@@ -5166,7 +5123,7 @@ mod tests {
         };
 
         let message = EventMessage {
-            time: msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap()),
+            time: crate::test::utc(1970, 1, 1, 0, 1, 1),
             kind: EventKind::BlocklistHttp,
             fields: bincode::serialize(&fields).expect("serializable"),
         };
@@ -5180,7 +5137,7 @@ mod tests {
         );
 
         let blocklist_http = Event::Blocklist(RecordType::Http(BlocklistHttp::new(
-            msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap()),
+            crate::test::utc(1970, 1, 1, 0, 1, 1),
             fields.into(),
         )))
         .to_string();
@@ -5198,11 +5155,7 @@ mod tests {
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 4)),
             resp_port: 53,
             proto: 17,
-            start_time: Utc
-                .with_ymd_and_hms(1970, 1, 1, 0, 1, 1)
-                .unwrap()
-                .timestamp_nanos_opt()
-                .unwrap(),
+            start_time: crate::test::utc_nanos(1970, 1, 1, 0, 1, 1),
             duration: 0,
             orig_pkts: 0,
             resp_pkts: 0,
@@ -5225,7 +5178,7 @@ mod tests {
         };
 
         let message = EventMessage {
-            time: msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap()),
+            time: crate::test::utc(1970, 1, 1, 0, 1, 1),
             kind: EventKind::LockyRansomware,
             fields: bincode::serialize(&fields).expect("serializable"),
         };
@@ -5239,7 +5192,7 @@ mod tests {
         );
 
         let locky_ransomware = Event::LockyRansomware(LockyRansomware::new(
-            msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap()),
+            crate::test::utc(1970, 1, 1, 0, 1, 1),
             fields.into(),
         ))
         .to_string();
@@ -5257,23 +5210,15 @@ mod tests {
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
             resp_ports: vec![80, 443, 8000, 8080, 8888, 8443, 9000, 9001, 9002],
-            first_event_start_time: Utc
-                .with_ymd_and_hms(1970, 1, 1, 0, 1, 1)
-                .unwrap()
-                .timestamp_nanos_opt()
-                .unwrap(),
-            last_event_start_time: Utc
-                .with_ymd_and_hms(1970, 1, 1, 0, 1, 2)
-                .unwrap()
-                .timestamp_nanos_opt()
-                .unwrap(),
+            first_event_start_time: crate::test::utc_nanos(1970, 1, 1, 0, 1, 1),
+            last_event_start_time: crate::test::utc_nanos(1970, 1, 1, 0, 1, 2),
             proto: 6,
             confidence: 0.3,
             category: Some(EventCategory::Reconnaissance),
         };
 
         let message = EventMessage {
-            time: msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap()),
+            time: crate::test::utc(1970, 1, 1, 0, 1, 1),
             kind: EventKind::PortScan,
             fields: bincode::serialize(&fields).expect("serializable"),
         };
@@ -5287,7 +5232,7 @@ mod tests {
         );
 
         let port_scan = Event::PortScan(PortScan::new(
-            msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap()),
+            crate::test::utc(1970, 1, 1, 0, 1, 1),
             &fields.into(),
         ))
         .to_string();
@@ -5307,23 +5252,15 @@ mod tests {
                 IpAddr::V4(Ipv4Addr::new(127, 0, 0, 3)),
             ],
             resp_port: 80,
-            first_event_start_time: Utc
-                .with_ymd_and_hms(1970, 1, 1, 0, 1, 1)
-                .unwrap()
-                .timestamp_nanos_opt()
-                .unwrap(),
-            last_event_start_time: Utc
-                .with_ymd_and_hms(1970, 1, 1, 0, 1, 2)
-                .unwrap()
-                .timestamp_nanos_opt()
-                .unwrap(),
+            first_event_start_time: crate::test::utc_nanos(1970, 1, 1, 0, 1, 1),
+            last_event_start_time: crate::test::utc_nanos(1970, 1, 1, 0, 1, 2),
             proto: 6,
             confidence: 0.3,
             category: Some(EventCategory::Reconnaissance),
         };
 
         let message = EventMessage {
-            time: msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap()),
+            time: crate::test::utc(1970, 1, 1, 0, 1, 1),
             kind: EventKind::MultiHostPortScan,
             fields: bincode::serialize(&fields).expect("serializable"),
         };
@@ -5337,7 +5274,7 @@ mod tests {
         );
 
         let multi_host_port_scan = Event::MultiHostPortScan(MultiHostPortScan::new(
-            msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap()),
+            crate::test::utc(1970, 1, 1, 0, 1, 1),
             &fields.into(),
         ))
         .to_string();
@@ -5356,23 +5293,15 @@ mod tests {
                 IpAddr::V4(Ipv4Addr::new(127, 0, 0, 3)),
             ],
             resp_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
-            first_event_start_time: Utc
-                .with_ymd_and_hms(1970, 1, 1, 0, 1, 1)
-                .unwrap()
-                .timestamp_nanos_opt()
-                .unwrap(),
-            last_event_start_time: Utc
-                .with_ymd_and_hms(1970, 1, 1, 0, 1, 2)
-                .unwrap()
-                .timestamp_nanos_opt()
-                .unwrap(),
+            first_event_start_time: crate::test::utc_nanos(1970, 1, 1, 0, 1, 1),
+            last_event_start_time: crate::test::utc_nanos(1970, 1, 1, 0, 1, 2),
             proto: 6,
             confidence: 0.3,
             category: Some(EventCategory::Impact),
         };
 
         let message = EventMessage {
-            time: msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap()),
+            time: crate::test::utc(1970, 1, 1, 1, 1, 1),
             kind: EventKind::ExternalDdos,
             fields: bincode::serialize(&fields).expect("serializable"),
         };
@@ -5385,7 +5314,7 @@ mod tests {
         );
 
         let external_ddos = Event::ExternalDdos(ExternalDdos::new(
-            msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap()),
+            crate::test::utc(1970, 1, 1, 1, 1, 1),
             &fields.into(),
         ))
         .to_string();
@@ -5403,11 +5332,7 @@ mod tests {
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
             resp_port: 67,
             proto: 17,
-            start_time: Utc
-                .with_ymd_and_hms(1970, 1, 1, 0, 0, 0)
-                .unwrap()
-                .timestamp_nanos_opt()
-                .unwrap(),
+            start_time: crate::test::utc_nanos(1970, 1, 1, 0, 0, 0),
             duration: 0,
             orig_pkts: 0,
             resp_pkts: 0,
@@ -5434,7 +5359,7 @@ mod tests {
         let fields = blocklist_bootp_fields();
 
         let message = EventMessage {
-            time: msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap()),
+            time: crate::test::utc(1970, 1, 1, 1, 1, 1),
             kind: EventKind::BlocklistBootp,
             fields: bincode::serialize(&fields).expect("serializable"),
         };
@@ -5447,7 +5372,7 @@ mod tests {
             r#"time="1970-01-01T01:01:01+00:00" event_kind="BlocklistBootp" category="InitialAccess" sensor="collector1" orig_addr="127.0.0.1" orig_port="68" resp_addr="127.0.0.2" resp_port="67" proto="17" start_time="1970-01-01T00:00:00+00:00" duration="0" orig_pkts="0" resp_pkts="0" orig_l2_bytes="0" resp_l2_bytes="0" op="1" htype="2" hops="1" xid="1" ciaddr="127.0.0.5" yiaddr="127.0.0.6" siaddr="127.0.0.7" giaddr="127.0.0.8" chaddr="01:02:03:04:05:06" sname="server_name" file="boot_file_name" confidence="1""#,
         );
         let blocklist_bootp = Event::Blocklist(RecordType::Bootp(BlocklistBootp::new(
-            msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap()),
+            crate::test::utc(1970, 1, 1, 1, 1, 1),
             fields.into(),
         )))
         .to_string();
@@ -5466,7 +5391,7 @@ mod tests {
 
         let fields = blocklist_bootp_fields();
         let message = EventMessage {
-            time: msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap()),
+            time: crate::test::utc(1970, 1, 1, 1, 1, 1),
             kind: EventKind::BlocklistBootp,
             fields: bincode::serialize(&fields).expect("serializable"),
         };
@@ -5525,11 +5450,7 @@ mod tests {
             resp_port: 80,
             proto: 6,
             conn_state: "SAF".to_string(),
-            start_time: Utc
-                .with_ymd_and_hms(1970, 1, 1, 0, 0, 0)
-                .unwrap()
-                .timestamp_nanos_opt()
-                .unwrap(),
+            start_time: crate::test::utc_nanos(1970, 1, 1, 0, 0, 0),
             duration: 0,
             service: "http".to_string(),
             orig_bytes: 100,
@@ -5543,7 +5464,7 @@ mod tests {
         };
 
         let message = EventMessage {
-            time: msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap()),
+            time: crate::test::utc(1970, 1, 1, 1, 1, 1),
             kind: EventKind::BlocklistConn,
             fields: bincode::serialize(&fields).expect("serializable"),
         };
@@ -5557,7 +5478,7 @@ mod tests {
         );
 
         let blocklist_conn = Event::Blocklist(RecordType::Conn(BlocklistConn::new(
-            msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap()),
+            crate::test::utc(1970, 1, 1, 1, 1, 1),
             fields.into(),
         )))
         .to_string();
@@ -5576,11 +5497,7 @@ mod tests {
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
             resp_port: 135,
             proto: 6,
-            start_time: Utc
-                .with_ymd_and_hms(1970, 1, 1, 0, 0, 0)
-                .unwrap()
-                .timestamp_nanos_opt()
-                .unwrap(),
+            start_time: crate::test::utc_nanos(1970, 1, 1, 0, 0, 0),
             duration: 0,
             orig_pkts: 0,
             resp_pkts: 0,
@@ -5607,7 +5524,7 @@ mod tests {
         };
 
         let message = EventMessage {
-            time: msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap()),
+            time: crate::test::utc(1970, 1, 1, 1, 1, 1),
             kind: EventKind::BlocklistDceRpc,
             fields: bincode::serialize(&fields).expect("serializable"),
         };
@@ -5640,7 +5557,7 @@ mod tests {
         );
 
         let blocklist_dce_rpc = Event::Blocklist(RecordType::DceRpc(BlocklistDceRpc::new(
-            msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap()),
+            crate::test::utc(1970, 1, 1, 1, 1, 1),
             fields.into(),
         )))
         .to_string();
@@ -5679,11 +5596,7 @@ mod tests {
             resp_addr: IpAddr::from_str("127.0.0.2").unwrap(),
             resp_port: 67,
             proto: 17,
-            start_time: Utc
-                .with_ymd_and_hms(1970, 1, 1, 0, 0, 0)
-                .unwrap()
-                .timestamp_nanos_opt()
-                .unwrap(),
+            start_time: crate::test::utc_nanos(1970, 1, 1, 0, 0, 0),
             duration: 0,
             orig_pkts: 0,
             resp_pkts: 0,
@@ -5718,7 +5631,7 @@ mod tests {
         let fields = blocklist_dhcp_fields();
 
         let message = EventMessage {
-            time: msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap()),
+            time: crate::test::utc(1970, 1, 1, 1, 1, 1),
             kind: EventKind::BlocklistDhcp,
             fields: bincode::serialize(&fields).expect("serializable"),
         };
@@ -5731,7 +5644,7 @@ mod tests {
         );
 
         let blocklist_dhcp = Event::Blocklist(RecordType::Dhcp(BlocklistDhcp::new(
-            msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap()),
+            crate::test::utc(1970, 1, 1, 1, 1, 1),
             fields.into(),
         )))
         .to_string();
@@ -5750,7 +5663,7 @@ mod tests {
 
         let fields = blocklist_dhcp_fields();
         let message = EventMessage {
-            time: msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap()),
+            time: crate::test::utc(1970, 1, 1, 1, 1, 1),
             kind: EventKind::BlocklistDhcp,
             fields: bincode::serialize(&fields).expect("serializable"),
         };
@@ -5808,11 +5721,7 @@ mod tests {
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
             resp_port: 53,
             proto: 17,
-            start_time: Utc
-                .with_ymd_and_hms(1970, 1, 1, 0, 1, 1)
-                .unwrap()
-                .timestamp_nanos_opt()
-                .unwrap(),
+            start_time: crate::test::utc_nanos(1970, 1, 1, 0, 1, 1),
             duration: 0,
             orig_pkts: 0,
             resp_pkts: 0,
@@ -5835,7 +5744,7 @@ mod tests {
         };
 
         let message = EventMessage {
-            time: msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap()),
+            time: crate::test::utc(1970, 1, 1, 1, 1, 1),
             kind: EventKind::DnsCovertChannel,
             fields: bincode::serialize(&fields).expect("serializable"),
         };
@@ -5853,7 +5762,7 @@ mod tests {
             score: 0.9,
         }];
         let mut dns_covert_channel = Event::DnsCovertChannel(DnsCovertChannel::new(
-            msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap()),
+            crate::test::utc(1970, 1, 1, 1, 1, 1),
             fields.into(),
         ));
         dns_covert_channel.set_triage_scores(triage_scores);
@@ -5874,11 +5783,7 @@ mod tests {
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
             resp_port: 53,
             proto: 17,
-            start_time: Utc
-                .with_ymd_and_hms(1970, 1, 1, 0, 1, 1)
-                .unwrap()
-                .timestamp_nanos_opt()
-                .unwrap(),
+            start_time: crate::test::utc_nanos(1970, 1, 1, 0, 1, 1),
             duration: 0,
             orig_pkts: 0,
             resp_pkts: 0,
@@ -5902,7 +5807,7 @@ mod tests {
         };
 
         let message = EventMessage {
-            time: msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap()),
+            time: crate::test::utc(1970, 1, 1, 1, 1, 1),
             kind: EventKind::CryptocurrencyMiningPool,
             fields: bincode::serialize(&fields).expect("serializable"),
         };
@@ -5915,12 +5820,10 @@ mod tests {
             r#"time="1970-01-01T01:01:01+00:00" event_kind="CryptocurrencyMiningPool" category="CommandAndControl" sensor="collector1" orig_addr="127.0.0.1" orig_port="10000" resp_addr="127.0.0.2" resp_port="53" proto="17" start_time="1970-01-01T00:01:01+00:00" duration="0" orig_pkts="0" resp_pkts="0" orig_l2_bytes="0" resp_l2_bytes="0" query="foo.com" answer="10.10.10.10,20.20.20.20" trans_id="123" rtt="1" qclass="0" qtype="0" rcode="0" aa_flag="false" tc_flag="false" rd_flag="false" ra_flag="true" ttl="120,120,120,120,120" coins="bitcoin,monero" confidence="1""#
         );
 
-        let cryptocurrency_mining_pool =
-            Event::CryptocurrencyMiningPool(CryptocurrencyMiningPool::new(
-                msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap()),
-                fields.into(),
-            ))
-            .to_string();
+        let cryptocurrency_mining_pool = Event::CryptocurrencyMiningPool(
+            CryptocurrencyMiningPool::new(crate::test::utc(1970, 1, 1, 1, 1, 1), fields.into()),
+        )
+        .to_string();
         assert_eq!(
             &cryptocurrency_mining_pool,
             r#"time="1970-01-01T01:01:01+00:00" event_kind="CryptocurrencyMiningPool" category="CommandAndControl" sensor="collector1" orig_addr="127.0.0.1" orig_port="10000" orig_country_code="XX" resp_addr="127.0.0.2" resp_port="53" resp_country_code="XX" proto="17" start_time="1970-01-01T00:01:01+00:00" duration="0" orig_pkts="0" resp_pkts="0" orig_l2_bytes="0" resp_l2_bytes="0" query="foo.com" answer="10.10.10.10,20.20.20.20" trans_id="123" rtt="1" qclass="0" qtype="0" rcode="0" aa_flag="false" tc_flag="false" rd_flag="false" ra_flag="true" ttl="120,120,120,120,120" coins="bitcoin,monero" triage_scores="""#
@@ -5936,11 +5839,7 @@ mod tests {
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
             resp_port: 53,
             proto: 17,
-            start_time: Utc
-                .with_ymd_and_hms(1970, 1, 1, 0, 0, 0)
-                .unwrap()
-                .timestamp_nanos_opt()
-                .unwrap(),
+            start_time: crate::test::utc_nanos(1970, 1, 1, 0, 0, 0),
             duration: 0,
             orig_pkts: 0,
             resp_pkts: 0,
@@ -5963,7 +5862,7 @@ mod tests {
         };
 
         let message = EventMessage {
-            time: msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap()),
+            time: crate::test::utc(1970, 1, 1, 1, 1, 1),
             kind: EventKind::BlocklistDns,
             fields: bincode::serialize(&fields).expect("serializable"),
         };
@@ -5976,7 +5875,7 @@ mod tests {
             r#"time="1970-01-01T01:01:01+00:00" event_kind="BlocklistDns" category="InitialAccess" sensor="collector1" orig_addr="127.0.0.1" orig_port="10000" resp_addr="127.0.0.2" resp_port="53" proto="17" start_time="1970-01-01T00:00:00+00:00" duration="0" orig_pkts="0" resp_pkts="0" orig_l2_bytes="0" resp_l2_bytes="0" query="foo.com" answer="10.10.10.10,20.20.20.20" trans_id="123" rtt="1" qclass="0" qtype="0" rcode="0" aa_flag="false" tc_flag="false" rd_flag="false" ra_flag="true" ttl="120,120,120,120,120" confidence="1""#
         );
         let blocklist_dns = Event::Blocklist(RecordType::Dns(BlocklistDns::new(
-            msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap()),
+            crate::test::utc(1970, 1, 1, 1, 1, 1),
             fields.into(),
         )))
         .to_string();
@@ -5995,23 +5894,15 @@ mod tests {
             resp_port: 21,
             proto: 6,
             user_list: vec!["user1".to_string(), "user_2".to_string()],
-            first_event_start_time: Utc
-                .with_ymd_and_hms(1970, 1, 1, 0, 1, 1)
-                .unwrap()
-                .timestamp_nanos_opt()
-                .unwrap(),
-            last_event_start_time: Utc
-                .with_ymd_and_hms(1970, 1, 1, 0, 1, 2)
-                .unwrap()
-                .timestamp_nanos_opt()
-                .unwrap(),
+            first_event_start_time: crate::test::utc_nanos(1970, 1, 1, 0, 1, 1),
+            last_event_start_time: crate::test::utc_nanos(1970, 1, 1, 0, 1, 2),
             is_internal: true,
             confidence: 0.3,
             category: Some(EventCategory::CredentialAccess),
         };
 
         let message = EventMessage {
-            time: msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap()),
+            time: crate::test::utc(1970, 1, 1, 0, 1, 1),
             kind: EventKind::FtpBruteForce,
             fields: bincode::serialize(&fields).expect("serializable"),
         };
@@ -6025,7 +5916,7 @@ mod tests {
         );
 
         let ftp_brute_force = Event::FtpBruteForce(FtpBruteForce::new(
-            msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap()),
+            crate::test::utc(1970, 1, 1, 0, 1, 1),
             &fields.into(),
         ))
         .to_string();
@@ -6060,11 +5951,7 @@ mod tests {
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
             resp_port: 21,
             proto: 6,
-            start_time: Utc
-                .with_ymd_and_hms(1970, 1, 1, 0, 1, 1)
-                .unwrap()
-                .timestamp_nanos_opt()
-                .unwrap(),
+            start_time: crate::test::utc_nanos(1970, 1, 1, 0, 1, 1),
             duration: 0,
             orig_pkts: 0,
             resp_pkts: 0,
@@ -6078,7 +5965,7 @@ mod tests {
         };
 
         let message = EventMessage {
-            time: msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap()),
+            time: crate::test::utc(1970, 1, 1, 1, 1, 1),
             kind: EventKind::FtpPlainText,
             fields: bincode::serialize(&fields).expect("serializable"),
         };
@@ -6092,7 +5979,7 @@ mod tests {
         );
 
         let ftp_plain_text = Event::FtpPlainText(FtpPlainText::new(
-            msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap()),
+            crate::test::utc(1970, 1, 1, 1, 1, 1),
             fields.into(),
         ))
         .to_string();
@@ -6124,11 +6011,7 @@ mod tests {
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
             resp_port: 21,
             proto: 6,
-            start_time: Utc
-                .with_ymd_and_hms(1970, 1, 1, 0, 1, 1)
-                .unwrap()
-                .timestamp_nanos_opt()
-                .unwrap(),
+            start_time: crate::test::utc_nanos(1970, 1, 1, 0, 1, 1),
             duration: 0,
             orig_pkts: 0,
             resp_pkts: 0,
@@ -6148,7 +6031,7 @@ mod tests {
         let fields = ftpeventfields();
 
         let message = EventMessage {
-            time: msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap()),
+            time: crate::test::utc(1970, 1, 1, 1, 1, 1),
             kind: EventKind::BlocklistFtp,
             fields: bincode::serialize(&fields).expect("serializable"),
         };
@@ -6162,7 +6045,7 @@ mod tests {
         );
 
         let blocklist_ftp = Event::Blocklist(RecordType::Ftp(BlocklistFtp::new(
-            msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap()),
+            crate::test::utc(1970, 1, 1, 1, 1, 1),
             fields.into(),
         )))
         .to_string();
@@ -6181,7 +6064,7 @@ mod tests {
 
         let fields = ftpeventfields();
         let message = EventMessage {
-            time: msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap()),
+            time: crate::test::utc(1970, 1, 1, 1, 1, 1),
             kind: EventKind::BlocklistFtp,
             fields: bincode::serialize(&fields).expect("serializable"),
         };
@@ -6232,11 +6115,7 @@ mod tests {
 
     #[test]
     fn syslog_for_repeatedhttpsessions() {
-        let now = Utc
-            .with_ymd_and_hms(1970, 1, 1, 1, 1, 1)
-            .unwrap()
-            .timestamp_nanos_opt()
-            .unwrap();
+        let now = crate::test::utc_nanos(1970, 1, 1, 1, 1, 1);
         let fields = RepeatedHttpSessionsFields {
             sensor: "collector1".to_string(),
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
@@ -6251,7 +6130,7 @@ mod tests {
         };
 
         let message = EventMessage {
-            time: msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap()),
+            time: crate::test::utc(1970, 1, 1, 1, 1, 1),
             kind: EventKind::RepeatedHttpSessions,
             fields: bincode::serialize(&fields).expect("serializable"),
         };
@@ -6264,7 +6143,7 @@ mod tests {
             r#"time="1970-01-01T01:01:01+00:00" event_kind="RepeatedHttpSessions" category="Exfiltration" sensor="collector1" orig_addr="127.0.0.1" orig_port="10000" resp_addr="127.0.0.2" resp_port="443" proto="6" first_event_start_time="1970-01-01T01:01:01+00:00" last_event_start_time="1970-01-01T01:01:01+00:00" confidence="0.3""#
         );
         let repeated_http_sessions = Event::RepeatedHttpSessions(RepeatedHttpSessions::new(
-            msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap()),
+            crate::test::utc(1970, 1, 1, 1, 1, 1),
             &fields.into(),
         ))
         .to_string();
@@ -6283,11 +6162,7 @@ mod tests {
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
             resp_port: 88,
             proto: 17,
-            start_time: Utc
-                .with_ymd_and_hms(1970, 1, 1, 0, 0, 0)
-                .unwrap()
-                .timestamp_nanos_opt()
-                .unwrap(),
+            start_time: crate::test::utc_nanos(1970, 1, 1, 0, 0, 0),
             duration: 0,
             orig_pkts: 0,
             resp_pkts: 0,
@@ -6307,7 +6182,7 @@ mod tests {
         };
 
         let message = EventMessage {
-            time: msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap()),
+            time: crate::test::utc(1970, 1, 1, 1, 1, 1),
             kind: EventKind::BlocklistKerberos,
             fields: bincode::serialize(&fields).expect("serializable"),
         };
@@ -6321,7 +6196,7 @@ mod tests {
         );
 
         let blocklist_kerberos = Event::Blocklist(RecordType::Kerberos(BlocklistKerberos::new(
-            msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap()),
+            crate::test::utc(1970, 1, 1, 1, 1, 1),
             fields.into(),
         )))
         .to_string();
@@ -6344,22 +6219,14 @@ mod tests {
                 ("user1".to_string(), "pw1".to_string()),
                 ("user_2".to_string(), "pw2".to_string()),
             ],
-            first_event_start_time: Utc
-                .with_ymd_and_hms(1970, 1, 1, 0, 1, 1)
-                .unwrap()
-                .timestamp_nanos_opt()
-                .unwrap(),
-            last_event_start_time: Utc
-                .with_ymd_and_hms(1970, 1, 1, 0, 1, 2)
-                .unwrap()
-                .timestamp_nanos_opt()
-                .unwrap(),
+            first_event_start_time: crate::test::utc_nanos(1970, 1, 1, 0, 1, 1),
+            last_event_start_time: crate::test::utc_nanos(1970, 1, 1, 0, 1, 2),
             confidence: 0.3,
             category: Some(EventCategory::CredentialAccess),
         };
 
         let message = EventMessage {
-            time: msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap()),
+            time: crate::test::utc(1970, 1, 1, 0, 1, 1),
             kind: EventKind::LdapBruteForce,
             fields: bincode::serialize(&fields).expect("serializable"),
         };
@@ -6373,7 +6240,7 @@ mod tests {
         );
 
         let ldap_brute_force = Event::LdapBruteForce(LdapBruteForce::new(
-            msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap()),
+            crate::test::utc(1970, 1, 1, 0, 1, 1),
             &fields.into(),
         ))
         .to_string();
@@ -6393,11 +6260,7 @@ mod tests {
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
             resp_port: 389,
             proto: 6,
-            start_time: Utc
-                .with_ymd_and_hms(1970, 1, 1, 0, 1, 1)
-                .unwrap()
-                .timestamp_nanos_opt()
-                .unwrap(),
+            start_time: crate::test::utc_nanos(1970, 1, 1, 0, 1, 1),
             duration: 0,
             orig_pkts: 0,
             resp_pkts: 0,
@@ -6415,7 +6278,7 @@ mod tests {
         };
 
         let message = EventMessage {
-            time: msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap()),
+            time: crate::test::utc(1970, 1, 1, 1, 1, 1),
             kind: EventKind::LdapPlainText,
             fields: bincode::serialize(&fields).expect("serializable"),
         };
@@ -6429,7 +6292,7 @@ mod tests {
         );
 
         let ldap_plain_text = Event::LdapPlainText(LdapPlainText::new(
-            msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap()),
+            crate::test::utc(1970, 1, 1, 1, 1, 1),
             fields.into(),
         ))
         .to_string();
@@ -6448,11 +6311,7 @@ mod tests {
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
             resp_port: 389,
             proto: 6,
-            start_time: Utc
-                .with_ymd_and_hms(1970, 1, 1, 0, 1, 1)
-                .unwrap()
-                .timestamp_nanos_opt()
-                .unwrap(),
+            start_time: crate::test::utc_nanos(1970, 1, 1, 0, 1, 1),
             duration: 0,
             orig_pkts: 0,
             resp_pkts: 0,
@@ -6475,7 +6334,7 @@ mod tests {
         let fields = ldapeventfields();
 
         let message = EventMessage {
-            time: msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap()),
+            time: crate::test::utc(1970, 1, 1, 1, 1, 1),
             kind: EventKind::BlocklistLdap,
             fields: bincode::serialize(&fields).expect("serializable"),
         };
@@ -6489,7 +6348,7 @@ mod tests {
         );
 
         let blocklist_ldap = Event::Blocklist(RecordType::Ldap(BlocklistLdap::new(
-            msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap()),
+            crate::test::utc(1970, 1, 1, 1, 1, 1),
             fields.into(),
         )))
         .to_string();
@@ -6508,7 +6367,7 @@ mod tests {
 
         let fields = ldapeventfields();
         let message = EventMessage {
-            time: msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap()),
+            time: crate::test::utc(1970, 1, 1, 1, 1, 1),
             kind: EventKind::BlocklistLdap,
             fields: bincode::serialize(&fields).expect("serializable"),
         };
@@ -6598,7 +6457,7 @@ mod tests {
 
         let fields = blocklist_radius_fields();
         let message = EventMessage {
-            time: msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap()),
+            time: crate::test::utc(1970, 1, 1, 1, 1, 1),
             kind: EventKind::BlocklistRadius,
             fields: bincode::serialize(&fields).expect("serializable"),
         };
@@ -6650,7 +6509,7 @@ mod tests {
     #[test]
     fn syslog_for_extrathreat() {
         let fields = ExtraThreatFields {
-            time: msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap()),
+            time: crate::test::utc(1970, 1, 1, 1, 1, 1),
             sensor: "collector1".to_string(),
             service: "service".to_string(),
             content: "content".to_string(),
@@ -6665,7 +6524,7 @@ mod tests {
         };
 
         let message = EventMessage {
-            time: msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap()),
+            time: crate::test::utc(1970, 1, 1, 1, 1, 1),
             kind: EventKind::ExtraThreat,
             fields: bincode::serialize(&fields).expect("serializable"),
         };
@@ -6688,11 +6547,7 @@ mod tests {
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
             resp_port: 1883,
             proto: 6,
-            start_time: Utc
-                .with_ymd_and_hms(1970, 1, 1, 0, 0, 0)
-                .unwrap()
-                .timestamp_nanos_opt()
-                .unwrap(),
+            start_time: crate::test::utc_nanos(1970, 1, 1, 0, 0, 0),
             duration: 0,
             orig_pkts: 0,
             resp_pkts: 0,
@@ -6709,7 +6564,7 @@ mod tests {
         };
 
         let message = EventMessage {
-            time: msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap()),
+            time: crate::test::utc(1970, 1, 1, 1, 1, 1),
             kind: EventKind::BlocklistMqtt,
             fields: bincode::serialize(&fields).expect("serializable"),
         };
@@ -6723,7 +6578,7 @@ mod tests {
         );
 
         let blocklist_mqtt = Event::Blocklist(RecordType::Mqtt(BlocklistMqtt::new(
-            msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap()),
+            crate::test::utc(1970, 1, 1, 1, 1, 1),
             fields.into(),
         )))
         .to_string();
@@ -6737,7 +6592,7 @@ mod tests {
     #[test]
     fn syslog_for_networkthreat() {
         let fields = NetworkThreatFields {
-            time: msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap()),
+            time: crate::test::utc(1970, 1, 1, 1, 1, 1),
             sensor: "collector1".to_string(),
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             orig_port: 10000,
@@ -6745,11 +6600,7 @@ mod tests {
             resp_port: 80,
             proto: 6,
             service: "http".to_string(),
-            start_time: Utc
-                .with_ymd_and_hms(1970, 1, 1, 0, 0, 0)
-                .unwrap()
-                .timestamp_nanos_opt()
-                .unwrap(),
+            start_time: crate::test::utc_nanos(1970, 1, 1, 0, 0, 0),
             duration: 0,
             orig_pkts: 0,
             resp_pkts: 0,
@@ -6767,7 +6618,7 @@ mod tests {
         };
 
         let message = EventMessage {
-            time: msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap()),
+            time: crate::test::utc(1970, 1, 1, 1, 1, 1),
             kind: EventKind::NetworkThreat,
             fields: bincode::serialize(&fields).expect("serializable"),
         };
@@ -6790,11 +6641,7 @@ mod tests {
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
             resp_port: 2049,
             proto: 6,
-            start_time: Utc
-                .with_ymd_and_hms(1970, 1, 1, 0, 0, 0)
-                .unwrap()
-                .timestamp_nanos_opt()
-                .unwrap(),
+            start_time: crate::test::utc_nanos(1970, 1, 1, 0, 0, 0),
             duration: 0,
             orig_pkts: 0,
             resp_pkts: 0,
@@ -6807,7 +6654,7 @@ mod tests {
         };
 
         let message = EventMessage {
-            time: msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap()),
+            time: crate::test::utc(1970, 1, 1, 1, 1, 1),
             kind: EventKind::BlocklistNfs,
             fields: bincode::serialize(&fields).expect("serializable"),
         };
@@ -6821,7 +6668,7 @@ mod tests {
         );
 
         let blocklist_nfs = Event::Blocklist(RecordType::Nfs(BlocklistNfs::new(
-            msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap()),
+            crate::test::utc(1970, 1, 1, 1, 1, 1),
             fields.into(),
         )))
         .to_string();
@@ -6841,11 +6688,7 @@ mod tests {
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
             resp_port: 445,
             proto: 6,
-            start_time: Utc
-                .with_ymd_and_hms(1970, 1, 1, 0, 0, 0)
-                .unwrap()
-                .timestamp_nanos_opt()
-                .unwrap(),
+            start_time: crate::test::utc_nanos(1970, 1, 1, 0, 0, 0),
             duration: 0,
             orig_pkts: 0,
             resp_pkts: 0,
@@ -6861,7 +6704,7 @@ mod tests {
         };
 
         let message = EventMessage {
-            time: msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap()),
+            time: crate::test::utc(1970, 1, 1, 1, 1, 1),
             kind: EventKind::BlocklistNtlm,
             fields: bincode::serialize(&fields).expect("serializable"),
         };
@@ -6875,7 +6718,7 @@ mod tests {
         );
 
         let blocklist_ntlm = Event::Blocklist(RecordType::Ntlm(BlocklistNtlm::new(
-            msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap()),
+            crate::test::utc(1970, 1, 1, 1, 1, 1),
             fields.into(),
         )))
         .to_string();
@@ -6891,7 +6734,7 @@ mod tests {
         let fields = blocklist_radius_fields();
 
         let message = EventMessage {
-            time: msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap()),
+            time: crate::test::utc(1970, 1, 1, 1, 1, 1),
             kind: EventKind::BlocklistRadius,
             fields: bincode::serialize(&fields).expect("serializable"),
         };
@@ -6905,7 +6748,7 @@ mod tests {
         );
 
         let blocklist_radius = Event::Blocklist(RecordType::Radius(BlocklistRadius::new(
-            msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap()),
+            crate::test::utc(1970, 1, 1, 1, 1, 1),
             fields.into(),
         )))
         .to_string();
@@ -6924,11 +6767,7 @@ mod tests {
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
             resp_port: 53,
             proto: 17,
-            start_time: Utc
-                .with_ymd_and_hms(1970, 1, 1, 0, 0, 0)
-                .unwrap()
-                .timestamp_nanos_opt()
-                .unwrap(),
+            start_time: crate::test::utc_nanos(1970, 1, 1, 0, 0, 0),
             duration: 1_000_000_000,
             orig_pkts: 10,
             resp_pkts: 5,
@@ -6959,7 +6798,7 @@ mod tests {
 
         let fields = blocklist_malformed_dns_fields();
         let message = EventMessage {
-            time: msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap()),
+            time: crate::test::utc(1970, 1, 1, 1, 1, 1),
             kind: EventKind::BlocklistMalformedDns,
             fields: bincode::serialize(&fields).expect("serializable"),
         };
@@ -7016,7 +6855,7 @@ mod tests {
         let fields = blocklist_malformed_dns_fields();
 
         let message = EventMessage {
-            time: msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap()),
+            time: crate::test::utc(1970, 1, 1, 1, 1, 1),
             kind: EventKind::BlocklistMalformedDns,
             fields: bincode::serialize(&fields).expect("serializable"),
         };
@@ -7029,12 +6868,10 @@ mod tests {
             r#"time="1970-01-01T01:01:01+00:00" event_kind="BlocklistMalformedDns" category="InitialAccess" sensor="collector1" orig_addr="127.0.0.1" orig_port="10000" resp_addr="127.0.0.2" resp_port="53" proto="17" start_time="1970-01-01T00:00:00+00:00" duration="1000000000" orig_pkts="10" resp_pkts="5" orig_l2_bytes="500" resp_l2_bytes="300" trans_id="1234" flags="33152" question_count="1" answer_count="1" authority_count="0" additional_count="0" query_count="1" resp_count="1" query_bytes="50" resp_bytes="100" query_body="example.com" resp_body="192.0.2.1" confidence="0.95""#
         );
 
-        let blocklist_malformed_dns =
-            Event::Blocklist(RecordType::MalformedDns(BlocklistMalformedDns::new(
-                msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap()),
-                fields.into(),
-            )))
-            .to_string();
+        let blocklist_malformed_dns = Event::Blocklist(RecordType::MalformedDns(
+            BlocklistMalformedDns::new(crate::test::utc(1970, 1, 1, 1, 1, 1), fields.into()),
+        ))
+        .to_string();
 
         assert_eq!(
             &blocklist_malformed_dns,
@@ -7051,23 +6888,15 @@ mod tests {
                 IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
                 IpAddr::V4(Ipv4Addr::new(127, 0, 0, 3)),
             ],
-            first_event_start_time: Utc
-                .with_ymd_and_hms(1970, 1, 1, 0, 1, 1)
-                .unwrap()
-                .timestamp_nanos_opt()
-                .unwrap(),
-            last_event_start_time: Utc
-                .with_ymd_and_hms(1970, 1, 1, 0, 10, 2)
-                .unwrap()
-                .timestamp_nanos_opt()
-                .unwrap(),
+            first_event_start_time: crate::test::utc_nanos(1970, 1, 1, 0, 1, 1),
+            last_event_start_time: crate::test::utc_nanos(1970, 1, 1, 0, 10, 2),
             proto: 6,
             confidence: 0.3,
             category: Some(EventCategory::Discovery),
         };
 
         let message = EventMessage {
-            time: msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap()),
+            time: crate::test::utc(1970, 1, 1, 0, 1, 1),
             kind: EventKind::RdpBruteForce,
             fields: bincode::serialize(&fields).expect("serializable"),
         };
@@ -7081,7 +6910,7 @@ mod tests {
         );
 
         let rdp_brute_force = Event::RdpBruteForce(RdpBruteForce::new(
-            msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap()),
+            crate::test::utc(1970, 1, 1, 0, 1, 1),
             &fields.into(),
         ))
         .to_string();
@@ -7101,11 +6930,7 @@ mod tests {
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
             resp_port: 3389,
             proto: 6,
-            start_time: Utc
-                .with_ymd_and_hms(1970, 1, 1, 0, 0, 0)
-                .unwrap()
-                .timestamp_nanos_opt()
-                .unwrap(),
+            start_time: crate::test::utc_nanos(1970, 1, 1, 0, 0, 0),
             duration: 0,
             orig_pkts: 0,
             resp_pkts: 0,
@@ -7117,7 +6942,7 @@ mod tests {
         };
 
         let message = EventMessage {
-            time: msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap()),
+            time: crate::test::utc(1970, 1, 1, 1, 1, 1),
             kind: EventKind::BlocklistRdp,
             fields: bincode::serialize(&fields).expect("serializable"),
         };
@@ -7131,7 +6956,7 @@ mod tests {
         );
 
         let blocklist_rdp = Event::Blocklist(RecordType::Rdp(BlocklistRdp::new(
-            msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap()),
+            crate::test::utc(1970, 1, 1, 1, 1, 1),
             fields.into(),
         )))
         .to_string();
@@ -7151,11 +6976,7 @@ mod tests {
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
             resp_port: 445,
             proto: 6,
-            start_time: Utc
-                .with_ymd_and_hms(1970, 1, 1, 0, 0, 0)
-                .unwrap()
-                .timestamp_nanos_opt()
-                .unwrap(),
+            start_time: crate::test::utc_nanos(1970, 1, 1, 0, 0, 0),
             duration: 0,
             orig_pkts: 0,
             resp_pkts: 0,
@@ -7177,7 +6998,7 @@ mod tests {
         };
 
         let message = EventMessage {
-            time: msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap()),
+            time: crate::test::utc(1970, 1, 1, 1, 1, 1),
             kind: EventKind::BlocklistSmb,
             fields: bincode::serialize(&fields).expect("serializable"),
         };
@@ -7191,7 +7012,7 @@ mod tests {
         );
 
         let blocklist_smb = Event::Blocklist(RecordType::Smb(BlocklistSmb::new(
-            msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap()),
+            crate::test::utc(1970, 1, 1, 1, 1, 1),
             fields.into(),
         )))
         .to_string();
@@ -7211,11 +7032,7 @@ mod tests {
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
             resp_port: 25,
             proto: 6,
-            start_time: Utc
-                .with_ymd_and_hms(1970, 1, 1, 0, 0, 0)
-                .unwrap()
-                .timestamp_nanos_opt()
-                .unwrap(),
+            start_time: crate::test::utc_nanos(1970, 1, 1, 0, 0, 0),
             duration: 0,
             orig_pkts: 0,
             resp_pkts: 0,
@@ -7233,7 +7050,7 @@ mod tests {
         };
 
         let message = EventMessage {
-            time: msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap()),
+            time: crate::test::utc(1970, 1, 1, 1, 1, 1),
             kind: EventKind::BlocklistSmtp,
             fields: bincode::serialize(&fields).expect("serializable"),
         };
@@ -7247,7 +7064,7 @@ mod tests {
         );
 
         let blocklist_smtp = Event::Blocklist(RecordType::Smtp(BlocklistSmtp::new(
-            msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap()),
+            crate::test::utc(1970, 1, 1, 1, 1, 1),
             fields.into(),
         )))
         .to_string();
@@ -7267,11 +7084,7 @@ mod tests {
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
             resp_port: 22,
             proto: 6,
-            start_time: Utc
-                .with_ymd_and_hms(1970, 1, 1, 0, 0, 0)
-                .unwrap()
-                .timestamp_nanos_opt()
-                .unwrap(),
+            start_time: crate::test::utc_nanos(1970, 1, 1, 0, 0, 0),
             duration: 0,
             orig_pkts: 0,
             resp_pkts: 0,
@@ -7295,7 +7108,7 @@ mod tests {
         };
 
         let message = EventMessage {
-            time: msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap()),
+            time: crate::test::utc(1970, 1, 1, 1, 1, 1),
             kind: EventKind::BlocklistSsh,
             fields: bincode::serialize(&fields).expect("serializable"),
         };
@@ -7309,7 +7122,7 @@ mod tests {
         );
 
         let blocklist_ssh = Event::Blocklist(RecordType::Ssh(BlocklistSsh::new(
-            msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap()),
+            crate::test::utc(1970, 1, 1, 1, 1, 1),
             fields.into(),
         )))
         .to_string();
@@ -7323,7 +7136,7 @@ mod tests {
     #[test]
     fn syslog_for_windowsthreat() {
         let fields = WindowsThreatFields {
-            time: msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap()),
+            time: crate::test::utc(1970, 1, 1, 0, 1, 1),
             sensor: "collector1".to_string(),
             service: "notepad".to_string(),
             agent_name: "win64".to_string(),
@@ -7344,7 +7157,7 @@ mod tests {
         };
 
         let message = EventMessage {
-            time: msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap()),
+            time: crate::test::utc(1970, 1, 1, 0, 1, 1),
             kind: EventKind::WindowsThreat,
             fields: bincode::serialize(&fields).expect("serializable"),
         };
@@ -7362,10 +7175,7 @@ mod tests {
                 .contains("content=\"cmd /c \"vssadmin.exe Delete Shadows /all /quiet\"\"")
         );
 
-        let runtime = WindowsThreat::new(
-            msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap()),
-            fields.into(),
-        );
+        let runtime = WindowsThreat::new(crate::test::utc(1970, 1, 1, 0, 1, 1), fields.into());
         let windows_threat = Event::WindowsThreat(runtime).to_string();
         assert_eq!(
             &windows_threat,
@@ -7387,11 +7197,7 @@ mod tests {
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
             resp_port: 443,
             proto: 6,
-            start_time: Utc
-                .with_ymd_and_hms(1970, 1, 1, 0, 0, 0)
-                .unwrap()
-                .timestamp_nanos_opt()
-                .unwrap(),
+            start_time: crate::test::utc_nanos(1970, 1, 1, 0, 0, 0),
             duration: 0,
             orig_pkts: 0,
             resp_pkts: 0,
@@ -7423,7 +7229,7 @@ mod tests {
         };
 
         let message = EventMessage {
-            time: msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap()),
+            time: crate::test::utc(1970, 1, 1, 1, 1, 1),
             kind: EventKind::BlocklistTls,
             fields: bincode::serialize(&fields).expect("serializable"),
         };
@@ -7437,7 +7243,7 @@ mod tests {
         );
 
         let blocklist_tls = Event::Blocklist(RecordType::Tls(BlocklistTls::new(
-            msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap()),
+            crate::test::utc(1970, 1, 1, 1, 1, 1),
             fields.into(),
         )))
         .to_string();
@@ -7451,11 +7257,7 @@ mod tests {
     fn httpeventfields() -> HttpEventFields {
         HttpEventFields {
             sensor: "collector1".to_string(),
-            start_time: Utc
-                .with_ymd_and_hms(1970, 1, 1, 0, 1, 1)
-                .unwrap()
-                .timestamp_nanos_opt()
-                .unwrap(),
+            start_time: crate::test::utc_nanos(1970, 1, 1, 0, 1, 1),
             duration: 0,
             orig_pkts: 0,
             resp_pkts: 0,
@@ -7496,7 +7298,7 @@ mod tests {
         let fields = httpeventfields();
 
         let message = EventMessage {
-            time: msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap()),
+            time: crate::test::utc(1970, 1, 1, 1, 1, 1),
             kind: EventKind::TorConnection,
             fields: bincode::serialize(&fields).expect("serializable"),
         };
@@ -7510,7 +7312,7 @@ mod tests {
         );
 
         let tor_connection = Event::TorConnection(TorConnection::new(
-            msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap()),
+            crate::test::utc(1970, 1, 1, 1, 1, 1),
             &fields.into(),
         ))
         .to_string();
@@ -7529,7 +7331,7 @@ mod tests {
 
         let fields = httpeventfields();
         let message = EventMessage {
-            time: msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap()),
+            time: crate::test::utc(1970, 1, 1, 1, 1, 1),
             kind: EventKind::TorConnection,
             fields: bincode::serialize(&fields).expect("serializable"),
         };
@@ -7589,11 +7391,7 @@ mod tests {
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
             resp_port: 443,
             proto: 6,
-            start_time: Utc
-                .with_ymd_and_hms(1970, 1, 1, 0, 0, 0)
-                .unwrap()
-                .timestamp_nanos_opt()
-                .unwrap(),
+            start_time: crate::test::utc_nanos(1970, 1, 1, 0, 0, 0),
             duration: 0,
             orig_pkts: 0,
             resp_pkts: 0,
@@ -7629,7 +7427,7 @@ mod tests {
         let mut fields = blocklist_tls_fields();
         fields.category = category;
         Event::SuspiciousTlsTraffic(SuspiciousTlsTraffic::new(
-            msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap()),
+            crate::test::utc(1970, 1, 1, 1, 1, 1),
             fields.into(),
         ))
     }
@@ -7705,7 +7503,7 @@ mod tests {
 
         let fields = blocklist_tls_fields();
         let message = EventMessage {
-            time: msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap()),
+            time: crate::test::utc(1970, 1, 1, 1, 1, 1),
             kind: EventKind::SuspiciousTlsTraffic,
             fields: bincode::serialize(&fields).expect("serializable"),
         };
@@ -7718,10 +7516,8 @@ mod tests {
             r#"time="1970-01-01T01:01:01+00:00" event_kind="SuspiciousTlsTraffic" category="InitialAccess" sensor="collector1" orig_addr="127.0.0.1" orig_port="10000" resp_addr="127.0.0.2" resp_port="443" proto="6" start_time="1970-01-01T00:00:00+00:00" duration="0" orig_pkts="0" resp_pkts="0" orig_l2_bytes="0" resp_l2_bytes="0" server_name="server" alpn_protocol="alpn" ja3="ja3" version="version" client_cipher_suites="1,2,3" client_extensions="4,5,6" cipher="1" extensions="7,8,9" ja3s="ja3s" serial="serial" subject_country="country" subject_org_name="org" subject_common_name="common" validity_not_before="100" validity_not_after="200" subject_alt_name="alt" issuer_country="country" issuer_org_name="org" issuer_org_unit_name="unit" issuer_common_name="common" last_alert="1" confidence="0.9""#
         );
 
-        let suspicious_tls_traffic = SuspiciousTlsTraffic::new(
-            msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap()),
-            fields.into(),
-        );
+        let suspicious_tls_traffic =
+            SuspiciousTlsTraffic::new(crate::test::utc(1970, 1, 1, 1, 1, 1), fields.into());
         assert_eq!(
             suspicious_tls_traffic.orig_addrs(),
             &[IpAddr::V4(Ipv4Addr::LOCALHOST)]
@@ -7755,7 +7551,7 @@ mod tests {
         let mut fields = blocklist_tls_fields();
         fields.category = None;
         let message = EventMessage {
-            time: msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap()),
+            time: crate::test::utc(1970, 1, 1, 1, 1, 1),
             kind: EventKind::SuspiciousTlsTraffic,
             fields: bincode::serialize(&fields).expect("serializable"),
         };
@@ -7855,7 +7651,7 @@ mod tests {
 
     #[test]
     fn count_country_rdp_brute_force_counts_all_countries_and_round_trips_filters() {
-        let time = msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap());
+        let time = crate::test::utc(1970, 1, 1, 0, 1, 1);
         let event = Event::RdpBruteForce(RdpBruteForce {
             sensor: String::new(),
             time,
@@ -7884,7 +7680,7 @@ mod tests {
 
     #[test]
     fn count_country_multi_host_port_scan_counts_all_countries_and_round_trips_filters() {
-        let time = msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap());
+        let time = crate::test::utc(1970, 1, 1, 0, 1, 1);
         let event = Event::MultiHostPortScan(MultiHostPortScan {
             sensor: String::new(),
             time,
@@ -7909,7 +7705,7 @@ mod tests {
 
     #[test]
     fn count_country_external_ddos_counts_all_countries_and_round_trips_filters() {
-        let time = msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap());
+        let time = crate::test::utc(1970, 1, 1, 0, 1, 1);
         let event = Event::ExternalDdos(ExternalDdos {
             sensor: String::new(),
             time,
@@ -7933,7 +7729,7 @@ mod tests {
 
     #[test]
     fn count_country_unusual_destination_pattern_counts_all_countries_and_round_trips_filters() {
-        let time = msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap());
+        let time = crate::test::utc(1970, 1, 1, 0, 1, 1);
         let event = Event::Blocklist(RecordType::UnusualDestinationPattern(
             UnusualDestinationPattern {
                 time,
@@ -7961,7 +7757,7 @@ mod tests {
 
     #[test]
     fn count_country_deduplicates_repeated_codes_across_endpoints() {
-        let time = msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap());
+        let time = crate::test::utc(1970, 1, 1, 0, 1, 1);
         let event = Event::ExternalDdos(ExternalDdos {
             sensor: String::new(),
             time,
@@ -7985,7 +7781,7 @@ mod tests {
 
     #[test]
     fn count_country_deduplicates_non_utf8_fallback_bucket() {
-        let time = msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap());
+        let time = crate::test::utc(1970, 1, 1, 0, 1, 1);
         let event = Event::RdpBruteForce(RdpBruteForce {
             sensor: String::new(),
             time,
@@ -8006,7 +7802,7 @@ mod tests {
 
     #[test]
     fn count_country_stack_dedup_path_fills_inline_array() {
-        let time = msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap());
+        let time = crate::test::utc(1970, 1, 1, 0, 1, 1);
         let resp_country_codes = [*b"JP", *b"KR", *b"CN", *b"RU", *b"IT", *b"FR", *b"GB"];
         assert_eq!(
             resp_country_codes.len() + 1,
@@ -8044,7 +7840,7 @@ mod tests {
 
     #[test]
     fn count_country_hash_dedup_path_uses_rendered_bucket_keys() {
-        let time = msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap());
+        let time = crate::test::utc(1970, 1, 1, 0, 1, 1);
         let event = Event::RdpBruteForce(RdpBruteForce {
             sensor: String::new(),
             time,
@@ -8065,7 +7861,7 @@ mod tests {
 
     #[test]
     fn count_country_hash_dedup_path_keeps_distinct_ascii_countries() {
-        let time = msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap());
+        let time = crate::test::utc(1970, 1, 1, 0, 1, 1);
         let countries = [*b"KR", *b"JP", *b"CN"];
         let event = Event::RdpBruteForce(RdpBruteForce {
             sensor: String::new(),
@@ -8092,7 +7888,7 @@ mod tests {
 
     #[test]
     fn aggregated_placeholder_buckets_can_all_be_used_as_country_filters() {
-        let time = msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap());
+        let time = crate::test::utc(1970, 1, 1, 0, 1, 1);
         let event = Event::RdpBruteForce(RdpBruteForce {
             sensor: String::new(),
             time,
@@ -8141,7 +7937,7 @@ mod tests {
 
     #[test]
     fn count_country_events_without_stored_codes_produce_no_buckets() {
-        let time = msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap());
+        let time = crate::test::utc(1970, 1, 1, 0, 1, 1);
         let windows = Event::WindowsThreat(WindowsThreat {
             time,
             sensor: String::new(),
@@ -8183,7 +7979,7 @@ mod tests {
 
     #[test]
     fn count_country_single_endpoint_per_side_is_unchanged() {
-        let time = msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap());
+        let time = crate::test::utc(1970, 1, 1, 0, 1, 1);
         let mut event = Event::RepeatedHttpSessions(RepeatedHttpSessions {
             time,
             sensor: String::new(),
@@ -8400,11 +8196,11 @@ mod tests {
         let db = store.events();
 
         // Insert events at different timestamps.
-        let old_time = Utc.with_ymd_and_hms(2020, 1, 1, 0, 0, 0).unwrap();
-        let recent_time = Utc.with_ymd_and_hms(2025, 6, 1, 0, 0, 0).unwrap();
+        let old_time = crate::test::utc(2020, 1, 1, 0, 0, 0);
+        let recent_time = crate::test::utc(2025, 6, 1, 0, 0, 0);
 
         let old_msg = EventMessage {
-            time: msg_time(old_time),
+            time: old_time,
             kind: EventKind::DnsCovertChannel,
             fields: bincode::serialize(&DnsEventFields {
                 sensor: "s1".to_string(),
@@ -8413,7 +8209,7 @@ mod tests {
                 resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
                 resp_port: 53,
                 proto: 17,
-                start_time: old_time.timestamp_nanos_opt().unwrap(),
+                start_time: crate::timestamp::to_i64_nanos(old_time).unwrap(),
                 duration: 0,
                 orig_pkts: 0,
                 resp_pkts: 0,
@@ -8438,7 +8234,7 @@ mod tests {
         };
 
         let recent_msg = EventMessage {
-            time: msg_time(recent_time),
+            time: recent_time,
             kind: EventKind::DnsCovertChannel,
             fields: old_msg.fields.clone(),
         };
@@ -8450,7 +8246,7 @@ mod tests {
         assert_eq!(db.iter_forward().count(), 2);
 
         // Remove events before 2024-01-01.
-        let cutoff = msg_time(Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap());
+        let cutoff = crate::test::utc(2024, 1, 1, 0, 0, 0);
         let deleted = db.remove_before(cutoff).unwrap();
         assert_eq!(deleted, 1);
 
@@ -8470,7 +8266,7 @@ mod tests {
         db.put(&msg).unwrap();
 
         // Cutoff in the past — nothing to delete.
-        let cutoff = msg_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 0, 0).unwrap());
+        let cutoff = crate::test::utc(1970, 1, 1, 0, 0, 0);
         let deleted = db.remove_before(cutoff).unwrap();
         assert_eq!(deleted, 0);
         assert_eq!(db.iter_forward().count(), 1);
@@ -8481,7 +8277,7 @@ mod tests {
         let (_permit, store) = setup_store();
         let db = store.events();
 
-        let cutoff = msg_time(Utc::now());
+        let cutoff = jiff::Timestamp::now();
         let deleted = db.remove_before(cutoff).unwrap();
         assert_eq!(deleted, 0);
     }
@@ -8525,11 +8321,11 @@ mod tests {
         let (_permit, store) = setup_store();
         let db = store.events();
 
-        let exact_time = Utc.with_ymd_and_hms(2024, 6, 15, 12, 0, 0).unwrap();
-        let before_time = Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap();
+        let exact_time = crate::test::utc(2024, 6, 15, 12, 0, 0);
+        let before_time = crate::test::utc(2024, 1, 1, 0, 0, 0);
 
         let msg_at_cutoff = EventMessage {
-            time: msg_time(exact_time),
+            time: exact_time,
             kind: EventKind::DnsCovertChannel,
             fields: bincode::serialize(&DnsEventFields {
                 sensor: "s1".to_string(),
@@ -8538,7 +8334,7 @@ mod tests {
                 resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
                 resp_port: 53,
                 proto: 17,
-                start_time: exact_time.timestamp_nanos_opt().unwrap(),
+                start_time: crate::timestamp::to_i64_nanos(exact_time).unwrap(),
                 duration: 0,
                 orig_pkts: 0,
                 resp_pkts: 0,
@@ -8563,7 +8359,7 @@ mod tests {
         };
 
         let msg_before = EventMessage {
-            time: msg_time(before_time),
+            time: before_time,
             kind: EventKind::DnsCovertChannel,
             fields: msg_at_cutoff.fields.clone(),
         };
@@ -8574,7 +8370,7 @@ mod tests {
 
         // Cutoff equal to exact_time: event at exact_time is NOT deleted
         // (strictly before).
-        let deleted = db.remove_before(msg_time(exact_time)).unwrap();
+        let deleted = db.remove_before(exact_time).unwrap();
         assert_eq!(deleted, 1);
         assert_eq!(db.iter_forward().count(), 1);
     }
@@ -8629,7 +8425,7 @@ mod tests {
 
         // Insert more than BATCH_SIZE (1000) events in both physical regions
         // so each region has a full-batch flush and a remainder batch.
-        let base_time = Utc.with_ymd_and_hms(2020, 1, 1, 0, 0, 0).unwrap();
+        let base_time = crate::test::utc(2020, 1, 1, 0, 0, 0);
         let fields = bincode::serialize(&DnsEventFields {
             sensor: "s1".to_string(),
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
@@ -8637,7 +8433,7 @@ mod tests {
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
             resp_port: 53,
             proto: 17,
-            start_time: base_time.timestamp_nanos_opt().unwrap(),
+            start_time: crate::timestamp::to_i64_nanos(base_time).unwrap(),
             duration: 0,
             orig_pkts: 0,
             resp_pkts: 0,
@@ -8690,24 +8486,30 @@ mod tests {
     fn remove_by_sensors_deletes_matching_event_variants() {
         let (_permit, store) = setup_store();
         let db = store.events();
-        let base_time = Utc.with_ymd_and_hms(2025, 1, 1, 0, 0, 0).unwrap();
+        let base_time = crate::test::utc(2025, 1, 1, 0, 0, 0);
 
         db.put(&dns_message("target.example", base_time)).unwrap();
         db.put(&dns_message(
             "other-target.example",
-            base_time + chrono::Duration::seconds(1),
+            base_time
+                .checked_add(jiff::SignedDuration::from_secs(1))
+                .unwrap(),
         ))
         .unwrap();
         db.put(&dns_message(
             "keep.example",
-            base_time + chrono::Duration::seconds(2),
+            base_time
+                .checked_add(jiff::SignedDuration::from_secs(2))
+                .unwrap(),
         ))
         .unwrap();
 
         let mut blocklist_fields = blocklist_bootp_fields();
         blocklist_fields.sensor = "target.example".to_string();
         db.put(&EventMessage {
-            time: msg_time(base_time + chrono::Duration::seconds(3)),
+            time: base_time
+                .checked_add(jiff::SignedDuration::from_secs(3))
+                .unwrap(),
             kind: EventKind::BlocklistBootp,
             fields: bincode::serialize(&blocklist_fields).unwrap(),
         })
@@ -8738,12 +8540,14 @@ mod tests {
     fn remove_by_sensors_requires_exact_sensor_match() {
         let (_permit, store) = setup_store();
         let db = store.events();
-        let base_time = Utc.with_ymd_and_hms(2025, 1, 1, 0, 0, 0).unwrap();
+        let base_time = crate::test::utc(2025, 1, 1, 0, 0, 0);
 
         db.put(&dns_message("target.example", base_time)).unwrap();
         db.put(&dns_message(
             "target.example.extra",
-            base_time + chrono::Duration::seconds(1),
+            base_time
+                .checked_add(jiff::SignedDuration::from_secs(1))
+                .unwrap(),
         ))
         .unwrap();
 
@@ -8761,19 +8565,23 @@ mod tests {
     fn remove_by_sensors_writes_all_batches() {
         let (_permit, store) = setup_store();
         let db = store.events();
-        let base_time = Utc.with_ymd_and_hms(2025, 1, 1, 0, 0, 0).unwrap();
+        let base_time = crate::test::utc(2025, 1, 1, 0, 0, 0);
         let total = 1_001;
 
         for offset in 0..total {
             db.put(&dns_message(
                 "target.example",
-                base_time + chrono::Duration::seconds(offset),
+                base_time
+                    .checked_add(jiff::SignedDuration::from_secs(offset))
+                    .unwrap(),
             ))
             .unwrap();
         }
         db.put(&dns_message(
             "keep.example",
-            base_time + chrono::Duration::seconds(total),
+            base_time
+                .checked_add(jiff::SignedDuration::from_secs(total))
+                .unwrap(),
         ))
         .unwrap();
 

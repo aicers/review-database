@@ -7,7 +7,7 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail};
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 use num_derive::{FromPrimitive, ToPrimitive};
 use rocksdb::{Direction, OptimisticTransactionDB};
 use serde::{Deserialize, Serialize};
@@ -22,7 +22,8 @@ use super::{
 use crate::{
     Agent, AgentKind, EXCLUSIVE, ExternalService, Indexable, IndexedMap, IndexedMapUpdate,
     IndexedTable, Iterable, Map, Table as CrateTable, UniqueKey, collections::Indexed,
-    model_guard::InstanceRecords, training::INSTANCE_REMOVED, types::FromKeyValue,
+    model_guard::InstanceRecords, timestamp::ts_nanoseconds_saturating, training::INSTANCE_REMOVED,
+    types::FromKeyValue,
 };
 
 #[derive(
@@ -85,7 +86,7 @@ pub struct Node {
     pub profile_draft: Option<Profile>,
     pub agents: Vec<Agent>,
     pub external_services: Vec<ExternalService>,
-    pub creation_time: DateTime<Utc>,
+    pub creation_time: Timestamp,
 }
 
 #[derive(Debug)]
@@ -1373,7 +1374,8 @@ pub(crate) struct Inner {
     pub name_draft: Option<String>,
     pub profile: Option<Profile>,
     pub profile_draft: Option<Profile>,
-    pub creation_time: DateTime<Utc>,
+    #[serde(with = "ts_nanoseconds_saturating")]
+    pub creation_time: Timestamp,
     pub agents: Vec<String>,
     pub external_services: Vec<String>,
 }
@@ -1625,7 +1627,7 @@ mod test {
         agents: Vec<Agent>,
         external_services: Vec<ExternalService>,
     ) -> Node {
-        let creation_time = Utc::now();
+        let creation_time = jiff::Timestamp::now();
         Node {
             id,
             name: name.to_string(),
@@ -1751,9 +1753,9 @@ mod test {
 
     /// Builds a deterministic public `Node` for the serde baseline test.
     fn deterministic_node() -> Node {
-        let creation_time = DateTime::parse_from_rfc3339("2000-02-29T12:34:56.123456789Z")
-            .expect("valid RFC3339 timestamp")
-            .with_timezone(&Utc);
+        let creation_time = "2000-02-29T12:34:56.123456789Z"
+            .parse::<jiff::Timestamp>()
+            .expect("valid RFC3339 timestamp");
         Node {
             id: 42,
             name: "fixture-node".to_string(),
@@ -1812,9 +1814,9 @@ mod test {
 
     /// Builds a deterministic `Inner` for the literal-byte contract test.
     fn deterministic_node_inner() -> Inner {
-        let creation_time = DateTime::parse_from_rfc3339("2000-02-29T12:34:56.123456789Z")
-            .expect("valid RFC3339 timestamp")
-            .with_timezone(&Utc);
+        let creation_time = "2000-02-29T12:34:56.123456789Z"
+            .parse::<jiff::Timestamp>()
+            .expect("valid RFC3339 timestamp");
         Inner {
             id: 42,
             name: "fixture-node".to_string(),
@@ -1842,7 +1844,8 @@ mod test {
     /// `2000-02-29T12:34:56.123456789Z` so the encoding stays deterministic.
     #[test]
     fn node_inner_literal_bytes_contract() -> Result<()> {
-        const FIXTURE_BYTES: &[u8] = include_bytes!("../../tests/fixtures/node_inner_literal.bin");
+        const FIXTURE_BYTES: &[u8] =
+            include_bytes!("../../tests/fixtures/node_inner_literal_v0_62.bin");
 
         let decoded = Inner::from_key_value(b"fixture-node", FIXTURE_BYTES)?;
         let expected = deterministic_node_inner();

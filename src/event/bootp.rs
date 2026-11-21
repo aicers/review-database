@@ -4,9 +4,9 @@ use attrievent::attribute::{BootpAttr, RawEventAttrKind};
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
-use super::timestamp;
 use super::{EventCategory, LearningMethod, ThreatLevel, TriageScore, common::Match};
 use crate::event::common::{AttrValue, to_hardware_address, triage_scores_to_string};
+use crate::timestamp;
 
 macro_rules! find_bootp_attr_by_kind {
     ($event: expr, $raw_event_attr: expr) => {{

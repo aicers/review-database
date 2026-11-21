@@ -805,8 +805,6 @@ impl<'d> Table<'d, PortAllocation> {
 mod tests {
     use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
-    use chrono::{DateTime, Utc};
-
     use super::*;
     use crate::tables::operation_attempt::AddressAllocationError;
     use crate::tables::{
@@ -894,8 +892,8 @@ mod tests {
         }
     }
 
-    fn timestamp(secs: i64) -> DateTime<Utc> {
-        DateTime::from_timestamp(secs, 0).unwrap()
+    fn timestamp(secs: i64) -> jiff::Timestamp {
+        crate::test::from_second(secs, 0)
     }
 
     /// A canonical `UUIDv4` request key derived from a short test name.

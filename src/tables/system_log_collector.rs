@@ -7,7 +7,7 @@
 use std::collections::HashSet;
 
 use anyhow::{Context, Result, anyhow, bail};
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 use rocksdb::{IteratorMode, OptimisticTransactionDB, Transaction};
 use serde::{Deserialize, Serialize};
 
@@ -70,7 +70,8 @@ impl SystemLogCollector {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SystemLogCollectorRefusal {
     /// When the call was refused.
-    pub at: DateTime<Utc>,
+    #[serde(with = "crate::timestamp::ts_nanoseconds_saturating")]
+    pub at: Timestamp,
     /// The reason the call was refused, as reported.
     pub message: String,
 }
@@ -529,7 +530,7 @@ mod tests {
 
     fn refusal(message: &str) -> SystemLogCollectorRefusal {
         SystemLogCollectorRefusal {
-            at: DateTime::from_timestamp(1_700_000_000, 0).unwrap(),
+            at: crate::test::from_second(1_700_000_000, 0),
             message: message.to_string(),
         }
     }

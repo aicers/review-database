@@ -75,7 +75,7 @@ use std::net::SocketAddr;
 
 use anyhow::{Context, Result, anyhow, bail};
 use aws_lc_rs::digest;
-use chrono::{DateTime, TimeDelta, Utc};
+use jiff::{SignedDuration, Timestamp};
 use rocksdb::{Direction, IteratorMode, OptimisticTransactionDB, ReadOptions, Transaction};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -85,7 +85,14 @@ use super::{
     CoreComponent, InstanceAllocation, InstanceAllocationError, ListenerBinding, ListenerTransport,
     PortAllocation, PortAllocationError, PortOwner, SystemLogCollectorTable,
 };
-use crate::{EXCLUSIVE, Map, Table, types::FromKeyValue};
+use crate::{
+    EXCLUSIVE, Map, Table,
+    timestamp::{
+        I64_NANOS_JIFF_INVARIANT, from_i64_nanos, saturating_i64_nanos, ts_nanoseconds_saturating,
+        ts_nanoseconds_saturating_option,
+    },
+    types::FromKeyValue,
+};
 
 /// The first byte reserved for the index key spaces.
 ///
@@ -785,7 +792,7 @@ pub struct OperationAttempt {
     /// `Failed` with a teardown still owed, and that owed work is re-driven
     /// once the registrar becomes reachable.
     pub cleanup_state: Option<CleanupState>,
-    pub started_at: DateTime<Utc>,
+    pub started_at: Timestamp,
     /// The apply's terminating retry budget.
     pub retry_policy: RetryPolicy,
     /// The terminal result, or `None` while the attempt is non-terminal.
@@ -814,7 +821,7 @@ pub struct OperationAttempt {
     ///
     /// `started_at` and `expires_at` cannot stand in for it: the first is
     /// when the attempt began, and the second a deadline it may never reach.
-    pub finalized_at: Option<DateTime<Utc>>,
+    pub finalized_at: Option<Timestamp>,
     /// The durable absolute deadline, set for every action.
     ///
     /// For an [`Action::Onboard`] it is the join-token wrap TTL at mint, so
@@ -824,7 +831,7 @@ pub struct OperationAttempt {
     /// is normal. It exists because the retry budget is advanced only on a
     /// host check-in, so a host that never returns would otherwise leave its
     /// attempt non-terminal forever.
-    pub expires_at: DateTime<Utc>,
+    pub expires_at: Timestamp,
     /// The id returned by the pre-update `backup::create`, set only for a
     /// core-component update of `REview`.
     pub backup_id: Option<u32>,
@@ -960,11 +967,14 @@ struct Value<'a> {
     resolved_commit: Cow<'a, str>,
     phase: Phase,
     cleanup_state: Option<CleanupState>,
-    started_at: DateTime<Utc>,
+    #[serde(with = "ts_nanoseconds_saturating")]
+    started_at: Timestamp,
     retry_policy: RetryPolicy,
     outcome: Option<Outcome>,
-    finalized_at: Option<DateTime<Utc>>,
-    expires_at: DateTime<Utc>,
+    #[serde(with = "ts_nanoseconds_saturating_option")]
+    finalized_at: Option<Timestamp>,
+    #[serde(with = "ts_nanoseconds_saturating")]
+    expires_at: Timestamp,
     backup_id: Option<u32>,
     pre_update_version: Option<Cow<'a, str>>,
     failure_kind: Option<FailureKind>,
@@ -1016,7 +1026,7 @@ pub struct RetentionBound {
     /// is when it began, or from `expires_at`, which is a per-action deadline
     /// and would order attempts by the policy that set it rather than by when
     /// the work happened.
-    pub max_age: TimeDelta,
+    pub max_age: SignedDuration,
     /// How many terminal attempts one `(host, target, instance)` triple keeps,
     /// counting down from the one the latest pointer names.
     ///
@@ -1048,9 +1058,31 @@ fn push_instance(key: &mut Vec<u8>, instance: Option<u32>) {
     key.extend_from_slice(&instance.unwrap_or_default().to_be_bytes());
 }
 
+/// Returns `at` as a stored row reads it back: saturated to the `i64`
+/// nanosecond range.
+fn stored_timestamp(at: Timestamp) -> Timestamp {
+    from_i64_nanos(saturating_i64_nanos(at)).expect(I64_NANOS_JIFF_INVARIANT)
+}
+
+/// Returns `attempt` with its timestamps as a stored row reads them back, so
+/// the attempt a write returns is the one a later read of it returns.
+fn as_stored(mut attempt: OperationAttempt) -> OperationAttempt {
+    attempt.started_at = stored_timestamp(attempt.started_at);
+    attempt.finalized_at = attempt.finalized_at.map(stored_timestamp);
+    attempt.expires_at = stored_timestamp(attempt.expires_at);
+    attempt
+}
+
 /// Encodes a timestamp so that byte order is time order.
-fn timestamp_bytes(at: DateTime<Utc>) -> Vec<u8> {
-    let mut seconds = at.timestamp().to_be_bytes();
+///
+/// The timestamp is taken as the record stores it, saturated to the `i64`
+/// nanosecond range, so the key a deletion recomputes from a stored record is
+/// the key its insertion wrote.
+fn timestamp_bytes(at: Timestamp) -> Vec<u8> {
+    const NANOS_PER_SECOND: i64 = 1_000_000_000;
+
+    let nanos = saturating_i64_nanos(at);
+    let mut seconds = nanos.div_euclid(NANOS_PER_SECOND).to_be_bytes();
     if let Some(first) = seconds.first_mut() {
         // Flip the sign bit, so that an instant before the epoch sorts before
         // one after it instead of after every one of them.
@@ -1058,7 +1090,9 @@ fn timestamp_bytes(at: DateTime<Utc>) -> Vec<u8> {
     }
     let mut key = Vec::with_capacity(TIMESTAMP_LEN);
     key.extend_from_slice(&seconds);
-    key.extend_from_slice(&at.timestamp_subsec_nanos().to_be_bytes());
+    let subsec = u32::try_from(nanos.rem_euclid(NANOS_PER_SECOND))
+        .expect("a Euclidean remainder by one second is in 0..1_000_000_000");
+    key.extend_from_slice(&subsec.to_be_bytes());
     key
 }
 
@@ -1352,7 +1386,14 @@ impl<'d> Table<'d, OperationAttempt> {
     ///
     /// Returns an error if a stored value is invalid or the database operation
     /// fails.
-    pub fn expired_attempts(&self, instant: DateTime<Utc>) -> Result<Vec<OperationAttempt>> {
+    pub fn expired_attempts(&self, instant: Timestamp) -> Result<Vec<OperationAttempt>> {
+        // Every stored deadline is at or after the start of the `i64`
+        // nanosecond range, so none has passed at an instant before it. The
+        // cutoff would otherwise saturate to that start and match the
+        // deadlines stored there.
+        if instant < stored_timestamp(instant) {
+            return Ok(Vec::new());
+        }
         let cutoff = timestamp_bytes(instant);
         self.attempts_in_index(&[EXPIRES_AT], Some(&cutoff))
     }
@@ -1373,7 +1414,8 @@ impl<'d> Table<'d, OperationAttempt> {
     /// The attempt returned is the one the store holds: this call's own row
     /// where it created it, and the first request's row where it did not. A
     /// caller told it did not create the row allocated an instance nothing
-    /// now refers to, and releases it.
+    /// now refers to, and releases it. Its timestamps are the stored ones,
+    /// saturated to the `i64` nanosecond range, whichever row it is.
     ///
     /// [`Table::upsert`] carries an attempt already held under its key
     /// forward. It does not create one carrying an `install_intent`, so this
@@ -1424,7 +1466,7 @@ impl<'d> Table<'d, OperationAttempt> {
             }
             self.write_with_transaction(None, attempt, &txn)?;
             match txn.commit() {
-                Ok(()) => return Ok(attempt.clone()),
+                Ok(()) => return Ok(as_stored(attempt.clone())),
                 Err(e) => {
                     // The retry re-reads the key before anything else, so a
                     // loser that conflicted on a create finds the winner's
@@ -1859,7 +1901,7 @@ impl<'d> Table<'d, OperationAttempt> {
                 return Err(error.into());
             }
             match txn.commit() {
-                Ok(()) => return Ok(allocated),
+                Ok(()) => return Ok(as_stored(allocated)),
                 Err(e) => {
                     if !e.as_ref().starts_with("Resource busy:") {
                         return Err(anyhow::Error::new(e)
@@ -2081,7 +2123,7 @@ impl<'d> Table<'d, OperationAttempt> {
     /// Returns an error if a stored value is invalid, if the sweep stamps
     /// `finalized_at` and the latest-pointer column family is not registered,
     /// or if the database operation fails.
-    pub fn sweep_expired(&self, instant: DateTime<Utc>) -> Result<usize> {
+    pub fn sweep_expired(&self, instant: Timestamp) -> Result<usize> {
         loop {
             let txn = self.transaction();
             let mut finalized = 0;
@@ -2162,7 +2204,7 @@ impl<'d> Table<'d, OperationAttempt> {
     /// Returns an error if a stored value is invalid, if the latest-pointer or
     /// the system log collectors column family is not registered, or if the
     /// database operation fails.
-    pub fn prune(&self, bound: RetentionBound, instant: DateTime<Utc>) -> Result<usize> {
+    pub fn prune(&self, bound: RetentionBound, instant: Timestamp) -> Result<usize> {
         loop {
             let txn = self.transaction();
             let mut removed = 0;
@@ -2203,11 +2245,7 @@ impl<'d> Table<'d, OperationAttempt> {
 
     /// Returns the terminal attempts that neither keep-rule holds on to and
     /// that exceed `bound`.
-    fn prunable(
-        &self,
-        bound: RetentionBound,
-        instant: DateTime<Utc>,
-    ) -> Result<Vec<OperationAttempt>> {
+    fn prunable(&self, bound: RetentionBound, instant: Timestamp) -> Result<Vec<OperationAttempt>> {
         let mut by_triple: HashMap<(String, String, Option<u32>), Vec<OperationAttempt>> =
             HashMap::new();
         for attempt in self.iter(Direction::Forward, None) {
@@ -2257,7 +2295,7 @@ impl<'d> Table<'d, OperationAttempt> {
                 let Some(finalized_at) = attempt.finalized_at else {
                     continue;
                 };
-                let too_old = instant.signed_duration_since(finalized_at) > bound.max_age;
+                let too_old = instant.duration_since(finalized_at) > bound.max_age;
                 let too_many = rank > bound.max_terminal_per_triple;
                 if too_old || too_many {
                     prunable.push(attempt);
@@ -2715,8 +2753,8 @@ mod tests {
         }
     }
 
-    fn timestamp(secs: i64) -> DateTime<Utc> {
-        DateTime::from_timestamp(secs, 0).unwrap()
+    fn timestamp(secs: i64) -> jiff::Timestamp {
+        crate::test::from_second(secs, 0)
     }
 
     /// A module attempt: the instance dimension applies, so it is recorded.
@@ -2881,7 +2919,7 @@ mod tests {
 
     fn bound(max_age_seconds: i64, max_terminal_per_triple: usize) -> RetentionBound {
         RetentionBound {
-            max_age: TimeDelta::seconds(max_age_seconds),
+            max_age: jiff::SignedDuration::from_secs(max_age_seconds),
             max_terminal_per_triple,
         }
     }
@@ -3669,7 +3707,7 @@ mod tests {
         // and take them in opposite orders. Nothing but the commit order
         // tells the two apart, so a pointer derived from a timestamp or from
         // key order would answer the same on both.
-        let at = DateTime::from_timestamp(1_000, 123_456_789).unwrap();
+        let at = crate::test::from_second(1_000, 123_456_789);
         let mut attempts = Vec::new();
         for (instance, keys) in [(1, ["op-a1", "op-b1"]), (2, ["op-b2", "op-a2"])] {
             for key in keys {
@@ -3735,7 +3773,7 @@ mod tests {
         // The rule this table is built to: an older terminal attempt goes 30
         // days past its finalization, and the current one never does.
         let thirty_days = RetentionBound {
-            max_age: TimeDelta::days(30),
+            max_age: SignedDuration::from_hours(30 * 24),
             max_terminal_per_triple: usize::MAX,
         };
         let superseded = terminal_attempt("op-1-old", HOST, TARGET, Some(1), 1_000, 9_000);
@@ -3748,7 +3786,9 @@ mod tests {
             table.upsert(attempt).unwrap();
         }
 
-        let a_year_on = timestamp(1_000) + TimeDelta::days(365);
+        let a_year_on = timestamp(1_000)
+            .checked_add(SignedDuration::from_hours(365 * 24))
+            .unwrap();
         assert_eq!(table.prune(thirty_days, a_year_on).unwrap(), 1);
         assert_eq!(
             keys(&table, Direction::Forward, None),
@@ -5453,22 +5493,25 @@ mod tests {
         assert_no_allocations(&test_db);
     }
 
-    /// Holds the pinned 0.61 layout the migration writes to the live `Value`:
+    /// Holds the pinned 0.62 layout the migration writes to the live `Value`:
     /// it must decode a live encoding and re-encode it to the very same bytes.
     /// The options the table reads with refuse a short value and trailing
     /// bytes alike, so a field added to either side and not the other fails
-    /// here.
+    /// here. The fully populated record is also held to the literal bytes of
+    /// `operation_attempt_v0_62_literal.bin`, so an encoding change shared by
+    /// both sides fails too.
     #[test]
-    fn pinned_v0_61_layout_matches_the_live_value() {
+    fn pinned_v0_62_layout_matches_the_live_value() {
         use bincode::Options;
 
-        use crate::migration::migration_structures::OperationAttemptValueV0_61;
+        use crate::migration::migration_structures::OperationAttemptValueV0_62;
 
         let mut attempt = install_attempt(REQUEST_KEY, HOST, TARGET, Some(7));
         attempt.cleanup_state = Some(CleanupState::PendingDeregister);
         attempt.phase = Phase::AwaitingReport;
         attempt.outcome = Some(Outcome::Failed);
-        attempt.finalized_at = Some(timestamp(1_700_000_900));
+        attempt.started_at = "1969-12-31T23:59:59.5Z".parse().unwrap();
+        attempt.finalized_at = Some("2024-06-15T12:30:45.1Z".parse().unwrap());
         attempt.backup_id = Some(9);
         attempt.pre_update_version = Some("0.47.0".to_string());
 
@@ -5479,8 +5522,22 @@ mod tests {
                 for failure_kind in [Some(FailureKind::TrustAnchorRefused), None] {
                     attempt.failure_kind = failure_kind;
                     let live = attempt.record_value();
-                    let pinned: OperationAttemptValueV0_61 =
+                    let pinned: OperationAttemptValueV0_62 =
                         bincode::DefaultOptions::new().deserialize(&live).unwrap();
+                    assert_eq!(
+                        pinned.started_at,
+                        crate::timestamp::to_i64_nanos(attempt.started_at).unwrap()
+                    );
+                    assert_eq!(
+                        pinned.finalized_at,
+                        attempt
+                            .finalized_at
+                            .map(|at| crate::timestamp::to_i64_nanos(at).unwrap())
+                    );
+                    assert_eq!(
+                        pinned.expires_at,
+                        crate::timestamp::to_i64_nanos(attempt.expires_at).unwrap()
+                    );
                     assert_eq!(pinned.failure_kind, failure_kind);
                     assert_eq!(pinned.config_template, config_template);
                     assert_eq!(pinned.privilege_profile, privilege_profile);
@@ -5494,5 +5551,147 @@ mod tests {
                 }
             }
         }
+
+        // The fully populated record keeps the bytes the fixture pins, which
+        // the 0.62.0 step also writes for its 0.61 form.
+        attempt.privilege_profile = Some("replay".to_string());
+        attempt.config_template = Some("baseline".to_string());
+        attempt.failure_kind = Some(FailureKind::TrustAnchorRefused);
+        assert_eq!(
+            attempt.record_value(),
+            include_bytes!("../../tests/fixtures/operation_attempt_v0_62_literal.bin")
+        );
+    }
+
+    /// The `expires_at` key of a pre-1970 deadline keeps the bytes the table
+    /// has always written: the floored seconds with the sign bit flipped, then
+    /// the nonnegative subsecond nanoseconds.
+    #[test]
+    fn expires_at_key_of_a_pre_1970_deadline_keeps_its_bytes() {
+        let at: Timestamp = "1969-12-31T23:59:59.5Z".parse().unwrap();
+        assert_eq!(
+            timestamp_bytes(at),
+            [
+                0x7f, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x1d, 0xcd, 0x65, 0x00
+            ]
+        );
+        let mut attempt = install_attempt(REQUEST_KEY, HOST, TARGET, Some(7));
+        attempt.expires_at = "1965-10-15T12:34:56.123456789Z".parse().unwrap();
+        let mut expected = vec![EXPIRES_AT];
+        // -132_924_304 seconds and 123_456_789 nanoseconds.
+        expected.extend_from_slice(&[0x7f, 0xff, 0xff, 0xff, 0xf8, 0x13, 0xbc, 0x70]);
+        expected.extend_from_slice(&123_456_789_u32.to_be_bytes());
+        push_segment(&mut expected, REQUEST_KEY).unwrap();
+        assert_eq!(expires_at_key(&attempt).unwrap(), expected);
+    }
+
+    /// A deadline past the `i64` nanosecond range is stored saturated, and
+    /// its `expires_at` key is built from the stored value, so the key a
+    /// deletion recomputes from the record is the one the insert wrote. A
+    /// sweep at the end of the range finds the attempt.
+    #[test]
+    fn a_deadline_past_the_i64_range_is_indexed_as_stored() {
+        let test_db = TestDb::new();
+        let table = test_db.table();
+        let far_future: Timestamp = "2300-01-01T00:00:00Z".parse().unwrap();
+        let end_of_range = crate::timestamp::from_i64_nanos(i64::MAX).unwrap();
+        let expiry_keys = |test_db: &TestDb| -> Vec<Vec<u8>> {
+            test_db
+                .raw_keys()
+                .into_iter()
+                .filter(|key| key.first() == Some(&EXPIRES_AT))
+                .collect()
+        };
+
+        let mut attempt = live_attempt("op-far", HOST, TARGET, Some(1));
+        attempt.expires_at = far_future;
+        table.upsert(&attempt).unwrap();
+        let stored = table.get("op-far").unwrap().unwrap();
+        assert_eq!(stored.expires_at, end_of_range);
+        assert_eq!(expiry_keys(&test_db), [expires_at_key(&stored).unwrap()]);
+        assert_eq!(
+            expires_at_key(&attempt).unwrap(),
+            expires_at_key(&stored).unwrap()
+        );
+        assert_eq!(
+            table.expired_attempts(far_future).unwrap(),
+            vec![stored.clone()]
+        );
+
+        table.delete("op-far").unwrap();
+        assert_eq!(expiry_keys(&test_db), Vec::<Vec<u8>>::new());
+
+        table.upsert(&attempt).unwrap();
+        assert_eq!(table.sweep_expired(end_of_range).unwrap(), 1);
+    }
+
+    /// A deadline before the `i64` nanosecond range is stored at its start,
+    /// and has not passed at an instant before that start, however far the
+    /// requested deadline lay in the past.
+    #[test]
+    fn a_cutoff_before_the_i64_range_finds_no_attempt() {
+        let test_db = TestDb::new();
+        let table = test_db.table();
+        let start_of_range = crate::timestamp::from_i64_nanos(i64::MIN).unwrap();
+        let just_before = start_of_range
+            .checked_sub(jiff::SignedDuration::from_nanos(1))
+            .unwrap();
+
+        let mut attempt = live_attempt("op-past", HOST, TARGET, Some(1));
+        attempt.expires_at = "1600-06-01T00:00:00Z".parse().unwrap();
+        table.upsert(&attempt).unwrap();
+        let stored = table.get("op-past").unwrap().unwrap();
+        assert_eq!(stored.expires_at, start_of_range);
+
+        let far_past: Timestamp = "1600-01-01T00:00:00Z".parse().unwrap();
+        assert_eq!(table.expired_attempts(far_past).unwrap(), Vec::new());
+        assert_eq!(table.expired_attempts(just_before).unwrap(), Vec::new());
+        assert_eq!(
+            table.expired_attempts(start_of_range).unwrap(),
+            vec![stored]
+        );
+        assert_eq!(table.sweep_expired(just_before).unwrap(), 0);
+    }
+
+    /// The attempt a create returns carries the timestamps the store holds,
+    /// so the create, a later lookup and a retry of the create all agree for
+    /// a deadline past the `i64` nanosecond range.
+    #[test]
+    fn a_created_attempt_is_returned_as_stored() {
+        let test_db = TestDb::new();
+        let table = test_db.table();
+        let far_future: Timestamp = "2300-01-01T00:00:00Z".parse().unwrap();
+        let end_of_range = crate::timestamp::from_i64_nanos(i64::MAX).unwrap();
+
+        let mut attempt = install_attempt(REQUEST_KEY, HOST, TARGET, Some(1));
+        attempt.expires_at = far_future;
+        let created = table.create_or_resolve(&attempt).unwrap();
+        assert_eq!(created.expires_at, end_of_range);
+        assert_eq!(table.get(REQUEST_KEY).unwrap(), Some(created.clone()));
+        assert_eq!(table.create_or_resolve(&attempt).unwrap(), created);
+    }
+
+    /// The attempt an allocation returns carries the timestamps the store
+    /// holds, so the allocation, a later lookup and a retry of the allocation
+    /// all agree for a deadline past the `i64` nanosecond range.
+    #[test]
+    fn an_allocated_attempt_is_returned_as_stored() {
+        let test_db = TestDb::new();
+        let table = test_db.table();
+        let far_future: Timestamp = "2300-01-01T00:00:00Z".parse().unwrap();
+        let end_of_range = crate::timestamp::from_i64_nanos(i64::MAX).unwrap();
+
+        let mut request = golden_intent();
+        request.bind_addrs = None;
+        let mut attempt = install_attempt(REQUEST_KEY, &request.host, &request.target, None);
+        attempt.install_intent = Some(request.digest().unwrap());
+        attempt.expires_at = far_future;
+        let allocated = table.allocate_instance(&attempt, &request).unwrap();
+        assert_eq!(allocated.expires_at, end_of_range);
+        assert_eq!(table.get(REQUEST_KEY).unwrap(), Some(allocated.clone()));
+        assert_eq!(
+            table.allocate_instance(&attempt, &request).unwrap(),
+            allocated
+        );
     }
 }

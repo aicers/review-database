@@ -7,7 +7,7 @@ use std::{
 };
 
 use anyhow::Result;
-use chrono::Utc;
+use jiff::Timestamp;
 use rocksdb::OptimisticTransactionDB;
 use serde::{Deserialize, Serialize};
 
@@ -79,7 +79,8 @@ impl<'d> Table<'d, Host> {
                 None => Host {
                     customer_id,
                     ip: *ip,
-                    creation_time: Utc::now().timestamp_nanos_opt().unwrap_or_default(),
+                    creation_time: crate::timestamp::to_i64_nanos(Timestamp::now())
+                        .unwrap_or_default(),
                     opened_ports: opened_ports.clone(),
                     known_agents: Vec::new(),
                     unknown_agents: Vec::new(),
@@ -109,7 +110,7 @@ impl<'d> Table<'d, Host> {
             None => Host {
                 customer_id,
                 ip,
-                creation_time: Utc::now().timestamp_nanos_opt().unwrap_or_default(),
+                creation_time: crate::timestamp::to_i64_nanos(Timestamp::now()).unwrap_or_default(),
                 opened_ports: HashMap::new(),
                 known_agents: Vec::new(),
                 unknown_agents: Vec::new(),

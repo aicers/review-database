@@ -7,7 +7,7 @@
 use std::collections::HashSet;
 
 use anyhow::{Context, Result, anyhow, bail};
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 use rocksdb::{IteratorMode, OptimisticTransactionDB, Transaction};
 use serde::{Deserialize, Serialize};
 
@@ -21,7 +21,8 @@ pub struct OwnedNetworkSet {
     pub revision: u64,
     pub networks: Vec<OwnedNetwork>,
     /// When the set was last written.
-    pub updated_at: DateTime<Utc>,
+    #[serde(with = "crate::timestamp::ts_nanoseconds_saturating")]
+    pub updated_at: Timestamp,
 }
 
 impl OwnedNetworkSet {
@@ -152,7 +153,7 @@ impl<'d> OwnedNetworkTable<'d> {
         let set = OwnedNetworkSet {
             revision,
             networks,
-            updated_at: Utc::now(),
+            updated_at: Timestamp::now(),
         };
         let value = super::serialize(&set).context("failed to serialize customer networks")?;
         loop {
@@ -317,12 +318,12 @@ mod tests {
             network("edge", NetworkType::Gateway, "192.168.0.0/24"),
             network("partner", NetworkType::Extranet, "172.16.0.0/12"),
         ];
-        let before = Utc::now();
+        let before = jiff::Timestamp::now();
         assert_eq!(
             table.replace(7, 3, networks.clone()).unwrap(),
             written(None)
         );
-        let after = Utc::now();
+        let after = jiff::Timestamp::now();
 
         let stored = table.get(7).unwrap().unwrap();
         assert_eq!(stored.revision, 3);
@@ -512,7 +513,7 @@ mod tests {
         let value = super::super::serialize(&OwnedNetworkSet {
             revision: 1,
             networks: Vec::new(),
-            updated_at: Utc::now(),
+            updated_at: jiff::Timestamp::now(),
         })
         .unwrap();
         let txn = table.map.db.transaction();
@@ -578,7 +579,7 @@ mod tests {
         let set = OwnedNetworkSet {
             revision: 1,
             networks: vec![intranet.clone(), extranet, gateway.clone()],
-            updated_at: Utc::now(),
+            updated_at: jiff::Timestamp::now(),
         };
         assert_eq!(set.internal_groups(), vec![intranet.group, gateway.group]);
     }
@@ -619,7 +620,7 @@ mod tests {
                     group: HostNetworkGroup::new(Vec::new(), Vec::new(), Vec::new()),
                 },
             ],
-            updated_at: Utc::now(),
+            updated_at: jiff::Timestamp::now(),
         };
 
         let merged = set.merged_group();

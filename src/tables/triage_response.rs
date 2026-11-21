@@ -3,13 +3,15 @@
 use std::borrow::Cow;
 
 use anyhow::Result;
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 use rocksdb::{Direction, OptimisticTransactionDB};
 use serde::{Deserialize, Serialize};
 
 use super::UniqueKey;
 use crate::{
-    Indexable, IndexedMap, IndexedMapUpdate, IndexedTable, Iterable, collections::Indexed,
+    Indexable, IndexedMap, IndexedMapUpdate, IndexedTable, Iterable,
+    collections::Indexed,
+    timestamp::{to_i64_nanos, ts_nanoseconds_saturating},
     types::FromKeyValue,
 };
 
@@ -18,17 +20,20 @@ pub struct TriageResponse {
     pub id: u32,
     key: Vec<u8>,
     sensor: String,
-    time: DateTime<Utc>,
+    #[serde(with = "ts_nanoseconds_saturating")]
+    time: Timestamp,
     tag_ids: Vec<u32>,
     pub remarks: String,
-    creation_time: DateTime<Utc>,
-    last_modified_time: DateTime<Utc>,
+    #[serde(with = "ts_nanoseconds_saturating")]
+    creation_time: Timestamp,
+    #[serde(with = "ts_nanoseconds_saturating")]
+    last_modified_time: Timestamp,
 }
 
 impl TriageResponse {
     #[must_use]
-    pub fn new(sensor: String, time: DateTime<Utc>, tag_ids: Vec<u32>, remarks: String) -> Self {
-        let creation_time = Utc::now();
+    pub fn new(sensor: String, time: Timestamp, tag_ids: Vec<u32>, remarks: String) -> Self {
+        let creation_time = Timestamp::now();
         let last_modified_time = creation_time;
         let tag_ids = Self::clean_up(tag_ids);
         let key = Self::create_key(&sensor, &time);
@@ -56,9 +61,10 @@ impl TriageResponse {
             .map_err(|idx| anyhow::anyhow!("{idx}"))
     }
 
-    fn create_key(sensor: &str, time: &DateTime<Utc>) -> Vec<u8> {
+    fn create_key(sensor: &str, time: &Timestamp) -> Vec<u8> {
         let mut key = sensor.as_bytes().to_vec();
-        key.extend_from_slice(&time.timestamp_nanos_opt().unwrap_or_default().to_be_bytes());
+        // A time outside the i64 nanosecond range keeps the key suffix 0.
+        key.extend_from_slice(&to_i64_nanos(*time).unwrap_or_default().to_be_bytes());
         key
     }
 
@@ -121,7 +127,7 @@ impl<'d> IndexedTable<'d, TriageResponse> {
     /// # Errors
     ///
     /// Returns an error if the database query fails.
-    pub fn get(&self, sensor: &str, time: &DateTime<Utc>) -> Result<Option<TriageResponse>> {
+    pub fn get(&self, sensor: &str, time: &Timestamp) -> Result<Option<TriageResponse>> {
         let key = TriageResponse::create_key(sensor, time);
         self.indexed_map
             .get_by_key(&key)?
@@ -201,7 +207,7 @@ impl IndexedMapUpdate for Update {
             value.tag_ids = TriageResponse::clean_up(tag_ids.to_vec());
         }
 
-        value.last_modified_time = Utc::now();
+        value.last_modified_time = Timestamp::now();
         Ok(value)
     }
 
@@ -230,7 +236,6 @@ mod test {
     use std::sync::Arc;
 
     use anyhow::Result;
-    use chrono::{DateTime, NaiveDate, Utc};
 
     use crate::Indexable;
     use crate::test::{DbGuard, acquire_db_permit};
@@ -239,14 +244,14 @@ mod test {
 
     const SENSOR: &str = "sensor-a";
 
-    /// `2023-03-15T12:34:56.123456789Z` as chrono `timestamp_nanos_opt()`.
+    /// `2023-03-15T12:34:56.123456789Z` as `i64` Unix-epoch nanoseconds.
     const TIMESTAMP_2023_SUFFIX: [u8; size_of::<i64>()] =
         1_678_883_696_123_456_789i64.to_be_bytes();
 
-    /// `1969-12-31T23:59:59.999999999Z` as chrono `timestamp_nanos_opt()`.
+    /// `1969-12-31T23:59:59.999999999Z` as `i64` Unix-epoch nanoseconds.
     const TIMESTAMP_PRE_EPOCH_SUFFIX: [u8; size_of::<i64>()] = (-1i64).to_be_bytes();
 
-    /// Suffix substituted when chrono `timestamp_nanos_opt()` returns `None`.
+    /// Suffix substituted when the time is outside the `i64` nanosecond range.
     const TIMESTAMP_OUT_OF_RANGE_SUFFIX: [u8; size_of::<i64>()] = 0i64.to_be_bytes();
 
     /// Extracts the 8-byte timestamp suffix from a `TriageResponse` unique key.
@@ -262,7 +267,7 @@ mod test {
 
     fn assert_unique_key_timestamp(
         sensor: &str,
-        time: DateTime<Utc>,
+        time: jiff::Timestamp,
         expected_suffix: [u8; size_of::<i64>()],
     ) {
         let response = TriageResponse::new(sensor.to_string(), time, Vec::new(), String::new());
@@ -274,36 +279,32 @@ mod test {
         let actual = timestamp_bytes_from_key(key, sensor);
         assert_eq!(
             actual, expected_suffix,
-            "unique key timestamp suffix must match the pinned chrono i64 nanosecond bytes"
+            "unique key timestamp suffix must match the pinned i64 nanosecond bytes"
         );
     }
 
     #[test]
     fn unique_key_timestamp_nanosecond_precision() {
-        let time = DateTime::parse_from_rfc3339("2023-03-15T12:34:56.123456789Z")
-            .expect("valid RFC3339 timestamp")
-            .with_timezone(&Utc);
+        let time = "2023-03-15T12:34:56.123456789Z"
+            .parse::<jiff::Timestamp>()
+            .expect("valid RFC3339 timestamp");
         assert_unique_key_timestamp(SENSOR, time, TIMESTAMP_2023_SUFFIX);
     }
 
     #[test]
     fn unique_key_timestamp_pre_1970() {
-        let time = DateTime::parse_from_rfc3339("1969-12-31T23:59:59.999999999Z")
-            .expect("valid RFC3339 timestamp")
-            .with_timezone(&Utc);
+        let time = "1969-12-31T23:59:59.999999999Z"
+            .parse::<jiff::Timestamp>()
+            .expect("valid RFC3339 timestamp");
         assert_unique_key_timestamp(SENSOR, time, TIMESTAMP_PRE_EPOCH_SUFFIX);
     }
 
     #[test]
     fn unique_key_timestamp_out_of_range_uses_zero() {
-        // Years far beyond chrono's representable i64-nanosecond range make
-        // `timestamp_nanos_opt()` return `None`. The key builder currently
-        // substitutes `i64::default()` (zero) rather than failing.
-        let naive = NaiveDate::from_ymd_opt(3000, 1, 1)
-            .expect("valid date")
-            .and_hms_opt(0, 0, 0)
-            .expect("valid time");
-        let time = DateTime::from_naive_utc_and_offset(naive, Utc);
+        // Years far beyond the i64-nanosecond range have no i64 nanosecond
+        // count. The key builder substitutes `i64::default()` (zero) rather
+        // than failing.
+        let time = crate::test::utc(3000, 1, 1, 0, 0, 0);
 
         let response = TriageResponse::new(SENSOR.to_string(), time, Vec::new(), String::new());
         let actual = timestamp_bytes_from_key(response.unique_key(), SENSOR);
@@ -334,7 +335,7 @@ mod test {
     #[test]
     fn triage_response_literal_bytes_contract() -> Result<()> {
         const FIXTURE_BYTES: &[u8] =
-            include_bytes!("../../tests/fixtures/triage_response_literal.bin");
+            include_bytes!("../../tests/fixtures/triage_response_literal_v0_62.bin");
 
         let decoded = TriageResponse::from_key_value(b"fixture-key", FIXTURE_BYTES)?;
         let expected = deterministic_triage_response();
@@ -354,25 +355,25 @@ mod test {
     }
 
     #[test]
-    #[ignore = "run manually to regenerate tests/fixtures/triage_response_literal.bin"]
+    #[ignore = "run manually to regenerate tests/fixtures/triage_response_literal_v0_62.bin"]
     fn dump_triage_response_literal_fixture_bytes() {
         let bytes = deterministic_triage_response().value();
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("tests/fixtures/triage_response_literal.bin");
+            .join("tests/fixtures/triage_response_literal_v0_62.bin");
         std::fs::write(path, &bytes).expect("write fixture");
     }
 
     /// Builds a deterministic `TriageResponse` for the literal-byte contract test.
     fn deterministic_triage_response() -> TriageResponse {
-        let time = DateTime::parse_from_rfc3339("2000-02-29T12:34:56.123456789Z")
-            .expect("valid RFC 3339 timestamp")
-            .with_timezone(&Utc);
-        let creation_time = DateTime::parse_from_rfc3339("2000-01-15T08:00:00.111111111Z")
-            .expect("valid RFC 3339 timestamp")
-            .with_timezone(&Utc);
-        let last_modified_time = DateTime::parse_from_rfc3339("2000-03-01T23:59:59.987654321Z")
-            .expect("valid RFC 3339 timestamp")
-            .with_timezone(&Utc);
+        let time = "2000-02-29T12:34:56.123456789Z"
+            .parse::<jiff::Timestamp>()
+            .expect("valid RFC 3339 timestamp");
+        let creation_time = "2000-01-15T08:00:00.111111111Z"
+            .parse::<jiff::Timestamp>()
+            .expect("valid RFC 3339 timestamp");
+        let last_modified_time = "2000-03-01T23:59:59.987654321Z"
+            .parse::<jiff::Timestamp>()
+            .expect("valid RFC 3339 timestamp");
         let sensor = "fixture-sensor".to_string();
         let key = TriageResponse::create_key(&sensor, &time);
 
@@ -401,7 +402,7 @@ mod test {
         let (_permit, store) = setup_store();
         let mut table = store.triage_response_map();
 
-        let time = Utc::now();
+        let time = jiff::Timestamp::now();
         let sensor = "sensor";
         let remarks = "remarks";
         let tag_ids = &[3, 1, 2, 1];

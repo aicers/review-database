@@ -4,9 +4,9 @@ use attrievent::attribute::{ConnAttr, RawEventAttrKind};
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
-use super::timestamp::{self, ts_nanoseconds as jiff_ts_nanoseconds};
 use super::{EventCategory, LearningMethod, ThreatLevel, TriageScore, common::Match};
 use crate::event::common::{AttrValue, triage_scores_to_string, vector_to_string};
+use crate::timestamp::{self, ts_nanoseconds as jiff_ts_nanoseconds};
 
 #[macro_export]
 macro_rules! find_conn_attr_by_kind {

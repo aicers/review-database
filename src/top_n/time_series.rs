@@ -1,6 +1,6 @@
 #![allow(deprecated)] // TODO: Remove this when LineSegment and Regression structs are deleted
 
-use chrono::NaiveDateTime;
+use jiff::Timestamp;
 use serde::Deserialize;
 
 #[deprecated(
@@ -10,7 +10,7 @@ use serde::Deserialize;
 // Frontend uses count of usize
 #[derive(Clone, Debug, Deserialize)]
 pub struct TimeCount {
-    pub time: NaiveDateTime,
+    pub time: Timestamp,
     pub count: usize,
 }
 

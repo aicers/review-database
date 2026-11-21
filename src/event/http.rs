@@ -4,8 +4,8 @@ use attrievent::attribute::{HttpAttr, RawEventAttrKind};
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
-use super::timestamp::{self, ts_nanoseconds as jiff_ts_nanoseconds};
 use super::{EventCategory, LearningMethod, ThreatLevel, TriageScore, common::Match};
+use crate::timestamp::{self, ts_nanoseconds as jiff_ts_nanoseconds};
 use crate::{
     TriageExclusion,
     event::common::{AttrValue, triage_scores_to_string},

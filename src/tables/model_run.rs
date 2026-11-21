@@ -9,7 +9,7 @@
 //! any run created after that read.
 
 use anyhow::{Context, Result, anyhow};
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 use rocksdb::{IteratorMode, OptimisticTransactionDB, Transaction};
 use serde::{Deserialize, Serialize};
 
@@ -73,9 +73,11 @@ pub struct ModelRun {
     pub state: RunState,
     /// The reason given with the last state change, if any.
     pub reason: Option<String>,
-    pub requested_at: DateTime<Utc>,
+    #[serde(with = "crate::timestamp::ts_nanoseconds_saturating")]
+    pub requested_at: Timestamp,
     /// When the state last changed; `requested_at` until it first does.
-    pub updated_at: DateTime<Utc>,
+    #[serde(with = "crate::timestamp::ts_nanoseconds_saturating")]
+    pub updated_at: Timestamp,
 }
 
 impl ModelRun {

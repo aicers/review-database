@@ -9,8 +9,8 @@ use std::{
 
 use anyhow::{Context, Result, anyhow};
 use attrievent::attribute::RawEventKind;
-use chrono::{DateTime, Utc};
 use ipnet::{IpNet, Ipv4Net, Ipv6Net};
+use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
 use crate::types::{EventCategory, HostNetworkGroup};
@@ -216,7 +216,7 @@ impl TryFrom<ExclusionReason> for TriageExclusion {
 pub struct TriagePolicyInput {
     pub id: u32,
     pub name: String,
-    pub creation_time: DateTime<Utc>,
+    pub creation_time: Timestamp,
     pub triage_exclusion: Vec<TriageExclusion>,
     pub packet_attr: Vec<PacketAttr>,
     pub confidence: Vec<Confidence>,

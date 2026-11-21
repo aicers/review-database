@@ -17,6 +17,7 @@ mod tables;
 mod tags;
 #[cfg(test)]
 mod test;
+pub mod timestamp;
 mod top_n;
 mod training;
 pub mod types;
@@ -28,7 +29,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use anyhow::{Result, anyhow};
+use anyhow::{Context, Result, anyhow};
 pub use attrievent::attribute::RawEventKind;
 pub use rocksdb::backup::BackupEngineInfo;
 pub use tags::TagSet;
@@ -948,8 +949,10 @@ impl Store {
             return Ok(None);
         };
 
-        let cutoff = chrono::Utc::now().naive_utc()
-            - chrono::Duration::days(i64::from(config.period_in_days));
+        let period = jiff::SignedDuration::from_hours(i64::from(config.period_in_days) * 24);
+        let cutoff = jiff::Timestamp::now()
+            .checked_sub(period)
+            .context("the column statistics retention cutoff is out of range")?;
 
         let table = self.column_stats_map();
         let count = table.remove_older_than(cutoff)?;

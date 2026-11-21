@@ -3,7 +3,7 @@
 use std::borrow::Cow;
 
 use anyhow::Result;
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 use rocksdb::OptimisticTransactionDB;
 use serde::{Deserialize, Serialize};
 
@@ -22,7 +22,7 @@ pub struct Network {
     /// Tag IDs of rows written before network tags were removed. Kept so
     /// that every stored row decodes, and carried through updates unchanged.
     tag_ids: Vec<u32>,
-    pub creation_time: DateTime<Utc>,
+    pub creation_time: Timestamp,
 }
 
 impl Network {
@@ -34,7 +34,7 @@ impl Network {
             description,
             networks,
             tag_ids: Vec::new(),
-            creation_time: Utc::now(),
+            creation_time: Timestamp::now(),
         }
     }
 
@@ -107,7 +107,8 @@ struct Value {
     description: String,
     networks: HostNetworkGroup,
     tag_ids: Vec<u32>,
-    creation_time: DateTime<Utc>,
+    #[serde(with = "crate::timestamp::ts_nanoseconds_saturating")]
+    creation_time: Timestamp,
 }
 
 /// Functions for the `network` indexed map.
@@ -215,7 +216,6 @@ mod test {
         sync::Arc,
     };
 
-    use chrono::{DateTime, Utc};
     use ipnet::IpNet;
     use rocksdb::Direction;
 
@@ -231,7 +231,7 @@ mod test {
     /// by `Indexable::value` for the private projected `Value` and by
     /// `FromKeyValue::from_key_value`.
     fn deterministic_fixture_network() -> Network {
-        let creation_time: DateTime<Utc> =
+        let creation_time: jiff::Timestamp =
             FIXTURE_TIMESTAMP.parse().expect("valid RFC 3339 timestamp");
 
         Network {
@@ -259,7 +259,7 @@ mod test {
 
     /// Verifies the private projected `Value` wire format for `Network`.
     ///
-    /// `tests/fixtures/network_projected_private_value.bin` was produced once by
+    /// `tests/fixtures/network_projected_private_value_v0_62.bin` was produced once by
     /// calling `Indexable::value` on `deterministic_fixture_network()`, which
     /// serializes the private `Value` struct (name excluded; stored in the key)
     /// via `tables::serialize` (`bincode::DefaultOptions`).
@@ -267,7 +267,7 @@ mod test {
     fn network_projected_private_value_backward_compatibility() {
         const FIXTURE_BYTES: &[u8] = include_bytes!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/tests/fixtures/network_projected_private_value.bin"
+            "/tests/fixtures/network_projected_private_value_v0_62.bin"
         ));
 
         let expected = deterministic_fixture_network();
@@ -282,12 +282,12 @@ mod test {
     }
 
     #[test]
-    #[ignore = "one-shot helper to regenerate tests/fixtures/network_projected_private_value.bin"]
+    #[ignore = "one-shot helper to regenerate tests/fixtures/network_projected_private_value_v0_62.bin"]
     fn write_network_projected_private_value_fixture() {
         let bytes = Indexable::value(&deterministic_fixture_network());
         let path = concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/tests/fixtures/network_projected_private_value.bin"
+            "/tests/fixtures/network_projected_private_value_v0_62.bin"
         );
         std::fs::write(path, &bytes).expect("write fixture");
     }
