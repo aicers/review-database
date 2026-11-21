@@ -238,8 +238,6 @@ pub(crate) fn agent_for_update(
 mod tests {
     use std::cell::Cell;
 
-    use chrono::{DateTime, Utc};
-
     use super::*;
     use crate::{
         AgentStatus, DetectorSourceStatus, DetectorState, EngineDetectorRef, EngineDocumentRefs,
@@ -272,8 +270,8 @@ mod tests {
         }
     }
 
-    fn at(secs: i64) -> DateTime<Utc> {
-        DateTime::from_timestamp(secs, 0).unwrap()
+    fn at(secs: i64) -> jiff::Timestamp {
+        crate::test::from_second(secs, 0)
     }
 
     fn agent(key: &str, kind: AgentKind, config: Option<&str>, draft: Option<&str>) -> Agent {

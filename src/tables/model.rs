@@ -1,7 +1,7 @@
 use std::borrow::Cow;
 
 use anyhow::{Result, anyhow};
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 use rocksdb::OptimisticTransactionDB;
 use serde::{Deserialize, Serialize};
 
@@ -40,7 +40,8 @@ pub struct Model {
     /// instance" state, `Some` its ready state.
     pub instance: Option<ModelInstance>,
     /// When the run that produced the current classifier succeeded.
-    pub trained_at: DateTime<Utc>,
+    #[serde(with = "crate::timestamp::ts_nanoseconds_saturating")]
+    pub trained_at: Timestamp,
     /// The generation of the current classifier file.
     pub classifier_generation: u64,
     /// The id of the run that produced the current classifier.
@@ -102,7 +103,8 @@ pub struct ReplacedModel {
 /// the definition that trained it.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct PreviousTraining {
-    pub trained_at: DateTime<Utc>,
+    #[serde(with = "crate::timestamp::ts_nanoseconds_saturating")]
+    pub trained_at: Timestamp,
     pub version: i32,
     pub classifier_generation: u64,
     pub trained_run_id: u32,
@@ -454,7 +456,7 @@ mod tests {
                 node_id: 1,
                 agent_key: "unsupervised@host".to_string(),
             }),
-            trained_at: chrono::DateTime::from_timestamp(1_700_000_000, 123).unwrap(),
+            trained_at: crate::test::from_second(1_700_000_000, 123),
             classifier_generation: 1,
             trained_run_id: 9,
             trained_definition: "eps = 5.0".to_string(),

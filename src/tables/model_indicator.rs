@@ -6,13 +6,13 @@ use std::{
 };
 
 use anyhow::Result;
-use chrono::{DateTime, Utc, serde::ts_seconds};
 use data_encoding::BASE64;
 use flate2::read::GzDecoder;
+use jiff::Timestamp;
 use rocksdb::OptimisticTransactionDB;
 use serde::{Deserialize, Serialize};
 
-use crate::{Map, Table, types::FromKeyValue};
+use crate::{Map, Table, timestamp::ts_seconds_floor, types::FromKeyValue};
 
 #[derive(Default)]
 pub struct ModelIndicator {
@@ -20,7 +20,7 @@ pub struct ModelIndicator {
     pub description: String,
     pub model_id: u32,
     pub tokens: HashSet<Vec<String>>,
-    pub last_modification_time: DateTime<Utc>,
+    pub last_modification_time: Timestamp,
 }
 
 impl ModelIndicator {
@@ -56,8 +56,8 @@ struct Value {
     description: String,
     model_id: u32,
     tokens: HashSet<Vec<String>>,
-    #[serde(with = "ts_seconds")]
-    last_modification_time: DateTime<Utc>,
+    #[serde(with = "ts_seconds_floor")]
+    last_modification_time: Timestamp,
 }
 
 impl FromKeyValue for ModelIndicator {
@@ -129,8 +129,6 @@ mod tests {
     use std::collections::HashSet;
     use std::sync::Arc;
 
-    use chrono::{TimeZone, Utc};
-
     use crate::test::{DbGuard, acquire_db_permit};
     use crate::types::FromKeyValue;
     use crate::{ModelIndicator, Store};
@@ -140,18 +138,18 @@ mod tests {
     /// One day before the Unix epoch; exercises signed `i64` epoch seconds.
     const NEGATIVE_TS_SECONDS: i64 = -86_400;
 
-    const SUBSECOND_NANOS: u32 = 500_000_000;
+    const SUBSECOND_NANOS: i32 = 500_000_000;
 
     const FIXTURE_NAME: &str = "baseline-mi";
 
     /// Pinned table-value bytes produced by the production `tables::serialize`
     /// path for a `ModelIndicator` value.
     ///
-    /// `last_modification_time` is stored with `chrono::serde::ts_seconds`
-    /// (`i64` epoch seconds). This baseline is separate from the default
-    /// bincode table-value baseline because that contract uses default chrono
-    /// serde instead of `ts_seconds`, so the timestamp encoding must be pinned
-    /// on its own to catch accidental migration during future changes.
+    /// `last_modification_time` is stored as `i64` epoch seconds, the format
+    /// chrono's `ts_seconds` wrote and `ts_seconds_floor` keeps. This baseline
+    /// is separate from the other table-value baselines because those store
+    /// `i64` nanoseconds, so the timestamp encoding must be pinned on its own
+    /// to catch accidental migration during future changes.
     const TABLE_VALUE_FIXTURE: &[u8] = &[
         16, 98, 97, 115, 101, 108, 105, 110, 101, 32, 102, 105, 120, 116, 117, 114, 101, 42, 1, 1,
         7, 116, 111, 107, 101, 110, 45, 97, 252, 0, 1, 178, 196,
@@ -163,13 +161,21 @@ mod tests {
         7, 116, 111, 107, 101, 110, 45, 97, 252, 255, 162, 2, 0,
     ];
 
-    fn fixture_last_modification_time(ts_seconds: i64, subsec_nanos: u32) -> chrono::DateTime<Utc> {
-        Utc.timestamp_opt(ts_seconds, subsec_nanos)
-            .single()
-            .expect("canonical timestamp must be valid")
+    fn fixture_last_modification_time(ts_seconds: i64, subsec_nanos: i32) -> jiff::Timestamp {
+        jiff::Timestamp::new(ts_seconds, subsec_nanos).expect("canonical timestamp must be valid")
     }
 
-    fn fixture_model_indicator(ts_seconds: i64, subsec_nanos: u32) -> ModelIndicator {
+    /// Splits a timestamp into its floored seconds and nonnegative subsecond
+    /// nanoseconds.
+    fn seconds_and_subsec(time: jiff::Timestamp) -> (i64, i64) {
+        let nanos = i64::try_from(time.as_nanosecond()).expect("in range");
+        (
+            nanos.div_euclid(1_000_000_000),
+            nanos.rem_euclid(1_000_000_000),
+        )
+    }
+
+    fn fixture_model_indicator(ts_seconds: i64, subsec_nanos: i32) -> ModelIndicator {
         let mut tokens = HashSet::new();
         tokens.insert(vec!["token-a".to_string()]);
         ModelIndicator {
@@ -198,12 +204,12 @@ mod tests {
                 .expect("production table-value decoder must accept pinned bytes");
 
         assert_eq!(
-            indicator.last_modification_time.timestamp(),
+            seconds_and_subsec(indicator.last_modification_time).0,
             TS_SECONDS,
-            "stored timestamp must be i64 epoch seconds via chrono::serde::ts_seconds"
+            "stored timestamp must be i64 epoch seconds via ts_seconds_floor"
         );
         assert_eq!(
-            indicator.last_modification_time.timestamp_subsec_nanos(),
+            seconds_and_subsec(indicator.last_modification_time).1,
             0,
             "ts_seconds encoding must not preserve subsecond precision"
         );
@@ -235,12 +241,12 @@ mod tests {
         .expect("production table-value decoder must accept pinned pre-1970 bytes");
 
         assert_eq!(
-            indicator.last_modification_time.timestamp(),
+            seconds_and_subsec(indicator.last_modification_time).0,
             NEGATIVE_TS_SECONDS,
-            "stored timestamp must be signed i64 epoch seconds via chrono::serde::ts_seconds"
+            "stored timestamp must be signed i64 epoch seconds via ts_seconds_floor"
         );
         assert_eq!(
-            indicator.last_modification_time.timestamp_subsec_nanos(),
+            seconds_and_subsec(indicator.last_modification_time).1,
             0,
             "ts_seconds encoding must not preserve subsecond precision"
         );
@@ -264,8 +270,7 @@ mod tests {
     #[test]
     fn baseline_last_modification_time_encodes_truncates_subseconds_to_whole_seconds() {
         let indicator = fixture_model_indicator(TS_SECONDS, SUBSECOND_NANOS);
-        let timestamp = indicator.last_modification_time.timestamp();
-        let subsec_nanos = indicator.last_modification_time.timestamp_subsec_nanos();
+        let (timestamp, subsec_nanos) = seconds_and_subsec(indicator.last_modification_time);
         let (_key, encoded) = indicator
             .into_key_value()
             .expect("production table-value encoder must succeed");
@@ -285,12 +290,65 @@ mod tests {
         );
     }
 
+    /// Returns a stored value whose `last_modification_time` is `seconds`.
+    fn value_with_seconds(seconds: i64) -> Vec<u8> {
+        #[derive(serde::Serialize)]
+        struct RawValue {
+            description: String,
+            model_id: u32,
+            tokens: HashSet<Vec<String>>,
+            last_modification_time: i64,
+        }
+        crate::tables::serialize(&RawValue {
+            description: "out of range".to_owned(),
+            model_id: 7,
+            tokens: HashSet::new(),
+            last_modification_time: seconds,
+        })
+        .unwrap()
+    }
+
+    fn upload(value: &[u8]) -> String {
+        use std::io::{Cursor, Read};
+
+        use data_encoding::BASE64;
+        use flate2::{Compression, bufread::GzEncoder};
+
+        let mut gz = GzEncoder::new(Cursor::new(value), Compression::fast());
+        let mut zipped = Vec::new();
+        gz.read_to_end(&mut zipped).unwrap();
+        BASE64.encode(&zipped)
+    }
+
+    #[test]
+    fn seconds_outside_the_timestamp_range_are_a_read_error() {
+        let max = jiff::Timestamp::MAX.as_second();
+        let min = jiff::Timestamp::MIN.as_second();
+        for seconds in [max + 1, min - 1, i64::MAX, i64::MIN] {
+            let value = value_with_seconds(seconds);
+            assert!(
+                super::ModelIndicator::from_key_value(FIXTURE_NAME.as_bytes(), &value).is_err(),
+                "{seconds}"
+            );
+            assert!(
+                super::ModelIndicator::new(FIXTURE_NAME, &upload(&value)).is_err(),
+                "{seconds}"
+            );
+        }
+        for seconds in [max, min] {
+            let value = value_with_seconds(seconds);
+            let indicator =
+                super::ModelIndicator::from_key_value(FIXTURE_NAME.as_bytes(), &value).unwrap();
+            assert_eq!(indicator.last_modification_time.as_second(), seconds);
+            assert!(super::ModelIndicator::new(FIXTURE_NAME, &upload(&value)).is_ok());
+        }
+    }
+
     #[test]
     fn serde() {
         use std::collections::HashSet;
         use std::io::{Cursor, Read};
 
-        use chrono::Utc;
         use data_encoding::BASE64;
         use flate2::{Compression, bufread::GzEncoder};
 
@@ -299,7 +357,7 @@ mod tests {
             description: "test".to_owned(),
             model_id: 123,
             tokens: HashSet::new(),
-            last_modification_time: Utc::now(),
+            last_modification_time: jiff::Timestamp::now(),
         };
         let serialized = crate::tables::serialize(&value).unwrap();
         let cursor = Cursor::new(serialized);

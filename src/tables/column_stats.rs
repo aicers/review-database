@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 use anyhow::{Context, Result};
-use chrono::NaiveDateTime;
+use jiff::Timestamp;
 use num_traits::{FromPrimitive, ToPrimitive};
 use rocksdb::{Direction, OptimisticTransactionDB};
 use serde::{Deserialize, Serialize};
@@ -90,10 +90,10 @@ impl<'d> Table<'d, ColumnStats> {
     ///
     /// Returns an error if the cutoff is outside the i64 nanosecond range,
     /// iteration fails to decode a key, or a database operation fails.
-    pub fn remove_older_than(&self, cutoff: NaiveDateTime) -> Result<usize> {
+    pub fn remove_older_than(&self, cutoff: Timestamp) -> Result<usize> {
         const BATCH_SIZE: usize = 1024;
 
-        let cutoff_ts = from_naive_utc(cutoff)?;
+        let cutoff_ts = to_nanos(cutoff)?;
         let mut total = 0;
         let mut batch: Vec<Vec<u8>> = Vec::with_capacity(BATCH_SIZE);
 
@@ -144,7 +144,7 @@ impl<'d> Table<'d, ColumnStats> {
         &self,
         model: u32,
         cluster: u32,
-        time: Vec<NaiveDateTime>,
+        time: Vec<Timestamp>,
     ) -> Result<Vec<Statistics>> {
         if time.is_empty() {
             let mut prefix = model.to_be_bytes().to_vec();
@@ -155,7 +155,7 @@ impl<'d> Table<'d, ColumnStats> {
                 .map(|result| {
                     let column_stats = result?;
                     Ok(Statistics {
-                        batch_ts: from_timestamp(column_stats.batch_ts)?,
+                        batch_ts: from_nanos(column_stats.batch_ts)?,
                         column_index: i32::try_from(column_stats.column_index)?,
                         column_stats: structured::ColumnStatistics {
                             description: column_stats.description,
@@ -168,14 +168,14 @@ impl<'d> Table<'d, ColumnStats> {
         // Validate all requested times before reading any database entries so
         // timestamp errors retain precedence over database errors.
         for &t in &time {
-            from_naive_utc(t)?;
+            to_nanos(t)?;
         }
         let mut statistics = Vec::new();
         for t in time {
-            for result in self.get(from_naive_utc(t)?, model, cluster) {
+            for result in self.get(to_nanos(t)?, model, cluster) {
                 let column_stats = result?;
                 statistics.push(Statistics {
-                    batch_ts: from_timestamp(column_stats.batch_ts)?,
+                    batch_ts: from_nanos(column_stats.batch_ts)?,
                     column_index: i32::try_from(column_stats.column_index)?,
                     column_stats: structured::ColumnStatistics {
                         description: column_stats.description,
@@ -204,9 +204,9 @@ impl<'d> Table<'d, ColumnStats> {
         &self,
         stats: Vec<(u32, Vec<structured::ColumnStatistics>)>,
         model_id: u32,
-        batch_ts: NaiveDateTime,
+        batch_ts: Timestamp,
     ) -> Result<()> {
-        let batch_ts = from_naive_utc(batch_ts)?;
+        let batch_ts = to_nanos(batch_ts)?;
         for (cluster_id, columns) in stats {
             let mut key = Key {
                 cluster_id,
@@ -252,9 +252,9 @@ impl<'d> Table<'d, ColumnStats> {
         (column_1, column_n): (&[bool], &[bool]),
         number_of_top_n: usize,
         min_top_n_of_1_to_n: usize,
-        time: Option<NaiveDateTime>,
+        time: Option<Timestamp>,
     ) -> Result<Vec<TopMultimaps>> {
-        let time = time.map(from_naive_utc).transpose()?;
+        let time = time.map(to_nanos).transpose()?;
         let column_1: HashSet<_> = get_selected_column_index(column_1).into_iter().collect();
         let column_n: HashSet<_> = get_selected_column_index(column_n).into_iter().collect();
         let prefix_size = if time.is_some() {
@@ -361,11 +361,11 @@ impl<'d> Table<'d, ColumnStats> {
         cluster_ids: Vec<u32>,
         top_n: &[bool],
         number_of_top_n: usize,
-        time: Option<NaiveDateTime>,
+        time: Option<Timestamp>,
         portion_of_top_n: Option<f64>,
     ) -> Result<Vec<TopElementCountsByColumn>> {
         let columns = get_columns_for_top_n(top_n);
-        let time = time.map(from_naive_utc).transpose()?;
+        let time = time.map(to_nanos).transpose()?;
         let prefix_size = if time.is_some() {
             size_of::<i32>() + size_of::<u32>() + size_of::<i64>()
         } else {
@@ -505,10 +505,10 @@ impl<'d> Table<'d, ColumnStats> {
         model_id: u32,
         cluster_ids: &[u32],
         size: usize, // number of top N IP addresses to return
-        time: Option<NaiveDateTime>,
+        time: Option<Timestamp>,
         portion_of_top_n: Option<f64>,
     ) -> Result<Vec<TopElementCountsByColumn>> {
-        let time = time.map(from_naive_utc).transpose()?.map(i64::to_be_bytes);
+        let time = time.map(to_nanos).transpose()?.map(i64::to_be_bytes);
         let mut total_of_top_n: HashMap<_, HashMap<_, HashMap<String, i64>>> = HashMap::new();
         let prefix_size = if time.is_some() {
             size_of::<i32>() + size_of::<u32>() + size_of::<i64>()
@@ -606,11 +606,11 @@ impl<'d> Table<'d, ColumnStats> {
         &self,
         model_id: u32,
         cluster_id: u32,
-        after: &Option<NaiveDateTime>,
-        before: &Option<NaiveDateTime>,
+        after: &Option<Timestamp>,
+        before: &Option<Timestamp>,
         is_first: bool,
         limit: usize,
-    ) -> Result<(i32, Vec<NaiveDateTime>)> {
+    ) -> Result<(i32, Vec<Timestamp>)> {
         let model_id_i32 = i32::try_from(model_id)?;
         if limit == 0 {
             return Ok((model_id_i32, Vec::new()));
@@ -619,7 +619,7 @@ impl<'d> Table<'d, ColumnStats> {
         let mut prefix = model_id.to_be_bytes().to_vec();
         prefix.extend(cluster_id.to_be_bytes());
         let boundary = if is_first { after } else { before };
-        let boundary_ts = boundary.map(from_naive_utc).transpose()?;
+        let boundary_ts = boundary.map(to_nanos).transpose()?;
         let seek_key = boundary_ts.map(|batch_ts| round_seek_key(model_id, cluster_id, batch_ts));
         let direction = if is_first {
             Direction::Forward
@@ -640,7 +640,7 @@ impl<'d> Table<'d, ColumnStats> {
             }
 
             last_batch_ts = Some(column_stats.batch_ts);
-            rounds.push(from_timestamp(column_stats.batch_ts)?);
+            rounds.push(from_nanos(column_stats.batch_ts)?);
             if rounds.len() >= limit {
                 break;
             }
@@ -814,20 +814,14 @@ fn to_element_counts(
     top_n
 }
 
-fn from_timestamp(timestamp: i64) -> Result<NaiveDateTime> {
-    // Convert the timestamp to a NaiveDateTime.
-    const A_BILLION: i64 = 1_000_000_000;
-    let s = timestamp.div_euclid(A_BILLION);
-    let nanos = u32::try_from(timestamp.rem_euclid(A_BILLION))?;
-    chrono::DateTime::from_timestamp(s, nanos)
-        .map(|t| t.naive_utc())
-        .ok_or(anyhow::anyhow!("Invalid timestamp: {timestamp}"))
+fn from_nanos(timestamp: i64) -> Result<Timestamp> {
+    crate::timestamp::from_i64_nanos(timestamp)
+        .map_err(|_| anyhow::anyhow!("Invalid timestamp: {timestamp}"))
 }
 
-fn from_naive_utc(date: NaiveDateTime) -> Result<i64> {
-    date.and_utc()
-        .timestamp_nanos_opt()
-        .ok_or_else(|| anyhow::anyhow!("timestamp is outside the i64 nanosecond range: {date}"))
+fn to_nanos(date: Timestamp) -> Result<i64> {
+    crate::timestamp::to_i64_nanos(date)
+        .map_err(|_| anyhow::anyhow!("timestamp is outside the i64 nanosecond range: {date}"))
 }
 
 fn to_multi_maps(
@@ -1022,7 +1016,7 @@ mod tests {
         let results: Vec<_> = table.iter(Direction::Forward, None).collect();
         assert_eq!(results.iter().filter(|item| item.is_ok()).count(), 1);
         assert_eq!(results.iter().filter(|item| item.is_err()).count(), 2);
-        let cutoff = chrono::DateTime::from_timestamp(1, 0).unwrap().naive_utc();
+        let cutoff = crate::test::from_second(1, 0);
         assert!(table.remove_older_than(cutoff).is_err());
         table.map.delete(&short).unwrap();
         let future = ColumnStats {
@@ -1044,7 +1038,6 @@ mod tests {
     use std::collections::HashMap;
     use std::sync::Arc;
 
-    use chrono::NaiveDate;
     use structured::{Description, Element, NLargestCount};
     use structured::{ElementCount, FloatRange};
 
@@ -1073,7 +1066,6 @@ mod tests {
 
     #[test]
     fn test_insert_and_get_column_statistics() {
-        use chrono::NaiveDate;
         use structured::{ColumnStatistics, Description, Element, NLargestCount};
 
         let (_permit, store) = setup_store();
@@ -1081,10 +1073,7 @@ mod tests {
 
         let cluster_id = 1;
         let model_id = 99;
-        let batch_ts = NaiveDate::from_ymd_opt(2023, 6, 1)
-            .unwrap()
-            .and_hms_opt(0, 0, 0)
-            .unwrap();
+        let batch_ts = crate::test::utc(2023, 6, 1, 0, 0, 0);
 
         let statistics = vec![(
             cluster_id,
@@ -1130,10 +1119,7 @@ mod tests {
 
         let (_permit, store) = setup_store();
         let table = store.column_stats_map();
-        let batch_ts = NaiveDate::from_ymd_opt(2023, 6, 1)
-            .unwrap()
-            .and_hms_opt(0, 0, 0)
-            .unwrap();
+        let batch_ts = crate::test::utc(2023, 6, 1, 0, 0, 0);
         let statistics = || {
             vec![(
                 3,
@@ -1178,7 +1164,6 @@ mod tests {
 
     #[test]
     fn test_count_rounds_by_cluster() {
-        use chrono::NaiveDate;
         use structured::{ColumnStatistics, Description, Element, NLargestCount};
 
         let (_permit, store) = setup_store();
@@ -1187,14 +1172,8 @@ mod tests {
         let cluster_id = 11;
         let model_id = 2;
 
-        let batch1 = NaiveDate::from_ymd_opt(2023, 1, 1)
-            .unwrap()
-            .and_hms_opt(0, 0, 0)
-            .unwrap();
-        let batch2 = NaiveDate::from_ymd_opt(2023, 2, 1)
-            .unwrap()
-            .and_hms_opt(0, 0, 0)
-            .unwrap();
+        let batch1 = crate::test::utc(2023, 1, 1, 0, 0, 0);
+        let batch2 = crate::test::utc(2023, 2, 1, 0, 0, 0);
 
         let stats1 = ColumnStatistics {
             description: Description::default(),
@@ -1234,7 +1213,6 @@ mod tests {
 
     #[test]
     fn test_load_rounds_by_cluster() {
-        use chrono::NaiveDate;
         use structured::{ColumnStatistics, Description, Element, NLargestCount};
 
         let (_permit, store) = setup_store();
@@ -1244,12 +1222,7 @@ mod tests {
         let model_id = 42_u32;
 
         let batches: Vec<_> = (1..=4)
-            .map(|month| {
-                NaiveDate::from_ymd_opt(2024, month, 10)
-                    .unwrap()
-                    .and_hms_opt(0, 0, 0)
-                    .unwrap()
-            })
+            .map(|month| crate::test::utc(2024, month, 10, 0, 0, 0))
             .collect();
 
         let stats = ColumnStatistics {
@@ -1299,18 +1272,18 @@ mod tests {
         let (_, rounds) = table
             .load_rounds_by_cluster(model_id, cluster_id, &Some(batches[3]), &None, true, 2)
             .unwrap();
-        assert_eq!(rounds, Vec::<NaiveDateTime>::new());
+        assert_eq!(rounds, Vec::<jiff::Timestamp>::new());
 
         let (retrieved_model_id, rounds) = table
             .load_rounds_by_cluster(model_id, cluster_id, &None, &None, true, 0)
             .unwrap();
         assert_eq!(u32::try_from(retrieved_model_id).unwrap(), model_id);
-        assert_eq!(rounds, Vec::<NaiveDateTime>::new());
+        assert_eq!(rounds, Vec::<jiff::Timestamp>::new());
 
         let (_, rounds) = table
             .load_rounds_by_cluster(model_id, cluster_id, &None, &Some(batches[0]), false, 2)
             .unwrap();
-        assert_eq!(rounds, Vec::<NaiveDateTime>::new());
+        assert_eq!(rounds, Vec::<jiff::Timestamp>::new());
     }
 
     #[test]
@@ -1320,12 +1293,7 @@ mod tests {
         let model_id = 42;
         let cluster_id = 123;
         let batches: Vec<_> = (1..=3)
-            .map(|month| {
-                NaiveDate::from_ymd_opt(2024, month, 10)
-                    .unwrap()
-                    .and_hms_opt(0, 0, 0)
-                    .unwrap()
-            })
+            .map(|month| crate::test::utc(2024, month, 10, 0, 0, 0))
             .collect();
         for is_first in [true, false] {
             assert_eq!(
@@ -1340,7 +1308,7 @@ mod tests {
                     )
                     .unwrap()
                     .1,
-                Vec::<NaiveDateTime>::new()
+                Vec::<jiff::Timestamp>::new()
             );
         }
 
@@ -1357,10 +1325,7 @@ mod tests {
                 )
                 .unwrap();
         }
-        let invalid = NaiveDate::from_ymd_opt(3000, 1, 1)
-            .unwrap()
-            .and_hms_opt(0, 0, 0)
-            .unwrap();
+        let invalid = crate::test::utc(3000, 1, 1, 0, 0, 0);
         for is_first in [true, false] {
             let (_, rounds) = table
                 .load_rounds_by_cluster(model_id, cluster_id, &None, &None, is_first, usize::MAX)
@@ -1378,7 +1343,7 @@ mod tests {
                     )
                     .unwrap()
                     .1,
-                Vec::<NaiveDateTime>::new()
+                Vec::<jiff::Timestamp>::new()
             );
         }
         let (_, rounds) = table
@@ -1423,7 +1388,6 @@ mod tests {
 
     #[test]
     fn test_get_column_types_of_model() {
-        use chrono::NaiveDate;
         use structured::{ColumnStatistics, Description, Element, NLargestCount};
 
         let (_permit, store) = setup_store();
@@ -1431,10 +1395,7 @@ mod tests {
 
         let model_id = 101;
         let cluster_id = 7;
-        let batch_ts = NaiveDate::from_ymd_opt(2023, 3, 15)
-            .unwrap()
-            .and_hms_opt(0, 0, 0)
-            .unwrap();
+        let batch_ts = crate::test::utc(2023, 3, 15, 0, 0, 0);
 
         let stats = ColumnStatistics {
             description: Description::default(),
@@ -1510,12 +1471,9 @@ mod tests {
 
     #[test]
     fn test_from_and_to_timestamp() {
-        let now = NaiveDate::from_ymd_opt(2024, 1, 1)
-            .unwrap()
-            .and_hms_opt(12, 0, 0)
-            .unwrap();
-        let ts = from_naive_utc(now).unwrap();
-        let restored = from_timestamp(ts).unwrap();
+        let now = crate::test::utc(2024, 1, 1, 12, 0, 0);
+        let ts = to_nanos(now).unwrap();
+        let restored = from_nanos(ts).unwrap();
         assert_eq!(restored, now);
     }
 
@@ -1615,7 +1573,7 @@ mod tests {
     fn test_top_queries_count_conversion_errors() {
         let (_permit, store) = setup_store();
         let table = store.column_stats_map();
-        let time = from_timestamp(0).unwrap();
+        let time = from_nanos(0).unwrap();
         let count = usize::try_from(i64::MAX).unwrap() + 1;
         table
             .insert_column_statistics(vec![(1, vec![ip_statistics(&[count])])], 1, time)
@@ -1644,7 +1602,7 @@ mod tests {
                 .insert_column_statistics(
                     vec![(1, vec![ip_statistics(&[count])])],
                     1,
-                    from_timestamp(batch).unwrap(),
+                    from_nanos(batch).unwrap(),
                 )
                 .unwrap();
         }
@@ -1677,7 +1635,7 @@ mod tests {
                     (2, vec![ip_statistics(&[1])]),
                 ],
                 1,
-                from_timestamp(0).unwrap(),
+                from_nanos(0).unwrap(),
             )
             .unwrap();
 
@@ -1713,7 +1671,7 @@ mod tests {
                 .insert_column_statistics(
                     vec![(1, vec![ip_statistics(&counts)])],
                     1,
-                    from_timestamp(0).unwrap(),
+                    from_nanos(0).unwrap(),
                 )
                 .unwrap();
 
@@ -1748,7 +1706,6 @@ mod tests {
 
     #[test]
     fn test_get_top_ip_addresses_of_model() {
-        use chrono::NaiveDate;
         use structured::{ColumnStatistics, Description, Element, ElementCount, NLargestCount};
 
         let (_permit, store) = setup_store();
@@ -1757,10 +1714,7 @@ mod tests {
         let model_id = 10;
         let cluster_id = 55;
         let column_index = 0;
-        let batch_ts = NaiveDate::from_ymd_opt(2025, 1, 1)
-            .unwrap()
-            .and_hms_opt(0, 0, 0)
-            .unwrap();
+        let batch_ts = crate::test::utc(2025, 1, 1, 0, 0, 0);
 
         let ip_counts = NLargestCount::new(
             3,
@@ -1818,18 +1772,9 @@ mod tests {
         let (_permit, store) = setup_store();
         let table = store.column_stats_map();
 
-        let old_ts = NaiveDate::from_ymd_opt(2023, 1, 1)
-            .unwrap()
-            .and_hms_opt(0, 0, 0)
-            .unwrap();
-        let recent_ts = NaiveDate::from_ymd_opt(2025, 6, 1)
-            .unwrap()
-            .and_hms_opt(0, 0, 0)
-            .unwrap();
-        let cutoff = NaiveDate::from_ymd_opt(2024, 1, 1)
-            .unwrap()
-            .and_hms_opt(0, 0, 0)
-            .unwrap();
+        let old_ts = crate::test::utc(2023, 1, 1, 0, 0, 0);
+        let recent_ts = crate::test::utc(2025, 6, 1, 0, 0, 0);
+        let cutoff = crate::test::utc(2024, 1, 1, 0, 0, 0);
 
         // Insert old stats
         let old_stats = vec![(
@@ -1872,7 +1817,7 @@ mod tests {
             .collect::<Result<Vec<_>>>()
             .unwrap();
         assert_eq!(remaining.len(), 1);
-        assert_eq!(remaining[0].batch_ts, from_naive_utc(recent_ts).unwrap());
+        assert_eq!(remaining[0].batch_ts, to_nanos(recent_ts).unwrap());
     }
 
     #[test]
@@ -1880,14 +1825,8 @@ mod tests {
         let (_permit, store) = setup_store();
         let table = store.column_stats_map();
 
-        let recent_ts = NaiveDate::from_ymd_opt(2025, 6, 1)
-            .unwrap()
-            .and_hms_opt(0, 0, 0)
-            .unwrap();
-        let cutoff = NaiveDate::from_ymd_opt(2024, 1, 1)
-            .unwrap()
-            .and_hms_opt(0, 0, 0)
-            .unwrap();
+        let recent_ts = crate::test::utc(2025, 6, 1, 0, 0, 0);
+        let cutoff = crate::test::utc(2024, 1, 1, 0, 0, 0);
 
         let stats = vec![(
             1u32,
@@ -1928,10 +1867,7 @@ mod tests {
         let table = store.column_stats_map();
 
         // Insert old stats (well in the past)
-        let old_ts = NaiveDate::from_ymd_opt(2020, 1, 1)
-            .unwrap()
-            .and_hms_opt(0, 0, 0)
-            .unwrap();
+        let old_ts = crate::test::utc(2020, 1, 1, 0, 0, 0);
         let old_stats = vec![(
             1u32,
             vec![structured::ColumnStatistics {
@@ -1944,7 +1880,7 @@ mod tests {
             .unwrap();
 
         // Insert recent stats (now)
-        let recent_ts = chrono::Utc::now().naive_utc();
+        let recent_ts = jiff::Timestamp::now();
         let recent_stats = vec![(
             2u32,
             vec![structured::ColumnStatistics {
@@ -1973,13 +1909,14 @@ mod tests {
         let (_permit, store) = setup_store();
         let table = store.column_stats_map();
 
-        let cutoff = NaiveDate::from_ymd_opt(2024, 1, 1)
-            .unwrap()
-            .and_hms_opt(0, 0, 0)
+        let cutoff = crate::test::utc(2024, 1, 1, 0, 0, 0);
+        let just_before = cutoff
+            .checked_sub(jiff::SignedDuration::from_nanos(1))
             .unwrap();
-        let just_before = cutoff - chrono::Duration::nanoseconds(1);
         let at_cutoff = cutoff;
-        let just_after = cutoff + chrono::Duration::nanoseconds(1);
+        let just_after = cutoff
+            .checked_add(jiff::SignedDuration::from_nanos(1))
+            .unwrap();
 
         for (model_id, ts) in [(1u32, just_before), (2, at_cutoff), (3, just_after)] {
             let stats = vec![(
@@ -2004,10 +1941,7 @@ mod tests {
         remaining_ts.sort_unstable();
         assert_eq!(
             remaining_ts,
-            vec![
-                from_naive_utc(at_cutoff).unwrap(),
-                from_naive_utc(just_after).unwrap()
-            ]
+            vec![to_nanos(at_cutoff).unwrap(), to_nanos(just_after).unwrap()]
         );
     }
 
@@ -2018,18 +1952,9 @@ mod tests {
 
         // Insert more entries than the internal batch size (1024) to exercise
         // the bounded-batch code path.
-        let old_ts = NaiveDate::from_ymd_opt(2023, 1, 1)
-            .unwrap()
-            .and_hms_opt(0, 0, 0)
-            .unwrap();
-        let recent_ts = NaiveDate::from_ymd_opt(2025, 6, 1)
-            .unwrap()
-            .and_hms_opt(0, 0, 0)
-            .unwrap();
-        let cutoff = NaiveDate::from_ymd_opt(2024, 1, 1)
-            .unwrap()
-            .and_hms_opt(0, 0, 0)
-            .unwrap();
+        let old_ts = crate::test::utc(2023, 1, 1, 0, 0, 0);
+        let recent_ts = crate::test::utc(2025, 6, 1, 0, 0, 0);
+        let cutoff = crate::test::utc(2024, 1, 1, 0, 0, 0);
 
         let old_count = 2500u32;
         let recent_count = 5u32;
@@ -2068,7 +1993,7 @@ mod tests {
             .unwrap();
         assert_eq!(remaining.len(), recent_count as usize);
         for stats in &remaining {
-            assert_eq!(stats.batch_ts, from_naive_utc(recent_ts).unwrap());
+            assert_eq!(stats.batch_ts, to_nanos(recent_ts).unwrap());
         }
     }
 
@@ -2078,7 +2003,9 @@ mod tests {
         let table = store.column_stats_map();
 
         // Insert a single aged entry.
-        let old_ts = chrono::Utc::now().naive_utc() - chrono::Duration::days(30);
+        let old_ts = jiff::Timestamp::now()
+            .checked_sub(jiff::SignedDuration::from_hours(30 * 24))
+            .unwrap();
         let stats = vec![(
             1u32,
             vec![structured::ColumnStatistics {
@@ -2156,10 +2083,9 @@ mod tests {
     }
 
     /// Baseline tests for the `column_stats` timestamp contract between the
-    /// public `chrono::NaiveDateTime` API and the stored big-endian `i64`
+    /// public `jiff::Timestamp` API and the stored big-endian `i64`
     /// nanosecond key layout.
     mod timestamp_contract {
-        use chrono::NaiveDate;
         use rocksdb::Direction;
         use structured::{ColumnStatistics, Description, Element, ElementCount, NLargestCount};
 
@@ -2201,30 +2127,38 @@ mod tests {
 
         #[test]
         fn timestamp_range_and_leap_second() {
-            let minimum = NaiveDate::from_ymd_opt(1677, 9, 21)
-                .unwrap()
-                .and_hms_nano_opt(0, 12, 43, 145_224_192)
-                .unwrap();
-            let maximum = NaiveDate::from_ymd_opt(2262, 4, 11)
-                .unwrap()
-                .and_hms_nano_opt(23, 47, 16, 854_775_807)
-                .unwrap();
-            assert_eq!(from_naive_utc(minimum).unwrap(), i64::MIN);
-            assert_eq!(from_naive_utc(maximum).unwrap(), i64::MAX);
+            let minimum = crate::test::utc_nano(1677, 9, 21, 0, 12, 43, 145_224_192);
+            let maximum = crate::test::utc_nano(2262, 4, 11, 23, 47, 16, 854_775_807);
+            assert_eq!(to_nanos(minimum).unwrap(), i64::MIN);
+            assert_eq!(to_nanos(maximum).unwrap(), i64::MAX);
             assert_eq!(
-                from_naive_utc(minimum + chrono::Duration::nanoseconds(1)).unwrap(),
+                to_nanos(
+                    minimum
+                        .checked_add(jiff::SignedDuration::from_nanos(1))
+                        .unwrap()
+                )
+                .unwrap(),
                 i64::MIN + 1
             );
-            assert!(from_naive_utc(minimum - chrono::Duration::nanoseconds(1)).is_err());
-            assert!(from_naive_utc(maximum + chrono::Duration::nanoseconds(1)).is_err());
-            let leap_second = NaiveDate::from_ymd_opt(2016, 12, 31)
-                .unwrap()
-                .and_hms_nano_opt(23, 59, 59, 1_500_000_000)
-                .unwrap();
-            assert_eq!(
-                from_naive_utc(leap_second).unwrap(),
-                1_483_228_800_500_000_000
+            assert!(
+                to_nanos(
+                    minimum
+                        .checked_sub(jiff::SignedDuration::from_nanos(1))
+                        .unwrap()
+                )
+                .is_err()
             );
+            assert!(
+                to_nanos(
+                    maximum
+                        .checked_add(jiff::SignedDuration::from_nanos(1))
+                        .unwrap()
+                )
+                .is_err()
+            );
+            // jiff has no leap seconds: `:60` reads as the second before it.
+            let leap_second: jiff::Timestamp = "2016-12-31T23:59:60.5Z".parse().unwrap();
+            assert_eq!(to_nanos(leap_second).unwrap(), 1_483_228_799_500_000_000);
         }
 
         #[test]
@@ -2233,16 +2167,10 @@ mod tests {
             let table = store.column_stats_map();
             let model_id = 7;
             let cluster_id = 11;
-            let present = NaiveDate::from_ymd_opt(2026, 10, 7)
-                .unwrap()
-                .and_hms_opt(0, 0, 0)
-                .unwrap();
+            let present = crate::test::utc(2026, 10, 7, 0, 0, 0);
 
             for year in [1600, 3000] {
-                let invalid = NaiveDate::from_ymd_opt(year, 1, 1)
-                    .unwrap()
-                    .and_hms_opt(0, 0, 0)
-                    .unwrap();
+                let invalid = crate::test::utc(year, 1, 1, 0, 0, 0);
                 assert!(
                     table
                         .insert_column_statistics(
@@ -2327,18 +2255,9 @@ mod tests {
             let table = store.column_stats_map();
             let model_id = 7;
             let cluster_id = 11;
-            let first = NaiveDate::from_ymd_opt(2026, 10, 7)
-                .unwrap()
-                .and_hms_opt(0, 0, 0)
-                .unwrap();
-            let second = NaiveDate::from_ymd_opt(2026, 10, 8)
-                .unwrap()
-                .and_hms_opt(0, 0, 0)
-                .unwrap();
-            let invalid = NaiveDate::from_ymd_opt(3000, 1, 1)
-                .unwrap()
-                .and_hms_opt(0, 0, 0)
-                .unwrap();
+            let first = crate::test::utc(2026, 10, 7, 0, 0, 0);
+            let second = crate::test::utc(2026, 10, 8, 0, 0, 0);
+            let invalid = crate::test::utc(3000, 1, 1, 0, 0, 0);
 
             for time in [first, second] {
                 table
@@ -2364,7 +2283,7 @@ mod tests {
             let key = Key {
                 model_id,
                 cluster_id,
-                batch_ts: from_naive_utc(first).unwrap(),
+                batch_ts: to_nanos(first).unwrap(),
                 column_index: 0,
             };
             table.map.delete(&key.to_bytes()).unwrap();
@@ -2383,7 +2302,7 @@ mod tests {
                 .unwrap();
             assert_eq!(
                 error.to_string(),
-                from_naive_utc(invalid).unwrap_err().to_string()
+                to_nanos(invalid).unwrap_err().to_string()
             );
         }
 
@@ -2393,10 +2312,7 @@ mod tests {
             let table = store.column_stats_map();
             let model_id = 7;
             let cluster_id = 11;
-            let present = NaiveDate::from_ymd_opt(2026, 10, 7)
-                .unwrap()
-                .and_hms_opt(0, 0, 0)
-                .unwrap();
+            let present = crate::test::utc(2026, 10, 7, 0, 0, 0);
 
             table
                 .insert_column_statistics(
@@ -2406,10 +2322,7 @@ mod tests {
                 )
                 .unwrap();
             for year in [1600, 3000] {
-                let invalid = NaiveDate::from_ymd_opt(year, 1, 1)
-                    .unwrap()
-                    .and_hms_opt(0, 0, 0)
-                    .unwrap();
+                let invalid = crate::test::utc(year, 1, 1, 0, 0, 0);
                 assert!(
                     table
                         .insert_column_statistics(
@@ -2449,28 +2362,19 @@ mod tests {
 
         #[test]
         fn test_key_bytes_for_timestamp() {
-            let epoch = NaiveDate::from_ymd_opt(1970, 1, 1)
-                .unwrap()
-                .and_hms_opt(0, 0, 0)
-                .unwrap();
-            let leap_second = NaiveDate::from_ymd_opt(2000, 2, 29)
-                .unwrap()
-                .and_hms_nano_opt(12, 34, 56, 123_456_789)
-                .unwrap();
-            let pre_epoch = NaiveDate::from_ymd_opt(1969, 12, 31)
-                .unwrap()
-                .and_hms_nano_opt(23, 59, 59, 999_999_999)
-                .unwrap();
+            let epoch = crate::test::utc(1970, 1, 1, 0, 0, 0);
+            let leap_second = crate::test::utc_nano(2000, 2, 29, 12, 34, 56, 123_456_789);
+            let pre_epoch = crate::test::utc_nano(1969, 12, 31, 23, 59, 59, 999_999_999);
 
             let cases = [
                 (epoch, 0_i64),
-                (leap_second, from_naive_utc(leap_second).unwrap()),
+                (leap_second, to_nanos(leap_second).unwrap()),
                 (pre_epoch, -1_i64),
             ];
 
             for (timestamp, expected_nanos) in cases {
-                assert_eq!(from_naive_utc(timestamp).unwrap(), expected_nanos);
-                assert_eq!(from_timestamp(expected_nanos).unwrap(), timestamp);
+                assert_eq!(to_nanos(timestamp).unwrap(), expected_nanos);
+                assert_eq!(from_nanos(expected_nanos).unwrap(), timestamp);
 
                 let key = Key {
                     model_id: 7,
@@ -2497,11 +2401,8 @@ mod tests {
 
             let model_id = 42;
             let cluster_id = 99;
-            let timestamp = NaiveDate::from_ymd_opt(2000, 2, 29)
-                .unwrap()
-                .and_hms_nano_opt(12, 34, 56, 123_456_789)
-                .unwrap();
-            let expected_nanos = from_naive_utc(timestamp).unwrap();
+            let timestamp = crate::test::utc_nano(2000, 2, 29, 12, 34, 56, 123_456_789);
+            let expected_nanos = to_nanos(timestamp).unwrap();
 
             table
                 .insert_column_statistics(
@@ -2530,18 +2431,9 @@ mod tests {
 
             let model_id = 5;
             let cluster_id = 17;
-            let pre_epoch = NaiveDate::from_ymd_opt(1969, 12, 31)
-                .unwrap()
-                .and_hms_nano_opt(23, 59, 59, 999_999_999)
-                .unwrap();
-            let epoch = NaiveDate::from_ymd_opt(1970, 1, 1)
-                .unwrap()
-                .and_hms_opt(0, 0, 0)
-                .unwrap();
-            let leap_second = NaiveDate::from_ymd_opt(2000, 2, 29)
-                .unwrap()
-                .and_hms_nano_opt(12, 34, 56, 123_456_789)
-                .unwrap();
+            let pre_epoch = crate::test::utc_nano(1969, 12, 31, 23, 59, 59, 999_999_999);
+            let epoch = crate::test::utc(1970, 1, 1, 0, 0, 0);
+            let leap_second = crate::test::utc_nano(2000, 2, 29, 12, 34, 56, 123_456_789);
 
             // Insert out of chronological order to prove ordering comes from key bytes.
             for timestamp in [leap_second, pre_epoch, epoch] {
@@ -2554,9 +2446,9 @@ mod tests {
                     .unwrap();
             }
 
-            let epoch_nanos = from_naive_utc(epoch).unwrap();
-            let leap_nanos = from_naive_utc(leap_second).unwrap();
-            let pre_epoch_nanos = from_naive_utc(pre_epoch).unwrap();
+            let epoch_nanos = to_nanos(epoch).unwrap();
+            let leap_nanos = to_nanos(leap_second).unwrap();
+            let pre_epoch_nanos = to_nanos(pre_epoch).unwrap();
 
             // RocksDB orders keys by unsigned byte comparison. Big-endian `i64`
             // nanoseconds therefore sort non-negative timestamps before negative
@@ -2584,18 +2476,9 @@ mod tests {
 
             let model_id = 6;
             let cluster_id = 21;
-            let batch_a = NaiveDate::from_ymd_opt(2020, 1, 1)
-                .unwrap()
-                .and_hms_opt(0, 0, 0)
-                .unwrap();
-            let batch_b = NaiveDate::from_ymd_opt(2021, 6, 15)
-                .unwrap()
-                .and_hms_nano_opt(12, 0, 0, 500)
-                .unwrap();
-            let batch_c = NaiveDate::from_ymd_opt(2022, 12, 31)
-                .unwrap()
-                .and_hms_nano_opt(23, 59, 59, 999_999_999)
-                .unwrap();
+            let batch_a = crate::test::utc(2020, 1, 1, 0, 0, 0);
+            let batch_b = crate::test::utc_nano(2021, 6, 15, 12, 0, 0, 500);
+            let batch_c = crate::test::utc_nano(2022, 12, 31, 23, 59, 59, 999_999_999);
 
             for timestamp in [batch_c, batch_a, batch_b] {
                 table
@@ -2610,9 +2493,9 @@ mod tests {
             let forward =
                 ordered_unique_batch_ts(&table, model_id, cluster_id, Direction::Forward, None);
             let expected = vec![
-                from_naive_utc(batch_a).unwrap(),
-                from_naive_utc(batch_b).unwrap(),
-                from_naive_utc(batch_c).unwrap(),
+                to_nanos(batch_a).unwrap(),
+                to_nanos(batch_b).unwrap(),
+                to_nanos(batch_c).unwrap(),
             ];
             assert_eq!(forward, expected);
 
@@ -2636,7 +2519,7 @@ mod tests {
             // A full-key seek including `model_id` honors timestamp order.
             let mut full_seek_key = model_id.to_be_bytes().to_vec();
             full_seek_key.extend(cluster_id.to_be_bytes());
-            full_seek_key.extend(from_naive_utc(batch_b).unwrap().to_be_bytes());
+            full_seek_key.extend(to_nanos(batch_b).unwrap().to_be_bytes());
             let forward_from_b = ordered_unique_batch_ts(
                 &table,
                 model_id,
@@ -2646,10 +2529,7 @@ mod tests {
             );
             assert_eq!(
                 forward_from_b,
-                vec![
-                    from_naive_utc(batch_b).unwrap(),
-                    from_naive_utc(batch_c).unwrap()
-                ]
+                vec![to_nanos(batch_b).unwrap(), to_nanos(batch_c).unwrap()]
             );
         }
 
@@ -2660,10 +2540,7 @@ mod tests {
 
             let model_id = 3;
             let cluster_id = 8;
-            let timestamp = NaiveDate::from_ymd_opt(2000, 2, 29)
-                .unwrap()
-                .and_hms_nano_opt(12, 34, 56, 123_456_789)
-                .unwrap();
+            let timestamp = crate::test::utc_nano(2000, 2, 29, 12, 34, 56, 123_456_789);
 
             table
                 .insert_column_statistics(
@@ -2679,8 +2556,8 @@ mod tests {
             assert_eq!(stats.len(), 1);
             assert_eq!(stats[0].batch_ts, timestamp);
             assert_eq!(
-                from_naive_utc(stats[0].batch_ts).unwrap(),
-                from_naive_utc(timestamp).unwrap()
+                to_nanos(stats[0].batch_ts).unwrap(),
+                to_nanos(timestamp).unwrap()
             );
 
             let all_stats = table
@@ -2697,10 +2574,7 @@ mod tests {
 
             let model_id = 12;
             let cluster_id = 4;
-            let batch_ts = NaiveDate::from_ymd_opt(2024, 6, 15)
-                .unwrap()
-                .and_hms_nano_opt(10, 30, 45, 123_000_000)
-                .unwrap();
+            let batch_ts = crate::test::utc_nano(2024, 6, 15, 10, 30, 45, 123_000_000);
             let jiff_dt = structured::DateTime::new(2024, 6, 15, 10, 30, 45, 123_000_000).unwrap();
             let element = Element::DateTime(jiff_dt);
 

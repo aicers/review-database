@@ -30,7 +30,7 @@
 use std::{collections::BTreeSet, fmt};
 
 use anyhow::{Context, Result, anyhow, bail};
-use chrono::Utc;
+use jiff::Timestamp;
 use rocksdb::{OptimisticTransactionDB, Transaction};
 use serde::{Deserialize, Serialize};
 
@@ -352,7 +352,7 @@ impl Store {
             if let Some(instance) = &record.instance {
                 self.hold_agent_row(txn, instance)?;
             }
-            let now = Utc::now();
+            let now = Timestamp::now();
             record.created_at = now;
             record.updated_at = now;
             definitions.put(txn, &record)
@@ -409,7 +409,7 @@ impl Store {
             definition.sources.clone_from(&update.sources);
             definition.indicator.clone_from(&update.indicator);
             definition.definition.clone_from(&update.definition);
-            definition.updated_at = Utc::now();
+            definition.updated_at = Timestamp::now();
             definitions.put(txn, &definition)
         })
     }
@@ -555,7 +555,7 @@ impl Store {
             self.check_no_active_run(txn, definition.last_run)?;
             self.check_instance_idle(txn, &instance)?;
 
-            let now = Utc::now();
+            let now = Timestamp::now();
             let run = ModelRun {
                 id: runs.allocate_id(txn)?,
                 kind: RunKind::Train,
@@ -657,7 +657,7 @@ impl Store {
             self.check_instance_idle(txn, &instance)?;
             self.check_new_definition(txn, &record)?;
 
-            let now = Utc::now();
+            let now = Timestamp::now();
             let run = ModelRun {
                 id: runs.allocate_id(txn)?,
                 kind: RunKind::Clone {
@@ -721,7 +721,7 @@ impl Store {
                         &ModelRun {
                             state: RunState::Started,
                             reason: reason.map(ToString::to_string),
-                            updated_at: Utc::now(),
+                            updated_at: Timestamp::now(),
                             ..run
                         },
                     )
@@ -840,7 +840,7 @@ impl Store {
                 .into());
             }
 
-            let now = Utc::now();
+            let now = Timestamp::now();
             let owner = ModelOwner {
                 customer_id: definition.customer_id,
                 instance,
@@ -1275,7 +1275,7 @@ pub(crate) fn end_run(
         &ModelRun {
             state,
             reason: reason.map(ToString::to_string),
-            updated_at: Utc::now(),
+            updated_at: Timestamp::now(),
             ..run
         },
     )
@@ -1307,7 +1307,7 @@ pub(crate) fn fail_active_runs(
 /// Returns the stored form of a new definition, its timestamps to be set
 /// when it is written.
 fn new_record(definition: NewTrainingDefinition, cloning: bool) -> TrainingDefinition {
-    let now = Utc::now();
+    let now = Timestamp::now();
     TrainingDefinition {
         name: definition.name,
         customer_id: definition.customer_id,
@@ -1424,7 +1424,7 @@ mod tests {
             profile_draft: None,
             agents,
             external_services: Vec::new(),
-            creation_time: Utc::now(),
+            creation_time: jiff::Timestamp::now(),
         };
         store.node_map().put(&node).unwrap()
     }
@@ -1650,7 +1650,7 @@ mod tests {
     fn insert_stores_a_definition_with_no_run() {
         let f = setup();
         let store = f.store();
-        let before = Utc::now();
+        let before = jiff::Timestamp::now();
         let mut second = new_definition("b", instance(f.node, ENGINE));
         second.indicator = Some(INDICATOR.to_string());
         store.insert_training_definition(second).unwrap();
@@ -1715,7 +1715,7 @@ mod tests {
                     customer_id: CUSTOMER,
                     instance: engine.clone(),
                 },
-                Utc::now(),
+                jiff::Timestamp::now(),
                 TrainedWith {
                     run_id: 0,
                     definition: eps("1.0"),
@@ -2316,7 +2316,7 @@ mod tests {
             .unwrap();
 
         let first = store.start_training_run("d").unwrap();
-        let before = Utc::now();
+        let before = jiff::Timestamp::now();
         let replaced = store
             .complete_run(first.run.id, &engine, body("d"))
             .unwrap();

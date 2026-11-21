@@ -1,5 +1,5 @@
 #![allow(deprecated)]
-use chrono::NaiveDateTime;
+use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
 use crate::types::Cluster;
@@ -29,7 +29,7 @@ struct ClusterDbSchema {
     signature: String,
     size: i64,
     score: Option<f64>,
-    last_modification_time: Option<NaiveDateTime>,
+    last_modification_time: Option<Timestamp>,
     model_id: u32,
 }
 

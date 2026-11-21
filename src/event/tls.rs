@@ -4,10 +4,10 @@ use attrievent::attribute::{RawEventAttrKind, TlsAttr};
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
-use super::timestamp;
 use super::{EventCategory, LearningMethod, ThreatLevel, TriageScore, common::Match};
 use crate::TriageExclusion;
 use crate::event::common::{AttrValue, triage_scores_to_string, vector_to_string};
+use crate::timestamp;
 
 macro_rules! find_tls_attr_by_kind {
     ($event: expr, $raw_event_attr: expr) => {{
@@ -678,13 +678,10 @@ impl Match for SuspiciousTlsTraffic {
 mod tests {
     use std::net::{IpAddr, Ipv4Addr};
 
-    use chrono::{TimeZone, Utc};
-
     use super::{
         BlocklistTls, BlocklistTlsFields, BlocklistTlsFieldsStored, Match, SuspiciousTlsTraffic,
     };
     use crate::event::EventCategory;
-    use crate::event::timestamp;
     use crate::tables::{ExclusionReason, TriageExclusion};
     use crate::types::HostNetworkGroup;
 
@@ -696,11 +693,7 @@ mod tests {
             resp_addr: IpAddr::V4(Ipv4Addr::new(198, 51, 100, 1)),
             resp_port: 443,
             proto: 6,
-            start_time: Utc
-                .with_ymd_and_hms(2023, 1, 1, 12, 0, 0)
-                .unwrap()
-                .timestamp_nanos_opt()
-                .unwrap(),
+            start_time: crate::test::utc_nanos(2023, 1, 1, 12, 0, 0),
             duration: 1_000_000_000,
             orig_pkts: 10,
             resp_pkts: 15,
@@ -756,8 +749,7 @@ mod tests {
 
     #[test]
     fn blocklist_tls_exclusion_matches_ip_address() {
-        let time = timestamp::from_chrono(Utc.with_ymd_and_hms(2023, 1, 1, 12, 0, 0).unwrap())
-            .expect(timestamp::I64_NANOS_JIFF_INVARIANT);
+        let time = crate::test::utc(2023, 1, 1, 12, 0, 0);
         let event = BlocklistTls::new(time, tls_fields("internal-cert.example.com"));
 
         assert!(event.matched_any_exclusion(&[ip_exclusion("192.168.1.100")]));
@@ -767,8 +759,7 @@ mod tests {
 
     #[test]
     fn blocklist_tls_exclusion_matches_domain_via_server_name() {
-        let time = timestamp::from_chrono(Utc.with_ymd_and_hms(2023, 1, 1, 12, 0, 0).unwrap())
-            .expect(timestamp::I64_NANOS_JIFF_INVARIANT);
+        let time = crate::test::utc(2023, 1, 1, 12, 0, 0);
         let event = BlocklistTls::new(time, tls_fields("internal-cert.example.com"));
 
         // Subdomain match: "example.com" matches "internal-cert.example.com".
@@ -781,8 +772,7 @@ mod tests {
 
     #[test]
     fn blocklist_tls_exclusion_matches_hostname_exact() {
-        let time = timestamp::from_chrono(Utc.with_ymd_and_hms(2023, 1, 1, 12, 0, 0).unwrap())
-            .expect(timestamp::I64_NANOS_JIFF_INVARIANT);
+        let time = crate::test::utc(2023, 1, 1, 12, 0, 0);
         let event = BlocklistTls::new(time, tls_fields("internal-cert.example.com"));
 
         assert!(event.matched_any_exclusion(&[hostname_exclusion("internal-cert.example.com")]));
@@ -793,8 +783,7 @@ mod tests {
 
     #[test]
     fn blocklist_tls_exclusion_does_not_match_uri() {
-        let time = timestamp::from_chrono(Utc.with_ymd_and_hms(2023, 1, 1, 12, 0, 0).unwrap())
-            .expect(timestamp::I64_NANOS_JIFF_INVARIANT);
+        let time = crate::test::utc(2023, 1, 1, 12, 0, 0);
         let event = BlocklistTls::new(time, tls_fields("internal-cert.example.com"));
 
         assert!(!event.matched_any_exclusion(&[uri_exclusion("/anything")]));
@@ -803,8 +792,7 @@ mod tests {
 
     #[test]
     fn blocklist_tls_exclusion_does_not_match_empty() {
-        let time = timestamp::from_chrono(Utc.with_ymd_and_hms(2023, 1, 1, 12, 0, 0).unwrap())
-            .expect(timestamp::I64_NANOS_JIFF_INVARIANT);
+        let time = crate::test::utc(2023, 1, 1, 12, 0, 0);
         let event = BlocklistTls::new(time, tls_fields("internal-cert.example.com"));
 
         assert!(!event.matched_any_exclusion(&[]));
@@ -812,8 +800,7 @@ mod tests {
 
     #[test]
     fn suspicious_tls_traffic_exclusion_matches_ip_address() {
-        let time = timestamp::from_chrono(Utc.with_ymd_and_hms(2023, 1, 1, 12, 0, 0).unwrap())
-            .expect(timestamp::I64_NANOS_JIFF_INVARIANT);
+        let time = crate::test::utc(2023, 1, 1, 12, 0, 0);
         let event = SuspiciousTlsTraffic::new(time, tls_fields("internal-cert.example.com"));
 
         assert!(event.matched_any_exclusion(&[ip_exclusion("192.168.1.100")]));
@@ -823,8 +810,7 @@ mod tests {
 
     #[test]
     fn suspicious_tls_traffic_exclusion_matches_domain_via_server_name() {
-        let time = timestamp::from_chrono(Utc.with_ymd_and_hms(2023, 1, 1, 12, 0, 0).unwrap())
-            .expect(timestamp::I64_NANOS_JIFF_INVARIANT);
+        let time = crate::test::utc(2023, 1, 1, 12, 0, 0);
         let event = SuspiciousTlsTraffic::new(time, tls_fields("internal-cert.example.com"));
 
         // Subdomain match: "example.com" matches "internal-cert.example.com".
@@ -837,8 +823,7 @@ mod tests {
 
     #[test]
     fn suspicious_tls_traffic_exclusion_matches_hostname_exact() {
-        let time = timestamp::from_chrono(Utc.with_ymd_and_hms(2023, 1, 1, 12, 0, 0).unwrap())
-            .expect(timestamp::I64_NANOS_JIFF_INVARIANT);
+        let time = crate::test::utc(2023, 1, 1, 12, 0, 0);
         let event = SuspiciousTlsTraffic::new(time, tls_fields("internal-cert.example.com"));
 
         assert!(event.matched_any_exclusion(&[hostname_exclusion("internal-cert.example.com")]));
@@ -849,8 +834,7 @@ mod tests {
 
     #[test]
     fn suspicious_tls_traffic_exclusion_does_not_match_uri() {
-        let time = timestamp::from_chrono(Utc.with_ymd_and_hms(2023, 1, 1, 12, 0, 0).unwrap())
-            .expect(timestamp::I64_NANOS_JIFF_INVARIANT);
+        let time = crate::test::utc(2023, 1, 1, 12, 0, 0);
         let event = SuspiciousTlsTraffic::new(time, tls_fields("internal-cert.example.com"));
 
         assert!(!event.matched_any_exclusion(&[uri_exclusion("/anything")]));
@@ -859,8 +843,7 @@ mod tests {
 
     #[test]
     fn suspicious_tls_traffic_exclusion_does_not_match_empty() {
-        let time = timestamp::from_chrono(Utc.with_ymd_and_hms(2023, 1, 1, 12, 0, 0).unwrap())
-            .expect(timestamp::I64_NANOS_JIFF_INVARIANT);
+        let time = crate::test::utc(2023, 1, 1, 12, 0, 0);
         let event = SuspiciousTlsTraffic::new(time, tls_fields("internal-cert.example.com"));
 
         assert!(!event.matched_any_exclusion(&[]));

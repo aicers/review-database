@@ -2,7 +2,7 @@
 //! Engine model is trained from, keyed by its name, which models share.
 
 use anyhow::{Context, Result};
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 use rocksdb::{IteratorMode, OptimisticTransactionDB, Transaction};
 use serde::{Deserialize, Serialize};
 
@@ -44,10 +44,12 @@ pub struct TrainingDefinition {
     pub cloning: bool,
     /// The last run of the definition.
     pub last_run: Option<RunId>,
-    pub created_at: DateTime<Utc>,
+    #[serde(with = "crate::timestamp::ts_nanoseconds_saturating")]
+    pub created_at: Timestamp,
     /// When the definition was last changed by
     /// [`Store::update_training_definition`](crate::Store::update_training_definition).
-    pub updated_at: DateTime<Utc>,
+    #[serde(with = "crate::timestamp::ts_nanoseconds_saturating")]
+    pub updated_at: Timestamp,
 }
 
 /// A training definition to create.

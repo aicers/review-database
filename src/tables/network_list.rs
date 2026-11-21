@@ -7,7 +7,7 @@
 use std::collections::HashSet;
 
 use anyhow::{Context, Result, anyhow, bail};
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 use rocksdb::{IteratorMode, OptimisticTransactionDB, Transaction};
 use serde::{Deserialize, Serialize};
 
@@ -23,7 +23,8 @@ pub struct NetworkListSet {
     pub allowlist: Vec<NetworkListEntry>,
     pub blocklist: Vec<NetworkListEntry>,
     /// When the set was last written.
-    pub updated_at: DateTime<Utc>,
+    #[serde(with = "crate::timestamp::ts_nanoseconds_saturating")]
+    pub updated_at: Timestamp,
 }
 
 impl NetworkListSet {
@@ -123,7 +124,7 @@ impl<'d> NetworkListTable<'d> {
             revision,
             allowlist,
             blocklist,
-            updated_at: Utc::now(),
+            updated_at: Timestamp::now(),
         };
         let value = super::serialize(&set).context("failed to serialize network lists")?;
         loop {
@@ -307,14 +308,14 @@ mod tests {
             entry("edge", "192.168.0.0/24"),
         ];
         let blocklist = vec![entry("attacker", "203.0.113.0/24")];
-        let before = Utc::now();
+        let before = jiff::Timestamp::now();
         assert_eq!(
             table
                 .replace(7, 3, allowlist.clone(), blocklist.clone())
                 .unwrap(),
             written(None)
         );
-        let after = Utc::now();
+        let after = jiff::Timestamp::now();
 
         let stored = table.get(7).unwrap().unwrap();
         assert_eq!(stored.revision, 3);
@@ -620,7 +621,7 @@ mod tests {
             revision: 1,
             allowlist: Vec::new(),
             blocklist: Vec::new(),
-            updated_at: Utc::now(),
+            updated_at: jiff::Timestamp::now(),
         })
         .unwrap();
         let txn = table.map.db.transaction();
@@ -730,7 +731,7 @@ mod tests {
                     ),
                 },
             ],
-            updated_at: Utc::now(),
+            updated_at: jiff::Timestamp::now(),
         };
 
         let allowlist = set.merged_allowlist();

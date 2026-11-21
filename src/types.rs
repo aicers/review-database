@@ -2,7 +2,6 @@
 use std::{cmp::Ordering, net::IpAddr, ops::RangeInclusive};
 
 use anyhow::Result;
-use chrono::{NaiveDateTime, naive::serde::ts_nanoseconds_option};
 use ipnet::IpNet;
 use num_derive::{FromPrimitive, ToPrimitive};
 use serde::{Deserialize, Serialize};
@@ -124,8 +123,8 @@ pub struct Cluster {
     pub signature: String,
     pub size: i64,
     pub score: Option<f64>,
-    #[serde(with = "ts_nanoseconds_option")]
-    pub last_modification_time: Option<NaiveDateTime>,
+    #[serde(with = "crate::timestamp::ts_nanoseconds_saturating_option")]
+    pub last_modification_time: Option<jiff::Timestamp>,
     pub model_id: u32,
 }
 

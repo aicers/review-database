@@ -98,7 +98,7 @@ impl ClassifierFileManager {
         create_dir_durably(&model_dir, &classifiers_dir)?;
 
         let file_path = self.create_classifier_path(model_id, generation);
-        let timestamp = chrono::Utc::now().timestamp_millis();
+        let timestamp = jiff::Timestamp::now().as_millisecond();
         let temp_path = file_path.with_extension(timestamp.to_string());
 
         // Write to temporary file first. The mode is requested here because

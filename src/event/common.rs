@@ -591,12 +591,9 @@ pub(crate) mod tests {
         ConnAttr, DhcpAttr, DnsAttr, FtpAttr, HttpAttr, RadiusAttr, RawEventKind,
     };
     use bincode::Options;
-    use chrono::{DateTime, TimeZone, Utc};
-    use jiff::Timestamp;
     use serde::Serialize;
 
     use super::{AttrValue, Match, is_attr_matched};
-    use crate::event::timestamp;
     use crate::{
         AttrCmpKind, EventCategory, HostNetworkGroup, PacketAttr, ValueKind,
         event::{
@@ -645,7 +642,7 @@ pub(crate) mod tests {
 
     #[test]
     fn learning_method_match_on_semi_supervised_events() {
-        let time = stored_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap());
+        let time = crate::test::utc(1970, 1, 1, 0, 1, 1);
         let mut semi_supervised_events = Vec::new();
 
         let dns_event = Event::DnsCovertChannel(DnsCovertChannel::new(time, dns_event_fields()));
@@ -845,7 +842,7 @@ pub(crate) mod tests {
         let mut unsupervised_events = Vec::new();
 
         let http_threat_event = Event::HttpThreat(HttpThreat::new(
-            stored_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap()),
+            crate::test::utc(1970, 1, 1, 0, 1, 1),
             http_threat_fields(),
         ));
         unsupervised_events.push(http_threat_event);
@@ -891,7 +888,7 @@ pub(crate) mod tests {
 
     #[test]
     fn filter_events_by_address() {
-        let time = stored_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap());
+        let time = crate::test::utc(1970, 1, 1, 0, 1, 1);
         let mut single_address_events = Vec::new();
 
         let dns_event = Event::DnsCovertChannel(DnsCovertChannel::new(time, dns_event_fields()));
@@ -1365,7 +1362,7 @@ pub(crate) mod tests {
 
     #[test]
     fn address_aggregation_vector_round_trips_and_deduplicates() {
-        let time = stored_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap());
+        let time = crate::test::utc(1970, 1, 1, 0, 1, 1);
         let a = "127.0.0.1".parse().unwrap();
         let b = "127.0.1.2".parse().unwrap();
         let c = "127.0.1.3".parse().unwrap();
@@ -1420,7 +1417,7 @@ pub(crate) mod tests {
 
     #[test]
     fn address_aggregation_matching_filters_keep_all_vector_endpoints() {
-        let time = stored_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap());
+        let time = crate::test::utc(1970, 1, 1, 0, 1, 1);
         let a = "127.0.0.1".parse().unwrap();
         let b = "127.0.1.2".parse().unwrap();
         let c = "127.0.1.3".parse().unwrap();
@@ -1489,7 +1486,7 @@ pub(crate) mod tests {
     fn network_aggregation_counts_fixed_ids_once_per_event() {
         use std::collections::HashMap;
 
-        let time = stored_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap());
+        let time = crate::test::utc(1970, 1, 1, 0, 1, 1);
         let mut networks = Vec::new();
         for (id, cidr) in [
             (7, "127.0.0.0/24"),
@@ -1531,7 +1528,7 @@ pub(crate) mod tests {
 
     #[test]
     fn address_aggregation_empty_vectors_keep_surviving_side_without_pairs() {
-        let time = stored_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap());
+        let time = crate::test::utc(1970, 1, 1, 0, 1, 1);
         let a = "127.0.0.1".parse().unwrap();
         let mut rdp = rdp_brute_force_fields();
         rdp.orig_addr = a;
@@ -1567,7 +1564,7 @@ pub(crate) mod tests {
     fn address_aggregation_counts_stored_unspecified_address() {
         use std::collections::HashMap;
 
-        let time = stored_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap());
+        let time = crate::test::utc(1970, 1, 1, 0, 1, 1);
         let addr = IpAddr::V4(Ipv4Addr::UNSPECIFIED);
         let mut fields = dns_event_fields();
         fields.orig_addr = addr;
@@ -1608,7 +1605,7 @@ pub(crate) mod tests {
     }
 
     fn dns_event_from(sensor: &str, orig_addr: IpAddr, resp_addr: IpAddr) -> Event {
-        let time = stored_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap());
+        let time = crate::test::utc(1970, 1, 1, 0, 1, 1);
         let mut fields = dns_event_fields();
         fields.sensor = sensor.to_string();
         fields.orig_addr = orig_addr;
@@ -1732,7 +1729,7 @@ pub(crate) mod tests {
 
     #[test]
     fn directions_per_sensor_keeps_any_address_semantics() {
-        let time = stored_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap());
+        let time = crate::test::utc(1970, 1, 1, 0, 1, 1);
         // Responders 127.0.0.2 and 127.0.0.3; only the second is internal.
         let mut fields = multi_host_port_scan_fields();
         fields.sensor = "sensor-a".to_string();
@@ -1749,7 +1746,7 @@ pub(crate) mod tests {
 
     #[test]
     fn address_aggregation_single_endpoints_and_empty_events() {
-        let time = stored_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap());
+        let time = crate::test::utc(1970, 1, 1, 0, 1, 1);
         let a = "127.0.0.1".parse().unwrap();
         for b in [
             a,
@@ -1801,7 +1798,7 @@ pub(crate) mod tests {
 
     #[test]
     fn compare_attribute() {
-        let time = stored_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap());
+        let time = crate::test::utc(1970, 1, 1, 0, 1, 1);
 
         // Compare `Addr`, `String`, `UInt`, `VecString` type
         let http_event = DomainGenerationAlgorithm::new(time, dga_fields());
@@ -2116,7 +2113,7 @@ pub(crate) mod tests {
 
     #[test]
     fn compare_attribute_new_protocols() {
-        let time = stored_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap());
+        let time = crate::test::utc(1970, 1, 1, 0, 1, 1);
 
         // 1. Radius
         let radius_event = BlocklistRadius::new(time, blocklist_radius_fields());
@@ -2234,11 +2231,7 @@ pub(crate) mod tests {
             resp_port: 67,
             resp_country_code: crate::util::COUNTRY_CODE_UNRESOLVED,
             proto: 17,
-            start_time: Utc
-                .with_ymd_and_hms(1970, 1, 1, 0, 0, 0)
-                .unwrap()
-                .timestamp_nanos_opt()
-                .unwrap(),
+            start_time: crate::test::utc_nanos(1970, 1, 1, 0, 0, 0),
             duration: 0,
             orig_pkts: 0,
             resp_pkts: 0,
@@ -2271,11 +2264,7 @@ pub(crate) mod tests {
             resp_country_code: crate::util::COUNTRY_CODE_UNRESOLVED,
             proto: 6,
             conn_state: "SAF".to_string(),
-            start_time: Utc
-                .with_ymd_and_hms(1970, 1, 1, 0, 0, 0)
-                .unwrap()
-                .timestamp_nanos_opt()
-                .unwrap(),
+            start_time: crate::test::utc_nanos(1970, 1, 1, 0, 0, 0),
             duration: 0,
             service: "http".to_string(),
             orig_bytes: 100,
@@ -2299,11 +2288,7 @@ pub(crate) mod tests {
             resp_port: 135,
             resp_country_code: crate::util::COUNTRY_CODE_UNRESOLVED,
             proto: 6,
-            start_time: Utc
-                .with_ymd_and_hms(1970, 1, 1, 0, 0, 0)
-                .unwrap()
-                .timestamp_nanos_opt()
-                .unwrap(),
+            start_time: crate::test::utc_nanos(1970, 1, 1, 0, 0, 0),
             duration: 0,
             orig_pkts: 0,
             resp_pkts: 0,
@@ -2326,11 +2311,7 @@ pub(crate) mod tests {
             resp_port: 67,
             resp_country_code: crate::util::COUNTRY_CODE_UNRESOLVED,
             proto: 17,
-            start_time: Utc
-                .with_ymd_and_hms(1970, 1, 1, 0, 0, 0)
-                .unwrap()
-                .timestamp_nanos_opt()
-                .unwrap(),
+            start_time: crate::test::utc_nanos(1970, 1, 1, 0, 0, 0),
 
             duration: 0,
             orig_pkts: 0,
@@ -2371,11 +2352,7 @@ pub(crate) mod tests {
             resp_port: 53,
             resp_country_code: crate::util::COUNTRY_CODE_UNRESOLVED,
             proto: 17,
-            start_time: Utc
-                .with_ymd_and_hms(1970, 1, 1, 0, 0, 0)
-                .unwrap()
-                .timestamp_nanos_opt()
-                .unwrap(),
+            start_time: crate::test::utc_nanos(1970, 1, 1, 0, 0, 0),
             duration: 0,
             orig_pkts: 0,
             resp_pkts: 0,
@@ -2408,11 +2385,7 @@ pub(crate) mod tests {
             resp_port: 80,
             resp_country_code: crate::util::COUNTRY_CODE_UNRESOLVED,
             proto: 6,
-            start_time: Utc
-                .with_ymd_and_hms(1970, 1, 1, 0, 0, 0)
-                .unwrap()
-                .timestamp_nanos_opt()
-                .unwrap(),
+            start_time: crate::test::utc_nanos(1970, 1, 1, 0, 0, 0),
             duration: 0,
             orig_pkts: 0,
             resp_pkts: 0,
@@ -2453,11 +2426,7 @@ pub(crate) mod tests {
             resp_port: 88,
             resp_country_code: crate::util::COUNTRY_CODE_UNRESOLVED,
             proto: 17,
-            start_time: Utc
-                .with_ymd_and_hms(1970, 1, 1, 0, 0, 0)
-                .unwrap()
-                .timestamp_nanos_opt()
-                .unwrap(),
+            start_time: crate::test::utc_nanos(1970, 1, 1, 0, 0, 0),
             duration: 0,
             orig_pkts: 0,
             resp_pkts: 0,
@@ -2487,11 +2456,7 @@ pub(crate) mod tests {
             resp_port: 1883,
             resp_country_code: crate::util::COUNTRY_CODE_UNRESOLVED,
             proto: 6,
-            start_time: Utc
-                .with_ymd_and_hms(1970, 1, 1, 0, 0, 0)
-                .unwrap()
-                .timestamp_nanos_opt()
-                .unwrap(),
+            start_time: crate::test::utc_nanos(1970, 1, 1, 0, 0, 0),
             duration: 0,
             orig_pkts: 0,
             resp_pkts: 0,
@@ -2518,11 +2483,7 @@ pub(crate) mod tests {
             resp_port: 2049,
             resp_country_code: crate::util::COUNTRY_CODE_UNRESOLVED,
             proto: 6,
-            start_time: Utc
-                .with_ymd_and_hms(1970, 1, 1, 0, 0, 0)
-                .unwrap()
-                .timestamp_nanos_opt()
-                .unwrap(),
+            start_time: crate::test::utc_nanos(1970, 1, 1, 0, 0, 0),
             duration: 0,
             orig_pkts: 0,
             resp_pkts: 0,
@@ -2545,11 +2506,7 @@ pub(crate) mod tests {
             resp_port: 445,
             resp_country_code: crate::util::COUNTRY_CODE_UNRESOLVED,
             proto: 6,
-            start_time: Utc
-                .with_ymd_and_hms(1970, 1, 1, 0, 0, 0)
-                .unwrap()
-                .timestamp_nanos_opt()
-                .unwrap(),
+            start_time: crate::test::utc_nanos(1970, 1, 1, 0, 0, 0),
             duration: 0,
             orig_pkts: 0,
             resp_pkts: 0,
@@ -2575,11 +2532,7 @@ pub(crate) mod tests {
             resp_port: 3389,
             resp_country_code: crate::util::COUNTRY_CODE_UNRESOLVED,
             proto: 6,
-            start_time: Utc
-                .with_ymd_and_hms(1970, 1, 1, 0, 0, 0)
-                .unwrap()
-                .timestamp_nanos_opt()
-                .unwrap(),
+            start_time: crate::test::utc_nanos(1970, 1, 1, 0, 0, 0),
             duration: 0,
             orig_pkts: 0,
             resp_pkts: 0,
@@ -2601,11 +2554,7 @@ pub(crate) mod tests {
             resp_port: 445,
             resp_country_code: crate::util::COUNTRY_CODE_UNRESOLVED,
             proto: 6,
-            start_time: Utc
-                .with_ymd_and_hms(1970, 1, 1, 0, 0, 0)
-                .unwrap()
-                .timestamp_nanos_opt()
-                .unwrap(),
+            start_time: crate::test::utc_nanos(1970, 1, 1, 0, 0, 0),
             duration: 0,
             orig_pkts: 0,
             resp_pkts: 0,
@@ -2637,11 +2586,7 @@ pub(crate) mod tests {
             resp_port: 25,
             resp_country_code: crate::util::COUNTRY_CODE_UNRESOLVED,
             proto: 6,
-            start_time: Utc
-                .with_ymd_and_hms(1970, 1, 1, 0, 0, 0)
-                .unwrap()
-                .timestamp_nanos_opt()
-                .unwrap(),
+            start_time: crate::test::utc_nanos(1970, 1, 1, 0, 0, 0),
             duration: 0,
             orig_pkts: 0,
             resp_pkts: 0,
@@ -2669,11 +2614,7 @@ pub(crate) mod tests {
             resp_port: 22,
             resp_country_code: crate::util::COUNTRY_CODE_UNRESOLVED,
             proto: 6,
-            start_time: Utc
-                .with_ymd_and_hms(1970, 1, 1, 0, 0, 0)
-                .unwrap()
-                .timestamp_nanos_opt()
-                .unwrap(),
+            start_time: crate::test::utc_nanos(1970, 1, 1, 0, 0, 0),
             duration: 0,
             orig_pkts: 0,
             resp_pkts: 0,
@@ -2707,11 +2648,7 @@ pub(crate) mod tests {
             resp_port: 443,
             resp_country_code: crate::util::COUNTRY_CODE_UNRESOLVED,
             proto: 6,
-            start_time: Utc
-                .with_ymd_and_hms(1970, 1, 1, 0, 0, 0)
-                .unwrap()
-                .timestamp_nanos_opt()
-                .unwrap(),
+            start_time: crate::test::utc_nanos(1970, 1, 1, 0, 0, 0),
             duration: 0,
             orig_pkts: 0,
             resp_pkts: 0,
@@ -2753,11 +2690,7 @@ pub(crate) mod tests {
             resp_port: 389,
             resp_country_code: crate::util::COUNTRY_CODE_UNRESOLVED,
             proto: 6,
-            start_time: Utc
-                .with_ymd_and_hms(1970, 1, 1, 0, 1, 1)
-                .unwrap()
-                .timestamp_nanos_opt()
-                .unwrap(),
+            start_time: crate::test::utc_nanos(1970, 1, 1, 0, 1, 1),
             duration: 0,
             orig_pkts: 0,
             resp_pkts: 0,
@@ -2800,11 +2733,7 @@ pub(crate) mod tests {
             resp_port: 21,
             resp_country_code: crate::util::COUNTRY_CODE_UNRESOLVED,
             proto: 6,
-            start_time: Utc
-                .with_ymd_and_hms(1970, 1, 1, 0, 1, 1)
-                .unwrap()
-                .timestamp_nanos_opt()
-                .unwrap(),
+            start_time: crate::test::utc_nanos(1970, 1, 1, 0, 1, 1),
             duration: 0,
             orig_pkts: 0,
             resp_pkts: 0,
@@ -2826,16 +2755,8 @@ pub(crate) mod tests {
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
             resp_ports: vec![80, 443, 8000, 8080, 8888, 8443, 9000, 9001, 9002],
             resp_country_code: crate::util::COUNTRY_CODE_UNRESOLVED,
-            first_event_start_time: Utc
-                .with_ymd_and_hms(1970, 1, 1, 0, 1, 1)
-                .unwrap()
-                .timestamp_nanos_opt()
-                .unwrap(),
-            last_event_start_time: Utc
-                .with_ymd_and_hms(1970, 1, 1, 0, 1, 2)
-                .unwrap()
-                .timestamp_nanos_opt()
-                .unwrap(),
+            first_event_start_time: crate::test::utc_nanos(1970, 1, 1, 0, 1, 1),
+            last_event_start_time: crate::test::utc_nanos(1970, 1, 1, 0, 1, 2),
             proto: 6,
             confidence: 0.3,
             category: Some(EventCategory::Reconnaissance),
@@ -2853,16 +2774,8 @@ pub(crate) mod tests {
             ],
             resp_port: 80,
             resp_country_codes: vec![crate::util::COUNTRY_CODE_UNRESOLVED; 2],
-            first_event_start_time: Utc
-                .with_ymd_and_hms(1970, 1, 1, 0, 1, 1)
-                .unwrap()
-                .timestamp_nanos_opt()
-                .unwrap(),
-            last_event_start_time: Utc
-                .with_ymd_and_hms(1970, 1, 1, 0, 1, 2)
-                .unwrap()
-                .timestamp_nanos_opt()
-                .unwrap(),
+            first_event_start_time: crate::test::utc_nanos(1970, 1, 1, 0, 1, 1),
+            last_event_start_time: crate::test::utc_nanos(1970, 1, 1, 0, 1, 2),
             proto: 6,
             confidence: 0.3,
             category: Some(EventCategory::Reconnaissance),
@@ -2879,16 +2792,8 @@ pub(crate) mod tests {
             orig_country_codes: vec![crate::util::COUNTRY_CODE_UNRESOLVED; 2],
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
             resp_country_code: crate::util::COUNTRY_CODE_UNRESOLVED,
-            first_event_start_time: Utc
-                .with_ymd_and_hms(1970, 1, 1, 0, 1, 1)
-                .unwrap()
-                .timestamp_nanos_opt()
-                .unwrap(),
-            last_event_start_time: Utc
-                .with_ymd_and_hms(1970, 1, 1, 0, 1, 2)
-                .unwrap()
-                .timestamp_nanos_opt()
-                .unwrap(),
+            first_event_start_time: crate::test::utc_nanos(1970, 1, 1, 0, 1, 1),
+            last_event_start_time: crate::test::utc_nanos(1970, 1, 1, 0, 1, 2),
             proto: 6,
             confidence: 0.3,
             category: Some(EventCategory::Impact),
@@ -2905,11 +2810,7 @@ pub(crate) mod tests {
             resp_port: 53,
             resp_country_code: crate::util::COUNTRY_CODE_UNRESOLVED,
             proto: 17,
-            start_time: Utc
-                .with_ymd_and_hms(1970, 1, 1, 0, 1, 1)
-                .unwrap()
-                .timestamp_nanos_opt()
-                .unwrap(),
+            start_time: crate::test::utc_nanos(1970, 1, 1, 0, 1, 1),
             duration: 0,
             orig_pkts: 0,
             resp_pkts: 0,
@@ -2943,16 +2844,8 @@ pub(crate) mod tests {
             resp_country_code: crate::util::COUNTRY_CODE_UNRESOLVED,
             proto: 6,
             user_list: vec!["user1".to_string(), "user_2".to_string()],
-            first_event_start_time: Utc
-                .with_ymd_and_hms(1970, 1, 1, 0, 1, 1)
-                .unwrap()
-                .timestamp_nanos_opt()
-                .unwrap(),
-            last_event_start_time: Utc
-                .with_ymd_and_hms(1970, 1, 1, 0, 1, 2)
-                .unwrap()
-                .timestamp_nanos_opt()
-                .unwrap(),
+            first_event_start_time: crate::test::utc_nanos(1970, 1, 1, 0, 1, 1),
+            last_event_start_time: crate::test::utc_nanos(1970, 1, 1, 0, 1, 2),
             is_internal: true,
             confidence: 0.3,
             category: Some(EventCategory::CredentialAccess),
@@ -2960,7 +2853,7 @@ pub(crate) mod tests {
     }
 
     fn repeated_http_sessions_fiedls() -> RepeatedHttpSessionsFieldsStored {
-        let now = chrono::Utc::now().timestamp_nanos_opt().unwrap();
+        let now = crate::timestamp::to_i64_nanos(jiff::Timestamp::now()).unwrap();
         RepeatedHttpSessionsFieldsStored {
             sensor: "sensor".to_string(),
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
@@ -2987,11 +2880,7 @@ pub(crate) mod tests {
             resp_port: 80,
             resp_country_code: crate::util::COUNTRY_CODE_UNRESOLVED,
             proto: 6,
-            start_time: Utc
-                .with_ymd_and_hms(1970, 1, 1, 0, 0, 0)
-                .unwrap()
-                .timestamp_nanos_opt()
-                .unwrap(),
+            start_time: crate::test::utc_nanos(1970, 1, 1, 0, 0, 0),
             duration: 0,
             orig_pkts: 0,
             resp_pkts: 0,
@@ -3032,11 +2921,7 @@ pub(crate) mod tests {
             resp_port: 80,
             resp_country_code: crate::util::COUNTRY_CODE_UNRESOLVED,
             proto: 6,
-            start_time: Utc
-                .with_ymd_and_hms(1970, 1, 1, 0, 1, 1)
-                .unwrap()
-                .timestamp_nanos_opt()
-                .unwrap(),
+            start_time: crate::test::utc_nanos(1970, 1, 1, 0, 1, 1),
             duration: 0,
             orig_pkts: 0,
             resp_pkts: 0,
@@ -3080,16 +2965,8 @@ pub(crate) mod tests {
                 ("user1".to_string(), "pw1".to_string()),
                 ("user_2".to_string(), "pw2".to_string()),
             ],
-            first_event_start_time: Utc
-                .with_ymd_and_hms(1970, 1, 1, 0, 1, 1)
-                .unwrap()
-                .timestamp_nanos_opt()
-                .unwrap(),
-            last_event_start_time: Utc
-                .with_ymd_and_hms(1970, 1, 1, 0, 1, 2)
-                .unwrap()
-                .timestamp_nanos_opt()
-                .unwrap(),
+            first_event_start_time: crate::test::utc_nanos(1970, 1, 1, 0, 1, 1),
+            last_event_start_time: crate::test::utc_nanos(1970, 1, 1, 0, 1, 2),
             confidence: 0.3,
             category: Some(EventCategory::CredentialAccess),
         }
@@ -3105,16 +2982,8 @@ pub(crate) mod tests {
                 IpAddr::V4(Ipv4Addr::new(127, 0, 0, 3)),
             ],
             resp_country_codes: vec![crate::util::COUNTRY_CODE_UNRESOLVED; 2],
-            first_event_start_time: Utc
-                .with_ymd_and_hms(1970, 1, 1, 0, 1, 1)
-                .unwrap()
-                .timestamp_nanos_opt()
-                .unwrap(),
-            last_event_start_time: Utc
-                .with_ymd_and_hms(1970, 1, 1, 0, 10, 2)
-                .unwrap()
-                .timestamp_nanos_opt()
-                .unwrap(),
+            first_event_start_time: crate::test::utc_nanos(1970, 1, 1, 0, 1, 1),
+            last_event_start_time: crate::test::utc_nanos(1970, 1, 1, 0, 10, 2),
             proto: 6,
             confidence: 0.3,
             category: Some(EventCategory::Discovery),
@@ -3131,11 +3000,7 @@ pub(crate) mod tests {
             resp_port: 53,
             resp_country_code: crate::util::COUNTRY_CODE_UNRESOLVED,
             proto: 17,
-            start_time: Utc
-                .with_ymd_and_hms(1970, 1, 1, 0, 1, 1)
-                .unwrap()
-                .timestamp_nanos_opt()
-                .unwrap(),
+            start_time: crate::test::utc_nanos(1970, 1, 1, 0, 1, 1),
             duration: 0,
             orig_pkts: 0,
             resp_pkts: 0,
@@ -3160,7 +3025,7 @@ pub(crate) mod tests {
 
     fn network_threat() -> NetworkThreat {
         NetworkThreat {
-            time: stored_time(Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap()),
+            time: crate::test::utc(1970, 1, 1, 1, 1, 1),
             sensor: "sensor".to_string(),
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             orig_port: 10000,
@@ -3170,7 +3035,7 @@ pub(crate) mod tests {
             resp_country_code: crate::util::COUNTRY_CODE_UNRESOLVED,
             proto: 6,
             service: "http".to_string(),
-            start_time: stored_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 0, 0).unwrap()),
+            start_time: crate::test::utc(1970, 1, 1, 0, 0, 0),
             duration: 100,
             orig_pkts: 10,
             resp_pkts: 20,
@@ -3190,7 +3055,7 @@ pub(crate) mod tests {
 
     fn extra_threat() -> ExtraThreat {
         ExtraThreat {
-            time: stored_time(Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap()),
+            time: crate::test::utc(1970, 1, 1, 1, 1, 1),
             sensor: "sensor".to_string(),
             service: "service".to_string(),
             content: "content".to_string(),
@@ -3207,7 +3072,7 @@ pub(crate) mod tests {
 
     fn windows_threat() -> WindowsThreat {
         WindowsThreat {
-            time: stored_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap()),
+            time: crate::test::utc(1970, 1, 1, 0, 1, 1),
             sensor: "sensor".to_string(),
             service: "notepad".to_string(),
             agent_name: "win64".to_string(),
@@ -3228,13 +3093,9 @@ pub(crate) mod tests {
         }
     }
 
-    fn stored_time(time: DateTime<Utc>) -> Timestamp {
-        timestamp::from_chrono(time).expect("test stored timestamp must fit i64 nanoseconds")
-    }
-
     fn extra_threat_fields_v0_46() -> ExtraThreatFieldsStored {
         ExtraThreatFieldsStored {
-            time: stored_time(Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap()),
+            time: crate::test::utc(1970, 1, 1, 1, 1, 1),
             sensor: "sensor".to_string(),
             service: "service".to_string(),
             content: "content".to_string(),
@@ -3251,7 +3112,7 @@ pub(crate) mod tests {
 
     fn network_threat_fields_v0_46() -> NetworkThreatFieldsStored {
         NetworkThreatFieldsStored {
-            time: stored_time(Utc.with_ymd_and_hms(1970, 1, 1, 1, 1, 1).unwrap()),
+            time: crate::test::utc(1970, 1, 1, 1, 1, 1),
             sensor: "sensor".to_string(),
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             orig_port: 10000,
@@ -3261,11 +3122,7 @@ pub(crate) mod tests {
             resp_country_code: crate::util::COUNTRY_CODE_UNRESOLVED,
             proto: 6,
             service: "http".to_string(),
-            start_time: Utc
-                .with_ymd_and_hms(1970, 1, 1, 0, 0, 0)
-                .unwrap()
-                .timestamp_nanos_opt()
-                .unwrap(),
+            start_time: crate::test::utc_nanos(1970, 1, 1, 0, 0, 0),
             duration: 100,
             orig_pkts: 10,
             resp_pkts: 20,
@@ -3285,7 +3142,7 @@ pub(crate) mod tests {
 
     fn windows_threat_fields_v0_46() -> WindowsThreatFieldsStored {
         WindowsThreatFieldsStored {
-            time: stored_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap()),
+            time: crate::test::utc(1970, 1, 1, 0, 1, 1),
             sensor: "sensor".to_string(),
             service: "notepad".to_string(),
             agent_name: "win64".to_string(),
@@ -3308,7 +3165,7 @@ pub(crate) mod tests {
 
     fn http_threat_fields() -> HttpThreatFieldsStored {
         HttpThreatFieldsStored {
-            time: stored_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap()),
+            time: crate::test::utc(1970, 1, 1, 0, 1, 1),
             sensor: "sensor".to_string(),
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             orig_port: 10000,
@@ -3317,11 +3174,7 @@ pub(crate) mod tests {
             resp_port: 80,
             resp_country_code: crate::util::COUNTRY_CODE_UNRESOLVED,
             proto: 6,
-            start_time: Utc
-                .with_ymd_and_hms(1970, 1, 1, 0, 0, 0)
-                .unwrap()
-                .timestamp_nanos_opt()
-                .unwrap(),
+            start_time: crate::test::utc_nanos(1970, 1, 1, 0, 0, 0),
             duration: 0,
             orig_pkts: 0,
             resp_pkts: 0,
@@ -3359,7 +3212,7 @@ pub(crate) mod tests {
 
     fn http_threat_fields_v0_46() -> HttpThreatFieldsStored {
         HttpThreatFieldsStored {
-            time: stored_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap()),
+            time: crate::test::utc(1970, 1, 1, 0, 1, 1),
             sensor: "sensor".to_string(),
             orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             orig_port: 10000,
@@ -3368,11 +3221,7 @@ pub(crate) mod tests {
             resp_port: 80,
             resp_country_code: crate::util::COUNTRY_CODE_UNRESOLVED,
             proto: 6,
-            start_time: Utc
-                .with_ymd_and_hms(1970, 1, 1, 0, 0, 0)
-                .unwrap()
-                .timestamp_nanos_opt()
-                .unwrap(),
+            start_time: crate::test::utc_nanos(1970, 1, 1, 0, 0, 0),
             duration: 0,
             orig_pkts: 0,
             resp_pkts: 0,
@@ -3417,11 +3266,7 @@ pub(crate) mod tests {
             resp_port: 1812,
             resp_country_code: crate::util::COUNTRY_CODE_UNRESOLVED,
             proto: 17,
-            start_time: Utc
-                .with_ymd_and_hms(1970, 1, 1, 0, 0, 0)
-                .unwrap()
-                .timestamp_nanos_opt()
-                .unwrap(),
+            start_time: crate::test::utc_nanos(1970, 1, 1, 0, 0, 0),
             duration: 0,
             orig_pkts: 0,
             resp_pkts: 0,
@@ -3456,11 +3301,7 @@ pub(crate) mod tests {
             resp_port: 53,
             resp_country_code: crate::util::COUNTRY_CODE_UNRESOLVED,
             proto: 17,
-            start_time: Utc
-                .with_ymd_and_hms(1970, 1, 1, 0, 0, 0)
-                .unwrap()
-                .timestamp_nanos_opt()
-                .unwrap(),
+            start_time: crate::test::utc_nanos(1970, 1, 1, 0, 0, 0),
             duration: 0,
             orig_pkts: 0,
             resp_pkts: 0,
@@ -3486,16 +3327,8 @@ pub(crate) mod tests {
     fn unusual_destination_pattern_fields() -> UnusualDestinationPatternFieldsStored {
         UnusualDestinationPatternFieldsStored {
             sensor: "sensor".to_string(),
-            sampling_window_start_time: Utc
-                .with_ymd_and_hms(1970, 1, 1, 0, 0, 0)
-                .unwrap()
-                .timestamp_nanos_opt()
-                .unwrap(),
-            sampling_window_end_time: Utc
-                .with_ymd_and_hms(1970, 1, 1, 0, 0, 0)
-                .unwrap()
-                .timestamp_nanos_opt()
-                .unwrap(),
+            sampling_window_start_time: crate::test::utc_nanos(1970, 1, 1, 0, 0, 0),
+            sampling_window_end_time: crate::test::utc_nanos(1970, 1, 1, 0, 0, 0),
             destination_ips: vec![IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1))],
             resp_country_codes: vec![crate::util::COUNTRY_CODE_UNRESOLVED; 1],
             count: 1,
@@ -3759,7 +3592,7 @@ pub(crate) mod tests {
     /// only events with the same category.
     #[test]
     fn score_by_confidence_none_matches_only_none_category() {
-        let time = stored_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap());
+        let time = crate::test::utc(1970, 1, 1, 0, 1, 1);
 
         // Event with category = Some(Reconnaissance)
         let fields_with_cat = http_threat_fields(); // category: Some(Reconnaissance)
@@ -3815,12 +3648,12 @@ pub(crate) mod tests {
     }
 
     fn dns_covert_channel_event() -> Event {
-        let time = stored_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap());
+        let time = crate::test::utc(1970, 1, 1, 0, 1, 1);
         Event::DnsCovertChannel(DnsCovertChannel::new(time, dns_event_fields()))
     }
 
     fn blocklist_http_event() -> Event {
-        let time = stored_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap());
+        let time = crate::test::utc(1970, 1, 1, 0, 1, 1);
         Event::Blocklist(RecordType::Http(BlocklistHttp::new(
             time,
             blocklist_http_fields(),
@@ -3844,7 +3677,7 @@ pub(crate) mod tests {
         crate::TriagePolicyInput {
             id,
             name: format!("policy-{id}"),
-            creation_time: Utc.with_ymd_and_hms(1970, 1, 1, 0, 0, 0).unwrap(),
+            creation_time: crate::test::utc(1970, 1, 1, 0, 0, 0),
             triage_exclusion: Vec::new(),
             packet_attr: Vec::new(),
             confidence,
@@ -3907,7 +3740,7 @@ pub(crate) mod tests {
                 .unwrap(),
             ];
 
-        let time = stored_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap());
+        let time = crate::test::utc(1970, 1, 1, 0, 1, 1);
 
         let mut v4_fields = blocklist_http_fields();
         v4_fields.orig_addr = "10.1.2.3".parse().unwrap();
@@ -4021,7 +3854,7 @@ pub(crate) mod tests {
     }
 
     fn http_threat_event_with_country_codes(orig: [u8; 2], resp: [u8; 2]) -> Event {
-        let time = stored_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap());
+        let time = crate::test::utc(1970, 1, 1, 0, 1, 1);
         let mut fields = http_threat_fields();
         fields.orig_country_code = orig;
         fields.resp_country_code = resp;
@@ -4096,7 +3929,7 @@ pub(crate) mod tests {
 
     #[test]
     fn country_filter_matches_any_vector_response_code() {
-        let time = stored_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap());
+        let time = crate::test::utc(1970, 1, 1, 0, 1, 1);
         let mut fields = multi_host_port_scan_fields();
         fields.orig_country_code = *b"US";
         fields.resp_country_codes = vec![*b"JP", *b"DE"];
@@ -4116,7 +3949,7 @@ pub(crate) mod tests {
     /// Builds one event of `kind` from the fixtures above.
     #[allow(clippy::too_many_lines)] // one arm per kind
     fn event_of_kind(kind: EventKind) -> Event {
-        let time = stored_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap());
+        let time = crate::test::utc(1970, 1, 1, 0, 1, 1);
         match kind {
             EventKind::DnsCovertChannel => {
                 Event::DnsCovertChannel(DnsCovertChannel::new(time, dns_event_fields()))
@@ -4353,7 +4186,7 @@ pub(crate) mod tests {
 
     #[test]
     fn kind_filter_http_threat_ignores_attack_kind() {
-        let time = stored_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap());
+        let time = crate::test::utc(1970, 1, 1, 0, 1, 1);
         let filter = kind_filter(Some(vec![EventKind::HttpThreat]));
         for attack_kind in ["", "ftp plain text", "SQL Injection", "tor exit nodes"] {
             let mut fields = http_threat_fields();
@@ -4420,7 +4253,7 @@ pub(crate) mod tests {
                 .count_kind(&mut counter, &filter)
                 .unwrap();
         }
-        let time = stored_time(Utc.with_ymd_and_hms(1970, 1, 1, 0, 1, 1).unwrap());
+        let time = crate::test::utc(1970, 1, 1, 0, 1, 1);
         for attack_kind in ["SQL Injection", "Cross Site Scripting"] {
             let mut fields = http_threat_fields();
             fields.attack_kind = attack_kind.to_string();

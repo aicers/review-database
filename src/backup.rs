@@ -7,7 +7,7 @@ use std::{
 };
 
 use anyhow::Result;
-use chrono::{DateTime, TimeZone, Utc};
+use jiff::Timestamp;
 use rocksdb::backup::BackupEngineInfo;
 
 use crate::{
@@ -34,7 +34,7 @@ const PROBE_LOG_DIR: &str = "probe-log";
 #[allow(clippy::module_name_repetitions)]
 pub struct BackupInfo {
     pub id: u32,
-    pub timestamp: DateTime<Utc>,
+    pub timestamp: Timestamp,
     pub size: u64,
 }
 
@@ -42,8 +42,7 @@ impl From<BackupEngineInfo> for BackupInfo {
     fn from(backup: BackupEngineInfo) -> Self {
         Self {
             id: backup.backup_id,
-            timestamp: DateTime::from_timestamp(backup.timestamp, 0)
-                .unwrap_or_else(|| Utc.timestamp_opt(0, 0).unwrap()),
+            timestamp: Timestamp::from_second(backup.timestamp).unwrap_or(Timestamp::UNIX_EPOCH),
             size: backup.size,
         }
     }
@@ -611,11 +610,7 @@ mod tests {
         sync::{Arc, RwLock},
     };
 
-    use chrono::{DateTime, TimeZone, Utc};
-    use jiff::Timestamp;
-
     use super::{OfflineRestoreError, create, list, restore, restore_states_offline};
-    use crate::event::timestamp;
     use crate::test::acquire_db_permit;
     use crate::{
         DEFAULT_STATES, Store,
@@ -623,10 +618,6 @@ mod tests {
         migration::DATABASE_FORMAT_VERSION,
         tables::{DATA_SOURCES, MAP_NAMES, open_rocksdb_backup_engine},
     };
-
-    fn msg_time(time: DateTime<Utc>) -> Timestamp {
-        timestamp::from_chrono(time).expect("test event message time must fit i64 nanoseconds")
-    }
 
     fn example_message() -> EventMessage {
         let fields = DnsEventFields {
@@ -636,11 +627,7 @@ mod tests {
             resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
             resp_port: 53,
             proto: 17,
-            start_time: Utc
-                .with_ymd_and_hms(1970, 1, 1, 0, 1, 1)
-                .unwrap()
-                .timestamp_nanos_opt()
-                .unwrap(),
+            start_time: crate::test::utc_nanos(1970, 1, 1, 0, 1, 1),
             duration: 0,
             orig_pkts: 0,
             resp_pkts: 0,
@@ -662,7 +649,7 @@ mod tests {
             category: Some(crate::EventCategory::CommandAndControl),
         };
         EventMessage {
-            time: msg_time(Utc::now()),
+            time: jiff::Timestamp::now(),
             kind: EventKind::DnsCovertChannel,
             fields: bincode::serialize(&fields).expect("serializable"),
         }
@@ -1363,53 +1350,62 @@ mod tests {
         });
     }
 
-    /// A backup taken by a 0.60 build has every family of the current format
-    /// but the marker, whose row layouts it does not share. It is refused
-    /// by id and as the latest, and the database stays open and serving, while
-    /// a backup taken at the current format restores.
+    /// A backup taken by a 0.61 build has every family of the current format
+    /// but the `format 0.62` marker, and one taken by a 0.60 build lacks the
+    /// `format 0.61` one as well; neither shares the current row layouts. Each
+    /// is refused by id and as the latest, and the database stays open and
+    /// serving, while a backup taken at the current format restores.
     #[test]
     fn online_restore_refuses_a_backup_without_the_format_marker_family() {
         let _permit = acquire_db_permit();
-        let data_dir = tempfile::tempdir().unwrap();
-        let backup_dir = tempfile::tempdir().unwrap();
-        let store = open_current_store(data_dir.path(), backup_dir.path());
-        put_event(&store);
-        create(&store, true, 3).unwrap();
-        put_event(&store);
-        let families: Vec<&str> = MAP_NAMES
-            .into_iter()
-            .filter(|name| *name != crate::tables::FORMAT_0_61)
-            .collect();
-        add_backup_with_families(backup_dir.path(), &families);
-        let before = RestoreState::read(&store, data_dir.path(), backup_dir.path());
-        assert_eq!(before.backup_ids, [1, 2]);
+        for (missing, listed) in [
+            (&[crate::tables::FORMAT_0_62][..], "\"format 0.62\""),
+            (
+                &[crate::tables::FORMAT_0_61, crate::tables::FORMAT_0_62][..],
+                "\"format 0.61\", \"format 0.62\"",
+            ),
+        ] {
+            let data_dir = tempfile::tempdir().unwrap();
+            let backup_dir = tempfile::tempdir().unwrap();
+            let store = open_current_store(data_dir.path(), backup_dir.path());
+            put_event(&store);
+            create(&store, true, 3).unwrap();
+            put_event(&store);
+            let families: Vec<&str> = MAP_NAMES
+                .into_iter()
+                .filter(|name| !missing.contains(name))
+                .collect();
+            add_backup_with_families(backup_dir.path(), &families);
+            let before = RestoreState::read(&store, data_dir.path(), backup_dir.path());
+            assert_eq!(before.backup_ids, [1, 2]);
 
-        let expected = format!(
-            "backup 2 is not in database format {DATABASE_FORMAT_VERSION}: unexpected column \
-             families [], missing column families [\"format 0.61\"]; nothing was restored"
-        );
-        let err = store
-            .write()
-            .expect("test holds no other locks")
-            .restore_from_backup(2)
-            .unwrap_err();
-        assert_eq!(err.to_string(), expected);
-        assert_still_open(&store, data_dir.path(), backup_dir.path(), &before);
-        let err = store
-            .write()
-            .expect("test holds no other locks")
-            .restore_from_latest_backup()
-            .unwrap_err();
-        assert_eq!(err.to_string(), expected);
+            let expected = format!(
+                "backup 2 is not in database format {DATABASE_FORMAT_VERSION}: unexpected column \
+                 families [], missing column families [{listed}]; nothing was restored"
+            );
+            let err = store
+                .write()
+                .expect("test holds no other locks")
+                .restore_from_backup(2)
+                .unwrap_err();
+            assert_eq!(err.to_string(), expected);
+            assert_still_open(&store, data_dir.path(), backup_dir.path(), &before);
+            let err = store
+                .write()
+                .expect("test holds no other locks")
+                .restore_from_latest_backup()
+                .unwrap_err();
+            assert_eq!(err.to_string(), expected);
 
-        let count = live_event_count(&store);
-        assert!(count > 1);
-        store
-            .write()
-            .expect("test holds no other locks")
-            .restore_from_backup(1)
-            .unwrap();
-        assert_eq!(live_event_count(&store), 1);
+            let count = live_event_count(&store);
+            assert!(count > 1);
+            store
+                .write()
+                .expect("test holds no other locks")
+                .restore_from_backup(1)
+                .unwrap();
+            assert_eq!(live_event_count(&store), 1);
+        }
     }
 
     #[test]
@@ -1600,7 +1596,6 @@ mod tests {
 
     #[test]
     fn test_backup_info_timestamp_conversion() {
-        use chrono::{DateTime, Datelike};
         use rocksdb::backup::BackupEngineInfo;
 
         use super::BackupInfo;
@@ -1621,8 +1616,14 @@ mod tests {
         assert_eq!(backup_info.size, 697_860);
 
         // The timestamp should be in 2025, not 1970
-        let expected_timestamp = DateTime::from_timestamp(timestamp_seconds, 0).unwrap();
+        let expected_timestamp = crate::test::from_second(timestamp_seconds, 0);
         assert_eq!(backup_info.timestamp, expected_timestamp);
-        assert_eq!(backup_info.timestamp.year(), 2025);
+        assert_eq!(
+            backup_info
+                .timestamp
+                .to_zoned_datetime(jiff::tz::TimeZone::UTC)
+                .year(),
+            2025
+        );
     }
 }

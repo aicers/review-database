@@ -1,15 +1,19 @@
 //! The `trusted_user_agent` map.
 
 use anyhow::{Context, Result};
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 use rocksdb::OptimisticTransactionDB;
 
 use super::Value;
-use crate::{Map, Table, UniqueKey, types::FromKeyValue};
+use crate::{
+    Map, Table, UniqueKey,
+    timestamp::{from_i64_nanos, saturating_i64_nanos},
+    types::FromKeyValue,
+};
 
 pub struct TrustedUserAgent {
     pub user_agent: String,
-    pub updated_at: DateTime<Utc>,
+    pub updated_at: Timestamp,
 }
 
 impl FromKeyValue for TrustedUserAgent {
@@ -17,10 +21,8 @@ impl FromKeyValue for TrustedUserAgent {
         let user_agent = std::str::from_utf8(key)
             .context("invalid user-agent in database")?
             .to_owned();
-        let updated_at = std::str::from_utf8(value)
-            .context("invalid timestamp in database")?
-            .parse()
-            .context("invalid timestamp in database")?;
+        let nanos: i64 = super::deserialize(value).context("invalid timestamp in database")?;
+        let updated_at = from_i64_nanos(nanos).context("invalid timestamp in database")?;
         Ok(TrustedUserAgent {
             user_agent,
             updated_at,
@@ -40,7 +42,7 @@ impl Value for TrustedUserAgent {
     type AsBytes<'a> = Vec<u8>;
 
     fn value(&self) -> Vec<u8> {
-        self.updated_at.to_string().into_bytes()
+        super::serialize(&saturating_i64_nanos(self.updated_at)).expect("an i64 always serializes")
     }
 }
 
@@ -84,7 +86,6 @@ mod test {
     use std::sync::Arc;
 
     use anyhow::Result;
-    use chrono::Utc;
     use rocksdb::Direction;
 
     use crate::test::{DbGuard, acquire_db_permit};
@@ -134,125 +135,108 @@ mod test {
     fn create_entry(name: &str) -> TrustedUserAgent {
         TrustedUserAgent {
             user_agent: name.to_string(),
-            updated_at: Utc::now(),
+            updated_at: jiff::Timestamp::now(),
         }
     }
 
-    /// Baseline tests for the chrono string bytes stored in `updated_at`.
-    ///
-    /// These tests pin the current `DateTime<Utc>::to_string()` write format and
-    /// read parsing behavior. A follow-up migration will normalize these values
-    /// to `i64` epoch seconds; that migration is out of scope for this issue.
+    /// Tests pinning the 0.62 bytes of `updated_at`: the whole value is an
+    /// `i64` of Unix-epoch nanoseconds, encoded with `tables::serialize`.
     mod timestamp_contract {
         use anyhow::Result;
-        use chrono::{DateTime, NaiveDateTime, Utc};
+        use jiff::Timestamp;
         use rocksdb::Direction;
 
         use super::*;
         use crate::types::FromKeyValue;
 
         const WHOLE_SECOND_TS: i64 = 951_827_696;
-        const FRACTIONAL_NSEC: u32 = 123_456_789;
+        const FRACTIONAL_NSEC: i32 = 123_456_789;
 
-        const WHOLE_SECOND_BYTES: &[u8] = b"2000-02-29 12:34:56 UTC";
-        const FRACTIONAL_SECOND_BYTES: &[u8] = b"2000-02-29 12:34:56.123456789 UTC";
+        /// `2000-02-29T12:34:56Z` as varint `i64` nanoseconds.
+        const WHOLE_SECOND_BYTES: &[u8] = &[0xfd, 0x00, 0xc0, 0xea, 0x36, 0x7e, 0x24, 0x6b, 0x1a];
+        /// `2000-02-29T12:34:56.123456789Z` as varint `i64` nanoseconds.
+        const FRACTIONAL_SECOND_BYTES: &[u8] =
+            &[0xfd, 0x2a, 0x5a, 0xa2, 0x45, 0x7e, 0x24, 0x6b, 0x1a];
+        /// [`i64::MAX`] as varint `i64` nanoseconds.
+        const SATURATED_BYTES: &[u8] = &[0xfd, 0xfe, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff];
+        /// The 0.61 `Display` bytes, which only the 0.62 migration reads.
+        const V0_61_BYTES: &[u8] = b"2000-02-29 12:34:56.123456789 UTC";
 
-        // `from_utc` / `from_timestamp_opt` match the construction style documented in
-        // issue #747; both are deprecated but still mirror production chrono usage.
-        #[allow(deprecated)]
-        fn whole_second_datetime() -> DateTime<Utc> {
-            DateTime::from_utc(
-                NaiveDateTime::from_timestamp_opt(WHOLE_SECOND_TS, 0)
-                    .expect("valid whole-second timestamp"),
-                Utc,
-            )
+        fn whole_second_timestamp() -> Timestamp {
+            crate::test::from_second(WHOLE_SECOND_TS, 0)
         }
 
-        #[allow(deprecated)]
-        fn fractional_second_datetime() -> DateTime<Utc> {
-            DateTime::from_utc(
-                NaiveDateTime::from_timestamp_opt(WHOLE_SECOND_TS, FRACTIONAL_NSEC)
-                    .expect("valid fractional-second timestamp"),
-                Utc,
-            )
+        fn fractional_second_timestamp() -> Timestamp {
+            crate::test::from_second(WHOLE_SECOND_TS, FRACTIONAL_NSEC)
         }
 
         #[test]
-        fn test_updated_at_writer_stores_chrono_string_bytes() {
+        fn updated_at_writer_stores_i64_nanosecond_bytes() {
             let (_permit, store) = super::setup_store();
             let table = store.trusted_user_agent_map();
 
-            let whole = whole_second_datetime();
-            let fractional = fractional_second_datetime();
+            let whole = whole_second_timestamp();
+            let fractional = fractional_second_timestamp();
+            let far_future: Timestamp = "2300-01-01T00:00:00Z".parse().unwrap();
 
-            table
-                .insert(&TrustedUserAgent {
-                    user_agent: "whole-second-agent".to_string(),
-                    updated_at: whole,
-                })
-                .unwrap();
-            table
-                .insert(&TrustedUserAgent {
-                    user_agent: "fractional-second-agent".to_string(),
-                    updated_at: fractional,
-                })
-                .unwrap();
+            for (name, updated_at) in [("a", whole), ("b", fractional), ("c", far_future)] {
+                table
+                    .put(&TrustedUserAgent {
+                        user_agent: name.to_string(),
+                        updated_at,
+                    })
+                    .unwrap();
+            }
 
-            let whole_value = table.map.get(b"whole-second-agent").unwrap().unwrap();
-            assert_eq!(whole_value.as_ref(), WHOLE_SECOND_BYTES);
-
-            let fractional_value = table.map.get(b"fractional-second-agent").unwrap().unwrap();
-            assert_eq!(fractional_value.as_ref(), FRACTIONAL_SECOND_BYTES);
+            assert_eq!(
+                table.map.get(b"a").unwrap().unwrap().as_ref(),
+                WHOLE_SECOND_BYTES
+            );
+            assert_eq!(
+                table.map.get(b"b").unwrap().unwrap().as_ref(),
+                FRACTIONAL_SECOND_BYTES
+            );
+            assert_eq!(
+                table.map.get(b"c").unwrap().unwrap().as_ref(),
+                SATURATED_BYTES
+            );
         }
 
         #[test]
-        fn test_updated_at_reads_legacy_chrono_string_bytes() {
+        fn updated_at_reads_i64_nanosecond_bytes() {
             let (_permit, store) = super::setup_store();
             let table = store.trusted_user_agent_map();
 
-            let whole = whole_second_datetime();
-            let fractional = fractional_second_datetime();
-
-            table
-                .map
-                .put(b"whole-second-agent", WHOLE_SECOND_BYTES)
-                .unwrap();
-            table
-                .map
-                .put(b"fractional-second-agent", FRACTIONAL_SECOND_BYTES)
-                .unwrap();
+            table.map.put(b"a", WHOLE_SECOND_BYTES).unwrap();
+            table.map.put(b"b", FRACTIONAL_SECOND_BYTES).unwrap();
+            table.map.put(b"c", SATURATED_BYTES).unwrap();
 
             let entries: Vec<_> = table
                 .iter(Direction::Forward, None)
                 .collect::<Result<Vec<_>>>()
                 .unwrap();
-            assert_eq!(entries.len(), 2);
+            assert_eq!(entries.len(), 3);
+            let find = |name: &str| {
+                entries
+                    .iter()
+                    .find(|entry| entry.user_agent == name)
+                    .expect("entry")
+                    .updated_at
+            };
+            assert_eq!(find("a"), whole_second_timestamp());
+            assert_eq!(find("b"), fractional_second_timestamp());
+            assert_eq!(
+                find("c"),
+                crate::timestamp::from_i64_nanos(i64::MAX).unwrap()
+            );
 
-            let whole_entry = entries
-                .iter()
-                .find(|entry| entry.user_agent == "whole-second-agent")
-                .expect("whole-second entry");
-            assert_eq!(whole_entry.updated_at, whole);
+            let parsed = TrustedUserAgent::from_key_value(b"b", FRACTIONAL_SECOND_BYTES).unwrap();
+            assert_eq!(parsed.updated_at, fractional_second_timestamp());
+        }
 
-            let fractional_entry = entries
-                .iter()
-                .find(|entry| entry.user_agent == "fractional-second-agent")
-                .expect("fractional-second entry");
-            assert_eq!(fractional_entry.updated_at, fractional);
-
-            let parsed_whole =
-                TrustedUserAgent::from_key_value(b"whole-second-agent", WHOLE_SECOND_BYTES)
-                    .unwrap();
-            assert_eq!(parsed_whole.user_agent, "whole-second-agent");
-            assert_eq!(parsed_whole.updated_at, whole);
-
-            let parsed_fractional = TrustedUserAgent::from_key_value(
-                b"fractional-second-agent",
-                FRACTIONAL_SECOND_BYTES,
-            )
-            .unwrap();
-            assert_eq!(parsed_fractional.user_agent, "fractional-second-agent");
-            assert_eq!(parsed_fractional.updated_at, fractional);
+        #[test]
+        fn updated_at_rejects_v0_61_display_bytes() {
+            assert!(TrustedUserAgent::from_key_value(b"a", V0_61_BYTES).is_err());
         }
     }
 }

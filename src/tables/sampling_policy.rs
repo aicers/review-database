@@ -23,7 +23,7 @@
 use std::{borrow::Cow, collections::BTreeMap, fmt, net::IpAddr};
 
 use anyhow::{Context, Result, anyhow};
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 use rocksdb::{IteratorMode, OptimisticTransactionDB, Transaction};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -65,7 +65,8 @@ pub struct SamplingPolicy {
     /// `None` if that generator had none. Unassigning the policy and
     /// removing the generator leave it as it is.
     pub data_store: Option<String>,
-    pub creation_time: DateTime<Utc>,
+    #[serde(with = "crate::timestamp::ts_nanoseconds_saturating")]
+    pub creation_time: Timestamp,
 }
 
 impl FromKeyValue for SamplingPolicy {
@@ -314,7 +315,7 @@ impl<'d> IndexedTable<'d, SamplingPolicy> {
             state: PolicyState::Draft,
             assignee: None,
             data_store: None,
-            creation_time: Utc::now(),
+            creation_time: Timestamp::now(),
         })
     }
 
@@ -817,7 +818,6 @@ mod test {
     use std::net::{IpAddr, Ipv4Addr};
 
     use anyhow::Result;
-    use chrono::DateTime;
     use rocksdb::Direction;
 
     use super::*;
@@ -928,7 +928,7 @@ mod test {
                 profile_draft: None,
                 agents,
                 external_services: Vec::new(),
-                creation_time: Utc::now(),
+                creation_time: jiff::Timestamp::now(),
             })
             .unwrap()
     }
@@ -1026,8 +1026,7 @@ mod test {
     /// Builds a deterministic `SamplingPolicy` for the literal-byte contract
     /// test.
     fn deterministic_sampling_policy() -> SamplingPolicy {
-        let creation_time =
-            DateTime::from_timestamp(1_700_000_000, 123_456_789).expect("valid timestamp");
+        let creation_time = crate::test::from_second(1_700_000_000, 123_456_789);
         SamplingPolicy {
             id: 42,
             name: "fixture-policy".to_string(),
@@ -1063,7 +1062,7 @@ mod test {
     #[test]
     fn sampling_policy_literal_bytes_contract() -> Result<()> {
         const FIXTURE_BYTES: &[u8] =
-            include_bytes!("../../tests/fixtures/sampling_policy_literal_bytes.bin");
+            include_bytes!("../../tests/fixtures/sampling_policy_literal_bytes_v0_62.bin");
 
         let decoded = SamplingPolicy::from_key_value(b"fixture-policy", FIXTURE_BYTES)?;
         let expected = deterministic_sampling_policy();
@@ -1076,11 +1075,11 @@ mod test {
     }
 
     #[test]
-    #[ignore = "run manually to regenerate tests/fixtures/sampling_policy_literal_bytes.bin"]
+    #[ignore = "run manually to regenerate tests/fixtures/sampling_policy_literal_bytes_v0_62.bin"]
     fn dump_sampling_policy_literal_fixture_bytes() {
         let bytes = Indexable::value(&deterministic_sampling_policy());
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("tests/fixtures/sampling_policy_literal_bytes.bin");
+            .join("tests/fixtures/sampling_policy_literal_bytes_v0_62.bin");
         std::fs::write(path, bytes).expect("write fixture");
     }
 
@@ -1535,7 +1534,7 @@ mod test {
                     customer_id: CUSTOMER,
                     instance: instance(f.node, ENGINE),
                 },
-                Utc::now(),
+                jiff::Timestamp::now(),
                 TrainedWith {
                     run_id: 1,
                     definition: "eps = 5.0".to_string(),

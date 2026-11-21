@@ -3,8 +3,8 @@
 use std::collections::HashMap;
 
 use anyhow::{Result, bail};
-use chrono::{DateTime, Utc};
 use ipnet::IpNet;
+use jiff::Timestamp;
 use rocksdb::{Direction, OptimisticTransactionDB};
 use serde::{Deserialize, Serialize};
 
@@ -15,8 +15,10 @@ use crate::{Iterable, Map, Table, UniqueKey, types::FromKeyValue};
 pub struct TrafficFilter {
     pub host_fqdn: String,
     pub rules: HashMap<IpNet, ProtocolPorts>,
-    pub last_modification_time: DateTime<Utc>,
-    pub update_time: Option<DateTime<Utc>>,
+    #[serde(with = "crate::timestamp::ts_nanoseconds_saturating")]
+    pub last_modification_time: Timestamp,
+    #[serde(with = "crate::timestamp::ts_nanoseconds_saturating_option")]
+    pub update_time: Option<Timestamp>,
     pub description: Option<String>,
 }
 
@@ -64,7 +66,7 @@ impl TrafficFilter {
         Self {
             host_fqdn: host_fqdn.to_string(),
             rules,
-            last_modification_time: Utc::now(),
+            last_modification_time: Timestamp::now(),
             update_time: None,
             description,
         }
@@ -214,7 +216,7 @@ impl<'d> Table<'d, TrafficFilter> {
                 udp_ports,
             },
         );
-        entry.last_modification_time = Utc::now();
+        entry.last_modification_time = Timestamp::now();
         self.put(&entry).map(|()| entry.len())
     }
 
@@ -242,7 +244,7 @@ impl<'d> Table<'d, TrafficFilter> {
             if let Some(description) = description {
                 entry.description = Some(description);
             }
-            entry.last_modification_time = Utc::now();
+            entry.last_modification_time = Timestamp::now();
         } else {
             bail!("Rule not found");
         }
@@ -265,7 +267,7 @@ impl<'d> Table<'d, TrafficFilter> {
         for network in networks {
             _ = entry.rules.remove(network); // ignore when the network doesn't exist
         }
-        entry.last_modification_time = Utc::now();
+        entry.last_modification_time = Timestamp::now();
         if entry.rules.is_empty() {
             self.remove(host_fqdn).map(|()| 0)
         } else {
@@ -284,7 +286,7 @@ impl<'d> Table<'d, TrafficFilter> {
         let Some(mut entry) = self.get(host_fqdn)? else {
             return Ok(());
         };
-        entry.update_time = Some(Utc::now());
+        entry.update_time = Some(Timestamp::now());
 
         self.put(&entry)
     }
@@ -305,7 +307,6 @@ mod test {
     use std::sync::Arc;
 
     use anyhow::Result;
-    use chrono::{DateTime, Utc};
     use ipnet::IpNet;
     use rocksdb::Direction;
 
@@ -318,7 +319,7 @@ mod test {
     const FIXTURE_TIMESTAMP: &str = "2000-02-29T12:34:56.123456789Z";
     const FIXTURE_BYTES: &[u8] = include_bytes!(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/tests/fixtures/traffic_filter_literal_bytes.bin"
+        "/tests/fixtures/traffic_filter_literal_bytes_v0_62.bin"
     ));
 
     /// Builds the deterministic `TrafficFilter` encoded by the literal-byte fixture.
@@ -326,9 +327,9 @@ mod test {
     /// Uses exactly one rule entry so `HashMap` iteration order does not affect
     /// serialized bytes.
     fn fixture_traffic_filter() -> TrafficFilter {
-        let timestamp = DateTime::parse_from_rfc3339(FIXTURE_TIMESTAMP)
-            .expect("valid RFC3339 timestamp")
-            .with_timezone(&Utc);
+        let timestamp = FIXTURE_TIMESTAMP
+            .parse::<jiff::Timestamp>()
+            .expect("valid RFC3339 timestamp");
         let mut rules = HashMap::new();
         rules.insert(
             "192.168.1.0/24".parse::<IpNet>().expect("valid IpNet"),

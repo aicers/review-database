@@ -4,7 +4,6 @@ use attrievent::attribute::{ConnAttr, HttpAttr, RawEventAttrKind};
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
-use super::timestamp::{self, ts_nanoseconds as jiff_ts_nanoseconds};
 use super::{EventCategory, LearningMethod, ThreatLevel, TriageScore, common::Match};
 use crate::TriageExclusion;
 use crate::event::{
@@ -12,6 +11,7 @@ use crate::event::{
     conn::{BlocklistConnFieldsStored, find_conn_attr_by_kind},
     http::{HttpEventFieldsStored, find_http_attr_by_kind, get_post_body},
 };
+use crate::timestamp::{self, ts_nanoseconds as jiff_ts_nanoseconds};
 
 #[allow(clippy::module_name_repetitions)]
 #[derive(Serialize, Deserialize)]
@@ -381,21 +381,15 @@ mod tests {
     use std::net::IpAddr;
 
     use attrievent::attribute::{ConnAttr, RawEventAttrKind};
-    use chrono::{TimeZone, Utc};
 
     use super::{Match, TorConnectionConn};
-    use crate::event::timestamp;
     use crate::event::{
         EventCategory, LearningMethod, ThreatLevel, common::AttrValue,
         conn::BlocklistConnFieldsStored,
     };
 
     fn tor_connection_conn_fields() -> BlocklistConnFieldsStored {
-        let start_time = Utc
-            .with_ymd_and_hms(2023, 1, 1, 12, 0, 0)
-            .unwrap()
-            .timestamp_nanos_opt()
-            .unwrap();
+        let start_time = crate::test::utc_nanos(2023, 1, 1, 12, 0, 0);
         BlocklistConnFieldsStored {
             sensor: "test-sensor".to_string(),
             orig_addr: "192.168.1.100".parse().unwrap(),
@@ -422,8 +416,7 @@ mod tests {
 
     #[test]
     fn tor_connection_conn_new() {
-        let time = timestamp::from_chrono(Utc.with_ymd_and_hms(2023, 1, 1, 12, 0, 0).unwrap())
-            .expect(timestamp::I64_NANOS_JIFF_INVARIANT);
+        let time = crate::test::utc(2023, 1, 1, 12, 0, 0);
         let fields = tor_connection_conn_fields();
 
         let event = TorConnectionConn::new(time, fields);
@@ -451,8 +444,7 @@ mod tests {
 
     #[test]
     fn tor_connection_conn_display() {
-        let time = timestamp::from_chrono(Utc.with_ymd_and_hms(2023, 1, 1, 12, 0, 0).unwrap())
-            .expect(timestamp::I64_NANOS_JIFF_INVARIANT);
+        let time = crate::test::utc(2023, 1, 1, 12, 0, 0);
         let event = TorConnectionConn::new(time, tor_connection_conn_fields());
 
         let display_output = format!("{event}");
@@ -465,8 +457,7 @@ mod tests {
 
     #[test]
     fn tor_connection_conn_match_trait() {
-        let time = timestamp::from_chrono(Utc.with_ymd_and_hms(2023, 1, 1, 12, 0, 0).unwrap())
-            .expect(timestamp::I64_NANOS_JIFF_INVARIANT);
+        let time = crate::test::utc(2023, 1, 1, 12, 0, 0);
         let event = TorConnectionConn::new(time, tor_connection_conn_fields());
 
         assert_eq!(
@@ -493,8 +484,7 @@ mod tests {
 
     #[test]
     fn tor_connection_conn_find_attr_by_kind() {
-        let time = timestamp::from_chrono(Utc.with_ymd_and_hms(2023, 1, 1, 12, 0, 0).unwrap())
-            .expect(timestamp::I64_NANOS_JIFF_INVARIANT);
+        let time = crate::test::utc(2023, 1, 1, 12, 0, 0);
         let event = TorConnectionConn::new(time, tor_connection_conn_fields());
 
         // Test finding originator address attribute (ConnAttr::SrcAddr from attrievent)

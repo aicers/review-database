@@ -8,9 +8,8 @@
 //! key[0..8] == timestamp_nanos.to_be_bytes()
 //! ```
 //!
-//! These tests pin that layout after migrating `EventMessage.time` from chrono
-//! to Jiff. Expected timestamp values are pinned as literal `i64` nanoseconds
-//! (not recomputed in the assertion path). On-disk layout is checked via raw
+//! These tests pin that layout. Expected timestamp values are pinned as
+//! literal `i64` nanoseconds (not recomputed in the assertion path). On-disk layout is checked via raw
 //! RocksDB key bytes as well as `EventDb::put` and `EventIterator`.
 
 use std::net::{IpAddr, Ipv4Addr};

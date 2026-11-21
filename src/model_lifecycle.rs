@@ -60,7 +60,7 @@ use std::{
 };
 
 use anyhow::{Context, Result, anyhow, bail};
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 use rocksdb::{
     ColumnFamily, IteratorMode, OptimisticTransactionDB, OptimisticTransactionOptions, Transaction,
     WriteOptions,
@@ -224,7 +224,7 @@ impl Store {
         &self,
         model: crate::model::Model,
         owner: ModelOwner,
-        trained_at: DateTime<Utc>,
+        trained_at: Timestamp,
         trained: TrainedWith,
     ) -> Result<ReplacedModel> {
         let files = self.lock_model_files();
@@ -258,7 +258,7 @@ impl Store {
         txn: &ModelTransaction<'_>,
         model: &crate::model::Model,
         owner: &ModelOwner,
-        trained_at: DateTime<Utc>,
+        trained_at: Timestamp,
         trained: &TrainedWith,
     ) -> Result<PendingReplace> {
         files.check(self)?;
@@ -1008,7 +1008,6 @@ mod tests {
         thread,
     };
 
-    use chrono::{DateTime, NaiveDate, Utc};
     use structured::{ColumnStatistics, Description, NLargestCount};
 
     use super::*;
@@ -1081,8 +1080,8 @@ mod tests {
         }
     }
 
-    fn at(secs: i64) -> DateTime<Utc> {
-        DateTime::from_timestamp(secs, 0).unwrap()
+    fn at(secs: i64) -> jiff::Timestamp {
+        crate::test::from_second(secs, 0)
     }
 
     fn batch(id: i64) -> ModelBatchInfo {
@@ -1178,11 +1177,9 @@ mod tests {
                 is_saved: false,
             })
             .unwrap();
-        let batch_ts = NaiveDate::from_ymd_opt(2026, 1, 1)
-            .unwrap()
-            .and_hms_opt(0, 0, 0)
-            .unwrap()
-            + chrono::Duration::seconds(tag);
+        let batch_ts = crate::test::utc(2026, 1, 1, 0, 0, 0)
+            .checked_add(jiff::SignedDuration::from_secs(tag))
+            .unwrap();
         store
             .column_stats_map()
             .insert_column_statistics(

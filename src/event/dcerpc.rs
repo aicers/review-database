@@ -4,9 +4,9 @@ use attrievent::attribute::{DceRpcAttr, RawEventAttrKind};
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
-use super::timestamp;
 use super::{EventCategory, LearningMethod, ThreatLevel, TriageScore, common::Match};
 use crate::event::common::{AttrValue, triage_scores_to_string};
+use crate::timestamp;
 
 // request entry format: "{context_id}:{opnum}"
 const REQUEST_SEPARATOR: char = ':';
@@ -492,14 +492,12 @@ mod tests {
 
     use attrievent::attribute::{DceRpcAttr, RawEventAttrKind, RawEventKind};
     use bincode::Options;
-    use chrono::{TimeZone, Utc};
     use serde::Serialize;
 
     use super::{
         BlocklistDceRpc, BlocklistDceRpcFieldsStored, DceRpcContext, collect_request_part,
         format_dce_uuid,
     };
-    use crate::event::timestamp;
     use crate::{
         AttrCmpKind, PacketAttr, ValueKind,
         event::common::{AttrValue, Match},
@@ -543,11 +541,7 @@ mod tests {
             resp_port: 135,
             resp_country_code: crate::util::COUNTRY_CODE_UNRESOLVED,
             proto: 6,
-            start_time: Utc
-                .with_ymd_and_hms(1970, 1, 1, 0, 0, 0)
-                .unwrap()
-                .timestamp_nanos_opt()
-                .unwrap(),
+            start_time: crate::test::utc_nanos(1970, 1, 1, 0, 0, 0),
             duration: 10,
             orig_pkts: 1,
             resp_pkts: 2,
@@ -578,8 +572,7 @@ mod tests {
 
     #[test]
     fn dcerpc_context_attr_mappings() {
-        let time = timestamp::from_chrono(Utc.with_ymd_and_hms(1970, 1, 1, 0, 0, 0).unwrap())
-            .expect(timestamp::I64_NANOS_JIFF_INVARIANT);
+        let time = crate::test::utc(1970, 1, 1, 0, 0, 0);
         let event = BlocklistDceRpc::new(time, dcerpc_fields_with_context());
 
         let Some(AttrValue::VecUInt(ids)) =
@@ -609,8 +602,7 @@ mod tests {
 
     #[test]
     fn dcerpc_empty_context_returns_none_for_vector_attrs() {
-        let time = timestamp::from_chrono(Utc.with_ymd_and_hms(1970, 1, 1, 0, 0, 0).unwrap())
-            .expect(timestamp::I64_NANOS_JIFF_INVARIANT);
+        let time = crate::test::utc(1970, 1, 1, 0, 0, 0);
         let mut fields = dcerpc_fields_with_context();
         fields.context.clear();
         let event = BlocklistDceRpc::new(time, fields);
@@ -631,8 +623,7 @@ mod tests {
 
     #[test]
     fn dcerpc_score_by_attr() {
-        let time = timestamp::from_chrono(Utc.with_ymd_and_hms(1970, 1, 1, 0, 0, 0).unwrap())
-            .expect(timestamp::I64_NANOS_JIFF_INVARIANT);
+        let time = crate::test::utc(1970, 1, 1, 0, 0, 0);
         let event = BlocklistDceRpc::new(time, dcerpc_fields_with_context());
 
         let packet_attrs = vec![

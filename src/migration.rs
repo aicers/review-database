@@ -21,12 +21,16 @@ use crate::{
     migration::migration_structures::{
         AgentValueV0_46, AgentValueV0_47, AgentValueV0_61, BlocklistDceRpcFieldsStoredV0_42,
         BlocklistDceRpcFieldsStoredV0_44, BlocklistDhcpFieldsStoredV0_42,
-        BlocklistDhcpFieldsStoredV0_44, CustomerDataDeletionJobValueV0_58, EngineInstanceRefsV0_57,
-        ExternalServiceValueV0_46, ExternalServiceValueV0_47, HttpThreatFieldsStoredV0_43,
-        HttpThreatFieldsStoredV0_44, ModelV0_56, NodeV0_56, OperationAttemptValueV0_47,
-        OperationAttemptValueV0_48, OperationAttemptValueV0_49, OperationAttemptValueV0_61,
-        SamplingPolicyV0_56, TrainingDefinitionV0_56, V0_46_COUNTRY_CODE_LOOKUP_FAILED,
-        migrate_event_stored_schema_to_v0_46, validate_event_stored_schema_v0_46,
+        BlocklistDhcpFieldsStoredV0_44, ClusterValueV0_61, CustomerDataDeletionJobValueV0_58,
+        EngineInstanceRefsV0_57, EngineInstanceRowV0_61, ExternalServiceValueV0_46,
+        ExternalServiceValueV0_47, HttpThreatFieldsStoredV0_43, HttpThreatFieldsStoredV0_44,
+        ModelRunV0_61, ModelV0_56, ModelV0_61, NetworkListSetV0_61, NetworkValueV0_61, NodeV0_56,
+        NodeV0_61, OperationAttemptValueV0_47, OperationAttemptValueV0_48,
+        OperationAttemptValueV0_49, OperationAttemptValueV0_61, OwnedNetworkSetV0_61,
+        SamplingPolicyV0_56, SamplingPolicyV0_61, SystemLogCollectorV0_61, TimestampConverter,
+        TrafficFilterV0_61, TrainingDefinitionV0_56, TrainingDefinitionV0_61, TriageResponseV0_61,
+        V0_46_COUNTRY_CODE_LOOKUP_FAILED, migrate_event_stored_schema_to_v0_46,
+        validate_event_stored_schema_v0_46,
     },
     tables::{
         ACCESS_TOKENS, ACCOUNTS, ALLOW_NETWORKS, BLOCK_NETWORKS, CUSTOMERS, DATA_SOURCES, FILTERS,
@@ -46,8 +50,9 @@ use crate::{
 /// backups of the two formats indistinguishable to that check, so it must give
 /// the check another way to tell them apart. The empty `format 0.61` family is
 /// the precedent: 0.61 changes row layouts only, and that family is what a 0.60
-/// backup lacks.
-pub(crate) const DATABASE_FORMAT_VERSION: &str = "0.61.0";
+/// backup lacks. 0.62 follows it with the empty `format 0.62` family, which a
+/// 0.61 backup lacks.
+pub(crate) const DATABASE_FORMAT_VERSION: &str = "0.62.0";
 
 /// The range of format markers that use the current database format.
 ///
@@ -58,7 +63,7 @@ pub(crate) const DATABASE_FORMAT_VERSION: &str = "0.61.0";
 /// `">=X.Y.0,<X.(Y+1).0"` and appends a step to the migration table. A
 /// release, or any change without a format change, leaves all three as they
 /// are. No build writes a prerelease marker.
-const COMPATIBLE_VERSION_REQ: &str = ">=0.61.0,<0.62.0";
+const COMPATIBLE_VERSION_REQ: &str = ">=0.62.0,<0.63.0";
 
 /// Number of event records applied in each atomic migration write.
 const EVENT_MIGRATION_BATCH_SIZE: usize = 100;
@@ -104,6 +109,46 @@ const OPERATION_ATTEMPT_RESERVED_V0_48: u8 = 0xf8;
 /// change to the live layout must not change what it walks.
 const OPERATION_ATTEMPT_RESERVED_V0_49: u8 = 0xf8;
 
+/// The leading byte of the `expires_at` index in the 0.62 layout of the
+/// "operation attempts" column family, written out rather than taken from the
+/// live table for the reason [`OPERATION_ATTEMPT_RESERVED_V0_49`] gives.
+const OPERATION_ATTEMPT_EXPIRES_AT_V0_62: u8 = 0xfa;
+
+/// The `meta` key [`migrate_0_61_to_0_62`] writes before it changes any row.
+const V0_62_STARTED_KEY: &[u8] = b"migration/0.62.0/started";
+
+/// The column families whose table values [`migrate_0_61_to_0_62`] rewrites,
+/// in the order it rewrites them.
+const TIMESTAMP_FAMILIES_V0_62: [&str; 17] = [
+    crate::tables::OPERATION_ATTEMPTS,
+    crate::tables::TRIAGE_RESPONSE,
+    crate::tables::TOR_EXIT_NODES,
+    crate::tables::TRUSTED_USER_AGENTS,
+    crate::tables::CLUSTER,
+    crate::tables::PREVIOUS_CLUSTER,
+    crate::tables::NODES,
+    crate::tables::NETWORKS,
+    crate::tables::NETWORK_LISTS,
+    crate::tables::CUSTOMER_NETWORKS,
+    crate::tables::SAMPLING_POLICY,
+    crate::tables::TRAFFIC_FILTER_RULES,
+    crate::tables::TRAINING_DEFINITIONS,
+    crate::tables::MODEL_RUNS,
+    crate::tables::MODELS,
+    crate::tables::ENGINE_INSTANCES,
+    crate::tables::SYSTEM_LOG_COLLECTORS,
+];
+
+/// The families of [`TIMESTAMP_FAMILIES_V0_62`] that are `IndexedMap`s, whose
+/// index row is stored under the empty key.
+const INDEXED_FAMILIES_V0_62: [&str; 5] = [
+    crate::tables::NETWORKS,
+    crate::tables::NODES,
+    crate::tables::SAMPLING_POLICY,
+    crate::tables::MODELS,
+    crate::tables::TRIAGE_RESPONSE,
+];
+
 /// The name of the temporary file that [`create_version_file`] renames over
 /// [`VERSION_FILE_NAME`].
 ///
@@ -127,6 +172,13 @@ const VERSION_TMP_FILE_NAME: &str = "VERSION.tmp";
 /// "migration from {version} is not supported": neither
 /// `COMPATIBLE_VERSION_REQ` nor any requirement in the migration table carries
 /// a prerelease, so under semver's matching rule none of them admits it.
+///
+/// The 0.62.0 step records its progress in the `meta` family, because a row
+/// does not tell whether it is in the 0.61 or the 0.62 layout. A chain that
+/// stopped inside that step therefore resumes from it, whatever version
+/// `VERSION` still records, and runs no earlier step again. A run interrupted
+/// after the backup `VERSION` was written and before the data one was, with
+/// the 0.62.0 step complete, has only the data `VERSION` written.
 ///
 /// Pass a shared `IP2Location` database handle when available so endpoint
 /// country-code fields can be resolved during the stored event schema
@@ -162,8 +214,24 @@ pub fn migrate_data_dir<P: AsRef<Path>>(
 
     let (data, data_ver) = retrieve_or_create_version(data_dir)?;
     let (backup, backup_ver) = retrieve_or_create_version(backup_dir)?;
+    let current = Version::parse(DATABASE_FORMAT_VERSION)?;
+    let v0_62 = Version::parse("0.62.0")?;
 
     if data_ver != backup_ver {
+        // `migrate_data_dir` writes the backup VERSION first and the data
+        // VERSION second, so a run interrupted between the two leaves the
+        // backup VERSION current and the data VERSION older. The 0.62 markers
+        // tell whether the database itself finished migrating.
+        if backup_ver == current && data_ver < backup_ver {
+            let markers = MarkersV0_62::read(data_dir)?;
+            if markers.started && markers.all_completed {
+                info!(
+                    "Completing an interrupted VERSION update from {data_ver} to {DATABASE_FORMAT_VERSION}"
+                );
+                return create_version_file(&data, DATABASE_FORMAT_VERSION)
+                    .context("failed to update VERSION");
+            }
+        }
         return Err(anyhow!(
             "mismatched database version {data_ver} and backup version {backup_ver}"
         ));
@@ -172,6 +240,16 @@ pub fn migrate_data_dir<P: AsRef<Path>>(
     let mut version = data_ver;
     if compatible.matches(&version) {
         return Ok(());
+    }
+
+    // VERSION is written only after the whole chain ends, so a chain that
+    // started before 0.61 and stopped inside the 0.62 step still records the
+    // version it started from. Its earlier steps already ran, and the rows the
+    // 0.62 step rewrote no longer decode as the layouts they read, so the chain
+    // resumes from the 0.62 step.
+    if version < v0_62 && MarkersV0_62::read(data_dir)?.started {
+        info!("Resuming the 0.62.0 migration of a database recorded as {version}");
+        version = Version::parse("0.61.0")?;
     }
 
     // A list of migrations where each item is a tuple of (version requirement, to version,
@@ -279,6 +357,11 @@ pub fn migrate_data_dir<P: AsRef<Path>>(
             VersionReq::parse(">=0.60.0,<0.61.0")?,
             Version::parse("0.61.0")?,
             |data_dir, _backup_dir, _locator| migrate_0_60_to_0_61(data_dir),
+        ),
+        (
+            VersionReq::parse(">=0.61.0,<0.62.0")?,
+            Version::parse("0.62.0")?,
+            |data_dir, _backup_dir, _locator| migrate_0_61_to_0_62(data_dir),
         ),
     ];
 
@@ -942,6 +1025,483 @@ fn migrate_0_60_to_0_61(data_dir: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Migrates a database in the 0.61.x format to 0.62.0.
+///
+/// Rewrites every timestamp the table values of
+/// [`TIMESTAMP_FAMILIES_V0_62`] store as text — chrono's default serde string,
+/// a chrono `NaiveDateTime` string, or, in `Tor exit nodes` and `trusted user
+/// agents`, chrono's `Display` text as the whole value — into `i64` Unix-epoch
+/// nanoseconds; see [`old_timestamp_nanos_v0_62`] for how each string is read.
+/// Keys are left as they are. In `operation attempts` only the records, the
+/// keys below [`OPERATION_ATTEMPT_RESERVED_V0_49`], are rewritten, and the
+/// `expires_at` index is rebuilt from the rewritten records; its two other
+/// indexes are left alone. The index row under the empty key of each
+/// `IndexedMap` family in [`INDEXED_FAMILIES_V0_62`] is left alone.
+///
+/// Whether a row is in the 0.61 or the 0.62 layout cannot be told from its
+/// bytes, since a 0.61 string's length can decode as a 0.62 `i64`, so progress
+/// is recorded in `meta` instead: [`V0_62_STARTED_KEY`] before any row is
+/// changed, and each family's completion key, written in the same atomic batch
+/// as that family's rows. A family whose completion key is present is
+/// skipped, and every row of one without it is read as 0.61.
+///
+/// Creates the empty `format 0.62` column family if it is missing, which is
+/// what lets the online restore tell a 0.62 backup from an older one.
+///
+/// A rerun is safe: completed families are skipped, and `migrate_data_dir`
+/// resumes a chain that stopped inside this step from this step, whatever
+/// `VERSION` says, once the start marker is present.
+fn migrate_0_61_to_0_62(data_dir: &Path) -> Result<()> {
+    migrate_0_61_to_0_62_inner(data_dir, None).map(|_| ())
+}
+
+/// Runs [`migrate_0_61_to_0_62`], optionally stopping after rewriting
+/// `family_limit` families.
+///
+/// The limit exists for interrupt-and-resume tests. A `false` result means the
+/// step stopped with families left to rewrite.
+fn migrate_0_61_to_0_62_inner(data_dir: &Path, family_limit: Option<usize>) -> Result<bool> {
+    let db_path = data_dir.join("states.db");
+    let mut opts = rocksdb::Options::default();
+    opts.create_if_missing(false);
+    opts.create_missing_column_families(false);
+    let column_families = map_names_for_existing_format(&opts, &db_path)?;
+    let mut db: rocksdb::OptimisticTransactionDB<rocksdb::SingleThreaded> =
+        rocksdb::OptimisticTransactionDB::open_cf(&opts, &db_path, column_families)
+            .context("failed to open database for the 0.62.0 migration")?;
+
+    if db.cf_handle(crate::tables::FORMAT_0_62).is_none() {
+        info!("Creating '{}' column family", crate::tables::FORMAT_0_62);
+        db.create_cf(crate::tables::FORMAT_0_62, &rocksdb::Options::default())
+            .with_context(|| {
+                format!(
+                    "failed to create '{}' column family",
+                    crate::tables::FORMAT_0_62
+                )
+            })?;
+    }
+
+    let meta = db
+        .cf_handle(crate::tables::META)
+        .context("meta column family not found")?;
+    // The markers decide on the next start whether the rows are 0.61 or 0.62,
+    // and `migrate_data_dir` publishes `VERSION` with a synced write once this
+    // returns. Closing the database does not sync its write-ahead log, so the
+    // marker and every family batch are synced writes: a power loss after
+    // `VERSION` is on disk cannot leave a family behind with 0.61 rows.
+    let mut synced = rocksdb::WriteOptions::default();
+    synced.set_sync(true);
+    db.put_cf_opt(meta, V0_62_STARTED_KEY, b"1", &synced)
+        .context("failed to write the 0.62.0 migration start marker")?;
+
+    let mut rewritten = 0usize;
+    for cf_name in TIMESTAMP_FAMILIES_V0_62 {
+        let completed = v0_62_completed_key(cf_name);
+        if db
+            .get_cf(meta, &completed)
+            .with_context(|| format!("failed to read the 0.62.0 completion key of '{cf_name}'"))?
+            .is_some()
+        {
+            info!("Timestamp migration of '{cf_name}' already complete");
+            continue;
+        }
+        let mut batch = rocksdb::WriteBatchWithTransaction::<true>::default();
+        let converted = if cf_name == crate::tables::OPERATION_ATTEMPTS {
+            rewrite_operation_attempts_v0_62(&db, &mut batch)?
+        } else {
+            rewrite_family_v0_62(&db, cf_name, &mut batch)?
+        };
+        batch.put_cf(meta, &completed, b"1");
+        db.write_opt(batch, &synced)
+            .with_context(|| format!("failed to write the migrated '{cf_name}' rows"))?;
+        info!("Timestamp migration of '{cf_name}' complete: converted_count={converted}");
+        rewritten += 1;
+        if family_limit == Some(rewritten) {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+/// The progress markers [`migrate_0_61_to_0_62`] leaves in `meta`.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct MarkersV0_62 {
+    /// Whether [`V0_62_STARTED_KEY`] is present.
+    started: bool,
+    /// Whether the completion key of every family of
+    /// [`TIMESTAMP_FAMILIES_V0_62`] is present.
+    all_completed: bool,
+}
+
+impl MarkersV0_62 {
+    /// Reads the markers of the states database in `data_dir`.
+    ///
+    /// A missing `states.db`, or one without a `meta` family, has none. The
+    /// database is opened read-only and closed again before this returns.
+    fn read(data_dir: &Path) -> Result<Self> {
+        let db_path = data_dir.join("states.db");
+        if !db_path.exists() {
+            return Ok(Self::default());
+        }
+        let opts = rocksdb::Options::default();
+        if !existing_map_names(&opts, &db_path)?
+            .iter()
+            .any(|name| name == crate::tables::META)
+        {
+            return Ok(Self::default());
+        }
+        let db = rocksdb::DB::open_cf_for_read_only(&opts, &db_path, [crate::tables::META], false)
+            .context("failed to open the database to read the 0.62.0 migration markers")?;
+        let meta = db
+            .cf_handle(crate::tables::META)
+            .context("meta column family not found")?;
+        let present = |key: &[u8]| -> Result<bool> {
+            Ok(db
+                .get_cf(meta, key)
+                .context("failed to read a 0.62.0 migration marker")?
+                .is_some())
+        };
+        let started = present(V0_62_STARTED_KEY)?;
+        let mut all_completed = true;
+        for cf_name in TIMESTAMP_FAMILIES_V0_62 {
+            all_completed &= present(&v0_62_completed_key(cf_name))?;
+        }
+        Ok(Self {
+            started,
+            all_completed,
+        })
+    }
+}
+
+/// Returns the `meta` key that records that [`migrate_0_61_to_0_62`] has
+/// rewritten every row of `cf_name`.
+fn v0_62_completed_key(cf_name: &str) -> Vec<u8> {
+    format!("migration/0.62.0/{cf_name}/completed").into_bytes()
+}
+
+/// Rewrites every record of `cf_name` other than `operation attempts` into
+/// `batch`, as [`migrate_0_61_to_0_62`] describes, and returns how many.
+fn rewrite_family_v0_62(
+    db: &rocksdb::OptimisticTransactionDB<rocksdb::SingleThreaded>,
+    cf_name: &str,
+    batch: &mut rocksdb::WriteBatchWithTransaction<true>,
+) -> Result<usize> {
+    let cf = db
+        .cf_handle(cf_name)
+        .with_context(|| format!("'{cf_name}' column family not found"))?;
+    let indexed = INDEXED_FAMILIES_V0_62.contains(&cf_name);
+    let mut converted = 0usize;
+    for entry in db.iterator_cf(cf, rocksdb::IteratorMode::Start) {
+        let (key, value) = entry.with_context(|| format!("failed to read a '{cf_name}' row"))?;
+        if indexed && key.is_empty() {
+            continue;
+        }
+        batch.put_cf(cf, &key, rewrite_value_v0_62(cf_name, &key, &value)?);
+        converted += 1;
+    }
+    Ok(converted)
+}
+
+/// Returns the 0.62 bytes of the 0.61 value `value` stored under `key` in
+/// `cf_name`.
+fn rewrite_value_v0_62(cf_name: &str, key: &[u8], value: &[u8]) -> Result<Vec<u8>> {
+    use crate::tables::{
+        CLUSTER, CUSTOMER_NETWORKS, ENGINE_INSTANCES, MODEL_RUNS, MODELS, NETWORK_LISTS, NETWORKS,
+        NODES, PREVIOUS_CLUSTER, SAMPLING_POLICY, SYSTEM_LOG_COLLECTORS, TOR_EXIT_NODES,
+        TRAFFIC_FILTER_RULES, TRAINING_DEFINITIONS, TRIAGE_RESPONSE, TRUSTED_USER_AGENTS,
+    };
+
+    /// Decodes `value` as `Old`, converts it with `map_timestamps` and encodes
+    /// the result.
+    fn convert<Old, New>(
+        cf_name: &str,
+        key: &[u8],
+        value: &[u8],
+        form: OldTimestampText,
+        map_timestamps: impl FnOnce(Old, &mut TimestampConverter<'_, String, i64>) -> Result<New>,
+    ) -> Result<Vec<u8>>
+    where
+        Old: serde::de::DeserializeOwned,
+        New: serde::Serialize,
+    {
+        let old: Old = bincode::DefaultOptions::new()
+            .deserialize(value)
+            .with_context(|| {
+                format!(
+                    "'{cf_name}' row with key {} does not decode in the 0.61 layout",
+                    data_encoding::HEXLOWER.encode(key)
+                )
+            })?;
+        let mut ts = |text: String| old_timestamp_nanos_v0_62(&text, form, cf_name, key);
+        let new = map_timestamps(old, &mut ts)?;
+        bincode::DefaultOptions::new()
+            .serialize(&new)
+            .with_context(|| format!("failed to serialize a migrated '{cf_name}' row"))
+    }
+
+    use OldTimestampText::{Naive, Serde};
+    match cf_name {
+        TRIAGE_RESPONSE => convert(
+            cf_name,
+            key,
+            value,
+            Serde,
+            TriageResponseV0_61::map_timestamps,
+        ),
+        TOR_EXIT_NODES | TRUSTED_USER_AGENTS => {
+            let text = std::str::from_utf8(value).with_context(|| {
+                format!(
+                    "'{cf_name}' row with key {} does not decode in the 0.61 layout",
+                    data_encoding::HEXLOWER.encode(key)
+                )
+            })?;
+            let nanos = old_timestamp_nanos_v0_62(text, OldTimestampText::Display, cf_name, key)?;
+            bincode::DefaultOptions::new()
+                .serialize(&nanos)
+                .with_context(|| format!("failed to serialize a migrated '{cf_name}' row"))
+        }
+        CLUSTER | PREVIOUS_CLUSTER => convert(
+            cf_name,
+            key,
+            value,
+            Naive,
+            ClusterValueV0_61::map_timestamps,
+        ),
+        NODES => convert(cf_name, key, value, Serde, NodeV0_61::map_timestamps),
+        NETWORKS => convert(
+            cf_name,
+            key,
+            value,
+            Serde,
+            NetworkValueV0_61::map_timestamps,
+        ),
+        NETWORK_LISTS => convert(
+            cf_name,
+            key,
+            value,
+            Serde,
+            NetworkListSetV0_61::map_timestamps,
+        ),
+        CUSTOMER_NETWORKS => convert(
+            cf_name,
+            key,
+            value,
+            Serde,
+            OwnedNetworkSetV0_61::map_timestamps,
+        ),
+        SAMPLING_POLICY => convert(
+            cf_name,
+            key,
+            value,
+            Serde,
+            SamplingPolicyV0_61::map_timestamps,
+        ),
+        TRAFFIC_FILTER_RULES => convert(
+            cf_name,
+            key,
+            value,
+            Serde,
+            TrafficFilterV0_61::map_timestamps,
+        ),
+        TRAINING_DEFINITIONS => convert(
+            cf_name,
+            key,
+            value,
+            Serde,
+            TrainingDefinitionV0_61::map_timestamps,
+        ),
+        MODEL_RUNS => convert(cf_name, key, value, Serde, ModelRunV0_61::map_timestamps),
+        MODELS => convert(cf_name, key, value, Serde, ModelV0_61::map_timestamps),
+        ENGINE_INSTANCES => convert(
+            cf_name,
+            key,
+            value,
+            Serde,
+            EngineInstanceRowV0_61::map_timestamps,
+        ),
+        SYSTEM_LOG_COLLECTORS => convert(
+            cf_name,
+            key,
+            value,
+            Serde,
+            SystemLogCollectorV0_61::map_timestamps,
+        ),
+        _ => Err(anyhow!(
+            "'{cf_name}' is not a family the 0.62.0 migration rewrites"
+        )),
+    }
+}
+
+/// Rewrites every `operation attempts` record into `batch` and rebuilds the
+/// `expires_at` index from the rewritten records, as
+/// [`migrate_0_61_to_0_62`] describes, and returns how many records.
+///
+/// Every row under the `expires_at` lead byte is deleted first, so the
+/// entries put after it — the same bytes as a deleted one whenever the
+/// record's deadline is within the `i64` nanosecond range — are the ones the
+/// batch leaves.
+fn rewrite_operation_attempts_v0_62(
+    db: &rocksdb::OptimisticTransactionDB<rocksdb::SingleThreaded>,
+    batch: &mut rocksdb::WriteBatchWithTransaction<true>,
+) -> Result<usize> {
+    let cf_name = crate::tables::OPERATION_ATTEMPTS;
+    let cf = db
+        .cf_handle(cf_name)
+        .with_context(|| format!("'{cf_name}' column family not found"))?;
+
+    let mut readopts = rocksdb::ReadOptions::default();
+    readopts.set_iterate_upper_bound([OPERATION_ATTEMPT_EXPIRES_AT_V0_62 + 1]);
+    let start = [OPERATION_ATTEMPT_EXPIRES_AT_V0_62];
+    for entry in db.iterator_cf_opt(
+        cf,
+        readopts,
+        rocksdb::IteratorMode::From(&start, rocksdb::Direction::Forward),
+    ) {
+        let (key, _) = entry.context("failed to read an operation attempt index entry")?;
+        batch.delete_cf(cf, &key);
+    }
+
+    let mut readopts = rocksdb::ReadOptions::default();
+    readopts.set_iterate_upper_bound([OPERATION_ATTEMPT_RESERVED_V0_49]);
+    let mut converted = 0usize;
+    for entry in db.iterator_cf_opt(cf, readopts, rocksdb::IteratorMode::Start) {
+        let (key, value) = entry.context("failed to read an operation attempt record")?;
+        let old: OperationAttemptValueV0_61 = bincode::DefaultOptions::new()
+            .deserialize(&value)
+            .with_context(|| {
+                format!(
+                    "'{cf_name}' row with key {} does not decode in the 0.61 layout",
+                    data_encoding::HEXLOWER.encode(&key)
+                )
+            })?;
+        let mut ts =
+            |text: String| old_timestamp_nanos_v0_62(&text, OldTimestampText::Serde, cf_name, &key);
+        let new = old.map_timestamps(&mut ts)?;
+        batch.put_cf(
+            cf,
+            &key,
+            bincode::DefaultOptions::new()
+                .serialize(&new)
+                .context("failed to serialize a migrated operation attempt record")?,
+        );
+        batch.put_cf(
+            cf,
+            operation_attempt_expires_at_key_v0_62(new.expires_at, &key)?,
+            &key,
+        );
+        converted += 1;
+    }
+    Ok(converted)
+}
+
+/// Returns the 0.62 `expires_at` index key of the operation attempt whose
+/// record stores `expires_at` nanoseconds under `idempotency_key`.
+///
+/// The layout is `[0xfa]`, the seconds as a big-endian `i64` with its sign
+/// bit flipped, the subsecond nanoseconds as a big-endian `u32`, the length
+/// of the idempotency key as a big-endian `u32`, and the idempotency key. It
+/// is written out here rather than taken from the live table, so a later
+/// change to the live layout does not change what this step writes.
+fn operation_attempt_expires_at_key_v0_62(
+    expires_at: i64,
+    idempotency_key: &[u8],
+) -> Result<Vec<u8>> {
+    const NANOS_PER_SECOND: i64 = 1_000_000_000;
+
+    let mut seconds = expires_at.div_euclid(NANOS_PER_SECOND).to_be_bytes();
+    if let Some(first) = seconds.first_mut() {
+        *first ^= 0x80;
+    }
+    let subsec = u32::try_from(expires_at.rem_euclid(NANOS_PER_SECOND))
+        .expect("a Euclidean remainder by one second is in 0..1_000_000_000");
+    let len = u32::try_from(idempotency_key.len()).context("idempotency key is too long")?;
+    let mut key = vec![OPERATION_ATTEMPT_EXPIRES_AT_V0_62];
+    key.extend_from_slice(&seconds);
+    key.extend_from_slice(&subsec.to_be_bytes());
+    key.extend_from_slice(&len.to_be_bytes());
+    key.extend_from_slice(idempotency_key);
+    Ok(key)
+}
+
+/// How a 0.61 table value stores a timestamp as text.
+#[derive(Clone, Copy, Debug)]
+enum OldTimestampText {
+    /// chrono's default serde form of a `DateTime<Utc>`, such as
+    /// `2026-03-15T15:00:04.100Z`.
+    Serde,
+    /// chrono's default serde form of a `NaiveDateTime`, such as
+    /// `2026-03-15T15:00:04.100`.
+    Naive,
+    /// chrono's `Display` of a `DateTime<Utc>`, such as
+    /// `2026-03-15 15:00:04.100 UTC`.
+    Display,
+}
+
+/// Returns the `i64` Unix-epoch nanoseconds of the 0.61 timestamp text
+/// `text`, stored in `form` under `key` in `cf_name`.
+///
+/// The text is read as a civil date and time in UTC, not as a
+/// [`jiff::Timestamp`], whose range ends before chrono's. A value that reads
+/// and lies within the `i64` nanosecond range keeps its value; a leap second
+/// reads as the second before it. A value that reads but lies outside the
+/// range, or past the end of a `jiff::Timestamp`, saturates by its year: one
+/// of 1970 or later to [`i64::MAX`], an earlier one to [`i64::MIN`]. A value
+/// that does not read saturates by its sign, which chrono writes only for a
+/// year of five or more digits: `+` to `i64::MAX` and `-` to `i64::MIN`. Each
+/// saturated value is logged. Any other value fails, naming the family and
+/// the key.
+fn old_timestamp_nanos_v0_62(
+    text: &str,
+    form: OldTimestampText,
+    cf_name: &str,
+    key: &[u8],
+) -> Result<i64> {
+    use jiff::{civil::DateTime, fmt::strtime, tz::TimeZone};
+
+    let parsed: Result<DateTime, anyhow::Error> = match form {
+        OldTimestampText::Serde => text
+            .strip_suffix('Z')
+            .context("the timestamp does not end in 'Z'")
+            .and_then(|civil| civil.parse::<DateTime>().map_err(anyhow::Error::from)),
+        OldTimestampText::Naive => text.parse::<DateTime>().map_err(anyhow::Error::from),
+        OldTimestampText::Display => strtime::parse("%Y-%m-%d %H:%M:%S%.f UTC", text)
+            .and_then(|broken_down| broken_down.to_datetime())
+            .map_err(anyhow::Error::from),
+    };
+    let saturated = match parsed {
+        Ok(datetime) => {
+            if let Some(nanos) = TimeZone::UTC
+                .to_timestamp(datetime)
+                .ok()
+                .and_then(|time| crate::timestamp::to_i64_nanos(time).ok())
+            {
+                return Ok(nanos);
+            }
+            if datetime.year() >= 1970 {
+                i64::MAX
+            } else {
+                i64::MIN
+            }
+        }
+        Err(error) => match text.chars().next() {
+            Some('+') => i64::MAX,
+            Some('-') => i64::MIN,
+            _ => {
+                return Err(error.context(format!(
+                    "'{cf_name}' row with key {} has an unreadable timestamp {text:?}",
+                    data_encoding::HEXLOWER.encode(key)
+                )));
+            }
+        },
+    };
+    warn!(
+        "timestamp {text:?} of the '{cf_name}' row with key {} is outside the i64 nanosecond \
+         range; stored as {saturated}",
+        data_encoding::HEXLOWER.encode(key)
+    );
+    Ok(saturated)
+}
+
 /// Writes the detector id marks of the engine instance rows of `db`, as
 /// [`migrate_0_57_to_0_58`] describes.
 fn migrate_detector_id_marks_v0_58(
@@ -1038,8 +1598,6 @@ fn migrate_retire_sampling_policy_ids(db: &rocksdb::OptimisticTransactionDB) -> 
 /// is false, or from its first character if it is true. No RFC 3339
 /// timestamp's length or leading digit is small enough to be a variant.
 fn migrate_sampling_policy_records_v0_57(db: &rocksdb::OptimisticTransactionDB) -> Result<()> {
-    use crate::Indexable;
-
     let name = crate::tables::SAMPLING_POLICY;
     let cf = db
         .cf_handle(name)
@@ -1051,7 +1609,7 @@ fn migrate_sampling_policy_records_v0_57(db: &rocksdb::OptimisticTransactionDB) 
         let (key, value) = entry.context("failed to read a sampling policy record")?;
         if key.is_empty()
             || bincode::DefaultOptions::new()
-                .deserialize::<crate::SamplingPolicy>(&value)
+                .deserialize::<SamplingPolicyV0_61>(&value)
                 .is_ok()
         {
             continue;
@@ -1141,8 +1699,6 @@ fn sensor_customers_v0_56(
 /// `trained_sources` to the 0.56 one, so neither decodes the other's
 /// records.
 fn migrate_model_trained_sources_v0_57(db: &rocksdb::OptimisticTransactionDB) -> Result<()> {
-    use crate::Indexable;
-
     let name = crate::tables::MODELS;
     let cf = db
         .cf_handle(name)
@@ -1157,7 +1713,7 @@ fn migrate_model_trained_sources_v0_57(db: &rocksdb::OptimisticTransactionDB) ->
         let (key, value) = entry.context("failed to read a model record")?;
         if key.is_empty()
             || bincode::DefaultOptions::new()
-                .deserialize::<crate::tables::Model>(&value)
+                .deserialize::<ModelV0_61>(&value)
                 .is_ok()
         {
             continue;
@@ -2199,7 +2755,7 @@ fn migrate_network_cf_inner(
         description: String,
         networks: crate::types::HostNetworkGroup,
         tag_ids: Vec<u32>,
-        creation_time: chrono::DateTime<chrono::Utc>,
+        creation_time: String,
     }
 
     // Build a new index using the same structure as KeyIndex
@@ -2321,7 +2877,7 @@ fn migrate_network_cf_inner(
             description: old_value.description.clone(),
             networks: old_value.networks.clone(),
             tag_ids: old_value.tag_ids.clone(),
-            creation_time: old_value.creation_time,
+            creation_time: old_value.creation_time.clone(),
         };
 
         let value_bytes = bincode::DefaultOptions::new()
@@ -2848,6 +3404,9 @@ fn write_version_marker(dir: &Path, version: &str) -> Result<()> {
 }
 
 #[cfg(test)]
+mod v0_62_tests;
+
+#[cfg(test)]
 mod tests {
     use std::{collections::HashMap, io::Write, net::IpAddr, path::Path};
 
@@ -2870,11 +3429,11 @@ mod tests {
     use crate::geo::CountryLookup;
     use crate::migration::migration_structures::{
         AgentValueV0_46, AgentValueV0_47, AgentValueV0_61, BlocklistConnFieldsStoredV0_42,
-        ExternalServiceValueV0_46, ExternalServiceValueV0_47, ModelV0_56,
+        ExternalServiceValueV0_46, ExternalServiceValueV0_47, ModelV0_56, ModelV0_61,
         MultiHostPortScanFieldsStoredV0_42, NodeProfileV0_56, NodeV0_56,
         OperationAttemptValueV0_47, OperationAttemptValueV0_48, OperationAttemptValueV0_49,
-        OperationAttemptValueV0_61, SamplingPolicyV0_56, TrainingDefinitionV0_56,
-        V0_46_COUNTRY_CODE_UNRESOLVED,
+        OperationAttemptValueV0_61, OperationAttemptValueV0_62, SamplingPolicyV0_56,
+        SamplingPolicyV0_61, TrainingDefinitionV0_56, V0_46_COUNTRY_CODE_UNRESOLVED,
     };
     use crate::tables::NETWORK_TAGS;
     use crate::test::{DbGuard, acquire_db_permit};
@@ -2900,7 +3459,7 @@ mod tests {
     }
 
     /// Helper to write a specific version to a VERSION file.
-    fn write_version(path: &Path, version: &str) {
+    pub(super) fn write_version(path: &Path, version: &str) {
         let version_file = path.join("VERSION");
         let mut f = std::fs::File::create(&version_file).unwrap();
         f.write_all(version.as_bytes()).unwrap();
@@ -2931,8 +3490,7 @@ mod tests {
 
     fn blocklist_conn_message(legacy: &BlocklistConnFieldsStoredV0_42) -> EventMessage {
         EventMessage {
-            time: crate::event::timestamp::from_chrono(chrono::Utc::now())
-                .expect("current time fits i64 nanoseconds"),
+            time: jiff::Timestamp::now(),
             kind: EventKind::BlocklistConn,
             fields: bincode::serialize(&BlocklistConnFields {
                 sensor: legacy.sensor.clone(),
@@ -3784,6 +4342,9 @@ mod tests {
     /// The column families the 0.61.0 format adds to the 0.60 set.
     const FAMILIES_ADDED_BY_V0_61: [&str; 1] = [crate::tables::FORMAT_0_61];
 
+    /// The column families the 0.62.0 format adds to the 0.61 set.
+    const FAMILIES_ADDED_BY_V0_62: [&str; 1] = [crate::tables::FORMAT_0_62];
+
     /// Migrates a database in the 0.43-through-0.46 layout, recorded as
     /// `version`, and asserts that it reaches the current format with its agent
     /// and external-service values converted.
@@ -3830,6 +4391,7 @@ mod tests {
             .chain(FAMILIES_ADDED_BY_V0_56)
             .chain(FAMILIES_ADDED_BY_V0_58)
             .chain(FAMILIES_ADDED_BY_V0_61)
+            .chain(FAMILIES_ADDED_BY_V0_62)
         {
             assert!(db.cf_handle(name).is_some(), "{name} must exist");
         }
@@ -3841,6 +4403,7 @@ mod tests {
                 + FAMILIES_ADDED_BY_V0_56.len()
                 + FAMILIES_ADDED_BY_V0_58.len()
                 + FAMILIES_ADDED_BY_V0_61.len()
+                + FAMILIES_ADDED_BY_V0_62.len()
                 - FAMILIES_REMOVED_BY_V0_47.len()
                 - FAMILIES_REMOVED_BY_V0_52.len()
                 - FAMILIES_REMOVED_BY_V0_60.len(),
@@ -3854,6 +4417,7 @@ mod tests {
                 + FAMILIES_ADDED_BY_V0_56.len()
                 + FAMILIES_ADDED_BY_V0_58.len()
                 + FAMILIES_ADDED_BY_V0_61.len()
+                + FAMILIES_ADDED_BY_V0_62.len()
                 - FAMILIES_REMOVED_BY_V0_52.len()
                 - FAMILIES_REMOVED_BY_V0_60.len(),
             crate::tables::MAP_NAMES.len()
@@ -3864,6 +4428,7 @@ mod tests {
                 + FAMILIES_ADDED_BY_V0_56.len()
                 + FAMILIES_ADDED_BY_V0_58.len()
                 + FAMILIES_ADDED_BY_V0_61.len()
+                + FAMILIES_ADDED_BY_V0_62.len()
                 - FAMILIES_REMOVED_BY_V0_60.len(),
             crate::tables::MAP_NAMES.len()
         );
@@ -3872,6 +4437,7 @@ mod tests {
                 + FAMILIES_ADDED_BY_V0_56.len()
                 + FAMILIES_ADDED_BY_V0_58.len()
                 + FAMILIES_ADDED_BY_V0_61.len()
+                + FAMILIES_ADDED_BY_V0_62.len()
                 - FAMILIES_REMOVED_BY_V0_60.len(),
             crate::tables::MAP_NAMES.len()
         );
@@ -5339,6 +5905,136 @@ mod tests {
         entries
     }
 
+    /// The prefix of every `meta` key the 0.62.0 step writes.
+    const V0_62_MARKER_PREFIX: &[u8] = b"migration/0.62.0/";
+
+    /// Returns `entries`, a snapshot of a store's families by name, with the
+    /// markers the 0.62.0 step writes to `meta` left out.
+    fn without_v0_62_markers(entries: Vec<(String, Entries)>) -> Vec<(String, Entries)> {
+        entries
+            .into_iter()
+            .map(|(name, rows)| {
+                if name == crate::tables::META {
+                    let rows = rows
+                        .into_iter()
+                        .filter(|(key, _)| !key.starts_with(V0_62_MARKER_PREFIX))
+                        .collect();
+                    (name, rows)
+                } else {
+                    (name, rows)
+                }
+            })
+            .collect()
+    }
+
+    /// Returns `entries`, a snapshot of a store's families by name taken in
+    /// the 0.61 layout, as the 0.62.0 step rewrites them: every table value
+    /// it converts in its 0.62 bytes and every other row as it is.
+    fn as_v0_62(entries: Vec<(String, Entries)>) -> Vec<(String, Entries)> {
+        entries
+            .into_iter()
+            .map(|(name, rows)| {
+                if !super::TIMESTAMP_FAMILIES_V0_62.contains(&name.as_str()) {
+                    return (name, rows);
+                }
+                let rows = rows
+                    .into_iter()
+                    .map(|(key, value)| {
+                        let index = if name == crate::tables::OPERATION_ATTEMPTS {
+                            key.first() >= Some(&super::OPERATION_ATTEMPT_RESERVED_V0_49)
+                        } else {
+                            super::INDEXED_FAMILIES_V0_62.contains(&name.as_str()) && key.is_empty()
+                        };
+                        if index {
+                            return (key, value);
+                        }
+                        let value = if name == crate::tables::OPERATION_ATTEMPTS {
+                            let old: OperationAttemptValueV0_61 =
+                                bincode::DefaultOptions::new().deserialize(&value).unwrap();
+                            let new = old
+                                .map_timestamps(&mut |text: String| {
+                                    super::old_timestamp_nanos_v0_62(
+                                        &text,
+                                        super::OldTimestampText::Serde,
+                                        &name,
+                                        &key,
+                                    )
+                                })
+                                .unwrap();
+                            bincode::DefaultOptions::new().serialize(&new).unwrap()
+                        } else {
+                            super::rewrite_value_v0_62(&name, &key, &value).unwrap()
+                        };
+                        (key, value)
+                    })
+                    .collect();
+                (name, rows)
+            })
+            .collect()
+    }
+
+    /// A `customer networks` value in the 0.61 layout.
+    fn v0_61_customer_networks_row() -> Vec<u8> {
+        bincode::DefaultOptions::new()
+            .serialize(
+                &crate::migration::migration_structures::OwnedNetworkSetV0_61 {
+                    revision: 1,
+                    networks: Vec::new(),
+                    updated_at: "2026-11-21T01:02:03.400Z".to_string(),
+                },
+            )
+            .unwrap()
+    }
+
+    /// A `network lists` value in the 0.61 layout.
+    fn v0_61_network_lists_row() -> Vec<u8> {
+        bincode::DefaultOptions::new()
+            .serialize(
+                &crate::migration::migration_structures::NetworkListSetV0_61 {
+                    revision: 1,
+                    allowlist: Vec::new(),
+                    blocklist: Vec::new(),
+                    updated_at: "2026-11-21T01:02:03.400Z".to_string(),
+                },
+            )
+            .unwrap()
+    }
+
+    /// A `system log collectors` value in the 0.61 layout.
+    fn v0_61_system_log_collector_row() -> Vec<u8> {
+        use crate::migration::migration_structures::{
+            SystemLogCollectorRefusalValue, SystemLogCollectorV0_61,
+        };
+        bincode::DefaultOptions::new()
+            .serialize(&SystemLogCollectorV0_61 {
+                host: "host-a.example".to_string(),
+                instance: Some(1),
+                install_keys: vec!["key-1".to_string()],
+                installed_version: None,
+                installed_commit: None,
+                data_store: None,
+                config: None,
+                last_refusal: Some(SystemLogCollectorRefusalValue {
+                    at: "2026-11-21T01:02:03Z".to_string(),
+                    message: "refused".to_string(),
+                }),
+            })
+            .unwrap()
+    }
+
+    /// A `networks` value in the 0.61 layout.
+    fn v0_61_network_row() -> Vec<u8> {
+        bincode::DefaultOptions::new()
+            .serialize(&crate::migration::migration_structures::NetworkValueV0_61 {
+                id: 9,
+                description: "unrelated".to_string(),
+                networks: crate::types::HostNetworkGroup::default(),
+                tag_ids: Vec::new(),
+                creation_time: "1969-12-31T23:59:59.500Z".to_string(),
+            })
+            .unwrap()
+    }
+
     /// Returns the non-default families physically present, sorted.
     fn present_families(db_path: &Path) -> Vec<String> {
         let mut present = super::existing_map_names(&rocksdb::Options::default(), db_path).unwrap();
@@ -5356,6 +6052,48 @@ mod tests {
         expected
     }
 
+    /// Runs the migration chain of `data_dir` from the version its markers
+    /// record up to 0.61.0 and records 0.61.0 in both markers, as the 0.61
+    /// build did. A test of how an earlier step treats the rows it and the
+    /// steps after it wrote stops here: from the 0.62.0 step on, a retry
+    /// resumes from that step and no earlier one reads a row again.
+    fn migrate_to_v0_61(data_dir: &Path, backup_dir: &Path) {
+        run_steps_to_v0_61(data_dir);
+        write_version(backup_dir, "0.61.0");
+        write_version(data_dir, "0.61.0");
+    }
+
+    /// Runs every step of the migration chain of `data_dir` from the version
+    /// its data marker records up to 0.61.0, writing no marker.
+    pub(super) fn run_steps_to_v0_61(data_dir: &Path) {
+        type Step = fn(&Path) -> anyhow::Result<()>;
+        let steps: [(&str, Step); 17] = [
+            ("0.43.0", super::migrate_0_42_to_0_43),
+            ("0.44.0", super::migrate_0_43_to_0_44),
+            ("0.45.0", super::migrate_0_44_to_0_45),
+            ("0.46.0", |dir| super::migrate_0_45_to_0_46(dir, None)),
+            ("0.47.0", super::migrate_0_46_to_0_47),
+            ("0.48.0", super::migrate_0_47_to_0_48),
+            ("0.49.0", super::migrate_0_48_to_0_49),
+            ("0.50.0", super::migrate_0_49_to_0_50),
+            ("0.52.0", super::migrate_0_50_to_0_52),
+            ("0.53.0", super::migrate_0_52_to_0_53),
+            ("0.55.0", super::migrate_0_53_to_0_55),
+            ("0.56.0", super::migrate_0_55_to_0_56),
+            ("0.57.0", super::migrate_0_56_to_0_57),
+            ("0.58.0", super::migrate_0_57_to_0_58),
+            ("0.59.0", super::migrate_0_58_to_0_59),
+            ("0.60.0", super::migrate_0_59_to_0_60),
+            ("0.61.0", super::migrate_0_60_to_0_61),
+        ];
+        let from = read_version_file(&data_dir.join(VERSION_FILE_NAME)).unwrap();
+        for (to, step) in steps {
+            if Version::parse(to).unwrap() > from {
+                step(data_dir).unwrap_or_else(|error| panic!("step to {to}: {error:#}"));
+            }
+        }
+    }
+
     /// Creates a store over `families`, a subset of the 0.50 and 0.51 set,
     /// marked `version`, with a row in each of the families the 0.52 step
     /// drops that `families` names, network, event and workflow tags and the
@@ -5365,7 +6103,7 @@ mod tests {
     fn create_v0_51_store(data_dir: &Path, backup_dir: &Path, version: &str, families: &[&str]) {
         const NETWORK_FIXTURE: &[u8] = include_bytes!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/tests/fixtures/network_projected_private_value.bin"
+            "/tests/fixtures/network_projected_private_value_v0_61.bin"
         ));
 
         let db_path = data_dir.join("states.db");
@@ -5417,10 +6155,7 @@ mod tests {
             &db_path,
             families.iter().copied(),
             crate::tables::CUSTOMER_NETWORKS,
-            &[(
-                1_u32.to_be_bytes().to_vec(),
-                b"customer networks row".to_vec(),
-            )],
+            &[(1_u32.to_be_bytes().to_vec(), v0_61_customer_networks_row())],
         );
         put_entries(
             &db_path,
@@ -5446,7 +6181,7 @@ mod tests {
         let backup_dir = tempfile::tempdir().unwrap();
         let db_path = data_dir.path().join("states.db");
         create_v0_51_store(data_dir.path(), backup_dir.path(), version, families);
-        let mut expected = kept_family_entries(&db_path);
+        let mut expected = as_v0_62(kept_family_entries(&db_path));
         for (name, entries) in &mut expected {
             if name == crate::tables::META {
                 entries.retain(|(key, _)| key != NETWORK_TAGS);
@@ -5482,7 +6217,10 @@ mod tests {
             ),
             Some(tag_index_bytes(&["event-tag"]))
         );
-        assert_eq!(kept_family_entries(&db_path), expected);
+        assert_eq!(
+            without_v0_62_markers(kept_family_entries(&db_path)),
+            expected
+        );
 
         let store = Store::new(data_dir.path(), backup_dir.path(), None).unwrap();
         drop(store);
@@ -5498,10 +6236,16 @@ mod tests {
         // Running the steps again on the migrated store finds nothing to do.
         super::migrate_0_50_to_0_52(data_dir.path()).unwrap();
         assert_eq!(present_families(&db_path), current_families());
-        assert_eq!(kept_family_entries(&db_path), expected);
+        assert_eq!(
+            without_v0_62_markers(kept_family_entries(&db_path)),
+            expected
+        );
         super::migrate_0_52_to_0_53(data_dir.path()).unwrap();
         assert_eq!(present_families(&db_path), current_families());
-        assert_eq!(kept_family_entries(&db_path), expected);
+        assert_eq!(
+            without_v0_62_markers(kept_family_entries(&db_path)),
+            expected
+        );
     }
 
     /// A `0.51.0` store loses the six families and the network tags, keeps
@@ -5625,7 +6369,7 @@ mod tests {
                 .iter()
                 .any(|name| name == crate::tables::DATA_SOURCES)
         );
-        let expected = kept_family_entries(&db_path);
+        let expected = as_v0_62(kept_family_entries(&db_path));
 
         migrate_data_dir(data_dir.path(), backup_dir.path(), None).unwrap();
 
@@ -5638,7 +6382,10 @@ mod tests {
             current_version
         );
         assert_eq!(present_families(&db_path), current_families());
-        assert_eq!(kept_family_entries(&db_path), expected);
+        assert_eq!(
+            without_v0_62_markers(kept_family_entries(&db_path)),
+            expected
+        );
 
         let store = Store::new(data_dir.path(), backup_dir.path(), None).unwrap();
         drop(store);
@@ -5654,7 +6401,10 @@ mod tests {
         // Running the step again on the migrated store finds nothing to do.
         super::migrate_0_59_to_0_60(data_dir.path()).unwrap();
         assert_eq!(present_families(&db_path), current_families());
-        assert_eq!(kept_family_entries(&db_path), expected);
+        assert_eq!(
+            without_v0_62_markers(kept_family_entries(&db_path)),
+            expected
+        );
     }
 
     /// A store marked `version` over `families` holds bytes no layout decodes
@@ -5752,7 +6502,7 @@ mod tests {
                 .into_iter()
                 .chain(FAMILIES_ADDED_BY_V0_50),
             crate::tables::CUSTOMER_NETWORKS,
-            &[(1u32.to_be_bytes().to_vec(), b"kept".to_vec())],
+            &[(1u32.to_be_bytes().to_vec(), v0_61_customer_networks_row())],
         );
         write_version(data_dir.path(), "0.46.0");
         write_version(backup_dir.path(), "0.46.0");
@@ -5778,7 +6528,15 @@ mod tests {
                 crate::tables::MAP_NAMES,
                 crate::tables::CUSTOMER_NETWORKS
             ),
-            vec![(1u32.to_be_bytes().to_vec(), b"kept".to_vec())]
+            vec![(
+                1u32.to_be_bytes().to_vec(),
+                super::rewrite_value_v0_62(
+                    crate::tables::CUSTOMER_NETWORKS,
+                    &1u32.to_be_bytes(),
+                    &v0_61_customer_networks_row()
+                )
+                .unwrap()
+            )]
         );
     }
 
@@ -5795,10 +6553,7 @@ mod tests {
             &db_path,
             families.iter().copied(),
             crate::tables::CUSTOMER_NETWORKS,
-            &[(
-                1_u32.to_be_bytes().to_vec(),
-                b"customer networks row".to_vec(),
-            )],
+            &[(1_u32.to_be_bytes().to_vec(), v0_61_customer_networks_row())],
         );
         put_entries(
             &db_path,
@@ -5853,11 +6608,15 @@ mod tests {
             .chain(FAMILIES_ADDED_BY_V0_58)
             .filter(|name| !FAMILIES_REMOVED_BY_V0_60.contains(name))
             .collect();
-        let mut v0_61: Vec<&str> = v0_60.into_iter().chain(FAMILIES_ADDED_BY_V0_61).collect();
-        v0_61.sort_unstable();
+        let mut v0_62: Vec<&str> = v0_60
+            .into_iter()
+            .chain(FAMILIES_ADDED_BY_V0_61)
+            .chain(FAMILIES_ADDED_BY_V0_62)
+            .collect();
+        v0_62.sort_unstable();
         let mut current = crate::tables::MAP_NAMES;
         current.sort_unstable();
-        assert_eq!(v0_61, current);
+        assert_eq!(v0_62, current);
 
         create_v0_52_store(data_dir.path(), backup_dir.path(), &super::MAP_NAMES_V0_52);
         assert!(
@@ -5865,7 +6624,7 @@ mod tests {
                 .iter()
                 .any(|name| name == crate::tables::NETWORK_LISTS)
         );
-        let expected = kept_family_entries(&db_path);
+        let expected = as_v0_62(kept_family_entries(&db_path));
 
         migrate_data_dir(data_dir.path(), backup_dir.path(), None).unwrap();
 
@@ -5886,7 +6645,10 @@ mod tests {
             ),
             Entries::new()
         );
-        assert_eq!(kept_family_entries(&db_path), expected);
+        assert_eq!(
+            without_v0_62_markers(kept_family_entries(&db_path)),
+            expected
+        );
 
         // A second start is a no-op: nothing under either directory changes.
         let before = (files_under(data_dir.path()), files_under(backup_dir.path()));
@@ -5921,9 +6683,9 @@ mod tests {
             &db_path,
             families.iter().copied(),
             crate::tables::NETWORK_LISTS,
-            &[(1u32.to_be_bytes().to_vec(), b"kept".to_vec())],
+            &[(1u32.to_be_bytes().to_vec(), v0_61_network_lists_row())],
         );
-        let expected = kept_family_entries(&db_path);
+        let expected = as_v0_62(kept_family_entries(&db_path));
 
         migrate_data_dir(data_dir.path(), backup_dir.path(), None).unwrap();
 
@@ -5942,9 +6704,20 @@ mod tests {
                 crate::tables::MAP_NAMES,
                 crate::tables::NETWORK_LISTS
             ),
-            vec![(1u32.to_be_bytes().to_vec(), b"kept".to_vec())]
+            vec![(
+                1u32.to_be_bytes().to_vec(),
+                super::rewrite_value_v0_62(
+                    crate::tables::NETWORK_LISTS,
+                    &1u32.to_be_bytes(),
+                    &v0_61_network_lists_row()
+                )
+                .unwrap()
+            )]
         );
-        assert_eq!(kept_family_entries(&db_path), expected);
+        assert_eq!(
+            without_v0_62_markers(kept_family_entries(&db_path)),
+            expected
+        );
     }
 
     /// Creates a store over `families`, the 0.55 set or a superset of it,
@@ -5960,7 +6733,7 @@ mod tests {
             &db_path,
             families.iter().copied(),
             crate::tables::NETWORK_LISTS,
-            &[(1_u32.to_be_bytes().to_vec(), b"network lists row".to_vec())],
+            &[(1_u32.to_be_bytes().to_vec(), v0_61_network_lists_row())],
         );
         put_entries(
             &db_path,
@@ -6002,7 +6775,7 @@ mod tests {
                 .iter()
                 .any(|name| name == crate::tables::SYSTEM_LOG_COLLECTORS)
         );
-        let expected = kept_family_entries(&db_path);
+        let expected = as_v0_62(kept_family_entries(&db_path));
 
         migrate_data_dir(data_dir.path(), backup_dir.path(), None).unwrap();
 
@@ -6023,7 +6796,10 @@ mod tests {
             ),
             Entries::new()
         );
-        assert_eq!(kept_family_entries(&db_path), expected);
+        assert_eq!(
+            without_v0_62_markers(kept_family_entries(&db_path)),
+            expected
+        );
 
         // A second start is a no-op: nothing under either directory changes.
         let before = (files_under(data_dir.path()), files_under(backup_dir.path()));
@@ -6059,9 +6835,9 @@ mod tests {
             &db_path,
             families.iter().copied(),
             crate::tables::SYSTEM_LOG_COLLECTORS,
-            &[(b"host-a.example".to_vec(), b"kept".to_vec())],
+            &[(b"host-a.example".to_vec(), v0_61_system_log_collector_row())],
         );
-        let expected = kept_family_entries(&db_path);
+        let expected = as_v0_62(kept_family_entries(&db_path));
 
         migrate_data_dir(data_dir.path(), backup_dir.path(), None).unwrap();
 
@@ -6080,9 +6856,20 @@ mod tests {
                 crate::tables::MAP_NAMES,
                 crate::tables::SYSTEM_LOG_COLLECTORS
             ),
-            vec![(b"host-a.example".to_vec(), b"kept".to_vec())]
+            vec![(
+                b"host-a.example".to_vec(),
+                super::rewrite_value_v0_62(
+                    crate::tables::SYSTEM_LOG_COLLECTORS,
+                    b"host-a.example",
+                    &v0_61_system_log_collector_row()
+                )
+                .unwrap()
+            )]
         );
-        assert_eq!(kept_family_entries(&db_path), expected);
+        assert_eq!(
+            without_v0_62_markers(kept_family_entries(&db_path)),
+            expected
+        );
     }
 
     /// Rows a 0.53 store holds in each per-model family: those of model "m"
@@ -6162,7 +6949,7 @@ mod tests {
             &db_path,
             families.iter().copied(),
             crate::tables::NETWORK_LISTS,
-            &[(1_u32.to_be_bytes().to_vec(), b"network lists row".to_vec())],
+            &[(1_u32.to_be_bytes().to_vec(), v0_61_network_lists_row())],
         );
         if per_model_rows {
             for (family, rows) in per_model_rows_v0_53() {
@@ -6230,7 +7017,10 @@ mod tests {
                 "{name} must be empty"
             );
         }
-        assert_eq!(kept_family_entries(&db_path), expected);
+        assert_eq!(
+            without_v0_62_markers(kept_family_entries(&db_path)),
+            expected
+        );
         assert!(!data_dir.join("classifiers").exists());
         assert_eq!(
             entries_outside_states_db(data_dir),
@@ -6275,7 +7065,7 @@ mod tests {
                 "the fixture fills {family}"
             );
         }
-        let expected = entries_without_models(&db_path);
+        let expected = as_v0_62(entries_without_models(&db_path));
 
         migrate_data_dir(data_dir.path(), backup_dir.path(), None).unwrap();
         assert_migrated_from_v0_53(data_dir.path(), backup_dir.path(), &expected);
@@ -6349,7 +7139,7 @@ mod tests {
                 per_model_rows,
                 classifier_dirs,
             );
-            let expected = entries_without_models(&db_path);
+            let expected = as_v0_62(entries_without_models(&db_path));
 
             migrate_data_dir(data_dir.path(), backup_dir.path(), None).unwrap();
             assert_migrated_from_v0_53(data_dir.path(), backup_dir.path(), &expected);
@@ -6366,7 +7156,7 @@ mod tests {
             true,
             &["model_0"],
         );
-        let expected = entries_without_models(&db_path);
+        let expected = as_v0_62(entries_without_models(&db_path));
         super::migrate_0_53_to_0_55(data_dir.path()).unwrap();
         super::migrate_0_53_to_0_55(data_dir.path()).unwrap();
         migrate_data_dir(data_dir.path(), backup_dir.path(), None).unwrap();
@@ -6393,7 +7183,7 @@ mod tests {
         );
         write_version(data_dir.path(), "0.54.0");
         write_version(backup_dir.path(), "0.54.0");
-        let expected = entries_without_models(&db_path);
+        let expected = as_v0_62(entries_without_models(&db_path));
 
         migrate_data_dir(data_dir.path(), backup_dir.path(), None).unwrap();
         assert_migrated_from_v0_53(data_dir.path(), backup_dir.path(), &expected);
@@ -6918,7 +7708,7 @@ mod tests {
             networks: HostNetworkGroup::default(),
             customer_ids: vec![1, 2, 3],
             tag_ids: vec![10, 20],
-            creation_time: chrono::Utc::now(),
+            creation_time: crate::test::v0_61_serde_string(jiff::Timestamp::now()),
         };
 
         let old_key = make_old_network_key("TestNetwork", 5);
@@ -6931,6 +7721,8 @@ mod tests {
 
         // Run the migration
         super::migrate_network_cf_inner(&db_path, &opts, &crate::tables::MAP_NAMES).unwrap();
+        // The step writes the 0.61 layout; the store reads the current one.
+        super::migrate_0_61_to_0_62(db_dir.path()).unwrap();
 
         // Verify the migration
         let test_schema = TestSchema::new_with_dir(permit, db_dir, tempfile::tempdir().unwrap());
@@ -6974,7 +7766,7 @@ mod tests {
 
         let networks_cf = db.cf_handle("networks").unwrap();
 
-        let creation_time = chrono::Utc::now();
+        let creation_time = crate::test::v0_61_serde_string(jiff::Timestamp::now());
 
         // Entry 1: "DuplicateNet" with id=10
         let old_value1 = NetworkValueV0_43 {
@@ -6982,7 +7774,7 @@ mod tests {
             networks: HostNetworkGroup::default(),
             customer_ids: vec![1],
             tag_ids: vec![100],
-            creation_time,
+            creation_time: creation_time.clone(),
         };
         let old_key1 = make_old_network_key("DuplicateNet", 10);
         let old_value_bytes1 = bincode::DefaultOptions::new()
@@ -6997,7 +7789,7 @@ mod tests {
             networks: HostNetworkGroup::default(),
             customer_ids: vec![2],
             tag_ids: vec![200],
-            creation_time,
+            creation_time: creation_time.clone(),
         };
         let old_key2 = make_old_network_key("DuplicateNet", 3);
         let old_value_bytes2 = bincode::DefaultOptions::new()
@@ -7012,7 +7804,7 @@ mod tests {
             networks: HostNetworkGroup::default(),
             customer_ids: vec![3],
             tag_ids: vec![300],
-            creation_time,
+            creation_time: creation_time.clone(),
         };
         let old_key3 = make_old_network_key("DuplicateNet", 7);
         let old_value_bytes3 = bincode::DefaultOptions::new()
@@ -7027,7 +7819,7 @@ mod tests {
             networks: HostNetworkGroup::default(),
             customer_ids: vec![4],
             tag_ids: vec![400],
-            creation_time,
+            creation_time: creation_time.clone(),
         };
         let old_key4 = make_old_network_key("UniqueNet", 1);
         let old_value_bytes4 = bincode::DefaultOptions::new()
@@ -7040,6 +7832,8 @@ mod tests {
 
         // Run the migration
         super::migrate_network_cf_inner(&db_path, &opts, &crate::tables::MAP_NAMES).unwrap();
+        // The step writes the 0.61 layout; the store reads the current one.
+        super::migrate_0_61_to_0_62(db_dir.path()).unwrap();
 
         // Verify the migration
         let test_schema = TestSchema::new_with_dir(permit, db_dir, tempfile::tempdir().unwrap());
@@ -7095,6 +7889,8 @@ mod tests {
 
         // Run the migration - should not fail on empty column family
         super::migrate_network_cf_inner(&db_path, &opts, &crate::tables::MAP_NAMES).unwrap();
+        // The step writes the 0.61 layout; the store reads the current one.
+        super::migrate_0_61_to_0_62(db_dir.path()).unwrap();
 
         // Verify the migration produced an empty result
         let test_schema = TestSchema::new_with_dir(permit, db_dir, tempfile::tempdir().unwrap());
@@ -7133,7 +7929,7 @@ mod tests {
 
         let networks_cf = db.cf_handle("networks").unwrap();
 
-        let creation_time = chrono::Utc::now();
+        let creation_time = crate::test::v0_61_serde_string(jiff::Timestamp::now());
 
         // Create 5 unique networks with different names and IDs
         let network_data = [
@@ -7150,7 +7946,7 @@ mod tests {
                 networks: HostNetworkGroup::default(),
                 customer_ids: vec![1, 2],
                 tag_ids: tags.clone(),
-                creation_time,
+                creation_time: creation_time.clone(),
             };
             let old_key = make_old_network_key(name, *id);
             let old_value_bytes = bincode::DefaultOptions::new()
@@ -7163,6 +7959,8 @@ mod tests {
 
         // Run the migration
         super::migrate_network_cf_inner(&db_path, &opts, &crate::tables::MAP_NAMES).unwrap();
+        // The step writes the 0.61 layout; the store reads the current one.
+        super::migrate_0_61_to_0_62(db_dir.path()).unwrap();
 
         // Verify the migration
         let test_schema = TestSchema::new_with_dir(permit, db_dir, tempfile::tempdir().unwrap());
@@ -7216,7 +8014,7 @@ mod tests {
 
         let networks_cf = db.cf_handle("networks").unwrap();
 
-        let creation_time = chrono::Utc::now();
+        let creation_time = crate::test::v0_61_serde_string(jiff::Timestamp::now());
         let entries = [("NetA", 1), ("NetB", 3)];
         for (name, id) in entries {
             let old_value = NetworkValueV0_43 {
@@ -7224,7 +8022,7 @@ mod tests {
                 networks: HostNetworkGroup::default(),
                 customer_ids: vec![1],
                 tag_ids: vec![],
-                creation_time,
+                creation_time: creation_time.clone(),
             };
             let old_key = make_old_network_key(name, id);
             let old_value_bytes = bincode::DefaultOptions::new()
@@ -7237,6 +8035,8 @@ mod tests {
 
         // Run the migration
         super::migrate_network_cf_inner(&db_path, &opts, &crate::tables::MAP_NAMES).unwrap();
+        // The step writes the 0.61 layout; the store reads the current one.
+        super::migrate_0_61_to_0_62(db_dir.path()).unwrap();
 
         // Verify the index reuses gaps
         let test_schema = TestSchema::new_with_dir(permit, db_dir, tempfile::tempdir().unwrap());
@@ -7334,7 +8134,7 @@ mod tests {
             node: None,
             column: None,
             immutable: false,
-            creation_time: chrono::Utc::now(),
+            creation_time: crate::test::v0_61_serde_string(jiff::Timestamp::now()),
         }
     }
 
@@ -7486,7 +8286,10 @@ mod tests {
             node: Some("sensor-node-1".to_string()),
             column: Some(7),
             immutable: true,
-            creation_time: chrono::DateTime::from_timestamp(1_700_000_000, 123_456_789).unwrap(),
+            creation_time: crate::test::v0_61_serde_string(crate::test::from_second(
+                1_700_000_000,
+                123_456_789,
+            )),
         };
         let decoded: SamplingPolicyV0_56 = bincode::DefaultOptions::new()
             .deserialize(FIXTURE_BYTES)
@@ -7522,7 +8325,7 @@ mod tests {
                 hostname: hostname.to_string(),
             }),
             profile_draft: None,
-            creation_time: chrono::Utc::now(),
+            creation_time: crate::test::v0_61_serde_string(jiff::Timestamp::now()),
             agents: vec![agent.to_string()],
             external_services: Vec::new(),
         };
@@ -7623,7 +8426,7 @@ mod tests {
         create_v0_56_sampling_policy_store(data_dir.path(), backup_dir.path(), &index, &policies);
         put_v0_56_nodes(&db_path);
 
-        migrate_data_dir(data_dir.path(), backup_dir.path(), None).unwrap();
+        migrate_0_56_to_0_57(data_dir.path()).unwrap();
 
         let stored = |name: &str| {
             raw_value(
@@ -7643,7 +8446,7 @@ mod tests {
                 "`immutable` is gone from {:?}",
                 old.name
             );
-            let migrated: crate::SamplingPolicy =
+            let migrated: SamplingPolicyV0_61 =
                 bincode::DefaultOptions::new().deserialize(&bytes).unwrap();
             let customer_id =
                 matches!(old.name.as_str(), "sensor-named" | "mutable").then_some(SENSOR_CUSTOMER);
@@ -7658,6 +8461,18 @@ mod tests {
         migrate_0_56_to_0_57(data_dir.path()).unwrap();
         let after: Vec<Vec<u8>> = policies.iter().map(|p| stored(&p.name)).collect();
         assert_eq!(after, snapshot);
+
+        // The rest of the chain moves the records to the current layout.
+        migrate_data_dir(data_dir.path(), backup_dir.path(), None).unwrap();
+        for old in &policies {
+            let migrated: crate::SamplingPolicy = bincode::DefaultOptions::new()
+                .deserialize(&stored(&old.name))
+                .unwrap();
+            assert_eq!(
+                migrated.creation_time,
+                old.creation_time.parse::<jiff::Timestamp>().unwrap()
+            );
+        }
 
         let test_schema = TestSchema::new_with_dir(permit, data_dir, backup_dir);
         let table = test_schema.store.sampling_policy_map();
@@ -7691,7 +8506,7 @@ mod tests {
             event_kind: "conn".to_string(),
             customer_id: 1,
             instance: None,
-            trained_at: chrono::Utc::now(),
+            trained_at: crate::test::v0_61_serde_string(jiff::Timestamp::now()),
             classifier_generation: 1,
             trained_run_id: 1,
             trained_definition: "eps = 5.0".to_string(),
@@ -7730,8 +8545,8 @@ mod tests {
                 definition: "eps = 5.0".to_string(),
                 cloning: false,
                 last_run: Some(1),
-                created_at: chrono::Utc::now(),
-                updated_at: chrono::Utc::now(),
+                created_at: crate::test::v0_61_serde_string(jiff::Timestamp::now()),
+                updated_at: crate::test::v0_61_serde_string(jiff::Timestamp::now()),
             };
             (
                 name.as_bytes().to_vec(),
@@ -7750,7 +8565,7 @@ mod tests {
             ],
         );
 
-        migrate_data_dir(data_dir.path(), backup_dir.path(), None).unwrap();
+        migrate_0_56_to_0_57(data_dir.path()).unwrap();
 
         let stored = |name: &str| {
             raw_value(
@@ -7761,7 +8576,7 @@ mod tests {
             )
             .unwrap()
         };
-        let migrated = |name: &str| -> crate::tables::Model {
+        let migrated = |name: &str| -> ModelV0_61 {
             bincode::DefaultOptions::new()
                 .deserialize(&stored(name))
                 .unwrap()
@@ -7785,6 +8600,18 @@ mod tests {
         migrate_0_56_to_0_57(data_dir.path()).unwrap();
         let after: Vec<Vec<u8>> = models.iter().map(|m| stored(&m.name)).collect();
         assert_eq!(after, snapshot);
+
+        // The rest of the chain moves the records to the current layout.
+        migrate_data_dir(data_dir.path(), backup_dir.path(), None).unwrap();
+        for old in &models {
+            let migrated: crate::tables::Model = bincode::DefaultOptions::new()
+                .deserialize(&stored(&old.name))
+                .unwrap();
+            assert_eq!(
+                migrated.trained_at,
+                old.trained_at.parse::<jiff::Timestamp>().unwrap()
+            );
+        }
     }
 
     /// The 0.58 step gives every engine instance row the detector id mark of
@@ -7820,7 +8647,7 @@ mod tests {
             name_draft: None,
             profile: applied.map(profile),
             profile_draft: draft.map(profile),
-            creation_time: chrono::Utc::now(),
+            creation_time: crate::test::v0_61_serde_string(jiff::Timestamp::now()),
             agents: vec!["reconverge".to_string()],
             external_services: Vec::new(),
         };
@@ -7873,12 +8700,21 @@ mod tests {
             reason: None,
             events: 3,
             sources: Vec::new(),
-            reported_at: chrono::Utc::now(),
+            reported_at: jiff::Timestamp::now(),
         };
+        // A 0.57 row stores its timestamps as text, as every layout before
+        // 0.62 does.
         let row = |node_id: u32, agent_key: &str, row: &EngineInstanceRow| {
+            let live: crate::migration::migration_structures::EngineInstanceRowValue<i64> =
+                bincode::DefaultOptions::new()
+                    .deserialize(&bincode::DefaultOptions::new().serialize(row).unwrap())
+                    .unwrap();
+            let old = live
+                .map_timestamps(&mut |nanos| Ok(v0_61_text(nanos)))
+                .unwrap();
             (
                 crate::tables::engine_instance_key(node_id, agent_key),
-                bincode::DefaultOptions::new().serialize(row).unwrap(),
+                bincode::DefaultOptions::new().serialize(&old).unwrap(),
             )
         };
         put_entries(
@@ -7916,7 +8752,7 @@ mod tests {
             ],
         );
 
-        migrate_data_dir(data_dir.path(), backup_dir.path(), None).unwrap();
+        migrate_to_v0_61(data_dir.path(), backup_dir.path());
 
         let marks = || -> Vec<(String, i32)> {
             let db = open_states_db(&db_path, crate::tables::MAP_NAMES);
@@ -7940,6 +8776,9 @@ mod tests {
         // An interrupted chain runs the step again.
         migrate_0_57_to_0_58(data_dir.path()).unwrap();
         assert_eq!(marks(), expected);
+
+        // The rest of the chain moves the rows to the current layout.
+        migrate_data_dir(data_dir.path(), backup_dir.path(), None).unwrap();
 
         let test_schema = TestSchema::new_with_dir(permit, data_dir, backup_dir);
         let store = &test_schema.store;
@@ -8112,7 +8951,7 @@ mod tests {
 
         // Create old-format stored HttpThreatFields with Option<usize> cluster_id
         let old_event = HttpThreatFieldsStoredV0_43 {
-            time: chrono::Utc::now(),
+            time: crate::timestamp::to_i64_nanos(jiff::Timestamp::now()).unwrap(),
             sensor: "test-sensor".to_string(),
             orig_addr: "192.168.1.1".parse::<IpAddr>().unwrap(),
             orig_port: 12345,
@@ -8159,7 +8998,7 @@ mod tests {
 
         // Create event key: (timestamp_nanos << 64) | (event_kind << 32) | random_bits
         // EventKind::HttpThreat = 1
-        let timestamp_nanos = chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0);
+        let timestamp_nanos = crate::timestamp::to_i64_nanos(jiff::Timestamp::now()).unwrap_or(0);
         let event_kind = EventKind::HttpThreat as i32;
         let random_bits: u32 = 12345;
         let key_i128: i128 = (i128::from(timestamp_nanos) << 64)
@@ -8252,7 +9091,7 @@ mod tests {
 
         let serialized = bincode::serialize(&old_event).unwrap();
 
-        let timestamp_nanos = chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0);
+        let timestamp_nanos = crate::timestamp::to_i64_nanos(jiff::Timestamp::now()).unwrap_or(0);
         let event_kind = EventKind::BlocklistDceRpc as i32;
         let random_bits: u32 = 12345;
         let key_i128: i128 = (i128::from(timestamp_nanos) << 64)
@@ -8379,7 +9218,7 @@ mod tests {
         let serialized = bincode::serialize(&old_event).unwrap();
 
         // Create event key: (timestamp_nanos << 64) | (event_kind << 32) | random_bits
-        let timestamp_nanos = chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0);
+        let timestamp_nanos = crate::timestamp::to_i64_nanos(jiff::Timestamp::now()).unwrap_or(0);
         let event_kind = EventKind::BlocklistDhcp as i32;
         let random_bits: u32 = 12345;
         let key_i128: i128 = (i128::from(timestamp_nanos) << 64)
@@ -8501,7 +9340,7 @@ mod tests {
                 },
             ],
             response: vec![],
-            creation_time: chrono::Utc::now(),
+            creation_time: crate::test::v0_61_serde_string(jiff::Timestamp::now()),
             customer_id: None,
         };
 
@@ -8559,7 +9398,6 @@ mod tests {
     #[test]
     fn triage_policy_v0_45_matches_literal_fixture() {
         use attrievent::attribute::RawEventKind;
-        use chrono::{TimeZone, Utc};
 
         use super::migration_structures::TriagePolicyV0_45;
         use crate::{
@@ -8569,8 +9407,15 @@ mod tests {
         const FIXTURE_BYTES: &[u8] =
             include_bytes!("../tests/fixtures/triage_policy_literal_bytes.bin");
 
-        let creation_time = Utc.with_ymd_and_hms(2024, 3, 15, 10, 30, 45).unwrap()
-            + chrono::Duration::nanoseconds(123_456_789);
+        let creation_time = crate::test::v0_61_serde_string(crate::test::utc_nano(
+            2024,
+            3,
+            15,
+            10,
+            30,
+            45,
+            123_456_789,
+        ));
         let expected = TriagePolicyV0_45 {
             id: 42,
             name: "fixture-policy".to_string(),
@@ -8637,8 +9482,8 @@ mod tests {
     const ATTEMPT_HOST: &str = "host-a.example";
     const ATTEMPT_TARGET: &str = "sensor";
 
-    fn attempt_timestamp(secs: i64) -> chrono::DateTime<chrono::Utc> {
-        chrono::DateTime::from_timestamp(secs, 0).unwrap()
+    fn attempt_timestamp(secs: i64) -> jiff::Timestamp {
+        crate::test::from_second(secs, 0)
     }
 
     /// A non-terminal update on `(ATTEMPT_HOST, ATTEMPT_TARGET, instance)`.
@@ -8730,8 +9575,41 @@ mod tests {
         ]
     }
 
-    /// The 0.47 encoding of a value the live table wrote: the same fields,
-    /// without the `failure_kind` and `config_template` 0.47 does not have.
+    /// Returns stored `i64` nanoseconds as the 0.61 format stored them as
+    /// text.
+    fn v0_61_text(nanos: i64) -> String {
+        crate::test::v0_61_serde_string(crate::timestamp::from_i64_nanos(nanos).unwrap())
+    }
+
+    /// Rewrites every operation attempt record of the store at `db_path` from
+    /// the layout the live table writes into the 0.61 one, whose timestamps
+    /// are text, leaving every index entry as it is: the state of a store the
+    /// 0.61 build wrote.
+    fn operation_attempt_records_to_v0_61(db_path: &Path) {
+        let families = super::existing_map_names(&rocksdb::Options::default(), db_path).unwrap();
+        let db = open_states_db(db_path, families.iter().map(String::as_str));
+        let cf = db.cf_handle(crate::tables::OPERATION_ATTEMPTS).unwrap();
+        let records: Entries = all_entries(&db, crate::tables::OPERATION_ATTEMPTS)
+            .into_iter()
+            .filter(|(key, _)| key.first() < Some(&super::OPERATION_ATTEMPT_RESERVED_V0_49))
+            .collect();
+        for (key, value) in records {
+            let live: OperationAttemptValueV0_62 =
+                bincode::DefaultOptions::new().deserialize(&value).unwrap();
+            let old = live
+                .map_timestamps(&mut |nanos| Ok(v0_61_text(nanos)))
+                .unwrap();
+            db.put_cf(
+                &cf,
+                &key,
+                bincode::DefaultOptions::new().serialize(&old).unwrap(),
+            )
+            .unwrap();
+        }
+    }
+
+    /// The 0.47 encoding of a 0.61 value: the same fields, without the
+    /// `failure_kind` and `config_template` 0.47 does not have.
     fn v0_47_encoding(live: &[u8]) -> Vec<u8> {
         let current: OperationAttemptValueV0_61 =
             bincode::DefaultOptions::new().deserialize(live).unwrap();
@@ -8771,11 +9649,11 @@ mod tests {
             resolved_commit: row.resolved_commit.clone(),
             phase: row.phase,
             cleanup_state: row.cleanup_state,
-            started_at: row.started_at,
+            started_at: crate::test::v0_61_serde_string(row.started_at),
             retry_policy: row.retry_policy,
             outcome: row.outcome,
-            finalized_at: row.finalized_at,
-            expires_at: row.expires_at,
+            finalized_at: row.finalized_at.map(crate::test::v0_61_serde_string),
+            expires_at: crate::test::v0_61_serde_string(row.expires_at),
             backup_id: row.backup_id,
             pre_update_version: row.pre_update_version.clone(),
         };
@@ -8836,6 +9714,7 @@ mod tests {
                 table.upsert(row).unwrap();
             }
         }
+        operation_attempt_records_to_v0_61(&data_dir.join("states.db"));
 
         let db = open_states_db(&data_dir.join("states.db"), crate::tables::MAP_NAMES);
         let cf = db.cf_handle(crate::tables::OPERATION_ATTEMPTS).unwrap();
@@ -8884,17 +9763,24 @@ mod tests {
             resolved_commit: "c0ffee".to_string(),
             phase: OperationPhase::AwaitingReport,
             cleanup_state: Some(OperationCleanupState::PendingDeregister),
-            started_at: chrono::DateTime::from_timestamp(1_700_000_000, 123_456_789).unwrap(),
+            started_at: crate::test::v0_61_serde_string(crate::test::from_second(
+                1_700_000_000,
+                123_456_789,
+            )),
             retry_policy: OperationRetryPolicy {
                 max_attempts: 5,
                 attempts_made: 2,
                 backoff_seconds: 30,
             },
             outcome: Some(OperationOutcome::Failed),
-            finalized_at: Some(
-                chrono::DateTime::from_timestamp(1_700_000_500, 987_654_321).unwrap(),
-            ),
-            expires_at: chrono::DateTime::from_timestamp(1_700_086_400, 42).unwrap(),
+            finalized_at: Some(crate::test::v0_61_serde_string(crate::test::from_second(
+                1_700_000_500,
+                987_654_321,
+            ))),
+            expires_at: crate::test::v0_61_serde_string(crate::test::from_second(
+                1_700_086_400,
+                42,
+            )),
             backup_id: Some(9),
             pre_update_version: Some("0.46.0".to_string()),
         };
@@ -9118,6 +10004,7 @@ mod tests {
                 }
             }
         }
+        operation_attempt_records_to_v0_61(&data_dir.join("states.db"));
         let db = open_states_db(&data_dir.join("states.db"), crate::tables::MAP_NAMES);
         let cf = db.cf_handle(crate::tables::OPERATION_ATTEMPTS).unwrap();
         for row in rows {
@@ -9173,9 +10060,9 @@ mod tests {
                 .collect::<Vec<_>>()
         };
 
-        migrate_data_dir(data_dir.path(), backup_dir.path(), None).unwrap();
+        migrate_to_v0_61(data_dir.path(), backup_dir.path());
 
-        let current = Version::parse(DATABASE_FORMAT_VERSION).unwrap();
+        let current = Version::parse("0.61.0").unwrap();
         assert_eq!(
             read_version_file(&data_dir.path().join(VERSION_FILE_NAME)).unwrap(),
             current
@@ -9210,6 +10097,8 @@ mod tests {
         expected_families.sort_unstable();
         assert_eq!(families, expected_families);
 
+        // The rest of the chain moves the rows to the current layout.
+        migrate_data_dir(data_dir.path(), backup_dir.path(), None).unwrap();
         let store = Store::new(data_dir.path(), backup_dir.path(), None).unwrap();
         let table = store.operation_attempt_map();
         for row in &rows {
@@ -9261,7 +10150,7 @@ mod tests {
             &operation_attempt_rows(),
             &[],
         );
-        migrate_data_dir(data_dir.path(), backup_dir.path(), None).unwrap();
+        migrate_to_v0_61(data_dir.path(), backup_dir.path());
 
         let migrated_store = operation_attempt_families(&db_path);
         super::migrate_0_47_to_0_48(data_dir.path()).unwrap();
@@ -9282,7 +10171,7 @@ mod tests {
         operation_attempt_store_v0_47(data_dir.path(), backup_dir.path(), &rows, &already);
         let (before, _) = operation_attempt_families(&db_path);
 
-        migrate_data_dir(data_dir.path(), backup_dir.path(), None).unwrap();
+        migrate_to_v0_61(data_dir.path(), backup_dir.path());
 
         let (after, _) = operation_attempt_families(&db_path);
         assert_eq!(after.len(), before.len());
@@ -9293,6 +10182,8 @@ mod tests {
             assert_eq!(old == new, untouched, "{}", String::from_utf8_lossy(key));
         }
 
+        // The rest of the chain moves the rows to the current layout.
+        migrate_data_dir(data_dir.path(), backup_dir.path(), None).unwrap();
         let store = Store::new(data_dir.path(), backup_dir.path(), None).unwrap();
         let table = store.operation_attempt_map();
         for row in rows {
@@ -9322,7 +10213,7 @@ mod tests {
             &db_path,
             crate::tables::MAP_NAMES,
             crate::tables::NETWORKS,
-            &[(b"unrelated-key".to_vec(), FOREIGN_VALUE.to_vec())],
+            &[(b"unrelated-key".to_vec(), v0_61_network_row())],
         );
 
         // Every record is now in the 0.48 layout, which 0.49 cannot read.
@@ -9357,9 +10248,9 @@ mod tests {
                 .collect::<Vec<_>>()
         };
 
-        migrate_data_dir(data_dir.path(), backup_dir.path(), None).unwrap();
+        migrate_to_v0_61(data_dir.path(), backup_dir.path());
 
-        let current = Version::parse(DATABASE_FORMAT_VERSION).unwrap();
+        let current = Version::parse("0.61.0").unwrap();
         assert_eq!(
             read_version_file(&data_dir.path().join(VERSION_FILE_NAME)).unwrap(),
             current
@@ -9394,6 +10285,8 @@ mod tests {
         expected_families.sort_unstable();
         assert_eq!(families, expected_families);
 
+        // The rest of the chain moves the rows to the current layout.
+        migrate_data_dir(data_dir.path(), backup_dir.path(), None).unwrap();
         let store = Store::new(data_dir.path(), backup_dir.path(), None).unwrap();
         let table = store.operation_attempt_map();
         for row in &rows {
@@ -9455,7 +10348,7 @@ mod tests {
             &operation_attempt_rows_v0_48(),
             &[],
         );
-        migrate_data_dir(data_dir.path(), backup_dir.path(), None).unwrap();
+        migrate_to_v0_61(data_dir.path(), backup_dir.path());
 
         let migrated_store = operation_attempt_families(&db_path);
         super::migrate_0_48_to_0_49(data_dir.path()).unwrap();
@@ -9480,7 +10373,7 @@ mod tests {
         operation_attempt_store_v0_48(data_dir.path(), backup_dir.path(), &rows, &already);
         let (before, _) = operation_attempt_families(&db_path);
 
-        migrate_data_dir(data_dir.path(), backup_dir.path(), None).unwrap();
+        migrate_to_v0_61(data_dir.path(), backup_dir.path());
 
         let (after, _) = operation_attempt_families(&db_path);
         assert_eq!(after.len(), before.len());
@@ -9491,6 +10384,8 @@ mod tests {
             assert_eq!(old == new, untouched, "{}", String::from_utf8_lossy(key));
         }
 
+        // The rest of the chain moves the rows to the current layout.
+        migrate_data_dir(data_dir.path(), backup_dir.path(), None).unwrap();
         let store = Store::new(data_dir.path(), backup_dir.path(), None).unwrap();
         let table = store.operation_attempt_map();
         for row in rows {
@@ -9706,7 +10601,9 @@ mod tests {
     }
 
     /// The column families of a `0.60.0` store: the current ones without the
-    /// marker family.
+    /// 0.61 marker family. The stores built from them are written by the live
+    /// table, so they also hold the empty 0.62 marker family, which the 0.62.0
+    /// step finds there.
     fn map_names_v0_60() -> Vec<&'static str> {
         crate::tables::MAP_NAMES
             .into_iter()
@@ -9810,6 +10707,7 @@ mod tests {
                 }
             }
         }
+        operation_attempt_records_to_v0_61(&data_dir.join("states.db"));
         let db_path = data_dir.join("states.db");
         let mut db = open_states_db(&db_path, crate::tables::MAP_NAMES);
         {
@@ -9864,7 +10762,7 @@ mod tests {
             &db_path,
             map_names_v0_60(),
             crate::tables::NETWORKS,
-            &[(b"unrelated-key".to_vec(), FOREIGN_VALUE.to_vec())],
+            &[(b"unrelated-key".to_vec(), v0_61_network_row())],
         );
         assert!(
             !present_families(&db_path)
@@ -9893,9 +10791,9 @@ mod tests {
                 .collect::<Vec<_>>()
         };
 
-        migrate_data_dir(data_dir.path(), backup_dir.path(), None).unwrap();
+        migrate_to_v0_61(data_dir.path(), backup_dir.path());
 
-        let current = Version::parse(DATABASE_FORMAT_VERSION).unwrap();
+        let current = Version::parse("0.61.0").unwrap();
         assert_eq!(current, Version::parse("0.61.0").unwrap());
         assert_eq!(
             read_version_file(&data_dir.path().join(VERSION_FILE_NAME)).unwrap(),
@@ -9941,6 +10839,20 @@ mod tests {
             operation_attempt_families(&db_path),
             cf_entries(&db_path, crate::tables::MAP_NAMES, crate::tables::AGENTS),
         );
+        // A rerun over the migrated store changes no row.
+        super::migrate_0_60_to_0_61(data_dir.path()).unwrap();
+        assert_eq!(
+            (
+                operation_attempt_families(&db_path),
+                cf_entries(&db_path, crate::tables::MAP_NAMES, crate::tables::AGENTS),
+            ),
+            snapshot
+        );
+        assert_eq!(present_families(&db_path), current_families());
+
+        // The rest of the chain moves the rows to the current layout.
+        migrate_data_dir(data_dir.path(), backup_dir.path(), None).unwrap();
+        assert_eq!(present_families(&db_path), current_families());
         {
             let store = Store::new(data_dir.path(), backup_dir.path(), None).unwrap();
             let table = store.operation_attempt_map();
@@ -9968,17 +10880,6 @@ mod tests {
                 assert_eq!(agent.installed_version, Some(format!("1.{index}.0")));
             }
         }
-
-        // A rerun over the migrated store changes no row.
-        super::migrate_0_60_to_0_61(data_dir.path()).unwrap();
-        assert_eq!(
-            (
-                operation_attempt_families(&db_path),
-                cf_entries(&db_path, crate::tables::MAP_NAMES, crate::tables::AGENTS),
-            ),
-            snapshot
-        );
-        assert_eq!(present_families(&db_path), current_families());
     }
 
     /// A run interrupted part-way leaves some rows in each layout. The retry
@@ -10013,7 +10914,7 @@ mod tests {
         store_v0_60(data_dir.path(), backup_dir.path(), &rows, &[LIVE], &agents);
 
         let records_before = operation_attempt_records(&db_path);
-        migrate_data_dir(data_dir.path(), backup_dir.path(), None).unwrap();
+        migrate_to_v0_61(data_dir.path(), backup_dir.path());
 
         let records = operation_attempt_records(&db_path);
         assert_eq!(records.len(), records_before.len());
@@ -10053,6 +10954,8 @@ mod tests {
             snapshot
         );
 
+        // The rest of the chain moves the rows to the current layout.
+        migrate_data_dir(data_dir.path(), backup_dir.path(), None).unwrap();
         let store = Store::new(data_dir.path(), backup_dir.path(), None).unwrap();
         let table = store.operation_attempt_map();
         assert_eq!(
@@ -10107,6 +11010,10 @@ mod tests {
                     }
                 }
             }
+            // The live table writes the current layout; the 0.62.0 step
+            // writes the same bytes from the 0.61 rows the store holds.
+            let live_attempts = operation_attempt_families(&db_path);
+            operation_attempt_records_to_v0_61(&db_path);
 
             let policy = SamplingPolicyV0_56 {
                 node: Some(format!("piglet.{SENSOR_HOST}")),
@@ -10138,7 +11045,6 @@ mod tests {
             );
             write_version(data_dir.path(), marker);
             write_version(backup_dir.path(), marker);
-            let attempts = operation_attempt_families(&db_path);
 
             migrate_data_dir(data_dir.path(), backup_dir.path(), None)
                 .unwrap_or_else(|error| panic!("retry from {marker}: {error:#}"));
@@ -10148,7 +11054,11 @@ mod tests {
                 Version::parse(DATABASE_FORMAT_VERSION).unwrap()
             );
             assert_eq!(present_families(&db_path), current_families());
-            assert_eq!(operation_attempt_families(&db_path), attempts, "{marker}");
+            assert_eq!(
+                operation_attempt_families(&db_path),
+                live_attempts,
+                "{marker}"
+            );
             assert_eq!(
                 cf_entries(&db_path, crate::tables::MAP_NAMES, crate::tables::AGENTS),
                 agents,

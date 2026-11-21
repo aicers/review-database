@@ -803,8 +803,6 @@ mod tests {
         },
     };
 
-    use chrono::Utc;
-
     use super::*;
     use crate::{
         Agent, AgentStatus, EngineDocumentError, EngineDocumentRefs, EngineDocumentWrite,
@@ -886,7 +884,7 @@ mod tests {
             profile_draft: None,
             agents,
             external_services: Vec::new(),
-            creation_time: Utc::now(),
+            creation_time: jiff::Timestamp::now(),
         };
         store.node_map().put(&node).unwrap()
     }
@@ -1550,7 +1548,7 @@ mod tests {
         let f = setup();
         let store = f.store();
         add_indicator(store, INDICATOR, 3);
-        let modified = chrono::DateTime::from_timestamp(1_000, 0).unwrap();
+        let modified = crate::test::from_second(1_000, 0);
         store
             .update_model_indicator(ModelIndicator {
                 name: INDICATOR.to_string(),
@@ -1712,7 +1710,7 @@ mod tests {
                     customer_id: CUSTOMER,
                     instance: f.other_engine(),
                 },
-                Utc::now(),
+                jiff::Timestamp::now(),
                 TrainedWith {
                     run_id: 0,
                     definition: "eps = 1.0".to_string(),
@@ -1767,7 +1765,7 @@ mod tests {
                     reason: None,
                     events: 0,
                     sources: Vec::new(),
-                    reported_at: Utc::now(),
+                    reported_at: jiff::Timestamp::now(),
                 },
             )
             .unwrap();
@@ -2591,7 +2589,7 @@ mod tests {
                     customer_id: CUSTOMER,
                     instance: f.engine(),
                 },
-                Utc::now(),
+                jiff::Timestamp::now(),
                 TrainedWith {
                     run_id: 0,
                     definition: "eps = 1.0".to_string(),

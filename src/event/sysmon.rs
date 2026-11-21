@@ -5,9 +5,9 @@ use attrievent::attribute::{RawEventAttrKind, WindowAttr};
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
-use super::timestamp::ts_nanoseconds as jiff_ts_nanoseconds;
 use super::{EventCategory, LearningMethod, ThreatLevel, TriageScore, common::Match};
 use crate::event::common::{AttrValue, triage_scores_to_string};
+use crate::timestamp::ts_nanoseconds as jiff_ts_nanoseconds;
 
 // TODO: We plan to implement the triage feature only after we have cleaned up the range of
 // values for the properties for each sysmon service.

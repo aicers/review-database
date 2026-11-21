@@ -4,9 +4,9 @@ use attrievent::attribute::{ConnAttr, RawEventAttrKind};
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
-use super::timestamp;
 use super::{EventCategory, LearningMethod, ThreatLevel, TriageScore, common::Match};
 use crate::event::common::{AttrValue, triage_scores_to_string};
+use crate::timestamp;
 
 #[derive(Serialize, Deserialize)]
 pub struct UnusualDestinationPatternFields {
@@ -229,23 +229,13 @@ impl Match for UnusualDestinationPattern {
 mod tests {
     use std::net::Ipv4Addr;
 
-    use chrono::{TimeZone, Utc};
-
     use super::*;
 
     fn sample_fields(category: Option<EventCategory>) -> UnusualDestinationPatternFields {
         UnusualDestinationPatternFields {
             sensor: "sensor".to_string(),
-            sampling_window_start_time: Utc
-                .with_ymd_and_hms(1970, 1, 1, 0, 1, 1)
-                .unwrap()
-                .timestamp_nanos_opt()
-                .unwrap(),
-            sampling_window_end_time: Utc
-                .with_ymd_and_hms(1970, 1, 1, 0, 1, 2)
-                .unwrap()
-                .timestamp_nanos_opt()
-                .unwrap(),
+            sampling_window_start_time: crate::test::utc_nanos(1970, 1, 1, 0, 1, 1),
+            sampling_window_end_time: crate::test::utc_nanos(1970, 1, 1, 0, 1, 2),
             destination_ips: vec![IpAddr::V4(Ipv4Addr::LOCALHOST)],
             count: 1,
             expected_mean: 1.0,
