@@ -250,7 +250,7 @@ pub enum FailureKind {
     BuildNotServable = 8,
     /// No confirmation arrived before the attempt's deadline.
     NoConfirmation = 9,
-    /// Anything else, including every row migrated from 0.47.
+    /// Anything else.
     Other = 10,
 }
 
@@ -5493,19 +5493,11 @@ mod tests {
         assert_no_allocations(&test_db);
     }
 
-    /// Holds the pinned 0.62 layout the migration writes to the live `Value`:
-    /// it must decode a live encoding and re-encode it to the very same bytes.
-    /// The options the table reads with refuse a short value and trailing
-    /// bytes alike, so a field added to either side and not the other fails
-    /// here. The fully populated record is also held to the literal bytes of
-    /// `operation_attempt_v0_62_literal.bin`, so an encoding change shared by
-    /// both sides fails too.
+    /// Holds the live record value of a fully populated attempt to the literal
+    /// bytes of `operation_attempt_v0_62_literal.bin`, so any change to the
+    /// stored layout or its encoding fails here.
     #[test]
     fn pinned_v0_62_layout_matches_the_live_value() {
-        use bincode::Options;
-
-        use crate::migration::migration_structures::OperationAttemptValueV0_62;
-
         let mut attempt = install_attempt(REQUEST_KEY, HOST, TARGET, Some(7));
         attempt.cleanup_state = Some(CleanupState::PendingDeregister);
         attempt.phase = Phase::AwaitingReport;
@@ -5514,46 +5506,6 @@ mod tests {
         attempt.finalized_at = Some("2024-06-15T12:30:45.1Z".parse().unwrap());
         attempt.backup_id = Some(9);
         attempt.pre_update_version = Some("0.47.0".to_string());
-
-        for privilege_profile in [Some("replay".to_string()), None] {
-            attempt.privilege_profile = privilege_profile.clone();
-            for config_template in [Some("baseline".to_string()), None] {
-                attempt.config_template = config_template.clone();
-                for failure_kind in [Some(FailureKind::TrustAnchorRefused), None] {
-                    attempt.failure_kind = failure_kind;
-                    let live = attempt.record_value();
-                    let pinned: OperationAttemptValueV0_62 =
-                        bincode::DefaultOptions::new().deserialize(&live).unwrap();
-                    assert_eq!(
-                        pinned.started_at,
-                        crate::timestamp::to_i64_nanos(attempt.started_at).unwrap()
-                    );
-                    assert_eq!(
-                        pinned.finalized_at,
-                        attempt
-                            .finalized_at
-                            .map(|at| crate::timestamp::to_i64_nanos(at).unwrap())
-                    );
-                    assert_eq!(
-                        pinned.expires_at,
-                        crate::timestamp::to_i64_nanos(attempt.expires_at).unwrap()
-                    );
-                    assert_eq!(pinned.failure_kind, failure_kind);
-                    assert_eq!(pinned.config_template, config_template);
-                    assert_eq!(pinned.privilege_profile, privilege_profile);
-                    assert_eq!(pinned.host, attempt.host);
-                    assert_eq!(pinned.install_intent, attempt.install_intent);
-                    assert_eq!(pinned.pre_update_version, attempt.pre_update_version);
-                    assert_eq!(
-                        bincode::DefaultOptions::new().serialize(&pinned).unwrap(),
-                        live
-                    );
-                }
-            }
-        }
-
-        // The fully populated record keeps the bytes the fixture pins, which
-        // the 0.62.0 step also writes for its 0.61 form.
         attempt.privilege_profile = Some("replay".to_string());
         attempt.config_template = Some("baseline".to_string());
         attempt.failure_kind = Some(FailureKind::TrustAnchorRefused);

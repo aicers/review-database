@@ -1053,7 +1053,7 @@ mod test {
     /// production serializer inside this test). `creation_time` is pinned to
     /// `2023-11-14T22:13:20.123456789Z` so the encoding stays deterministic.
     /// Regenerate with `dump_sampling_policy_literal_fixture_bytes` if the
-    /// stored layout changes; the layout before it is pinned in `migration`.
+    /// stored layout changes.
     ///
     /// Variants not covered: `Kind::{Conn,Dns,Rdp}`; `Interval` values other
     /// than `ThirtyMinutes`; `Period` values other than `OneDay`;
