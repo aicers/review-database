@@ -5,6 +5,16 @@ file is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), and
 this project adheres to [Semantic
 Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.67.0](https://github.com/aicers/review-database/compare/0.66.0...0.67.0) - 2026-11-22
+
+### Added
+
+- record engine config revisions with history and stop reusing node ids ([#1093](https://github.com/aicers/review-database/pull/1093))
+- [**breaking**] store detection events in place of per-kind events and port filtering and triage scoring ([#1094](https://github.com/aicers/review-database/pull/1094))
+- add detection model properties and engine document completion ([#1091](https://github.com/aicers/review-database/pull/1091))
+- [**breaking**] rename the training event kind to raw event kind and add a log kind ([#1090](https://github.com/aicers/review-database/pull/1090))
+- [**breaking**] add entry ids and item readers to the allowlist and blocklist ([#1089](https://github.com/aicers/review-database/pull/1089))
+
 ## [0.66.0](https://github.com/aicers/review-database/compare/0.65.0...0.66.0) - 2026-11-22
 
 ### Added
