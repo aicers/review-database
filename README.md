@@ -15,7 +15,8 @@ flexible database interface for efficient data management.
   analysis
 - Support for various cybersecurity-related entities such as agents, data
   sources, and traffic filters
-- Flexible schema migration tools for seamless updates
+- Database format checks that refuse data directories and backups of an
+  unsupported format
 - Backup and restore functionalities for data integrity
 - Efficient data structures for handling large-scale datasets
 
@@ -41,6 +42,16 @@ and
 [`COUNTRY_CODE_UNRESOLVED`](https://docs.rs/review-database/latest/review_database/constant.COUNTRY_CODE_UNRESOLVED.html)
 for placeholder semantics. Vector country-code fields retain the same length
 and ordering as their corresponding address vectors.
+
+## Database Format
+
+The database format is recorded in a `VERSION` file in the data directory and
+in the backup directory, and checked by `migrate_data_dir` before the store is
+opened. Format 0.63 is deployed by a fresh install only: no data directory or
+backup of format 0.62 or earlier is migrated to it. `migrate_data_dir` refuses
+an earlier marker without changing either directory, and an online restore
+refuses a backup taken in an earlier format. To move to format 0.63, start from
+empty data and backup directories; existing data is not carried over.
 
 ## License
 

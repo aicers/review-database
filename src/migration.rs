@@ -68,7 +68,9 @@ const VERSION_TMP_FILE_NAME: &str = "VERSION.tmp";
 /// only, so no earlier format is migrated.
 ///
 /// A directory is *fresh* when it is missing, empty, or holds nothing but a
-/// `VERSION.tmp` left behind by an interrupted marker write. The pair is
+/// `VERSION.tmp` left behind by an interrupted marker write, which is a regular
+/// file; a subdirectory or a symbolic link of that name makes the directory
+/// populated. The pair is
 /// accepted when
 ///
 /// * both directories are fresh: each is created if missing and given a
@@ -238,7 +240,8 @@ fn unsupported(version: &Version) -> anyhow::Error {
 /// Returns the format marker `dir` holds, or `None` if `dir` is fresh.
 ///
 /// A fresh directory is missing, empty, or holds nothing but a
-/// `VERSION.tmp`. Nothing is created or changed either way.
+/// `VERSION.tmp` that is a regular file. Nothing is created or changed either
+/// way.
 ///
 /// # Errors
 ///
@@ -253,13 +256,16 @@ fn read_marker(dir: &Path) -> Result<Option<Version>> {
 
     // A temporary left behind by an interrupted write must not make an
     // otherwise empty directory look populated, or a fresh data directory
-    // would never be given a VERSION. Only that one name is forgiven: a
+    // would never be given a VERSION. Only that one name is forgiven, and only
+    // as a regular file, which is all `create_version_file` can leave: a
     // directory holding anything else but no VERSION stays an error, since
     // stamping the current version onto an existing tree would let it open in
-    // a format it is not in.
+    // a format it is not in. A subdirectory or a symbolic link of that name is
+    // no leftover of ours, and calling it fresh would let one side be written
+    // before the write over that name fails on the other.
     let tmp = dir.join(VERSION_TMP_FILE_NAME);
     let populated = entries.into_iter().any(|entry| match entry {
-        Ok(entry) => entry.path() != tmp,
+        Ok(entry) => entry.path() != tmp || !entry.file_type().is_ok_and(|kind| kind.is_file()),
         Err(_) => true,
     });
     if !populated {
@@ -461,6 +467,11 @@ mod tests {
         Marked(&'a str),
         /// A database and no `VERSION`.
         Unmarked,
+        /// Nothing but a subdirectory named `VERSION.tmp`.
+        TmpDirectory,
+        /// Nothing but a symbolic link named `VERSION.tmp` to a regular file
+        /// outside the directory.
+        TmpSymlink,
     }
 
     /// Creates `name` under `root` holding what `side` describes, and returns
@@ -482,6 +493,16 @@ mod tests {
             Side::Unmarked => {
                 std::fs::create_dir(&dir).unwrap();
                 std::fs::write(dir.join("states.db"), b"synthetic database").unwrap();
+            }
+            Side::TmpDirectory => {
+                std::fs::create_dir(&dir).unwrap();
+                std::fs::create_dir(dir.join(VERSION_TMP_FILE_NAME)).unwrap();
+            }
+            Side::TmpSymlink => {
+                std::fs::create_dir(&dir).unwrap();
+                let target = root.join(format!("{name}-link-target"));
+                std::fs::write(&target, STALE_TMP).unwrap();
+                std::os::unix::fs::symlink(&target, dir.join(VERSION_TMP_FILE_NAME)).unwrap();
             }
         }
         dir
@@ -509,6 +530,18 @@ mod tests {
         let mut files = BTreeMap::new();
         walk(dir, dir, &mut files);
         Some(files)
+    }
+
+    /// The device, inode and modification time of the `VERSION` in `dir`.
+    ///
+    /// A marker that is replaced through a rename gets a new inode, and one
+    /// rewritten in place gets a new modification time, so a marker that is
+    /// written again with the same bytes still changes this.
+    fn marker_identity(dir: &Path) -> (u64, u64, std::time::SystemTime) {
+        use std::os::unix::fs::MetadataExt;
+
+        let metadata = std::fs::metadata(dir.join(VERSION_FILE_NAME)).unwrap();
+        (metadata.dev(), metadata.ino(), metadata.modified().unwrap())
     }
 
     /// Runs `migrate_data_dir` over `data` and `backup`, and returns the two
@@ -584,26 +617,39 @@ mod tests {
 
                 let data_before = dir_state(&data_dir);
                 let backup_before = dir_state(&backup_dir);
+                let data_marker = marker_identity(&data_dir);
+                let backup_marker = marker_identity(&backup_dir);
                 migrate_data_dir(&data_dir, &backup_dir, None).unwrap();
                 assert_eq!(dir_state(&data_dir), data_before);
                 assert_eq!(dir_state(&backup_dir), backup_before);
+                assert_eq!(marker_identity(&data_dir), data_marker);
+                assert_eq!(marker_identity(&backup_dir), backup_marker);
             }
         }
     }
 
-    /// Both directories at the current format open, and nothing is written.
+    /// Both directories holding the same marker in the compatible range open,
+    /// and nothing is written: neither marker is replaced, even with the same
+    /// bytes.
     #[test]
-    fn current_markers_open_unchanged() {
-        let root = tempfile::tempdir().unwrap();
-        let data_dir = make_side(root.path(), "data", Side::Marked(DATABASE_FORMAT_VERSION));
-        let backup_dir = make_side(root.path(), "backup", Side::Marked(DATABASE_FORMAT_VERSION));
-        let data_before = dir_state(&data_dir);
-        let backup_before = dir_state(&backup_dir);
+    fn matching_compatible_markers_open_unchanged() {
+        for marker in [DATABASE_FORMAT_VERSION, "0.63.1"] {
+            let root = tempfile::tempdir().unwrap();
+            let data_dir = make_side(root.path(), "data", Side::Marked(marker));
+            let backup_dir = make_side(root.path(), "backup", Side::Marked(marker));
+            let data_before = dir_state(&data_dir);
+            let backup_before = dir_state(&backup_dir);
+            let data_marker = marker_identity(&data_dir);
+            let backup_marker = marker_identity(&backup_dir);
 
-        migrate_data_dir(&data_dir, &backup_dir, None).unwrap();
+            migrate_data_dir(&data_dir, &backup_dir, None)
+                .unwrap_or_else(|e| panic!("two {marker} markers must open: {e:#}"));
 
-        assert_eq!(dir_state(&data_dir), data_before);
-        assert_eq!(dir_state(&backup_dir), backup_before);
+            assert_eq!(dir_state(&data_dir), data_before, "{marker}");
+            assert_eq!(dir_state(&backup_dir), backup_before, "{marker}");
+            assert_eq!(marker_identity(&data_dir), data_marker, "{marker}");
+            assert_eq!(marker_identity(&backup_dir), backup_marker, "{marker}");
+        }
     }
 
     /// The current format on one side and a fresh directory on the other, on
@@ -621,6 +667,7 @@ mod tests {
                     marked,
                 );
                 let marked_before = dir_state(&marked_dir);
+                let marked_marker = marker_identity(&marked_dir);
                 let fresh_dir = make_side(
                     root.path(),
                     if marked_on_data { "backup" } else { "data" },
@@ -641,6 +688,7 @@ mod tests {
                     "{fresh:?} must hold VERSION alone"
                 );
                 assert_eq!(dir_state(&marked_dir), marked_before);
+                assert_eq!(marker_identity(&marked_dir), marked_marker);
             }
         }
     }
@@ -747,6 +795,22 @@ mod tests {
             Side::Unmarked,
             "cannot open VERSION",
         );
+    }
+
+    /// A `VERSION.tmp` that is not a regular file makes its directory
+    /// populated rather than fresh. Beside a fresh directory, on each side in
+    /// turn, the pair is refused for the missing `VERSION`, and neither side is
+    /// written: the fresh one gets no `VERSION`, and the `VERSION.tmp` is left
+    /// as it is.
+    #[test]
+    fn a_version_tmp_that_is_not_a_regular_file_is_refused() {
+        for odd in [Side::TmpDirectory, Side::TmpSymlink] {
+            for fresh in FRESH {
+                assert_refused(odd, Side::Fresh(fresh), "cannot open VERSION");
+                assert_refused(Side::Fresh(fresh), odd, "cannot open VERSION");
+            }
+            assert_refused(odd, odd, "cannot open VERSION");
+        }
     }
 
     /// A `VERSION` that does not parse is refused, on each side in turn and
