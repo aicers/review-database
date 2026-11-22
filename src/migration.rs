@@ -2,11 +2,11 @@
 //! backup directory.
 use std::{
     fs::{
-        File, OpenOptions, canonicalize, create_dir_all, metadata, remove_dir, remove_file, rename,
-        symlink_metadata,
+        File, OpenOptions, Permissions, canonicalize, create_dir_all, metadata, remove_dir,
+        remove_file, rename, symlink_metadata,
     },
     io::{ErrorKind, Read, Write},
-    os::unix::fs::MetadataExt,
+    os::unix::fs::{MetadataExt, PermissionsExt},
     path::{Component, Path, PathBuf},
     sync::Arc,
 };
@@ -44,6 +44,9 @@ pub(crate) const DATABASE_FORMAT_VERSION: &str = "0.63.0";
 /// [`migrate_data_dir`]. No build writes a marker in this range other than
 /// [`DATABASE_FORMAT_VERSION`], and no build writes a prerelease marker.
 const COMPATIBLE_VERSION_REQ: &str = ">=0.63.0,<0.64.0";
+
+/// The permission bits of a file mode, without its file type.
+const MODE_BITS: u32 = 0o7777;
 
 /// The name of the file recording the database format version.
 const VERSION_FILE_NAME: &str = "VERSION";
@@ -128,7 +131,12 @@ const VERSION_TMP_FILE_NAME: &str = "VERSION.tmp";
 ///   initializing the fresh one would take the other's marker away.
 ///
 /// Returns an error if a fresh directory cannot be created or its `VERSION`
-/// cannot be written.
+/// cannot be written. What the call created or wrote in either directory up
+/// to then is undone first: each `VERSION` written is removed, a leftover
+/// `VERSION.tmp` is put back with its bytes and mode, and a directory that was
+/// missing is removed again, so that, as for a refused pair, only the
+/// modification and status change times of the directories involved record
+/// the attempt. The error names the undo as well if it fails too.
 pub fn migrate_data_dir<P: AsRef<Path>>(
     data_dir: P,
     backup_dir: P,
@@ -152,24 +160,16 @@ pub fn migrate_data_dir<P: AsRef<Path>>(
     let backup_ver = read_marker(backup_dir)?;
 
     match (data_ver, backup_ver) {
-        (None, None) => {
-            create_fresh_dirs(data_dir, backup_dir)?;
-            write_version_marker(data_dir, DATABASE_FORMAT_VERSION, Leftover::Replace)
-                .context("failed to create VERSION")?;
-            write_version_marker(backup_dir, DATABASE_FORMAT_VERSION, Leftover::Replace)
-                .context("failed to create VERSION")
-        }
+        (None, None) => initialize_fresh_dirs(&[data_dir, backup_dir]),
         (Some(data_ver), None) => {
             check_marker_beside_fresh(&data_ver, &current, &compatible, true)?;
             check_leftover_is_not_the_marker(backup_dir, data_dir)?;
-            write_version_marker(backup_dir, DATABASE_FORMAT_VERSION, Leftover::Replace)
-                .context("failed to create VERSION")
+            initialize_fresh_dirs(&[backup_dir])
         }
         (None, Some(backup_ver)) => {
             check_marker_beside_fresh(&backup_ver, &current, &compatible, false)?;
             check_leftover_is_not_the_marker(data_dir, backup_dir)?;
-            write_version_marker(data_dir, DATABASE_FORMAT_VERSION, Leftover::Replace)
-                .context("failed to create VERSION")
+            initialize_fresh_dirs(&[data_dir])
         }
         (Some(data_ver), Some(backup_ver)) => {
             if data_ver != backup_ver {
@@ -183,11 +183,161 @@ pub fn migrate_data_dir<P: AsRef<Path>>(
     }
 }
 
-/// Creates both fresh directories, then checks that neither creation stopped
-/// the other directory's marker from being written.
+/// Creates the fresh directories `dirs` and gives each a `VERSION` naming
+/// `DATABASE_FORMAT_VERSION`, or, if any step fails, undoes what the call did.
+///
+/// Every directory in `dirs` was read as fresh, so none holds a `VERSION`, and
+/// a `VERSION` found in one after a failed step was written by this call. On
+/// failure each directory a write was attempted in loses that `VERSION`, and
+/// its `VERSION.tmp` is put back as it was: removed if there was none, and
+/// otherwise written again with the leftover's bytes and mode if the write
+/// had already replaced it. Then the directories created here are removed,
+/// deepest first. A directory that is read-only, or a disk that is full,
+/// therefore stops the initialization without leaving one side marked and the
+/// other not, or a missing directory created.
+///
+/// # Errors
+///
+/// Returns an error if a directory cannot be created or inspected, if a
+/// leftover cannot be read, if two directories overlap, if a marker cannot be
+/// written, or if what was written cannot be undone, in which case the error
+/// names both failures.
+fn initialize_fresh_dirs(dirs: &[&Path]) -> Result<()> {
+    let mut created = Vec::new();
+    let mut leftovers = Vec::with_capacity(dirs.len());
+    for dir in dirs {
+        created.extend(missing_ancestors(dir)?);
+        leftovers.push(SavedLeftover::read(dir)?);
+    }
+
+    let mut attempted = 0;
+    let result = create_fresh_dirs(dirs).and_then(|()| {
+        for dir in dirs {
+            attempted += 1;
+            write_version_marker(dir, DATABASE_FORMAT_VERSION, Leftover::Replace)
+                .context("failed to create VERSION")?;
+        }
+        Ok(())
+    });
+    let Err(e) = result else {
+        return Ok(());
+    };
+
+    let undo_failed = |path: &Path, undo_err: anyhow::Error| {
+        undo_err.context(format!(
+            "cannot restore {} after the data dirs could not be initialized: {e:#}",
+            path.display()
+        ))
+    };
+    // Only the directories a write was attempted in are touched: before the
+    // first write, the overlap check may have failed because the name
+    // `VERSION` or `VERSION.tmp` of one directory is another directory.
+    for (dir, leftover) in dirs.iter().zip(&leftovers).take(attempted) {
+        let version = dir.join(VERSION_FILE_NAME);
+        remove_if_present(&version).map_err(|undo_err| undo_failed(&version, undo_err))?;
+        let tmp = dir.join(VERSION_TMP_FILE_NAME);
+        match leftover {
+            None => remove_if_present(&tmp),
+            Some(leftover) => leftover.restore(&tmp),
+        }
+        .map_err(|undo_err| undo_failed(&tmp, undo_err))?;
+    }
+    for path in &removal_order(created) {
+        match remove_dir(path) {
+            Ok(()) => {}
+            Err(remove_err) if remove_err.kind() == ErrorKind::NotFound => {}
+            Err(remove_err) => {
+                return Err(undo_failed(path, remove_err.into()));
+            }
+        }
+    }
+    Err(e)
+}
+
+/// Removes the file at `path` if there is one.
+///
+/// # Errors
+///
+/// Returns an error if a file is there and cannot be removed.
+fn remove_if_present(path: &Path) -> Result<()> {
+    match remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e).context("cannot remove the file"),
+    }
+}
+
+/// A `VERSION.tmp` left in a fresh directory, kept so that it can be put back
+/// if the directory cannot be initialized.
+struct SavedLeftover {
+    dev: u64,
+    ino: u64,
+    mode: u32,
+    bytes: Vec<u8>,
+}
+
+impl SavedLeftover {
+    /// Reads the `VERSION.tmp` of the fresh directory `dir`, or returns
+    /// `None` if it has none.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the leftover cannot be inspected or read.
+    fn read(dir: &Path) -> Result<Option<Self>> {
+        let tmp = dir.join(VERSION_TMP_FILE_NAME);
+        let found = match symlink_metadata(&tmp) {
+            Ok(found) => found,
+            Err(e) if matches!(e.kind(), ErrorKind::NotFound | ErrorKind::NotADirectory) => {
+                return Ok(None);
+            }
+            Err(e) => return Err(e).with_context(|| format!("cannot inspect {}", tmp.display())),
+        };
+        let bytes =
+            std::fs::read(&tmp).with_context(|| format!("cannot read {}", tmp.display()))?;
+        Ok(Some(Self {
+            dev: found.dev(),
+            ino: found.ino(),
+            mode: found.mode() & MODE_BITS,
+            bytes,
+        }))
+    }
+
+    /// Puts the leftover back at `tmp`, unless it is still there.
+    ///
+    /// A write with [`Leftover::Replace`] never writes through the leftover:
+    /// it removes it and creates a file of its own. A file at `tmp` with the
+    /// leftover's inode is therefore the leftover, untouched, and anything
+    /// else at `tmp` is replaced by a new file with the leftover's bytes and
+    /// mode.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `tmp` cannot be inspected or removed, or if the
+    /// leftover cannot be written again.
+    fn restore(&self, tmp: &Path) -> Result<()> {
+        match symlink_metadata(tmp) {
+            Ok(found) if (found.dev(), found.ino()) == (self.dev, self.ino) => return Ok(()),
+            Ok(_) => remove_if_present(tmp)?,
+            Err(e) if e.kind() == ErrorKind::NotFound => {}
+            Err(e) => return Err(e).context("cannot inspect the file"),
+        }
+        let mut f = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(tmp)
+            .context("cannot create the file")?;
+        f.write_all(&self.bytes).context("cannot write the file")?;
+        f.set_permissions(Permissions::from_mode(self.mode))
+            .context("cannot set the mode of the file")?;
+        Ok(())
+    }
+}
+
+/// Creates the fresh directories `dirs`, then checks that no creation stopped
+/// another directory's marker from being written.
 ///
 /// Each read sees its directory as it is before anything is written, yet the
-/// two writes run in turn. A directory at or below the other's `VERSION` or
+/// writes run in turn. A directory at or below another's `VERSION` or
 /// `VERSION.tmp`, such as `store` beside `store/VERSION`, is fresh while both
 /// are missing, but the first write puts a file or a directory where the
 /// second needs the other, so the second would fail with the first marker
@@ -197,53 +347,34 @@ pub fn migrate_data_dir<P: AsRef<Path>>(
 /// holds them: one that folds case, or Unicode normalization, makes `État`
 /// and `état/VERSION` overlap, while a case-sensitive one keeps `store` and
 /// `store/version` apart. No comparison of names can follow every such rule,
-/// so the file system is asked instead. Both directories are created, and the
-/// pair overlaps exactly when that puts something at either one's `VERSION`,
-/// or anything but the leftover regular file at its `VERSION.tmp`: before the
-/// creation, each fresh directory had neither. An overlapping pair is refused
-/// after the directories created here are removed again, deepest first, so its
-/// contents are left as they were found and no marker is written. The
-/// directory the outermost of them was created in keeps its entries, but its
-/// modification and status change times record the creation and the removal:
-/// no write to a directory leaves them as they were, and the status change
-/// time cannot be set back.
+/// so the file system is asked instead. The directories are created, and two
+/// of them overlap exactly when that puts something at either one's
+/// `VERSION`, or anything but the leftover regular file at its `VERSION.tmp`:
+/// before the creation, each fresh directory had neither. The caller,
+/// [`initialize_fresh_dirs`], removes the directories created here again,
+/// deepest first, before an overlapping pair is refused, so its contents are
+/// left as they were found and no marker is written. The directory the
+/// outermost of them was created in keeps its entries, but its modification
+/// and status change times record the creation and the removal: no write to a
+/// directory leaves them as they were, and the status change time cannot be
+/// set back.
 ///
 /// # Errors
 ///
-/// Returns an error if the directories overlap, if one cannot be created or
-/// inspected, or if a directory created here cannot be removed again.
-fn create_fresh_dirs(data_dir: &Path, backup_dir: &Path) -> Result<()> {
-    let mut created = missing_ancestors(data_dir)?;
-    created.extend(missing_ancestors(backup_dir)?);
-
-    let checked = create_dir_all(data_dir)
-        .and_then(|()| create_dir_all(backup_dir))
-        .context("cannot create data dir")
-        .and_then(|()| {
-            for (dir, other) in [(data_dir, backup_dir), (backup_dir, data_dir)] {
+/// Returns an error if two directories overlap, or if one cannot be created or
+/// inspected.
+fn create_fresh_dirs(dirs: &[&Path]) -> Result<()> {
+    for dir in dirs {
+        create_dir_all(dir).context("cannot create data dir")?;
+    }
+    for (i, dir) in dirs.iter().enumerate() {
+        for (j, other) in dirs.iter().enumerate() {
+            if i != j {
                 check_marker_names_are_free(dir, other)?;
-            }
-            Ok(())
-        });
-    let Err(e) = checked else {
-        return Ok(());
-    };
-
-    for path in &removal_order(created) {
-        match remove_dir(path) {
-            Ok(()) => {}
-            Err(remove_err) if remove_err.kind() == ErrorKind::NotFound => {}
-            Err(remove_err) => {
-                return Err(remove_err).with_context(|| {
-                    format!(
-                        "cannot remove {} after the data dirs were refused: {e:#}",
-                        path.display()
-                    )
-                });
             }
         }
     }
-    Err(e)
+    Ok(())
 }
 
 /// Returns the directories in `created` in an order that removes each one
@@ -1485,6 +1616,86 @@ mod tests {
     /// A fresh directory nested inside the other under any name but `VERSION`
     /// and `VERSION.tmp` does not stop either marker from being written, so
     /// both are initialized, on each side in turn.
+    /// A fresh directory whose `VERSION` cannot be written, because it is
+    /// read-only, stops the initialization of a fresh pair, on each side in
+    /// turn and beside each way the counterpart is fresh, and the pair is left
+    /// as it was found: the counterpart gets no `VERSION`, keeps its leftover
+    /// `VERSION.tmp`, and stays missing if it was missing.
+    #[test]
+    fn a_marker_write_failure_leaves_the_fresh_pair_unchanged() {
+        use std::os::unix::fs::PermissionsExt;
+
+        const READ_ONLY: u32 = 0o555;
+        const WRITABLE: u32 = 0o755;
+        const LEFTOVER_MODE: u32 = 0o604;
+
+        for read_only_state in [Fresh::Empty, Fresh::TmpOnly] {
+            for counterpart in FRESH {
+                for read_only_on_data in [true, false] {
+                    let root = tempfile::tempdir().unwrap();
+                    let read_only =
+                        make_side(root.path(), "read-only", Side::Fresh(read_only_state));
+                    let other = make_side(root.path(), "other", Side::Fresh(counterpart));
+                    std::fs::set_permissions(
+                        &read_only,
+                        std::fs::Permissions::from_mode(READ_ONLY),
+                    )
+                    .unwrap();
+                    // A process that ignores file modes, such as one run as
+                    // root, cannot be made to fail this way.
+                    let probe = read_only.join("probe");
+                    if std::fs::write(&probe, b"").is_ok() {
+                        std::fs::remove_file(&probe).unwrap();
+                        return;
+                    }
+                    // A mode no new file gets, so that a leftover put back
+                    // with the mode a new file gets is caught.
+                    let other_tmp = other.join(VERSION_TMP_FILE_NAME);
+                    if matches!(counterpart, Fresh::TmpOnly) {
+                        std::fs::set_permissions(
+                            &other_tmp,
+                            std::fs::Permissions::from_mode(LEFTOVER_MODE),
+                        )
+                        .unwrap();
+                    }
+                    let tmp_mode = |tmp: &Path| {
+                        std::fs::symlink_metadata(tmp)
+                            .ok()
+                            .map(|found| found.permissions().mode() & 0o7777)
+                    };
+                    let read_only_before = dir_state(&read_only);
+                    let other_before = dir_state(&other);
+                    let other_tmp_mode_before = tmp_mode(&other_tmp);
+
+                    let (data_dir, backup_dir) = if read_only_on_data {
+                        (&read_only, &other)
+                    } else {
+                        (&other, &read_only)
+                    };
+                    let case = format!(
+                        "read-only {read_only_state:?} beside {counterpart:?}, on data: \
+                         {read_only_on_data}"
+                    );
+                    let message = format!(
+                        "{:#}",
+                        migrate_data_dir(data_dir, backup_dir, None)
+                            .expect_err(&format!("{case} must fail"))
+                    );
+                    std::fs::set_permissions(&read_only, std::fs::Permissions::from_mode(WRITABLE))
+                        .unwrap();
+
+                    assert!(
+                        message.contains("failed to create VERSION"),
+                        "unexpected error for {case}: {message}"
+                    );
+                    assert_eq!(dir_state(&read_only), read_only_before, "{case}");
+                    assert_eq!(dir_state(&other), other_before, "{case}");
+                    assert_eq!(tmp_mode(&other_tmp), other_tmp_mode_before, "{case}");
+                }
+            }
+        }
+    }
+
     #[test]
     fn nested_fresh_directories_are_initialized() {
         for outer_on_data in [true, false] {

@@ -289,12 +289,12 @@ pub enum OfflineRestoreError {
 ///    flushed to disk so the version markers the caller writes next cannot
 ///    outlive the swap, and the working directory is removed.
 ///
-/// A handle opened in this process other than through a [`Store`], such as
-/// by [`migrate_data_dir`](crate::migrate_data_dir), is recognized only if it
-/// spelled the path the same way and was opened before the probe in step 3:
-/// RocksDB recognizes a lock held by this process only under the path it was
-/// taken at, and probing `replaced` in step 4 would release one taken since.
-/// This is why the caller serializes the two.
+/// A handle opened in this process other than through a [`Store`] is
+/// recognized only if it spelled the path the same way and was opened before
+/// the probe in step 3: RocksDB recognizes a lock held by this process only
+/// under the path it was taken at, and probing `replaced` in step 4 would
+/// release one taken since. This is why the caller serializes the restore
+/// against any other open of the database.
 ///
 /// Nothing is created at, or removed from, `states.db` while the database is
 /// moved aside. A process that opens `states.db` between moving the database
