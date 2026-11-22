@@ -2022,7 +2022,7 @@ mod tests {
         assert_eq!(definition(store, "s").instance, None);
 
         let reinserted = insert_node(store, "reinserted", Some(CUSTOMER), node_agents());
-        assert_eq!(reinserted, f.node, "the node id is reused");
+        assert_ne!(reinserted, f.node, "the node id is not reused");
         for key in [ENGINE, OTHER_ENGINE] {
             assert_eq!(
                 store

@@ -5,6 +5,7 @@ mod category;
 mod cluster;
 mod column_stats;
 mod config;
+mod config_revision;
 mod core_component;
 mod csv_column_extra;
 mod customer_data_deletion_job;
@@ -61,6 +62,12 @@ pub use self::config::{
     KEY_BACKUP_DURATION, KEY_BACKUP_TIME, KEY_EVENT_RETENTION_PERIOD_DAYS,
     KEY_NUM_OF_BACKUPS_TO_KEEP, KEY_RETENTION_PERIOD,
 };
+pub use self::config_revision::ConfigRevisionRecord;
+pub(crate) use self::config_revision::{
+    ConfigRevisions, CustomerOf, Written as WrittenAgent, is_engine,
+};
+#[cfg(test)]
+pub(crate) use self::config_revision::{HookPoint, set_hook};
 pub use self::core_component::CoreComponent;
 pub use self::csv_column_extra::CsvColumnExtra;
 pub use self::customer_data_deletion_job::{
@@ -158,6 +165,12 @@ pub(super) const CATEGORY: &str = "category";
 pub(super) const CLUSTER: &str = "cluster";
 pub(super) const COLUMN_STATS: &str = "column stats";
 pub(super) const CONFIGS: &str = "configs";
+/// The revision state of each engine instance: the highest configuration
+/// revision number ever issued for it and its current revision.
+pub(super) const CONFIG_REVISIONS: &str = "config revisions";
+/// The completed document of every configuration revision of every engine
+/// instance.
+pub(super) const CONFIG_REVISION_HISTORY: &str = "config revision history";
 pub(super) const CORE_COMPONENTS: &str = "core components";
 pub(super) const CSV_COLUMN_EXTRAS: &str = "csv column extras";
 pub(super) const CUSTOMER_DELETION_JOBS: &str = "customer deletion jobs";
@@ -217,13 +230,25 @@ pub(super) const TRIAGE_RESPONSE: &str = "triage response";
 pub(super) const TRUSTED_DNS_SERVERS: &str = "trusted DNS servers";
 pub(super) const TRUSTED_USER_AGENTS: &str = "trusted user agents";
 
-pub(crate) const MAP_NAMES: [&str; 50] = [
+/// The column families added to [`MAP_NAMES`] after a build of the current
+/// database format was released, with no change of
+/// [`DATABASE_FORMAT_VERSION`].
+///
+/// A store of that format opened by this build gets them, empty, as it opens,
+/// so a backup of the format may lack them; [`check_backup_format`] accepts
+/// one that does. They hold nothing such a build could have written: the
+/// configuration revisions start with the first write that records one.
+pub(super) const ADDED_WITHIN_FORMAT: [&str; 2] = [CONFIG_REVISIONS, CONFIG_REVISION_HISTORY];
+
+pub(crate) const MAP_NAMES: [&str; 52] = [
     AGENTS,
     BATCH_INFO,
     CATEGORY,
     CLUSTER,
     COLUMN_STATS,
     CONFIGS,
+    CONFIG_REVISIONS,
+    CONFIG_REVISION_HISTORY,
     CORE_COMPONENTS,
     CSV_COLUMN_EXTRAS,
     CUSTOMER_DELETION_JOBS,
@@ -543,6 +568,11 @@ impl StateDb {
             .expect("StateDb::open initializes the instance allocation column family")
     }
 
+    pub(crate) fn config_revisions(&self) -> ConfigRevisions<'_> {
+        ConfigRevisions::open(self.db())
+            .expect("StateDb::open creates the config revision families")
+    }
+
     pub(crate) fn engine_instances(&self) -> EngineInstances<'_> {
         EngineInstances::open(self.db()).expect("StateDb::open creates the engine instances family")
     }
@@ -817,6 +847,37 @@ mod iteration {
     impl Eligible for tables::TrustedUserAgent {}
 }
 
+/// The opt-in list of record types whose [`Table`] may be written through the
+/// generic writers `put`, `put_with_transaction`, `insert`,
+/// `insert_with_transaction`, `update_with_transaction` and
+/// `delete_with_transaction`, which store a record exactly as the caller
+/// built it.
+///
+/// `tables::Agent` is deliberately absent: an agent row that gives an engine
+/// instance its applied configuration document is stored completed, with the
+/// instance's configuration revision recorded in the same transaction, so the
+/// agent table has writers of its own. As with [`iteration`], the trait is not
+/// exported, so nothing outside the crate can add a type to the list.
+mod plain_writes {
+    use crate::tables;
+
+    pub trait Eligible {}
+
+    impl Eligible for crate::BatchInfo {}
+    impl Eligible for tables::Cluster {}
+    impl Eligible for tables::ColumnStats {}
+    impl Eligible for tables::CoreComponent {}
+    impl Eligible for tables::CustomerDataDeletionJob {}
+    impl Eligible for tables::ExternalService {}
+    impl Eligible for tables::Host {}
+    impl Eligible for tables::OutlierInfo {}
+    impl Eligible for crate::Scores {}
+    impl Eligible for tables::TimeSeries {}
+    impl Eligible for tables::TrafficFilter {}
+    impl Eligible for tables::TrustedDomain {}
+    impl Eligible for tables::TrustedUserAgent {}
+}
+
 /// The opt-in list of record types whose [`IndexedTable`] may be written
 /// through the generic method `update_with_transaction`, and, for the subsets
 /// that also implement [`indexed_writes::Inserting`],
@@ -854,14 +915,20 @@ mod indexed_writes {
     /// and the Time Series Generator its checkpoint under that ID after the
     /// policy is deleted, and a new policy under a reused ID would inherit
     /// both. A sampling policy is deleted with the table's `remove_unused`
-    /// instead, which retires its ID. Every other `Eligible` type recycles.
+    /// instead, which retires its ID.
+    ///
+    /// `tables::InnerNode` is deliberately absent too: a node ID is never
+    /// reused, so that an engine instance, named by its node ID and agent
+    /// key, names one node only and its configuration revisions and history
+    /// stay that node's. A node is removed with
+    /// [`NodeTable::remove`](crate::NodeTable::remove), which retires its ID.
+    /// Every other `Eligible` type recycles.
     ///
     /// [`IndexedTable`]: super::IndexedTable
     pub trait Recycling: Eligible {}
 
     impl Recycling for crate::Category {}
     impl Recycling for tables::CsvColumnExtra {}
-    impl Recycling for tables::InnerNode {}
     impl Recycling for tables::Network {}
     impl Recycling for types::Qualifier {}
     impl Recycling for types::Status {}
@@ -874,14 +941,19 @@ mod indexed_writes {
     /// `tables::SamplingPolicy` is deliberately absent: every new sampling
     /// policy is a draft with no assignee and no Data Store, which the
     /// table's own `insert` sets, so a caller cannot store one fixed or
-    /// assigned. Every other `Eligible` type is inserted freely.
+    /// assigned.
+    ///
+    /// `tables::InnerNode` is deliberately absent too: these writers take
+    /// the next ID off the free list, and a node ID is never reused. A node
+    /// is created with [`NodeTable::put`](crate::NodeTable::put), which
+    /// gives it an ID never handed out before. Every other `Eligible` type is
+    /// inserted freely.
     ///
     /// [`IndexedTable`]: super::IndexedTable
     pub trait Inserting: Eligible {}
 
     impl Inserting for crate::Category {}
     impl Inserting for tables::CsvColumnExtra {}
-    impl Inserting for tables::InnerNode {}
     impl Inserting for tables::Network {}
     impl Inserting for types::Qualifier {}
     impl Inserting for types::Status {}
@@ -1002,7 +1074,7 @@ impl<'d, R> Table<'d, R> {
     }
 }
 
-impl<R: UniqueKey + Value> Table<'_, R> {
+impl<R: UniqueKey + Value + plain_writes::Eligible> Table<'_, R> {
     /// Stores a record into the database.
     ///
     /// # Errors
@@ -1454,7 +1526,10 @@ pub(crate) fn open_rocksdb_backup_engine(
 /// is in the current database format, without restoring it.
 ///
 /// A backup is taken to be in [`DATABASE_FORMAT_VERSION`] exactly when its
-/// column families other than `default` are [`MAP_NAMES`]. The backup engine
+/// column families other than `default` are [`MAP_NAMES`], less any of
+/// [`ADDED_WITHIN_FORMAT`]: a backup taken by an earlier build of the same
+/// format lacks those, and reopening the restored database creates them
+/// empty, which is the state that build left them in. The backup engine
 /// keeps each backup's `CURRENT` and `MANIFEST` in `private/<id>`, which is
 /// where RocksDB opens a backup from, so the families are listed from there.
 /// Listing them reads those two files only and writes nothing.
@@ -1495,7 +1570,11 @@ fn check_backup_format(
         .filter(|name| *name != "default")
         .collect();
     let expected: BTreeSet<&str> = MAP_NAMES.into_iter().collect();
-    if found == expected {
+    if found.is_subset(&expected)
+        && expected
+            .difference(&found)
+            .all(|name| ADDED_WITHIN_FORMAT.contains(name))
+    {
         return Ok(());
     }
 
