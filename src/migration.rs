@@ -3,7 +3,7 @@
 use std::{
     fs::{File, create_dir_all, metadata, remove_file, rename, symlink_metadata},
     io::{ErrorKind, Read, Write},
-    path::Path,
+    path::{Path, PathBuf},
     sync::Arc,
 };
 
@@ -101,7 +101,8 @@ const VERSION_TMP_FILE_NAME: &str = "VERSION.tmp";
 ///   parsed, or a directory cannot be listed;
 /// * a directory cannot be listed and is not missing either, such as a
 ///   dangling symbolic link, or a path whose nearest existing ancestor is not a
-///   directory.
+///   directory;
+/// * a directory path is empty, which names no directory.
 ///
 /// Returns an error if a fresh directory cannot be created or its `VERSION`
 /// cannot be written.
@@ -205,10 +206,17 @@ fn unsupported(version: &Version) -> anyhow::Error {
 ///
 /// # Errors
 ///
-/// Returns an error if `dir` cannot be listed, if it is missing and could not
-/// be created, or if it is not fresh and its `VERSION` cannot be read or
-/// parsed.
+/// Returns an error if `dir` is empty, if it cannot be listed, if it is missing
+/// and could not be created, or if it is not fresh and its `VERSION` cannot be
+/// read or parsed.
 fn read_marker(dir: &Path) -> Result<Option<Version>> {
+    // Listing an empty path fails as not found, yet joining a file name to it
+    // names that file in the working directory, so calling it missing would
+    // let the working directory's `VERSION` be replaced. It names no
+    // directory, so it is refused before anything is written.
+    if dir.as_os_str().is_empty() {
+        return Err(anyhow!("cannot read data dir: the path is empty"));
+    }
     let entries = match dir.read_dir() {
         Ok(entries) => entries,
         Err(e) if e.kind() == ErrorKind::NotFound => {
@@ -249,6 +257,11 @@ fn read_marker(dir: &Path) -> Result<Option<Version>> {
 /// nothing has been written yet. The nearest ancestor that exists must
 /// therefore resolve to a directory.
 ///
+/// Each path is inspected without a trailing separator or `.`, which `Path`
+/// does not count as a component: `link/` and `link/.` resolve `link` before
+/// they are looked up, so a dangling `link` would make them fail as not found
+/// where `link` itself is found as a link.
+///
 /// # Errors
 ///
 /// Returns an error if a dangling symbolic link stands at `dir` or at one of
@@ -256,11 +269,12 @@ fn read_marker(dir: &Path) -> Result<Option<Version>> {
 /// the ancestors cannot be inspected.
 fn check_missing_dir_can_be_created(dir: &Path) -> Result<()> {
     for path in dir.ancestors() {
+        let path: PathBuf = path.components().collect();
         // An empty path is the current directory of a relative `dir`.
         let path = if path.as_os_str().is_empty() {
             Path::new(".")
         } else {
-            path
+            path.as_path()
         };
         match symlink_metadata(path) {
             Ok(_) => {
@@ -829,23 +843,31 @@ mod tests {
     /// stands at it, or at one of its ancestors, is not missing: no directory
     /// can be created through the link. Beside a fresh directory, on each side
     /// in turn, the pair is refused before anything is written, so the fresh
-    /// side gets no `VERSION`, and the link is left dangling.
+    /// side gets no `VERSION`, and the link is left dangling. The path is
+    /// refused alike when it ends in a separator or in `/.`, which resolve the
+    /// link before the path is looked up.
     #[test]
     fn a_dangling_directory_symlink_is_refused() {
         const NOT_A_DIRECTORY: &str = "does not resolve to a directory";
 
-        for at_ancestor in [false, true] {
+        for (at_ancestor, suffix) in [false, true]
+            .into_iter()
+            .flat_map(|at_ancestor| ["", "/", "/."].map(|suffix| (at_ancestor, suffix)))
+        {
             for fresh in FRESH {
                 for link_on_data in [true, false] {
                     let root = tempfile::tempdir().unwrap();
                     let link = root.path().join("link");
                     let target = root.path().join("nowhere");
                     std::os::unix::fs::symlink(&target, &link).unwrap();
-                    let linked = if at_ancestor {
+                    let mut linked = if at_ancestor {
                         link.join("sub")
                     } else {
                         link.clone()
-                    };
+                    }
+                    .into_os_string();
+                    linked.push(suffix);
+                    let linked = PathBuf::from(linked);
                     let fresh_dir = make_side(root.path(), "fresh", Side::Fresh(fresh));
                     let fresh_before = dir_state(&fresh_dir);
 
@@ -876,6 +898,85 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// Marks the child process [`an_empty_path_is_refused`] starts, and names
+    /// the fresh directory it passes beside the empty path.
+    const EMPTY_PATH_FRESH_DIR_ENV: &str = "REVIEW_DATABASE_EMPTY_PATH_FRESH_DIR";
+
+    /// Tells the child process [`an_empty_path_is_refused`] starts whether the
+    /// empty path is the data directory (`data`) or the backup (`backup`).
+    const EMPTY_PATH_SIDE_ENV: &str = "REVIEW_DATABASE_EMPTY_PATH_SIDE";
+
+    /// An empty path, which joins to names in the working directory, is
+    /// refused before anything is written, on each side in turn and beside
+    /// each kind of fresh directory: the working directory's `VERSION` of an
+    /// earlier format is kept, and the fresh side gets no `VERSION`.
+    ///
+    /// The empty path resolves against the working directory, which a test
+    /// must not change, so the call runs in a child test process started in a
+    /// directory of its own.
+    #[test]
+    fn an_empty_path_is_refused() {
+        const CHILD: &str = "migration::tests::refuse_an_empty_path_in_a_child";
+
+        for fresh in FRESH {
+            for empty_on_data in [true, false] {
+                let root = tempfile::tempdir().unwrap();
+                let cwd = make_side(root.path(), "cwd", Side::Marked("0.62.0"));
+                let fresh_dir = make_side(root.path(), "fresh", Side::Fresh(fresh));
+                let cwd_before = dir_state(&cwd);
+                let fresh_before = dir_state(&fresh_dir);
+
+                let output = std::process::Command::new(std::env::current_exe().unwrap())
+                    .args(["--exact", CHILD, "--ignored", "--test-threads=1"])
+                    .current_dir(&cwd)
+                    .env(EMPTY_PATH_FRESH_DIR_ENV, &fresh_dir)
+                    .env(
+                        EMPTY_PATH_SIDE_ENV,
+                        if empty_on_data { "data" } else { "backup" },
+                    )
+                    .output()
+                    .unwrap();
+
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                assert!(
+                    output.status.success(),
+                    "the child failed beside {fresh:?}: {stdout}{}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
+                assert!(
+                    stdout.contains("test result: ok. 1 passed"),
+                    "the child must run exactly one test: {stdout}"
+                );
+                assert_eq!(dir_state(&cwd), cwd_before, "beside {fresh:?}");
+                assert_eq!(
+                    std::fs::read(cwd.join(VERSION_FILE_NAME)).unwrap(),
+                    b"0.62.0"
+                );
+                assert_eq!(dir_state(&fresh_dir), fresh_before, "{fresh:?}");
+            }
+        }
+    }
+
+    /// The body [`an_empty_path_is_refused`] runs in a child process, in the
+    /// working directory it chose.
+    #[test]
+    #[ignore = "run only as the child process of an_empty_path_is_refused"]
+    fn refuse_an_empty_path_in_a_child() {
+        let fresh_dir = PathBuf::from(std::env::var_os(EMPTY_PATH_FRESH_DIR_ENV).unwrap());
+        let empty = PathBuf::new();
+        let side = std::env::var(EMPTY_PATH_SIDE_ENV).unwrap();
+        let (data_dir, backup_dir) = match side.as_str() {
+            "data" => (&empty, &fresh_dir),
+            "backup" => (&fresh_dir, &empty),
+            other => panic!("unexpected side {other}"),
+        };
+
+        let err = migrate_data_dir(data_dir, backup_dir, None)
+            .expect_err("an empty path must be refused");
+
+        assert_eq!(err.to_string(), "cannot read data dir: the path is empty");
     }
 
     /// A `VERSION` that does not parse is refused, on each side in turn and
