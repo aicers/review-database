@@ -46,6 +46,12 @@ impl NetworkListSet {
 /// One allowlist or blocklist entry of a customer.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct NetworkListEntry {
+    /// The writer's ID of the entry, stored as given.
+    ///
+    /// The writer assigns it when the entry is created, keeps it across every
+    /// later replacement, even when the entry is renamed, and never reuses it
+    /// after the entry is deleted. This table neither assigns nor checks it.
+    pub id: u64,
     /// The name of the entry, unique within its list.
     pub name: String,
     pub group: HostNetworkGroup,
@@ -93,9 +99,40 @@ impl<'d> NetworkListTable<'d> {
             .transpose()
     }
 
+    /// Returns the allowlist entries of the customer `customer_id`, with their
+    /// IDs, names and groups, in the order of the last accepted replacement.
+    ///
+    /// Returns an empty vector if no row is stored for the customer.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database query fails or the stored row cannot
+    /// be decoded.
+    pub fn allowlist_items(&self, customer_id: u32) -> Result<Vec<NetworkListEntry>> {
+        Ok(self.get(customer_id)?.map_or_default(|set| set.allowlist))
+    }
+
+    /// Returns the blocklist entries of the customer `customer_id`, with their
+    /// IDs, names and groups, in the order of the last accepted replacement.
+    ///
+    /// Returns an empty vector if no row is stored for the customer.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database query fails or the stored row cannot
+    /// be decoded.
+    pub fn blocklist_items(&self, customer_id: u32) -> Result<Vec<NetworkListEntry>> {
+        Ok(self.get(customer_id)?.map_or_default(|set| set.blocklist))
+    }
+
     /// Replaces the allowlist and blocklist of the customer `customer_id` with
     /// `allowlist` and `blocklist`, recorded at `revision` and the current
     /// time.
+    ///
+    /// Each entry is stored with its `id` exactly as given: the table never
+    /// assigns, renumbers or checks IDs, so a replacement that carries an
+    /// entry under the same ID stores that ID with the name and group that
+    /// come with it.
     ///
     /// A stored row with a higher revision is left as it is, and
     /// [`NetworkListReplaceOutcome::Stale`] reports its revision. Otherwise the
@@ -270,8 +307,9 @@ mod tests {
         (permit, store)
     }
 
-    fn entry(name: &str, cidr: &str) -> NetworkListEntry {
+    fn entry(id: u64, name: &str, cidr: &str) -> NetworkListEntry {
         NetworkListEntry {
+            id,
             name: name.to_string(),
             group: HostNetworkGroup::new(Vec::new(), vec![cidr.parse().unwrap()], Vec::new()),
         }
@@ -304,10 +342,10 @@ mod tests {
         assert_eq!(table.get(7).unwrap(), None);
 
         let allowlist = vec![
-            entry("office", "10.0.0.0/8"),
-            entry("edge", "192.168.0.0/24"),
+            entry(1, "office", "10.0.0.0/8"),
+            entry(2, "edge", "192.168.0.0/24"),
         ];
-        let blocklist = vec![entry("attacker", "203.0.113.0/24")];
+        let blocklist = vec![entry(3, "attacker", "203.0.113.0/24")];
         let before = jiff::Timestamp::now();
         assert_eq!(
             table
@@ -354,8 +392,8 @@ mod tests {
             .replace(
                 1,
                 5,
-                vec![entry("office", "10.0.0.0/8")],
-                vec![entry("attacker", "203.0.113.0/24")],
+                vec![entry(1, "office", "10.0.0.0/8")],
+                vec![entry(2, "attacker", "203.0.113.0/24")],
             )
             .unwrap();
         let before = raw(&table, 1).unwrap();
@@ -364,8 +402,8 @@ mod tests {
             .replace(
                 1,
                 4,
-                vec![entry("other", "10.1.0.0/16")],
-                vec![entry("other", "198.51.100.0/24")],
+                vec![entry(3, "other", "10.1.0.0/16")],
+                vec![entry(4, "other", "198.51.100.0/24")],
             )
             .unwrap();
         assert_eq!(outcome, NetworkListReplaceOutcome::Stale { stored: 5 });
@@ -381,8 +419,8 @@ mod tests {
             .replace(
                 1,
                 5,
-                vec![entry("office", "10.0.0.0/8")],
-                vec![entry("attacker", "203.0.113.0/24")],
+                vec![entry(1, "office", "10.0.0.0/8")],
+                vec![entry(2, "attacker", "203.0.113.0/24")],
             )
             .unwrap();
         let stored_first = table.get(1).unwrap().unwrap();
@@ -402,8 +440,8 @@ mod tests {
         assert_eq!(stored_again.allowlist, stored_first.allowlist);
         assert_eq!(stored_again.blocklist, stored_first.blocklist);
 
-        let allowlist = vec![entry("lab", "10.2.0.0/16")];
-        let blocklist = vec![entry("scanner", "198.51.100.0/24")];
+        let allowlist = vec![entry(3, "lab", "10.2.0.0/16")];
+        let blocklist = vec![entry(4, "scanner", "198.51.100.0/24")];
         let outcome = table
             .replace(1, 6, allowlist.clone(), blocklist.clone())
             .unwrap();
@@ -420,8 +458,8 @@ mod tests {
         let table = store.network_lists_map();
 
         let duplicates = vec![
-            entry("office", "10.0.0.0/8"),
-            entry("office", "10.1.0.0/16"),
+            entry(1, "office", "10.0.0.0/8"),
+            entry(2, "office", "10.1.0.0/16"),
         ];
         let err = table
             .replace(1, 1, duplicates.clone(), Vec::new())
@@ -438,8 +476,8 @@ mod tests {
 
         // Names are compared exactly, so differing case is not a duplicate.
         let distinct = vec![
-            entry("office", "10.0.0.0/8"),
-            entry("Office", "10.1.0.0/16"),
+            entry(3, "office", "10.0.0.0/8"),
+            entry(4, "Office", "10.1.0.0/16"),
         ];
         table.replace(1, 3, distinct, Vec::new()).unwrap();
     }
@@ -450,8 +488,8 @@ mod tests {
         let table = store.network_lists_map();
 
         let duplicates = vec![
-            entry("attacker", "203.0.113.0/24"),
-            entry("attacker", "198.51.100.0/24"),
+            entry(1, "attacker", "203.0.113.0/24"),
+            entry(2, "attacker", "198.51.100.0/24"),
         ];
         let err = table
             .replace(1, 1, Vec::new(), duplicates.clone())
@@ -468,8 +506,8 @@ mod tests {
 
         // Names are compared exactly, so differing case is not a duplicate.
         let distinct = vec![
-            entry("attacker", "203.0.113.0/24"),
-            entry("Attacker", "198.51.100.0/24"),
+            entry(3, "attacker", "203.0.113.0/24"),
+            entry(4, "Attacker", "198.51.100.0/24"),
         ];
         table.replace(1, 3, Vec::new(), distinct).unwrap();
     }
@@ -479,8 +517,8 @@ mod tests {
         let (_permit, store) = setup_store();
         let table = store.network_lists_map();
 
-        let allowlist = vec![entry("shared", "10.0.0.0/8")];
-        let blocklist = vec![entry("shared", "203.0.113.0/24")];
+        let allowlist = vec![entry(1, "shared", "10.0.0.0/8")];
+        let blocklist = vec![entry(2, "shared", "203.0.113.0/24")];
         table
             .replace(1, 1, allowlist.clone(), blocklist.clone())
             .unwrap();
@@ -498,8 +536,8 @@ mod tests {
             .replace(
                 1,
                 1,
-                vec![entry("office", "10.0.0.0/8")],
-                vec![entry("attacker", "203.0.113.0/24")],
+                vec![entry(1, "office", "10.0.0.0/8")],
+                vec![entry(2, "attacker", "203.0.113.0/24")],
             )
             .unwrap();
         table.replace(1, 2, Vec::new(), Vec::new()).unwrap();
@@ -518,8 +556,8 @@ mod tests {
             .replace(
                 1,
                 1,
-                vec![entry("office", "10.0.0.0/8")],
-                vec![entry("attacker", "203.0.113.0/24")],
+                vec![entry(1, "office", "10.0.0.0/8")],
+                vec![entry(2, "attacker", "203.0.113.0/24")],
             )
             .unwrap();
         table.replace(2, 1, Vec::new(), Vec::new()).unwrap();
@@ -584,6 +622,7 @@ mod tests {
         let start = IpAddr::V6(Ipv6Addr::new(0x2001, 0xdb8, 0, 1, 0, 0, 0, 1));
         let end = IpAddr::V6(Ipv6Addr::new(0x2001, 0xdb8, 0, 1, 0, 0, 0, 0xff));
         let allowlist = vec![NetworkListEntry {
+            id: 1,
             name: "v6".to_string(),
             group: HostNetworkGroup::new(
                 vec![
@@ -595,6 +634,7 @@ mod tests {
             ),
         }];
         let blocklist = vec![NetworkListEntry {
+            id: 2,
             name: "v6".to_string(),
             group: HostNetworkGroup::new(
                 Vec::new(),
@@ -639,8 +679,8 @@ mod tests {
 
         for round in 0..20 {
             let customer_id = round;
-            let lower = vec![entry("lower", "10.0.0.0/8")];
-            let higher = vec![entry("higher", "10.1.0.0/16")];
+            let lower = vec![entry(1, "lower", "10.0.0.0/8")];
+            let higher = vec![entry(2, "higher", "10.1.0.0/16")];
             std::thread::scope(|scope| {
                 let low = scope.spawn(|| {
                     store
@@ -690,6 +730,7 @@ mod tests {
             revision: 1,
             allowlist: vec![
                 NetworkListEntry {
+                    id: 1,
                     name: "a".to_string(),
                     group: HostNetworkGroup::new(
                         vec![host_a, host_b],
@@ -698,6 +739,7 @@ mod tests {
                     ),
                 },
                 NetworkListEntry {
+                    id: 2,
                     name: "b".to_string(),
                     group: HostNetworkGroup::new(
                         vec![host_a],
@@ -709,12 +751,14 @@ mod tests {
                     ),
                 },
                 NetworkListEntry {
+                    id: 3,
                     name: "c".to_string(),
                     group: HostNetworkGroup::new(Vec::new(), Vec::new(), Vec::new()),
                 },
             ],
             blocklist: vec![
                 NetworkListEntry {
+                    id: 4,
                     name: "a".to_string(),
                     group: HostNetworkGroup::new(
                         vec![blocked_host],
@@ -723,6 +767,7 @@ mod tests {
                     ),
                 },
                 NetworkListEntry {
+                    id: 5,
                     name: "b".to_string(),
                     group: HostNetworkGroup::new(
                         vec![blocked_host],
@@ -752,5 +797,211 @@ mod tests {
         assert_eq!(blocklist.ip_ranges(), &[blocked_range]);
         assert!(!blocklist.contains(host_a));
         assert!(!blocklist.contains(host_b));
+    }
+
+    #[test]
+    fn ids_round_trip() {
+        let (_permit, store) = setup_store();
+        let table = store.network_lists_map();
+
+        // Ids past 2^53 are not exact in a double, so they must not pass
+        // through one anywhere on the way.
+        let above_double = (1u64 << 53) + 1;
+        let allowlist = vec![
+            entry(u64::MAX, "max", "10.0.0.0/8"),
+            entry(0, "zero", "10.1.0.0/16"),
+            entry(above_double, "above", "10.2.0.0/16"),
+        ];
+        let blocklist = vec![
+            entry(u64::MAX - 1, "near-max", "203.0.113.0/24"),
+            entry(1u64 << 53, "power", "198.51.100.0/24"),
+        ];
+        table
+            .replace(1, 1, allowlist.clone(), blocklist.clone())
+            .unwrap();
+
+        let ids = |entries: &[NetworkListEntry]| -> Vec<u64> {
+            entries.iter().map(|entry| entry.id).collect()
+        };
+        let stored = table.get(1).unwrap().unwrap();
+        assert_eq!(ids(&stored.allowlist), [u64::MAX, 0, above_double]);
+        assert_eq!(ids(&stored.blocklist), [u64::MAX - 1, 1u64 << 53]);
+        assert_eq!(stored.allowlist, allowlist);
+        assert_eq!(stored.blocklist, blocklist);
+
+        let rows: Vec<(u32, NetworkListSet)> = table.iter().map(Result::unwrap).collect();
+        assert_eq!(rows.len(), 1);
+        let (customer_id, iterated) = &rows[0];
+        assert_eq!(*customer_id, 1);
+        assert_eq!(iterated.allowlist, allowlist);
+        assert_eq!(iterated.blocklist, blocklist);
+
+        let removed = table.remove(1).unwrap().unwrap();
+        assert_eq!(removed.allowlist, allowlist);
+        assert_eq!(removed.blocklist, blocklist);
+    }
+
+    #[test]
+    fn ids_are_kept_across_replacements() {
+        let (_permit, store) = setup_store();
+        let table = store.network_lists_map();
+
+        let first_allowlist = vec![
+            entry(10, "office", "10.0.0.0/8"),
+            entry(20, "edge", "192.168.0.0/24"),
+        ];
+        let first_blocklist = vec![entry(30, "attacker", "203.0.113.0/24")];
+        table
+            .replace(1, 1, first_allowlist.clone(), first_blocklist.clone())
+            .unwrap();
+        let first = table.get(1).unwrap().unwrap();
+
+        // Entry 10 is renamed and entry 20 regrouped, both under the same id;
+        // entry 30 is regrouped and entry 40 is new.
+        let second_allowlist = vec![
+            entry(10, "headquarters", "10.0.0.0/8"),
+            entry(20, "edge", "192.168.1.0/24"),
+        ];
+        let second_blocklist = vec![
+            entry(40, "scanner", "198.51.100.0/24"),
+            entry(30, "attacker", "203.0.113.128/25"),
+        ];
+        let outcome = table
+            .replace(1, 2, second_allowlist.clone(), second_blocklist.clone())
+            .unwrap();
+
+        let NetworkListReplaceOutcome::Written {
+            previous: Some(previous),
+        } = outcome
+        else {
+            panic!("expected a write over the first set, got {outcome:?}");
+        };
+        assert_eq!(previous, first);
+        assert_eq!(previous.allowlist, first_allowlist);
+        assert_eq!(previous.blocklist, first_blocklist);
+
+        let stored = table.get(1).unwrap().unwrap();
+        assert_eq!(stored.allowlist, second_allowlist);
+        assert_eq!(stored.blocklist, second_blocklist);
+        let office = &stored.allowlist[0];
+        assert_eq!((office.id, office.name.as_str()), (10, "headquarters"));
+        let edge = &stored.allowlist[1];
+        assert_eq!(edge.id, 20);
+        assert_eq!(edge.group.networks(), &["192.168.1.0/24".parse().unwrap()]);
+    }
+
+    #[test]
+    fn duplicate_ids_are_stored_as_given() {
+        let (_permit, store) = setup_store();
+        let table = store.network_lists_map();
+
+        // Refusing duplicate ids is the writer's job, so the table stores them.
+        let allowlist = vec![entry(7, "a", "10.0.0.0/8"), entry(7, "b", "10.1.0.0/16")];
+        table.replace(1, 1, allowlist.clone(), Vec::new()).unwrap();
+        assert_eq!(table.allowlist_items(1).unwrap(), allowlist);
+    }
+
+    #[test]
+    fn item_readers_return_their_own_list_in_stored_order() {
+        let (_permit, store) = setup_store();
+        let table = store.network_lists_map();
+
+        // Neither the ids nor the names are in order, so a sort by either
+        // would show.
+        let allowlist = vec![
+            entry(30, "bravo", "10.3.0.0/16"),
+            entry(10, "charlie", "10.1.0.0/16"),
+            entry(20, "alpha", "10.2.0.0/16"),
+        ];
+        let blocklist = vec![
+            entry(5, "zulu", "203.0.113.0/24"),
+            entry(50, "yankee", "198.51.100.0/24"),
+            entry(1, "xray", "192.0.2.0/24"),
+        ];
+        table
+            .replace(1, 1, allowlist.clone(), blocklist.clone())
+            .unwrap();
+        table
+            .replace(2, 1, vec![entry(99, "other", "10.9.0.0/16")], Vec::new())
+            .unwrap();
+
+        assert_eq!(table.allowlist_items(1).unwrap(), allowlist);
+        assert_eq!(table.blocklist_items(1).unwrap(), blocklist);
+        assert_eq!(table.blocklist_items(2).unwrap(), Vec::new());
+
+        // A later replacement's order is the one returned.
+        let reordered: Vec<NetworkListEntry> = allowlist.iter().rev().cloned().collect();
+        table
+            .replace(1, 2, reordered.clone(), blocklist.clone())
+            .unwrap();
+        assert_eq!(table.allowlist_items(1).unwrap(), reordered);
+        assert_eq!(table.blocklist_items(1).unwrap(), blocklist);
+    }
+
+    #[test]
+    fn item_readers_return_empty_for_a_missing_customer() {
+        let (_permit, store) = setup_store();
+        let table = store.network_lists_map();
+
+        table
+            .replace(
+                1,
+                1,
+                vec![entry(1, "office", "10.0.0.0/8")],
+                vec![entry(2, "attacker", "203.0.113.0/24")],
+            )
+            .unwrap();
+        assert_eq!(table.allowlist_items(2).unwrap(), Vec::new());
+        assert_eq!(table.blocklist_items(2).unwrap(), Vec::new());
+    }
+
+    #[test]
+    fn item_readers_fail_on_an_undecodable_row() {
+        let (_permit, store) = setup_store();
+        let table = store.network_lists_map();
+
+        table
+            .map
+            .db
+            .put_cf(table.map.cf, 1u32.to_be_bytes(), [0xff; 3])
+            .unwrap();
+        assert!(table.allowlist_items(1).is_err());
+        assert!(table.blocklist_items(1).is_err());
+    }
+
+    #[test]
+    fn item_readers_keep_the_stored_items_after_a_refused_replacement() {
+        let (_permit, store) = setup_store();
+        let table = store.network_lists_map();
+
+        let allowlist = vec![
+            entry(2, "office", "10.0.0.0/8"),
+            entry(1, "edge", "192.168.0.0/24"),
+        ];
+        let blocklist = vec![entry(3, "attacker", "203.0.113.0/24")];
+        table
+            .replace(1, 5, allowlist.clone(), blocklist.clone())
+            .unwrap();
+
+        let stale = table
+            .replace(
+                1,
+                4,
+                vec![entry(2, "renamed", "10.0.0.0/8")],
+                vec![entry(4, "scanner", "198.51.100.0/24")],
+            )
+            .unwrap();
+        assert_eq!(stale, NetworkListReplaceOutcome::Stale { stored: 5 });
+        assert_eq!(table.allowlist_items(1).unwrap(), allowlist);
+        assert_eq!(table.blocklist_items(1).unwrap(), blocklist);
+
+        let duplicate = vec![
+            entry(5, "twin", "10.5.0.0/16"),
+            entry(6, "twin", "10.6.0.0/16"),
+        ];
+        assert!(table.replace(1, 6, duplicate.clone(), Vec::new()).is_err());
+        assert!(table.replace(1, 6, Vec::new(), duplicate).is_err());
+        assert_eq!(table.allowlist_items(1).unwrap(), allowlist);
+        assert_eq!(table.blocklist_items(1).unwrap(), blocklist);
     }
 }
