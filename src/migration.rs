@@ -2,7 +2,7 @@
 //! backup directory.
 use std::{
     fs::{
-        File, OpenOptions, create_dir_all, metadata, remove_dir, remove_file, rename,
+        File, OpenOptions, canonicalize, create_dir_all, metadata, remove_dir, remove_file, rename,
         symlink_metadata,
     },
     io::{ErrorKind, Read, Write},
@@ -91,6 +91,9 @@ const VERSION_TMP_FILE_NAME: &str = "VERSION.tmp";
 /// overlap, where one is at or below the other's `VERSION` or `VERSION.tmp`,
 /// are told apart only by creating them, so the directories created for such
 /// a pair are removed again before it is refused, and no marker is written.
+/// The directory they were created in, such as an empty `store` beside
+/// `store/VERSION`, keeps its contents but not its modification and status
+/// change times, which creating and removing an entry in it updates.
 ///
 /// `ip2location` is kept in the signature for callers, but no earlier format is
 /// migrated, so it is unused.
@@ -151,21 +154,21 @@ pub fn migrate_data_dir<P: AsRef<Path>>(
     match (data_ver, backup_ver) {
         (None, None) => {
             create_fresh_dirs(data_dir, backup_dir)?;
-            write_version_marker(data_dir, DATABASE_FORMAT_VERSION)
+            write_version_marker(data_dir, DATABASE_FORMAT_VERSION, Leftover::Replace)
                 .context("failed to create VERSION")?;
-            write_version_marker(backup_dir, DATABASE_FORMAT_VERSION)
+            write_version_marker(backup_dir, DATABASE_FORMAT_VERSION, Leftover::Replace)
                 .context("failed to create VERSION")
         }
         (Some(data_ver), None) => {
             check_marker_beside_fresh(&data_ver, &current, &compatible, true)?;
             check_leftover_is_not_the_marker(backup_dir, data_dir)?;
-            write_version_marker(backup_dir, DATABASE_FORMAT_VERSION)
+            write_version_marker(backup_dir, DATABASE_FORMAT_VERSION, Leftover::Replace)
                 .context("failed to create VERSION")
         }
         (None, Some(backup_ver)) => {
             check_marker_beside_fresh(&backup_ver, &current, &compatible, false)?;
             check_leftover_is_not_the_marker(data_dir, backup_dir)?;
-            write_version_marker(data_dir, DATABASE_FORMAT_VERSION)
+            write_version_marker(data_dir, DATABASE_FORMAT_VERSION, Leftover::Replace)
                 .context("failed to create VERSION")
         }
         (Some(data_ver), Some(backup_ver)) => {
@@ -198,8 +201,12 @@ pub fn migrate_data_dir<P: AsRef<Path>>(
 /// pair overlaps exactly when that puts something at either one's `VERSION`,
 /// or anything but the leftover regular file at its `VERSION.tmp`: before the
 /// creation, each fresh directory had neither. An overlapping pair is refused
-/// after the directories created here are removed again, deepest first, so it
-/// is left as it was found and no marker is written.
+/// after the directories created here are removed again, deepest first, so its
+/// contents are left as they were found and no marker is written. The
+/// directory the outermost of them was created in keeps its entries, but its
+/// modification and status change times record the creation and the removal:
+/// no write to a directory leaves them as they were, and the status change
+/// time cannot be set back.
 ///
 /// # Errors
 ///
@@ -208,10 +215,6 @@ pub fn migrate_data_dir<P: AsRef<Path>>(
 fn create_fresh_dirs(data_dir: &Path, backup_dir: &Path) -> Result<()> {
     let mut created = missing_ancestors(data_dir)?;
     created.extend(missing_ancestors(backup_dir)?);
-    // A deeper path is removed before the shallower ones it sits in. The two
-    // lists can name one directory twice, through an alias the file system
-    // folds, so the second removal may find it gone already.
-    created.sort_unstable_by_key(|path| std::cmp::Reverse(path.components().count()));
 
     let checked = create_dir_all(data_dir)
         .and_then(|()| create_dir_all(backup_dir))
@@ -226,7 +229,7 @@ fn create_fresh_dirs(data_dir: &Path, backup_dir: &Path) -> Result<()> {
         return Ok(());
     };
 
-    for path in &created {
+    for path in &removal_order(created) {
         match remove_dir(path) {
             Ok(()) => {}
             Err(remove_err) if remove_err.kind() == ErrorKind::NotFound => {}
@@ -241,6 +244,39 @@ fn create_fresh_dirs(data_dir: &Path, backup_dir: &Path) -> Result<()> {
         }
     }
     Err(e)
+}
+
+/// Returns the directories in `created` in an order that removes each one
+/// before the directory holding it.
+///
+/// The paths as given cannot be ordered by their depth: a symbolic link can
+/// make a directory's path longer than that of a directory inside it, as with
+/// `a/b/c/alias/store` beside `store/VERSION` where `a/b/c/alias` links to
+/// the directory holding `store`. Each path is therefore resolved, now that
+/// the directories exist, and the resolved paths are ordered deepest first; a
+/// directory inside another always resolves to a longer path than it. The
+/// two lists `created` was built from can name one directory twice, through
+/// a link or an alias the file system folds, and it is then named once. A
+/// path that no longer resolves names nothing to remove, since nothing was
+/// created there, and a path that cannot be resolved otherwise is kept as
+/// given, so that its removal reports the failure.
+fn removal_order(created: Vec<PathBuf>) -> Vec<PathBuf> {
+    let mut resolved: Vec<PathBuf> = created
+        .into_iter()
+        .filter_map(|path| match canonicalize(&path) {
+            Ok(resolved) => Some(resolved),
+            Err(e) if e.kind() == ErrorKind::NotFound => None,
+            Err(_) => Some(path),
+        })
+        .collect();
+    resolved.sort_unstable_by(|a, b| {
+        b.components()
+            .count()
+            .cmp(&a.components().count())
+            .then_with(|| a.cmp(b))
+    });
+    resolved.dedup();
+    resolved
 }
 
 /// Returns the missing ancestors of `dir`, `dir` itself included, from the
@@ -493,6 +529,26 @@ fn check_missing_dir_can_be_created(dir: &Path) -> Result<()> {
     Ok(())
 }
 
+/// What [`create_version_file`] does with a `VERSION.tmp` it finds in place.
+#[derive(Clone, Copy, Debug)]
+enum Leftover {
+    /// The leftover is removed and the temporary created anew, so the bytes
+    /// go to an inode of its own and the marker gets the mode `OpenOptions`
+    /// and the umask give a new file.
+    ///
+    /// `migrate_data_dir` initializes fresh directories this way: a leftover
+    /// that is a hard link to some other file shares that file's inode, and
+    /// writing through it would rewrite that file too.
+    Replace,
+    /// The leftover is truncated and written in place, so it keeps its inode
+    /// and its mode, and the marker it is renamed to has them.
+    ///
+    /// [`write_version_markers`] writes this way, as it always has: the
+    /// rollback it serves is outside the format change, and so is the mode
+    /// of the markers it leaves.
+    Reuse,
+}
+
 /// Writes `version` to the VERSION file at `path`, creating it if it does not
 /// exist.
 ///
@@ -503,6 +559,7 @@ fn check_missing_dir_can_be_created(dir: &Path) -> Result<()> {
 /// `version` is written verbatim, so every caller passes a string it has
 /// already validated: `DATABASE_FORMAT_VERSION` from `migrate_data_dir`, and the
 /// canonical form of a parsed [`Version`] from [`write_version_markers`].
+/// `leftover` says what becomes of a `VERSION.tmp` already in the directory.
 ///
 /// # Errors
 ///
@@ -510,7 +567,7 @@ fn check_missing_dir_can_be_created(dir: &Path) -> Result<()> {
 /// temporary file cannot be created, written, or flushed, if it cannot be
 /// renamed over the VERSION file, or if the
 /// containing directory cannot be flushed.
-fn create_version_file(path: &Path, version: &str) -> Result<()> {
+fn create_version_file(path: &Path, version: &str, leftover: Leftover) -> Result<()> {
     let dir = path.parent().unwrap_or_else(|| Path::new("."));
     let tmp = dir.join(VERSION_TMP_FILE_NAME);
 
@@ -519,21 +576,18 @@ fn create_version_file(path: &Path, version: &str) -> Result<()> {
     // `OpenOptions` asks for `0o666` and lets the umask narrow it — which is
     // what VERSION has had all along. It records a format version, not a
     // secret, so there is nothing to tighten.
-    //
-    // A `VERSION.tmp` already there is removed rather than truncated, and the
-    // temporary is created anew, so the bytes go to an inode of its own: a
-    // leftover that is a hard link to some other file shares that file's
-    // inode, and writing through it would rewrite that file too.
-    match remove_file(&tmp) {
-        Ok(()) => {}
-        Err(e) if e.kind() == ErrorKind::NotFound => {}
-        Err(e) => return Err(e).context("cannot remove the leftover temporary VERSION"),
+    let mut f = match leftover {
+        Leftover::Replace => {
+            match remove_file(&tmp) {
+                Ok(()) => {}
+                Err(e) if e.kind() == ErrorKind::NotFound => {}
+                Err(e) => return Err(e).context("cannot remove the leftover temporary VERSION"),
+            }
+            OpenOptions::new().write(true).create_new(true).open(&tmp)
+        }
+        Leftover::Reuse => File::create(&tmp),
     }
-    let mut f = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&tmp)
-        .context("cannot create temporary VERSION")?;
+    .context("cannot create temporary VERSION")?;
     f.write_all(version.as_bytes())
         .context("cannot write temporary VERSION")?;
 
@@ -602,7 +656,9 @@ fn read_version_file(path: &Path) -> Result<Version> {
 /// A missing directory, and any missing component of its path, is created.
 /// Each marker is replaced through the same write-to-a-temporary, sync,
 /// rename, and directory-sync path `migrate_data_dir` uses, so an interruption cannot
-/// leave a marker empty or partially written. The two files can live on
+/// leave a marker empty or partially written. A `VERSION.tmp` already in a
+/// directory is truncated and reused rather than replaced, as it always has
+/// been, so the marker renamed from it keeps that file's mode. The two files can live on
 /// different filesystems, so there is no cross-directory atomic commit: a
 /// failure on the second leaves the first already updated. The operation is
 /// idempotent — correct the filesystem failure and call it again with the same
@@ -630,13 +686,13 @@ pub fn write_version_markers<P: AsRef<Path>, Q: AsRef<Path>>(
     let data_dir = data_dir.as_ref();
     let backup_dir = backup_dir.as_ref();
 
-    write_version_marker(data_dir, &canonical).with_context(|| {
+    write_version_marker(data_dir, &canonical, Leftover::Reuse).with_context(|| {
         format!(
             "cannot write the data directory VERSION in {}",
             data_dir.display()
         )
     })?;
-    write_version_marker(backup_dir, &canonical).with_context(|| {
+    write_version_marker(backup_dir, &canonical, Leftover::Reuse).with_context(|| {
         format!(
             "cannot write the backup directory VERSION in {}",
             backup_dir.display()
@@ -651,9 +707,9 @@ pub fn write_version_markers<P: AsRef<Path>, Q: AsRef<Path>>(
 ///
 /// Returns an error if `dir` cannot be created or if the marker cannot be
 /// replaced.
-fn write_version_marker(dir: &Path, version: &str) -> Result<()> {
+fn write_version_marker(dir: &Path, version: &str, leftover: Leftover) -> Result<()> {
     create_dir_all(dir).context("cannot create the directory")?;
-    create_version_file(&dir.join(VERSION_FILE_NAME), version)
+    create_version_file(&dir.join(VERSION_FILE_NAME), version, leftover)
 }
 
 #[cfg(test)]
@@ -667,8 +723,9 @@ mod tests {
     use semver::{Version, VersionReq};
 
     use super::{
-        COMPATIBLE_VERSION_REQ, DATABASE_FORMAT_VERSION, VERSION_FILE_NAME, VERSION_TMP_FILE_NAME,
-        create_version_file, migrate_data_dir, read_version_file, write_version_markers,
+        COMPATIBLE_VERSION_REQ, DATABASE_FORMAT_VERSION, Leftover, VERSION_FILE_NAME,
+        VERSION_TMP_FILE_NAME, create_version_file, migrate_data_dir, read_version_file,
+        write_version_markers,
     };
 
     /// The bytes a `VERSION.tmp` left behind by an interrupted write holds in
@@ -1274,6 +1331,48 @@ mod tests {
         }
     }
 
+    /// Two missing fresh directories that overlap through a symbolic link that
+    /// makes the outer one's path the longer, `a/b/c/alias/store` beside
+    /// `store/VERSION` with `a/b/c/alias` linking to the directory holding
+    /// `store`, are refused, on each side in turn, and both are missing again:
+    /// the directories created for the check are removed in the order their
+    /// resolved paths nest, not by the length of the paths as given.
+    #[test]
+    fn overlap_through_a_longer_alias_is_cleaned_up() {
+        const OVERLAP: &str = "is inside the";
+
+        for outer_on_data in [true, false] {
+            let root = tempfile::tempdir().unwrap();
+            let real = make_side(root.path(), "real", Side::Fresh(Fresh::Empty));
+            let link_parent = root.path().join("a").join("b").join("c");
+            std::fs::create_dir_all(&link_parent).unwrap();
+            std::os::unix::fs::symlink(&real, link_parent.join("alias")).unwrap();
+            let outer = link_parent.join("alias").join("store");
+            let inner = real.join("store").join(VERSION_FILE_NAME);
+            let before = dir_state(&real);
+
+            let (data_dir, backup_dir) = if outer_on_data {
+                (&outer, &inner)
+            } else {
+                (&inner, &outer)
+            };
+            let case = format!("outer on data: {outer_on_data}");
+            let message = migrate_data_dir(data_dir, backup_dir, None)
+                .expect_err(&format!("{case} must be refused"))
+                .to_string();
+
+            assert!(
+                message.contains(OVERLAP),
+                "unexpected error for {case}: {message}"
+            );
+            assert!(
+                std::fs::symlink_metadata(real.join("store")).is_err(),
+                "{case}: store must stay missing"
+            );
+            assert_eq!(dir_state(&real), before, "{case}");
+        }
+    }
+
     /// A `VERSION` that is a symbolic or a hard link to the leftover
     /// `VERSION.tmp` of a fresh counterpart is refused, on each side in turn:
     /// initializing the counterpart would rename that file away, leaving the
@@ -1507,7 +1606,7 @@ mod tests {
         let version_path = temp.path().join("VERSION");
 
         // Create a version file
-        create_version_file(&version_path, env!("CARGO_PKG_VERSION")).unwrap();
+        create_version_file(&version_path, env!("CARGO_PKG_VERSION"), Leftover::Replace).unwrap();
 
         // Read it back
         let version = read_version_file(&version_path).unwrap();
@@ -1526,7 +1625,7 @@ mod tests {
         write_version(temp.path(), "0.45.0");
         let version_path = temp.path().join(VERSION_FILE_NAME);
 
-        create_version_file(&version_path, DATABASE_FORMAT_VERSION).unwrap();
+        create_version_file(&version_path, DATABASE_FORMAT_VERSION, Leftover::Replace).unwrap();
 
         assert_eq!(
             read_version_file(&version_path).unwrap(),
@@ -1647,6 +1746,46 @@ mod tests {
                 std::fs::read_to_string(dir.join(VERSION_FILE_NAME)).unwrap(),
                 "0.46.0"
             );
+            assert!(!dir.join(VERSION_TMP_FILE_NAME).exists());
+        }
+    }
+
+    /// Test that a leftover `VERSION.tmp` is reused by the rollback writer, as
+    /// it always has been: the marker renamed from it keeps the leftover's
+    /// inode and mode rather than taking the mode the umask gives a new file.
+    #[test]
+    fn write_version_markers_reuses_a_leftover_temporary() {
+        use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+
+        const LEFTOVER_MODE: u32 = 0o600;
+
+        let data_dir = tempfile::tempdir().unwrap();
+        let backup_dir = tempfile::tempdir().unwrap();
+        let mut leftovers = Vec::new();
+        for dir in [data_dir.path(), backup_dir.path()] {
+            let tmp = dir.join(VERSION_TMP_FILE_NAME);
+            std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(LEFTOVER_MODE)
+                .open(&tmp)
+                .unwrap()
+                .write_all(STALE_TMP)
+                .unwrap();
+            leftovers.push(std::fs::metadata(&tmp).unwrap().ino());
+        }
+
+        write_version_markers(data_dir.path(), backup_dir.path(), "0.46.0").unwrap();
+
+        for (dir, leftover) in [data_dir.path(), backup_dir.path()]
+            .into_iter()
+            .zip(leftovers)
+        {
+            let marker = dir.join(VERSION_FILE_NAME);
+            assert_eq!(std::fs::read_to_string(&marker).unwrap(), "0.46.0");
+            let metadata = std::fs::metadata(&marker).unwrap();
+            assert_eq!(metadata.ino(), leftover);
+            assert_eq!(metadata.mode() & 0o777, LEFTOVER_MODE);
             assert!(!dir.join(VERSION_TMP_FILE_NAME).exists());
         }
     }
