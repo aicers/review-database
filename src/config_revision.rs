@@ -619,6 +619,45 @@ mod tests {
         );
     }
 
+    /// A completion failure is returned, not retried as a write conflict,
+    /// whatever text its agent key holds.
+    #[test]
+    fn a_completion_failure_is_refused_whatever_the_agent_key_says() {
+        for key in ["001.already exists.hog", "001.Resource busy:.hog"] {
+            let f = setup();
+            let store = &f.store;
+            let error = store
+                .node_map()
+                .put(&new_node(
+                    "n",
+                    CUSTOMER,
+                    vec![hog(0, key, Some(FAILING_HOG))],
+                ))
+                .unwrap_err();
+            assert_completion_error(&error);
+            assert_eq!(store.node_map().count().unwrap(), 0, "{key}");
+
+            let node = put_node(store, "m", CUSTOMER, Vec::new());
+            for (name, create) in &creating_paths()[..2] {
+                let error =
+                    create(store, &node, &hog(node.id, key, Some(FAILING_HOG))).unwrap_err();
+                assert_completion_error(&error);
+                assert_eq!(stored(store, node.id), node, "{name} {key}");
+            }
+
+            let node = put_node(store, "o", CUSTOMER, vec![hog(0, key, Some(HOG_A))]);
+            let old = stored_agent(store, node.id, key).unwrap();
+            let mut failing = old.clone();
+            failing.config = Some(document(FAILING_HOG));
+            for (name, replace) in &replacing_paths()[..2] {
+                let error = replace(store, &old, &failing).unwrap_err();
+                assert_completion_error(&error);
+                assert_eq!(stored(store, node.id), node, "{name} {key}");
+                assert_eq!(revision(store, node.id, key), Some(1), "{name} {key}");
+            }
+        }
+    }
+
     /// Every scenario the replacing paths support, each on a fresh store.
     #[test]
     fn every_replacing_path_completes_changes_and_keeps_the_rest() {

@@ -543,9 +543,7 @@ impl<'d> Table<'d> {
                 let mut agent = agent.clone();
                 agent.node_id = node_id;
                 if let Err(e) = self.agent.put_in_transaction(&txn, &agent, customer) {
-                    if e.to_string().contains("Resource busy")
-                        || e.to_string().contains("already exists")
-                    {
+                    if is_write_conflict(&e) {
                         continue 'outer;
                     }
                     return Err(e);
@@ -1041,7 +1039,7 @@ impl<'d> Table<'d> {
                         stored_agents.insert(written.row.key.clone(), written.row);
                     }
                     Err(e) => {
-                        if e.to_string().contains("Resource busy") {
+                        if is_write_conflict(&e) {
                             continue 'outer;
                         }
                         return Err(e);
@@ -1077,7 +1075,7 @@ impl<'d> Table<'d> {
                         stored_agents.insert(written.row.key.clone(), written.row);
                     }
                     Err(e) => {
-                        if e.to_string().contains("Resource busy") {
+                        if is_write_conflict(&e) {
                             continue 'outer;
                         }
                         return Err(e);
@@ -1238,6 +1236,20 @@ impl<'d> Table<'d> {
         updated_agent.status = new_status;
         self.agent.update(agent, &updated_agent)
     }
+}
+
+/// Returns whether `error`, from an agent write staged in a transaction, is a
+/// database write conflict, after which the whole transaction runs again.
+///
+/// The kind of the database error in the chain decides it, never the text of
+/// the error: a refusal such as a completion failure names the agent key,
+/// whose text can be anything, and has to be returned rather than retried.
+fn is_write_conflict(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        cause
+            .downcast_ref::<rocksdb::Error>()
+            .is_some_and(|e| e.kind() == rocksdb::ErrorKind::Busy)
+    })
 }
 
 /// Refuses, for [`Table::update`], a change of the `config`, `draft` or
