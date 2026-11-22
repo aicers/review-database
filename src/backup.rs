@@ -616,7 +616,7 @@ mod tests {
         DEFAULT_STATES, Store,
         event::{DnsEventFields, EventKind, EventMessage},
         migration::DATABASE_FORMAT_VERSION,
-        tables::{DATA_SOURCES, MAP_NAMES, open_rocksdb_backup_engine},
+        tables::{MAP_NAMES, open_rocksdb_backup_engine},
     };
 
     fn example_message() -> EventMessage {
@@ -1257,10 +1257,92 @@ mod tests {
         engine.create_new_backup_flush(&db, true).unwrap();
     }
 
-    /// The column families of a `0.59` database: the current ones and
+    /// The column families of a database in format 0.62, written out rather
+    /// than derived from `MAP_NAMES` so that a change to the live set does not
+    /// change the historical one.
+    const MAP_NAMES_V0_62: [&str; 51] = [
+        "Tor exit nodes",
+        "agents",
+        "batch_info",
+        "category",
+        "cluster",
+        "column stats",
+        "configs",
+        "core components",
+        "csv column extras",
+        "customer deletion jobs",
+        "customer networks",
+        "detector id marks",
+        "engine instances",
+        "external services",
+        "format 0.61",
+        "format 0.62",
+        "hosts",
+        "instance allocations",
+        "label database",
+        "meta",
+        "model indicators",
+        "model runs",
+        "models",
+        "network lists",
+        "networks",
+        "nodes",
+        "operation attempt latest",
+        "operation attempts",
+        "outliers",
+        "port allocations",
+        "port allocations by attempt",
+        "port allocations by instance",
+        "previous batch_info",
+        "previous cluster",
+        "previous column stats",
+        "previous csv column extras",
+        "previous outliers",
+        "previous scores",
+        "previous time series",
+        "qualifiers",
+        "sampling policy",
+        "scores",
+        "statuses",
+        "system log collectors",
+        "templates",
+        "time series",
+        "traffic filter rules",
+        "training definitions",
+        "triage response",
+        "trusted DNS servers",
+        "trusted user agents",
+    ];
+
+    /// The column families of a database in format 0.62.
+    fn families_v0_62() -> Vec<&'static str> {
+        MAP_NAMES_V0_62.to_vec()
+    }
+
+    /// The column families of a database in format 0.61: those of 0.62
+    /// without `format 0.62`.
+    fn families_v0_61() -> Vec<&'static str> {
+        MAP_NAMES_V0_62
+            .into_iter()
+            .filter(|name| *name != "format 0.62")
+            .collect()
+    }
+
+    /// The column families of a database in format 0.60: those of 0.62
+    /// without `format 0.61` and `format 0.62`.
+    fn families_v0_60() -> Vec<&'static str> {
+        MAP_NAMES_V0_62
+            .into_iter()
+            .filter(|name| !["format 0.61", "format 0.62"].contains(name))
+            .collect()
+    }
+
+    /// The column families of a database in format 0.59: those of 0.60 and
     /// `data sources`.
     fn older_format_families() -> Vec<&'static str> {
-        MAP_NAMES.into_iter().chain([DATA_SOURCES]).collect()
+        let mut families = families_v0_60();
+        families.push("data sources");
+        families
     }
 
     fn private_dir(backup_dir: &Path, id: u32) -> std::path::PathBuf {
@@ -1289,8 +1371,8 @@ mod tests {
             err.to_string(),
             format!(
                 "backup 1 is not in database format {DATABASE_FORMAT_VERSION}: unexpected \
-                 column families [\"data sources\"], missing column families []; nothing \
-                 was restored"
+                 column families [\"data sources\"], missing column families \
+                 [\"format 0.63\"]; nothing was restored"
             )
         );
         assert_eq!(
@@ -1323,8 +1405,8 @@ mod tests {
             err.to_string(),
             format!(
                 "backup 2 is not in database format {DATABASE_FORMAT_VERSION}: unexpected \
-                 column families [\"data sources\"], missing column families []; nothing \
-                 was restored"
+                 column families [\"data sources\"], missing column families \
+                 [\"format 0.63\"]; nothing was restored"
             )
         );
         assert_eq!(live_event_count(&store), 2);
@@ -1350,20 +1432,17 @@ mod tests {
         });
     }
 
-    /// A backup taken by a 0.61 build has every family of the current format
-    /// but the `format 0.62` marker, and one taken by a 0.60 build lacks the
-    /// `format 0.61` one as well; neither shares the current row layouts. Each
-    /// is refused by id and as the latest, and the database stays open and
-    /// serving, while a backup taken at the current format restores.
+    /// A backup with the family set of each format before 0.63 (0.60, 0.61
+    /// and 0.62) is refused by id and as the latest, restoring nothing, and
+    /// the database stays open and serving, while a backup taken in the
+    /// current format still restores.
     #[test]
     fn online_restore_refuses_a_backup_without_the_format_marker_family() {
         let _permit = acquire_db_permit();
-        for (missing, listed) in [
-            (&[crate::tables::FORMAT_0_62][..], "\"format 0.62\""),
-            (
-                &[crate::tables::FORMAT_0_61, crate::tables::FORMAT_0_62][..],
-                "\"format 0.61\", \"format 0.62\"",
-            ),
+        for (format, families, unexpected) in [
+            ("0.60", families_v0_60(), ""),
+            ("0.61", families_v0_61(), "\"format 0.61\""),
+            ("0.62", families_v0_62(), "\"format 0.61\", \"format 0.62\""),
         ] {
             let data_dir = tempfile::tempdir().unwrap();
             let backup_dir = tempfile::tempdir().unwrap();
@@ -1371,41 +1450,61 @@ mod tests {
             put_event(&store);
             create(&store, true, 3).unwrap();
             put_event(&store);
-            let families: Vec<&str> = MAP_NAMES
-                .into_iter()
-                .filter(|name| !missing.contains(name))
-                .collect();
             add_backup_with_families(backup_dir.path(), &families);
             let before = RestoreState::read(&store, data_dir.path(), backup_dir.path());
-            assert_eq!(before.backup_ids, [1, 2]);
+            assert_eq!(before.backup_ids, [1, 2], "{format}");
+            let private_before = dir_entries(&private_dir(backup_dir.path(), 2));
 
             let expected = format!(
                 "backup 2 is not in database format {DATABASE_FORMAT_VERSION}: unexpected column \
-                 families [], missing column families [{listed}]; nothing was restored"
+                 families [{unexpected}], missing column families [\"format 0.63\"]; nothing \
+                 was restored"
             );
             let err = store
                 .write()
                 .expect("test holds no other locks")
                 .restore_from_backup(2)
                 .unwrap_err();
-            assert_eq!(err.to_string(), expected);
+            assert_eq!(err.to_string(), expected, "{format}");
+            assert_eq!(live_event_count(&store), 2, "{format}");
             assert_still_open(&store, data_dir.path(), backup_dir.path(), &before);
+            let after_by_id = RestoreState::read(&store, data_dir.path(), backup_dir.path());
             let err = store
                 .write()
                 .expect("test holds no other locks")
                 .restore_from_latest_backup()
                 .unwrap_err();
-            assert_eq!(err.to_string(), expected);
+            assert_eq!(err.to_string(), expected, "{format}");
+            assert_eq!(live_event_count(&store), 3, "{format}");
+            assert_still_open(&store, data_dir.path(), backup_dir.path(), &after_by_id);
+            assert_eq!(
+                dir_entries(&private_dir(backup_dir.path(), 2)),
+                private_before,
+                "{format}"
+            );
 
-            let count = live_event_count(&store);
-            assert!(count > 1);
             store
                 .write()
                 .expect("test holds no other locks")
                 .restore_from_backup(1)
                 .unwrap();
-            assert_eq!(live_event_count(&store), 1);
+            assert_eq!(live_event_count(&store), 1, "{format}");
+            drop(store);
+            assert_eq!(
+                event_count(data_dir.path(), backup_dir.path()),
+                1,
+                "{format}"
+            );
         }
+    }
+
+    /// `MAP_NAMES` carries the `format 0.63` marker family and neither of the
+    /// earlier marker families.
+    #[test]
+    fn map_names_carry_the_format_0_63_marker_family_alone() {
+        assert!(MAP_NAMES.contains(&"format 0.63"));
+        assert!(!MAP_NAMES.contains(&"format 0.61"));
+        assert!(!MAP_NAMES.contains(&"format 0.62"));
     }
 
     #[test]

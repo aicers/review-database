@@ -53,7 +53,6 @@ use anyhow::{Result, anyhow};
 use rocksdb::Direction;
 use serde::{Deserialize, Serialize};
 
-pub(crate) use self::agent::sensor_hostname;
 pub use self::agent::{Agent, AgentKind};
 pub use self::backup_config::{BackupConfig, BackupConfigUpdate};
 pub use self::cluster::Cluster;
@@ -64,14 +63,12 @@ pub use self::config::{
 };
 pub use self::core_component::CoreComponent;
 pub use self::csv_column_extra::CsvColumnExtra;
-pub(crate) use self::customer_data_deletion_job::StoredCustomerDataDeletionJob;
 pub use self::customer_data_deletion_job::{
     CustomerDataDeletionJob, CustomerDataDeletionService, CustomerDataDeletionServiceResult,
     CustomerDataDeletionStatus,
 };
 pub(crate) use self::engine_instance::{
     DetectorIdMarks, EngineInstances, Row as EngineInstanceRow, key as engine_instance_key,
-    lookup_key as agent_lookup_key,
 };
 pub use self::engine_instance::{
     DetectorSourceStatus, DetectorState, DetectorStatus, EngineDetectorRef, EngineDocumentError,
@@ -155,39 +152,25 @@ use crate::{
 };
 
 // Key-value map names in `Database`.
-pub(super) const ACCESS_TOKENS: &str = "access_tokens";
-pub(super) const ACCOUNTS: &str = "accounts";
 pub(super) const AGENTS: &str = "agents";
-pub(super) const ALLOW_NETWORKS: &str = "allow networks";
 pub(super) const BATCH_INFO: &str = "batch_info";
-pub(super) const BLOCK_NETWORKS: &str = "block networks";
 pub(super) const CATEGORY: &str = "category";
 pub(super) const CLUSTER: &str = "cluster";
 pub(super) const COLUMN_STATS: &str = "column stats";
 pub(super) const CONFIGS: &str = "configs";
 pub(super) const CORE_COMPONENTS: &str = "core components";
 pub(super) const CSV_COLUMN_EXTRAS: &str = "csv column extras";
-pub(crate) const CUSTOMERS: &str = "customers";
 pub(super) const CUSTOMER_DELETION_JOBS: &str = "customer deletion jobs";
 pub(super) const CUSTOMER_NETWORKS: &str = "customer networks";
-pub(super) const DATA_SOURCES: &str = "data sources";
 pub(super) const DETECTOR_ID_MARKS: &str = "detector id marks";
 pub(super) const ENGINE_INSTANCES: &str = "engine instances";
-pub(super) const FILTERS: &str = "filters";
-/// An empty column family that exists only so that `check_backup_format` can
-/// tell a 0.61 backup from an older one.
+/// An empty column family that exists only so that `check_backup_format`
+/// refuses every backup taken before format 0.63.
 ///
-/// The 0.61 format changes row layouts and no family otherwise, and an online
-/// restore recognizes a backup's format by its column families alone. Nothing
-/// reads or writes rows in it.
-pub(super) const FORMAT_0_61: &str = "format 0.61";
-/// An empty column family that exists only so that `check_backup_format` can
-/// tell a 0.62 backup from an older one.
-///
-/// The 0.62 format changes how table values store timestamps and no family
-/// otherwise, and an online restore recognizes a backup's format by its column
-/// families alone. Nothing reads or writes rows in it.
-pub(super) const FORMAT_0_62: &str = "format 0.62";
+/// An online restore recognizes a backup's format by its column families
+/// alone, and without this family the current set would be exactly that of
+/// format 0.60. Nothing reads or writes rows in it.
+pub(super) const FORMAT_0_63: &str = "format 0.63";
 pub(super) const HOSTS: &str = "hosts";
 pub(super) const INSTANCE_ALLOCATIONS: &str = "instance allocations";
 pub(super) const MODELS: &str = "models";
@@ -228,13 +211,11 @@ pub(super) const TIME_SERIES: &str = "time series";
 pub(super) const TOR_EXIT_NODES: &str = "Tor exit nodes";
 pub(super) const TRAFFIC_FILTER_RULES: &str = "traffic filter rules";
 pub(super) const TRAINING_DEFINITIONS: &str = "training definitions";
-pub(super) const TRIAGE_EXCLUSION_REASON: &str = "triage exclusion reason";
-pub(super) const TRIAGE_POLICY: &str = "triage policy";
 pub(super) const TRIAGE_RESPONSE: &str = "triage response";
 pub(super) const TRUSTED_DNS_SERVERS: &str = "trusted DNS servers";
 pub(super) const TRUSTED_USER_AGENTS: &str = "trusted user agents";
 
-pub(crate) const MAP_NAMES: [&str; 51] = [
+pub(crate) const MAP_NAMES: [&str; 50] = [
     AGENTS,
     BATCH_INFO,
     CATEGORY,
@@ -271,8 +252,7 @@ pub(crate) const MAP_NAMES: [&str; 51] = [
     PREVIOUS_TIME_SERIES,
     QUALIFIERS,
     EXTERNAL_SERVICES,
-    FORMAT_0_61,
-    FORMAT_0_62,
+    FORMAT_0_63,
     SAMPLING_POLICY,
     SCORES,
     STATUSES,
@@ -290,7 +270,6 @@ pub(crate) const MAP_NAMES: [&str; 51] = [
 
 // Keys for the meta map.
 pub(super) const EVENT_TAGS: &[u8] = b"event tags";
-pub(super) const NETWORK_TAGS: &[u8] = b"network tags";
 pub(super) const WORKFLOW_TAGS: &[u8] = b"workflow tags";
 /// The last allocated model run id, as a big-endian `u32`; absent before the
 /// first run.

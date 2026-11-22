@@ -184,7 +184,7 @@ mod tests {
             &[0xfd, 0x2a, 0x5a, 0xa2, 0x45, 0x7e, 0x24, 0x6b, 0x1a];
         /// [`i64::MAX`] as varint `i64` nanoseconds.
         const SATURATED_BYTES: &[u8] = &[0xfd, 0xfe, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff];
-        /// The 0.61 `Display` bytes, which only the 0.62 migration reads.
+        /// The 0.61 `Display` bytes, which the live layout does not read.
         const V0_61_BYTES: &[u8] = b"2000-02-29 12:34:56.123456789 UTC";
 
         fn whole_second_timestamp() -> Timestamp {
