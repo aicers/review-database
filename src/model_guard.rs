@@ -931,7 +931,8 @@ mod tests {
             customer_id: CUSTOMER,
             instance: instance.clone(),
             method: ModelMethod::Multidimension,
-            event_kind: "http".to_string(),
+            raw_event_kind: "http".to_string(),
+            log_kind: None,
             sources: vec!["sensor-a".to_string()],
             indicator: None,
             definition: "eps = 5.0".to_string(),
@@ -953,7 +954,7 @@ mod tests {
             kind: "Multifield".to_string(),
             serialized_classifier: b"classifier".to_vec(),
             max_event_id_num: 10,
-            event_kind: "http".to_string(),
+            raw_event_kind: "http".to_string(),
             classification_id: 1,
             batch_info: Vec::new(),
             scores: [(1, 0.5)].into_iter().collect(),
@@ -1029,7 +1030,8 @@ mod tests {
                 name,
                 TrainingDefinitionUpdate {
                     method: stored.method,
-                    event_kind: stored.event_kind,
+                    raw_event_kind: stored.raw_event_kind,
+                    log_kind: stored.log_kind,
                     sources: stored.sources,
                     indicator: Some(indicator.to_string()),
                     definition: stored.definition,
@@ -1715,6 +1717,7 @@ mod tests {
                     run_id: 0,
                     definition: "eps = 1.0".to_string(),
                     sources: Vec::new(),
+                    log_kind: None,
                 },
             )
             .unwrap();
@@ -2327,7 +2330,8 @@ mod tests {
                         HOLDER,
                         TrainingDefinitionUpdate {
                             method: stored.method,
-                            event_kind: stored.event_kind,
+                            raw_event_kind: stored.raw_event_kind,
+                            log_kind: stored.log_kind,
                             sources: stored.sources,
                             indicator: indicator.map(ToString::to_string),
                             definition: stored.definition,
@@ -2594,6 +2598,7 @@ mod tests {
                     run_id: 0,
                     definition: "eps = 1.0".to_string(),
                     sources: Vec::new(),
+                    log_kind: None,
                 },
             )
             .unwrap();
@@ -2623,7 +2628,8 @@ mod tests {
                 NAMED,
                 TrainingDefinitionUpdate {
                     method: stored.method,
-                    event_kind: stored.event_kind,
+                    raw_event_kind: stored.raw_event_kind,
+                    log_kind: stored.log_kind,
                     sources: stored.sources,
                     indicator: None,
                     definition: stored.definition,

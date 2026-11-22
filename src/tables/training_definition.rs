@@ -30,7 +30,12 @@ pub struct TrainingDefinition {
     /// instance" state.
     pub instance: Option<ModelInstance>,
     pub method: ModelMethod,
-    pub event_kind: String,
+    /// The Giganto kind name of the raw events the model reads, such as
+    /// `http`, `process_create` or `log`.
+    pub raw_event_kind: String,
+    /// The log kind a `log` definition reads. It is stored as the caller
+    /// gave it, for any `raw_event_kind`.
+    pub log_kind: Option<String>,
     pub sources: Vec<String>,
     /// The name of the model indicator in `suspicious_tokens`, if any.
     pub indicator: Option<String>,
@@ -54,16 +59,19 @@ pub struct TrainingDefinition {
 
 /// A training definition to create.
 ///
-/// `method`, `event_kind`, `sources` and `indicator` are what the caller
-/// extracted from its own parse of `definition`; nothing in this crate
-/// parses it.
+/// `method`, `raw_event_kind`, `log_kind`, `sources` and `indicator` are
+/// what the caller extracted from its own parse of `definition`; nothing in
+/// this crate parses it. `raw_event_kind` is the Giganto kind name of the
+/// raw events the model reads, and `log_kind` the log kind of a `log`
+/// definition; both are stored verbatim and neither is validated.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NewTrainingDefinition {
     pub name: String,
     pub customer_id: u32,
     pub instance: ModelInstance,
     pub method: ModelMethod,
-    pub event_kind: String,
+    pub raw_event_kind: String,
+    pub log_kind: Option<String>,
     pub sources: Vec<String>,
     pub indicator: Option<String>,
     pub definition: String,
@@ -74,7 +82,8 @@ pub struct NewTrainingDefinition {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TrainingDefinitionUpdate {
     pub method: ModelMethod,
-    pub event_kind: String,
+    pub raw_event_kind: String,
+    pub log_kind: Option<String>,
     pub sources: Vec<String>,
     pub indicator: Option<String>,
     pub definition: String,

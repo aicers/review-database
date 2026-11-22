@@ -8,7 +8,7 @@ pub struct Digest {
     pub id: i32,
     pub name: String,
     pub version: i32,
-    pub event_kind: String,
+    pub raw_event_kind: String,
     pub classification_id: Option<i64>,
 }
 
@@ -20,7 +20,7 @@ pub struct Model {
     pub kind: String,
     pub serialized_classifier: Vec<u8>,
     pub max_event_id_num: i32,
-    pub event_kind: String,
+    pub raw_event_kind: String,
     pub classification_id: i64,
     pub batch_info: Vec<crate::types::ModelBatchInfo>,
     pub scores: crate::types::ModelScores,
@@ -74,7 +74,7 @@ impl Model {
             kind,
             serialized_classifier: model.serialized_classifier,
             max_event_id_num: model.max_event_id_num,
-            event_kind: model.event_kind,
+            raw_event_kind: model.raw_event_kind,
             classification_id: model.classification_id,
             batch_info: model.batch_info,
             scores: model.scores,
@@ -91,7 +91,7 @@ impl Model {
             name: self.name,
             serialized_classifier: self.serialized_classifier,
             max_event_id_num: self.max_event_id_num,
-            event_kind: self.event_kind,
+            raw_event_kind: self.raw_event_kind,
             classification_id: self.classification_id,
             batch_info: self.batch_info,
             scores: self.scores,
@@ -211,7 +211,7 @@ struct Body {
     name: String,
     serialized_classifier: Vec<u8>,
     max_event_id_num: i32,
-    event_kind: String,
+    raw_event_kind: String,
     classification_id: i64,
     batch_info: Vec<crate::types::ModelBatchInfo>,
     scores: crate::types::ModelScores,
@@ -229,7 +229,7 @@ mod tests {
                 kind: "Multifield".to_owned(),
                 serialized_classifier: b"test".to_vec(),
                 max_event_id_num: 123,
-                event_kind: "http".to_owned(),
+                raw_event_kind: "http".to_owned(),
                 classification_id: 0,
                 batch_info: vec![],
                 scores: crate::types::ModelScores::default(),
@@ -239,7 +239,7 @@ mod tests {
                 name: "example".to_owned(),
                 serialized_classifier: b"test".to_vec(),
                 max_event_id_num: 123,
-                event_kind: "http".to_owned(),
+                raw_event_kind: "http".to_owned(),
                 classification_id: 0,
                 batch_info: vec![],
                 scores: crate::types::ModelScores::default(),
@@ -303,12 +303,12 @@ mod tests {
         assert_eq!(d_model.kind, model.kind);
         assert_eq!(d_model.serialized_classifier, model.serialized_classifier);
         assert_eq!(d_model.max_event_id_num, model.max_event_id_num);
-        assert_eq!(d_model.event_kind, "http");
+        assert_eq!(d_model.raw_event_kind, "http");
         assert_eq!(d_model.classification_id, model.classification_id);
     }
 
     /// The same fixture as petabi/reconverge#1959: header format 2, method 1
-    /// (`Multifield`), version 1, and a body whose `event_kind` sits where
+    /// (`Multifield`), version 1, and a body whose `raw_event_kind` sits where
     /// format 1 had `data_source_id`.
     #[test]
     fn format_2_golden_fixture() {
@@ -321,7 +321,7 @@ mod tests {
             kind: "Multifield".to_owned(),
             serialized_classifier: vec![1, 2, 3],
             max_event_id_num: 25,
-            event_kind: "http".to_owned(),
+            raw_event_kind: "http".to_owned(),
             classification_id: 0,
             batch_info: vec![],
             scores: crate::types::ModelScores::default(),
@@ -331,7 +331,7 @@ mod tests {
         assert_eq!(data_encoding::HEXLOWER.encode(&serialized), GOLDEN);
 
         let decoded = super::Model::from_serialized(&serialized).unwrap();
-        assert_eq!(decoded.event_kind, "http");
+        assert_eq!(decoded.raw_event_kind, "http");
         assert_eq!(decoded.kind, "Multifield");
         assert_eq!(decoded.max_event_id_num, 25);
     }
