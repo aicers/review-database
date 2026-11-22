@@ -28,15 +28,21 @@ pub struct RecompletedDocument {
     pub document: String,
 }
 
-/// The database failure that ended
-/// [`Store::recomplete_applied_documents`], with the changes it had
-/// committed before the failure.
+/// The failure that ended [`Store::recomplete_applied_documents`], with the
+/// changes it had committed before the failure.
+///
+/// The failure is any error other than a failure of initial document
+/// completion, which the call logs and skips: reading the agents or a stored
+/// row, converting a completed document into an [`AgentConfig`], updating
+/// the agent, or committing other than on a write conflict.
 #[derive(Debug)]
 pub struct RecompletionError {
-    /// The changes the call committed before it failed, in the order it
-    /// committed them; they stay in place.
+    /// Exactly the changes the call committed before it failed, in the order
+    /// it committed them; they stay in place.
     pub committed: Vec<RecompletedDocument>,
-    /// The database failure.
+    /// The error that ended the call, one of the failures listed above; an
+    /// error from the agent update is passed on whatever it is, including
+    /// `old value mismatch` after a successful completion.
     pub error: anyhow::Error,
 }
 
@@ -59,7 +65,7 @@ impl std::error::Error for RecompletionError {
 
 /// A hook the tests run before each commit of
 /// [`Store::recomplete_applied_documents`]; an error it returns ends the call
-/// as a database failure would.
+/// with a [`RecompletionError`], as any other error after completion does.
 #[cfg(test)]
 pub(crate) type RecompletionHook =
     std::sync::Arc<dyn Fn(&ModelInstance) -> Result<()> + Send + Sync>;
@@ -121,17 +127,30 @@ impl Store {
     /// an entry for each instance it changed.
     ///
     /// A document that fails completion is logged as a warning, naming the
-    /// node id, agent key and error, and left unchanged. A document whose
-    /// completion equals its stored bytes is not written. Any other is stored
-    /// completed with a new revision, in a transaction of its own, so a later
-    /// failure leaves earlier changes in place. A `config` that another write
-    /// changed after this call read it is never overwritten.
+    /// node id, agent key and error, and left unchanged; the call goes on
+    /// with the next instance. A document whose completion equals its stored
+    /// bytes is not written. Any other is stored completed with a new
+    /// revision, in a transaction of its own, so a later failure leaves
+    /// earlier changes in place. A `config` that another write changed after
+    /// this call read it is never overwritten. A commit that conflicts with
+    /// another write is retried.
     ///
     /// # Errors
     ///
-    /// Returns a [`RecompletionError`] if a database operation fails; its
-    /// `committed` holds exactly the entries of the changes this call
-    /// committed before the failure.
+    /// Returns a [`RecompletionError`], ending the call, on any error other
+    /// than a failure of the initial completion:
+    ///
+    /// * the agents, or the stored row of an instance being changed, cannot
+    ///   be read;
+    /// * the completed document cannot be converted into an [`AgentConfig`];
+    /// * the agent update fails, whatever its error. This includes `old value
+    ///   mismatch` after a successful completion, for a stored row whose
+    ///   bytes differ from its re-encoding, such as a Hog row with an unknown
+    ///   lifecycle index;
+    /// * the commit fails other than on a write conflict.
+    ///
+    /// Its `committed` lists exactly the changes this call committed before
+    /// the failure.
     pub fn recomplete_applied_documents(
         &self,
     ) -> std::result::Result<Vec<RecompletedDocument>, RecompletionError> {
@@ -1103,6 +1122,45 @@ mod tests {
         agents.update(&from, &to).unwrap();
         assert_eq!(revision(store, node.id, HOG), Some(2));
         assert_eq!(revision(store, node.id, OTHER_HOG), None);
+    }
+
+    #[test]
+    fn a_key_move_in_a_committed_caller_transaction_is_recorded() {
+        let f = setup();
+        let store = &f.store;
+        let agents = store.agents_map();
+        let node = put_node(store, "n", CUSTOMER, vec![hog(0, HOG, Some(HOG_A))]);
+        // The new key has issued revision 1 before.
+        agents.put(&hog(node.id, OTHER_HOG, Some(HOG_A))).unwrap();
+        agents.delete(node.id, OTHER_HOG).unwrap();
+
+        let from = stored_agent(store, node.id, HOG).unwrap();
+        let mut to = from.clone();
+        to.key = OTHER_HOG.to_string();
+        to.config = Some(document(HOG_B));
+        let txn = agents.transaction();
+        agents.update_with_transaction(&from, &to, &txn).unwrap();
+        txn.commit().unwrap();
+
+        assert_eq!(stored_agent(store, node.id, HOG), None);
+        assert_eq!(revision(store, node.id, HOG), None);
+        assert_eq!(
+            recorded_document(store, node.id, HOG, 1),
+            Some(completed(HOG_A))
+        );
+        assert_eq!(record(store, node.id, HOG, 2), None);
+
+        let moved = stored_agent(store, node.id, OTHER_HOG).unwrap();
+        assert_eq!(config_of(&moved), Some(completed(HOG_B).as_str()));
+        assert_eq!(revision(store, node.id, OTHER_HOG), Some(2));
+        assert_eq!(
+            recorded_document(store, node.id, OTHER_HOG, 2),
+            Some(completed(HOG_B))
+        );
+        assert_eq!(
+            recorded_document(store, node.id, OTHER_HOG, 1),
+            Some(completed(HOG_A))
+        );
     }
 
     #[test]
