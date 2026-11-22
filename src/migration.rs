@@ -1,7 +1,7 @@
 //! Routines to check the database format version of a data directory and its
 //! backup directory.
 use std::{
-    fs::{File, create_dir_all, remove_file, rename},
+    fs::{File, create_dir_all, metadata, remove_file, rename, symlink_metadata},
     io::{ErrorKind, Read, Write},
     path::Path,
     sync::Arc,
@@ -9,9 +9,6 @@ use std::{
 
 use anyhow::{Context, Result, anyhow};
 use semver::{Version, VersionReq};
-use tracing::info;
-
-use crate::geo::{CountryLookup, Ip2LocationResolver};
 
 /// The database format marker written to `VERSION`.
 ///
@@ -39,7 +36,7 @@ pub(crate) const DATABASE_FORMAT_VERSION: &str = "0.63.0";
 /// version. The range is set once, together with [`DATABASE_FORMAT_VERSION`],
 /// when the marker is raised to 0.63.0 for a fresh-install format with no
 /// migration from any earlier format. Later format changes in the same series
-/// leave both constants as they are and add no step to the migration table of
+/// leave both constants as they are and add no migration step to
 /// [`migrate_data_dir`]. No build writes a marker in this range other than
 /// [`DATABASE_FORMAT_VERSION`], and no build writes a prerelease marker.
 const COMPATIBLE_VERSION_REQ: &str = ">=0.63.0,<0.64.0";
@@ -70,8 +67,9 @@ const VERSION_TMP_FILE_NAME: &str = "VERSION.tmp";
 /// A directory is *fresh* when it is missing, empty, or holds nothing but a
 /// `VERSION.tmp` left behind by an interrupted marker write, which is a regular
 /// file; a subdirectory or a symbolic link of that name makes the directory
-/// populated. The pair is
-/// accepted when
+/// populated. A path that cannot be listed because a dangling symbolic link
+/// stands at it or at one of its ancestors is not missing, since no directory
+/// can be created through that link. The pair is accepted when
 ///
 /// * both directories are fresh: each is created if missing and given a
 ///   `VERSION` naming `DATABASE_FORMAT_VERSION`;
@@ -85,8 +83,8 @@ const VERSION_TMP_FILE_NAME: &str = "VERSION.tmp";
 /// stays, and a missing directory stays missing. Both directories are read
 /// before either is written for that reason.
 ///
-/// `ip2location` is accepted for the steps of the migration table, which has
-/// none, so it is currently unused.
+/// `ip2location` is kept in the signature for callers, but no earlier format is
+/// migrated, so it is unused.
 ///
 /// # Errors
 ///
@@ -100,7 +98,10 @@ const VERSION_TMP_FILE_NAME: &str = "VERSION.tmp";
 ///   by both directories alike or by one with a fresh counterpart: "database
 ///   format {version} is not supported";
 /// * a directory that is not fresh has no `VERSION` that can be read and
-///   parsed, or a directory cannot be listed.
+///   parsed, or a directory cannot be listed;
+/// * a directory cannot be listed and is not missing either, such as a
+///   dangling symbolic link, or a path whose nearest existing ancestor is not a
+///   directory.
 ///
 /// Returns an error if a fresh directory cannot be created or its `VERSION`
 /// cannot be written.
@@ -109,11 +110,9 @@ pub fn migrate_data_dir<P: AsRef<Path>>(
     backup_dir: P,
     ip2location: Option<Arc<ip2location::DB>>,
 ) -> Result<()> {
-    type Migration = (
-        VersionReq,
-        Version,
-        fn(&Path, &Path, Option<&dyn CountryLookup>) -> anyhow::Result<()>,
-    );
+    // The format is deployed by a fresh install only, so there is no step to
+    // hand the database to and nothing for the resolver to serve.
+    drop(ip2location);
 
     let data_dir = data_dir.as_ref();
     let backup_dir = backup_dir.as_ref();
@@ -128,72 +127,33 @@ pub fn migrate_data_dir<P: AsRef<Path>>(
     let data_ver = read_marker(data_dir)?;
     let backup_ver = read_marker(backup_dir)?;
 
-    let mut version = match (data_ver, backup_ver) {
+    match (data_ver, backup_ver) {
         (None, None) => {
             write_version_marker(data_dir, DATABASE_FORMAT_VERSION)
                 .context("failed to create VERSION")?;
-            return write_version_marker(backup_dir, DATABASE_FORMAT_VERSION)
-                .context("failed to create VERSION");
+            write_version_marker(backup_dir, DATABASE_FORMAT_VERSION)
+                .context("failed to create VERSION")
         }
         (Some(data_ver), None) => {
             check_marker_beside_fresh(&data_ver, &current, &compatible, true)?;
-            return write_version_marker(backup_dir, DATABASE_FORMAT_VERSION)
-                .context("failed to create VERSION");
+            write_version_marker(backup_dir, DATABASE_FORMAT_VERSION)
+                .context("failed to create VERSION")
         }
         (None, Some(backup_ver)) => {
             check_marker_beside_fresh(&backup_ver, &current, &compatible, false)?;
-            return write_version_marker(data_dir, DATABASE_FORMAT_VERSION)
-                .context("failed to create VERSION");
+            write_version_marker(data_dir, DATABASE_FORMAT_VERSION)
+                .context("failed to create VERSION")
         }
         (Some(data_ver), Some(backup_ver)) => {
             if data_ver != backup_ver {
-                return Err(mismatched(&data_ver, &backup_ver));
+                Err(mismatched(&data_ver, &backup_ver))
+            } else if compatible.matches(&data_ver) {
+                Ok(())
+            } else {
+                Err(unsupported(&data_ver))
             }
-            data_ver
-        }
-    };
-
-    if compatible.matches(&version) {
-        return Ok(());
-    }
-
-    // A list of migrations where each item is a tuple of (version requirement,
-    // to version, migration function).
-    //
-    // It is empty: the 0.63 format is deployed by a fresh install only, so no
-    // step leads to it from an earlier format, and the format changes that
-    // follow in the same series add none either.
-    //
-    // * The "version requirement" should include all the earlier, released
-    //   versions that use the database format the migration function can
-    //   handle, and exclude the first future version that uses a new database
-    //   format.
-    // * The "to version" should be the first future version that uses a new
-    //   database format.
-    // * The "migration function" should migrate the database from the version
-    //   before "to version" to "to version".
-    let migration: [Migration; 0] = [];
-
-    let resolver = ip2location.map(Ip2LocationResolver::new);
-    let locator = resolver
-        .as_ref()
-        .map(|resolver| resolver as &dyn CountryLookup);
-    while let Some((_req, to, m)) = migration
-        .iter()
-        .find(|(req, _to, _m)| req.matches(&version))
-    {
-        info!("Migrating database to {to}");
-        m(data_dir, backup_dir, locator)?;
-        version = to.clone();
-        if compatible.matches(&version) {
-            write_version_marker(backup_dir, DATABASE_FORMAT_VERSION)
-                .context("failed to update VERSION")?;
-            return write_version_marker(data_dir, DATABASE_FORMAT_VERSION)
-                .context("failed to update VERSION");
         }
     }
-
-    Err(unsupported(&version))
 }
 
 /// Checks `marker`, held by one directory whose counterpart is fresh.
@@ -245,12 +205,16 @@ fn unsupported(version: &Version) -> anyhow::Error {
 ///
 /// # Errors
 ///
-/// Returns an error if `dir` cannot be listed, or if it is not fresh and its
-/// `VERSION` cannot be read or parsed.
+/// Returns an error if `dir` cannot be listed, if it is missing and could not
+/// be created, or if it is not fresh and its `VERSION` cannot be read or
+/// parsed.
 fn read_marker(dir: &Path) -> Result<Option<Version>> {
     let entries = match dir.read_dir() {
         Ok(entries) => entries,
-        Err(e) if e.kind() == ErrorKind::NotFound => return Ok(None),
+        Err(e) if e.kind() == ErrorKind::NotFound => {
+            check_missing_dir_can_be_created(dir)?;
+            return Ok(None);
+        }
         Err(e) => return Err(e).context("cannot read data dir"),
     };
 
@@ -273,6 +237,54 @@ fn read_marker(dir: &Path) -> Result<Option<Version>> {
     }
 
     read_version_file(&dir.join(VERSION_FILE_NAME)).map(Some)
+}
+
+/// Checks that `dir`, which cannot be listed because it is not found, is
+/// really missing and can be created by `create_dir_all`.
+///
+/// A dangling symbolic link at `dir`, or at one of its ancestors, also makes
+/// listing `dir` fail as not found, yet `create_dir_all` cannot create a
+/// directory through it. Calling such a side fresh would let the other side be
+/// written before the write on this one fails, so it is refused here, while
+/// nothing has been written yet. The nearest ancestor that exists must
+/// therefore resolve to a directory.
+///
+/// # Errors
+///
+/// Returns an error if a dangling symbolic link stands at `dir` or at one of
+/// its ancestors, if the nearest existing ancestor is not a directory, or if
+/// the ancestors cannot be inspected.
+fn check_missing_dir_can_be_created(dir: &Path) -> Result<()> {
+    for path in dir.ancestors() {
+        // An empty path is the current directory of a relative `dir`.
+        let path = if path.as_os_str().is_empty() {
+            Path::new(".")
+        } else {
+            path
+        };
+        match symlink_metadata(path) {
+            Ok(_) => {
+                return match metadata(path) {
+                    Ok(resolved) if resolved.is_dir() => Ok(()),
+                    Ok(_) => Err(anyhow!(
+                        "cannot create data dir: {} is not a directory",
+                        path.display()
+                    )),
+                    Err(e) => Err(e).with_context(|| {
+                        format!(
+                            "cannot create data dir: {} does not resolve to a directory",
+                            path.display()
+                        )
+                    }),
+                };
+            }
+            Err(e) if e.kind() == ErrorKind::NotFound => {}
+            Err(e) => {
+                return Err(e).with_context(|| format!("cannot inspect {}", path.display()));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Writes `version` to the VERSION file at `path`, creating it if it does not
@@ -810,6 +822,59 @@ mod tests {
                 assert_refused(Side::Fresh(fresh), odd, "cannot open VERSION");
             }
             assert_refused(odd, odd, "cannot open VERSION");
+        }
+    }
+
+    /// A side whose path cannot be listed because a dangling symbolic link
+    /// stands at it, or at one of its ancestors, is not missing: no directory
+    /// can be created through the link. Beside a fresh directory, on each side
+    /// in turn, the pair is refused before anything is written, so the fresh
+    /// side gets no `VERSION`, and the link is left dangling.
+    #[test]
+    fn a_dangling_directory_symlink_is_refused() {
+        const NOT_A_DIRECTORY: &str = "does not resolve to a directory";
+
+        for at_ancestor in [false, true] {
+            for fresh in FRESH {
+                for link_on_data in [true, false] {
+                    let root = tempfile::tempdir().unwrap();
+                    let link = root.path().join("link");
+                    let target = root.path().join("nowhere");
+                    std::os::unix::fs::symlink(&target, &link).unwrap();
+                    let linked = if at_ancestor {
+                        link.join("sub")
+                    } else {
+                        link.clone()
+                    };
+                    let fresh_dir = make_side(root.path(), "fresh", Side::Fresh(fresh));
+                    let fresh_before = dir_state(&fresh_dir);
+
+                    let (data_dir, backup_dir) = if link_on_data {
+                        (&linked, &fresh_dir)
+                    } else {
+                        (&fresh_dir, &linked)
+                    };
+                    let err = migrate_data_dir(data_dir, backup_dir, None).expect_err(&format!(
+                        "{} beside {fresh:?} must be refused",
+                        linked.display()
+                    ));
+
+                    let message = err.to_string();
+                    assert!(
+                        message.contains(NOT_A_DIRECTORY),
+                        "unexpected error for {} beside {fresh:?}: {message}",
+                        linked.display()
+                    );
+                    assert_eq!(
+                        dir_state(&fresh_dir),
+                        fresh_before,
+                        "{fresh:?} beside {}",
+                        linked.display()
+                    );
+                    assert_eq!(std::fs::read_link(&link).unwrap(), target);
+                    assert!(std::fs::symlink_metadata(&target).is_err());
+                }
+            }
         }
     }
 
