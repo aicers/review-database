@@ -5,6 +5,17 @@ file is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), and
 this project adheres to [Semantic
 Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.66.0](https://github.com/aicers/review-database/compare/0.65.0...0.66.0) - 2026-11-22
+
+### Added
+
+- [**breaking**] require a fresh install for database format 0.63.0 ([#1088](https://github.com/aicers/review-database/pull/1088))
+
+### Other
+
+- update shared instruction blocks to 0.6.4 ([#1086](https://github.com/aicers/review-database/pull/1086))
+- update shared instruction blocks to 0.6.3 ([#1077](https://github.com/aicers/review-database/pull/1077))
+
 ## [0.65.0](https://github.com/aicers/review-database/compare/0.64.0...0.65.0) - 2026-11-21
 
 ### Changed
