@@ -134,8 +134,8 @@ pub use self::training_definition::{
     ModelMethod, NewTrainingDefinition, TrainingDefinition, TrainingDefinitionUpdate,
 };
 pub use self::triage_policy::{
-    AttrCmpKind, Confidence, ExclusionReason, NetworkFilter, PacketAttr, Response, ResponseKind,
-    TriageExclusion, TriagePolicyInput, ValueKind,
+    AttrCmpKind, ExclusionReason, NetworkFilter, PacketAttr, Response, ResponseKind,
+    ScoreCondition, TriageExclusion, TriagePolicyInput, ValueKind,
 };
 pub use self::triage_response::{TriageResponse, Update as TriageResponseUpdate};
 pub use self::trusted_domain::TrustedDomain;

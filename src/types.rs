@@ -109,6 +109,31 @@ pub enum EventCategoryV0_42 {
     ResourceDevelopment,
 }
 
+/// Maps review-protocol's category to the variant of the same name and
+/// number.
+impl From<review_protocol::types::EventCategory> for EventCategoryV0_42 {
+    fn from(category: review_protocol::types::EventCategory) -> Self {
+        use review_protocol::types::EventCategory as Protocol;
+
+        match category {
+            Protocol::Reconnaissance => Self::Reconnaissance,
+            Protocol::InitialAccess => Self::InitialAccess,
+            Protocol::Execution => Self::Execution,
+            Protocol::CredentialAccess => Self::CredentialAccess,
+            Protocol::Discovery => Self::Discovery,
+            Protocol::LateralMovement => Self::LateralMovement,
+            Protocol::CommandAndControl => Self::CommandAndControl,
+            Protocol::Exfiltration => Self::Exfiltration,
+            Protocol::Impact => Self::Impact,
+            Protocol::Collection => Self::Collection,
+            Protocol::DefenseEvasion => Self::DefenseEvasion,
+            Protocol::Persistence => Self::Persistence,
+            Protocol::PrivilegeEscalation => Self::PrivilegeEscalation,
+            Protocol::ResourceDevelopment => Self::ResourceDevelopment,
+        }
+    }
+}
+
 #[derive(Deserialize)]
 pub struct Cluster {
     pub id: i32,

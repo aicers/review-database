@@ -22,8 +22,8 @@ flexible database interface for efficient data management.
 
 ## Key Components
 
-- Event Management: Store and retrieve various types of security events (e.g.,
-  HTTP threats, network threats, Windows threats)
+- Event Management: Store and retrieve the detection events detection engines
+  report, filter and count them, and score them against triage policies
 - Network Configuration: Handle trusted domains and Tor exit nodes
 - Model Management: Store and update machine learning models with versioning
   support
@@ -34,14 +34,14 @@ flexible database interface for efficient data management.
 
 Open an IP2Location database in the caller application and pass it to
 `Store::new` as `Some(Arc<ip2location::DB>)` to share it with event writers.
-`EventDb::put` then resolves endpoint country codes while converting
-producer-facing fields to the stored schema. Producers do not provide
-country-code fields. See the public rustdoc for
+`EventDb::put` then resolves the country code of each endpoint address of a
+detection event and stores it with the record, outside the event itself.
+Producers do not provide country codes. See the public rustdoc for
 [`COUNTRY_CODE_UNKNOWN`](https://docs.rs/review-database/latest/review_database/constant.COUNTRY_CODE_UNKNOWN.html)
 and
 [`COUNTRY_CODE_UNRESOLVED`](https://docs.rs/review-database/latest/review_database/constant.COUNTRY_CODE_UNRESOLVED.html)
-for placeholder semantics. Vector country-code fields retain the same length
-and ordering as their corresponding address vectors.
+for placeholder semantics. `StoredDetectionEvent::country_codes` returns each
+endpoint address with its stored code.
 
 ## License
 
