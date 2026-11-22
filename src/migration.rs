@@ -1,6 +1,7 @@
 //! Routines to check the database format version of a data directory and its
 //! backup directory.
 use std::{
+    ffi::OsStr,
     fs::{File, create_dir_all, metadata, remove_file, rename, symlink_metadata},
     io::{ErrorKind, Read, Write},
     path::{Component, Path, PathBuf},
@@ -107,7 +108,10 @@ const VERSION_TMP_FILE_NAME: &str = "VERSION.tmp";
 /// * a missing directory's path has a `..` after a missing component, such as
 ///   `missing/../old`, which would name a different directory once `missing`
 ///   was created;
-/// * a directory path is empty, which names no directory.
+/// * a directory path is empty, which names no directory;
+/// * both directories are fresh and one is at or below the other's `VERSION`
+///   or `VERSION.tmp`, such as `store` beside `store/VERSION`, where writing
+///   one marker would stop the other from being written.
 ///
 /// Returns an error if a fresh directory cannot be created or its `VERSION`
 /// cannot be written.
@@ -135,6 +139,7 @@ pub fn migrate_data_dir<P: AsRef<Path>>(
 
     match (data_ver, backup_ver) {
         (None, None) => {
+            check_fresh_dirs_do_not_overlap(data_dir, backup_dir)?;
             write_version_marker(data_dir, DATABASE_FORMAT_VERSION)
                 .context("failed to create VERSION")?;
             write_version_marker(backup_dir, DATABASE_FORMAT_VERSION)
@@ -159,6 +164,114 @@ pub fn migrate_data_dir<P: AsRef<Path>>(
                 Err(unsupported(&data_ver))
             }
         }
+    }
+}
+
+/// Checks that writing the marker of either fresh directory cannot stop the
+/// marker of the other from being written.
+///
+/// Each read sees its directory as it is before anything is written, yet the
+/// two writes run in turn. A directory at or below the other's `VERSION` or
+/// `VERSION.tmp`, such as `store` beside `store/VERSION`, is fresh while both
+/// are missing, but the first write puts a file or a directory where the
+/// second needs the other, so the second fails with the first marker already
+/// in place. Refusing such a pair here keeps it as it was found.
+///
+/// The paths are compared as they resolve: the nearest existing ancestor of
+/// each is canonicalized, so a symbolic link or a `..` within it cannot hide
+/// the overlap, and the missing components below it, which
+/// [`check_missing_dir_can_be_created`] has already found free of `..`, are
+/// appended as they are. Names are compared ASCII-case-insensitively, so a
+/// case-insensitive file system, as macOS uses by default, cannot alias them
+/// either; on a case-sensitive one this also refuses a pair such as `store`
+/// beside `store/version`, which no deployment uses.
+///
+/// # Errors
+///
+/// Returns an error if one directory is at or below the other's `VERSION` or
+/// `VERSION.tmp`, or if a directory's nearest existing ancestor cannot be
+/// canonicalized.
+fn check_fresh_dirs_do_not_overlap(data_dir: &Path, backup_dir: &Path) -> Result<()> {
+    let data = resolved_location(data_dir)?;
+    let backup = resolved_location(backup_dir)?;
+    for (dir, other) in [(&data, &backup), (&backup, &data)] {
+        let Some(name) = name_below(dir, other) else {
+            continue;
+        };
+        if name.eq_ignore_ascii_case(VERSION_FILE_NAME)
+            || name.eq_ignore_ascii_case(VERSION_TMP_FILE_NAME)
+        {
+            return Err(anyhow!(
+                "cannot create data dir: {} is inside the {} of {}",
+                other.display(),
+                name.display(),
+                dir.display()
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Returns where `dir`, a fresh directory that may be missing, resolves to.
+///
+/// The nearest ancestor of `dir` that exists is canonicalized, and the
+/// components of `dir` below it are appended, without any `.`.
+///
+/// # Errors
+///
+/// Returns an error if an ancestor of `dir` exists but cannot be
+/// canonicalized.
+fn resolved_location(dir: &Path) -> Result<PathBuf> {
+    for path in dir.ancestors() {
+        let path: PathBuf = path.components().collect();
+        let existing_components = path.components().count();
+        // An empty path is the current directory of a relative `dir`.
+        let path = if path.as_os_str().is_empty() {
+            Path::new(".")
+        } else {
+            path.as_path()
+        };
+        match path.canonicalize() {
+            Ok(mut resolved) => {
+                resolved.extend(
+                    dir.components()
+                        .skip(existing_components)
+                        .filter(|component| *component != Component::CurDir),
+                );
+                return Ok(resolved);
+            }
+            Err(e) if e.kind() == ErrorKind::NotFound => {}
+            Err(e) => {
+                return Err(e).with_context(|| format!("cannot resolve {}", path.display()));
+            }
+        }
+    }
+    Err(anyhow!(
+        "cannot resolve {}: no ancestor exists",
+        dir.display()
+    ))
+}
+
+/// Returns the name of the component of `other` right below `dir`, or `None`
+/// if `other` is not below `dir`.
+///
+/// Both paths are absolute and free of `.` and `..`, as
+/// [`resolved_location`] returns them. Names are compared
+/// ASCII-case-insensitively.
+fn name_below<'a>(dir: &Path, other: &'a Path) -> Option<&'a OsStr> {
+    let mut below = other.components();
+    for component in dir.components() {
+        let same = match (component, below.next()?) {
+            (Component::Normal(a), Component::Normal(b)) => a.eq_ignore_ascii_case(b),
+            (a, b) => a == b,
+        };
+        if !same {
+            return None;
+        }
+    }
+    match below.next()? {
+        Component::Normal(name) => Some(name),
+        _ => None,
     }
 }
 
@@ -986,6 +1099,94 @@ mod tests {
 
         assert_initialized(&root.path().join("data"));
         assert_initialized(&backup_dir);
+    }
+
+    /// Two fresh directories where one is at or below the other's `VERSION` or
+    /// `VERSION.tmp`, such as `store` beside `store/VERSION`, are refused
+    /// before either marker is written, on each side in turn: writing one would
+    /// put a file or a directory where the other needs to be. The outer
+    /// directory is missing or empty, the names are matched regardless of
+    /// ASCII case, and the inner path may reach the outer one through a
+    /// symbolic link. Nothing is created: a missing directory stays missing.
+    #[test]
+    fn overlapping_fresh_directories_are_refused() {
+        const OVERLAP: &str = "is inside the";
+
+        for inner in [
+            "VERSION",
+            "VERSION.tmp",
+            "VERSION/sub",
+            "version",
+            "Version.TMP",
+        ] {
+            for outer_state in [Fresh::Missing, Fresh::Empty] {
+                for through_link in [false, true] {
+                    for outer_on_data in [true, false] {
+                        let root = tempfile::tempdir().unwrap();
+                        let real = make_side(root.path(), "real", Side::Fresh(Fresh::Empty));
+                        let alias = root.path().join("alias");
+                        std::os::unix::fs::symlink(&real, &alias).unwrap();
+                        let outer = make_side(&real, "store", Side::Fresh(outer_state));
+                        let inner_dir = if through_link { &alias } else { &real }
+                            .join("store")
+                            .join(inner);
+                        let before = dir_state(&real);
+
+                        let (data_dir, backup_dir) = if outer_on_data {
+                            (&outer, &inner_dir)
+                        } else {
+                            (&inner_dir, &outer)
+                        };
+                        let case = format!(
+                            "{} beside {} ({outer_state:?})",
+                            data_dir.display(),
+                            backup_dir.display()
+                        );
+                        let err = migrate_data_dir(data_dir, backup_dir, None)
+                            .expect_err(&format!("{case} must be refused"));
+
+                        let message = err.to_string();
+                        assert!(
+                            message.contains(OVERLAP),
+                            "unexpected error for {case}: {message}"
+                        );
+                        assert_eq!(dir_state(&real), before, "{case}");
+                        assert!(
+                            std::fs::symlink_metadata(&inner_dir).is_err(),
+                            "{case}: the inner directory must stay missing"
+                        );
+                        if matches!(outer_state, Fresh::Missing) {
+                            assert!(
+                                std::fs::symlink_metadata(&outer).is_err(),
+                                "{case}: the outer directory must stay missing"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// A fresh directory nested inside the other under any name but `VERSION`
+    /// and `VERSION.tmp` does not stop either marker from being written, so
+    /// both are initialized, on each side in turn.
+    #[test]
+    fn nested_fresh_directories_are_initialized() {
+        for outer_on_data in [true, false] {
+            let root = tempfile::tempdir().unwrap();
+            let outer = root.path().join("store");
+            let inner = outer.join("backup");
+
+            let (data_dir, backup_dir) = if outer_on_data {
+                (&outer, &inner)
+            } else {
+                (&inner, &outer)
+            };
+            migrate_data_dir(data_dir, backup_dir, None).unwrap();
+
+            assert_initialized(&outer);
+            assert_initialized(&inner);
+        }
     }
 
     /// Marks the child process [`an_empty_path_is_refused`] starts, and names
