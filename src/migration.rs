@@ -2,11 +2,11 @@
 //! backup directory.
 use std::{
     fs::{
-        File, OpenOptions, Permissions, canonicalize, create_dir_all, metadata, remove_dir,
-        remove_file, rename, symlink_metadata,
+        File, OpenOptions, canonicalize, create_dir_all, metadata, remove_dir, remove_file, rename,
+        symlink_metadata,
     },
     io::{ErrorKind, Read, Write},
-    os::unix::fs::{MetadataExt, PermissionsExt},
+    os::unix::fs::MetadataExt,
     path::{Component, Path, PathBuf},
     sync::Arc,
 };
@@ -45,9 +45,6 @@ pub(crate) const DATABASE_FORMAT_VERSION: &str = "0.63.0";
 /// [`DATABASE_FORMAT_VERSION`], and no build writes a prerelease marker.
 const COMPATIBLE_VERSION_REQ: &str = ">=0.63.0,<0.64.0";
 
-/// The permission bits of a file mode, without its file type.
-const MODE_BITS: u32 = 0o7777;
-
 /// The name of the file recording the database format version.
 const VERSION_FILE_NAME: &str = "VERSION";
 
@@ -60,8 +57,24 @@ const VERSION_FILE_NAME: &str = "VERSION";
 /// `migrate_data_dir` runs once at startup, and [`write_version_markers`] is a
 /// rollback step the caller serializes against it and against any other
 /// rollback. In exchange, an interrupted write can leave behind only this one
-/// file, which the next start recognizes.
+/// file, which the next start recognizes, unless it interrupts the recovery
+/// from such a leftover; see [`VERSION_BESIDE_LEFTOVER_FILE_NAME`].
 const VERSION_TMP_FILE_NAME: &str = "VERSION.tmp";
+
+/// The name of the temporary that `migrate_data_dir` renames over
+/// [`VERSION_FILE_NAME`] in a fresh directory that holds a leftover
+/// [`VERSION_TMP_FILE_NAME`].
+///
+/// The leftover is left where it is until every marker of the pair is
+/// written, so that a failed initialization finds it as it was: the same
+/// directory entry, inode, links, bytes and mode, none of which can be put
+/// back once it has been removed. The marker therefore needs another name.
+/// The next start does not forgive this one, so an interruption between its
+/// creation and its rename, which needs a crash during the recovery from an
+/// earlier one, leaves a directory that is refused with the VERSION read
+/// error until the two files are removed, rather than one stamped with a
+/// format nothing checked.
+const VERSION_BESIDE_LEFTOVER_FILE_NAME: &str = "VERSION.new";
 
 /// Checks the database format of the data and backup directories, and records
 /// the current format in a fresh one.
@@ -91,8 +104,8 @@ const VERSION_TMP_FILE_NAME: &str = "VERSION.tmp";
 /// removed: a fresh directory gets no `VERSION`, a leftover `VERSION.tmp`
 /// stays, and a missing directory stays missing. Both directories are read
 /// before either is written for that reason. Two fresh directories that
-/// overlap, where one is at or below the other's `VERSION` or `VERSION.tmp`,
-/// are told apart only by creating them, so the directories created for such
+/// overlap, where one is at or below the other's `VERSION`, its `VERSION.tmp`
+/// or, beside a leftover, its `VERSION.new`, are told apart only by creating them, so the directories created for such
 /// a pair are removed again before it is refused, and no marker is written.
 /// The directory they were created in, such as an empty `store` beside
 /// `store/VERSION`, keeps its contents but not its modification and status
@@ -121,8 +134,9 @@ const VERSION_TMP_FILE_NAME: &str = "VERSION.tmp";
 ///   `missing/../old`, which would name a different directory once `missing`
 ///   was created;
 /// * a directory path is empty, which names no directory;
-/// * both directories are fresh and one is at or below the other's `VERSION`
-///   or `VERSION.tmp` as the file system resolves names, such as `store`
+/// * both directories are fresh and one is at or below the other's
+///   `VERSION`, its `VERSION.tmp` or, where it holds a leftover `VERSION.tmp`,
+///   its `VERSION.new` as the file system resolves names, such as `store`
 ///   beside `store/VERSION`, or `État` beside `état/VERSION` where the file
 ///   system folds case, so that writing one marker would stop the other from
 ///   being written;
@@ -132,11 +146,14 @@ const VERSION_TMP_FILE_NAME: &str = "VERSION.tmp";
 ///
 /// Returns an error if a fresh directory cannot be created or its `VERSION`
 /// cannot be written. What the call created or wrote in either directory up
-/// to then is undone first: each `VERSION` written is removed, a leftover
-/// `VERSION.tmp` is put back with its bytes and mode, and a directory that was
-/// missing is removed again, so that, as for a refused pair, only the
-/// modification and status change times of the directories involved record
-/// the attempt. The error names the undo as well if it fails too.
+/// to then is undone first: each `VERSION` and temporary written is removed,
+/// and a directory that was missing is removed again. A leftover `VERSION.tmp`
+/// is never touched before both markers are written, and is removed only
+/// then, so it is still there as it was, the same file with the same links.
+/// As for a refused pair, only the modification and status change times of
+/// the directories involved record the attempt. The error names the undo as
+/// well if it fails too. A leftover that cannot be removed once both markers
+/// are written is reported too, with the markers kept.
 pub fn migrate_data_dir<P: AsRef<Path>>(
     data_dir: P,
     backup_dir: P,
@@ -187,39 +204,62 @@ pub fn migrate_data_dir<P: AsRef<Path>>(
 /// `DATABASE_FORMAT_VERSION`, or, if any step fails, undoes what the call did.
 ///
 /// Every directory in `dirs` was read as fresh, so none holds a `VERSION`, and
-/// a `VERSION` found in one after a failed step was written by this call. On
-/// failure each directory a write was attempted in loses that `VERSION`, and
-/// its `VERSION.tmp` is put back as it was: removed if there was none, and
-/// otherwise written again with the leftover's bytes and mode if the write
-/// had already replaced it. Then the directories created here are removed,
-/// deepest first. A directory that is read-only, or a disk that is full,
-/// therefore stops the initialization without leaving one side marked and the
-/// other not, or a missing directory created.
+/// a `VERSION` found in one after a failed step was written by this call. A
+/// leftover `VERSION.tmp` is not touched while the markers are written: each
+/// marker goes through a temporary of its own, `VERSION.tmp` where there is no
+/// leftover and [`VERSION_BESIDE_LEFTOVER_FILE_NAME`] beside one, and the
+/// leftovers are removed only once every marker is in place. A leftover is
+/// therefore never read, so one that cannot be read does not stop the
+/// initialization, and a failed one finds it with the directory entry, inode,
+/// links, bytes and mode it had.
+///
+/// On failure each directory a write was attempted in loses that `VERSION`
+/// and the temporary the write went through, and then the directories created
+/// here are removed, deepest first. A directory that is read-only, or a disk
+/// that is full, therefore stops the initialization without leaving one side
+/// marked and the other not, or a missing directory created.
 ///
 /// # Errors
 ///
-/// Returns an error if a directory cannot be created or inspected, if a
-/// leftover cannot be read, if two directories overlap, if a marker cannot be
-/// written, or if what was written cannot be undone, in which case the error
-/// names both failures.
+/// Returns an error if a directory cannot be created or inspected, if two
+/// directories overlap, if a marker cannot be written, or if what was written
+/// cannot be undone, in which case the error names both failures. Returns an
+/// error as well if a leftover cannot be removed once every marker is
+/// written; the markers are kept then, since they are complete, and the pair
+/// opens on the next start.
 fn initialize_fresh_dirs(dirs: &[&Path]) -> Result<()> {
     let mut created = Vec::new();
-    let mut leftovers = Vec::with_capacity(dirs.len());
+    let mut temporaries = Vec::with_capacity(dirs.len());
     for dir in dirs {
         created.extend(missing_ancestors(dir)?);
-        leftovers.push(SavedLeftover::read(dir)?);
+        temporaries.push(if has_leftover(dir)? {
+            VERSION_BESIDE_LEFTOVER_FILE_NAME
+        } else {
+            VERSION_TMP_FILE_NAME
+        });
     }
 
     let mut attempted = 0;
-    let result = create_fresh_dirs(dirs).and_then(|()| {
-        for dir in dirs {
+    let result = create_fresh_dirs(dirs, &temporaries).and_then(|()| {
+        for (dir, temporary) in dirs.iter().zip(&temporaries) {
             attempted += 1;
-            write_version_marker(dir, DATABASE_FORMAT_VERSION, Leftover::Replace)
+            write_version_marker(dir, DATABASE_FORMAT_VERSION, Temporary::Create(temporary))
                 .context("failed to create VERSION")?;
         }
         Ok(())
     });
     let Err(e) = result else {
+        for (dir, temporary) in dirs.iter().zip(&temporaries) {
+            if *temporary == VERSION_BESIDE_LEFTOVER_FILE_NAME {
+                let tmp = dir.join(VERSION_TMP_FILE_NAME);
+                remove_if_present(&tmp).with_context(|| {
+                    format!(
+                        "the data dirs are initialized, but {} cannot be removed",
+                        tmp.display()
+                    )
+                })?;
+            }
+        }
         return Ok(());
     };
 
@@ -230,17 +270,13 @@ fn initialize_fresh_dirs(dirs: &[&Path]) -> Result<()> {
         ))
     };
     // Only the directories a write was attempted in are touched: before the
-    // first write, the overlap check may have failed because the name
-    // `VERSION` or `VERSION.tmp` of one directory is another directory.
-    for (dir, leftover) in dirs.iter().zip(&leftovers).take(attempted) {
-        let version = dir.join(VERSION_FILE_NAME);
-        remove_if_present(&version).map_err(|undo_err| undo_failed(&version, undo_err))?;
-        let tmp = dir.join(VERSION_TMP_FILE_NAME);
-        match leftover {
-            None => remove_if_present(&tmp),
-            Some(leftover) => leftover.restore(&tmp),
+    // first write, the overlap check may have failed because a name the
+    // markers are written under in one directory is another directory.
+    for (dir, temporary) in dirs.iter().zip(&temporaries).take(attempted) {
+        for name in [VERSION_FILE_NAME, *temporary] {
+            let path = dir.join(name);
+            remove_if_present(&path).map_err(|undo_err| undo_failed(&path, undo_err))?;
         }
-        .map_err(|undo_err| undo_failed(&tmp, undo_err))?;
     }
     for path in &removal_order(created) {
         match remove_dir(path) {
@@ -267,69 +303,20 @@ fn remove_if_present(path: &Path) -> Result<()> {
     }
 }
 
-/// A `VERSION.tmp` left in a fresh directory, kept so that it can be put back
-/// if the directory cannot be initialized.
-struct SavedLeftover {
-    dev: u64,
-    ino: u64,
-    mode: u32,
-    bytes: Vec<u8>,
-}
-
-impl SavedLeftover {
-    /// Reads the `VERSION.tmp` of the fresh directory `dir`, or returns
-    /// `None` if it has none.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the leftover cannot be inspected or read.
-    fn read(dir: &Path) -> Result<Option<Self>> {
-        let tmp = dir.join(VERSION_TMP_FILE_NAME);
-        let found = match symlink_metadata(&tmp) {
-            Ok(found) => found,
-            Err(e) if matches!(e.kind(), ErrorKind::NotFound | ErrorKind::NotADirectory) => {
-                return Ok(None);
-            }
-            Err(e) => return Err(e).with_context(|| format!("cannot inspect {}", tmp.display())),
-        };
-        let bytes =
-            std::fs::read(&tmp).with_context(|| format!("cannot read {}", tmp.display()))?;
-        Ok(Some(Self {
-            dev: found.dev(),
-            ino: found.ino(),
-            mode: found.mode() & MODE_BITS,
-            bytes,
-        }))
-    }
-
-    /// Puts the leftover back at `tmp`, unless it is still there.
-    ///
-    /// A write with [`Leftover::Replace`] never writes through the leftover:
-    /// it removes it and creates a file of its own. A file at `tmp` with the
-    /// leftover's inode is therefore the leftover, untouched, and anything
-    /// else at `tmp` is replaced by a new file with the leftover's bytes and
-    /// mode.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if `tmp` cannot be inspected or removed, or if the
-    /// leftover cannot be written again.
-    fn restore(&self, tmp: &Path) -> Result<()> {
-        match symlink_metadata(tmp) {
-            Ok(found) if (found.dev(), found.ino()) == (self.dev, self.ino) => return Ok(()),
-            Ok(_) => remove_if_present(tmp)?,
-            Err(e) if e.kind() == ErrorKind::NotFound => {}
-            Err(e) => return Err(e).context("cannot inspect the file"),
-        }
-        let mut f = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(tmp)
-            .context("cannot create the file")?;
-        f.write_all(&self.bytes).context("cannot write the file")?;
-        f.set_permissions(Permissions::from_mode(self.mode))
-            .context("cannot set the mode of the file")?;
-        Ok(())
+/// Tells whether the fresh directory `dir` holds a leftover `VERSION.tmp`.
+///
+/// Only the directory entry is inspected: the leftover is never opened, so
+/// one whose mode forbids reading it is found all the same.
+///
+/// # Errors
+///
+/// Returns an error if the leftover cannot be inspected.
+fn has_leftover(dir: &Path) -> Result<bool> {
+    let tmp = dir.join(VERSION_TMP_FILE_NAME);
+    match symlink_metadata(&tmp) {
+        Ok(_) => Ok(true),
+        Err(e) if matches!(e.kind(), ErrorKind::NotFound | ErrorKind::NotADirectory) => Ok(false),
+        Err(e) => Err(e).with_context(|| format!("cannot inspect {}", tmp.display())),
     }
 }
 
@@ -337,11 +324,12 @@ impl SavedLeftover {
 /// another directory's marker from being written.
 ///
 /// Each read sees its directory as it is before anything is written, yet the
-/// writes run in turn. A directory at or below another's `VERSION` or
-/// `VERSION.tmp`, such as `store` beside `store/VERSION`, is fresh while both
-/// are missing, but the first write puts a file or a directory where the
-/// second needs the other, so the second would fail with the first marker
-/// already in place.
+/// writes run in turn. A directory at or below another's `VERSION`, or the
+/// temporary its marker is written through, such as `store` beside
+/// `store/VERSION`, is fresh while both are missing, but the first write puts
+/// a file or a directory where the second needs the other, so the second
+/// would fail with the first marker already in place. `temporaries` holds
+/// that name for each directory of `dirs`.
 ///
 /// Whether two paths name the same directory depends on the file system that
 /// holds them: one that folds case, or Unicode normalization, makes `État`
@@ -349,8 +337,9 @@ impl SavedLeftover {
 /// `store/version` apart. No comparison of names can follow every such rule,
 /// so the file system is asked instead. The directories are created, and two
 /// of them overlap exactly when that puts something at either one's
-/// `VERSION`, or anything but the leftover regular file at its `VERSION.tmp`:
-/// before the creation, each fresh directory had neither. The caller,
+/// `VERSION` or [`VERSION_BESIDE_LEFTOVER_FILE_NAME`], or anything but the
+/// leftover regular file at its `VERSION.tmp`: before the creation, each
+/// fresh directory had none of them. The caller,
 /// [`initialize_fresh_dirs`], removes the directories created here again,
 /// deepest first, before an overlapping pair is refused, so its contents are
 /// left as they were found and no marker is written. The directory the
@@ -363,14 +352,14 @@ impl SavedLeftover {
 ///
 /// Returns an error if two directories overlap, or if one cannot be created or
 /// inspected.
-fn create_fresh_dirs(dirs: &[&Path]) -> Result<()> {
+fn create_fresh_dirs(dirs: &[&Path], temporaries: &[&str]) -> Result<()> {
     for dir in dirs {
         create_dir_all(dir).context("cannot create data dir")?;
     }
-    for (i, dir) in dirs.iter().enumerate() {
+    for (i, (dir, temporary)) in dirs.iter().zip(temporaries).enumerate() {
         for (j, other) in dirs.iter().enumerate() {
             if i != j {
-                check_marker_names_are_free(dir, other)?;
+                check_marker_names_are_free(dir, temporary, other)?;
             }
         }
     }
@@ -435,18 +424,19 @@ fn missing_ancestors(dir: &Path) -> Result<Vec<PathBuf>> {
 }
 
 /// Checks that nothing stands at the `VERSION` of `dir`, a fresh directory
-/// that now exists, and nothing but a regular file at its `VERSION.tmp`.
+/// that now exists, or at the temporary `temporary` its marker is written
+/// through, and nothing but a regular file at its `VERSION.tmp`.
 ///
 /// `other` is the directory whose creation would have put it there.
 ///
 /// # Errors
 ///
-/// Returns an error if either name is taken, or if it cannot be inspected.
-fn check_marker_names_are_free(dir: &Path, other: &Path) -> Result<()> {
-    for name in [VERSION_FILE_NAME, VERSION_TMP_FILE_NAME] {
+/// Returns an error if a name is taken, or if it cannot be inspected.
+fn check_marker_names_are_free(dir: &Path, temporary: &str, other: &Path) -> Result<()> {
+    for name in [VERSION_FILE_NAME, temporary, VERSION_TMP_FILE_NAME] {
         let path = dir.join(name);
         let taken = match symlink_metadata(&path) {
-            Ok(found) => name == VERSION_FILE_NAME || !found.is_file(),
+            Ok(found) => name != VERSION_TMP_FILE_NAME || !found.is_file(),
             Err(e) if e.kind() == ErrorKind::NotFound => false,
             Err(e) => {
                 return Err(e).with_context(|| format!("cannot inspect {}", path.display()));
@@ -463,12 +453,11 @@ fn check_marker_names_are_free(dir: &Path, other: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Checks that the `VERSION.tmp` of `fresh`, which is about to be replaced
-/// and renamed over its `VERSION`, is not the file `marked` holds its marker
-/// in.
+/// Checks that the `VERSION.tmp` of `fresh`, which is removed once `fresh` is
+/// initialized, is not the file `marked` holds its marker in.
 ///
 /// A `VERSION` of `marked` that is a symbolic link to that `VERSION.tmp`
-/// would be left dangling once the temporary is renamed, and one that is a
+/// would be left dangling once the leftover is removed, and one that is a
 /// hard link to it shares its inode. Either way the file is not a leftover of
 /// an interrupted write but the marker the pair was accepted on, so the pair
 /// is refused while nothing has been written.
@@ -660,19 +649,23 @@ fn check_missing_dir_can_be_created(dir: &Path) -> Result<()> {
     Ok(())
 }
 
-/// What [`create_version_file`] does with a `VERSION.tmp` it finds in place.
+/// The temporary [`create_version_file`] writes the marker to before renaming
+/// it over VERSION.
 #[derive(Clone, Copy, Debug)]
-enum Leftover {
-    /// The leftover is removed and the temporary created anew, so the bytes
-    /// go to an inode of its own and the marker gets the mode `OpenOptions`
-    /// and the umask give a new file.
+enum Temporary {
+    /// A new file is created under this name, which nothing may hold, so the
+    /// bytes go to an inode of its own and the marker gets the mode
+    /// `OpenOptions` and the umask give a new file.
     ///
-    /// `migrate_data_dir` initializes fresh directories this way: a leftover
-    /// that is a hard link to some other file shares that file's inode, and
-    /// writing through it would rewrite that file too.
-    Replace,
-    /// The leftover is truncated and written in place, so it keeps its inode
-    /// and its mode, and the marker it is renamed to has them.
+    /// `migrate_data_dir` initializes fresh directories this way, under
+    /// `VERSION.tmp` where there is no leftover and under
+    /// [`VERSION_BESIDE_LEFTOVER_FILE_NAME`] beside one, which it never
+    /// writes to: a leftover that is a hard link to some other file shares
+    /// that file's inode, and writing through it would rewrite that file too.
+    Create(&'static str),
+    /// `VERSION.tmp` is created, or truncated and written in place if it is
+    /// already there, so a leftover keeps its inode and its mode, and the
+    /// marker it is renamed to has them.
     ///
     /// [`write_version_markers`] writes this way, as it always has: the
     /// rollback it serves is outside the format change, and so is the mode
@@ -690,35 +683,34 @@ enum Leftover {
 /// `version` is written verbatim, so every caller passes a string it has
 /// already validated: `DATABASE_FORMAT_VERSION` from `migrate_data_dir`, and the
 /// canonical form of a parsed [`Version`] from [`write_version_markers`].
-/// `leftover` says what becomes of a `VERSION.tmp` already in the directory.
+/// `temporary` says which file the version goes to first.
 ///
 /// # Errors
 ///
-/// Returns an error if a leftover temporary file cannot be removed, if the
-/// temporary file cannot be created, written, or flushed, if it cannot be
-/// renamed over the VERSION file, or if the
+/// Returns an error if the temporary file cannot be created, written, or
+/// flushed, if it cannot be renamed over the VERSION file, or if the
 /// containing directory cannot be flushed.
-fn create_version_file(path: &Path, version: &str, leftover: Leftover) -> Result<()> {
+fn create_version_file(path: &Path, version: &str, temporary: Temporary) -> Result<()> {
     let dir = path.parent().unwrap_or_else(|| Path::new("."));
-    let tmp = dir.join(VERSION_TMP_FILE_NAME);
 
     // No mode is requested here. `rename` installs this inode at the
     // destination, so the temporary's mode becomes VERSION's, and
     // `OpenOptions` asks for `0o666` and lets the umask narrow it — which is
     // what VERSION has had all along. It records a format version, not a
     // secret, so there is nothing to tighten.
-    let mut f = match leftover {
-        Leftover::Replace => {
-            match remove_file(&tmp) {
-                Ok(()) => {}
-                Err(e) if e.kind() == ErrorKind::NotFound => {}
-                Err(e) => return Err(e).context("cannot remove the leftover temporary VERSION"),
-            }
-            OpenOptions::new().write(true).create_new(true).open(&tmp)
+    let (tmp, opened) = match temporary {
+        Temporary::Create(name) => {
+            let tmp = dir.join(name);
+            let opened = OpenOptions::new().write(true).create_new(true).open(&tmp);
+            (tmp, opened)
         }
-        Leftover::Reuse => File::create(&tmp),
-    }
-    .context("cannot create temporary VERSION")?;
+        Temporary::Reuse => {
+            let tmp = dir.join(VERSION_TMP_FILE_NAME);
+            let opened = File::create(&tmp);
+            (tmp, opened)
+        }
+    };
+    let mut f = opened.context("cannot create temporary VERSION")?;
     f.write_all(version.as_bytes())
         .context("cannot write temporary VERSION")?;
 
@@ -817,13 +809,13 @@ pub fn write_version_markers<P: AsRef<Path>, Q: AsRef<Path>>(
     let data_dir = data_dir.as_ref();
     let backup_dir = backup_dir.as_ref();
 
-    write_version_marker(data_dir, &canonical, Leftover::Reuse).with_context(|| {
+    write_version_marker(data_dir, &canonical, Temporary::Reuse).with_context(|| {
         format!(
             "cannot write the data directory VERSION in {}",
             data_dir.display()
         )
     })?;
-    write_version_marker(backup_dir, &canonical, Leftover::Reuse).with_context(|| {
+    write_version_marker(backup_dir, &canonical, Temporary::Reuse).with_context(|| {
         format!(
             "cannot write the backup directory VERSION in {}",
             backup_dir.display()
@@ -838,9 +830,9 @@ pub fn write_version_markers<P: AsRef<Path>, Q: AsRef<Path>>(
 ///
 /// Returns an error if `dir` cannot be created or if the marker cannot be
 /// replaced.
-fn write_version_marker(dir: &Path, version: &str, leftover: Leftover) -> Result<()> {
+fn write_version_marker(dir: &Path, version: &str, temporary: Temporary) -> Result<()> {
     create_dir_all(dir).context("cannot create the directory")?;
-    create_version_file(&dir.join(VERSION_FILE_NAME), version, leftover)
+    create_version_file(&dir.join(VERSION_FILE_NAME), version, temporary)
 }
 
 #[cfg(test)]
@@ -854,9 +846,9 @@ mod tests {
     use semver::{Version, VersionReq};
 
     use super::{
-        COMPATIBLE_VERSION_REQ, DATABASE_FORMAT_VERSION, Leftover, VERSION_FILE_NAME,
-        VERSION_TMP_FILE_NAME, create_version_file, migrate_data_dir, read_version_file,
-        write_version_markers,
+        COMPATIBLE_VERSION_REQ, DATABASE_FORMAT_VERSION, Temporary,
+        VERSION_BESIDE_LEFTOVER_FILE_NAME, VERSION_FILE_NAME, VERSION_TMP_FILE_NAME,
+        create_version_file, migrate_data_dir, read_version_file, write_version_markers,
     };
 
     /// The bytes a `VERSION.tmp` left behind by an interrupted write holds in
@@ -1506,8 +1498,8 @@ mod tests {
 
     /// A `VERSION` that is a symbolic or a hard link to the leftover
     /// `VERSION.tmp` of a fresh counterpart is refused, on each side in turn:
-    /// initializing the counterpart would rename that file away, leaving the
-    /// marker dangling, or write through the inode the two share. Neither
+    /// initializing the counterpart would remove that file, leaving the
+    /// marker dangling, or a link of the marker the pair was accepted on. Neither
     /// directory changes, the fresh side gets no `VERSION`, and the marker
     /// still reads the current format.
     #[test]
@@ -1557,14 +1549,14 @@ mod tests {
     }
 
     /// A leftover `VERSION.tmp` that is a hard link to a file outside both
-    /// directories is replaced without writing through it, beside a marker of
+    /// directories is removed without writing through it, beside a marker of
     /// the current format and beside a fresh directory whose leftover is a
     /// hard link to the same file, on each side in turn. Both directories end
     /// up with a readable `VERSION` of their own, the outside file keeps its
     /// bytes, and a marker that was there keeps its inode and modification
     /// time.
     #[test]
-    fn a_hard_linked_leftover_is_replaced_without_writing_through_it() {
+    fn a_hard_linked_leftover_is_removed_without_writing_through_it() {
         const OUTSIDE: &[u8] = b"synthetic bytes outside both directories";
 
         for counterpart in [
@@ -1613,14 +1605,12 @@ mod tests {
         }
     }
 
-    /// A fresh directory nested inside the other under any name but `VERSION`
-    /// and `VERSION.tmp` does not stop either marker from being written, so
-    /// both are initialized, on each side in turn.
     /// A fresh directory whose `VERSION` cannot be written, because it is
     /// read-only, stops the initialization of a fresh pair, on each side in
     /// turn and beside each way the counterpart is fresh, and the pair is left
     /// as it was found: the counterpart gets no `VERSION`, keeps its leftover
-    /// `VERSION.tmp`, and stays missing if it was missing.
+    /// `VERSION.tmp` as the same file with the same mode, and stays missing if
+    /// it was missing.
     #[test]
     fn a_marker_write_failure_leaves_the_fresh_pair_unchanged() {
         use std::os::unix::fs::PermissionsExt;
@@ -1659,10 +1649,18 @@ mod tests {
                         .unwrap();
                     }
                     let tmp_mode = |tmp: &Path| {
-                        std::fs::symlink_metadata(tmp)
-                            .ok()
-                            .map(|found| found.permissions().mode() & 0o7777)
+                        use std::os::unix::fs::MetadataExt;
+
+                        std::fs::symlink_metadata(tmp).ok().map(|found| {
+                            (
+                                found.dev(),
+                                found.ino(),
+                                found.permissions().mode() & 0o7777,
+                            )
+                        })
                     };
+                    let read_only_tmp = read_only.join(VERSION_TMP_FILE_NAME);
+                    let read_only_tmp_mode_before = tmp_mode(&read_only_tmp);
                     let read_only_before = dir_state(&read_only);
                     let other_before = dir_state(&other);
                     let other_tmp_mode_before = tmp_mode(&other_tmp);
@@ -1691,11 +1689,190 @@ mod tests {
                     assert_eq!(dir_state(&read_only), read_only_before, "{case}");
                     assert_eq!(dir_state(&other), other_before, "{case}");
                     assert_eq!(tmp_mode(&other_tmp), other_tmp_mode_before, "{case}");
+                    assert_eq!(
+                        tmp_mode(&read_only_tmp),
+                        read_only_tmp_mode_before,
+                        "{case}"
+                    );
                 }
             }
         }
     }
 
+    /// A leftover `VERSION.tmp` that is a hard link to a file outside both
+    /// directories is still that link after an initialization that fails on
+    /// the counterpart, which is read-only, on each side in turn: the outside
+    /// file keeps its bytes and both of its links, and the fresh side gets no
+    /// `VERSION`.
+    #[test]
+    fn a_failed_initialization_keeps_a_hard_linked_leftover() {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+        const OUTSIDE: &[u8] = b"synthetic bytes outside both directories";
+        const READ_ONLY: u32 = 0o555;
+        const WRITABLE: u32 = 0o755;
+
+        for leftover_on_data in [true, false] {
+            let root = tempfile::tempdir().unwrap();
+            let outside = root.path().join("outside");
+            std::fs::write(&outside, OUTSIDE).unwrap();
+            let fresh = make_side(root.path(), "fresh", Side::Fresh(Fresh::Empty));
+            let leftover = fresh.join(VERSION_TMP_FILE_NAME);
+            std::fs::hard_link(&outside, &leftover).unwrap();
+            let read_only = make_side(root.path(), "read-only", Side::Fresh(Fresh::Empty));
+            std::fs::set_permissions(&read_only, std::fs::Permissions::from_mode(READ_ONLY))
+                .unwrap();
+            // A process that ignores file modes, such as one run as root,
+            // cannot be made to fail this way.
+            let probe = read_only.join("probe");
+            if std::fs::write(&probe, b"").is_ok() {
+                std::fs::remove_file(&probe).unwrap();
+                return;
+            }
+
+            let (data_dir, backup_dir) = if leftover_on_data {
+                (&fresh, &read_only)
+            } else {
+                (&read_only, &fresh)
+            };
+            let case = format!("leftover on data: {leftover_on_data}");
+            let result = migrate_data_dir(data_dir, backup_dir, None);
+            std::fs::set_permissions(&read_only, std::fs::Permissions::from_mode(WRITABLE))
+                .unwrap();
+            result.expect_err(&format!("{case} must fail"));
+
+            let outside_metadata = std::fs::metadata(&outside).unwrap();
+            let leftover_metadata = std::fs::symlink_metadata(&leftover).unwrap();
+            assert_eq!(
+                (leftover_metadata.dev(), leftover_metadata.ino()),
+                (outside_metadata.dev(), outside_metadata.ino()),
+                "{case}: the leftover must still be the outside file"
+            );
+            assert_eq!(outside_metadata.nlink(), 2, "{case}");
+            assert_eq!(std::fs::read(&outside).unwrap(), OUTSIDE, "{case}");
+            assert_eq!(
+                dir_state(&fresh),
+                Some(BTreeMap::from([(
+                    PathBuf::from(VERSION_TMP_FILE_NAME),
+                    OUTSIDE.to_vec()
+                )])),
+                "{case}"
+            );
+            assert_eq!(dir_state(&read_only), Some(BTreeMap::new()), "{case}");
+        }
+    }
+
+    /// A leftover `VERSION.tmp` that cannot be read, because its mode allows
+    /// writing only, does not stop a fresh directory from being initialized,
+    /// beside a missing directory, beside a marker of the current format, and
+    /// beside another such leftover, on each side in turn: the leftover is
+    /// never opened, and it is removed once the markers are written.
+    #[test]
+    fn an_unreadable_leftover_does_not_stop_the_initialization() {
+        use std::os::unix::fs::PermissionsExt;
+
+        const WRITE_ONLY: u32 = 0o200;
+
+        for counterpart in [
+            Side::Fresh(Fresh::Missing),
+            Side::Marked(DATABASE_FORMAT_VERSION),
+            Side::Fresh(Fresh::TmpOnly),
+        ] {
+            for leftover_on_data in [true, false] {
+                let root = tempfile::tempdir().unwrap();
+                let fresh = make_side(root.path(), "fresh", Side::Fresh(Fresh::TmpOnly));
+                let other = make_side(root.path(), "other", counterpart);
+                let mut leftovers = vec![fresh.join(VERSION_TMP_FILE_NAME)];
+                if matches!(counterpart, Side::Fresh(Fresh::TmpOnly)) {
+                    leftovers.push(other.join(VERSION_TMP_FILE_NAME));
+                }
+                for leftover in &leftovers {
+                    std::fs::set_permissions(leftover, std::fs::Permissions::from_mode(WRITE_ONLY))
+                        .unwrap();
+                }
+                // A process that ignores file modes, such as one run as root,
+                // reads the leftover all the same.
+                if std::fs::read(&leftovers[0]).is_ok() {
+                    return;
+                }
+                let marker_before =
+                    matches!(counterpart, Side::Marked(_)).then(|| marker_identity(&other));
+
+                let (data_dir, backup_dir) = if leftover_on_data {
+                    (&fresh, &other)
+                } else {
+                    (&other, &fresh)
+                };
+                let case = format!("{counterpart:?}, leftover on data: {leftover_on_data}");
+                migrate_data_dir(data_dir, backup_dir, None)
+                    .unwrap_or_else(|e| panic!("{case} must be accepted: {e:#}"));
+
+                assert_initialized(&fresh);
+                assert_initialized(&other);
+                for dir in [&fresh, &other] {
+                    assert!(
+                        !dir.join(VERSION_BESIDE_LEFTOVER_FILE_NAME).exists(),
+                        "{case}: {}",
+                        dir.display()
+                    );
+                }
+                if let Some(identity) = marker_before {
+                    assert_eq!(marker_identity(&other), identity, "{case}");
+                }
+            }
+        }
+    }
+
+    /// A fresh directory at the name the marker of a fresh directory holding a
+    /// leftover is written through, such as `store/VERSION.new` beside a
+    /// `store` holding `VERSION.tmp`, is refused, on each side in turn, and
+    /// stays missing, while beside a `store` without a leftover it is just a
+    /// nested directory and both are initialized.
+    #[test]
+    fn a_directory_at_the_marker_beside_a_leftover_is_refused() {
+        const OVERLAP: &str = "is inside the";
+
+        for outer_state in [Fresh::TmpOnly, Fresh::Empty] {
+            for outer_on_data in [true, false] {
+                let root = tempfile::tempdir().unwrap();
+                let outer = make_side(root.path(), "store", Side::Fresh(outer_state));
+                let inner = outer.join(VERSION_BESIDE_LEFTOVER_FILE_NAME);
+                let before = dir_state(&outer);
+
+                let (data_dir, backup_dir) = if outer_on_data {
+                    (&outer, &inner)
+                } else {
+                    (&inner, &outer)
+                };
+                let case = format!("{outer_state:?}, outer on data: {outer_on_data}");
+                let result = migrate_data_dir(data_dir, backup_dir, None);
+
+                if matches!(outer_state, Fresh::Empty) {
+                    result.unwrap_or_else(|e| panic!("{case} must be accepted: {e:#}"));
+                    assert_initialized(&outer);
+                    assert_initialized(&inner);
+                    continue;
+                }
+                let message = result
+                    .expect_err(&format!("{case} must be refused"))
+                    .to_string();
+                assert!(
+                    message.contains(OVERLAP),
+                    "unexpected error for {case}: {message}"
+                );
+                assert_eq!(dir_state(&outer), before, "{case}");
+                assert!(
+                    std::fs::symlink_metadata(&inner).is_err(),
+                    "{case}: the inner directory must stay missing"
+                );
+            }
+        }
+    }
+
+    /// A fresh directory nested inside the other, which holds no leftover,
+    /// under any name but `VERSION` and `VERSION.tmp` does not stop either
+    /// marker from being written, so both are initialized, on each side in
+    /// turn.
     #[test]
     fn nested_fresh_directories_are_initialized() {
         for outer_on_data in [true, false] {
@@ -1817,7 +1994,12 @@ mod tests {
         let version_path = temp.path().join("VERSION");
 
         // Create a version file
-        create_version_file(&version_path, env!("CARGO_PKG_VERSION"), Leftover::Replace).unwrap();
+        create_version_file(
+            &version_path,
+            env!("CARGO_PKG_VERSION"),
+            Temporary::Create(VERSION_TMP_FILE_NAME),
+        )
+        .unwrap();
 
         // Read it back
         let version = read_version_file(&version_path).unwrap();
@@ -1836,7 +2018,12 @@ mod tests {
         write_version(temp.path(), "0.45.0");
         let version_path = temp.path().join(VERSION_FILE_NAME);
 
-        create_version_file(&version_path, DATABASE_FORMAT_VERSION, Leftover::Replace).unwrap();
+        create_version_file(
+            &version_path,
+            DATABASE_FORMAT_VERSION,
+            Temporary::Create(VERSION_TMP_FILE_NAME),
+        )
+        .unwrap();
 
         assert_eq!(
             read_version_file(&version_path).unwrap(),
