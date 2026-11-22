@@ -31,9 +31,13 @@ pub struct Model {
     pub kind: String,
     pub max_event_id_num: i32,
     pub classification_id: Option<i64>,
-    /// The Giganto event kind the model was trained on, such as `http`, a
-    /// Sysmon kind or a log kind.
-    pub event_kind: String,
+    /// The Giganto kind name of the raw events the model was trained on,
+    /// such as `http`, a Sysmon kind or `log`.
+    pub raw_event_kind: String,
+    /// The log kind a model of `log` raw events reads, as the training
+    /// definition or the caller of
+    /// [`Store::replace_model`](crate::Store::replace_model) gave it.
+    pub log_kind: Option<String>,
     /// The customer the model belongs to.
     pub customer_id: u32,
     /// The engine instance the model belongs to; `None` is the model's "no
@@ -81,13 +85,16 @@ pub struct ModelOwner {
 }
 
 /// The run that produced a classifier, and that run's exact training
-/// definition text and sources.
+/// definition text, sources and log kind.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TrainedWith {
     pub run_id: u32,
     pub definition: String,
     /// The `sources` of the run's training definition.
     pub sources: Vec<String>,
+    /// The `log_kind` of the run's training definition, stored verbatim in
+    /// the model record.
+    pub log_kind: Option<String>,
 }
 
 /// The outcome of [`Store::replace_model`](crate::Store::replace_model).
@@ -450,7 +457,8 @@ mod tests {
             kind: "test-kind".to_string(),
             max_event_id_num: 100,
             classification_id: None,
-            event_kind: "http".to_string(),
+            raw_event_kind: "http".to_string(),
+            log_kind: None,
             customer_id: 7,
             instance: Some(ModelInstance {
                 node_id: 1,

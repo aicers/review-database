@@ -195,19 +195,21 @@ impl Store {
     /// `model.name`; `model.id` is ignored.
     ///
     /// - If no model has that name, a record is inserted for `owner` with
-    ///   the body's method and event kind, `trained_at`, `trained`'s run id,
-    ///   definition text and sources, its first classifier generation and no
-    ///   previous result, and the body's classifier, batch information and
-    ///   scores are stored.
+    ///   the body's method and raw event kind, `trained_at`, `trained`'s run
+    ///   id, definition text, sources and log kind, its first classifier
+    ///   generation and no previous result, and the body's classifier, batch
+    ///   information and scores are stored.
     /// - If one does, it keeps its id. Its current batch information,
     ///   scores, clusters, column statistics, CSV column extras, time series
     ///   and outliers become its previous training result, read through
     ///   [`Store::previous_training_results`], overwriting the earlier one;
     ///   the body's batch information and scores become current; and the
-    ///   record's `previous` summarises the training replaced. Its indicators
-    ///   stay with it. The new classifier is written to a new file and the
-    ///   record switches to it in the same transaction that moves the rows;
-    ///   the earlier previous classifier file is removed after that commits.
+    ///   record's `previous` summarises the training replaced. The record
+    ///   takes `trained_at` and `trained`'s run id, definition text, sources
+    ///   and log kind. Its indicators stay with it. The new classifier is
+    ///   written to a new file and the record switches to it in the same
+    ///   transaction that moves the rows; the earlier previous classifier
+    ///   file is removed after that commits.
     ///
     /// # Errors
     ///
@@ -215,7 +217,7 @@ impl Store {
     /// `Distribution` (runs train only the multidimension, prefix and
     /// timeseries methods) or is not a known method; if a new model's name
     /// is not a valid model name; if the existing model belongs to another
-    /// customer or instance, or has another method or event kind; or if
+    /// customer or instance, or has another method or raw event kind; or if
     /// writing the classifier file or a database operation fails.
     // The upload is handed over by value, as its decoded body is; the retry
     // after a commit conflict reads it again, so the body works on references.
@@ -252,6 +254,9 @@ impl Store {
     /// with the replace. `txn` is a [`ModelTransaction`] because
     /// [`Store::finish_model_replace`] removes a classifier file the commit
     /// stops referring to.
+    // The insert and the replace read one record and write one transaction;
+    // splitting them would scatter the steps of that transaction.
+    #[allow(clippy::too_many_lines)]
     pub(crate) fn replace_model_with_transaction(
         &self,
         files: &ModelFilesGuard<'_>,
@@ -281,7 +286,8 @@ impl Store {
                 kind: method.to_string(),
                 max_event_id_num: model.max_event_id_num,
                 classification_id: Some(model.classification_id),
-                event_kind: model.event_kind.clone(),
+                raw_event_kind: model.raw_event_kind.clone(),
+                log_kind: trained.log_kind.clone(),
                 customer_id: owner.customer_id,
                 instance: Some(owner.instance.clone()),
                 trained_at,
@@ -317,12 +323,12 @@ impl Store {
                 record.kind
             );
         }
-        if record.event_kind != model.event_kind {
+        if record.raw_event_kind != model.raw_event_kind {
             bail!(
-                "model {:?} reads {:?} events, not {:?}",
+                "model {:?} reads {:?} raw events, not {:?}",
                 model.name,
-                record.event_kind,
-                model.event_kind
+                record.raw_event_kind,
+                model.raw_event_kind
             );
         }
 
@@ -342,6 +348,7 @@ impl Store {
             trained_run_id: trained.run_id,
             trained_definition: trained.definition.clone(),
             trained_sources: trained.sources.clone(),
+            log_kind: trained.log_kind.clone(),
             previous: Some(PreviousTraining {
                 trained_at: record.trained_at,
                 version: record.version,
@@ -385,19 +392,19 @@ impl Store {
     /// and scores, and its version, maximum number of event ids and
     /// classification id.
     ///
-    /// The model is looked up by `model.name`. Its owner, event kind,
-    /// training time, trained run and definition, previous result and the
-    /// classification id its clusters were last updated for stay as they
-    /// are. The classifier is written to a new file and the record switches
-    /// to it in the same transaction that stores the batch information and
-    /// scores, so a classification id read back always comes with that
-    /// upload's classifier, batch information and scores; the earlier
-    /// current classifier file is removed after that commits.
+    /// The model is looked up by `model.name`. Its owner, raw event kind,
+    /// log kind, training time, trained run and definition, previous result
+    /// and the classification id its clusters were last updated for stay as
+    /// they are. The classifier is written to a new file and the record
+    /// switches to it in the same transaction that stores the batch
+    /// information and scores, so a classification id read back always
+    /// comes with that upload's classifier, batch information and scores;
+    /// the earlier current classifier file is removed after that commits.
     ///
     /// # Errors
     ///
     /// Returns an error, and changes nothing, if no model has the name, if
-    /// `model.id` is not that model's id, if the method or the event kind
+    /// `model.id` is not that model's id, if the method or the raw event kind
     /// differs from the model's, or if writing the classifier file or a
     /// database operation fails.
     // The upload is handed over by value, as its decoded body is; the retry
@@ -427,12 +434,12 @@ impl Store {
                     record.kind
                 );
             }
-            if record.event_kind != model.event_kind {
+            if record.raw_event_kind != model.raw_event_kind {
                 bail!(
-                    "model {:?} reads {:?} events, not {:?}",
+                    "model {:?} reads {:?} raw events, not {:?}",
                     model.name,
-                    record.event_kind,
-                    model.event_kind
+                    record.raw_event_kind,
+                    model.raw_event_kind
                 );
             }
 
@@ -730,7 +737,7 @@ impl Store {
     /// Returns the model with the given name, with its current classifier
     /// and scores.
     ///
-    /// Model names are unique in the database. `event_kind` comes from the
+    /// Model names are unique in the database. `raw_event_kind` comes from the
     /// model's record and `scores` are the ones last stored for it (empty
     /// when it has none), read under the model-files lock together with the
     /// record and the classifier. `batch_info` is empty.
@@ -764,7 +771,7 @@ impl Store {
             kind: record.kind,
             serialized_classifier: classifier,
             max_event_id_num: record.max_event_id_num,
-            event_kind: record.event_kind,
+            raw_event_kind: record.raw_event_kind,
             classification_id: record.classification_id.unwrap_or_default(),
             batch_info: Vec::new(),
             scores,
@@ -1077,6 +1084,7 @@ mod tests {
             run_id,
             definition: definition.to_string(),
             sources: vec!["piglet.host".to_string()],
+            log_kind: None,
         }
     }
 
@@ -1107,7 +1115,7 @@ mod tests {
             kind: "Multifield".to_string(),
             serialized_classifier: classifier.to_vec(),
             max_event_id_num: 10,
-            event_kind: "http".to_string(),
+            raw_event_kind: "http".to_string(),
             classification_id,
             batch_info: vec![batch(classification_id)],
             scores: scores(0.5),
@@ -1348,7 +1356,8 @@ mod tests {
                 kind: "Multifield".to_string(),
                 max_event_id_num: 10,
                 classification_id: Some(3),
-                event_kind: "http".to_string(),
+                raw_event_kind: "http".to_string(),
+                log_kind: None,
                 customer_id: 1,
                 instance: Some(owner().instance),
                 trained_at: at(1_000),
@@ -1367,7 +1376,7 @@ mod tests {
 
         let loaded = store.load_model_by_name("alpha").unwrap();
         assert_eq!(loaded.id, 0);
-        assert_eq!(loaded.event_kind, "http");
+        assert_eq!(loaded.raw_event_kind, "http");
         assert_eq!(loaded.kind, "Multifield");
         assert_eq!(loaded.classification_id, 3);
         assert_eq!(loaded.serialized_classifier, b"classifier");
@@ -1695,6 +1704,65 @@ mod tests {
     }
 
     #[test]
+    fn the_log_kind_follows_the_caller_of_a_replace() {
+        let ts = setup_store();
+        let store = &ts.store;
+        let log_body = |classifier: &[u8], classification_id| crate::model::Model {
+            raw_event_kind: "log".to_string(),
+            ..body("alpha", classifier, classification_id)
+        };
+        let with_log_kind = |run_id, log_kind: &str| TrainedWith {
+            log_kind: Some(log_kind.to_string()),
+            ..trained(run_id, "eps = 5.0")
+        };
+
+        let inserted = store
+            .replace_model(
+                log_body(b"first", 1),
+                owner(),
+                at(100),
+                with_log_kind(1, "syslog"),
+            )
+            .unwrap();
+        assert!(inserted.inserted);
+        let record_after_insert = record(store, "alpha");
+        assert_eq!(record_after_insert.raw_event_kind, "log");
+        assert_eq!(record_after_insert.log_kind.as_deref(), Some("syslog"));
+
+        // An analysis round keeps the record's log kind.
+        store
+            .update_model(crate::model::Model {
+                id: i32::try_from(inserted.id).unwrap(),
+                ..log_body(b"round", 2)
+            })
+            .unwrap();
+        assert_eq!(record(store, "alpha").log_kind.as_deref(), Some("syslog"));
+
+        let replaced = store
+            .replace_model(
+                log_body(b"second", 3),
+                owner(),
+                at(200),
+                with_log_kind(2, "auth"),
+            )
+            .unwrap();
+        assert!(!replaced.inserted);
+        let record_after_replace = record(store, "alpha");
+        assert_eq!(record_after_replace.raw_event_kind, "log");
+        assert_eq!(record_after_replace.log_kind.as_deref(), Some("auth"));
+
+        // The caller's `None` replaces a stored log kind too.
+        store
+            .replace_model(log_body(b"third", 4), owner(), at(300), trained(3, "x"))
+            .unwrap();
+        assert_eq!(record(store, "alpha").log_kind, None);
+        assert_eq!(
+            store.load_model_by_name("alpha").unwrap().raw_event_kind,
+            "log"
+        );
+    }
+
+    #[test]
     fn refused_replaces_change_nothing() {
         let ts = setup_store();
         let store = &ts.store;
@@ -1728,11 +1796,11 @@ mod tests {
             ),
             (
                 crate::model::Model {
-                    event_kind: "dns".to_string(),
+                    raw_event_kind: "dns".to_string(),
                     ..body("alpha", b"x", 4)
                 },
                 owner(),
-                "events",
+                "raw events",
             ),
             (
                 crate::model::Model {
@@ -1865,10 +1933,10 @@ mod tests {
             (
                 crate::model::Model {
                     id: i32::try_from(alpha).unwrap(),
-                    event_kind: "dns".to_string(),
+                    raw_event_kind: "dns".to_string(),
                     ..body("alpha", b"x", 7)
                 },
-                "events",
+                "raw events",
             ),
             (
                 crate::model::Model {
@@ -2189,7 +2257,8 @@ mod tests {
             customer_id: owner.customer_id,
             instance: Some(owner.instance.clone()),
             method: ModelMethod::Multidimension,
-            event_kind: "http".to_string(),
+            raw_event_kind: "http".to_string(),
+            log_kind: None,
             sources: vec!["piglet.host".to_string()],
             indicator: indicator.map(str::to_string),
             definition: "eps = 5.0".to_string(),

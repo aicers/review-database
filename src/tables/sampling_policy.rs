@@ -1504,7 +1504,8 @@ mod test {
                 customer_id: CUSTOMER,
                 instance: instance(f.node, ENGINE),
                 method,
-                event_kind: "conn".to_string(),
+                raw_event_kind: "conn".to_string(),
+                log_kind: None,
                 sources: vec![source.to_string()],
                 indicator: None,
                 definition: "eps = 5.0".to_string(),
@@ -1522,7 +1523,7 @@ mod test {
             kind: kind.to_string(),
             serialized_classifier: b"classifier".to_vec(),
             max_event_id_num: 10,
-            event_kind: "conn".to_string(),
+            raw_event_kind: "conn".to_string(),
             classification_id: 1,
             batch_info: Vec::new(),
             scores: [(1, 0.5)].into_iter().collect(),
@@ -1539,6 +1540,7 @@ mod test {
                     run_id: 1,
                     definition: "eps = 5.0".to_string(),
                     sources: sources.to_vec(),
+                    log_kind: None,
                 },
             )
             .unwrap();

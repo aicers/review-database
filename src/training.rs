@@ -103,7 +103,7 @@ pub struct RunReconciliation {
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum FixedField {
     Method,
-    EventKind,
+    RawEventKind,
 }
 
 /// A refusal of a training definition, model run, model or model indicator
@@ -179,9 +179,9 @@ pub enum TrainingError {
         expected: ModelMethod,
         actual: String,
     },
-    /// An uploaded model or a clone source reads another event kind than the
-    /// definition's.
-    EventKindMismatch {
+    /// An uploaded model or a clone source reads another raw event kind than
+    /// the definition's.
+    RawEventKindMismatch {
         name: String,
         expected: String,
         actual: String,
@@ -291,11 +291,11 @@ impl fmt::Display for TrainingError {
                 f,
                 "{name:?} trains with the {expected:?} method, not {actual:?}"
             ),
-            Self::EventKindMismatch {
+            Self::RawEventKindMismatch {
                 name,
                 expected,
                 actual,
-            } => write!(f, "{name:?} reads {expected:?} events, not {actual:?}"),
+            } => write!(f, "{name:?} reads {expected:?} raw events, not {actual:?}"),
             Self::ModelInUse {
                 name,
                 instance,
@@ -359,8 +359,9 @@ impl Store {
         })
     }
 
-    /// Replaces the settings of a training definition: its method, event
-    /// kind, sources, indicator and text. Its customer and instance stay.
+    /// Replaces the settings of a training definition: its method, raw event
+    /// kind, log kind, sources, indicator and text. Its customer and instance
+    /// stay.
     ///
     /// # Errors
     ///
@@ -368,9 +369,9 @@ impl Store {
     /// checked in this order: `DefinitionNotFound`; `RunInProgress` while
     /// the definition's last run is active, which includes a definition
     /// being cloned; `FieldFixed` if a model of the name exists and the
-    /// method or the event kind would change; `IndicatorNotFound` if the
-    /// indicator does not exist. Returns an error, and changes nothing, if a
-    /// database operation fails.
+    /// method or the raw event kind would change (the log kind may);
+    /// `IndicatorNotFound` if the indicator does not exist. Returns an
+    /// error, and changes nothing, if a database operation fails.
     // The settings are handed over by value, as the caller's parse yields
     // them; a retry after a commit conflict reads them again.
     #[allow(clippy::needless_pass_by_value)]
@@ -390,8 +391,8 @@ impl Store {
             {
                 let field = if update.method != definition.method {
                     Some(FixedField::Method)
-                } else if update.event_kind != definition.event_kind {
-                    Some(FixedField::EventKind)
+                } else if update.raw_event_kind != definition.raw_event_kind {
+                    Some(FixedField::RawEventKind)
                 } else {
                     None
                 };
@@ -405,7 +406,8 @@ impl Store {
             }
             self.check_indicator(txn, update.indicator.as_deref())?;
             definition.method = update.method;
-            definition.event_kind.clone_from(&update.event_kind);
+            definition.raw_event_kind.clone_from(&update.raw_event_kind);
+            definition.log_kind.clone_from(&update.log_kind);
             definition.sources.clone_from(&update.sources);
             definition.indicator.clone_from(&update.indicator);
             definition.definition.clone_from(&update.definition);
@@ -597,12 +599,13 @@ impl Store {
     /// checked in this order: `ModelNotFound` if no model is named `source`;
     /// `NoInstance` if it has no instance; `SourceRetrained` if its
     /// `trained_run_id` is not `source_trained_run_id`; `MethodMismatch` or
-    /// `EventKindMismatch` if the target's method or event kind is not the
-    /// source's; `InstanceNotEligible`, `InstanceStopped` or `RunInProgress`
-    /// for the source's instance, as [`Store::start_training_run`] checks
-    /// them; then every refusal of [`Store::insert_training_definition`] for
-    /// the target. Returns an error, and changes nothing, if every run id
-    /// has been allocated or a database operation fails.
+    /// `RawEventKindMismatch` if the target's method or raw event kind is not
+    /// the source's; `InstanceNotEligible`, `InstanceStopped` or
+    /// `RunInProgress` for the source's instance, as
+    /// [`Store::start_training_run`] checks them; then every refusal of
+    /// [`Store::insert_training_definition`] for the target. Returns an
+    /// error, and changes nothing, if every run id has been allocated or a
+    /// database operation fails.
     pub fn start_clone_run(
         &self,
         source: &str,
@@ -644,11 +647,11 @@ impl Store {
                 }
                 .into());
             }
-            if model.event_kind != record.event_kind {
-                return Err(TrainingError::EventKindMismatch {
+            if model.raw_event_kind != record.raw_event_kind {
+                return Err(TrainingError::RawEventKindMismatch {
                     name: record.name.clone(),
-                    expected: record.event_kind.clone(),
-                    actual: model.event_kind,
+                    expected: record.raw_event_kind.clone(),
+                    actual: model.raw_event_kind,
                 }
                 .into());
             }
@@ -771,11 +774,11 @@ impl Store {
     ///
     /// The model is stored for the customer and instance of the definition
     /// the run's model names, trained now, with the run's id and the
-    /// definition's text and sources as the training it records. For a
-    /// training run that text is the one [`Store::start_training_run`]
-    /// returned; for a clone it is the target definition
-    /// [`Store::start_clone_run`] stored, which becomes both the clone's
-    /// snapshot and its editable definition.
+    /// definition's text, sources and log kind as the training it records,
+    /// whether the model is created or replaced. For a training run that
+    /// text is the one [`Store::start_training_run`] returned; for a clone
+    /// it is the target definition [`Store::start_clone_run`] stored, which
+    /// becomes both the clone's snapshot and its editable definition.
     /// The definition stops cloning.
     ///
     /// # Errors
@@ -785,8 +788,8 @@ impl Store {
     /// `caller` does not perform the run; `RunNotActive` for a finished run;
     /// `ModelNameMismatch` if `model.name` is not the run's model;
     /// `DefinitionNotFound`; `NoInstance` if the definition has no instance;
-    /// `MethodMismatch` or `EventKindMismatch` if the model's method or
-    /// event kind is not the definition's. Returns an error, leaving the
+    /// `MethodMismatch` or `RawEventKindMismatch` if the model's method or
+    /// raw event kind is not the definition's. Returns an error, leaving the
     /// run active and the model unchanged, if [`Store::replace_model`]
     /// refuses the model or a file or database operation fails.
     // The upload is handed over by value, as its decoded body is; the retry
@@ -831,11 +834,11 @@ impl Store {
                 }
                 .into());
             }
-            if model.event_kind != definition.event_kind {
-                return Err(TrainingError::EventKindMismatch {
+            if model.raw_event_kind != definition.raw_event_kind {
+                return Err(TrainingError::RawEventKindMismatch {
                     name: definition.name,
-                    expected: definition.event_kind,
-                    actual: model.event_kind.clone(),
+                    expected: definition.raw_event_kind,
+                    actual: model.raw_event_kind.clone(),
                 }
                 .into());
             }
@@ -849,6 +852,7 @@ impl Store {
                 run_id,
                 definition: definition.definition.clone(),
                 sources: definition.sources.clone(),
+                log_kind: definition.log_kind.clone(),
             };
             let pending =
                 self.replace_model_with_transaction(&files, &txn, &model, &owner, now, &trained)?;
@@ -1313,7 +1317,8 @@ fn new_record(definition: NewTrainingDefinition, cloning: bool) -> TrainingDefin
         customer_id: definition.customer_id,
         instance: Some(definition.instance),
         method: definition.method,
-        event_kind: definition.event_kind,
+        raw_event_kind: definition.raw_event_kind,
+        log_kind: definition.log_kind,
         sources: definition.sources,
         indicator: definition.indicator,
         definition: definition.definition,
@@ -1496,7 +1501,8 @@ mod tests {
             customer_id: CUSTOMER,
             instance,
             method: ModelMethod::Multidimension,
-            event_kind: "http".to_string(),
+            raw_event_kind: "http".to_string(),
+            log_kind: None,
             sources: vec!["sensor-a".to_string()],
             indicator: None,
             definition: eps("5.0"),
@@ -1506,7 +1512,8 @@ mod tests {
     fn update_with(definition: &str) -> TrainingDefinitionUpdate {
         TrainingDefinitionUpdate {
             method: ModelMethod::Multidimension,
-            event_kind: "http".to_string(),
+            raw_event_kind: "http".to_string(),
+            log_kind: None,
             sources: vec!["sensor-a".to_string()],
             indicator: None,
             definition: definition.to_string(),
@@ -1522,7 +1529,7 @@ mod tests {
             kind: "Multifield".to_string(),
             serialized_classifier: b"classifier".to_vec(),
             max_event_id_num: 10,
-            event_kind: "http".to_string(),
+            raw_event_kind: "http".to_string(),
             classification_id: 1,
             batch_info: Vec::new(),
             scores: [(1, 0.5)].into_iter().collect(),
@@ -1667,7 +1674,8 @@ mod tests {
                 customer_id: CUSTOMER,
                 instance: Some(instance(f.node, ENGINE)),
                 method: ModelMethod::Multidimension,
-                event_kind: "http".to_string(),
+                raw_event_kind: "http".to_string(),
+                log_kind: None,
                 sources: vec!["sensor-a".to_string()],
                 indicator: Some(INDICATOR.to_string()),
                 definition: eps("5.0"),
@@ -1687,6 +1695,164 @@ mod tests {
         assert_eq!(state(store, "b"), TrainingDefinitionState::NeverTrained);
         assert_eq!(store.training_definition("c").unwrap(), None);
         assert_eq!(store.training_definition_state("c").unwrap(), None);
+    }
+
+    /// A definition of `log` raw events reading the log kind `log_kind`.
+    fn log_definition(
+        name: &str,
+        instance: ModelInstance,
+        log_kind: &str,
+    ) -> NewTrainingDefinition {
+        NewTrainingDefinition {
+            raw_event_kind: "log".to_string(),
+            log_kind: Some(log_kind.to_string()),
+            ..new_definition(name, instance)
+        }
+    }
+
+    #[test]
+    fn raw_event_kind_and_log_kind_are_stored_verbatim() {
+        let f = setup();
+        let store = f.store();
+        let engine = instance(f.node, ENGINE);
+        let kinds = [
+            ("log", "log", Some("syslog")),
+            ("none", "http", None),
+            ("some", "process_create", Some("kept")),
+        ];
+        for (name, raw_event_kind, log_kind) in kinds {
+            store
+                .insert_training_definition(NewTrainingDefinition {
+                    raw_event_kind: raw_event_kind.to_string(),
+                    log_kind: log_kind.map(ToString::to_string),
+                    ..new_definition(name, engine.clone())
+                })
+                .unwrap();
+            let stored = definition(store, name);
+            assert_eq!(stored.raw_event_kind, raw_event_kind, "{name}");
+            assert_eq!(stored.log_kind.as_deref(), log_kind, "{name}");
+        }
+        let listed: Vec<_> = store
+            .training_definitions()
+            .unwrap()
+            .into_iter()
+            .map(|d| (d.name, d.raw_event_kind, d.log_kind))
+            .collect();
+        assert_eq!(
+            listed,
+            [
+                (
+                    "log".to_string(),
+                    "log".to_string(),
+                    Some("syslog".to_string())
+                ),
+                ("none".to_string(), "http".to_string(), None),
+                (
+                    "some".to_string(),
+                    "process_create".to_string(),
+                    Some("kept".to_string())
+                ),
+            ]
+        );
+
+        // An update replaces both, `Some` or `None`, for any raw event kind.
+        let updates = [
+            ("log", "log", Some("auth")),
+            ("none", "dns", Some("kept")),
+            ("some", "log", None),
+        ];
+        for (name, raw_event_kind, log_kind) in updates {
+            store
+                .update_training_definition(
+                    name,
+                    TrainingDefinitionUpdate {
+                        raw_event_kind: raw_event_kind.to_string(),
+                        log_kind: log_kind.map(ToString::to_string),
+                        ..update_with(&eps("5.0"))
+                    },
+                )
+                .unwrap();
+            let stored = definition(store, name);
+            assert_eq!(stored.raw_event_kind, raw_event_kind, "{name}");
+            assert_eq!(stored.log_kind.as_deref(), log_kind, "{name}");
+        }
+    }
+
+    #[test]
+    fn a_clone_stores_the_log_kind_of_its_target() {
+        let f = setup();
+        let store = f.store();
+        let engine = instance(f.node, ENGINE);
+        let other = instance(f.node, OTHER_ENGINE);
+        store
+            .insert_training_definition(log_definition("source", engine.clone(), "syslog"))
+            .unwrap();
+        let started = store.start_training_run("source").unwrap();
+        store
+            .complete_run(
+                started.run.id,
+                &engine,
+                crate::model::Model {
+                    raw_event_kind: "log".to_string(),
+                    ..body("source")
+                },
+            )
+            .unwrap();
+
+        store
+            .start_clone_run(
+                "source",
+                started.run.id,
+                log_definition("target", other, "auth"),
+            )
+            .unwrap();
+        let target = definition(store, "target");
+        assert_eq!(target.raw_event_kind, "log");
+        assert_eq!(target.log_kind.as_deref(), Some("auth"));
+        assert_eq!(model(store, "source").log_kind.as_deref(), Some("syslog"));
+    }
+
+    #[test]
+    fn complete_run_copies_the_log_kind_of_the_definition() {
+        let f = setup();
+        let store = f.store();
+        let engine = instance(f.node, ENGINE);
+        store
+            .insert_training_definition(log_definition("d", engine.clone(), "syslog"))
+            .unwrap();
+        let upload = || crate::model::Model {
+            raw_event_kind: "log".to_string(),
+            ..body("d")
+        };
+
+        let first = store.start_training_run("d").unwrap();
+        let created = store.complete_run(first.run.id, &engine, upload()).unwrap();
+        assert!(created.inserted);
+        let record = model(store, "d");
+        assert_eq!(record.raw_event_kind, "log");
+        assert_eq!(record.log_kind.as_deref(), Some("syslog"));
+
+        // The log kind may change while the model exists, and the next
+        // replace takes it.
+        store
+            .update_training_definition(
+                "d",
+                TrainingDefinitionUpdate {
+                    raw_event_kind: "log".to_string(),
+                    log_kind: Some("auth".to_string()),
+                    ..update_with(&eps("2.0"))
+                },
+            )
+            .unwrap();
+        assert_eq!(model(store, "d").log_kind.as_deref(), Some("syslog"));
+        let second = store.start_training_run("d").unwrap();
+        let replaced = store
+            .complete_run(second.run.id, &engine, upload())
+            .unwrap();
+        assert!(!replaced.inserted);
+        let record = model(store, "d");
+        assert_eq!(record.raw_event_kind, "log");
+        assert_eq!(record.log_kind.as_deref(), Some("auth"));
     }
 
     #[test]
@@ -1720,6 +1886,7 @@ mod tests {
                     run_id: 0,
                     definition: eps("1.0"),
                     sources: Vec::new(),
+                    log_kind: None,
                 },
             )
             .unwrap();
@@ -1820,6 +1987,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn update_replaces_the_settings_between_runs() {
         let f = setup();
         let store = f.store();
@@ -1837,10 +2005,11 @@ mod tests {
             }
         );
 
-        // Before a model exists, the method and the event kind may change.
+        // Before a model exists, the method and the raw event kind may change.
         let update = TrainingDefinitionUpdate {
             method: ModelMethod::Prefix,
-            event_kind: "dns".to_string(),
+            raw_event_kind: "dns".to_string(),
+            log_kind: None,
             sources: vec!["sensor-b".to_string()],
             indicator: Some(INDICATOR.to_string()),
             definition: eps("3.0"),
@@ -1854,7 +2023,7 @@ mod tests {
             updated,
             TrainingDefinition {
                 method: ModelMethod::Prefix,
-                event_kind: "dns".to_string(),
+                raw_event_kind: "dns".to_string(),
                 sources: vec!["sensor-b".to_string()],
                 indicator: Some(INDICATOR.to_string()),
                 definition: eps("3.0"),
@@ -1897,7 +2066,7 @@ mod tests {
             .complete_run(started.run.id, &engine, body("d"))
             .unwrap();
 
-        // Once the model exists, the method and the event kind are fixed.
+        // Once the model exists, the method and the raw event kind are fixed.
         let mut method = update_with("x");
         method.method = ModelMethod::Timeseries;
         assert_eq!(
@@ -1907,15 +2076,22 @@ mod tests {
                 field: FixedField::Method,
             }
         );
-        let mut event_kind = update_with("x");
-        event_kind.event_kind = "dns".to_string();
+        let mut raw_event_kind = update_with("x");
+        raw_event_kind.raw_event_kind = "dns".to_string();
         assert_eq!(
-            refusal(store, |s| s.update_training_definition("d", event_kind)),
+            refusal(store, |s| s.update_training_definition("d", raw_event_kind)),
             TrainingError::FieldFixed {
                 name: "d".to_string(),
-                field: FixedField::EventKind,
+                field: FixedField::RawEventKind,
             }
         );
+        // The log kind is not fixed, and is kept verbatim for a non-log kind.
+        let mut log_kind = update_with("x");
+        log_kind.log_kind = Some("syslog".to_string());
+        store.update_training_definition("d", log_kind).unwrap();
+        let with_log_kind = definition(store, "d");
+        assert_eq!(with_log_kind.raw_event_kind, "http");
+        assert_eq!(with_log_kind.log_kind.as_deref(), Some("syslog"));
         store
             .update_training_definition("d", update_with(&eps("2.0")))
             .unwrap();
@@ -2390,10 +2566,10 @@ mod tests {
             );
         }
         let mut upload = body("d");
-        upload.event_kind = "dns".to_string();
+        upload.raw_event_kind = "dns".to_string();
         assert_eq!(
             refusal(store, |s| s.complete_run(id, &engine, upload)),
-            TrainingError::EventKindMismatch {
+            TrainingError::RawEventKindMismatch {
                 name: "d".to_string(),
                 expected: "http".to_string(),
                 actual: "dns".to_string(),
@@ -2630,11 +2806,15 @@ mod tests {
                 actual: "Multifield".to_string(),
             }
         );
-        let mut event_kind = target();
-        event_kind.event_kind = "dns".to_string();
+        let mut raw_event_kind = target();
+        raw_event_kind.raw_event_kind = "dns".to_string();
         assert_eq!(
-            refusal(store, |s| s.start_clone_run("source", trained, event_kind)),
-            TrainingError::EventKindMismatch {
+            refusal(store, |s| s.start_clone_run(
+                "source",
+                trained,
+                raw_event_kind
+            )),
+            TrainingError::RawEventKindMismatch {
                 name: "target".to_string(),
                 expected: "dns".to_string(),
                 actual: "http".to_string(),

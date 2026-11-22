@@ -357,7 +357,7 @@ mod tests {
             kind: "Multifield".to_string(),
             serialized_classifier: b"classifier".to_vec(),
             max_event_id_num: 10,
-            event_kind: "http".to_string(),
+            raw_event_kind: "http".to_string(),
             classification_id: 1,
             batch_info: Vec::new(),
             scores: [(1, 0.5)].into_iter().collect(),
@@ -374,6 +374,7 @@ mod tests {
                     run_id: 1,
                     definition: "eps = 5.0".to_string(),
                     sources: Vec::new(),
+                    log_kind: None,
                 },
             )
             .unwrap();
