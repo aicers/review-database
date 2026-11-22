@@ -18,20 +18,6 @@ pub(crate) fn country_code_as_str(code: &[u8; 2]) -> &str {
     std::str::from_utf8(code).unwrap_or("ZZ")
 }
 
-/// Formats a list of two-letter country codes as a comma-separated string.
-#[must_use]
-pub(crate) fn country_codes_to_string(codes: &[[u8; 2]]) -> String {
-    if codes.is_empty() {
-        String::new()
-    } else {
-        codes
-            .iter()
-            .map(country_code_as_str)
-            .collect::<Vec<_>>()
-            .join(",")
-    }
-}
-
 /// Looks up the country code for the given IP address.
 ///
 /// # Arguments
@@ -85,8 +71,8 @@ fn get_record_country_short_name<'a>(record: &'a ip2location::Record<'_>) -> Opt
 #[cfg(test)]
 mod tests {
     use super::{
-        COUNTRY_CODE_UNKNOWN, COUNTRY_CODE_UNRESOLVED, country_code_as_str,
-        country_codes_to_string, parse_country_code, stored_country_code_matches,
+        COUNTRY_CODE_UNKNOWN, COUNTRY_CODE_UNRESOLVED, country_code_as_str, parse_country_code,
+        stored_country_code_matches,
     };
 
     #[test]
@@ -126,13 +112,5 @@ mod tests {
     fn stored_country_code_matches_is_case_sensitive() {
         assert!(stored_country_code_matches(*b"US", *b"US"));
         assert!(!stored_country_code_matches(*b"US", *b"us"));
-    }
-
-    #[test]
-    fn country_codes_to_string_formats_multiple_codes() {
-        assert_eq!(
-            country_codes_to_string(&[COUNTRY_CODE_UNRESOLVED, *b"US"]),
-            "XX,US"
-        );
     }
 }

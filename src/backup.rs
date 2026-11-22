@@ -610,48 +610,71 @@ mod tests {
         sync::{Arc, RwLock},
     };
 
+    use review_protocol::types::{
+        Detail, DetectionEvent, DetectionModel, EventCategory, RawEventBody, RawEventKind, Target,
+        raw_event,
+    };
+
     use super::{OfflineRestoreError, create, list, restore, restore_states_offline};
     use crate::test::acquire_db_permit;
     use crate::{
-        DEFAULT_STATES, Store,
-        event::{DnsEventFields, EventKind, EventMessage},
+        DEFAULT_STATES, DetectionEventStamp, ModelInstance, Store,
         migration::DATABASE_FORMAT_VERSION,
         tables::{FORMAT_0_63, MAP_NAMES, open_rocksdb_backup_engine},
     };
 
-    fn example_message() -> EventMessage {
-        let fields = DnsEventFields {
-            sensor: "collector1".to_string(),
-            orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
-            orig_port: 10000,
-            resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
-            resp_port: 53,
-            proto: 17,
-            start_time: crate::test::utc_nanos(1970, 1, 1, 0, 1, 1),
-            duration: 0,
-            orig_pkts: 0,
-            resp_pkts: 0,
-            orig_l2_bytes: 0,
-            resp_l2_bytes: 0,
-            query: "foo.com".to_string(),
-            answer: vec!["1.1.1.1".to_string()],
-            trans_id: 1,
-            rtt: 1,
-            qclass: 0,
-            qtype: 0,
-            rcode: 0,
-            aa_flag: false,
-            tc_flag: false,
-            rd_flag: false,
-            ra_flag: false,
-            ttl: vec![1; 5],
-            confidence: 0.8,
-            category: Some(crate::EventCategory::CommandAndControl),
-        };
-        EventMessage {
-            time: jiff::Timestamp::now(),
-            kind: EventKind::DnsCovertChannel,
-            fields: bincode::serialize(&fields).expect("serializable"),
+    fn example_event() -> DetectionEvent {
+        let time = jiff::Timestamp::now();
+        DetectionEvent {
+            time,
+            sensor: Some("collector1".to_string()),
+            detection_model: DetectionModel::DnsCovertChannel,
+            raw_event_kind: RawEventKind::Dns,
+            category: Some(EventCategory::CommandAndControl),
+            target: Target::RawEvent {
+                time,
+                body: RawEventBody::Dns(raw_event::Dns {
+                    orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
+                    orig_port: 10000,
+                    resp_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
+                    resp_port: 53,
+                    proto: 17,
+                    start_time: crate::test::utc_nanos(1970, 1, 1, 0, 1, 1),
+                    duration: 0,
+                    orig_pkts: 0,
+                    resp_pkts: 0,
+                    orig_l2_bytes: 0,
+                    resp_l2_bytes: 0,
+                    query: "foo.com".to_string(),
+                    answer: vec!["1.1.1.1".to_string()],
+                    trans_id: 1,
+                    rtt: 1,
+                    qclass: 0,
+                    qtype: 0,
+                    rcode: 0,
+                    aa_flag: false,
+                    tc_flag: false,
+                    rd_flag: false,
+                    ra_flag: false,
+                    ttl: vec![1; 5],
+                }),
+            },
+            score: 0.8,
+            detail: Detail::DnsCovertChannel,
+        }
+    }
+
+    fn example_stamp() -> DetectionEventStamp {
+        DetectionEventStamp {
+            engine_instance: ModelInstance {
+                node_id: 1,
+                agent_key: "semi-supervised".to_string(),
+            },
+            clustering_model_id: None,
+            trained_at: None,
+            installed_version: Some("1.0.0".to_string()),
+            installed_commit: None,
+            config_revision: Some(1),
         }
     }
 
@@ -671,13 +694,13 @@ mod tests {
             assert!(db.iter_forward().next().is_none());
         }
 
-        let msg = example_message();
+        let event = example_event();
 
         // backing up 1
         {
             let mut store = store.write().expect("test holds no other locks");
             let db = store.events();
-            db.put(&msg).unwrap();
+            db.put(&event, &example_stamp()).unwrap();
             let res = store.backup(true, 3);
             assert!(res.is_ok());
         }
@@ -685,7 +708,7 @@ mod tests {
         {
             let mut store = store.write().expect("test holds no other locks");
             let db = store.events();
-            db.put(&msg).unwrap();
+            db.put(&event, &example_stamp()).unwrap();
             let res = store.backup(true, 3);
             assert!(res.is_ok());
         }
@@ -694,7 +717,7 @@ mod tests {
         {
             let mut store = store.write().expect("test holds no other locks");
             let db = store.events();
-            db.put(&msg).unwrap();
+            db.put(&event, &example_stamp()).unwrap();
             let res = store.backup(true, 3);
             assert!(res.is_ok());
         }
@@ -721,7 +744,10 @@ mod tests {
 
     fn put_event(store: &Arc<RwLock<Store>>) {
         let store = store.read().expect("test holds no other locks");
-        store.events().put(&example_message()).unwrap();
+        store
+            .events()
+            .put(&example_event(), &example_stamp())
+            .unwrap();
     }
 
     fn event_count(data_dir: &Path, backup_dir: &Path) -> usize {

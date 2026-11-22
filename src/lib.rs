@@ -31,7 +31,7 @@ use std::{
 };
 
 use anyhow::{Context, Result, anyhow};
-pub use attrievent::attribute::RawEventKind;
+pub use review_protocol::types::RawEventKind;
 pub use rocksdb::backup::BackupEngineInfo;
 pub use tags::TagSet;
 use tags::{EventTagId, WorkflowTagId};
@@ -48,7 +48,9 @@ pub use self::detection_model::{
     OperatorValueSpec, OperatorValueType, PrimarySubjectKind, RoleSource, complete_engine_document,
     properties,
 };
-pub use self::event::{Event, EventDb, EventKind, EventMessage, PutOutcome, ThreatLevel};
+pub use self::event::{
+    DetectionEventStamp, EventDb, MAX_RAW_EVENT_KEYS, PutOutcome, RawEventKey, StoredDetectionEvent,
+};
 pub use self::migration::{migrate_data_dir, write_version_markers};
 pub use self::model::{Digest, Model};
 pub use self::model_guard::{Referrer, RemovalRefused, SourceReference};
@@ -58,7 +60,7 @@ use self::tables::StateDb;
 pub use self::tables::{
     AddressAllocationError, Agent, AgentConfig, AgentKind, AgentStatus, AttrCmpKind, BackupConfig,
     BackupConfigUpdate, BuildSelector, Cluster, ClusterTimeSeries, ColumnStats, ColumnTimeSeries,
-    Confidence, CoreComponent, CsvColumnExtra as CsvColumnExtraConfig, CustomerDataDeletionJob,
+    CoreComponent, CsvColumnExtra as CsvColumnExtraConfig, CustomerDataDeletionJob,
     CustomerDataDeletionService, CustomerDataDeletionServiceResult, CustomerDataDeletionStatus,
     DetectorSourceStatus, DetectorState, DetectorStatus, EngineDetectorRef, EngineDocumentError,
     EngineDocumentRefs, EngineDocumentWrite, EngineInstanceState, ExclusionReason, ExternalService,
@@ -76,7 +78,7 @@ pub use self::tables::{
     ProtocolPorts, ReplaceOutcome, ReplacedModel, ReportedRunState, RequestKeyError, Response,
     ResponseKind, RetentionConfig, RetentionConfigUpdate, RoundOutcome, RunId, RunKind, RunState,
     SamplingInterval, SamplingKind, SamplingPeriod, SamplingPolicy, SamplingPolicyError,
-    SamplingPolicyUpdate, SourceState, Structured, StructuredClusteringAlgorithm,
+    SamplingPolicyUpdate, ScoreCondition, SourceState, Structured, StructuredClusteringAlgorithm,
     SystemInstallRecord, SystemLogCollector, SystemLogCollectorRefusal, SystemLogCollectorTable,
     Table, Template, TimeSeries, TimeSeriesRange, TopColumnsOfCluster, TopMultimaps, TorExitNode,
     TrafficFilter, TrainedWith, TrainingDefinition, TrainingDefinitionUpdate, TriageExclusion,

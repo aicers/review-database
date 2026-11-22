@@ -1,24 +1,29 @@
-//! Baseline contract tests for the event key timestamp region.
+//! Baseline contract tests for the event key.
 //!
-//! `EventDb::put` stores `EventMessage.time` as **i64 epoch nanoseconds** in
-//! the upper 64 bits of a 16-byte big-endian `i128` key:
+//! `EventDb::put` stores a record under a 16-byte big-endian `i128` key that
+//! holds the detection event's `time` as **i64 epoch nanoseconds** in its
+//! upper 64 bits and the number of its `DetectionModel` in the next 32:
 //!
 //! ```text
-//! key = (timestamp_nanos << 64) | (event_kind << 32) | random_bits
-//! key[0..8] == timestamp_nanos.to_be_bytes()
+//! key = (time_ns << 64) | (detection_model << 32) | seq
+//! key[0..8]  == time_ns.to_be_bytes()
+//! key[8..12] == u32::from(detection_model).to_be_bytes()
 //! ```
 //!
 //! These tests pin that layout. Expected timestamp values are pinned as
-//! literal `i64` nanoseconds (not recomputed in the assertion path). On-disk layout is checked via raw
-//! RocksDB key bytes as well as `EventDb::put` and `EventIterator`.
-
-use std::net::{IpAddr, Ipv4Addr};
+//! literal `i64` nanoseconds (not recomputed in the assertion path). On-disk
+//! layout is checked via raw RocksDB key bytes as well as `EventDb::put` and
+//! `EventIterator`.
 
 use jiff::Timestamp;
+use review_protocol::types::{DetectionEvent, DetectionModel};
 use tempfile::tempdir;
 
-use super::{DnsEventFields, EventKind, EventMessage, timestamp};
-use crate::{EventCategory, Store};
+use super::{
+    fixture::{conn_event, stamp},
+    timestamp,
+};
+use crate::Store;
 
 /// 2020-06-15T12:30:45Z as epoch nanoseconds (pinned baseline).
 const EPOCH_NANOS_2020_06_15_123045: i64 = 1_592_224_245_000_000_000;
@@ -43,44 +48,19 @@ fn timestamp_region_from_raw(key: [u8; 16]) -> [u8; 8] {
     key[..8].try_into().expect("event key has 16 bytes")
 }
 
+/// Returns the detection model region from a raw 16-byte on-disk event key.
+fn model_region_from_raw(key: [u8; 16]) -> [u8; 4] {
+    key[8..12].try_into().expect("event key has 16 bytes")
+}
+
 fn timestamp_from_nanos(nanos: i64) -> Timestamp {
     timestamp::from_i64_nanos(nanos).expect("pinned baseline nanoseconds must be valid")
 }
 
-fn minimal_dns_message(time: Timestamp) -> EventMessage {
-    let fields = DnsEventFields {
-        sensor: "baseline-test".to_string(),
-        orig_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
-        orig_port: 53,
-        resp_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
-        resp_port: 53,
-        proto: 17,
-        start_time: 0,
-        duration: 0,
-        orig_pkts: 0,
-        resp_pkts: 0,
-        orig_l2_bytes: 0,
-        resp_l2_bytes: 0,
-        query: "example.com".to_string(),
-        answer: vec![],
-        trans_id: 1,
-        rtt: 0,
-        qclass: 0,
-        qtype: 0,
-        rcode: 0,
-        aa_flag: false,
-        tc_flag: false,
-        rd_flag: false,
-        ra_flag: false,
-        ttl: vec![],
-        confidence: 0.5,
-        category: Some(EventCategory::CommandAndControl),
-    };
-    EventMessage {
-        time,
-        kind: EventKind::DnsCovertChannel,
-        fields: bincode::serialize(&fields).expect("serializable DnsEventFields"),
-    }
+fn minimal_event(time: Timestamp) -> DetectionEvent {
+    let mut event = conn_event("192.0.2.1", "198.51.100.1");
+    event.time = time;
+    event
 }
 
 fn put_and_read_timestamp_regions(time: Timestamp) -> ([u8; 8], [u8; 8], [u8; 8]) {
@@ -89,7 +69,7 @@ fn put_and_read_timestamp_regions(time: Timestamp) -> ([u8; 8], [u8; 8], [u8; 8]
     let store = Store::new(data_dir.path(), backup_dir.path(), None).expect("open store");
     let db = store.events();
 
-    let key = db.put(&minimal_dns_message(time)).expect("put event");
+    let key = db.put(&minimal_event(time), &stamp()).expect("put event");
     let from_put = timestamp_region(key);
 
     let scanned_key = db
@@ -154,17 +134,6 @@ fn event_key_i64_nanosecond_range_boundaries() {
 }
 
 #[test]
-fn jiff_timestamp_outside_i64_nanos_cannot_be_stored_in_event_message() {
-    let far_future =
-        Timestamp::from_nanosecond(i128::from(i64::MAX) + 1).expect("valid jiff timestamp");
-    let far_past =
-        Timestamp::from_nanosecond(i128::from(i64::MIN) - 1).expect("valid jiff timestamp");
-
-    assert!(bincode::serialize(&minimal_dns_message(far_future)).is_err());
-    assert!(bincode::serialize(&minimal_dns_message(far_past)).is_err());
-}
-
-#[test]
 fn event_key_put_maps_out_of_range_time_to_i64_max() {
     // `EventDb::put` uses `event_key_nanos`, mapping out-of-i64 values to
     // `i64::MAX`. Both underflow and overflow therefore encode `i64::MAX`.
@@ -220,4 +189,54 @@ fn event_key_timestamp_is_not_millisecond_encoding() {
         (millis * 1_000).to_be_bytes(),
         "microsecond scaling must not be mistaken for nanoseconds"
     );
+}
+
+/// Every detection model number lands in `key[8..12]`, under the pinned
+/// time, for a positive and a pre-epoch time.
+#[test]
+fn event_key_holds_the_detection_model_number() {
+    use review_protocol::types::Detail;
+
+    let cases = [
+        (DetectionModel::WatchlistMatch, 0_u32),
+        (DetectionModel::LockyRansomware, 2),
+        (DetectionModel::NonBrowser, 13),
+        (DetectionModel::UnusualDestinationPattern, 17),
+    ];
+    for nanos in [
+        EPOCH_NANOS_2020_06_15_123045,
+        EPOCH_NANOS_1965_10_15_123456789,
+    ] {
+        for (model, number) in cases {
+            let data_dir = tempdir().expect("temp data dir");
+            let backup_dir = tempdir().expect("temp backup dir");
+            let store = Store::new(data_dir.path(), backup_dir.path(), None).expect("open store");
+            let db = store.events();
+
+            // The key reads the header's model; the detail is not checked.
+            let mut event = minimal_event(timestamp_from_nanos(nanos));
+            event.detection_model = model;
+            event.detail = Detail::NonBrowser;
+            let key = db.put(&event, &stamp()).expect("put event");
+
+            assert_eq!(key >> 64, i128::from(nanos), "{model:?}");
+            assert_eq!((key >> 32) & 0xffff_ffff, i128::from(number), "{model:?}");
+            assert_eq!(key & 0xffff_ffff, 0, "the first key of a time and model");
+
+            let raw_key = db
+                .first_raw_event_key()
+                .expect("read raw RocksDB key")
+                .expect("one stored event");
+            assert_eq!(timestamp_region_from_raw(raw_key), nanos.to_be_bytes());
+            assert_eq!(model_region_from_raw(raw_key), number.to_be_bytes());
+
+            let (scanned_key, record) = db
+                .iter_forward()
+                .next()
+                .expect("one stored event")
+                .expect("valid stored event");
+            assert_eq!(scanned_key, key);
+            assert_eq!(record.event().detection_model, model);
+        }
+    }
 }
