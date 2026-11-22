@@ -5,6 +5,7 @@ mod classifier_fs;
 mod cluster;
 mod collections;
 mod column_statistics;
+mod detection_model;
 mod engine_instance;
 pub mod event;
 mod geo;
@@ -42,6 +43,11 @@ pub use self::cluster::*;
 pub use self::collections::Indexable;
 pub(crate) use self::collections::{IndexedMap, IndexedMapUpdate, Map};
 pub use self::column_statistics::*;
+pub use self::detection_model::{
+    DetectionFamily, DetectionModelProperties, DetectionModelsSectionError, OperatorValueKind,
+    OperatorValueSpec, OperatorValueType, PrimarySubjectKind, RoleSource, complete_engine_document,
+    properties,
+};
 pub use self::event::{Event, EventDb, EventKind, EventMessage, PutOutcome, ThreatLevel};
 pub use self::migration::{migrate_data_dir, write_version_markers};
 pub use self::model::{Digest, Model};
