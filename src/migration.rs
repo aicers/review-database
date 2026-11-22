@@ -3,7 +3,7 @@
 use std::{
     fs::{File, create_dir_all, metadata, remove_file, rename, symlink_metadata},
     io::{ErrorKind, Read, Write},
-    path::{Path, PathBuf},
+    path::{Component, Path, PathBuf},
     sync::Arc,
 };
 
@@ -69,7 +69,9 @@ const VERSION_TMP_FILE_NAME: &str = "VERSION.tmp";
 /// file; a subdirectory or a symbolic link of that name makes the directory
 /// populated. A path that cannot be listed because a dangling symbolic link
 /// stands at it or at one of its ancestors is not missing, since no directory
-/// can be created through that link. The pair is accepted when
+/// can be created through that link, and neither is one with a `..` after a
+/// missing component, since creating that component would make it name
+/// another directory. The pair is accepted when
 ///
 /// * both directories are fresh: each is created if missing and given a
 ///   `VERSION` naming `DATABASE_FORMAT_VERSION`;
@@ -102,6 +104,9 @@ const VERSION_TMP_FILE_NAME: &str = "VERSION.tmp";
 /// * a directory cannot be listed and is not missing either, such as a
 ///   dangling symbolic link, or a path whose nearest existing ancestor is not a
 ///   directory;
+/// * a missing directory's path has a `..` after a missing component, such as
+///   `missing/../old`, which would name a different directory once `missing`
+///   was created;
 /// * a directory path is empty, which names no directory.
 ///
 /// Returns an error if a fresh directory cannot be created or its `VERSION`
@@ -262,14 +267,23 @@ fn read_marker(dir: &Path) -> Result<Option<Version>> {
 /// they are looked up, so a dangling `link` would make them fail as not found
 /// where `link` itself is found as a link.
 ///
+/// The part of `dir` below its nearest existing ancestor must not hold a `..`
+/// either. `missing/../old` cannot be listed while `missing` is missing, yet
+/// once `create_dir_all` has created `missing` it names `old`, which may
+/// already hold a `VERSION` of an earlier format; calling it fresh would let
+/// that marker be replaced. Only the components that are missing are checked:
+/// a `..` within the existing ancestor resolves the same before and after.
+///
 /// # Errors
 ///
 /// Returns an error if a dangling symbolic link stands at `dir` or at one of
-/// its ancestors, if the nearest existing ancestor is not a directory, or if
-/// the ancestors cannot be inspected.
+/// its ancestors, if the nearest existing ancestor is not a directory, if a
+/// `..` follows a missing component of `dir`, or if the ancestors cannot be
+/// inspected.
 fn check_missing_dir_can_be_created(dir: &Path) -> Result<()> {
     for path in dir.ancestors() {
         let path: PathBuf = path.components().collect();
+        let existing_components = path.components().count();
         // An empty path is the current directory of a relative `dir`.
         let path = if path.as_os_str().is_empty() {
             Path::new(".")
@@ -278,6 +292,16 @@ fn check_missing_dir_can_be_created(dir: &Path) -> Result<()> {
         };
         match symlink_metadata(path) {
             Ok(_) => {
+                if dir
+                    .components()
+                    .skip(existing_components)
+                    .any(|component| component == Component::ParentDir)
+                {
+                    return Err(anyhow!(
+                        "cannot create data dir: {} has a `..` after a missing component",
+                        dir.display()
+                    ));
+                }
                 return match metadata(path) {
                     Ok(resolved) if resolved.is_dir() => Ok(()),
                     Ok(_) => Err(anyhow!(
@@ -898,6 +922,70 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// A path with a `..` after a missing component, such as `missing/../old`,
+    /// cannot be listed while `missing` is missing, yet would name `old` once
+    /// `missing` was created. Beside a fresh directory, on each side in turn,
+    /// the pair is refused before anything is written: the `VERSION` of an
+    /// earlier format in `old` is kept, `missing` is not created, and the
+    /// fresh side gets no `VERSION`.
+    #[test]
+    fn a_parent_dir_after_a_missing_component_is_refused() {
+        const PARENT_AFTER_MISSING: &str = "has a `..` after a missing component";
+
+        for fresh in FRESH {
+            for dotdot_on_data in [true, false] {
+                let root = tempfile::tempdir().unwrap();
+                let old = make_side(root.path(), "old", Side::Marked("0.62.0"));
+                let missing = root.path().join("missing");
+                let through_missing = missing.join("..").join("old");
+                let fresh_dir = make_side(root.path(), "fresh", Side::Fresh(fresh));
+                let old_before = dir_state(&old);
+                let fresh_before = dir_state(&fresh_dir);
+
+                let (data_dir, backup_dir) = if dotdot_on_data {
+                    (&through_missing, &fresh_dir)
+                } else {
+                    (&fresh_dir, &through_missing)
+                };
+                let err = migrate_data_dir(data_dir, backup_dir, None).expect_err(&format!(
+                    "`missing/../old` beside {fresh:?} must be refused"
+                ));
+
+                let message = err.to_string();
+                assert!(
+                    message.contains(PARENT_AFTER_MISSING),
+                    "unexpected error beside {fresh:?}: {message}"
+                );
+                assert_eq!(dir_state(&old), old_before, "beside {fresh:?}");
+                assert_eq!(
+                    std::fs::read(old.join(VERSION_FILE_NAME)).unwrap(),
+                    b"0.62.0"
+                );
+                assert!(
+                    std::fs::symlink_metadata(&missing).is_err(),
+                    "`missing` must not be created beside {fresh:?}"
+                );
+                assert_eq!(dir_state(&fresh_dir), fresh_before, "{fresh:?}");
+            }
+        }
+    }
+
+    /// A `..` within the existing part of a missing directory's path resolves
+    /// the same before and after the directory is created, so the directory is
+    /// initialized as any other missing one.
+    #[test]
+    fn a_parent_dir_within_the_existing_ancestor_is_accepted() {
+        let root = tempfile::tempdir().unwrap();
+        let existing = make_side(root.path(), "existing", Side::Fresh(Fresh::Empty));
+        let data_dir = existing.join("..").join("data");
+        let backup_dir = root.path().join("backup");
+
+        migrate_data_dir(&data_dir, &backup_dir, None).unwrap();
+
+        assert_initialized(&root.path().join("data"));
+        assert_initialized(&backup_dir);
     }
 
     /// Marks the child process [`an_empty_path_is_refused`] starts, and names
