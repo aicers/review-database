@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use strum_macros::EnumString;
 
 use super::{
-    DetectorIdMarks, EngineInstances, Model, ModelInstance, ModelRuns, SamplingPolicy,
+    CustomerOf, DetectorIdMarks, EngineInstances, Model, ModelInstance, ModelRuns, SamplingPolicy,
     TableIter as TI, TrainingDefinitions,
     agent::sensor_hostname,
     engine_instance::{self, EngineDetectorRef, EngineDocumentError, EngineDocumentWrite},
@@ -465,9 +465,21 @@ impl<'d> Table<'d> {
 
     /// Inserts a node entry, returns the `id` of the inserted node.
     ///
+    /// The node is given an id no node has had before: neither the id of a
+    /// removed node nor one left on the free list of the table is handed out
+    /// again. Each agent is stored as the agent table stores it: an engine
+    /// instance's `config` is stored completed by
+    /// [`complete_engine_document`](crate::complete_engine_document), and its
+    /// first configuration revision is recorded in the same transaction, with
+    /// the customer of the node's applied profile, else of its draft profile.
+    ///
     /// # Errors
     ///
     /// Returns an error if the database operation fails or if the hostname is already in use.
+    ///
+    /// Returns an error, and stores nothing, if an engine agent's `config`
+    /// fails completion; the error carries the
+    /// [`DetectionModelsSectionError`](crate::DetectionModelsSectionError).
     pub fn put(&self, entry: &Node) -> Result<u32> {
         // Use optimistic transactions to atomically check hostname uniqueness and perform all writes
         // This ensures no race condition can occur between the check and insert
@@ -509,8 +521,10 @@ impl<'d> Table<'d> {
                     .collect(),
             };
 
-            // Insert the node within the same transaction
-            let node_id = match self.node.put_with_transaction(inner, &txn) {
+            // Insert the node within the same transaction, under an id never
+            // handed out before, so that an engine instance's node id and
+            // agent key name one node only.
+            let node_id = match self.node.raw().insert_fresh_with_transaction(inner, &txn) {
                 Ok(id) => id,
                 Err(e) => {
                     if e.to_string().contains("Resource busy")
@@ -523,10 +537,12 @@ impl<'d> Table<'d> {
             };
 
             // Insert agents within the same transaction
+            let customer =
+                CustomerOf::of_profiles(entry.profile.as_ref(), entry.profile_draft.as_ref());
             for agent in &entry.agents {
                 let mut agent = agent.clone();
                 agent.node_id = node_id;
-                if let Err(e) = self.agent.put_with_transaction(&agent, &txn) {
+                if let Err(e) = self.agent.put_in_transaction(&txn, &agent, customer) {
                     if e.to_string().contains("Resource busy")
                         || e.to_string().contains("already exists")
                     {
@@ -575,6 +591,10 @@ impl<'d> Table<'d> {
     /// nothing, and the two lists of agents and external services that could
     /// not be removed are always empty.
     ///
+    /// The node's id is retired, so no later [`Table::put`] is given it. The
+    /// configuration revision history of its agents stays, readable by the
+    /// id, and their keys have no current revision afterwards.
+    ///
     /// # Errors
     ///
     /// Returns an error if no node has the `id` or the database operation
@@ -597,7 +617,9 @@ impl<'d> Table<'d> {
                 key.extend(external_service.as_bytes());
                 self.external_service.delete_with_transaction(&key, &txn)?;
             }
-            let key = self.node.remove_with_transaction(id, &txn)?;
+            // The id is retired rather than freed, so no later node is given
+            // it.
+            let key = self.node.raw().deactivate_with_transaction(id, &txn)?;
             #[cfg(test)]
             self.run_before_commit_hook()?;
             match txn.commit() {
@@ -644,9 +666,23 @@ impl<'d> Table<'d> {
     /// and `new` when either side is [`AgentKind::Unsupervised`]. Adding or
     /// removing such an agent, or changing its install state, is accepted.
     ///
+    /// Each agent is written as the agent table writes it: an engine
+    /// instance's added or changed `config` is stored completed by
+    /// [`complete_engine_document`](crate::complete_engine_document), and a
+    /// new configuration revision is recorded in the same transaction when
+    /// the completed document differs from the stored one, with the customer
+    /// of the node's applied profile in `new`, else of its draft profile. An
+    /// agent whose `config` bytes and kind stay as stored runs no completion
+    /// and records nothing. The returned node holds each agent as committed,
+    /// its `config` completed where completion ran.
+    ///
     /// # Errors
     ///
     /// Returns an error if the `id` is invalid, the database operation fails, or if the hostname is already in use.
+    ///
+    /// Returns an error, and changes nothing, if an engine agent's added or
+    /// changed `config` fails completion; the error carries the
+    /// [`DetectionModelsSectionError`](crate::DetectionModelsSectionError).
     ///
     /// Returns an [`EngineDocumentError::RequiresEngineDocuments`] inside the
     /// error, and changes nothing, if the update changes an Unsupervised
@@ -660,6 +696,11 @@ impl<'d> Table<'d> {
     /// writes, in the same optimistic transaction, the references of the
     /// engine documents of the node's Unsupervised Engine agents listed in
     /// `documents`.
+    ///
+    /// An accepted change of an Unsupervised Engine agent's `config` is
+    /// stored byte for byte, since completion leaves such a document as it
+    /// is, and records a new configuration revision as [`Table::update`]
+    /// describes.
     ///
     /// For each listed agent, a slot given as `Some` replaces the stored
     /// `applied` (the references of the agent's `config`) or `pending` (those
@@ -984,17 +1025,27 @@ impl<'d> Table<'d> {
             }
             old_agents.retain(|&k, _| new_agents.contains_key(k));
 
+            // The rows as this attempt stores or keeps them, by key, for the
+            // returned node.
+            let customer =
+                CustomerOf::of_profiles(new.profile.as_ref(), new.profile_draft.as_ref());
+            let mut stored_agents: HashMap<String, Agent> = HashMap::new();
             for to_insert in new_agents
                 .values()
                 .filter(|v| !old_agents.contains_key(&v.key))
             {
                 let mut to_insert: Agent = (*to_insert).clone();
                 to_insert.node_id = id;
-                if let Err(e) = self.agent.put_with_transaction(&to_insert, &txn) {
-                    if e.to_string().contains("Resource busy") {
-                        continue 'outer;
+                match self.agent.put_in_transaction(&txn, &to_insert, customer) {
+                    Ok(written) => {
+                        stored_agents.insert(written.row.key.clone(), written.row);
                     }
-                    return Err(e);
+                    Err(e) => {
+                        if e.to_string().contains("Resource busy") {
+                            continue 'outer;
+                        }
+                        return Err(e);
+                    }
                 }
             }
             new_agents.retain(|&k, _| old_agents.contains_key(k));
@@ -1003,20 +1054,34 @@ impl<'d> Table<'d> {
             old_agents_v.sort_unstable_by_key(|a| a.key.clone());
             let mut new_agents_v: Vec<_> = new_agents.values().collect();
             new_agents_v.sort_unstable_by_key(|a| a.key.clone());
-            for (old_a, new_a) in old_agents_v
-                .into_iter()
-                .zip(new_agents_v)
-                .filter(|(o, n)| **o != **n)
-            {
+            for (old_a, new_a) in old_agents_v.into_iter().zip(new_agents_v) {
+                if **old_a == **new_a {
+                    // Nothing is written, so the stored row is what the node
+                    // holds; it is read for update so that a concurrent write
+                    // of it makes this attempt retry.
+                    let key = engine_instance::key(id, &new_a.key);
+                    if let Some(stored) = self.agent.get_for_update(&txn, &key)? {
+                        stored_agents.insert(stored.key.clone(), stored);
+                    }
+                    continue;
+                }
                 let mut old_a = (*old_a).clone();
                 old_a.node_id = id;
                 let mut new_a = (*new_a).clone();
                 new_a.node_id = id;
-                if let Err(e) = self.agent.update_with_transaction(&old_a, &new_a, &txn) {
-                    if e.to_string().contains("Resource busy") {
-                        continue 'outer;
+                match self
+                    .agent
+                    .update_in_transaction(&txn, &old_a, &new_a, customer)
+                {
+                    Ok(written) => {
+                        stored_agents.insert(written.row.key.clone(), written.row);
                     }
-                    return Err(e);
+                    Err(e) => {
+                        if e.to_string().contains("Resource busy") {
+                            continue 'outer;
+                        }
+                        return Err(e);
+                    }
                 }
             }
 
@@ -1093,14 +1158,13 @@ impl<'d> Table<'d> {
                         .name
                         .clone()
                         .unwrap_or_else(|| existing_inner.name.clone());
+                    // Looked up without removal: the node lists its agent
+                    // keys as given, duplicates included, and a fresh read
+                    // returns the stored row once per listed key.
                     let final_agents: Vec<Agent> = new
                         .agents
                         .iter()
-                        .map(|a| {
-                            let mut a = a.clone();
-                            a.node_id = id;
-                            a
-                        })
+                        .filter_map(|a| stored_agents.get(&a.key).cloned())
                         .collect();
                     let final_external_services: Vec<ExternalService> = new
                         .external_services
@@ -1705,7 +1769,13 @@ mod test {
                         data_store_port: Some(data_store_port),
                         ..Default::default()
                     };
-                    Some(toml::to_string(&config).unwrap().try_into().unwrap())
+                    // Completed, as every write of a Hog `config` stores it.
+                    let document = crate::complete_engine_document(
+                        AgentKind::SemiSupervised,
+                        &toml::to_string(&config).unwrap(),
+                    )
+                    .unwrap();
+                    Some(document.try_into().unwrap())
                 }
                 AgentKind::Sensor => {
                     let config = Piglet {
@@ -3065,6 +3135,91 @@ mod test {
 
         let returned = node_table.update(id, &old, &new).unwrap();
         assert_eq!(returned, node);
+    }
+
+    /// Puts a node that lists one Sensor agent twice and returns it with
+    /// its id filled in.
+    fn put_node_with_duplicate_agent(node_table: &mut Table) -> Node {
+        let kinds = vec![AgentKind::Sensor];
+        let configs = create_agent_configs(&kinds);
+        let agents = create_agents(0, &kinds, &configs, &[None]);
+        let mut doubled = agents.clone();
+        doubled.extend(agents);
+        let mut node = create_node(
+            0,
+            "test",
+            None,
+            Some(Profile::default()),
+            None,
+            doubled,
+            vec![],
+        );
+        let id = node_table.put(&node).unwrap();
+        node.id = id;
+        node.agents.iter_mut().for_each(|a| a.node_id = id);
+        node
+    }
+
+    #[test]
+    fn update_returns_every_listed_duplicate_agent() {
+        let (_permit, store) = setup_store();
+        let mut node_table = store.node_map();
+        let node = put_node_with_duplicate_agent(&mut node_table);
+        let id = node.id;
+
+        // Unchanged agents.
+        let old: Update = node.clone().into();
+        let returned = node_table.update(id, &old, &old).unwrap();
+        let (read, _, _) = node_table.get_by_id(id).unwrap().unwrap();
+        assert_eq!(read.agents.len(), 2);
+        assert_eq!(returned.agents, read.agents);
+        assert_eq!(returned, read);
+
+        // The returned node serves as the next update's `old`, here with a
+        // changed agent.
+        let mut changed = returned.clone();
+        changed
+            .agents
+            .iter_mut()
+            .for_each(|a| a.status = Status::Disabled);
+        let old: Update = returned.into();
+        let new: Update = changed.into();
+        let returned = node_table.update(id, &old, &new).unwrap();
+        let (read, _, _) = node_table.get_by_id(id).unwrap().unwrap();
+        assert_eq!(read.agents.len(), 2);
+        assert!(read.agents.iter().all(|a| a.status == Status::Disabled));
+        assert_eq!(returned, read);
+    }
+
+    #[test]
+    fn update_with_engine_documents_returns_every_listed_duplicate_agent() {
+        let (_permit, store) = setup_store();
+        let mut node_table = store.node_map();
+        let node = put_node_with_duplicate_agent(&mut node_table);
+        let id = node.id;
+
+        let old: Update = node.clone().into();
+        let returned = node_table
+            .update_with_engine_documents(id, &old, &old, &[])
+            .unwrap();
+        let (read, _, _) = node_table.get_by_id(id).unwrap().unwrap();
+        assert_eq!(read.agents.len(), 2);
+        assert_eq!(returned, read);
+
+        let mut changed = returned.clone();
+        changed
+            .agents
+            .iter_mut()
+            .for_each(|a| a.status = Status::Disabled);
+        let old: Update = returned.into();
+        let new: Update = changed.into();
+        let returned = node_table
+            .update_with_engine_documents(id, &old, &new, &[])
+            .unwrap();
+        let (read, _, _) = node_table.get_by_id(id).unwrap().unwrap();
+        assert_eq!(read.agents.len(), 2);
+        assert!(read.agents.iter().all(|a| a.status == Status::Disabled));
+        assert_eq!(returned, read);
     }
 
     #[test]

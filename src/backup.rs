@@ -620,7 +620,10 @@ mod tests {
     use crate::{
         DEFAULT_STATES, DetectionEventStamp, ModelInstance, Store,
         migration::DATABASE_FORMAT_VERSION,
-        tables::{FORMAT_0_63, MAP_NAMES, open_rocksdb_backup_engine},
+        tables::{
+            ADDED_WITHIN_FORMAT, CONFIG_REVISION_HISTORY, CONFIG_REVISIONS, FORMAT_0_63, MAP_NAMES,
+            open_rocksdb_backup_engine,
+        },
     };
 
     fn example_event() -> DetectionEvent {
@@ -1283,15 +1286,105 @@ mod tests {
         engine.create_new_backup_flush(&db, true).unwrap();
     }
 
+    /// Adds to the backup engine in `backup_dir` a backup of a store in the
+    /// current format holding `events` events, as an earlier build of the
+    /// format left it: without the [`ADDED_WITHIN_FORMAT`] families.
+    fn add_earlier_build_backup(backup_dir: &Path, events: usize) {
+        let source = tempfile::tempdir().unwrap();
+        let source_backup = tempfile::tempdir().unwrap();
+        {
+            let store = Store::new(source.path(), source_backup.path(), None).unwrap();
+            for _ in 0..events {
+                store
+                    .events()
+                    .put(&example_event(), &example_stamp())
+                    .unwrap();
+            }
+        }
+        let states = source.path().join(DEFAULT_STATES);
+        let mut db =
+            rocksdb::DB::open_cf(&rocksdb::Options::default(), &states, MAP_NAMES).unwrap();
+        for name in ADDED_WITHIN_FORMAT {
+            db.drop_cf(name).unwrap();
+        }
+        let mut engine = open_rocksdb_backup_engine(&backup_dir.join(DEFAULT_STATES)).unwrap();
+        engine.create_new_backup_flush(&db, true).unwrap();
+    }
+
+    /// A backup taken by an earlier build of the current format lacks the
+    /// configuration revision families, which that build did not have. It is
+    /// in the current format, so it restores online by id and as the latest,
+    /// and the restored store records configuration revisions.
+    #[test]
+    fn online_restore_accepts_an_earlier_build_backup_of_the_current_format() {
+        let _permit = acquire_db_permit();
+        let data_dir = tempfile::tempdir().unwrap();
+        let backup_dir = tempfile::tempdir().unwrap();
+        let store = open_current_store(data_dir.path(), backup_dir.path());
+        put_event(&store);
+        add_earlier_build_backup(backup_dir.path(), 2);
+        let families = rocksdb::DB::list_cf(
+            &rocksdb::Options::default(),
+            private_dir(backup_dir.path(), 1),
+        )
+        .unwrap();
+        assert!(
+            ADDED_WITHIN_FORMAT
+                .iter()
+                .all(|name| !families.iter().any(|family| family == name))
+        );
+
+        store
+            .write()
+            .expect("test holds no other locks")
+            .restore_from_latest_backup()
+            .unwrap();
+        assert_eq!(live_event_count(&store), 2);
+        put_event(&store);
+        store
+            .write()
+            .expect("test holds no other locks")
+            .restore_from_backup(1)
+            .unwrap();
+        assert_eq!(live_event_count(&store), 2);
+
+        {
+            let store = store.read().expect("test holds no other locks");
+            let agent = crate::Agent::new(
+                1,
+                "001.hog".to_string(),
+                crate::AgentKind::SemiSupervised,
+                crate::AgentStatus::Enabled,
+                Some("data_store_port = 1\n".to_string()),
+                None,
+            )
+            .unwrap();
+            store.agents_map().put(&agent).unwrap();
+            let instance = crate::ModelInstance {
+                node_id: 1,
+                agent_key: "001.hog".to_string(),
+            };
+            assert_eq!(store.config_revision(&instance).unwrap(), Some(1));
+        }
+        drop(store);
+        assert_eq!(event_count(data_dir.path(), backup_dir.path()), 2);
+    }
+
+    /// The column families every backup of an older format lacks, quoted and
+    /// in the order the refusal lists them.
+    const MISSING_FROM_OLDER: &str =
+        "\"config revision history\", \"config revisions\", \"format 0.63\"";
+
     /// The column families of a `0.62` database: the current ones without
-    /// `format 0.63`, and the `format 0.61` and `format 0.62` marker families.
+    /// `format 0.63` and the two configuration revision families, and the
+    /// `format 0.61` and `format 0.62` marker families.
     ///
     /// These are the 51 families `MAP_NAMES` held in format 0.62, spelled out
     /// here because no constant names the two older marker families any more.
     fn families_v0_62() -> Vec<&'static str> {
         let families: Vec<&str> = MAP_NAMES
             .into_iter()
-            .filter(|name| *name != FORMAT_0_63)
+            .filter(|name| ![FORMAT_0_63, CONFIG_REVISIONS, CONFIG_REVISION_HISTORY].contains(name))
             .chain(["format 0.61", "format 0.62"])
             .collect();
         assert_eq!(families.len(), 51);
@@ -1309,7 +1402,7 @@ mod tests {
 
     /// The column families of a `0.60` database: those of `0.62` without
     /// `format 0.61` and `format 0.62`, which are those of the current format
-    /// without `format 0.63`.
+    /// without `format 0.63` and the two configuration revision families.
     fn families_v0_60() -> Vec<&'static str> {
         families_v0_61()
             .into_iter()
@@ -1350,7 +1443,7 @@ mod tests {
             format!(
                 "backup 1 is not in database format {DATABASE_FORMAT_VERSION}: unexpected \
                  column families [\"format 0.61\", \"format 0.62\"], missing column \
-                 families [\"format 0.63\"]; nothing was restored"
+                 families [{MISSING_FROM_OLDER}]; nothing was restored"
             )
         );
         assert_eq!(
@@ -1384,7 +1477,7 @@ mod tests {
             format!(
                 "backup 2 is not in database format {DATABASE_FORMAT_VERSION}: unexpected \
                  column families [\"format 0.61\", \"format 0.62\"], missing column \
-                 families [\"format 0.63\"]; nothing was restored"
+                 families [{MISSING_FROM_OLDER}]; nothing was restored"
             )
         );
         assert_eq!(live_event_count(&store), 2);
@@ -1436,8 +1529,8 @@ mod tests {
 
             let expected = format!(
                 "backup 2 is not in database format {DATABASE_FORMAT_VERSION}: unexpected column \
-                 families [{unexpected}], missing column families [\"format 0.63\"]; nothing was \
-                 restored"
+                 families [{unexpected}], missing column families [{MISSING_FROM_OLDER}]; \
+                 nothing was restored"
             );
             let err = store
                 .write()

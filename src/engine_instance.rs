@@ -1051,8 +1051,9 @@ mod tests {
         drafted
     }
 
-    /// Asserts that `ENGINE` of node `id` has no record, and that a node
-    /// inserted under the reused id and agent key starts with none either.
+    /// Asserts that `ENGINE` of node `id` has no record, and, when the node
+    /// is inserted again, that it is given another id and the removed
+    /// instance still has none.
     fn assert_engine_records_removed(store: &Store, id: u32, reinsert: bool) {
         let engine = instance(id, ENGINE);
         assert_eq!(
@@ -1073,7 +1074,7 @@ mod tests {
         );
         if reinsert {
             let node = insert_node(store, "reinserted", agents());
-            assert_eq!(node.id, id, "the node id is reused");
+            assert_ne!(node.id, id, "the node id is not reused");
             assert_eq!(
                 store.engine_instance_state(&engine).unwrap(),
                 empty_state(engine.clone())

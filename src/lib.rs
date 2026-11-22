@@ -5,6 +5,7 @@ mod classifier_fs;
 mod cluster;
 mod collections;
 mod column_statistics;
+mod config_revision;
 mod detection_model;
 mod engine_instance;
 pub mod event;
@@ -43,6 +44,7 @@ pub use self::cluster::*;
 pub use self::collections::Indexable;
 pub(crate) use self::collections::{IndexedMap, IndexedMapUpdate, Map};
 pub use self::column_statistics::*;
+pub use self::config_revision::{RecompletedDocument, RecompletionError};
 pub use self::detection_model::{
     DetectionFamily, DetectionModelProperties, DetectionModelsSectionError, OperatorValueKind,
     OperatorValueSpec, OperatorValueType, PrimarySubjectKind, RoleSource, complete_engine_document,
@@ -60,23 +62,24 @@ use self::tables::StateDb;
 pub use self::tables::{
     AddressAllocationError, Agent, AgentConfig, AgentKind, AgentStatus, AttrCmpKind, BackupConfig,
     BackupConfigUpdate, BuildSelector, Cluster, ClusterTimeSeries, ColumnStats, ColumnTimeSeries,
-    CoreComponent, CsvColumnExtra as CsvColumnExtraConfig, CustomerDataDeletionJob,
-    CustomerDataDeletionService, CustomerDataDeletionServiceResult, CustomerDataDeletionStatus,
-    DetectorSourceStatus, DetectorState, DetectorStatus, EngineDetectorRef, EngineDocumentError,
-    EngineDocumentRefs, EngineDocumentWrite, EngineInstanceState, ExclusionReason, ExternalService,
-    ExternalServiceConfig, ExternalServiceKind, ExternalServiceStatus, Host, IndexedTable,
-    InstallIntent, InstanceAllocation, InstanceAllocationError, Iterable, LabelDb, LabelDbKind,
-    LabelDbRule, LabelDbRuleKind, Lifecycle, ListenerBinding, ListenerTransport,
-    Model as ModelDigest, ModelIndicator, ModelInstance, ModelMethod, ModelOwner, ModelRun,
-    ModelUse, Network, NetworkFilter, NetworkListEntry, NetworkListReplaceOutcome, NetworkListSet,
-    NetworkListTable, NetworkUpdate, NewSamplingPolicy, NewTrainingDefinition, Node, NodeProfile,
-    NodeTable, NodeUpdate, OperationAction, OperationAttempt, OperationCleanupState,
-    OperationFailureKind, OperationOnFailure, OperationOutcome, OperationPhase,
-    OperationRetentionBound, OperationRetryPolicy, OutlierInfo, OutlierInfoKey, OutlierInfoValue,
-    OwnedNetwork, OwnedNetworkSet, OwnedNetworkTable, PacketAttr, PolicyState, PolicyUse,
-    PortAllocation, PortAllocationError, PortOwner, PreviousTraining, PreviousTrainingResults,
-    ProtocolPorts, ReplaceOutcome, ReplacedModel, ReportedRunState, RequestKeyError, Response,
-    ResponseKind, RetentionConfig, RetentionConfigUpdate, RoundOutcome, RunId, RunKind, RunState,
+    ConfigRevisionRecord, CoreComponent, CsvColumnExtra as CsvColumnExtraConfig,
+    CustomerDataDeletionJob, CustomerDataDeletionService, CustomerDataDeletionServiceResult,
+    CustomerDataDeletionStatus, DetectorSourceStatus, DetectorState, DetectorStatus,
+    EngineDetectorRef, EngineDocumentError, EngineDocumentRefs, EngineDocumentWrite,
+    EngineInstanceState, ExclusionReason, ExternalService, ExternalServiceConfig,
+    ExternalServiceKind, ExternalServiceStatus, Host, IndexedTable, InstallIntent,
+    InstanceAllocation, InstanceAllocationError, Iterable, LabelDb, LabelDbKind, LabelDbRule,
+    LabelDbRuleKind, Lifecycle, ListenerBinding, ListenerTransport, Model as ModelDigest,
+    ModelIndicator, ModelInstance, ModelMethod, ModelOwner, ModelRun, ModelUse, Network,
+    NetworkFilter, NetworkListEntry, NetworkListReplaceOutcome, NetworkListSet, NetworkListTable,
+    NetworkUpdate, NewSamplingPolicy, NewTrainingDefinition, Node, NodeProfile, NodeTable,
+    NodeUpdate, OperationAction, OperationAttempt, OperationCleanupState, OperationFailureKind,
+    OperationOnFailure, OperationOutcome, OperationPhase, OperationRetentionBound,
+    OperationRetryPolicy, OutlierInfo, OutlierInfoKey, OutlierInfoValue, OwnedNetwork,
+    OwnedNetworkSet, OwnedNetworkTable, PacketAttr, PolicyState, PolicyUse, PortAllocation,
+    PortAllocationError, PortOwner, PreviousTraining, PreviousTrainingResults, ProtocolPorts,
+    ReplaceOutcome, ReplacedModel, ReportedRunState, RequestKeyError, Response, ResponseKind,
+    RetentionConfig, RetentionConfigUpdate, RoundOutcome, RunId, RunKind, RunState,
     SamplingInterval, SamplingKind, SamplingPeriod, SamplingPolicy, SamplingPolicyError,
     SamplingPolicyUpdate, ScoreCondition, SourceState, Structured, StructuredClusteringAlgorithm,
     SystemInstallRecord, SystemLogCollector, SystemLogCollectorRefusal, SystemLogCollectorTable,
@@ -113,6 +116,8 @@ pub struct Store {
     model_files_hook: Mutex<Option<model_lifecycle::ModelFilesHook>>,
     #[cfg(test)]
     training_hook: Mutex<Option<training::TrainingHook>>,
+    #[cfg(test)]
+    recompletion_hook: Mutex<Option<config_revision::RecompletionHook>>,
 }
 
 impl Store {
@@ -165,6 +170,8 @@ impl Store {
             model_files_hook: Mutex::new(None),
             #[cfg(test)]
             training_hook: Mutex::new(None),
+            #[cfg(test)]
+            recompletion_hook: Mutex::new(None),
         };
         Ok(store)
     }
@@ -183,6 +190,11 @@ impl Store {
     /// references of those documents with them, and deleting an agent's row
     /// here leaves its engine records, which only the [`NodeTable`] writers
     /// that remove an agent remove.
+    ///
+    /// Every writer stores an engine instance's new or changed `config`
+    /// completed by [`complete_engine_document`] and records its
+    /// configuration revision in the same transaction, as the table's
+    /// documentation describes; see [`Store::config_revision`].
     #[must_use]
     #[allow(clippy::missing_panics_doc)]
     pub fn agents_map(&self) -> Table<'_, Agent> {

@@ -2,14 +2,14 @@
 
 use std::mem::size_of;
 
-use anyhow::Result;
+use anyhow::{Context, Result, bail};
 use num_derive::{FromPrimitive, ToPrimitive};
 use rocksdb::OptimisticTransactionDB;
 use serde::{Deserialize, Serialize};
 use strum_macros::EnumString;
 
-use super::{AgentConfig, AgentStatus, Lifecycle};
-use crate::{Map, Table, UniqueKey, tables::Value as ValueTrait, types::FromKeyValue};
+use super::{AgentConfig, AgentStatus, ConfigRevisions, CustomerOf, Lifecycle, WrittenAgent};
+use crate::{EXCLUSIVE, Map, Table, UniqueKey, tables::Value as ValueTrait, types::FromKeyValue};
 
 #[derive(
     Serialize,
@@ -259,6 +259,23 @@ struct Value {
 }
 
 /// Functions for the agents table.
+///
+/// Every writer here stores an agent row as the configuration revisions
+/// require. A write that gives an engine instance, an agent of kind
+/// [`AgentKind::SemiSupervised`] or [`AgentKind::Unsupervised`], a `config`
+/// different from the one stored at its key under the same kind stores the
+/// output of [`complete_engine_document`](crate::complete_engine_document)
+/// for it, and records a new revision, with its history row, in the same
+/// transaction when the completed document differs from the stored one. A
+/// write that keeps the stored `config` bytes under the same kind runs no
+/// completion and records nothing, so it succeeds even over a stored
+/// document that would fail completion. A write that leaves the key with no
+/// engine document leaves it with no current revision. Agents of other kinds
+/// are stored as written.
+///
+/// A refused write stages nothing in its transaction, so it changes nothing
+/// at either key even when the caller of a `_with_transaction` form commits
+/// the transaction with other work.
 impl<'d> Table<'d, Agent> {
     /// Opens the agents table in the database.
     ///
@@ -286,6 +303,74 @@ impl<'d> Table<'d, Agent> {
         Ok(Some(Agent::from_key_value(&key, value.as_ref())?))
     }
 
+    /// Stores an agent, replacing any agent stored under its key.
+    ///
+    /// An engine document is completed and recorded as the table describes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error, and changes nothing, if the agent gives an engine
+    /// document that fails completion; the error carries the
+    /// [`DetectionModelsSectionError`](crate::DetectionModelsSectionError).
+    /// Returns an error if the database operation fails.
+    pub fn put(&self, record: &Agent) -> Result<()> {
+        self.commit_retrying("failed to store agent", |txn| {
+            self.put_in_transaction(txn, record, CustomerOf::Node)
+                .map(drop)
+        })
+    }
+
+    /// Stores an agent within a transaction, as [`put`](Self::put) does.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error, and stages nothing, if the agent gives an engine
+    /// document that fails completion; the error carries the
+    /// [`DetectionModelsSectionError`](crate::DetectionModelsSectionError).
+    /// Returns an error if the database operation fails.
+    pub fn put_with_transaction(
+        &self,
+        record: &Agent,
+        txn: &rocksdb::Transaction<OptimisticTransactionDB>,
+    ) -> Result<()> {
+        self.put_in_transaction(txn, record, CustomerOf::Node)
+            .map(drop)
+    }
+
+    /// Adds an agent under a key that holds none.
+    ///
+    /// An engine document is completed and recorded as the table describes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error, and changes nothing, if an agent is stored under the
+    /// key, or if the agent gives an engine document that fails completion;
+    /// the error then carries the
+    /// [`DetectionModelsSectionError`](crate::DetectionModelsSectionError).
+    /// Returns an error if the database operation fails.
+    pub fn insert(&self, record: &Agent) -> Result<()> {
+        self.commit_retrying("failed to insert agent", |txn| {
+            self.insert_in_transaction(txn, record).map(drop)
+        })
+    }
+
+    /// Adds an agent within a transaction, as [`insert`](Self::insert) does.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error, and stages nothing, if an agent is stored under the
+    /// key, or if the agent gives an engine document that fails completion;
+    /// the error then carries the
+    /// [`DetectionModelsSectionError`](crate::DetectionModelsSectionError).
+    /// Returns an error if the database operation fails.
+    pub fn insert_with_transaction(
+        &self,
+        record: &Agent,
+        txn: &rocksdb::Transaction<OptimisticTransactionDB>,
+    ) -> Result<()> {
+        self.insert_in_transaction(txn, record).map(drop)
+    }
+
     /// Deletes the agent with given `node_id` and `id`.
     ///
     /// This deletes the row alone. The engine records of an Unsupervised
@@ -295,32 +380,197 @@ impl<'d> Table<'d, Agent> {
     /// [`NodeTable`](crate::NodeTable) writers that remove an agent detach
     /// them, and so does
     /// [`Store::detach_engine_instance`](crate::Store::detach_engine_instance)
-    /// once the row is gone.
+    /// once the row is gone. The key is left with no current configuration
+    /// revision; its revision history stays.
     ///
     /// # Errors
     ///
-    /// Returns `None` if the table does not exist.
+    /// Returns an error if the database operation fails.
     pub fn delete(&self, node_id: u32, id: &str) -> Result<()> {
         let mut key = node_id.to_be_bytes().to_vec();
         key.extend(id.as_bytes());
-        self.map.delete(&key)
+        self.commit_retrying("failed to delete agent", |txn| {
+            self.delete_with_transaction(&key, txn)
+        })
+    }
+
+    /// Deletes the agent stored under `key` within a transaction, as
+    /// [`delete`](Self::delete) does.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database operation fails.
+    pub fn delete_with_transaction(
+        &self,
+        key: &[u8],
+        txn: &rocksdb::Transaction<OptimisticTransactionDB>,
+    ) -> Result<()> {
+        self.map.delete_with_transaction(key, txn)?;
+        self.revisions()?.clear_current_at(txn, key)
     }
 
     /// Updates the `Agent` in the database.
     ///
-    /// This writes the row alone. An Unsupervised Engine agent's `config` and
-    /// `draft` are written only through
+    /// An Unsupervised Engine agent's `config` and `draft` are written only
+    /// through
     /// [`NodeTable::update_with_engine_documents`](crate::NodeTable::update_with_engine_documents),
     /// which writes the references of those documents in the same
     /// transaction.
     ///
+    /// When `old` and `new` have different keys, the update removes the
+    /// agent at the old key, which keeps its revision history and has no
+    /// current revision afterwards, and writes `new` at the new key as onto
+    /// an empty one: an engine document there is completed and gets the new
+    /// key's next revision, even when its bytes equal those at the old key.
+    ///
     /// # Errors
     ///
-    /// Returns an error if the serialization fails or the database operation fails.
+    /// Returns an error, and changes nothing, if the old key holds no agent
+    /// or one other than `old`, if the keys differ and the new key holds an
+    /// agent, or if `new` gives an engine document that fails completion;
+    /// the error then carries the
+    /// [`DetectionModelsSectionError`](crate::DetectionModelsSectionError).
+    /// Returns an error if the serialization fails or the database operation
+    /// fails.
     pub fn update(&self, old: &Agent, new: &Agent) -> Result<()> {
-        let (ok, ov) = (old.unique_key(), old.value());
-        let (nk, nv) = (new.unique_key(), new.value());
-        self.map.update((&ok, &ov), (&nk, &nv))
+        self.commit_retrying("failed to update agent", |txn| {
+            self.update_in_transaction(txn, old, new, CustomerOf::Node)
+                .map(drop)
+        })
+    }
+
+    /// Updates the `Agent` within a transaction, as [`update`](Self::update)
+    /// does.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error, and stages nothing, in the cases
+    /// [`update`](Self::update) changes nothing. Returns an error if the
+    /// database operation fails.
+    pub fn update_with_transaction(
+        &self,
+        old: &Agent,
+        new: &Agent,
+        txn: &rocksdb::Transaction<OptimisticTransactionDB>,
+    ) -> Result<()> {
+        self.update_in_transaction(txn, old, new, CustomerOf::Node)
+            .map(drop)
+    }
+
+    /// Stores `record` within `txn` as [`put`](Self::put) does, and returns
+    /// the row as stored with the revision it issued.
+    pub(crate) fn put_in_transaction(
+        &self,
+        txn: &rocksdb::Transaction<OptimisticTransactionDB>,
+        record: &Agent,
+        customer: CustomerOf,
+    ) -> Result<WrittenAgent> {
+        let key = record.unique_key();
+        let prior = self.get_for_update(txn, &key)?;
+        self.stage(txn, None, prior.as_ref(), record, customer)
+    }
+
+    /// Adds `record` within `txn` as [`insert`](Self::insert) does, and
+    /// returns the row as stored with the revision it issued.
+    fn insert_in_transaction(
+        &self,
+        txn: &rocksdb::Transaction<OptimisticTransactionDB>,
+        record: &Agent,
+    ) -> Result<WrittenAgent> {
+        if self.get_for_update(txn, &record.unique_key())?.is_some() {
+            bail!("key already exists");
+        }
+        self.stage(txn, None, None, record, CustomerOf::Node)
+    }
+
+    /// Updates `old` to `new` within `txn` as [`update`](Self::update) does,
+    /// and returns the row as stored with the revision it issued.
+    pub(crate) fn update_in_transaction(
+        &self,
+        txn: &rocksdb::Transaction<OptimisticTransactionDB>,
+        old: &Agent,
+        new: &Agent,
+        customer: CustomerOf,
+    ) -> Result<WrittenAgent> {
+        let old_key = old.unique_key();
+        let Some(stored) = txn
+            .get_for_update_cf(self.map.cf, &old_key, EXCLUSIVE)
+            .context("cannot read old entry")?
+        else {
+            bail!("no such entry");
+        };
+        if stored != old.value() {
+            bail!("old value mismatch");
+        }
+        let new_key = new.unique_key();
+        if old_key == new_key {
+            let prior = Agent::from_key_value(&old_key, &stored)?;
+            return self.stage(txn, None, Some(&prior), new, customer);
+        }
+        if self.get_for_update(txn, &new_key)?.is_some() {
+            bail!("new key already exists");
+        }
+        self.stage(txn, Some(old), None, new, customer)
+    }
+
+    /// Stages, within `txn`, the removal of `moved_from` if the write moves a
+    /// row from another key, then `new` at its key, whose stored row before
+    /// the write is `prior`, with its revision. Nothing is staged unless every
+    /// check passes.
+    fn stage(
+        &self,
+        txn: &rocksdb::Transaction<OptimisticTransactionDB>,
+        moved_from: Option<&Agent>,
+        prior: Option<&Agent>,
+        new: &Agent,
+        customer: CustomerOf,
+    ) -> Result<WrittenAgent> {
+        let revisions = self.revisions()?;
+        let prepared = revisions.prepare(txn, prior, new, customer)?;
+        if let Some(old) = moved_from {
+            self.delete_with_transaction(&old.unique_key(), txn)?;
+        }
+        self.map
+            .put_with_transaction(&new.unique_key(), &prepared.row().value(), txn)?;
+        revisions.apply(txn, prepared)
+    }
+
+    /// Returns the agent stored under `key`, read for update within `txn`.
+    pub(crate) fn get_for_update(
+        &self,
+        txn: &rocksdb::Transaction<OptimisticTransactionDB>,
+        key: &[u8],
+    ) -> Result<Option<Agent>> {
+        txn.get_for_update_cf(self.map.cf, key, EXCLUSIVE)
+            .context("cannot read agent")?
+            .map(|value| Agent::from_key_value(key, &value))
+            .transpose()
+    }
+
+    /// Returns the configuration revision column families.
+    fn revisions(&self) -> Result<ConfigRevisions<'d>> {
+        ConfigRevisions::open(self.map.db).context("config revision families must be present")
+    }
+
+    /// Runs `write` in a new transaction and commits it, starting over when
+    /// the commit conflicts with another write.
+    fn commit_retrying(
+        &self,
+        failure: &'static str,
+        mut write: impl FnMut(&rocksdb::Transaction<OptimisticTransactionDB>) -> Result<()>,
+    ) -> Result<()> {
+        loop {
+            let txn = self.map.db.transaction();
+            write(&txn)?;
+            match txn.commit() {
+                Ok(()) => return Ok(()),
+                Err(e) => {
+                    if !e.as_ref().starts_with("Resource busy:") {
+                        return Err(e).context(failure);
+                    }
+                }
+            }
+        }
     }
 }
 
