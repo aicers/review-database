@@ -15,7 +15,8 @@ flexible database interface for efficient data management.
   analysis
 - Support for various cybersecurity-related entities such as agents, data
   sources, and traffic filters
-- Flexible schema migration tools for seamless updates
+- Database format version checks that refuse data directories and backups
+  of an unsupported format
 - Backup and restore functionalities for data integrity
 - Efficient data structures for handling large-scale datasets
 
