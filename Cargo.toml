@@ -6,7 +6,7 @@ publish = false
 
 [dependencies]
 anyhow = "1"
-attrievent = { git = "https://github.com/aicers/attrievent.git", tag = "0.6.0" }
+attrievent = { git = "https://github.com/aicers/attrievent.git", tag = "0.7.0" }
 aws-lc-rs = { version = "1", default-features = false, features = ["alloc", "non-fips"] }
 bincode = "1"
 config = { version = "0.15", optional = true }
@@ -20,7 +20,7 @@ num-derive = "0.5"
 num-traits = "0.2"
 rand = "0.10"
 regex = "1"
-review-protocol = { git = "https://github.com/aicers/review-protocol.git", tag = "0.29.0" }
+review-protocol = { git = "https://github.com/aicers/review-protocol.git", tag = "0.30.0" }
 rocksdb = "0.25"
 semver = "1"
 serde = { version = "1", features = ["derive"] }

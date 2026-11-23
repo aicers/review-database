@@ -14,8 +14,8 @@ use serde::{Deserialize, Serialize};
 use strum_macros::EnumString;
 
 use super::{
-    CustomerOf, DetectorIdMarks, EngineInstances, Model, ModelInstance, ModelRuns, SamplingPolicy,
-    TableIter as TI, TrainingDefinitions,
+    CustomerOf, DetectorIdMarks, EngineInstances, Model, ModelInstance, ModelRuns, TableIter as TI,
+    TimeSeriesGenerationPolicy, TrainingDefinitions,
     agent::sensor_hostname,
     engine_instance::{self, EngineDetectorRef, EngineDocumentError, EngineDocumentWrite},
 };
@@ -156,7 +156,7 @@ pub struct Table<'d> {
     model: IndexedTable<'d, Model>,
     model_indicator: Map<'d>,
     model_runs: ModelRuns<'d>,
-    sampling_policies: IndexedTable<'d, SamplingPolicy>,
+    time_series_generation_policies: IndexedTable<'d, TimeSeriesGenerationPolicy>,
     training_definitions: TrainingDefinitions<'d>,
     /// Run by every writer after its checks and before its commit.
     #[cfg(test)]
@@ -189,7 +189,7 @@ impl<'d> Table<'d> {
         let model = IndexedTable::<Model>::open(db)?;
         let model_indicator = Map::open(db, super::MODEL_INDICATORS)?;
         let model_runs = ModelRuns::open(db)?;
-        let sampling_policies = IndexedTable::<SamplingPolicy>::open(db)?;
+        let time_series_generation_policies = IndexedTable::<TimeSeriesGenerationPolicy>::open(db)?;
         let training_definitions = TrainingDefinitions::open(db)?;
         Some(Self {
             node,
@@ -200,7 +200,7 @@ impl<'d> Table<'d> {
             model,
             model_indicator,
             model_runs,
-            sampling_policies,
+            time_series_generation_policies,
             training_definitions,
             #[cfg(test)]
             before_commit_hook: None,
@@ -227,10 +227,10 @@ impl<'d> Table<'d> {
     /// definition it reserved, as does a clone creating a definition on the
     /// instance; its models and training definitions are left with no
     /// instance; its `engine instances` row, with its references, detector
-    /// statuses and stopped state, is deleted; and every sampling policy
-    /// assigned to it is left unassigned, its `data_store` unchanged, since
-    /// a later agent of a reused node id and the same key would otherwise
-    /// inherit the assignment.
+    /// statuses and stopped state, is deleted; and every time series
+    /// generation policy assigned to it is left unassigned, its `data_store`
+    /// unchanged, since a later agent of a reused node id and the same key
+    /// would otherwise inherit the assignment.
     ///
     /// Every writer that removes an agent calls this for each agent key it
     /// removes, whatever the agent's kind: the agent row may already be
@@ -257,7 +257,7 @@ impl<'d> Table<'d> {
             engine_instances: &self.engine_instances,
         }
         .detach(txn, &instance, INSTANCE_REMOVED)?;
-        self.sampling_policies
+        self.time_series_generation_policies
             .unassign_in_transaction(txn, &instance)
     }
 

@@ -65,8 +65,8 @@ pub struct Model {
     pub clusters_applied: Option<i64>,
     /// The `sources` of the training definition of the run that produced
     /// the current classifier, a snapshot taken with `trained_definition`.
-    /// A timeseries model's sources are sampling-policy IDs, and naming one
-    /// here keeps that policy in use.
+    /// A timeseries model's sources are time series generation policy IDs,
+    /// and naming one here keeps that policy in use.
     pub trained_sources: Vec<String>,
     /// The clustering model type the current classifier was trained as, as
     /// the upload that created or replaced the model gave it.

@@ -622,7 +622,7 @@ mod tests {
         migration::DATABASE_FORMAT_VERSION,
         tables::{
             ADDED_WITHIN_FORMAT, CONFIG_REVISION_HISTORY, CONFIG_REVISIONS, FORMAT_0_63, MAP_NAMES,
-            open_rocksdb_backup_engine,
+            TIME_SERIES_GENERATION_POLICY, open_rocksdb_backup_engine,
         },
     };
 
@@ -1371,19 +1371,41 @@ mod tests {
         assert_eq!(event_count(data_dir.path(), backup_dir.path()), 2);
     }
 
+    /// The area that held the policies of the Time Series Generator before
+    /// they became time series generation policies. No build of this one
+    /// opens a store or restores a backup that has it.
+    const RETIRED_POLICY_AREA: &str = "sampling policy";
+
     /// The column families every backup of an older format lacks, quoted and
     /// in the order the refusal lists them.
-    const MISSING_FROM_OLDER: &str =
-        "\"config revision history\", \"config revisions\", \"format 0.63\"";
+    const MISSING_FROM_OLDER: &str = "\"config revision history\", \"config revisions\", \
+                                      \"format 0.63\", \"time series generation policy\"";
+
+    /// The current column families with the time series generation policy
+    /// area replaced by [`RETIRED_POLICY_AREA`].
+    fn families_with_the_retired_policy_area() -> Vec<&'static str> {
+        MAP_NAMES
+            .into_iter()
+            .map(|name| {
+                if name == TIME_SERIES_GENERATION_POLICY {
+                    RETIRED_POLICY_AREA
+                } else {
+                    name
+                }
+            })
+            .collect()
+    }
 
     /// The column families of a `0.62` database: the current ones without
-    /// `format 0.63` and the two configuration revision families, and the
-    /// `format 0.61` and `format 0.62` marker families.
+    /// `format 0.63` and the two configuration revision families, with
+    /// [`RETIRED_POLICY_AREA`] in place of the time series generation policy
+    /// area, and the `format 0.61` and `format 0.62` marker families.
     ///
     /// These are the 51 families `MAP_NAMES` held in format 0.62, spelled out
-    /// here because no constant names the two older marker families any more.
+    /// here because no constant names the two older marker families or the
+    /// retired area any more.
     fn families_v0_62() -> Vec<&'static str> {
-        let families: Vec<&str> = MAP_NAMES
+        let families: Vec<&str> = families_with_the_retired_policy_area()
             .into_iter()
             .filter(|name| ![FORMAT_0_63, CONFIG_REVISIONS, CONFIG_REVISION_HISTORY].contains(name))
             .chain(["format 0.61", "format 0.62"])
@@ -1443,8 +1465,8 @@ mod tests {
             err.to_string(),
             format!(
                 "backup 1 is not in database format {DATABASE_FORMAT_VERSION}: unexpected \
-                 column families [\"format 0.61\", \"format 0.62\"], missing column \
-                 families [{MISSING_FROM_OLDER}]; nothing was restored"
+                 column families [\"format 0.61\", \"format 0.62\", \"{RETIRED_POLICY_AREA}\"], \
+                 missing column families [{MISSING_FROM_OLDER}]; nothing was restored"
             )
         );
         assert_eq!(
@@ -1477,8 +1499,8 @@ mod tests {
             err.to_string(),
             format!(
                 "backup 2 is not in database format {DATABASE_FORMAT_VERSION}: unexpected \
-                 column families [\"format 0.61\", \"format 0.62\"], missing column \
-                 families [{MISSING_FROM_OLDER}]; nothing was restored"
+                 column families [\"format 0.61\", \"format 0.62\", \"{RETIRED_POLICY_AREA}\"], \
+                 missing column families [{MISSING_FROM_OLDER}]; nothing was restored"
             )
         );
         assert_eq!(live_event_count(&store), 2);
@@ -1512,10 +1534,14 @@ mod tests {
     #[test]
     fn online_restore_refuses_a_backup_of_each_earlier_family_set() {
         let _permit = acquire_db_permit();
+        let retired = format!("\"{RETIRED_POLICY_AREA}\"");
         for (families, unexpected) in [
-            (families_v0_60(), ""),
-            (families_v0_61(), "\"format 0.61\""),
-            (families_v0_62(), "\"format 0.61\", \"format 0.62\""),
+            (families_v0_60(), retired.clone()),
+            (families_v0_61(), format!("\"format 0.61\", {retired}")),
+            (
+                families_v0_62(),
+                format!("\"format 0.61\", \"format 0.62\", {retired}"),
+            ),
         ] {
             let data_dir = tempfile::tempdir().unwrap();
             let backup_dir = tempfile::tempdir().unwrap();
@@ -1561,6 +1587,89 @@ mod tests {
                 .unwrap();
             assert_eq!(live_event_count(&store), 1);
         }
+    }
+
+    /// A new store has the time series generation policy area, and not
+    /// [`RETIRED_POLICY_AREA`].
+    #[test]
+    fn a_new_store_has_the_time_series_generation_policy_area() {
+        let _permit = acquire_db_permit();
+        let data_dir = tempfile::tempdir().unwrap();
+        let backup_dir = tempfile::tempdir().unwrap();
+        drop(open_current_store(data_dir.path(), backup_dir.path()));
+
+        let families = rocksdb::DB::list_cf(
+            &rocksdb::Options::default(),
+            data_dir.path().join(DEFAULT_STATES),
+        )
+        .unwrap();
+        assert!(
+            families
+                .iter()
+                .any(|name| name == "time series generation policy")
+        );
+        assert!(!families.iter().any(|name| name == RETIRED_POLICY_AREA));
+    }
+
+    /// A store marked with the current format that still has
+    /// [`RETIRED_POLICY_AREA`] is not in the current format, and fails to
+    /// open; nothing migrates it.
+    #[test]
+    fn a_current_format_store_with_the_retired_policy_area_fails_to_open() {
+        let _permit = acquire_db_permit();
+        let data_dir = tempfile::tempdir().unwrap();
+        let backup_dir = tempfile::tempdir().unwrap();
+        crate::write_version_markers(data_dir.path(), backup_dir.path(), DATABASE_FORMAT_VERSION)
+            .unwrap();
+        {
+            let mut opts = rocksdb::Options::default();
+            opts.create_if_missing(true);
+            opts.create_missing_column_families(true);
+            rocksdb::DB::open_cf(
+                &opts,
+                data_dir.path().join(DEFAULT_STATES),
+                families_with_the_retired_policy_area(),
+            )
+            .unwrap();
+        }
+
+        let Err(err) = Store::new(data_dir.path(), backup_dir.path(), None) else {
+            panic!("a store with the retired policy area opened");
+        };
+        assert!(
+            format!("{err:#}").contains(RETIRED_POLICY_AREA),
+            "unexpected error: {err:#}"
+        );
+    }
+
+    /// A backup of the current format that has [`RETIRED_POLICY_AREA`] in
+    /// place of the time series generation policy area is refused.
+    #[test]
+    fn online_restore_refuses_a_backup_with_the_retired_policy_area() {
+        let _permit = acquire_db_permit();
+        let data_dir = tempfile::tempdir().unwrap();
+        let backup_dir = tempfile::tempdir().unwrap();
+        let store = open_current_store(data_dir.path(), backup_dir.path());
+        put_event(&store);
+        add_backup_with_families(backup_dir.path(), &families_with_the_retired_policy_area());
+        let before = RestoreState::read(&store, data_dir.path(), backup_dir.path());
+
+        let err = store
+            .write()
+            .expect("test holds no other locks")
+            .restore_from_backup(1)
+            .unwrap_err();
+
+        assert_eq!(
+            err.to_string(),
+            format!(
+                "backup 1 is not in database format {DATABASE_FORMAT_VERSION}: unexpected \
+                 column families [\"{RETIRED_POLICY_AREA}\"], missing column families \
+                 [\"time series generation policy\"]; nothing was restored"
+            )
+        );
+        assert_eq!(live_event_count(&store), 1);
+        assert_still_open(&store, data_dir.path(), backup_dir.path(), &before);
     }
 
     #[test]

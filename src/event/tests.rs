@@ -4,7 +4,7 @@ use jiff::Timestamp;
 use review_protocol::types::EndpointRole::{Destination, Source};
 use review_protocol::types::{
     Detail, DetectionEvent, DetectionModel, LabelDbMatchDetail, PrimarySubject, RawEventKind,
-    Target, ThreatRole, UnusualDestinationPatternDetail,
+    SlotDeviation, Target, ThreatRole, UnusualDestinationPatternDetail, WindowOutlierDetail,
 };
 
 use super::{
@@ -522,6 +522,71 @@ fn label_db_match_negative_zeros_encode_as_zeros() {
     );
 }
 
+fn window_outlier_event(distance: f64, value: f64, centroid_value: f64) -> DetectionEvent {
+    let mut event = subject_event(host("192.0.2.9"), Vec::new());
+    event.detection_model = DetectionModel::WindowOutlier;
+    event.detail = Detail::WindowOutlier(WindowOutlierDetail {
+        time_series_id: "7/192.0.2.9".to_owned(),
+        window_start: time(),
+        nearest_cluster_id: 2,
+        distance,
+        top_slots: vec![
+            SlotDeviation {
+                slot_start: time(),
+                value: 1.5,
+                centroid_value: 2.5,
+            },
+            SlotDeviation {
+                slot_start: time(),
+                value,
+                centroid_value,
+            },
+        ],
+        truncated: 0,
+        pcap_truncated: None,
+    });
+    event
+}
+
+/// `-0.0` and `0.0` are equal values in a `WindowOutlier` detail, so the
+/// events holding them encode to the same bytes and are the same event.
+#[test]
+fn window_outlier_negative_zeros_encode_as_zeros() {
+    let negative = window_outlier_event(-0.0, -0.0, -0.0);
+    let positive = window_outlier_event(0.0, 0.0, 0.0);
+    assert_eq!(negative, positive);
+    assert_eq!(
+        super::record::encode_event(&negative).unwrap(),
+        super::record::encode_event(&positive).unwrap()
+    );
+    for (distance, value, centroid_value) in [(-0.0, 1.0, 1.0), (1.0, -0.0, 1.0), (1.0, 1.0, -0.0)]
+    {
+        let negative = window_outlier_event(distance, value, centroid_value);
+        let positive = window_outlier_event(distance.abs(), value.abs(), centroid_value.abs());
+        assert_eq!(
+            super::record::encode_event(&negative).unwrap(),
+            super::record::encode_event(&positive).unwrap()
+        );
+    }
+
+    // A value other than a zero is kept as is.
+    assert_ne!(
+        super::record::encode_event(&window_outlier_event(0.5, 0.0, 0.0)).unwrap(),
+        super::record::encode_event(&window_outlier_event(0.0, 0.0, 0.0)).unwrap()
+    );
+
+    let (_permit, store) = setup_store();
+    let db = store.events();
+    assert!(matches!(
+        db.put_unless_stored(&negative, &stamp()).unwrap(),
+        PutOutcome::Stored(_)
+    ));
+    assert_eq!(
+        db.put_unless_stored(&positive, &stamp()).unwrap(),
+        PutOutcome::AlreadyStored
+    );
+}
+
 /// Concurrent calls for one event store it at most once, also when another
 /// event already holds the first key of its time and model.
 #[test]
@@ -800,8 +865,8 @@ fn iterator_skips_unknown_detection_models() {
     let valid = db.put(&event_at_nanos(2_000_000_000), &stamp()).unwrap();
     let value = db.inner.get(valid.to_be_bytes()).unwrap().unwrap();
 
-    // Model 20 is the first number review-protocol has not assigned.
-    for model in [20_i128, 9999, i128::from(u32::MAX)] {
+    // Model 21 is the first number review-protocol has not assigned.
+    for model in [21_i128, 9999, i128::from(u32::MAX)] {
         let key = (1_000_000_000_i128 << 64) | (model << 32);
         db.put_raw(&key.to_be_bytes(), &value);
     }

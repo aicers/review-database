@@ -305,6 +305,12 @@ fn without_negative_zeros(event: &DetectionEvent) -> Cow<'_, DetectionEvent> {
             is_negative_zero_f32(detail.match_score)
                 || detail.rule_confidence.is_some_and(is_negative_zero_f32)
         }
+        Detail::WindowOutlier(detail) => {
+            is_negative_zero(detail.distance)
+                || detail.top_slots.iter().any(|slot| {
+                    is_negative_zero(slot.value) || is_negative_zero(slot.centroid_value)
+                })
+        }
         _ => false,
     };
     if !is_negative_zero(event.score) && !detail_has_negative_zero {
@@ -321,6 +327,13 @@ fn without_negative_zeros(event: &DetectionEvent) -> Cow<'_, DetectionEvent> {
         Detail::LabelDbMatch(detail) => {
             detail.match_score = positive_zero_f32(detail.match_score);
             detail.rule_confidence = detail.rule_confidence.map(positive_zero_f32);
+        }
+        Detail::WindowOutlier(detail) => {
+            detail.distance = positive_zero(detail.distance);
+            for slot in &mut detail.top_slots {
+                slot.value = positive_zero(slot.value);
+                slot.centroid_value = positive_zero(slot.centroid_value);
+            }
         }
         _ => {}
     }

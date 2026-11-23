@@ -118,6 +118,20 @@ impl<'d> OwnedNetworkTable<'d> {
             .transpose()
     }
 
+    /// Returns the networks owned by the customer `customer_id` as `txn` sees
+    /// them, or `None` if none were stored for it. The row is read for
+    /// update, so a concurrent replacement or removal conflicts with `txn`.
+    pub(crate) fn get_in_transaction(
+        &self,
+        txn: &Transaction<'_, OptimisticTransactionDB>,
+        customer_id: u32,
+    ) -> Result<Option<OwnedNetworkSet>> {
+        txn.get_for_update_cf(self.map.cf, customer_id.to_be_bytes(), EXCLUSIVE)
+            .with_context(|| format!("failed to read networks of customer {customer_id}"))?
+            .map(|stored| decode(customer_id, &stored))
+            .transpose()
+    }
+
     /// Replaces the networks owned by the customer `customer_id` with
     /// `networks`, recorded at `revision` and the current time.
     ///
