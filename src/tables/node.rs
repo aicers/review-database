@@ -696,9 +696,18 @@ impl<'d> Table<'d> {
     /// `documents`.
     ///
     /// An accepted change of an Unsupervised Engine agent's `config` is
-    /// stored byte for byte, since completion leaves such a document as it
-    /// is, and records a new configuration revision as [`Table::update`]
-    /// describes.
+    /// stored completed by
+    /// [`complete_engine_document`](crate::complete_engine_document) in
+    /// [`CompletionMode::Apply`](crate::CompletionMode::Apply), with the
+    /// clustering model type of each model its `[[detectors]]` name, read
+    /// within the transaction, and records a new configuration revision when
+    /// the completed document differs from the stored one, as
+    /// [`Table::update`] describes. The record of each such model is also
+    /// written back unchanged, so that a concurrent
+    /// [`Store::complete_run`](crate::Store::complete_run) that changes its
+    /// type conflicts with the update whichever commits first. A document
+    /// that completion refuses, such as one holding a section the type of
+    /// its detector's model does not allow, refuses the update.
     ///
     /// For each listed agent, a slot given as `Some` replaces the stored
     /// `applied` (the references of the agent's `config`) or `pending` (those
@@ -749,6 +758,12 @@ impl<'d> Table<'d> {
     /// - a written slot names a detector id that is at most the agent's
     ///   `last_detector_id` and that neither of its stored slots names
     ///   ([`EngineDocumentError::DetectorIdRetired`]).
+    ///
+    /// Returns an error that carries the
+    /// [`DetectionModelsSectionError`](crate::DetectionModelsSectionError),
+    /// and changes nothing, if an Unsupervised Engine agent's changed
+    /// `config` fails completion, and an error, changing nothing, if the
+    /// record of a model it names cannot be read.
     pub fn update_with_engine_documents(
         &mut self,
         id: u32,
@@ -1785,6 +1800,8 @@ mod test {
                     let document = crate::complete_engine_document(
                         AgentKind::SemiSupervised,
                         &toml::to_string(&config).unwrap(),
+                        &|_| None,
+                        crate::CompletionMode::Apply,
                     )
                     .unwrap();
                     Some(document.try_into().unwrap())

@@ -1569,8 +1569,8 @@ mod test {
         let stored = f.store.node_map().get_by_id(f.node).unwrap().unwrap().0;
         let mut new = stored.clone();
         let engine = new.agents.iter_mut().find(|a| a.key == ENGINE).unwrap();
-        engine.config = Some("detectors = 1".to_string().try_into().unwrap());
-        engine.draft = Some("detectors = 2".to_string().try_into().unwrap());
+        engine.config = Some("revision = 1".to_string().try_into().unwrap());
+        engine.draft = Some("revision = 2".to_string().try_into().unwrap());
         f.store
             .node_map()
             .update_with_engine_documents(

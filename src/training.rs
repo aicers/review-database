@@ -35,16 +35,30 @@ use rocksdb::{OptimisticTransactionDB, Transaction};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    AgentKind, ModelInstance, ModelMethod, ModelOwner, ModelRun, NewTrainingDefinition, Referrer,
-    ReplacedModel, ReportedRunState, RunId, RunKind, RunState, Store, TrainedWith,
-    TrainingDefinition, TrainingDefinitionUpdate,
+    Agent, AgentKind, ModelInstance, ModelMethod, ModelOwner, ModelRun, NewTrainingDefinition,
+    RecompletedDocument, Referrer, ReplacedModel, ReportedRunState, RunId, RunKind, RunState,
+    Store, TrainedWith, TrainingDefinition, TrainingDefinitionUpdate,
     classifier_fs::{self, ClassifierFsError},
+    detection_model::detector_models,
     engine_instance::agent_for_update,
     model_lifecycle::column_family,
     tables::{self, ModelRuns, TrainingDefinitions},
+    types::FromKeyValue,
 };
 
 type Txn<'a> = Transaction<'a, OptimisticTransactionDB>;
+
+/// The outcome of [`Store::complete_run`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CompletedRun {
+    /// The model inserted or replaced, as [`Store::replace_model`] returns
+    /// it.
+    pub model: ReplacedModel,
+    /// The applied engine documents the run changed because it changed the
+    /// clustering model type of the model, in agent row order; empty when
+    /// the type stayed or no document changed.
+    pub recompleted: Vec<RecompletedDocument>,
+}
 
 /// The reason an instance's active runs fail when it is stopped.
 pub(crate) const INSTANCE_STOPPED: &str = "instance stopped";
@@ -797,6 +811,23 @@ impl Store {
     /// becomes both the clone's snapshot and its editable definition.
     /// The definition stops cloning.
     ///
+    /// When the clustering model type the model is stored with differs from
+    /// that of the record it replaces, or the model is created, the applied
+    /// document, `config`, of every [`AgentKind::Unsupervised`] agent in
+    /// which a `[[detectors]]` entry names the model is completed again as a
+    /// whole, in the same transaction, in
+    /// [`CompletionMode::Recomplete`](crate::CompletionMode::Recomplete),
+    /// with the types of the model records as the transaction sees them, the
+    /// new record included: sections the new type does not allow are removed
+    /// and those it allows are filled. Each document whose completion differs
+    /// from its stored bytes is stored with a new revision and its history,
+    /// and returned in [`CompletedRun::recompleted`]. A document that fails
+    /// completion is logged as a warning, naming the node id, agent key and
+    /// error, and left unchanged with its history; the others are completed
+    /// and the run is completed all the same. Drafts are never changed. A
+    /// commit conflict, such as with a concurrent write of an applied
+    /// document that names the model, retries the whole transaction.
+    ///
     /// # Errors
     ///
     /// Returns a [`TrainingError`] inside the error, and changes nothing,
@@ -806,8 +837,10 @@ impl Store {
     /// `DefinitionNotFound`; `NoInstance` if the definition has no instance;
     /// `MethodMismatch` or `RawEventKindMismatch` if the model's method or
     /// raw event kind is not the definition's. Returns an error, leaving the
-    /// run active and the model unchanged, if [`Store::replace_model`]
-    /// refuses the model or a file or database operation fails.
+    /// run active, and the model, every applied document, revision and
+    /// history unchanged, if [`Store::replace_model`] refuses the model or a
+    /// file or database operation fails, including reading an agent or a
+    /// model record while completing the applied documents again.
     // The upload is handed over by value, as its decoded body is; the retry
     // after a commit conflict reads it again, so the body works on references.
     #[allow(clippy::needless_pass_by_value)]
@@ -816,7 +849,7 @@ impl Store {
         run_id: RunId,
         caller: &ModelInstance,
         model: crate::model::Model,
-    ) -> Result<ReplacedModel> {
+    ) -> Result<CompletedRun> {
         let files = self.lock_model_files();
         let definitions = self.states.training_definitions();
         let runs = self.states.model_runs();
@@ -869,6 +902,10 @@ impl Store {
                 definition: definition.definition.clone(),
                 sources: definition.sources.clone(),
             };
+            let replaced_type = self
+                .model_map()
+                .load_model_by_name_in_transaction(&model.name, &txn)?
+                .map(|record| record.clustering_model_type);
             let pending = self.replace_model_with_transaction(
                 &files,
                 &txn,
@@ -878,6 +915,11 @@ impl Store {
                 &trained,
                 definition.log_kind.as_deref(),
             )?;
+            let recompleted = if replaced_type.as_ref() == Some(&model.clustering_model_type) {
+                Vec::new()
+            } else {
+                self.recomplete_documents_naming(&txn, &model.name)?
+            };
             definition.cloning = false;
             definitions.put(&txn, &definition)?;
             runs.put(
@@ -894,9 +936,55 @@ impl Store {
             if txn.commit_or_retry()? {
                 #[cfg(test)]
                 self.run_model_files_hook(crate::model_lifecycle::ModelFilesPoint::AfterCommit)?;
-                return Ok(self.finish_model_replace(&files, &pending));
+                return Ok(CompletedRun {
+                    model: self.finish_model_replace(&files, &pending),
+                    recompleted,
+                });
             }
         }
+    }
+
+    /// Completes again within `txn`, as [`Store::complete_run`] describes,
+    /// the applied document of every [`AgentKind::Unsupervised`] agent in
+    /// which a `[[detectors]]` entry names the model `name`, and returns the
+    /// documents it changed.
+    ///
+    /// The scan that finds the agents is not tracked by `txn`; each agent
+    /// found is read again for update. An apply committed after the scan
+    /// conflicts with `txn` through the model record, which `txn` has read
+    /// for update before the scan and which the apply writes back.
+    fn recomplete_documents_naming(
+        &self,
+        txn: &Txn<'_>,
+        name: &str,
+    ) -> Result<Vec<RecompletedDocument>> {
+        let agents = self.states.agents();
+        let names_model = |agent: &Agent| {
+            agent.kind == AgentKind::Unsupervised
+                && agent.config.as_ref().is_some_and(|config| {
+                    detector_models(config.as_ref()).iter().any(|m| m == name)
+                })
+        };
+        let mut found = Vec::new();
+        for item in txn.iterator_cf(agents.raw().cf, rocksdb::IteratorMode::Start) {
+            let (key, value) = item.context("cannot read agents")?;
+            if names_model(&Agent::from_key_value(&key, &value)?) {
+                found.push(key);
+            }
+        }
+        let mut recompleted = Vec::new();
+        for key in found {
+            let Some(stored) = agents.get_for_update(txn, &key)? else {
+                continue;
+            };
+            if !names_model(&stored) {
+                continue;
+            }
+            if let Some(entry) = self.recomplete_in_transaction(txn, &agents, &stored)? {
+                recompleted.push(entry);
+            }
+        }
+        Ok(recompleted)
     }
 
     /// Reconciles the runs held for an instance with the runs it reports
@@ -2091,7 +2179,10 @@ mod tests {
         };
 
         let first = store.start_training_run("d").unwrap();
-        let created = store.complete_run(first.run.id, &engine, upload()).unwrap();
+        let created = store
+            .complete_run(first.run.id, &engine, upload())
+            .unwrap()
+            .model;
         assert!(created.inserted);
         let record = model(store, "d");
         assert_eq!(record.raw_event_kind, "log");
@@ -2106,7 +2197,8 @@ mod tests {
         let second = store.start_training_run("d").unwrap();
         let replaced = store
             .complete_run(second.run.id, &engine, upload())
-            .unwrap();
+            .unwrap()
+            .model;
         assert!(!replaced.inserted);
         let record = model(store, "d");
         assert_eq!(record.raw_event_kind, "log");
@@ -2154,7 +2246,8 @@ mod tests {
                     vec![state(19, 1), state(3, 2)],
                 ),
             )
-            .unwrap();
+            .unwrap()
+            .model;
         assert!(created.inserted);
         let record = model(store, "d");
         assert_eq!(record.clustering_model_type, ClusteringModelTypeRef::Custom);
@@ -2171,7 +2264,8 @@ mod tests {
                 &engine,
                 upload(http_url_v1(), 20, vec![state(19, 3)]),
             )
-            .unwrap();
+            .unwrap()
+            .model;
         assert!(!replaced.inserted);
         let record = model(store, "d");
         assert_eq!(record.clustering_model_type, http_url_v1());
@@ -2203,7 +2297,8 @@ mod tests {
                     ..body("d")
                 },
             )
-            .unwrap();
+            .unwrap()
+            .model;
         assert_eq!(
             model(store, "d").clustering_model_type,
             ClusteringModelTypeRef::Custom
@@ -2224,7 +2319,8 @@ mod tests {
         let second = store.start_training_run("d").unwrap();
         let replaced = store
             .complete_run(second.run.id, &engine, body("d"))
-            .unwrap();
+            .unwrap()
+            .model;
         assert_eq!(replaced.id, created.id);
         assert_eq!(model(store, "d").clustering_model_type, http_url_v1());
 
@@ -2879,7 +2975,8 @@ mod tests {
         let before = jiff::Timestamp::now();
         let replaced = store
             .complete_run(first.run.id, &engine, body("d"))
-            .unwrap();
+            .unwrap()
+            .model;
         assert!(replaced.inserted);
         let record = model(store, "d");
         assert_eq!(record.id, replaced.id);
@@ -2903,7 +3000,8 @@ mod tests {
         assert_eq!(state(store, "d"), TrainingDefinitionState::Training);
         let replaced = store
             .complete_run(second.run.id, &engine, body("d"))
-            .unwrap();
+            .unwrap()
+            .model;
         assert!(!replaced.inserted);
         let record = model(store, "d");
         assert_eq!(record.id, replaced.id);
@@ -3059,7 +3157,7 @@ mod tests {
         assert_eq!(model(store, "d"), record);
         assert_eq!(run(store, id).state, RunState::Requested);
 
-        let replaced = store.complete_run(id, &engine, body("d")).unwrap();
+        let replaced = store.complete_run(id, &engine, body("d")).unwrap().model;
         assert!(!replaced.inserted);
         assert_eq!(run(store, id).state, RunState::Succeeded);
         assert_eq!(model(store, "d").trained_run_id, id);
@@ -3358,7 +3456,8 @@ mod tests {
         );
         let replaced = store
             .complete_run(clone.id, &engine, body("foreign"))
-            .unwrap();
+            .unwrap()
+            .model;
         assert!(replaced.inserted);
         let record = model(store, "foreign");
         assert_eq!(record.customer_id, OTHER_CUSTOMER);
@@ -3888,5 +3987,486 @@ mod tests {
         store.set_training_hook(None);
         assert_eq!(error.to_string(), "hook failed");
         assert_eq!(dump(store), before);
+    }
+
+    // The re-completion of applied documents by a run that changes the
+    // clustering model type of its model.
+
+    /// The sections completion adds after a detector running a model of the
+    /// `http_url` type.
+    const WEB_SECTIONS: &str = "\n[detectors.detection_models.label_db_match]\nenabled = \
+                                true\nevent_range = 100\nmin_events_ratio = 10\ncolumns = \
+                                []\n\n[detectors.detection_models.far_outlier]\nenabled = true\n";
+
+    /// A document with one detector running `model`.
+    fn detector_doc(model: &str) -> String {
+        format!("[[detectors]]\nid = 1\nmodel = \"{model}\"\n")
+    }
+
+    /// [`detector_doc`] completed for a model of the `http_url` type.
+    fn with_sections(model: &str) -> String {
+        format!("{}{WEB_SECTIONS}", detector_doc(model))
+    }
+
+    /// Trains the definition `name` once more, the upload of the clustering
+    /// model type `model_type`, and returns what the run returned.
+    fn retrain(
+        store: &Store,
+        engine: &ModelInstance,
+        name: &str,
+        model_type: ClusteringModelTypeRef,
+    ) -> CompletedRun {
+        let started = store.start_training_run(name).unwrap();
+        store
+            .complete_run(started.run.id, engine, typed_body(name, model_type))
+            .unwrap()
+    }
+
+    fn typed_body(name: &str, model_type: ClusteringModelTypeRef) -> crate::model::Model {
+        crate::model::Model {
+            clustering_model_type: model_type,
+            ..body(name)
+        }
+    }
+
+    /// Writes `config` as the applied document, and `draft` as the draft,
+    /// each when given, of the agent `key` of node `node_id`, with no
+    /// references.
+    fn write_documents(
+        store: &Store,
+        node_id: u32,
+        key: &str,
+        config: Option<&str>,
+        draft: Option<&str>,
+    ) -> Result<()> {
+        let (node, _, _) = store.node_map().get_by_id(node_id)?.unwrap();
+        let mut new = node.clone();
+        let agent = new.agents.iter_mut().find(|a| a.key == key).unwrap();
+        if let Some(config) = config {
+            agent.config = Some(config.to_string().try_into()?);
+        }
+        if let Some(draft) = draft {
+            agent.draft = Some(draft.to_string().try_into()?);
+        }
+        store
+            .node_map()
+            .update_with_engine_documents(
+                node_id,
+                &node.into(),
+                &new.into(),
+                &[crate::EngineDocumentWrite {
+                    agent_key: key.to_string(),
+                    applied: config.map(|_| crate::EngineDocumentRefs::default()),
+                    pending: draft.map(|_| crate::EngineDocumentRefs::default()),
+                }],
+            )
+            .map(drop)
+    }
+
+    fn agent_row(store: &Store, node_id: u32, key: &str) -> Agent {
+        store.agents_map().get(node_id, key).unwrap().unwrap()
+    }
+
+    fn applied(store: &Store, node_id: u32, key: &str) -> Option<String> {
+        agent_row(store, node_id, key)
+            .config
+            .map(|config| config.as_ref().to_owned())
+    }
+
+    fn drafted(store: &Store, node_id: u32, key: &str) -> Option<String> {
+        agent_row(store, node_id, key)
+            .draft
+            .map(|draft| draft.as_ref().to_owned())
+    }
+
+    fn revision(store: &Store, node_id: u32, key: &str) -> Option<u64> {
+        store.config_revision(&instance(node_id, key)).unwrap()
+    }
+
+    fn recorded(store: &Store, node_id: u32, key: &str, number: u64) -> Option<String> {
+        store
+            .config_revision_record(&instance(node_id, key), number)
+            .unwrap()
+            .map(|record| record.document)
+    }
+
+    fn recompleted(node_id: u32, key: &str, revision: u64, document: &str) -> RecompletedDocument {
+        RecompletedDocument {
+            instance: instance(node_id, key),
+            revision,
+            document: document.to_string(),
+        }
+    }
+
+    /// Adds a Hog agent with an applied document to node `node_id`, and
+    /// returns its key.
+    fn add_hog(store: &Store, node_id: u32) -> &'static str {
+        const HOG: &str = "hog";
+        let (node, _, _) = store.node_map().get_by_id(node_id).unwrap().unwrap();
+        let mut new = node.clone();
+        let mut hog = agent(HOG, AgentKind::SemiSupervised, None);
+        hog.node_id = node_id;
+        hog.config = Some("data_store_port = 1\n".to_string().try_into().unwrap());
+        new.agents.push(hog);
+        store
+            .node_map()
+            .update(node_id, &node.into(), &new.into())
+            .unwrap();
+        HOG
+    }
+
+    /// Stores `agent` as is, bypassing every writer.
+    fn put_agent_raw(store: &Store, agent: &Agent) {
+        use crate::{UniqueKey, tables::Value};
+
+        store
+            .agents_map()
+            .raw()
+            .put(&agent.unique_key(), &agent.value())
+            .unwrap();
+    }
+
+    #[test]
+    fn a_type_change_completes_the_applied_documents_naming_the_model() {
+        let f = setup();
+        let store = f.store();
+        let node = f.node;
+        let engine = instance(node, ENGINE);
+        store
+            .insert_training_definition(new_definition("a", engine.clone()))
+            .unwrap();
+        let created = retrain(store, &engine, "a", ClusteringModelTypeRef::Custom);
+        assert!(created.model.inserted);
+        assert_eq!(created.recompleted, Vec::new());
+
+        let two = format!(
+            "{}[[detectors]]\nid = 2\nmodel = \"b\"\n",
+            detector_doc("a")
+        );
+        let draft = format!(
+            "{}[detectors.detection_models.port_scan]\nenabled = true\n",
+            detector_doc("a")
+        );
+        write_documents(store, node, ENGINE, Some(&detector_doc("a")), Some(&draft)).unwrap();
+        write_documents(store, node, OTHER_ENGINE, Some(&two), None).unwrap();
+        write_documents(store, node, UNNUMBERED, Some(&detector_doc("b")), None).unwrap();
+        let hog = add_hog(store, node);
+        let hog_config = applied(store, node, hog);
+        let hog_revision = revision(store, node, hog);
+        for key in [ENGINE, OTHER_ENGINE, UNNUMBERED] {
+            assert_eq!(revision(store, node, key), Some(1));
+        }
+
+        // Custom to `http_url`: both sections are added.
+        let two_web = format!(
+            "{}{WEB_SECTIONS}[[detectors]]\nid = 2\nmodel = \"b\"\n",
+            detector_doc("a")
+        );
+        let done = retrain(store, &engine, "a", http_url_v1());
+        assert!(!done.model.inserted);
+        assert_eq!(
+            done.recompleted,
+            vec![
+                recompleted(node, ENGINE, 2, &with_sections("a")),
+                recompleted(node, OTHER_ENGINE, 2, &two_web),
+            ]
+        );
+        assert_eq!(applied(store, node, ENGINE), Some(with_sections("a")));
+        assert_eq!(recorded(store, node, ENGINE, 2), Some(with_sections("a")));
+        assert_eq!(applied(store, node, OTHER_ENGINE), Some(two_web.clone()));
+        assert_eq!(
+            recorded(store, node, OTHER_ENGINE, 2),
+            Some(two_web.clone())
+        );
+        assert_eq!(model(store, "a").clustering_model_type, http_url_v1());
+        // A document naming another model, a Hog document and a draft are
+        // left alone.
+        assert_eq!(applied(store, node, UNNUMBERED), Some(detector_doc("b")));
+        assert_eq!(revision(store, node, UNNUMBERED), Some(1));
+        assert_eq!(drafted(store, node, ENGINE), Some(draft.clone()));
+        assert_eq!(applied(store, node, hog), hog_config);
+        assert_eq!(revision(store, node, hog), hog_revision);
+
+        // The same type changes no applied document.
+        let same = retrain(store, &engine, "a", http_url_v1());
+        assert!(!same.model.inserted);
+        assert_eq!(same.recompleted, Vec::new());
+        for key in [ENGINE, OTHER_ENGINE] {
+            assert_eq!(revision(store, node, key), Some(2));
+            assert_eq!(recorded(store, node, key, 3), None);
+        }
+
+        // `http_url` to custom: the sections are removed. A document already
+        // complete under custom records nothing.
+        let mut complete = agent_row(store, node, UNNUMBERED);
+        complete.config = Some(detector_doc("a").try_into().unwrap());
+        put_agent_raw(store, &complete);
+        let back = retrain(store, &engine, "a", ClusteringModelTypeRef::Custom);
+        assert_eq!(
+            back.recompleted,
+            vec![
+                recompleted(node, ENGINE, 3, &detector_doc("a")),
+                recompleted(node, OTHER_ENGINE, 3, &two),
+            ]
+        );
+        assert_eq!(applied(store, node, ENGINE), Some(detector_doc("a")));
+        assert_eq!(recorded(store, node, OTHER_ENGINE, 3), Some(two));
+        assert_eq!(applied(store, node, UNNUMBERED), Some(detector_doc("a")));
+        assert_eq!(revision(store, node, UNNUMBERED), Some(1));
+        assert_eq!(drafted(store, node, ENGINE), Some(draft));
+        assert_eq!(
+            model(store, "a").clustering_model_type,
+            ClusteringModelTypeRef::Custom
+        );
+    }
+
+    #[test]
+    fn creating_a_model_completes_the_documents_already_naming_it() {
+        let f = setup();
+        let store = f.store();
+        let engine = instance(f.node, ENGINE);
+        write_documents(store, f.node, ENGINE, Some(&detector_doc("n")), None).unwrap();
+        assert_eq!(applied(store, f.node, ENGINE), Some(detector_doc("n")));
+        store
+            .insert_training_definition(new_definition("n", engine.clone()))
+            .unwrap();
+        let created = retrain(store, &engine, "n", http_url_v1());
+        assert!(created.model.inserted);
+        assert_eq!(
+            created.recompleted,
+            vec![recompleted(f.node, ENGINE, 2, &with_sections("n"))]
+        );
+        assert_eq!(applied(store, f.node, ENGINE), Some(with_sections("n")));
+    }
+
+    #[test]
+    fn a_document_failing_completion_is_logged_and_the_others_completed() {
+        let f = setup();
+        let store = f.store();
+        let node = f.node;
+        let engine = instance(node, ENGINE);
+        store
+            .insert_training_definition(new_definition("a", engine.clone()))
+            .unwrap();
+        retrain(store, &engine, "a", ClusteringModelTypeRef::Custom);
+        write_documents(store, node, ENGINE, Some(&detector_doc("a")), None).unwrap();
+        let failing = format!("{}[[detectors]]\nmodel = 1\n", detector_doc("a"));
+        let mut row = agent_row(store, node, OTHER_ENGINE);
+        row.config = Some(failing.clone().try_into().unwrap());
+        put_agent_raw(store, &row);
+
+        let (done, warnings) =
+            crate::test::capture_warnings(|| retrain(store, &engine, "a", http_url_v1()));
+        assert_eq!(
+            done.recompleted,
+            vec![recompleted(node, ENGINE, 2, &with_sections("a"))]
+        );
+        assert_eq!(applied(store, node, OTHER_ENGINE), Some(failing));
+        assert_eq!(revision(store, node, OTHER_ENGINE), None);
+        assert_eq!(recorded(store, node, OTHER_ENGINE, 1), None);
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(
+            warnings[0].contains(OTHER_ENGINE) && warnings[0].contains("`model`"),
+            "{}",
+            warnings[0]
+        );
+    }
+
+    #[test]
+    fn a_model_read_failure_rolls_back_the_whole_run_completion() {
+        let f = setup();
+        let store = f.store();
+        let engine = instance(f.node, ENGINE);
+        store
+            .insert_training_definition(new_definition("a", engine.clone()))
+            .unwrap();
+        retrain(store, &engine, "a", ClusteringModelTypeRef::Custom);
+        write_documents(store, f.node, ENGINE, Some(&detector_doc("a")), None).unwrap();
+        let id = store.start_training_run("a").unwrap().run.id;
+
+        let revisions = |store: &Store| -> Entries {
+            let db = store.states.db();
+            [tables::CONFIG_REVISIONS, tables::CONFIG_REVISION_HISTORY]
+                .into_iter()
+                .flat_map(|name| {
+                    db.iterator_cf(db.cf_handle(name).unwrap(), rocksdb::IteratorMode::Start)
+                        .map(|entry| {
+                            let (key, value) = entry.unwrap();
+                            (key.to_vec(), value.to_vec())
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .collect()
+        };
+        let before = (dump(store), revisions(store));
+        let record = model(store, "a");
+        crate::tables::fail_model_reads(true);
+        let error = store
+            .complete_run(id, &engine, typed_body("a", http_url_v1()))
+            .unwrap_err();
+        crate::tables::fail_model_reads(false);
+        assert!(
+            format!("{error:#}").contains("injected failure"),
+            "{error:#}"
+        );
+        assert_eq!((dump(store), revisions(store)), before);
+        assert_eq!(model(store, "a"), record);
+        assert_eq!(applied(store, f.node, ENGINE), Some(detector_doc("a")));
+        assert_eq!(run(store, id).state, RunState::Requested);
+    }
+
+    #[test]
+    fn a_draft_for_an_earlier_type_is_refused_when_applied() {
+        let f = setup();
+        let store = f.store();
+        let node = f.node;
+        let engine = instance(node, ENGINE);
+        store
+            .insert_training_definition(new_definition("a", engine.clone()))
+            .unwrap();
+        retrain(store, &engine, "a", http_url_v1());
+        let draft = format!(
+            "{}[detectors.detection_models.far_outlier]\nenabled = true\n",
+            detector_doc("a")
+        );
+        write_documents(store, node, ENGINE, None, Some(&draft)).unwrap();
+        retrain(store, &engine, "a", ClusteringModelTypeRef::Custom);
+
+        let error = write_documents(store, node, ENGINE, Some(&draft), None).unwrap_err();
+        match error.downcast_ref::<crate::DetectionModelsSectionError>() {
+            Some(crate::DetectionModelsSectionError::Detector(detector)) => assert_eq!(
+                detector.error,
+                crate::DetectionModelsSectionError::DisallowedModel {
+                    section: "far_outlier".to_string()
+                }
+            ),
+            other => panic!("{other:?}: {error:#}"),
+        }
+        assert_eq!(drafted(store, node, ENGINE), Some(draft));
+        assert_eq!(applied(store, node, ENGINE), None);
+        assert_eq!(revision(store, node, ENGINE), None);
+    }
+
+    #[test]
+    fn an_apply_committed_during_a_type_change_is_completed_again() {
+        let f = setup();
+        let store = f.store();
+        let node = f.node;
+        let engine = instance(node, ENGINE);
+        store
+            .insert_training_definition(new_definition("a", engine.clone()))
+            .unwrap();
+        retrain(store, &engine, "a", http_url_v1());
+        write_documents(store, node, ENGINE, Some(&detector_doc("b")), None).unwrap();
+        let id = store.start_training_run("a").unwrap().run.id;
+
+        let (request, requested) = std::sync::mpsc::channel::<()>();
+        let (finish, finished) = std::sync::mpsc::channel::<()>();
+        let finished = std::sync::Mutex::new(finished);
+        let fired = AtomicBool::new(false);
+        store.set_model_files_hook(Some(Arc::new(move |point| {
+            if point == ModelFilesPoint::BeforeCommit && !fired.swap(true, Ordering::SeqCst) {
+                request.send(()).unwrap();
+                finished.lock().unwrap().recv().unwrap();
+            }
+            Ok(())
+        })));
+        let done = std::thread::scope(|scope| {
+            let run = scope.spawn(|| {
+                store.complete_run(id, &engine, typed_body("a", ClusteringModelTypeRef::Custom))
+            });
+            requested.recv().unwrap();
+            // The apply names the model with sections completed for its old
+            // type, and commits while the run is about to commit.
+            write_documents(store, node, ENGINE, Some(&with_sections("a")), None).unwrap();
+            finish.send(()).unwrap();
+            run.join().unwrap()
+        })
+        .unwrap();
+        store.set_model_files_hook(None);
+
+        assert_eq!(recorded(store, node, ENGINE, 2), Some(with_sections("a")));
+        assert_eq!(
+            done.recompleted,
+            vec![recompleted(node, ENGINE, 3, &detector_doc("a"))]
+        );
+        assert_eq!(applied(store, node, ENGINE), Some(detector_doc("a")));
+        assert_eq!(revision(store, node, ENGINE), Some(3));
+        assert_eq!(recorded(store, node, ENGINE, 4), None);
+    }
+
+    #[test]
+    fn an_apply_committed_after_a_type_change_is_completed_under_the_new_type() {
+        // (old type, new type, applied document, stored result)
+        let cases = [
+            (
+                http_url_v1(),
+                ClusteringModelTypeRef::Custom,
+                with_sections("a"),
+                None,
+            ),
+            (
+                ClusteringModelTypeRef::Custom,
+                http_url_v1(),
+                detector_doc("a"),
+                Some(with_sections("a")),
+            ),
+        ];
+        for (old, new, document, result) in cases {
+            let f = setup();
+            let store = f.store();
+            let node = f.node;
+            let engine = instance(node, ENGINE);
+            store
+                .insert_training_definition(new_definition("a", engine.clone()))
+                .unwrap();
+            retrain(store, &engine, "a", old);
+            write_documents(store, node, ENGINE, Some(&detector_doc("b")), None).unwrap();
+            let id = store.start_training_run("a").unwrap().run.id;
+
+            let (request, requested) = std::sync::mpsc::channel::<()>();
+            let (finish, finished) = std::sync::mpsc::channel::<()>();
+            crate::tables::set_hook(crate::tables::HookPoint::ModelLookup, move |_| {
+                request.send(()).unwrap();
+                finished.recv().unwrap();
+            });
+            let upload = typed_body("a", new.clone());
+            let caller = &engine;
+            let (applied_result, done) = std::thread::scope(|scope| {
+                let run = scope.spawn(move || {
+                    let done = requested
+                        .recv()
+                        .ok()
+                        .map(|()| store.complete_run(id, caller, upload));
+                    finish.send(()).ok();
+                    done
+                });
+                // The run commits after the apply read the model record.
+                let applied_result = write_documents(store, node, ENGINE, Some(&document), None);
+                crate::tables::set_hook(crate::tables::HookPoint::NodeLookup, |_| {});
+                (applied_result, run.join().unwrap())
+            });
+            let done = done.expect("the apply reached the model lookup").unwrap();
+            assert_eq!(done.recompleted, Vec::new());
+            assert_eq!(model(store, "a").clustering_model_type, new);
+
+            if let Some(result) = result {
+                applied_result.unwrap();
+                assert_eq!(applied(store, node, ENGINE), Some(result.clone()));
+                assert_eq!(revision(store, node, ENGINE), Some(2));
+                assert_eq!(recorded(store, node, ENGINE, 2), Some(result));
+            } else {
+                let error = applied_result.unwrap_err();
+                assert!(
+                    error
+                        .downcast_ref::<crate::DetectionModelsSectionError>()
+                        .is_some(),
+                    "{error:#}"
+                );
+                assert_eq!(applied(store, node, ENGINE), Some(detector_doc("b")));
+                assert_eq!(revision(store, node, ENGINE), Some(1));
+                assert_eq!(recorded(store, node, ENGINE, 2), None);
+            }
+        }
     }
 }

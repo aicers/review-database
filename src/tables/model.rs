@@ -246,6 +246,40 @@ impl<'d> IndexedTable<'d, Model> {
             .transpose()
     }
 
+    /// Writes the record of model `name`, as `record` gives it after it was
+    /// read with
+    /// [`load_model_by_name_in_transaction`](Self::load_model_by_name_in_transaction),
+    /// back unchanged within `txn`, or removes the key a record of that name
+    /// would have when `record` is `None`, so that a concurrent write of the
+    /// record conflicts with `txn` whichever of the two commits first.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the record cannot be serialized or the database
+    /// operation fails.
+    pub(crate) fn write_back_in_transaction(
+        &self,
+        name: &str,
+        record: Option<&Model>,
+        txn: &rocksdb::Transaction<OptimisticTransactionDB>,
+    ) -> Result<()> {
+        if name.is_empty() {
+            return Ok(());
+        }
+        match record {
+            Some(record) => txn
+                .put_cf(
+                    self.indexed_map.cf(),
+                    name.as_bytes(),
+                    super::serialize(record)?,
+                )
+                .map_err(|e| anyhow!("cannot write model {name:?} back: {e}")),
+            None => txn
+                .delete_cf(self.indexed_map.cf(), name.as_bytes())
+                .map_err(|e| anyhow!("cannot write model {name:?} back: {e}")),
+        }
+    }
+
     /// Returns every model record as `txn` sees it, ordered by name, skipping
     /// the index entry at the empty key.
     ///

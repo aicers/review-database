@@ -67,7 +67,7 @@ pub(crate) use self::config_revision::{
     ConfigRevisions, CustomerOf, Written as WrittenAgent, is_engine,
 };
 #[cfg(test)]
-pub(crate) use self::config_revision::{HookPoint, set_hook};
+pub(crate) use self::config_revision::{HookPoint, fail_model_reads, set_hook};
 pub use self::core_component::CoreComponent;
 pub use self::csv_column_extra::CsvColumnExtra;
 pub use self::customer_data_deletion_job::{

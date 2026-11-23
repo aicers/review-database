@@ -180,3 +180,57 @@ pub(crate) fn utc_nano(
         ))
         .expect("test date and time must be a valid UTC timestamp")
 }
+
+/// A subscriber that records the fields of every warning event, each event
+/// as one line of ` name=value` pairs.
+struct WarningLog(std::sync::Arc<Mutex<Vec<String>>>);
+
+/// Formats the fields of an event.
+struct Fields(String);
+
+impl tracing::field::Visit for Fields {
+    fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+        use std::fmt::Write;
+
+        let _ = write!(self.0, " {}={value:?}", field.name());
+    }
+}
+
+impl tracing::Subscriber for WarningLog {
+    fn enabled(&self, metadata: &tracing::Metadata<'_>) -> bool {
+        *metadata.level() == tracing::Level::WARN
+    }
+
+    fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+        tracing::span::Id::from_u64(1)
+    }
+
+    fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
+
+    fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+
+    fn event(&self, event: &tracing::Event<'_>) {
+        let mut fields = Fields(String::new());
+        event.record(&mut fields);
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(fields.0);
+    }
+
+    fn enter(&self, _: &tracing::span::Id) {}
+
+    fn exit(&self, _: &tracing::span::Id) {}
+}
+
+/// Runs `f` with every warning logged on this thread recorded, and returns
+/// its output with the warnings, each as one line of ` name=value` pairs.
+pub(crate) fn capture_warnings<T>(f: impl FnOnce() -> T) -> (T, Vec<String>) {
+    let log = std::sync::Arc::new(Mutex::new(Vec::new()));
+    let output = tracing::subscriber::with_default(WarningLog(log.clone()), f);
+    let warnings = log
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
+    (output, warnings)
+}
