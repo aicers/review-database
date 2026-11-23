@@ -932,8 +932,49 @@ fn is_of_type(value_type: DefinitionValueType, value: &Value) -> bool {
 
 /// Returns the timestamp `value` holds, a string in RFC 3339 with an
 /// offset.
+///
+/// The syntax is checked before parsing because `jiff` parses the broader
+/// Temporal syntax, which also takes a time without seconds and a time
+/// zone annotation.
 fn timestamp(value: &Value) -> Option<Timestamp> {
-    value.as_str().and_then(|s| s.parse().ok())
+    value
+        .as_str()
+        .filter(|s| is_rfc3339_date_time(s))
+        .and_then(|s| s.parse().ok())
+}
+
+/// Returns whether `s` has the syntax of an RFC 3339 `date-time`:
+/// `YYYY-MM-DDTHH:MM:SS`, optional fractional seconds, then `Z` or
+/// `±HH:MM`. `T` and `Z` may be lowercase, as RFC 3339 allows. The values
+/// of the fields are left to the parser.
+fn is_rfc3339_date_time(s: &str) -> bool {
+    /// Returns the rest of `s` after `pattern`, where `d` matches an ASCII
+    /// digit and `T` either case of `T`.
+    fn strip<'a>(s: &'a [u8], pattern: &[u8]) -> Option<&'a [u8]> {
+        let head = s.get(..pattern.len())?;
+        let matches = head.iter().zip(pattern).all(|(c, p)| match p {
+            b'd' => c.is_ascii_digit(),
+            b'T' => c.eq_ignore_ascii_case(&b'T'),
+            _ => c == p,
+        });
+        matches.then(|| s.get(pattern.len()..)).flatten()
+    }
+
+    let Some(mut rest) = strip(s.as_bytes(), b"dddd-dd-ddTdd:dd:dd") else {
+        return false;
+    };
+    if let Some(fraction) = rest.strip_prefix(b".") {
+        let digits = fraction.iter().take_while(|c| c.is_ascii_digit()).count();
+        if digits == 0 {
+            return false;
+        }
+        rest = fraction.get(digits..).unwrap_or_default();
+    }
+    match rest {
+        [b'Z' | b'z'] => true,
+        [b'+' | b'-', offset @ ..] => strip(offset, b"dd:dd").is_some_and(<[u8]>::is_empty),
+        _ => false,
+    }
 }
 
 /// Returns whether `value`, a list, string or table, is empty.
@@ -1921,6 +1962,49 @@ mod tests {
     }
 
     #[test]
+    fn http_url_window_timestamps_are_rfc3339() {
+        // The Temporal syntax `jiff` parses goes beyond RFC 3339; what it
+        // adds is refused.
+        for (key, value) in [
+            (WINDOW_START, "2026-01-01T00:00Z"),
+            (WINDOW_START, "2026-01-01T00:00:00Z[UTC]"),
+            (WINDOW_START, "2026-01-01T09:00:00+09:00[Asia/Seoul]"),
+            (WINDOW_START, "2026-01-01 00:00:00Z"),
+            (WINDOW_START, "20260101T000000Z"),
+            (WINDOW_START, "2026-01-01T00:00:00+0900"),
+            (WINDOW_START, "2026-01-01T00:00:00+09"),
+            (WINDOW_START, "2026-01-01T00:00:00.Z"),
+            (WINDOW_START, "2026-01-01T00:00:00,5Z"),
+            (WINDOW_START, "+002026-01-01T00:00:00Z"),
+            (WINDOW_END, "2026-01-08T00:00Z"),
+            (WINDOW_END, "2026-01-08T00:00:00Z[UTC]"),
+            (WINDOW_END, "2026-01-08T09:00:00+09:00[Asia/Seoul]"),
+            (WINDOW_END, "2026-01-08 00:00:00Z"),
+            (WINDOW_END, "20260108T000000Z"),
+            (WINDOW_END, "2026-01-08T00:00:00+0900"),
+        ] {
+            assert_eq!(
+                refused(&with(http_url(), key, Value::String(value.to_string()))),
+                r(InvalidDocument, key, value),
+                "{key} {value}"
+            );
+        }
+        // RFC 3339 allows fractional seconds and a lowercase `T` and `Z`.
+        for (start, end) in [
+            ("2026-01-01T00:00:00.5Z", "2026-01-08T00:00:00.5Z"),
+            ("2026-01-01t00:00:00z", "2026-01-08t00:00:00z"),
+            (
+                "2026-01-01T00:00:00.123456789-05:00",
+                "2026-01-09T00:00:00Z",
+            ),
+        ] {
+            let table = with(http_url(), "window_start", Value::String(start.to_string()));
+            let table = with(table, "window_end", Value::String(end.to_string()));
+            assert_eq!(check(&table), Ok(http_url_v1()), "{start} {end}");
+        }
+    }
+
+    #[test]
     fn http_url_operator_values() {
         assert_eq!(
             refused(&with(http_url(), "sources", v("[]"))),
@@ -1963,7 +2047,6 @@ mod tests {
             refused(&with(http_url(), "window_end", v(r#""next week""#))),
             r(InvalidDocument, "window_end", "next week")
         );
-
         // The window spans at least 7 days.
         for (start, end) in [
             ("2026-01-01T00:00:00Z", "2026-01-08T00:00:00Z"),
