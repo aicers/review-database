@@ -5,6 +5,20 @@ file is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), and
 this project adheres to [Semantic
 Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.68.0](https://github.com/aicers/review-database/compare/0.67.0...0.68.0) - 2026-11-23
+
+### Added
+
+- [**breaking**] complete REconverge detection model sections by clustering model type and re-complete applied documents when a run changes the type ([#1108](https://github.com/aicers/review-database/pull/1108))
+- [**breaking**] store clustering model format 3 with model type, training read and detection model states ([#1107](https://github.com/aicers/review-database/pull/1107))
+- [**breaking**] check training definitions by clustering model type and fix the log kind once a model exists ([#1106](https://github.com/aicers/review-database/pull/1106))
+- [**breaking**] add the clustering model type catalog and the LabelDbMatch and FarOutlier properties ([#1105](https://github.com/aicers/review-database/pull/1105))
+
+### Other
+
+- cover concurrent first insertion of detection events ([#1102](https://github.com/aicers/review-database/pull/1102))
+- cover a committed key move through update_with_transaction ([#1103](https://github.com/aicers/review-database/pull/1103))
+
 ## [0.67.0](https://github.com/aicers/review-database/compare/0.66.0...0.67.0) - 2026-11-22
 
 ### Added
