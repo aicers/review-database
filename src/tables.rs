@@ -28,12 +28,12 @@ mod port_allocation;
 mod previous_training;
 mod qualifier;
 mod retention_config;
-mod sampling_policy;
 mod scores;
 mod status;
 mod system_log_collector;
 mod template;
 mod time_series;
+mod time_series_generation_policy;
 mod tor_exit_node;
 mod traffic_filter;
 mod training_definition;
@@ -119,11 +119,6 @@ pub use self::port_allocation::{
 };
 pub use self::previous_training::PreviousTrainingResults;
 pub use self::retention_config::{RetentionConfig, RetentionConfigUpdate};
-pub use self::sampling_policy::{
-    Interval as SamplingInterval, Kind as SamplingKind, NewSamplingPolicy,
-    Period as SamplingPeriod, PolicyState, PolicyUse, SamplingPolicy, SamplingPolicyError,
-    Update as SamplingPolicyUpdate,
-};
 pub use self::system_log_collector::{
     SystemInstallRecord, SystemLogCollector, SystemLogCollectorRefusal, SystemLogCollectorTable,
 };
@@ -133,6 +128,10 @@ pub use self::template::{
 };
 pub use self::time_series::{
     Cluster as ClusterTimeSeries, Column as ColumnTimeSeries, TimeSeries, TimeSeriesRange,
+};
+pub use self::time_series_generation_policy::{
+    NewTimeSeriesGenerationPolicy, PolicyState, PolicyUse, SlotSize, TimeSeriesGenerationPolicy,
+    TimeSeriesGenerationPolicyError, Update as TimeSeriesGenerationPolicyUpdate, WindowSize,
 };
 pub use self::tor_exit_node::TorExitNode;
 pub use self::traffic_filter::{ProtocolPorts, TrafficFilter};
@@ -217,12 +216,12 @@ pub(super) const PREVIOUS_SCORES: &str = "previous scores";
 pub(super) const PREVIOUS_TIME_SERIES: &str = "previous time series";
 pub(super) const QUALIFIERS: &str = "qualifiers";
 pub(super) const EXTERNAL_SERVICES: &str = "external services";
-pub(super) const SAMPLING_POLICY: &str = "sampling policy";
 pub(super) const SCORES: &str = "scores";
 pub(super) const STATUSES: &str = "statuses";
 pub(super) const TEMPLATES: &str = "templates";
 pub(super) const LABEL_DB: &str = "label database";
 pub(super) const TIME_SERIES: &str = "time series";
+pub(super) const TIME_SERIES_GENERATION_POLICY: &str = "time series generation policy";
 pub(super) const TOR_EXIT_NODES: &str = "Tor exit nodes";
 pub(super) const TRAFFIC_FILTER_RULES: &str = "traffic filter rules";
 pub(super) const TRAINING_DEFINITIONS: &str = "training definitions";
@@ -280,13 +279,13 @@ pub(crate) const MAP_NAMES: [&str; 52] = [
     QUALIFIERS,
     EXTERNAL_SERVICES,
     FORMAT_0_63,
-    SAMPLING_POLICY,
     SCORES,
     STATUSES,
     SYSTEM_LOG_COLLECTORS,
     TEMPLATES,
     LABEL_DB,
     TIME_SERIES,
+    TIME_SERIES_GENERATION_POLICY,
     TOR_EXIT_NODES,
     TRAFFIC_FILTER_RULES,
     TRAINING_DEFINITIONS,
@@ -482,10 +481,12 @@ impl StateDb {
     }
 
     #[must_use]
-    pub(crate) fn sampling_policies(&self) -> IndexedTable<'_, SamplingPolicy> {
+    pub(crate) fn time_series_generation_policies(
+        &self,
+    ) -> IndexedTable<'_, TimeSeriesGenerationPolicy> {
         let inner = self.inner.as_ref().expect("database must be open");
-        IndexedTable::<SamplingPolicy>::open(inner)
-            .expect("{SAMPLING_POLICY} table must be present")
+        IndexedTable::<TimeSeriesGenerationPolicy>::open(inner)
+            .expect("{TIME_SERIES_GENERATION_POLICY} table must be present")
     }
 
     #[must_use]
@@ -836,10 +837,10 @@ mod iteration {
     impl Eligible for tables::Network {}
     impl Eligible for tables::OutlierInfo {}
     impl Eligible for types::Qualifier {}
-    impl Eligible for tables::SamplingPolicy {}
     impl Eligible for types::Status {}
     impl Eligible for tables::Template {}
     impl Eligible for tables::TimeSeries {}
+    impl Eligible for tables::TimeSeriesGenerationPolicy {}
     impl Eligible for tables::TorExitNode {}
     impl Eligible for tables::TrafficFilter {}
     impl Eligible for tables::TriageResponse {}
@@ -902,20 +903,21 @@ mod indexed_writes {
     impl Eligible for tables::InnerNode {}
     impl Eligible for tables::Network {}
     impl Eligible for types::Qualifier {}
-    impl Eligible for tables::SamplingPolicy {}
     impl Eligible for types::Status {}
+    impl Eligible for tables::TimeSeriesGenerationPolicy {}
     impl Eligible for tables::TriageResponse {}
 
     /// The opt-in list of [`Eligible`] record types whose [`IndexedTable`]
     /// may be written through `remove` and `remove_with_transaction`, which
     /// put the freed ID on the free list for the next insert to reuse.
     ///
-    /// `tables::SamplingPolicy` is deliberately absent: a sampling-policy ID
-    /// is never reused, because the Data Store keeps a policy's time series
-    /// and the Time Series Generator its checkpoint under that ID after the
-    /// policy is deleted, and a new policy under a reused ID would inherit
-    /// both. A sampling policy is deleted with the table's `remove_unused`
-    /// instead, which retires its ID.
+    /// `tables::TimeSeriesGenerationPolicy` is deliberately absent: a time
+    /// series generation policy ID is never reused, because the Data Store
+    /// keeps a policy's time series and the Time Series Generator its
+    /// checkpoint under that ID after the policy is deleted, and a new policy
+    /// under a reused ID would inherit both. A time series generation policy
+    /// is deleted with the table's `remove_unused` instead, which retires its
+    /// ID.
     ///
     /// `tables::InnerNode` is deliberately absent too: a node ID is never
     /// reused, so that an engine instance, named by its node ID and agent
@@ -938,10 +940,10 @@ mod indexed_writes {
     /// may be written through `put` and `put_with_transaction`, which store
     /// a record exactly as the caller built it.
     ///
-    /// `tables::SamplingPolicy` is deliberately absent: every new sampling
-    /// policy is a draft with no assignee and no Data Store, which the
-    /// table's own `insert` sets, so a caller cannot store one fixed or
-    /// assigned.
+    /// `tables::TimeSeriesGenerationPolicy` is deliberately absent: every new
+    /// time series generation policy is a draft with no assignee and no Data
+    /// Store, and has its spec checked, which the table's own `insert` does,
+    /// so a caller cannot store one fixed, assigned or unchecked.
     ///
     /// `tables::InnerNode` is deliberately absent too: these writers take
     /// the next ID off the free list, and a node ID is never reused. A node
@@ -963,11 +965,11 @@ mod indexed_writes {
     /// may be written through `deactivate`, which deletes a record without
     /// asking what still refers to it.
     ///
-    /// `tables::SamplingPolicy` is deliberately absent: a sampling policy is
-    /// deleted only by the table's `remove_unused`, which refuses while a
-    /// training definition, a detector or a model uses it, or by
-    /// `remove_customer_policies`, for the deletion of its customer. Every
-    /// other `Eligible` type is deactivated freely.
+    /// `tables::TimeSeriesGenerationPolicy` is deliberately absent: a time
+    /// series generation policy is deleted only by the table's
+    /// `remove_unused`, which refuses while a training definition, a detector
+    /// or a model uses it, or by `remove_customer_policies`, for the deletion
+    /// of its customer. Every other `Eligible` type is deactivated freely.
     ///
     /// [`IndexedTable`]: super::IndexedTable
     pub trait Deactivating: Eligible {}

@@ -20,6 +20,7 @@ mod tables;
 mod tags;
 #[cfg(test)]
 mod test;
+mod time_series_type;
 pub mod timestamp;
 mod top_n;
 mod training;
@@ -34,7 +35,10 @@ use std::{
 };
 
 use anyhow::{Context, Result, anyhow};
-pub use review_protocol::types::RawEventKind;
+pub use review_protocol::types::{
+    ConnField, CounterpartScope, EndpointRole, GroupByUnit, Measure, RawEventKind,
+    TimeSeriesTypeRef,
+};
 pub use rocksdb::backup::BackupEngineInfo;
 pub use tags::TagSet;
 use tags::{EventTagId, WorkflowTagId};
@@ -80,22 +84,24 @@ pub use self::tables::{
     LabelDbRuleKind, Lifecycle, ListenerBinding, ListenerTransport, Model as ModelDigest,
     ModelIndicator, ModelInstance, ModelMethod, ModelOwner, ModelRun, ModelUse, Network,
     NetworkFilter, NetworkListEntry, NetworkListReplaceOutcome, NetworkListSet, NetworkListTable,
-    NetworkUpdate, NewSamplingPolicy, NewTrainingDefinition, Node, NodeProfile, NodeTable,
-    NodeUpdate, OperationAction, OperationAttempt, OperationCleanupState, OperationFailureKind,
-    OperationOnFailure, OperationOutcome, OperationPhase, OperationRetentionBound,
-    OperationRetryPolicy, OutlierInfo, OutlierInfoKey, OutlierInfoValue, OwnedNetwork,
-    OwnedNetworkSet, OwnedNetworkTable, PacketAttr, PolicyState, PolicyUse, PortAllocation,
-    PortAllocationError, PortOwner, PreviousTraining, PreviousTrainingResults, ProtocolPorts,
-    ReplaceOutcome, ReplacedModel, ReportedRunState, RequestKeyError, Response, ResponseKind,
-    RetentionConfig, RetentionConfigUpdate, RoundOutcome, RunId, RunKind, RunState,
-    SamplingInterval, SamplingKind, SamplingPeriod, SamplingPolicy, SamplingPolicyError,
-    SamplingPolicyUpdate, ScoreCondition, SourceState, Structured, StructuredClusteringAlgorithm,
+    NetworkUpdate, NewTimeSeriesGenerationPolicy, NewTrainingDefinition, Node, NodeProfile,
+    NodeTable, NodeUpdate, OperationAction, OperationAttempt, OperationCleanupState,
+    OperationFailureKind, OperationOnFailure, OperationOutcome, OperationPhase,
+    OperationRetentionBound, OperationRetryPolicy, OutlierInfo, OutlierInfoKey, OutlierInfoValue,
+    OwnedNetwork, OwnedNetworkSet, OwnedNetworkTable, PacketAttr, PolicyState, PolicyUse,
+    PortAllocation, PortAllocationError, PortOwner, PreviousTraining, PreviousTrainingResults,
+    ProtocolPorts, ReplaceOutcome, ReplacedModel, ReportedRunState, RequestKeyError, Response,
+    ResponseKind, RetentionConfig, RetentionConfigUpdate, RoundOutcome, RunId, RunKind, RunState,
+    ScoreCondition, SlotSize, SourceState, Structured, StructuredClusteringAlgorithm,
     SystemInstallRecord, SystemLogCollector, SystemLogCollectorRefusal, SystemLogCollectorTable,
-    Table, Template, TimeSeries, TimeSeriesRange, TopColumnsOfCluster, TopMultimaps, TorExitNode,
-    TrafficFilter, TrainedWith, TrainingDefinition, TrainingDefinitionUpdate, TriageExclusion,
-    TriagePolicyInput, TriageResponse, TriageResponseUpdate, TrustedDomain, TrustedUserAgent,
-    UniqueKey, Unstructured, UnstructuredClusteringAlgorithm, UserAgent, ValueKind,
+    Table, Template, TimeSeries, TimeSeriesGenerationPolicy, TimeSeriesGenerationPolicyError,
+    TimeSeriesGenerationPolicyUpdate, TimeSeriesRange, TopColumnsOfCluster, TopMultimaps,
+    TorExitNode, TrafficFilter, TrainedWith, TrainingDefinition, TrainingDefinitionUpdate,
+    TriageExclusion, TriagePolicyInput, TriageResponse, TriageResponseUpdate, TrustedDomain,
+    TrustedUserAgent, UniqueKey, Unstructured, UnstructuredClusteringAlgorithm, UserAgent,
+    ValueKind, WindowSize,
 };
+pub use self::time_series_type::{TimeSeriesType, time_series_type, time_series_types};
 pub use self::top_n::*;
 #[allow(deprecated)]
 pub use self::top_n::{
@@ -769,37 +775,44 @@ impl Store {
         self.states.external_service()
     }
 
-    /// Returns the table of sampling policies.
+    /// Returns the table of time series generation policies.
     ///
-    /// A policy is inserted only as a draft with no assignee, through the
-    /// table's `insert`; the generic `put` writers, which store a record as
-    /// the caller built it, are not available for this table:
+    /// A policy is inserted only as a draft with no assignee, with its spec
+    /// checked, through the table's `insert`; the generic `put` writers,
+    /// which store a record as the caller built it, are not available for
+    /// this table:
     ///
     /// ```compile_fail,E0277
-    /// fn insert(store: &review_database::Store, policy: review_database::SamplingPolicy) {
-    ///     let _ = store.sampling_policy_map().put(policy);
+    /// fn insert(
+    ///     store: &review_database::Store,
+    ///     policy: review_database::TimeSeriesGenerationPolicy,
+    /// ) {
+    ///     let _ = store.time_series_generation_policy_map().put(policy);
     /// }
     /// ```
     ///
     /// ```compile_fail,E0277
-    /// fn insert(store: &review_database::Store, policy: review_database::SamplingPolicy) {
+    /// fn insert(
+    ///     store: &review_database::Store,
+    ///     policy: review_database::TimeSeriesGenerationPolicy,
+    /// ) {
     ///     let _ = store
-    ///         .sampling_policy_map()
+    ///         .time_series_generation_policy_map()
     ///         .put_with_transaction(policy, todo!());
     /// }
     /// ```
     ///
-    /// A sampling-policy ID is never reused. The Data Store keys a policy's
-    /// time series by its ID, and the Time Series Generator its checkpoint,
-    /// and neither deletes them when the policy is deleted; a new policy
-    /// given a freed ID would show the old policy's series, and a generator
-    /// still holding the old policy would keep producing it under the new
-    /// name. A policy is therefore deleted with `remove_unused`, which
+    /// A time series generation policy ID is never reused. The Data Store
+    /// keys a policy's time series by its ID, and the Time Series Generator
+    /// its checkpoint, and neither deletes them when the policy is deleted; a
+    /// new policy given a freed ID would show the old policy's series, and a
+    /// generator still holding the old policy would keep producing it under
+    /// the new name. A policy is therefore deleted with `remove_unused`, which
     /// refuses while the policy is in use and retires its ID:
     ///
     /// ```
     /// fn delete(store: &review_database::Store, id: u32) -> anyhow::Result<()> {
-    ///     store.sampling_policy_map().remove_unused(id)?;
+    ///     store.time_series_generation_policy_map().remove_unused(id)?;
     ///     Ok(())
     /// }
     /// ```
@@ -810,44 +823,48 @@ impl Store {
     ///
     /// ```compile_fail,E0277
     /// fn delete(store: &review_database::Store, id: u32) {
-    ///     let _ = store.sampling_policy_map().remove(id);
+    ///     let _ = store.time_series_generation_policy_map().remove(id);
     /// }
     /// ```
     ///
     /// ```compile_fail,E0277
     /// fn delete(store: &review_database::Store, id: u32) {
     ///     let _ = store
-    ///         .sampling_policy_map()
+    ///         .time_series_generation_policy_map()
     ///         .remove_with_transaction(id, todo!());
     /// }
     /// ```
     ///
     /// ```compile_fail,E0277
     /// fn delete(store: &review_database::Store, id: u32) {
-    ///     let _ = store.sampling_policy_map().deactivate(id);
+    ///     let _ = store.time_series_generation_policy_map().deactivate(id);
     /// }
     /// ```
     #[must_use]
     #[allow(clippy::missing_panics_doc)]
-    pub fn sampling_policy_map(&self) -> IndexedTable<'_, SamplingPolicy> {
-        self.states.sampling_policies()
+    pub fn time_series_generation_policy_map(
+        &self,
+    ) -> IndexedTable<'_, TimeSeriesGenerationPolicy> {
+        self.states.time_series_generation_policies()
     }
 
-    /// Returns the sampling policies assigned to the Time Series Generator
-    /// agent `instance`, in name order.
+    /// Returns the time series generation policies assigned to the Time
+    /// Series Generator agent `instance`, in name order.
     ///
     /// # Errors
     ///
     /// Returns an error if the database operation fails.
-    pub fn sampling_policies_assigned_to(
+    pub fn time_series_generation_policies_assigned_to(
         &self,
         instance: &ModelInstance,
-    ) -> Result<Vec<SamplingPolicy>> {
-        self.states.sampling_policies().assigned_to(instance)
+    ) -> Result<Vec<TimeSeriesGenerationPolicy>> {
+        self.states
+            .time_series_generation_policies()
+            .assigned_to(instance)
     }
 
-    /// Returns what uses the sampling policy `id`: what names its decimal ID
-    /// as a source.
+    /// Returns what uses the time series generation policy `id`: what names
+    /// its decimal ID as a source.
     ///
     /// The uses are, in this order: each training definition with the
     /// timeseries method, in name order; each detector of an applied or
@@ -861,8 +878,8 @@ impl Store {
     /// # Errors
     ///
     /// Returns an error if the database operation fails.
-    pub fn sampling_policy_uses(&self, id: u32) -> Result<Vec<PolicyUse>> {
-        self.states.sampling_policies().uses(id)
+    pub fn time_series_generation_policy_uses(&self, id: u32) -> Result<Vec<PolicyUse>> {
+        self.states.time_series_generation_policies().uses(id)
     }
 
     #[must_use]

@@ -29,7 +29,7 @@ const DETECTION_MODELS: &str = "detection_models";
 const ENABLED: &str = "enabled";
 
 /// Every detection model, in number order.
-const ALL_MODELS: [DetectionModel; 20] = [
+const ALL_MODELS: [DetectionModel; 21] = [
     DetectionModel::WatchlistMatch,
     DetectionModel::CryptocurrencyMiningPool,
     DetectionModel::LockyRansomware,
@@ -50,6 +50,7 @@ const ALL_MODELS: [DetectionModel; 20] = [
     DetectionModel::UnusualDestinationPattern,
     DetectionModel::LabelDbMatch,
     DetectionModel::FarOutlier,
+    DetectionModel::WindowOutlier,
 ];
 
 /// Every event category, in number order.
@@ -394,6 +395,11 @@ static LABEL_DB_MATCH_KINDS: LazyLock<Vec<RawEventKind>> =
 static FAR_OUTLIER_KINDS: LazyLock<Vec<RawEventKind>> =
     LazyLock::new(|| raw_event_kinds_of(DetectionModel::FarOutlier));
 
+/// The raw event kinds of `WindowOutlier`, from the clustering model type
+/// catalog.
+static WINDOW_OUTLIER_KINDS: LazyLock<Vec<RawEventKind>> =
+    LazyLock::new(|| raw_event_kinds_of(DetectionModel::WindowOutlier));
+
 static LABEL_DB_MATCH: LazyLock<DetectionModelProperties> =
     LazyLock::new(|| DetectionModelProperties {
         family: DetectionFamily::KnownThreat,
@@ -417,6 +423,19 @@ static FAR_OUTLIER: LazyLock<DetectionModelProperties> =
         primary_subject: PrimarySubjectKind::RawEvent,
         score_meaning: "Token distance from the nearest known cluster prefix (1 \u{2212} \
                         matched share).",
+        requires_device_account_identification: false,
+        operator_values: ENABLED_ONLY,
+    });
+
+static WINDOW_OUTLIER: LazyLock<DetectionModelProperties> =
+    LazyLock::new(|| DetectionModelProperties {
+        family: DetectionFamily::ClusteringAnomaly,
+        categories: &[],
+        learning_method: LearningMethod::Unsupervised,
+        raw_event_kinds: WINDOW_OUTLIER_KINDS.as_slice(),
+        primary_subject: PrimarySubjectKind::Host(RoleSource::TimeSeriesType),
+        score_meaning: "Euclidean distance from the window, after the type's input transform, \
+                        to the nearest cluster centroid",
         requires_device_account_identification: false,
         operator_values: ENABLED_ONLY,
     });
@@ -678,6 +697,7 @@ pub fn properties(model: DetectionModel) -> &'static DetectionModelProperties {
         }
         DetectionModel::LabelDbMatch => &LABEL_DB_MATCH,
         DetectionModel::FarOutlier => &FAR_OUTLIER,
+        DetectionModel::WindowOutlier => &WINDOW_OUTLIER,
     }
 }
 
@@ -705,6 +725,7 @@ pub(crate) fn section_name(model: DetectionModel) -> &'static str {
         DetectionModel::UnusualDestinationPattern => "unusual_destination_pattern",
         DetectionModel::LabelDbMatch => "label_db_match",
         DetectionModel::FarOutlier => "far_outlier",
+        DetectionModel::WindowOutlier => "window_outlier",
     }
 }
 
@@ -2676,6 +2697,41 @@ rdp_brute_force.enabled = false
     }
 
     #[test]
+    fn window_outlier_row() {
+        assert_eq!(ALL_MODELS.len(), 21);
+        assert_eq!(ALL_MODELS.get(20), Some(&DetectionModel::WindowOutlier));
+        assert_eq!(ALL_MODELS.last(), Some(&DetectionModel::WindowOutlier));
+        assert_eq!(
+            section_name(DetectionModel::WindowOutlier),
+            "window_outlier"
+        );
+        let expected = DetectionModelProperties {
+            family: DetectionFamily::ClusteringAnomaly,
+            categories: &[],
+            learning_method: LearningMethod::Unsupervised,
+            raw_event_kinds: &[],
+            primary_subject: PrimarySubjectKind::Host(RoleSource::TimeSeriesType),
+            score_meaning: "Euclidean distance from the window, after the type's input \
+                            transform, to the nearest cluster centroid",
+            requires_device_account_identification: false,
+            operator_values: ENABLED_TRUE,
+        };
+        assert_eq!(properties(DetectionModel::WindowOutlier), &expected);
+        let mut from_catalog = Vec::new();
+        for t in crate::clustering_model_types() {
+            if t.detection_models.contains(&DetectionModel::WindowOutlier)
+                && !from_catalog.contains(&t.raw_event_kind)
+            {
+                from_catalog.push(t.raw_event_kind);
+            }
+        }
+        assert_eq!(
+            properties(DetectionModel::WindowOutlier).raw_event_kinds,
+            from_catalog
+        );
+    }
+
+    #[test]
     fn unsupervised_raw_event_kinds_come_from_the_catalog() {
         for model in [DetectionModel::LabelDbMatch, DetectionModel::FarOutlier] {
             let mut from_catalog = Vec::new();
@@ -2698,7 +2754,11 @@ rdp_brute_force.enabled = false
             .collect();
         assert_eq!(
             unsupervised,
-            [DetectionModel::LabelDbMatch, DetectionModel::FarOutlier]
+            [
+                DetectionModel::LabelDbMatch,
+                DetectionModel::FarOutlier,
+                DetectionModel::WindowOutlier,
+            ]
         );
         assert_eq!(semi_models().count(), 18);
     }

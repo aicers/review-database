@@ -55,11 +55,11 @@ mod private {
     impl Sealed for tables::PortAllocation {}
     impl Sealed for types::Qualifier {}
     impl Sealed for tables::ExternalService {}
-    impl Sealed for tables::SamplingPolicy {}
     impl Sealed for types::Status {}
     impl Sealed for tables::Template {}
     impl Sealed for tables::LabelDb {}
     impl Sealed for tables::TimeSeries {}
+    impl Sealed for tables::TimeSeriesGenerationPolicy {}
     impl Sealed for tables::TorExitNode {}
     impl Sealed for tables::TrafficFilter {}
     impl Sealed for tables::TriageResponse {}

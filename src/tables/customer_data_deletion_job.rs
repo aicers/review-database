@@ -20,9 +20,9 @@ pub(crate) type StoredCustomerDataDeletionJob = (
 pub struct CustomerDataDeletionJob {
     pub customer_id: u32,
     pub service_results: Vec<CustomerDataDeletionServiceResult>,
-    /// The decimal IDs of the customer's sampling policies whose periodic time series the Data
-    /// Store deletes. They are kept here because the policies themselves are removed in the
-    /// Review stage.
+    /// The decimal IDs of the customer's time series generation policies whose periodic time
+    /// series the Data Store deletes. They are kept here because the policies themselves are
+    /// removed in the Review stage.
     pub periodic_time_series_ids: Vec<String>,
     /// The hosts a System Administrator gave up on, sorted and without duplicates. Each one is a
     /// host FQDN of the job's `Review` result.
