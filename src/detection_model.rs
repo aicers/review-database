@@ -15,7 +15,7 @@ use review_protocol::types::{DetectionModel, RawEventKind, ThreatRole};
 use thiserror::Error;
 use toml_edit::{Array, ArrayOfTables, Document, InlineTable, Item, Table, Value};
 
-pub(crate) use self::unsupervised::detector_models;
+pub(crate) use self::unsupervised::{detector_models, source_policy_ids};
 use crate::clustering_model_type::raw_event_kinds_of;
 use crate::event::LearningMethod;
 use crate::{AgentKind, ClusteringModelTypeRef, EventCategory};
@@ -386,17 +386,18 @@ const LABEL_DB_MATCH_VALUES: &[OperatorValueSpec] = &[
     },
 ];
 
-/// The raw event kinds of `LabelDbMatch`, from the clustering model type
-/// catalog.
+/// The raw event kinds of `LabelDbMatch`, from the clustering model type and
+/// time-series type catalogs.
 static LABEL_DB_MATCH_KINDS: LazyLock<Vec<RawEventKind>> =
     LazyLock::new(|| raw_event_kinds_of(DetectionModel::LabelDbMatch));
 
-/// The raw event kinds of `FarOutlier`, from the clustering model type catalog.
+/// The raw event kinds of `FarOutlier`, from the clustering model type and
+/// time-series type catalogs.
 static FAR_OUTLIER_KINDS: LazyLock<Vec<RawEventKind>> =
     LazyLock::new(|| raw_event_kinds_of(DetectionModel::FarOutlier));
 
-/// The raw event kinds of `WindowOutlier`, from the clustering model type
-/// catalog.
+/// The raw event kinds of `WindowOutlier`, from the clustering model type and
+/// time-series type catalogs.
 static WINDOW_OUTLIER_KINDS: LazyLock<Vec<RawEventKind>> =
     LazyLock::new(|| raw_event_kinds_of(DetectionModel::WindowOutlier));
 
@@ -443,7 +444,8 @@ static WINDOW_OUTLIER: LazyLock<DetectionModelProperties> =
 /// Returns the static properties of a detection model.
 ///
 /// The raw event kinds of a model the Unsupervised Engine runs are those of
-/// the clustering model types that allow it.
+/// the clustering model types, then of the time-series types, that allow it,
+/// each kind once.
 ///
 /// The match is exhaustive with no wildcard arm on purpose: a model added by a
 /// later review-protocol release fails to compile until its row exists.
@@ -888,8 +890,8 @@ impl fmt::Display for DetectorError {
 impl std::error::Error for DetectorError {}
 
 /// How [`complete_engine_document`] treats a section of an Unsupervised
-/// Engine document that the clustering model type of its detector's model
-/// does not allow.
+/// Engine document that the catalog type of its detector's model does not
+/// allow.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum CompletionMode {
     /// Refuses the section: the mode of a write that applies a document.
@@ -968,22 +970,25 @@ impl std::error::Error for CellError {}
 /// and completes them with the defaults of the property table.
 ///
 /// For [`AgentKind::SemiSupervised`], the `[detection_models]` table is
-/// checked and completed the same way in both modes, and `model_type` is never
-/// called: every missing section of a model the Semi-supervised Engine runs is
-/// appended at the end of the document, in model number order, as a standard
-/// `[detection_models.<section>]` table, and every missing operator value is
-/// appended at the end of its section. When `detection_models` is an inline
-/// table, missing sections are appended inside it instead, since TOML cannot
-/// extend an inline table with a header.
+/// checked and completed the same way in both modes, and neither `model_type`
+/// nor `policy_sensors` is ever called: every missing section of a model the
+/// Semi-supervised Engine runs is appended at the end of the document, in
+/// model number order, as a standard `[detection_models.<section>]` table,
+/// and every missing operator value is appended at the end of its section.
+/// When `detection_models` is an inline table, missing sections are appended
+/// inside it instead, since TOML cannot extend an inline table with a header.
 ///
 /// For [`AgentKind::Unsupervised`], each `[[detectors]]` entry has a
 /// `detection_models` table with one section per detection model, such as
 /// `[detectors.detection_models.far_outlier]`. `model_type` maps the name of
-/// the model a detector runs, its `model`, to that model's clustering model
-/// type, `None` if no model has that name. A catalog type allows the
-/// detection models of the current catalog entry of its id, whatever version
-/// the model was trained with, and none if the catalog has no such entry; a
-/// custom model, and a missing one, allow none. Each allowed model missing
+/// the model a detector runs, its `model`, to the type the model was trained
+/// as, `None` if no model has that name. A catalog type,
+/// [`ClusteringModelTypeRef::Catalog`], allows the detection models of the
+/// current clustering model type of its id or, if no clustering model type
+/// has that id, the models of the Unsupervised Engine among those of the
+/// current time-series type of that id, whatever version the model was
+/// trained with, and none if neither catalog has such an entry; a custom
+/// model, and a missing one, allow none. Each allowed model missing
 /// its section gets one with every value at its default, each missing value
 /// of an allowed section, or cell with a default of a `columns` entry, is
 /// added at its default, and every value present is kept and checked. A
@@ -998,10 +1003,25 @@ impl std::error::Error for CellError {}
 /// a whole with the values it holds, an entry of it. A document with no
 /// `detectors` is returned unchanged.
 ///
-/// In both kinds, everything outside the detection model sections is kept
-/// byte for byte, and a complete document is returned unchanged, so
-/// completing any output again in either mode is a no-op. Every other kind is
-/// returned unchanged without being checked.
+/// In both modes, a detector whose model's type is a time-series type gets a
+/// `source_sensors` key: an inline table from each source policy id to the
+/// sensors of that policy, in the policy's order, such as
+/// `source_sensors = { "42" = ["s1", "s2"] }`. `policy_sensors` maps a time
+/// series generation policy id to the policy's sensors, `None` if no policy
+/// has that id. The keys are the detector's `sources` entries in their
+/// order, each written as the entry is written: an entry is used only if it
+/// is a string that parses as a `u32` and `policy_sensors` finds that id,
+/// and not if its string equals that of an entry already used. With no
+/// entry used, the value is `{}`. A present `source_sensors` is kept as it
+/// is if it holds the same keys, each with the same list in the same order,
+/// whatever its key order and formatting, and replaced otherwise; a new one
+/// follows the detector's last value. The `source_sensors` of any other
+/// detector is left as it is.
+///
+/// In both kinds, everything outside the detection model sections and
+/// `source_sensors` is kept byte for byte, and a complete document is
+/// returned unchanged, so completing any output again in either mode is a
+/// no-op. Every other kind is returned unchanged without being checked.
 ///
 /// # Errors
 ///
@@ -1030,6 +1050,7 @@ pub fn complete_engine_document(
     kind: AgentKind,
     document: &str,
     model_type: &dyn Fn(&str) -> Option<ClusteringModelTypeRef>,
+    policy_sensors: &dyn Fn(u32) -> Option<Vec<String>>,
     mode: CompletionMode,
 ) -> Result<String, DetectionModelsSectionError> {
     match kind {
@@ -1039,7 +1060,9 @@ pub fn complete_engine_document(
             &ALL_MODELS,
             properties,
         ),
-        AgentKind::Unsupervised => unsupervised::complete(document, model_type, mode),
+        AgentKind::Unsupervised => {
+            unsupervised::complete(document, model_type, policy_sensors, mode)
+        }
         AgentKind::Sensor | AgentKind::TimeSeriesGenerator | AgentKind::LogCollector => {
             Ok(document.to_owned())
         }
@@ -1687,8 +1710,8 @@ mod tests {
     }];
 
     /// Completes `document` as a Semi-supervised Engine document in both
-    /// modes, asserting that the two agree and that the model type lookup is
-    /// never called.
+    /// modes, asserting that the two agree and that neither lookup is ever
+    /// called.
     fn semi(document: &str) -> Result<String, DetectionModelsSectionError> {
         let lookup = |name: &str| -> Option<ClusteringModelTypeRef> {
             panic!("the lookup was called for {name:?}")
@@ -1697,16 +1720,23 @@ mod tests {
             AgentKind::SemiSupervised,
             document,
             &lookup,
+            &no_policy,
             CompletionMode::Apply,
         );
         let recomplete = complete_engine_document(
             AgentKind::SemiSupervised,
             document,
             &lookup,
+            &no_policy,
             CompletionMode::Recomplete,
         );
         assert_eq!(apply, recomplete, "the modes differ for {document:?}");
         apply
+    }
+
+    /// A policy lookup that must never be called.
+    fn no_policy(id: u32) -> Option<Vec<String>> {
+        panic!("the policy lookup was called for {id}")
     }
 
     /// Returns every model the Semi-supervised Engine runs, in number order.
@@ -2296,7 +2326,8 @@ rdp_brute_force.enabled = false
             ] {
                 for mode in [CompletionMode::Apply, CompletionMode::Recomplete] {
                     assert_eq!(
-                        complete_engine_document(kind, document, &lookup, mode).as_deref(),
+                        complete_engine_document(kind, document, &lookup, &no_policy, mode)
+                            .as_deref(),
                         Ok(document)
                     );
                 }
@@ -2709,7 +2740,7 @@ rdp_brute_force.enabled = false
             family: DetectionFamily::ClusteringAnomaly,
             categories: &[],
             learning_method: LearningMethod::Unsupervised,
-            raw_event_kinds: &[],
+            raw_event_kinds: &[R::Tls],
             primary_subject: PrimarySubjectKind::Host(RoleSource::TimeSeriesType),
             score_meaning: "Euclidean distance from the window, after the type's input \
                             transform, to the nearest cluster centroid",
@@ -2717,17 +2748,36 @@ rdp_brute_force.enabled = false
             operator_values: ENABLED_TRUE,
         };
         assert_eq!(properties(DetectionModel::WindowOutlier), &expected);
-        let mut from_catalog = Vec::new();
-        for t in crate::clustering_model_types() {
-            if t.detection_models.contains(&DetectionModel::WindowOutlier)
-                && !from_catalog.contains(&t.raw_event_kind)
-            {
-                from_catalog.push(t.raw_event_kind);
+    }
+
+    #[test]
+    fn unsupervised_raw_event_kinds_come_from_both_catalogs() {
+        for model in [
+            DetectionModel::LabelDbMatch,
+            DetectionModel::FarOutlier,
+            DetectionModel::WindowOutlier,
+        ] {
+            let clustering = crate::clustering_model_types()
+                .iter()
+                .map(|t| (t.detection_models, t.raw_event_kind));
+            let series = crate::time_series_types()
+                .iter()
+                .map(|t| (t.detection_models, t.raw_event_kind));
+            let mut from_catalogs = Vec::new();
+            for (models, kind) in clustering.chain(series) {
+                if models.contains(&model) && !from_catalogs.contains(&kind) {
+                    from_catalogs.push(kind);
+                }
             }
+            assert_eq!(
+                properties(model).raw_event_kinds,
+                from_catalogs,
+                "{model:?}"
+            );
         }
         assert_eq!(
             properties(DetectionModel::WindowOutlier).raw_event_kinds,
-            from_catalog
+            [R::Tls]
         );
     }
 

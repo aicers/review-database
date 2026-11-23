@@ -59,7 +59,7 @@ use crate::{
 const GIGANTO_NAME: &str = "giganto_name";
 
 /// The raw event kinds a policy may count: the network kinds.
-const NETWORK_RAW_EVENT_KINDS: [RawEventKind; 20] = [
+pub(crate) const NETWORK_RAW_EVENT_KINDS: [RawEventKind; 20] = [
     RawEventKind::Bootp,
     RawEventKind::Conn,
     RawEventKind::DceRpc,
@@ -738,6 +738,31 @@ impl<'d> IndexedTable<'d, TimeSeriesGenerationPolicy> {
             .iter(rocksdb::Direction::Forward, None)
             .collect::<Result<Vec<_>>>()?;
         Ok(collect_uses(id, &definitions, &rows, &models))
+    }
+
+    /// Returns the sensors of the policy `id` as `txn` sees it, or `None` if
+    /// no policy has the ID.
+    ///
+    /// The index and the policy are read for update, and the policy is
+    /// written back unchanged, so that a concurrent change or removal of it
+    /// conflicts with `txn` whichever of the two commits first.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database operation fails.
+    pub(crate) fn sensors_in_transaction(
+        &self,
+        txn: &Txn<'_>,
+        id: u32,
+    ) -> Result<Option<Vec<String>>> {
+        let Some(policy) = self
+            .get_by_id_in_transaction(id, txn)
+            .with_context(|| format!("cannot read time series generation policy {id}"))?
+        else {
+            return Ok(None);
+        };
+        self.put_row(txn, &policy)?;
+        Ok(Some(policy.sensors))
     }
 
     /// Returns the policy `id`, read for update within `txn`, refusing an ID
@@ -2563,7 +2588,8 @@ mod test {
                 }
             );
         }
-        // The shipped catalog is empty, so `insert` knows no type at all.
+        // `insert` checks against the shipped catalog, which has no
+        // `test_conn_bytes`.
         let error = f.table().insert(typed_policy("shipped")).unwrap_err();
         assert_eq!(
             policy_error(&error),
@@ -2572,6 +2598,38 @@ mod test {
                 version: 2
             }
         );
+    }
+
+    #[test]
+    fn a_policy_of_each_shipped_type_passes_every_save_check() {
+        let f = setup();
+        assert_eq!(time_series_types().len(), 12);
+        for t in time_series_types() {
+            let policy = NewTimeSeriesGenerationPolicy {
+                name: t.id.to_string(),
+                raw_event_kind: t.raw_event_kind,
+                measure: t.measure,
+                group_by: Some(t.group_by),
+                group_by_unit: t.group_by_unit,
+                counterpart_scope: t.counterpart_scope,
+                slot_size: t.slot_size,
+                window_size: t.window_size,
+                utc_offset: 0,
+                src_ip: None,
+                dst_ip: None,
+                sensors: vec![SENSOR_NAME.to_string()],
+                time_series_type: Some(TimeSeriesTypeRef {
+                    id: t.id.to_string(),
+                    version: t.version,
+                }),
+                customer_id: CUSTOMER,
+            };
+            let id = f
+                .table()
+                .insert(policy)
+                .unwrap_or_else(|e| panic!("{}: {e:#}", t.id));
+            assert_eq!(f.policy(id).name, t.id);
+        }
     }
 
     #[test]

@@ -179,6 +179,7 @@ impl Store {
                     read.kind,
                     config.as_ref(),
                     &|_| None,
+                    &|_| None,
                     CompletionMode::Recomplete,
                 ) {
                     Ok(completed) if completed == config.as_ref() => continue,
@@ -416,6 +417,7 @@ mod tests {
         complete_engine_document(
             AgentKind::SemiSupervised,
             document,
+            &|_| None,
             &|_| None,
             CompletionMode::Apply,
         )
@@ -2100,5 +2102,165 @@ mod tests {
     #[test]
     fn the_format_marker_is_unchanged() {
         assert_eq!(crate::migration::DATABASE_FORMAT_VERSION, "0.63.0");
+    }
+
+    /// An Unsupervised Engine model of the `server_daily_tls` time-series
+    /// type.
+    const TLS_MODEL: &str = "tls";
+    const WINDOW_OUTLIER: &str = "[detectors.detection_models.window_outlier]\nenabled = true\n";
+
+    /// Inserts a custom time series generation policy `name` of
+    /// [`CUSTOMER`], reading `sensors`, and returns its id.
+    fn put_policy(store: &Store, name: &str, sensors: &[&str]) -> u32 {
+        use review_protocol::types::{CounterpartScope, GroupByUnit, Measure, RawEventKind};
+
+        store
+            .time_series_generation_policy_map()
+            .insert(crate::NewTimeSeriesGenerationPolicy {
+                name: name.to_string(),
+                raw_event_kind: RawEventKind::Tls,
+                measure: Measure::Count,
+                group_by: None,
+                group_by_unit: GroupByUnit::Ip,
+                counterpart_scope: CounterpartScope::Any,
+                slot_size: crate::SlotSize::FiveMinutes,
+                window_size: crate::WindowSize::OneDay,
+                utc_offset: 0,
+                src_ip: None,
+                dst_ip: None,
+                sensors: sensors.iter().map(ToString::to_string).collect(),
+                time_series_type: None,
+                customer_id: CUSTOMER,
+            })
+            .unwrap()
+    }
+
+    /// A [`TLS_MODEL`] detector reading the policies `ids`.
+    fn tls_detector(ids: &[String]) -> String {
+        let sources: Vec<_> = ids.iter().map(|id| format!("\"{id}\"")).collect();
+        format!(
+            "{}sources = [{}]\n",
+            detector(TLS_MODEL),
+            sources.join(", ")
+        )
+    }
+
+    /// [`tls_detector`] completed with `source_sensors`, given as TOML.
+    fn complete_tls(ids: &[String], source_sensors: &str) -> String {
+        format!(
+            "{}source_sensors = {source_sensors}\n\n{WINDOW_OUTLIER}",
+            tls_detector(ids)
+        )
+    }
+
+    fn server_daily_tls() -> ClusteringModelTypeRef {
+        ClusteringModelTypeRef::Catalog {
+            id: "server_daily_tls".to_string(),
+            version: 1,
+        }
+    }
+
+    #[test]
+    fn an_applied_unsupervised_document_gets_the_sensors_of_its_source_policies() {
+        let f = setup();
+        let store = &f.store;
+        put_model(store, TLS_MODEL, server_daily_tls());
+        let a = put_policy(store, "a", &["s2", "s1"]);
+        let b = put_policy(store, "b", &["s3"]);
+        let ids = [a.to_string(), b.to_string(), "999".to_string()];
+        let applied = tls_detector(&ids);
+        let expected = complete_tls(
+            &ids,
+            &format!(r#"{{ "{a}" = ["s2", "s1"], "{b}" = ["s3"] }}"#),
+        );
+
+        let node = put_node(
+            store,
+            "n",
+            CUSTOMER,
+            vec![unsupervised(0, UNSUPERVISED, Some(&applied))],
+        );
+        let stored_row = stored_agent(store, node.id, UNSUPERVISED).unwrap();
+        assert_eq!(config_of(&stored_row), Some(expected.as_str()));
+        assert_eq!(revision(store, node.id, UNSUPERVISED), Some(1));
+        assert_eq!(
+            recorded_document(store, node.id, UNSUPERVISED, 1),
+            Some(expected.clone())
+        );
+
+        // A draft is stored as it is given.
+        let mut drafted = stored_row.clone();
+        drafted.draft = Some(document(&applied));
+        let documents = [EngineDocumentWrite {
+            agent_key: UNSUPERVISED.to_string(),
+            applied: None,
+            pending: Some(EngineDocumentRefs::default()),
+        }];
+        update_node_with_documents(store, &node, &with_agent(&node, &drafted), &documents).unwrap();
+        let stored_row = stored_agent(store, node.id, UNSUPERVISED).unwrap();
+        assert_eq!(
+            stored_row.draft.as_ref().map(AsRef::as_ref),
+            Some(applied.as_str())
+        );
+        assert_eq!(config_of(&stored_row), Some(expected.as_str()));
+        assert_eq!(revision(store, node.id, UNSUPERVISED), Some(1));
+
+        // Recompletion follows a change of a policy's sensors.
+        let policies = store.time_series_generation_policy_map();
+        let old = policies.get_by_id(a).unwrap().unwrap();
+        let mut new: crate::TimeSeriesGenerationPolicyUpdate = old.clone().into();
+        new.sensors = vec!["s4".to_string()];
+        let mut policies = policies;
+        policies.update(a, &old.into(), &new).unwrap();
+        let recompleted = complete_tls(&ids, &format!(r#"{{ "{a}" = ["s4"], "{b}" = ["s3"] }}"#));
+        assert_eq!(
+            store.recomplete_applied_documents().unwrap(),
+            vec![RecompletedDocument {
+                instance: instance(node.id, UNSUPERVISED),
+                revision: 2,
+                document: recompleted.clone(),
+            }]
+        );
+        let stored_row = stored_agent(store, node.id, UNSUPERVISED).unwrap();
+        assert_eq!(config_of(&stored_row), Some(recompleted.as_str()));
+        assert_eq!(
+            stored_row.draft.as_ref().map(AsRef::as_ref),
+            Some(applied.as_str())
+        );
+        assert_eq!(store.recomplete_applied_documents().unwrap(), Vec::new());
+    }
+
+    #[test]
+    fn a_policy_changed_during_completion_conflicts_with_the_write() {
+        let f = setup();
+        let store = &f.store;
+        put_model(store, TLS_MODEL, server_daily_tls());
+        let a = put_policy(store, "a", &["s1"]);
+        let ids = [a.to_string()];
+
+        // The policy's sensors change after the write read them, so the write
+        // conflicts and is retried with the new sensors.
+        set_hook(HookPoint::ModelLookup, move |db| {
+            let map = IndexedMap::new(db, "time series generation policy").unwrap();
+            let mut policy: crate::TimeSeriesGenerationPolicy = map.get_by_id(a).unwrap().unwrap();
+            policy.sensors = vec!["late".to_string()];
+            db.put_cf(
+                map.cf(),
+                crate::Indexable::indexed_key(&policy),
+                crate::Indexable::value(&policy),
+            )
+            .unwrap();
+        });
+        let node = put_node(
+            store,
+            "n",
+            CUSTOMER,
+            vec![unsupervised(0, UNSUPERVISED, Some(&tls_detector(&ids)))],
+        );
+        assert_eq!(
+            config_of(&stored_agent(store, node.id, UNSUPERVISED).unwrap()),
+            Some(complete_tls(&ids, &format!(r#"{{ "{a}" = ["late"] }}"#)).as_str())
+        );
+        assert_eq!(revision(store, node.id, UNSUPERVISED), Some(1));
     }
 }

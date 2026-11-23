@@ -129,6 +129,7 @@ pub use self::template::{
 pub use self::time_series::{
     Cluster as ClusterTimeSeries, Column as ColumnTimeSeries, TimeSeries, TimeSeriesRange,
 };
+pub(crate) use self::time_series_generation_policy::NETWORK_RAW_EVENT_KINDS;
 pub use self::time_series_generation_policy::{
     NewTimeSeriesGenerationPolicy, PolicyState, PolicyUse, SlotSize, TimeSeriesGenerationPolicy,
     TimeSeriesGenerationPolicyError, Update as TimeSeriesGenerationPolicyUpdate, WindowSize,

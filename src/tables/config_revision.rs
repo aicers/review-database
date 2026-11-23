@@ -24,11 +24,16 @@ use jiff::Timestamp;
 use rocksdb::{OptimisticTransactionDB, Transaction};
 use serde::{Deserialize, Serialize};
 
-use super::{Agent, AgentConfig, AgentKind, InnerNode, Model, engine_instance};
+use super::{
+    Agent, AgentConfig, AgentKind, InnerNode, Model, TimeSeriesGenerationPolicy, engine_instance,
+};
 use crate::{
     ClusteringModelTypeRef, CompletionMode, DetectionModelsSectionError, EXCLUSIVE, IndexedTable,
-    Map, ModelInstance, collections::KeyIndex, complete_engine_document,
-    detection_model::detector_models, timestamp::ts_nanoseconds_saturating,
+    Map, ModelInstance,
+    collections::KeyIndex,
+    complete_engine_document,
+    detection_model::{detector_models, source_policy_ids},
+    timestamp::ts_nanoseconds_saturating,
 };
 
 /// The points in this module where a test can commit a concurrent write.
@@ -39,8 +44,9 @@ pub(crate) enum HookPoint {
     NodeLookup,
     /// After the history iterator of a customer history removal is created.
     HistoryScan,
-    /// After the model records an Unsupervised Engine document names are
-    /// read for its completion, before it is completed.
+    /// After the model records and the source policies an Unsupervised
+    /// Engine document names are read for its completion, before it is
+    /// completed.
     ModelLookup,
 }
 
@@ -174,14 +180,16 @@ impl Prepared {
 }
 
 /// The two column families of the configuration revisions, the node table a
-/// revision's customer is read from, and the model records the completion of
-/// an Unsupervised Engine document reads.
+/// revision's customer is read from, and the model records and time series
+/// generation policies the completion of an Unsupervised Engine document
+/// reads.
 pub(crate) struct ConfigRevisions<'d> {
     db: &'d OptimisticTransactionDB,
     states: Map<'d>,
     history: Map<'d>,
     nodes: Map<'d>,
     models: IndexedTable<'d, Model>,
+    policies: IndexedTable<'d, TimeSeriesGenerationPolicy>,
 }
 
 impl<'d> ConfigRevisions<'d> {
@@ -192,6 +200,7 @@ impl<'d> ConfigRevisions<'d> {
             history: Map::open(db, super::CONFIG_REVISION_HISTORY)?,
             nodes: Map::open(db, super::NODES)?,
             models: IndexedTable::<Model>::open(db)?,
+            policies: IndexedTable::<TimeSeriesGenerationPolicy>::open(db)?,
         })
     }
 
@@ -203,12 +212,15 @@ impl<'d> ConfigRevisions<'d> {
     /// writes, and written back unchanged, so that a concurrent write of any
     /// of them conflicts with `txn` whichever commits first; completion is
     /// given the clustering model type of each record, and `None` for a name
-    /// with no record.
+    /// with no record. Then every source policy that a detector of a
+    /// time-series type's model names is read the same way, so that a
+    /// concurrent change or removal of it conflicts with `txn`; completion is
+    /// given the sensors of each, and `None` for an id no policy has.
     ///
     /// # Errors
     ///
-    /// Returns an error if a model record cannot be read or written back. A
-    /// completion failure is returned inside the `Ok`.
+    /// Returns an error if a model record or a policy cannot be read or
+    /// written back. A completion failure is returned inside the `Ok`.
     pub(crate) fn complete_in_transaction(
         &self,
         txn: &Transaction<OptimisticTransactionDB>,
@@ -217,7 +229,13 @@ impl<'d> ConfigRevisions<'d> {
         mode: CompletionMode,
     ) -> Result<std::result::Result<String, DetectionModelsSectionError>> {
         if kind != AgentKind::Unsupervised {
-            return Ok(complete_engine_document(kind, document, &|_| None, mode));
+            return Ok(complete_engine_document(
+                kind,
+                document,
+                &|_| None,
+                &|_| None,
+                mode,
+            ));
         }
         let mut types: HashMap<String, ClusteringModelTypeRef> = HashMap::new();
         for name in detector_models(document) {
@@ -235,12 +253,20 @@ impl<'d> ConfigRevisions<'d> {
                 types.insert(name, record.clustering_model_type);
             }
         }
+        let model_type = |name: &str| types.get(name).cloned();
+        let mut sensors: HashMap<u32, Vec<String>> = HashMap::new();
+        for id in source_policy_ids(document, &model_type) {
+            if let Some(policy) = self.policies.sensors_in_transaction(txn, id)? {
+                sensors.insert(id, policy);
+            }
+        }
         #[cfg(test)]
         run_hook(HookPoint::ModelLookup, self.db);
         Ok(complete_engine_document(
             kind,
             document,
-            &|name| types.get(name).cloned(),
+            &model_type,
+            &|id| sensors.get(&id).cloned(),
             mode,
         ))
     }
