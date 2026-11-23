@@ -959,6 +959,10 @@ mod tests {
             classification_id: 1,
             batch_info: Vec::new(),
             scores: [(1, 0.5)].into_iter().collect(),
+            log_kind: None,
+            clustering_model_type: crate::ClusteringModelTypeRef::Custom,
+            training_read: crate::TrainingRead::default(),
+            detection_model_states: Vec::new(),
         }
     }
 
@@ -1719,7 +1723,6 @@ mod tests {
                     run_id: 0,
                     definition: "eps = 1.0".to_string(),
                     sources: Vec::new(),
-                    log_kind: None,
                 },
             )
             .unwrap();
@@ -1770,6 +1773,8 @@ mod tests {
                     reason: None,
                     events: 0,
                     sources: Vec::new(),
+                    detection_models: Vec::new(),
+                    excluded: Vec::new(),
                     reported_at: jiff::Timestamp::now(),
                 },
             )
@@ -2601,7 +2606,6 @@ mod tests {
                     run_id: 0,
                     definition: "eps = 1.0".to_string(),
                     sources: Vec::new(),
-                    log_kind: None,
                 },
             )
             .unwrap();

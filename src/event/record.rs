@@ -10,7 +10,7 @@ use review_protocol::types::{
 use serde::{Deserialize, Serialize};
 
 use super::RawEventKey;
-use crate::{EventCategory, ModelInstance, geo::CountryLookup};
+use crate::{ClusteringModelTypeRef, EventCategory, ModelInstance, geo::CountryLookup};
 
 /// The bit pattern of `-0.0_f64`.
 const NEGATIVE_ZERO_BITS: u64 = 0x8000_0000_0000_0000;
@@ -36,6 +36,11 @@ pub struct DetectionEventStamp {
     pub installed_commit: Option<String>,
     /// The revision of the engine configuration in effect.
     pub config_revision: Option<u64>,
+    /// The clustering model type of the model that produced the event, as
+    /// the caller decided it at receive time; `None` for an event not
+    /// produced by a clustering model. It stays as stored when the model is
+    /// later retrained as another type.
+    pub clustering_model_type: Option<ClusteringModelTypeRef>,
 }
 
 /// Serde adapter for an optional timestamp as optional `i128` epoch

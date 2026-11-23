@@ -13,7 +13,7 @@ mod record;
 mod triage;
 
 #[cfg(test)]
-mod fixture;
+pub(crate) mod fixture;
 #[cfg(test)]
 mod key_baseline;
 
