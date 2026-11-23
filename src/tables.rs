@@ -890,9 +890,17 @@ mod plain_writes {
 /// through the `Store` methods that hold the model-files lock, or has its
 /// instance alone changed by `Store::assign_model` and by the detach of an
 /// uninstalled engine instance, which write no classifier file and so take
-/// no lock. The generic writers are not reachable for it. As with
-/// [`iteration`], the trait is not exported, so nothing outside the crate can
-/// add a type to the list.
+/// no lock. The generic writers are not reachable for it.
+///
+/// `tables::TimeSeriesGenerationPolicy` is deliberately absent too: a time
+/// series generation policy is created as an unassigned draft with its spec
+/// checked by the table's own `insert`, changed by the table's own `update`,
+/// which checks a draft's spec and refuses a fixed policy's spec change, and
+/// assigned, unassigned, fixed and deleted only by the table's own methods,
+/// each of which checks what it writes. A generic writer stores a record as
+/// the caller built it, so a caller holding a transaction could otherwise
+/// save a draft that fails those checks. As with [`iteration`], the trait is
+/// not exported, so nothing outside the crate can add a type to the list.
 mod indexed_writes {
     use crate::{tables, types};
 
@@ -904,22 +912,13 @@ mod indexed_writes {
     impl Eligible for tables::Network {}
     impl Eligible for types::Qualifier {}
     impl Eligible for types::Status {}
-    impl Eligible for tables::TimeSeriesGenerationPolicy {}
     impl Eligible for tables::TriageResponse {}
 
     /// The opt-in list of [`Eligible`] record types whose [`IndexedTable`]
     /// may be written through `remove` and `remove_with_transaction`, which
     /// put the freed ID on the free list for the next insert to reuse.
     ///
-    /// `tables::TimeSeriesGenerationPolicy` is deliberately absent: a time
-    /// series generation policy ID is never reused, because the Data Store
-    /// keeps a policy's time series and the Time Series Generator its
-    /// checkpoint under that ID after the policy is deleted, and a new policy
-    /// under a reused ID would inherit both. A time series generation policy
-    /// is deleted with the table's `remove_unused` instead, which retires its
-    /// ID.
-    ///
-    /// `tables::InnerNode` is deliberately absent too: a node ID is never
+    /// `tables::InnerNode` is deliberately absent: a node ID is never
     /// reused, so that an engine instance, named by its node ID and agent
     /// key, names one node only and its configuration revisions and history
     /// stay that node's. A node is removed with
@@ -940,12 +939,7 @@ mod indexed_writes {
     /// may be written through `put` and `put_with_transaction`, which store
     /// a record exactly as the caller built it.
     ///
-    /// `tables::TimeSeriesGenerationPolicy` is deliberately absent: every new
-    /// time series generation policy is a draft with no assignee and no Data
-    /// Store, and has its spec checked, which the table's own `insert` does,
-    /// so a caller cannot store one fixed, assigned or unchecked.
-    ///
-    /// `tables::InnerNode` is deliberately absent too: these writers take
+    /// `tables::InnerNode` is deliberately absent: these writers take
     /// the next ID off the free list, and a node ID is never reused. A node
     /// is created with [`NodeTable::put`](crate::NodeTable::put), which
     /// gives it an ID never handed out before. Every other `Eligible` type is
@@ -965,11 +959,7 @@ mod indexed_writes {
     /// may be written through `deactivate`, which deletes a record without
     /// asking what still refers to it.
     ///
-    /// `tables::TimeSeriesGenerationPolicy` is deliberately absent: a time
-    /// series generation policy is deleted only by the table's
-    /// `remove_unused`, which refuses while a training definition, a detector
-    /// or a model uses it, or by `remove_customer_policies`, for the deletion
-    /// of its customer. Every other `Eligible` type is deactivated freely.
+    /// Every `Eligible` type is deactivated freely.
     ///
     /// [`IndexedTable`]: super::IndexedTable
     pub trait Deactivating: Eligible {}

@@ -802,6 +802,24 @@ impl Store {
     /// }
     /// ```
     ///
+    /// A policy is changed only through the table's `update`, which checks a
+    /// draft's spec as `insert` does and refuses a fixed policy's spec change;
+    /// the generic `update_with_transaction`, which writes the new value
+    /// without either, is not available for this table:
+    ///
+    /// ```compile_fail,E0277
+    /// fn update(
+    ///     store: &review_database::Store,
+    ///     id: u32,
+    ///     old: &review_database::TimeSeriesGenerationPolicyUpdate,
+    ///     new: &review_database::TimeSeriesGenerationPolicyUpdate,
+    /// ) {
+    ///     let _ = store
+    ///         .time_series_generation_policy_map()
+    ///         .update_with_transaction(id, old, new, todo!());
+    /// }
+    /// ```
+    ///
     /// A time series generation policy ID is never reused. The Data Store
     /// keys a policy's time series by its ID, and the Time Series Generator
     /// its checkpoint, and neither deletes them when the policy is deleted; a
