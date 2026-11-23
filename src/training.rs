@@ -376,8 +376,8 @@ impl Store {
     /// the definition's last run is active, which includes a definition
     /// being cloned; `FieldFixed` if a model of the name exists and the
     /// method, the raw event kind or the log kind would change, checked in
-    /// that order; `IndicatorNotFound` if the indicator does not exist. Returns an
-    /// error, and changes nothing, if a database operation fails.
+    /// that order; `IndicatorNotFound` if the indicator does not exist.
+    /// Returns an error, and changes nothing, if a database operation fails.
     // The settings are handed over by value, as the caller's parse yields
     // them; a retry after a commit conflict reads them again.
     #[allow(clippy::needless_pass_by_value)]

@@ -69,8 +69,9 @@ pub struct DefinitionKey {
 /// The code of a [`TrainingDefinitionRefusal`].
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum TrainingDefinitionRefusalCode {
-    /// Text that is not TOML, an absent or unknown `type` or `method`, or a
-    /// value of the wrong TOML type.
+    /// Text that is not TOML, an absent or non-string `type`, a `type_version`
+    /// that is not an integer, an absent, non-string or unknown `method`, a
+    /// value of the wrong TOML type, or an empty `sources`.
     InvalidDocument,
     /// A key outside the key table of the method.
     UnknownField,
