@@ -945,8 +945,10 @@ fn timestamp(value: &Value) -> Option<Timestamp> {
 
 /// Returns whether `s` has the syntax of an RFC 3339 `date-time`:
 /// `YYYY-MM-DDTHH:MM:SS`, optional fractional seconds, then `Z` or
-/// `±HH:MM`. `T` and `Z` may be lowercase, as RFC 3339 allows. The values
-/// of the fields are left to the parser.
+/// `±HH:MM`. `T` and `Z` may be lowercase, as RFC 3339 allows. The offset
+/// is held to RFC 3339's range, hours 00–23 and minutes 00–59, because
+/// `jiff` takes offset hours through 25; the values of the other fields
+/// are left to the parser.
 fn is_rfc3339_date_time(s: &str) -> bool {
     /// Returns the rest of `s` after `pattern`, where `d` matches an ASCII
     /// digit and `T` either case of `T`.
@@ -972,7 +974,11 @@ fn is_rfc3339_date_time(s: &str) -> bool {
     }
     match rest {
         [b'Z' | b'z'] => true,
-        [b'+' | b'-', offset @ ..] => strip(offset, b"dd:dd").is_some_and(<[u8]>::is_empty),
+        [b'+' | b'-', h1, h2, b':', m1, m2] => {
+            [h1, h2, m1, m2].iter().all(|c| c.is_ascii_digit())
+                && (*h1, *h2) <= (b'2', b'3')
+                && *m1 <= b'5'
+        }
         _ => false,
     }
 }
@@ -1982,6 +1988,19 @@ mod tests {
             (WINDOW_END, "2026-01-08 00:00:00Z"),
             (WINDOW_END, "20260108T000000Z"),
             (WINDOW_END, "2026-01-08T00:00:00+0900"),
+            // RFC 3339 offsets run to 23:59, where `jiff` takes hours
+            // through 25.
+            (WINDOW_START, "2026-01-01T00:00:00+24:00"),
+            (WINDOW_START, "2026-01-01T00:00:00-24:00"),
+            (WINDOW_START, "2026-01-01T00:00:00+25:59"),
+            (WINDOW_START, "2026-01-01T00:00:00-25:59"),
+            (WINDOW_START, "2026-01-01T00:00:00+30:00"),
+            (WINDOW_START, "2026-01-01T00:00:00+09:60"),
+            (WINDOW_END, "2026-01-08T00:00:00+24:00"),
+            (WINDOW_END, "2026-01-08T00:00:00-24:00"),
+            (WINDOW_END, "2026-01-08T00:00:00+25:59"),
+            (WINDOW_END, "2026-01-08T00:00:00-25:59"),
+            (WINDOW_END, "2026-01-08T00:00:00-09:60"),
         ] {
             assert_eq!(
                 refused(&with(http_url(), key, Value::String(value.to_string()))),
@@ -1997,6 +2016,9 @@ mod tests {
                 "2026-01-01T00:00:00.123456789-05:00",
                 "2026-01-09T00:00:00Z",
             ),
+            // The ends of the offset range.
+            ("2026-01-01T00:00:00+23:59", "2026-01-08T00:00:00-23:59"),
+            ("2026-01-01T00:00:00-00:00", "2026-01-08T00:00:00+00:00"),
         ] {
             let table = with(http_url(), "window_start", Value::String(start.to_string()));
             let table = with(table, "window_end", Value::String(end.to_string()));
