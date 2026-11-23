@@ -7,7 +7,7 @@ use rocksdb::{IteratorMode, OptimisticTransactionDB, Transaction};
 use serde::{Deserialize, Serialize};
 
 use super::{ModelInstance, RunId};
-use crate::{EXCLUSIVE, Map};
+use crate::{ClusteringModelTypeRef, EXCLUSIVE, Map};
 
 /// The clustering method a training definition trains a model with.
 ///
@@ -39,6 +39,13 @@ pub struct TrainingDefinition {
     pub sources: Vec<String>,
     /// The name of the model indicator in `suspicious_tokens`, if any.
     pub indicator: Option<String>,
+    /// The clustering model type the definition trains as, as the caller
+    /// gave it: what [`check_training_definition`] returned for the text,
+    /// or, for a clone, the type of its source model, which may be an
+    /// earlier catalog version.
+    ///
+    /// [`check_training_definition`]: crate::check_training_definition
+    pub clustering_model_type: ClusteringModelTypeRef,
     /// The definition's TOML text as the caller validated it: the settings
     /// of the model's next training, editable between runs. The settings
     /// that trained the current model are the model record's
@@ -60,10 +67,16 @@ pub struct TrainingDefinition {
 /// A training definition to create.
 ///
 /// `method`, `raw_event_kind`, `log_kind`, `sources` and `indicator` are
-/// what the caller extracted from its own parse of `definition`; nothing in
-/// this crate parses it. `raw_event_kind` is the Giganto kind name of the
-/// raw events the model reads, and `log_kind` the log kind of a `log`
+/// what the caller extracted from its own parse of `definition`; the store
+/// does not parse it. `raw_event_kind` is the Giganto kind name of the raw
+/// events the model reads, and `log_kind` the log kind of a `log`
 /// definition; both are stored verbatim and neither is validated.
+///
+/// `clustering_model_type` is what
+/// [`check_training_definition`](crate::check_training_definition) returned
+/// for `definition`, or, for a clone, the stored type of the source model.
+/// It is stored verbatim and checked against neither the catalog nor the
+/// text.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NewTrainingDefinition {
     pub name: String,
@@ -74,11 +87,16 @@ pub struct NewTrainingDefinition {
     pub log_kind: Option<String>,
     pub sources: Vec<String>,
     pub indicator: Option<String>,
+    pub clustering_model_type: ClusteringModelTypeRef,
     pub definition: String,
 }
 
 /// The new settings of a training definition, extracted by the caller from
 /// its own parse of `definition`.
+///
+/// `clustering_model_type` is what
+/// [`check_training_definition`](crate::check_training_definition) returned
+/// for `definition`; it is stored verbatim.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TrainingDefinitionUpdate {
     pub method: ModelMethod,
@@ -86,6 +104,7 @@ pub struct TrainingDefinitionUpdate {
     pub log_kind: Option<String>,
     pub sources: Vec<String>,
     pub indicator: Option<String>,
+    pub clustering_model_type: ClusteringModelTypeRef,
     pub definition: String,
 }
 

@@ -2261,6 +2261,7 @@ mod tests {
             log_kind: None,
             sources: vec!["piglet.host".to_string()],
             indicator: indicator.map(str::to_string),
+            clustering_model_type: crate::ClusteringModelTypeRef::Custom,
             definition: "eps = 5.0".to_string(),
             cloning: false,
             last_run: None,

@@ -1508,6 +1508,7 @@ mod test {
                 log_kind: None,
                 sources: vec![source.to_string()],
                 indicator: None,
+                clustering_model_type: crate::ClusteringModelTypeRef::Custom,
                 definition: "eps = 5.0".to_string(),
             })
             .unwrap();

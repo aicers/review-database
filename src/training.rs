@@ -104,6 +104,9 @@ pub struct RunReconciliation {
 pub enum FixedField {
     Method,
     RawEventKind,
+    /// The log kind, which alone names the log a `prefix` definition reads,
+    /// its raw event kind always being `log`.
+    LogKind,
 }
 
 /// A refusal of a training definition, model run, model or model indicator
@@ -360,8 +363,11 @@ impl Store {
     }
 
     /// Replaces the settings of a training definition: its method, raw event
-    /// kind, log kind, sources, indicator and text. Its customer and instance
-    /// stay.
+    /// kind, log kind, sources, indicator, clustering model type and text.
+    /// Its customer and instance stay.
+    ///
+    /// The clustering model type may change while a model of the name
+    /// exists, since a model may be retrained under another type.
     ///
     /// # Errors
     ///
@@ -369,8 +375,8 @@ impl Store {
     /// checked in this order: `DefinitionNotFound`; `RunInProgress` while
     /// the definition's last run is active, which includes a definition
     /// being cloned; `FieldFixed` if a model of the name exists and the
-    /// method or the raw event kind would change (the log kind may);
-    /// `IndicatorNotFound` if the indicator does not exist. Returns an
+    /// method, the raw event kind or the log kind would change, checked in
+    /// that order; `IndicatorNotFound` if the indicator does not exist. Returns an
     /// error, and changes nothing, if a database operation fails.
     // The settings are handed over by value, as the caller's parse yields
     // them; a retry after a commit conflict reads them again.
@@ -393,6 +399,8 @@ impl Store {
                     Some(FixedField::Method)
                 } else if update.raw_event_kind != definition.raw_event_kind {
                     Some(FixedField::RawEventKind)
+                } else if update.log_kind != definition.log_kind {
+                    Some(FixedField::LogKind)
                 } else {
                     None
                 };
@@ -410,6 +418,9 @@ impl Store {
             definition.log_kind.clone_from(&update.log_kind);
             definition.sources.clone_from(&update.sources);
             definition.indicator.clone_from(&update.indicator);
+            definition
+                .clustering_model_type
+                .clone_from(&update.clustering_model_type);
             definition.definition.clone_from(&update.definition);
             definition.updated_at = Timestamp::now();
             definitions.put(txn, &definition)
@@ -585,6 +596,9 @@ impl Store {
     /// `trained_definition`, the definition that produced the source's
     /// classifier, not from the source's editable definition, and passes the
     /// source's `trained_run_id` it read with it as `source_trained_run_id`.
+    /// It passes the source model's stored clustering model type as
+    /// `target.clustering_model_type`, which is stored unchanged even when
+    /// it names an earlier catalog version.
     ///
     /// The target's definition is stored cloning, with the new run as its
     /// last run, which reserves the name. The run is stored `Requested`,
@@ -1321,6 +1335,7 @@ fn new_record(definition: NewTrainingDefinition, cloning: bool) -> TrainingDefin
         log_kind: definition.log_kind,
         sources: definition.sources,
         indicator: definition.indicator,
+        clustering_model_type: definition.clustering_model_type,
         definition: definition.definition,
         cloning,
         last_run: None,
@@ -1369,7 +1384,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        Agent, AgentStatus, ModelIndicator, Node, NodeProfile,
+        Agent, AgentStatus, ClusteringModelTypeRef, ModelIndicator, Node, NodeProfile,
         model_lifecycle::ModelFilesPoint,
         test::{DbGuard, acquire_db_permit},
     };
@@ -1493,6 +1508,13 @@ mod tests {
         format!("eps = {value}")
     }
 
+    fn http_url_v1() -> ClusteringModelTypeRef {
+        ClusteringModelTypeRef::Catalog {
+            id: "http_url".to_string(),
+            version: 1,
+        }
+    }
+
     /// A multidimension definition of `http` events, of [`CUSTOMER`] unless
     /// changed.
     fn new_definition(name: &str, instance: ModelInstance) -> NewTrainingDefinition {
@@ -1505,6 +1527,7 @@ mod tests {
             log_kind: None,
             sources: vec!["sensor-a".to_string()],
             indicator: None,
+            clustering_model_type: http_url_v1(),
             definition: eps("5.0"),
         }
     }
@@ -1516,6 +1539,7 @@ mod tests {
             log_kind: None,
             sources: vec!["sensor-a".to_string()],
             indicator: None,
+            clustering_model_type: http_url_v1(),
             definition: definition.to_string(),
         }
     }
@@ -1678,6 +1702,7 @@ mod tests {
                 log_kind: None,
                 sources: vec!["sensor-a".to_string()],
                 indicator: Some(INDICATOR.to_string()),
+                clustering_model_type: http_url_v1(),
                 definition: eps("5.0"),
                 cloning: false,
                 last_run: None,
@@ -1778,6 +1803,218 @@ mod tests {
         }
     }
 
+    /// A prefix definition of `log` raw events reading `log_kind`.
+    fn prefix_definition(
+        name: &str,
+        instance: ModelInstance,
+        log_kind: Option<&str>,
+    ) -> NewTrainingDefinition {
+        NewTrainingDefinition {
+            method: ModelMethod::Prefix,
+            raw_event_kind: "log".to_string(),
+            log_kind: log_kind.map(ToString::to_string),
+            clustering_model_type: ClusteringModelTypeRef::Custom,
+            ..new_definition(name, instance)
+        }
+    }
+
+    /// An update of a prefix definition of `log` raw events to `log_kind`.
+    fn prefix_update(log_kind: Option<&str>) -> TrainingDefinitionUpdate {
+        TrainingDefinitionUpdate {
+            method: ModelMethod::Prefix,
+            raw_event_kind: "log".to_string(),
+            log_kind: log_kind.map(ToString::to_string),
+            clustering_model_type: ClusteringModelTypeRef::Custom,
+            ..update_with(&eps("5.0"))
+        }
+    }
+
+    /// Starts and completes a training run of the prefix definition `name`
+    /// on `instance`, returning the run id.
+    fn train_prefix(store: &Store, name: &str, instance: &ModelInstance) -> RunId {
+        let started = store.start_training_run(name).unwrap();
+        store
+            .complete_run(
+                started.run.id,
+                instance,
+                crate::model::Model {
+                    kind: "Prefix".to_string(),
+                    raw_event_kind: "log".to_string(),
+                    ..body(name)
+                },
+            )
+            .unwrap();
+        started.run.id
+    }
+
+    #[test]
+    fn log_kind_is_fixed_once_a_model_exists() {
+        let f = setup();
+        let store = f.store();
+        let engine = instance(f.node, ENGINE);
+        let other = instance(f.node, OTHER_ENGINE);
+        store
+            .insert_training_definition(prefix_definition("d", engine.clone(), Some("syslog")))
+            .unwrap();
+        store
+            .insert_training_definition(prefix_definition("e", other.clone(), None))
+            .unwrap();
+
+        // Without a model, the log kind may change.
+        store
+            .update_training_definition("d", prefix_update(Some("auth")))
+            .unwrap();
+        assert_eq!(definition(store, "d").log_kind.as_deref(), Some("auth"));
+        store
+            .update_training_definition("d", prefix_update(Some("syslog")))
+            .unwrap();
+        store
+            .update_training_definition("e", prefix_update(Some("auth")))
+            .unwrap();
+        store
+            .update_training_definition("e", prefix_update(None))
+            .unwrap();
+        assert_eq!(definition(store, "e").log_kind, None);
+
+        train_prefix(store, "d", &engine);
+        train_prefix(store, "e", &other);
+
+        // Once the model exists, a changed log kind is refused and the
+        // definition stays as it was.
+        let fixed = |name: &str| TrainingError::FieldFixed {
+            name: name.to_string(),
+            field: FixedField::LogKind,
+        };
+        for (name, log_kind) in [("d", Some("auth")), ("d", None), ("e", Some("auth"))] {
+            let before = definition(store, name);
+            assert_eq!(
+                refusal(store, |s| s
+                    .update_training_definition(name, prefix_update(log_kind))),
+                fixed(name),
+                "{name}: {log_kind:?}"
+            );
+            assert_eq!(definition(store, name), before);
+        }
+
+        // The method and the raw event kind are checked before it.
+        let mut method = prefix_update(Some("auth"));
+        method.method = ModelMethod::Timeseries;
+        assert_eq!(
+            refusal(store, |s| s.update_training_definition("d", method)),
+            TrainingError::FieldFixed {
+                name: "d".to_string(),
+                field: FixedField::Method,
+            }
+        );
+        let mut raw_event_kind = prefix_update(Some("auth"));
+        raw_event_kind.raw_event_kind = "http".to_string();
+        assert_eq!(
+            refusal(store, |s| s.update_training_definition("d", raw_event_kind)),
+            TrainingError::FieldFixed {
+                name: "d".to_string(),
+                field: FixedField::RawEventKind,
+            }
+        );
+
+        // The same log kind is accepted with other changes.
+        let mut same = prefix_update(Some("syslog"));
+        same.definition = eps("2.0");
+        store.update_training_definition("d", same).unwrap();
+        assert_eq!(definition(store, "d").definition, eps("2.0"));
+
+        // An active run is refused first.
+        let started = store.start_training_run("d").unwrap();
+        assert_eq!(
+            refusal(store, |s| s
+                .update_training_definition("d", prefix_update(Some("auth")))),
+            TrainingError::RunInProgress {
+                run_id: started.run.id
+            }
+        );
+    }
+
+    #[test]
+    fn clustering_model_type_is_stored_on_insert_update_and_clone() {
+        let f = setup();
+        let store = f.store();
+        let engine = instance(f.node, ENGINE);
+        let other = instance(f.node, OTHER_ENGINE);
+        let custom = ClusteringModelTypeRef::Custom;
+        store
+            .insert_training_definition(new_definition("catalog", engine.clone()))
+            .unwrap();
+        store
+            .insert_training_definition(NewTrainingDefinition {
+                clustering_model_type: custom.clone(),
+                ..new_definition("custom", other.clone())
+            })
+            .unwrap();
+        assert_eq!(
+            definition(store, "catalog").clustering_model_type,
+            http_url_v1()
+        );
+        assert_eq!(definition(store, "custom").clustering_model_type, custom);
+        let listed: Vec<_> = store
+            .training_definitions()
+            .unwrap()
+            .into_iter()
+            .map(|d| (d.name, d.clustering_model_type))
+            .collect();
+        assert_eq!(
+            listed,
+            [
+                ("catalog".to_string(), http_url_v1()),
+                ("custom".to_string(), custom.clone()),
+            ]
+        );
+
+        // An update replaces it, either way.
+        store
+            .update_training_definition(
+                "catalog",
+                TrainingDefinitionUpdate {
+                    clustering_model_type: custom.clone(),
+                    ..update_with(&eps("5.0"))
+                },
+            )
+            .unwrap();
+        store
+            .update_training_definition("custom", update_with(&eps("5.0")))
+            .unwrap();
+        assert_eq!(definition(store, "catalog").clustering_model_type, custom);
+        assert_eq!(
+            definition(store, "custom").clustering_model_type,
+            http_url_v1()
+        );
+
+        // It is not fixed: it may change while a model of the name exists.
+        let trained = train(store, "catalog", &engine);
+        store
+            .update_training_definition("catalog", update_with(&eps("5.0")))
+            .unwrap();
+        assert_eq!(
+            definition(store, "catalog").clustering_model_type,
+            http_url_v1()
+        );
+
+        // A clone stores the type it is given, an earlier version included.
+        let earlier = ClusteringModelTypeRef::Catalog {
+            id: "http_url".to_string(),
+            version: 0,
+        };
+        store
+            .start_clone_run(
+                "catalog",
+                trained,
+                NewTrainingDefinition {
+                    clustering_model_type: earlier.clone(),
+                    ..new_definition("clone", other)
+                },
+            )
+            .unwrap();
+        assert_eq!(definition(store, "clone").clustering_model_type, earlier);
+    }
+
     #[test]
     fn a_clone_stores_the_log_kind_of_its_target() {
         let f = setup();
@@ -1832,18 +2069,11 @@ mod tests {
         assert_eq!(record.raw_event_kind, "log");
         assert_eq!(record.log_kind.as_deref(), Some("syslog"));
 
-        // The log kind may change while the model exists, and the next
-        // replace takes it.
-        store
-            .update_training_definition(
-                "d",
-                TrainingDefinitionUpdate {
-                    raw_event_kind: "log".to_string(),
-                    log_kind: Some("auth".to_string()),
-                    ..update_with(&eps("2.0"))
-                },
-            )
-            .unwrap();
+        // The log kind is fixed while the model exists, so only a write past
+        // every check changes it; the next replace takes it.
+        let mut stored = definition(store, "d");
+        stored.log_kind = Some("auth".to_string());
+        put_definition(store, &stored);
         assert_eq!(model(store, "d").log_kind.as_deref(), Some("syslog"));
         let second = store.start_training_run("d").unwrap();
         let replaced = store
@@ -2012,6 +2242,7 @@ mod tests {
             log_kind: None,
             sources: vec!["sensor-b".to_string()],
             indicator: Some(INDICATOR.to_string()),
+            clustering_model_type: ClusteringModelTypeRef::Custom,
             definition: eps("3.0"),
         };
         store
@@ -2026,6 +2257,7 @@ mod tests {
                 raw_event_kind: "dns".to_string(),
                 sources: vec!["sensor-b".to_string()],
                 indicator: Some(INDICATOR.to_string()),
+                clustering_model_type: ClusteringModelTypeRef::Custom,
                 definition: eps("3.0"),
                 updated_at: updated.updated_at,
                 ..created.clone()
@@ -2085,13 +2317,15 @@ mod tests {
                 field: FixedField::RawEventKind,
             }
         );
-        // The log kind is not fixed, and is kept verbatim for a non-log kind.
         let mut log_kind = update_with("x");
         log_kind.log_kind = Some("syslog".to_string());
-        store.update_training_definition("d", log_kind).unwrap();
-        let with_log_kind = definition(store, "d");
-        assert_eq!(with_log_kind.raw_event_kind, "http");
-        assert_eq!(with_log_kind.log_kind.as_deref(), Some("syslog"));
+        assert_eq!(
+            refusal(store, |s| s.update_training_definition("d", log_kind)),
+            TrainingError::FieldFixed {
+                name: "d".to_string(),
+                field: FixedField::LogKind,
+            }
+        );
         store
             .update_training_definition("d", update_with(&eps("2.0")))
             .unwrap();
