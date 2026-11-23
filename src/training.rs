@@ -1997,7 +1997,23 @@ mod tests {
             http_url_v1()
         );
 
-        // A clone stores the type it is given, an earlier version included.
+        // A clone stores the type it is given, custom or an earlier catalog
+        // version alike. Failing the custom clone frees its instance.
+        let custom_clone = store
+            .start_clone_run(
+                "catalog",
+                trained,
+                NewTrainingDefinition {
+                    clustering_model_type: custom.clone(),
+                    ..new_definition("custom-clone", other.clone())
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            definition(store, "custom-clone").clustering_model_type,
+            custom
+        );
+        store.fail_run(custom_clone.id, "unreachable").unwrap();
         let earlier = ClusteringModelTypeRef::Catalog {
             id: "http_url".to_string(),
             version: 0,
