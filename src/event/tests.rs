@@ -454,6 +454,70 @@ fn put_unless_stored_stores_an_event_once_under_concurrency() {
     }
 }
 
+/// Concurrent calls for one event store it exactly once when no record holds
+/// any key of its time and model yet.
+#[test]
+fn put_unless_stored_stores_an_event_once_under_concurrency_in_an_empty_bucket() {
+    const CALLERS: usize = 8;
+
+    let (_permit, store) = setup_store();
+
+    // Each round races on its own time, so that every round starts with the
+    // time-and-model bucket empty.
+    for round in 0..10_u8 {
+        let event = event_at_nanos(i64::from(round));
+        let bucket = super::event_key_base(&event) >> 32;
+        assert!(
+            records(&store.events())
+                .iter()
+                .all(|(key, _)| key >> 32 != bucket),
+            "the time and model of the round hold no record"
+        );
+        let barrier = std::sync::Barrier::new(CALLERS);
+        let outcomes: Vec<PutOutcome> = std::thread::scope(|scope| {
+            let handles: Vec<_> = (0..CALLERS)
+                .map(|_| {
+                    scope.spawn(|| {
+                        barrier.wait();
+                        store.events().put_unless_stored(&event, &stamp()).unwrap()
+                    })
+                })
+                .collect();
+            handles.into_iter().map(|h| h.join().unwrap()).collect()
+        });
+        let stored_keys: Vec<i128> = outcomes
+            .iter()
+            .filter_map(|outcome| match outcome {
+                PutOutcome::Stored(key) => Some(*key),
+                _ => None,
+            })
+            .collect();
+        let [stored_key] = stored_keys[..] else {
+            panic!("exactly one call stores the event: {outcomes:?}");
+        };
+        assert_eq!(
+            outcomes
+                .iter()
+                .filter(|outcome| matches!(outcome, PutOutcome::AlreadyStored))
+                .count(),
+            CALLERS - 1,
+            "{outcomes:?}"
+        );
+
+        let in_bucket: Vec<(i128, StoredDetectionEvent)> = records(&store.events())
+            .into_iter()
+            .filter(|(key, _)| key >> 32 == bucket)
+            .collect();
+        let [(key, record)] = &in_bucket[..] else {
+            panic!("exactly one record in the bucket: {in_bucket:?}");
+        };
+        assert_eq!(*key, stored_key);
+        assert_eq!(record.event(), &event);
+        assert_eq!(record.stamp(), &stamp());
+        assert_eq!(store.events().raw_count(), usize::from(round) + 1);
+    }
+}
+
 #[test]
 fn iteration_stops_on_corrupt_sst() {
     let _permit = acquire_db_permit();
