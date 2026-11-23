@@ -996,6 +996,15 @@ fn complete<'p>(
     // keep the order they were added in.
     let mut inserts: BTreeMap<usize, String> = BTreeMap::new();
     let container_is_dotted = container.is_some_and(Node::is_dotted);
+    // A section that exists only through a header under it, such as
+    // `[[detection_models.<section>.<key>]]`, has no body of its own: its
+    // values would land in that header's table. It gets a header of its own
+    // after the document, which TOML allows after the headers under it, and
+    // only once every insertion is made, so that values inserted at the end
+    // of another section never follow it.
+    let (headerless, incomplete): (Vec<_>, Vec<_>) = incomplete.into_iter().partition(
+        |section| matches!(section.node, Node::Table(t) if t.is_implicit() && !t.is_dotted()),
+    );
     for section in &incomplete {
         let (offset, text) = section_insert(document, section, container_is_dotted, newline);
         inserts.entry(offset).or_default().push_str(&text);
@@ -1019,9 +1028,22 @@ fn complete<'p>(
         copied = *offset;
     }
     completed.push_str(document.get(copied..).unwrap_or_default());
+    for section in &headerless {
+        append_section(
+            &mut completed,
+            &section.name_key(),
+            section.missing.iter().copied(),
+            newline,
+        );
+    }
     if !matches!(container, Some(Node::Inline(_))) {
         for model in missing_models {
-            append_section(&mut completed, model, properties(model), newline);
+            append_section(
+                &mut completed,
+                section_name(model),
+                properties(model).operator_values.iter(),
+                newline,
+            );
         }
     }
     Ok(completed)
@@ -1080,12 +1102,12 @@ fn check_sections<'a, 'p>(
     Ok(incomplete)
 }
 
-/// Appends a model's section, with every operator value at its default, as a
-/// standard table at the end of `document`.
-fn append_section(
+/// Appends the section `name_key`, a TOML key, with the operator values
+/// `specs` at their defaults, as a standard table at the end of `document`.
+fn append_section<'s>(
     document: &mut String,
-    model: DetectionModel,
-    props: &DetectionModelProperties,
+    name_key: &str,
+    specs: impl Iterator<Item = &'s OperatorValueSpec>,
     newline: &str,
 ) {
     if !document.is_empty() {
@@ -1097,10 +1119,10 @@ fn append_section(
     document.push('[');
     document.push_str(DETECTION_MODELS);
     document.push('.');
-    document.push_str(section_name(model));
+    document.push_str(name_key);
     document.push(']');
     document.push_str(newline);
-    for spec in props.operator_values {
+    for spec in specs {
         document.push_str(&assignment(spec));
         document.push_str(newline);
     }
@@ -1376,7 +1398,7 @@ fn inline_pairs(specs: &[&OperatorValueSpec]) -> String {
 }
 
 /// Returns where and what to insert to add a section's missing values at the
-/// end of the section.
+/// end of the section, which has a body of its own.
 fn section_insert(
     document: &str,
     section: &IncompleteSection<'_>,
@@ -1404,30 +1426,6 @@ fn section_insert(
                 text.push_str(&assignment(spec));
             }
             (offset, text)
-        }
-        Node::Table(table) if table.is_implicit() && !table.is_dotted() => {
-            // The section exists only through a header under it, such as
-            // `[[detection_models.<section>.<key>]]`. Its values would land in
-            // that header's table, so they go under a header of their own,
-            // which TOML allows after the headers under it.
-            let mut text = String::new();
-            if !document.is_empty() {
-                if !document.ends_with('\n') {
-                    text.push_str(newline);
-                }
-                text.push_str(newline);
-            }
-            text.push('[');
-            text.push_str(DETECTION_MODELS);
-            text.push('.');
-            text.push_str(&section.name_key());
-            text.push(']');
-            text.push_str(newline);
-            for spec in &section.missing {
-                text.push_str(&assignment(spec));
-                text.push_str(newline);
-            }
-            (document.len(), text)
         }
         Node::Table(table) => {
             let prefix = if !table.is_dotted() {
@@ -3074,6 +3072,55 @@ rdp_brute_force.enabled = false
                 output,
                 "{document}"
             );
+        }
+    }
+
+    /// A section that exists only through an array of tables gets its header
+    /// after the values inserted at the end of the section that closes the
+    /// document, so those values stay in their own section.
+    #[test]
+    fn array_of_tables_section_header_follows_the_last_section() {
+        let complete_two = |document: &str| {
+            complete(
+                document,
+                LearningMethod::SemiSupervised,
+                &[DetectionModel::PortScan, DetectionModel::RdpBruteForce],
+                |_| &SYNTHETIC_TABLE,
+            )
+        };
+        for (document, expected) in [
+            (
+                "[[detection_models.port_scan.rows]]\ncount = 1\n\
+                 [detection_models.rdp_brute_force]\nrows = []\n",
+                "[[detection_models.port_scan.rows]]\ncount = 1\n\
+                 [detection_models.rdp_brute_force]\nrows = []\nshare = 1.0\n\n\
+                 [detection_models.port_scan]\nshare = 1.0\n",
+            ),
+            (
+                "[[detection_models.port_scan.rows]]\ncount = 1\n\
+                 [detection_models.rdp_brute_force]\nrows = []",
+                "[[detection_models.port_scan.rows]]\ncount = 1\n\
+                 [detection_models.rdp_brute_force]\nrows = []\nshare = 1.0\n\n\
+                 [detection_models.port_scan]\nshare = 1.0\n",
+            ),
+            (
+                "[[detection_models.port_scan.rows]]\ncount = 1\n\
+                 [[detection_models.rdp_brute_force.rows]]\ncount = 2",
+                "[[detection_models.port_scan.rows]]\ncount = 1\n\
+                 [[detection_models.rdp_brute_force.rows]]\ncount = 2\n\n\
+                 [detection_models.port_scan]\nshare = 1.0\n\n\
+                 [detection_models.rdp_brute_force]\nshare = 1.0\n",
+            ),
+            (
+                "[[detection_models.port_scan.rows]]\ncount = 1\n",
+                "[[detection_models.port_scan.rows]]\ncount = 1\n\n\
+                 [detection_models.port_scan]\nshare = 1.0\n\n\
+                 [detection_models.rdp_brute_force]\nrows = []\nshare = 1.0\n",
+            ),
+        ] {
+            let output = complete_two(document).unwrap();
+            assert_eq!(output, expected, "{document}");
+            assert_eq!(complete_two(&output).unwrap(), output, "{document}");
         }
     }
 
