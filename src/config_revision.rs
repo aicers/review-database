@@ -1800,6 +1800,24 @@ mod tests {
         paths
     }
 
+    /// The writers that can create an Unsupervised Engine agent on node
+    /// `node`, which holds no agent under its key: [`creating_paths`] and
+    /// `NodeTable::put`, which stores a new node holding the agent.
+    fn unsupervised_creating_paths() -> Vec<(&'static str, Create)> {
+        let mut paths = creating_paths();
+        paths.push(("NodeTable::put", |store, node, new| {
+            store
+                .node_map()
+                .put(&new_node(
+                    &format!("{}-put", node.name),
+                    CUSTOMER,
+                    vec![new.clone()],
+                ))
+                .map(drop)
+        }));
+        paths
+    }
+
     #[test]
     fn every_path_completes_an_unsupervised_document_in_apply_mode() {
         for (name, replace) in unsupervised_replacing_paths() {
@@ -1879,18 +1897,7 @@ mod tests {
 
     #[test]
     fn every_creating_path_completes_an_unsupervised_document_in_apply_mode() {
-        let mut paths = creating_paths();
-        paths.push(("NodeTable::put", |store, node, new| {
-            store
-                .node_map()
-                .put(&new_node(
-                    &format!("{}-put", node.name),
-                    CUSTOMER,
-                    vec![new.clone()],
-                ))
-                .map(drop)
-        }));
-        for (name, create) in paths {
+        for (name, create) in unsupervised_creating_paths() {
             let f = setup();
             let store = &f.store;
             put_model(store, WEB, http_url());
@@ -1931,6 +1938,60 @@ mod tests {
                 Some(complete_web(WEB)),
                 "{name}"
             );
+        }
+    }
+
+    #[test]
+    fn a_model_read_failure_fails_every_creating_path_and_stores_nothing() {
+        for (name, create) in unsupervised_creating_paths() {
+            let f = setup();
+            let store = &f.store;
+            put_model(store, WEB, http_url());
+            let node = put_node(store, "n", CUSTOMER, Vec::new());
+            // `NodeTable::put` stores a node of its own, with the next id.
+            let node_id = if name == "NodeTable::put" {
+                node.id + 1
+            } else {
+                node.id
+            };
+            let nodes = store.node_map().count().unwrap();
+            let new = unsupervised(node_id, UNSUPERVISED, Some(&detector(WEB)));
+
+            fail_model_reads(true);
+            let result = create(store, &node, &new);
+            fail_model_reads(false);
+            let error = result.unwrap_err();
+            assert!(
+                error
+                    .downcast_ref::<DetectionModelsSectionError>()
+                    .is_none(),
+                "{name}: {error:#}"
+            );
+            assert!(
+                format!("{error:#}").contains("injected failure"),
+                "{name}: {error:#}"
+            );
+            assert_eq!(stored_agent(store, node_id, UNSUPERVISED), None, "{name}");
+            assert_eq!(revision(store, node_id, UNSUPERVISED), None, "{name}");
+            assert_eq!(record(store, node_id, UNSUPERVISED, 1), None, "{name}");
+            assert_eq!(stored(store, node.id), node, "{name}");
+            assert_eq!(store.node_map().count().unwrap(), nodes, "{name}");
+            if name == "agents update to a new key" {
+                // The placeholder the path stores before its move stays.
+                let placeholder = format!("{UNSUPERVISED}.placeholder");
+                let row = stored_agent(store, node.id, &placeholder);
+                assert_eq!(row.map(|a| a.kind), Some(AgentKind::Sensor), "{name}");
+            }
+
+            // Without the injection, the same path stores the same document.
+            create(store, &node, &new).unwrap();
+            let agent = stored_agent(store, node_id, UNSUPERVISED).unwrap();
+            assert_eq!(
+                config_of(&agent),
+                Some(complete_web(WEB).as_str()),
+                "{name}"
+            );
+            assert_eq!(revision(store, node_id, UNSUPERVISED), Some(1), "{name}");
         }
     }
 
