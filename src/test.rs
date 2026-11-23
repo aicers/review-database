@@ -227,7 +227,16 @@ impl tracing::Subscriber for WarningLog {
 /// its output with the warnings, each as one line of ` name=value` pairs.
 pub(crate) fn capture_warnings<T>(f: impl FnOnce() -> T) -> (T, Vec<String>) {
     let log = std::sync::Arc::new(Mutex::new(Vec::new()));
-    let output = tracing::subscriber::with_default(WarningLog(log.clone()), f);
+    let output = tracing::subscriber::with_default(WarningLog(log.clone()), || {
+        // A callsite caches whether any subscriber wants it when it is first
+        // hit. Another test thread hitting the same callsite with no
+        // subscriber while this one's subscriber is being registered can
+        // cache it as unwanted, and this thread's warnings are then dropped
+        // before reaching the subscriber. Recomputing the cache now, with the
+        // subscriber registered, makes every registered callsite see it.
+        tracing::callsite::rebuild_interest_cache();
+        f()
+    });
     let warnings = log
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
