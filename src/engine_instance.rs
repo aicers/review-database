@@ -519,7 +519,7 @@ mod tests {
             detector(1, "m1", Some("tokens")),
             detector(-2, "m2", None),
         ]);
-        let drafted = with_draft(&node, ENGINE, "detectors = 2");
+        let drafted = with_draft(&node, ENGINE, "revision = 2");
         let returned = update_with_documents(
             store,
             &node,
@@ -541,7 +541,7 @@ mod tests {
         );
 
         let applied = refs(vec![detector(1, "m1", Some("tokens"))]);
-        let applied_node = with_config(&drafted, ENGINE, "detectors = 2");
+        let applied_node = with_config(&drafted, ENGINE, "revision = 2");
         update_with_documents(
             store,
             &drafted,
@@ -630,7 +630,7 @@ mod tests {
         let (t, node) = setup_node();
         let store = &t.store;
         add_indicator(store, "tokens");
-        let drafted = with_draft(&node, ENGINE, "detectors = 1");
+        let drafted = with_draft(&node, ENGINE, "revision = 1");
         let pending = |detectors| [write(ENGINE, None, Some(refs(detectors)))];
         let key = || ENGINE.to_string();
 
@@ -688,7 +688,7 @@ mod tests {
         assert_refused(
             store,
             &node,
-            &with_config(&drafted, ENGINE, "detectors = 1"),
+            &with_config(&drafted, ENGINE, "revision = 1"),
             &[write(
                 ENGINE,
                 Some(refs(vec![detector(1, "missing", None)])),
@@ -768,7 +768,7 @@ mod tests {
         assert_refused(
             store,
             &node,
-            &with_draft(&node, ENGINE, "detectors = 1"),
+            &with_draft(&node, ENGINE, "revision = 1"),
             &[write(ENGINE, empty(), None)],
             &EngineDocumentError::DraftWithoutReferences {
                 agent_key: ENGINE.to_string(),
@@ -777,7 +777,7 @@ mod tests {
         assert_refused(
             store,
             &node,
-            &with_config(&node, ENGINE, "detectors = 1"),
+            &with_config(&node, ENGINE, "revision = 1"),
             &[],
             &EngineDocumentError::ConfigWithoutReferences {
                 agent_key: ENGINE.to_string(),
@@ -811,7 +811,7 @@ mod tests {
     fn a_model_deleted_before_the_commit_refuses_the_update() {
         let (t, node) = setup_node();
         let store = &t.store;
-        let drafted = with_draft(&node, ENGINE, "detectors = 1");
+        let drafted = with_draft(&node, ENGINE, "revision = 1");
         let fired = Cell::new(0);
         let mut nodes = store.node_map();
         nodes.set_before_commit_hook(Some(Box::new(|| {
@@ -1036,7 +1036,7 @@ mod tests {
     /// Gives `ENGINE` of `node` a pending reference, a status and the
     /// stopped state, returning the node as updated.
     fn populate_engine(store: &Store, node: &Node) -> Node {
-        let drafted = with_draft(node, ENGINE, "detectors = 1");
+        let drafted = with_draft(node, ENGINE, "revision = 1");
         update_with_documents(
             store,
             node,
@@ -1336,8 +1336,8 @@ mod tests {
         let (t, node) = setup_node();
         let store = &t.store;
         let refused = [
-            with_draft(&node, ENGINE, "detectors = 1"),
-            with_config(&node, ENGINE, "detectors = 1"),
+            with_draft(&node, ENGINE, "revision = 1"),
+            with_config(&node, ENGINE, "revision = 1"),
             with_agent(&node, ENGINE, |a| a.kind = AgentKind::Sensor),
             with_agent(&node, SENSOR, |a| a.kind = AgentKind::Unsupervised),
         ];
@@ -1366,7 +1366,7 @@ mod tests {
             ..agent(
                 "reconverge-3",
                 AgentKind::Unsupervised,
-                Some("detectors = 0"),
+                Some("revision = 0"),
                 None,
             )
         });
@@ -1382,7 +1382,7 @@ mod tests {
         let (t, node) = setup_node();
         let store = &t.store;
         let engine = instance(node.id, ENGINE);
-        let drafted = with_draft(&node, ENGINE, "detectors = 2");
+        let drafted = with_draft(&node, ENGINE, "revision = 2");
         update_with_documents(
             store,
             &node,
@@ -1394,7 +1394,7 @@ mod tests {
             )],
         )
         .unwrap();
-        let applied = with_config(&drafted, ENGINE, "detectors = 2");
+        let applied = with_config(&drafted, ENGINE, "revision = 2");
         update_with_documents(
             store,
             &drafted,
@@ -1410,7 +1410,7 @@ mod tests {
         store.set_detector_status(&engine, 2, &status(2)).unwrap();
 
         // Detector 2 leaves the draft; detector 1 stays in the config.
-        let redrafted = with_draft(&applied, ENGINE, "detectors = 1");
+        let redrafted = with_draft(&applied, ENGINE, "revision = 1");
         update_with_documents(
             store,
             &applied,

@@ -17,15 +17,18 @@
 //! with [`ConfigRevisions::prepare`], before it stages anything, and records
 //! it with [`ConfigRevisions::apply`] in the same transaction as the row.
 
+use std::collections::HashMap;
+
 use anyhow::{Context, Result};
 use jiff::Timestamp;
 use rocksdb::{OptimisticTransactionDB, Transaction};
 use serde::{Deserialize, Serialize};
 
-use super::{Agent, AgentConfig, AgentKind, InnerNode, engine_instance};
+use super::{Agent, AgentConfig, AgentKind, InnerNode, Model, engine_instance};
 use crate::{
-    EXCLUSIVE, Map, ModelInstance, collections::KeyIndex, complete_engine_document,
-    timestamp::ts_nanoseconds_saturating,
+    ClusteringModelTypeRef, CompletionMode, DetectionModelsSectionError, EXCLUSIVE, IndexedTable,
+    Map, ModelInstance, collections::KeyIndex, complete_engine_document,
+    detection_model::detector_models, timestamp::ts_nanoseconds_saturating,
 };
 
 /// The points in this module where a test can commit a concurrent write.
@@ -36,6 +39,9 @@ pub(crate) enum HookPoint {
     NodeLookup,
     /// After the history iterator of a customer history removal is created.
     HistoryScan,
+    /// After the model records an Unsupervised Engine document names are
+    /// read for its completion, before it is completed.
+    ModelLookup,
 }
 
 /// A test hook, run once on the thread that set it.
@@ -46,6 +52,14 @@ type Hook = Box<dyn FnOnce(&OptimisticTransactionDB)>;
 thread_local! {
     static HOOK: std::cell::RefCell<Option<(HookPoint, Hook)>> =
         const { std::cell::RefCell::new(None) };
+    static FAIL_MODEL_READS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Sets whether, on this thread, every read of a model record for the
+/// completion of an Unsupervised Engine document fails.
+#[cfg(test)]
+pub(crate) fn fail_model_reads(fail: bool) {
+    FAIL_MODEL_READS.with(|slot| slot.set(fail));
 }
 
 /// Sets `hook` to run, on this thread, the next time a write reaches
@@ -159,13 +173,15 @@ impl Prepared {
     }
 }
 
-/// The two column families of the configuration revisions, and the node
-/// table a revision's customer is read from.
+/// The two column families of the configuration revisions, the node table a
+/// revision's customer is read from, and the model records the completion of
+/// an Unsupervised Engine document reads.
 pub(crate) struct ConfigRevisions<'d> {
     db: &'d OptimisticTransactionDB,
     states: Map<'d>,
     history: Map<'d>,
     nodes: Map<'d>,
+    models: IndexedTable<'d, Model>,
 }
 
 impl<'d> ConfigRevisions<'d> {
@@ -175,7 +191,58 @@ impl<'d> ConfigRevisions<'d> {
             states: Map::open(db, super::CONFIG_REVISIONS)?,
             history: Map::open(db, super::CONFIG_REVISION_HISTORY)?,
             nodes: Map::open(db, super::NODES)?,
+            models: IndexedTable::<Model>::open(db)?,
         })
+    }
+
+    /// Completes `document`, the engine document of an agent of `kind`, in
+    /// `mode` with [`complete_engine_document`], within `txn`.
+    ///
+    /// For an [`AgentKind::Unsupervised`] document, the record of every model
+    /// its `[[detectors]]` name is read first within `txn`, which sees its own
+    /// writes, and written back unchanged, so that a concurrent write of any
+    /// of them conflicts with `txn` whichever commits first; completion is
+    /// given the clustering model type of each record, and `None` for a name
+    /// with no record.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a model record cannot be read or written back. A
+    /// completion failure is returned inside the `Ok`.
+    pub(crate) fn complete_in_transaction(
+        &self,
+        txn: &Transaction<OptimisticTransactionDB>,
+        kind: AgentKind,
+        document: &str,
+        mode: CompletionMode,
+    ) -> Result<std::result::Result<String, DetectionModelsSectionError>> {
+        if kind != AgentKind::Unsupervised {
+            return Ok(complete_engine_document(kind, document, &|_| None, mode));
+        }
+        let mut types: HashMap<String, ClusteringModelTypeRef> = HashMap::new();
+        for name in detector_models(document) {
+            #[cfg(test)]
+            if FAIL_MODEL_READS.with(std::cell::Cell::get) {
+                anyhow::bail!("cannot read model {name:?}: injected failure");
+            }
+            let record = self
+                .models
+                .load_model_by_name_in_transaction(&name, txn)
+                .with_context(|| format!("cannot read model {name:?}"))?;
+            self.models
+                .write_back_in_transaction(&name, record.as_ref(), txn)?;
+            if let Some(record) = record {
+                types.insert(name, record.clustering_model_type);
+            }
+        }
+        #[cfg(test)]
+        run_hook(HookPoint::ModelLookup, self.db);
+        Ok(complete_engine_document(
+            kind,
+            document,
+            &|name| types.get(name).cloned(),
+            mode,
+        ))
     }
 
     /// Returns the current revision of `instance`; `None` if the agent is
@@ -233,18 +300,20 @@ impl<'d> ConfigRevisions<'d> {
     /// row there from another key).
     ///
     /// When `new` gives an engine document, an engine kind with a `config`,
-    /// the document is completed with [`complete_engine_document`] unless
-    /// `prior` is of the same kind and carries the same `config` bytes; the
-    /// completed document is what the write stores, and a new revision is
-    /// issued unless `prior` is of the same kind and carries the completed
-    /// bytes. Otherwise the key has no current revision afterwards.
+    /// the document is completed in [`CompletionMode::Apply`] by
+    /// [`complete_in_transaction`](Self::complete_in_transaction), which
+    /// reads the model records an Unsupervised Engine document names within
+    /// `txn`, unless `prior` is of the same kind and carries the same
+    /// `config` bytes; the completed document is what the write stores, and
+    /// a new revision is issued unless `prior` is of the same kind and
+    /// carries the completed bytes. Otherwise the key has no current revision
+    /// afterwards.
     ///
     /// # Errors
     ///
     /// Returns an error that carries the [`DetectionModelsSectionError`]
-    /// if completion fails, or an error if the database operation fails.
-    ///
-    /// [`DetectionModelsSectionError`]: crate::DetectionModelsSectionError
+    /// if completion fails, or an error if the database operation fails,
+    /// including the read of a model record.
     pub(crate) fn prepare(
         &self,
         txn: &Transaction<OptimisticTransactionDB>,
@@ -268,12 +337,14 @@ impl<'d> ConfigRevisions<'d> {
                 change: Change::Keep,
             });
         }
-        let completed = complete_engine_document(new.kind, config.as_ref()).with_context(|| {
-            format!(
-                "cannot complete the engine document of agent {} on node {}",
-                new.key, new.node_id
-            )
-        })?;
+        let completed = self
+            .complete_in_transaction(txn, new.kind, config.as_ref(), CompletionMode::Apply)?
+            .with_context(|| {
+                format!(
+                    "cannot complete the engine document of agent {} on node {}",
+                    new.key, new.node_id
+                )
+            })?;
         if let Some(prior_config) = prior_config.filter(|prior| prior.as_ref() == completed) {
             row.config = Some(prior_config.clone());
             return Ok(Prepared {

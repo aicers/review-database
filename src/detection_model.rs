@@ -5,6 +5,8 @@
 //! nothing else about them. What a model means lives in the table
 //! [`properties`] returns. It is code, never stored in the database.
 
+mod unsupervised;
+
 use std::collections::BTreeMap;
 use std::fmt;
 use std::sync::LazyLock;
@@ -13,9 +15,10 @@ use review_protocol::types::{DetectionModel, RawEventKind, ThreatRole};
 use thiserror::Error;
 use toml_edit::{Array, ArrayOfTables, Document, InlineTable, Item, Table, Value};
 
+pub(crate) use self::unsupervised::detector_models;
 use crate::clustering_model_type::raw_event_kinds_of;
 use crate::event::LearningMethod;
-use crate::{AgentKind, EventCategory};
+use crate::{AgentKind, ClusteringModelTypeRef, EventCategory};
 
 /// The key of the table holding one section per detection model in an engine
 /// configuration document.
@@ -762,6 +765,117 @@ pub enum DetectionModelsSectionError {
     /// A cell of a table-list entry was rejected.
     #[error("{0}")]
     Cell(Box<CellError>),
+    /// `detectors` is present but not an array of tables written with
+    /// `[[detectors]]` headers. Only an Unsupervised Engine document is
+    /// rejected for it.
+    #[error("`detectors` is not an array of tables")]
+    DetectorsNotAnArrayOfTables,
+    /// A detector's `model` is missing or not a string. It is reported inside
+    /// [`DetectionModelsSectionError::Detector`].
+    #[error("`model` is missing or not a string")]
+    ModelNotAString,
+    /// An entry under `detection_models` names a model of the Unsupervised
+    /// Engine that the clustering model type of the detector's model does not
+    /// allow. It is reported inside [`DetectionModelsSectionError::Detector`].
+    #[error(
+        "`detection_models.{section}` names a model the clustering model type of the detector's \
+         model does not allow"
+    )]
+    DisallowedModel { section: String },
+    /// A `[[detectors]]` entry of an Unsupervised Engine document was
+    /// rejected; every rejection of such a document other than
+    /// [`InvalidToml`](Self::InvalidToml) and
+    /// [`DetectorsNotAnArrayOfTables`](Self::DetectorsNotAnArrayOfTables) is
+    /// reported this way.
+    #[error("{0}")]
+    Detector(Box<DetectorError>),
+}
+
+/// The reason a `[[detectors]]` entry of an Unsupervised Engine document was
+/// rejected, with where the offence is and the offending value.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DetectorError {
+    /// The 0-based position of the entry in `detectors`.
+    pub index: usize,
+    /// What was rejected, located within the entry:
+    /// [`ModelNotAString`](DetectionModelsSectionError::ModelNotAString) for
+    /// its `model`, and any other variant, other than
+    /// [`InvalidToml`](DetectionModelsSectionError::InvalidToml),
+    /// [`DetectorsNotAnArrayOfTables`](DetectionModelsSectionError::DetectorsNotAnArrayOfTables)
+    /// and [`Detector`](DetectionModelsSectionError::Detector), as it locates
+    /// the offence within the entry's `detection_models` table.
+    pub error: DetectionModelsSectionError,
+    /// The offending value as TOML text, for a value, `detection_models`
+    /// table, section, list entry or cell of the wrong type, out of its range
+    /// or empty, and for a `model` that is not a string; a number in a list
+    /// that is out of range is given alone. `None` for every other error.
+    pub value: Option<String>,
+}
+
+impl DetectorError {
+    /// Returns the dotted path of the offence from the document root, with
+    /// list positions, such as
+    /// `detectors[0].detection_models.label_db_match.columns[1].db`.
+    #[must_use]
+    pub fn path(&self) -> String {
+        use DetectionModelsSectionError as E;
+
+        let key = |name: &str| toml_edit::Key::new(name).display_repr().into_owned();
+        let detector = format!("detectors[{}]", self.index);
+        let container = format!("{detector}.{DETECTION_MODELS}");
+        match &self.error {
+            E::ModelNotAString => format!("{detector}.model"),
+            E::NotATable => container,
+            E::SectionNotATable { section }
+            | E::UnknownModel { section }
+            | E::ModelOfAnotherEngine { section, .. }
+            | E::DisallowedModel { section } => format!("{container}.{}", key(section)),
+            E::UnknownKey { section, key: name }
+            | E::TypeMismatch {
+                section, key: name, ..
+            }
+            | E::OutOfRange {
+                section, key: name, ..
+            } => format!("{container}.{}.{}", key(section), key(name)),
+            E::EntryNotATable {
+                section,
+                key: name,
+                index,
+            } => format!("{container}.{}.{}[{index}]", key(section), key(name)),
+            E::Cell(cell) => format!(
+                "{container}.{}.{}[{}].{}",
+                key(&cell.section),
+                key(&cell.key),
+                cell.index,
+                key(&cell.cell)
+            ),
+            E::InvalidToml(_) | E::DetectorsNotAnArrayOfTables | E::Detector(_) => detector,
+        }
+    }
+}
+
+impl fmt::Display for DetectorError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "`detectors[{}]`: {}", self.index, self.error)?;
+        if let Some(value) = &self.value {
+            write!(f, " (found `{value}`)")?;
+        }
+        Ok(())
+    }
+}
+
+impl std::error::Error for DetectorError {}
+
+/// How [`complete_engine_document`] treats a section of an Unsupervised
+/// Engine document that the clustering model type of its detector's model
+/// does not allow.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum CompletionMode {
+    /// Refuses the section: the mode of a write that applies a document.
+    Apply,
+    /// Removes the section: the mode of completing a stored applied document
+    /// again, after the type of a model it names may have changed.
+    Recomplete,
 }
 
 /// The reason a cell of a table-list entry was rejected, with where the cell
@@ -829,20 +943,44 @@ impl fmt::Display for CellError {
 
 impl std::error::Error for CellError {}
 
-/// Checks the `[detection_models]` part of an engine configuration document
-/// and completes it with the defaults of the property table.
+/// Checks the detection model sections of an engine configuration document
+/// and completes them with the defaults of the property table.
 ///
-/// For [`AgentKind::SemiSupervised`], every missing section of a model the
-/// Semi-supervised Engine runs is appended at the end of the document, in
-/// model number order, as a standard `[detection_models.<section>]` table, and
-/// every missing operator value is appended at the end of its section. When
-/// `detection_models` is an inline table, missing sections are appended inside
-/// it instead, since TOML cannot extend an inline table with a header. Values
-/// already set are kept, and everything outside the model sections is kept
-/// byte for byte. A complete document is returned unchanged, so completing
-/// any output again is a no-op.
+/// For [`AgentKind::SemiSupervised`], the `[detection_models]` table is
+/// checked and completed the same way in both modes, and `model_type` is never
+/// called: every missing section of a model the Semi-supervised Engine runs is
+/// appended at the end of the document, in model number order, as a standard
+/// `[detection_models.<section>]` table, and every missing operator value is
+/// appended at the end of its section. When `detection_models` is an inline
+/// table, missing sections are appended inside it instead, since TOML cannot
+/// extend an inline table with a header.
 ///
-/// Every other kind is returned unchanged without being checked.
+/// For [`AgentKind::Unsupervised`], each `[[detectors]]` entry has a
+/// `detection_models` table with one section per detection model, such as
+/// `[detectors.detection_models.far_outlier]`. `model_type` maps the name of
+/// the model a detector runs, its `model`, to that model's clustering model
+/// type, `None` if no model has that name. A catalog type allows the
+/// detection models of the current catalog entry of its id, whatever version
+/// the model was trained with, and none if the catalog has no such entry; a
+/// custom model, and a missing one, allow none. Each allowed model missing
+/// its section gets one with every value at its default, each missing value
+/// of an allowed section, or cell with a default of a `columns` entry, is
+/// added at its default, and every value present is kept and checked. A
+/// section of a model the detector does not allow (an unknown section name,
+/// a model of another engine, or a model of the Unsupervised Engine the type
+/// does not allow) is refused in [`CompletionMode::Apply`] and removed in
+/// [`CompletionMode::Recomplete`]. A detector that allows no model is left
+/// with no `detection_models` table: an empty one is removed in both modes.
+/// New sections follow the form of the detector's `detection_models`: a
+/// header table after everything written for the detector, a dotted key
+/// after its last value, or, for an inline table, which is written again as
+/// a whole with the values it holds, an entry of it. A document with no
+/// `detectors` is returned unchanged.
+///
+/// In both kinds, everything outside the detection model sections is kept
+/// byte for byte, and a complete document is returned unchanged, so
+/// completing any output again in either mode is a no-op. Every other kind is
+/// returned unchanged without being checked.
 ///
 /// # Errors
 ///
@@ -854,9 +992,24 @@ impl std::error::Error for CellError {}
 /// is also rejected if an entry is not a table, or if an entry has a cell its
 /// specification does not name, lacks a cell that has no default, or has a
 /// cell whose type, range or emptiness does not match its specification.
+///
+/// For [`AgentKind::Unsupervised`], returns
+/// [`DetectionModelsSectionError::InvalidToml`] if the document is not valid
+/// TOML, [`DetectionModelsSectionError::DetectorsNotAnArrayOfTables`] if
+/// `detectors` is not an array of tables written with `[[detectors]]`
+/// headers, and otherwise a [`DetectionModelsSectionError::Detector`] naming
+/// the entry, if its `model` is missing or not a string, or for any of the
+/// rejections listed for [`AgentKind::SemiSupervised`] in its
+/// `detection_models` table, with a section of a model the detector does not
+/// allow rejected in [`CompletionMode::Apply`] only, as
+/// [`DetectionModelsSectionError::DisallowedModel`] for a model of the
+/// Unsupervised Engine. In [`CompletionMode::Recomplete`] any other error is
+/// returned even when the document also holds a section to remove.
 pub fn complete_engine_document(
     kind: AgentKind,
     document: &str,
+    model_type: &dyn Fn(&str) -> Option<ClusteringModelTypeRef>,
+    mode: CompletionMode,
 ) -> Result<String, DetectionModelsSectionError> {
     match kind {
         AgentKind::SemiSupervised => complete(
@@ -865,10 +1018,19 @@ pub fn complete_engine_document(
             &ALL_MODELS,
             properties,
         ),
-        AgentKind::Unsupervised
-        | AgentKind::Sensor
-        | AgentKind::TimeSeriesGenerator
-        | AgentKind::LogCollector => Ok(document.to_owned()),
+        AgentKind::Unsupervised => unsupervised::complete(document, model_type, mode),
+        AgentKind::Sensor | AgentKind::TimeSeriesGenerator | AgentKind::LogCollector => {
+            Ok(document.to_owned())
+        }
+    }
+}
+
+/// Returns the line ending of `document`: that of its first line, so a CRLF
+/// inside a multi-line string of an LF document does not decide it.
+fn newline_of(document: &str) -> &'static str {
+    match document.split_once('\n') {
+        Some((first_line, _)) if first_line.ends_with('\r') => "\r\n",
+        _ => "\n",
     }
 }
 
@@ -986,12 +1148,7 @@ fn complete<'p>(
         return Ok(document.to_owned());
     }
 
-    // Follow the document's first line ending, so a CRLF inside a multi-line
-    // string of an LF document does not decide it.
-    let newline = match document.split_once('\n') {
-        Some((first_line, _)) if first_line.ends_with('\r') => "\r\n",
-        _ => "\n",
-    };
+    let newline = newline_of(document);
     // Text to insert, by offset into `document`. Insertions at the same offset
     // keep the order they were added in.
     let mut inserts: BTreeMap<usize, String> = BTreeMap::new();
@@ -1508,8 +1665,27 @@ mod tests {
         kind: OperatorValueKind::Bool { default: true },
     }];
 
+    /// Completes `document` as a Semi-supervised Engine document in both
+    /// modes, asserting that the two agree and that the model type lookup is
+    /// never called.
     fn semi(document: &str) -> Result<String, DetectionModelsSectionError> {
-        complete_engine_document(AgentKind::SemiSupervised, document)
+        let lookup = |name: &str| -> Option<ClusteringModelTypeRef> {
+            panic!("the lookup was called for {name:?}")
+        };
+        let apply = complete_engine_document(
+            AgentKind::SemiSupervised,
+            document,
+            &lookup,
+            CompletionMode::Apply,
+        );
+        let recomplete = complete_engine_document(
+            AgentKind::SemiSupervised,
+            document,
+            &lookup,
+            CompletionMode::Recomplete,
+        );
+        assert_eq!(apply, recomplete, "the modes differ for {document:?}");
+        apply
     }
 
     /// Returns every model the Semi-supervised Engine runs, in number order.
@@ -2082,22 +2258,27 @@ rdp_brute_force.enabled = false
 
     #[test]
     fn other_kinds_are_returned_unchanged() {
+        let lookup = |name: &str| -> Option<ClusteringModelTypeRef> {
+            panic!("the lookup was called for {name:?}")
+        };
         for document in [
             "",
             "[detection_models.port_scan]",
             "not [valid toml",
             "x = 1\n",
+            "[[detectors]]\nmodel = 1\n",
         ] {
             for kind in [
-                AgentKind::Unsupervised,
                 AgentKind::Sensor,
                 AgentKind::TimeSeriesGenerator,
                 AgentKind::LogCollector,
             ] {
-                assert_eq!(
-                    complete_engine_document(kind, document).as_deref(),
-                    Ok(document)
-                );
+                for mode in [CompletionMode::Apply, CompletionMode::Recomplete] {
+                    assert_eq!(
+                        complete_engine_document(kind, document, &lookup, mode).as_deref(),
+                        Ok(document)
+                    );
+                }
             }
         }
     }
@@ -2553,20 +2734,6 @@ rdp_brute_force.enabled = false
                     "{document}"
                 );
             }
-        }
-    }
-
-    #[test]
-    fn unsupervised_documents_are_returned_unchanged() {
-        for document in [
-            "[detection_models.label_db_match]\nenabled = true\n",
-            "[detection_models.far_outlier]\nenabled = 1\n",
-            "[detection_models.port_scan]\nenabled = true\n",
-        ] {
-            assert_eq!(
-                complete_engine_document(AgentKind::Unsupervised, document).as_deref(),
-                Ok(document)
-            );
         }
     }
 

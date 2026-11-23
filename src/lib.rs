@@ -53,9 +53,10 @@ pub(crate) use self::collections::{IndexedMap, IndexedMapUpdate, Map};
 pub use self::column_statistics::*;
 pub use self::config_revision::{RecompletedDocument, RecompletionError};
 pub use self::detection_model::{
-    CellError, CellErrorKind, CellKind, CellSpec, DetectionFamily, DetectionModelProperties,
-    DetectionModelsSectionError, OperatorValueKind, OperatorValueSpec, OperatorValueType,
-    PrimarySubjectKind, RoleSource, complete_engine_document, properties,
+    CellError, CellErrorKind, CellKind, CellSpec, CompletionMode, DetectionFamily,
+    DetectionModelProperties, DetectionModelsSectionError, DetectorError, OperatorValueKind,
+    OperatorValueSpec, OperatorValueType, PrimarySubjectKind, RoleSource, complete_engine_document,
+    properties,
 };
 pub use self::event::{
     DetectionEventStamp, EventDb, MAX_RAW_EVENT_KEYS, PutOutcome, RawEventKey, StoredDetectionEvent,
@@ -101,7 +102,8 @@ pub use self::top_n::{
     ClusterTrend, ElementCount, LineSegment, Regression, StructuredColumnType, TopTrendsByColumn,
 };
 pub use self::training::{
-    FixedField, RunReconciliation, StartedTrainingRun, TrainingDefinitionState, TrainingError,
+    CompletedRun, FixedField, RunReconciliation, StartedTrainingRun, TrainingDefinitionState,
+    TrainingError,
 };
 pub use self::training_definition_check::{
     DefinitionKey, DefinitionKeyStatus, TrainingDefinitionRefusal, TrainingDefinitionRefusalCode,

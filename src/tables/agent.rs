@@ -265,8 +265,11 @@ struct Value {
 /// [`AgentKind::SemiSupervised`] or [`AgentKind::Unsupervised`], a `config`
 /// different from the one stored at its key under the same kind stores the
 /// output of [`complete_engine_document`](crate::complete_engine_document)
-/// for it, and records a new revision, with its history row, in the same
-/// transaction when the completed document differs from the stored one. A
+/// for it in [`CompletionMode::Apply`](crate::CompletionMode::Apply), with the
+/// clustering model type of each model an Unsupervised Engine document names
+/// read, and written back unchanged, within the transaction, and records a
+/// new revision, with its history row, in the same transaction when the
+/// completed document differs from the stored one. A
 /// write that keeps the stored `config` bytes under the same kind runs no
 /// completion and records nothing, so it succeeds even over a stored
 /// document that would fail completion. A write that leaves the key with no

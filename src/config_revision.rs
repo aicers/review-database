@@ -11,13 +11,13 @@ use anyhow::{Context, Result};
 use tracing::warn;
 
 use crate::{
-    Agent, AgentConfig, ConfigRevisionRecord, ModelInstance, Store, Table,
-    complete_engine_document,
+    Agent, AgentConfig, AgentKind, CompletionMode, ConfigRevisionRecord, ModelInstance, Store,
+    Table, complete_engine_document,
     tables::{CustomerOf, is_engine},
 };
 
-/// An applied engine document that
-/// [`Store::recomplete_applied_documents`] changed.
+/// An applied engine document that [`Store::recomplete_applied_documents`]
+/// or [`Store::complete_run`] changed.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RecompletedDocument {
     /// The engine instance whose `config` changed.
@@ -31,9 +31,9 @@ pub struct RecompletedDocument {
 /// The failure that ended [`Store::recomplete_applied_documents`], with the
 /// changes it had committed before the failure.
 ///
-/// The failure is any error other than a failure of initial document
-/// completion, which the call logs and skips: reading the agents or a stored
-/// row, converting a completed document into an [`AgentConfig`], updating
+/// The failure is any error other than a failure of document completion,
+/// which the call logs and skips: reading the agents, a stored row or a model
+/// record, converting a completed document into an [`AgentConfig`], updating
 /// the agent, or committing other than on a write conflict.
 #[derive(Debug)]
 pub struct RecompletionError {
@@ -123,25 +123,33 @@ impl Store {
     }
 
     /// Completes the stored applied document, `config`, of every engine
-    /// instance that has one with [`complete_engine_document`], and returns
-    /// an entry for each instance it changed.
+    /// instance that has one with [`complete_engine_document`] in
+    /// [`CompletionMode::Recomplete`], and returns an entry for each instance
+    /// it changed.
+    ///
+    /// A Hog document is completed as it was read. An Unsupervised Engine
+    /// document is completed within the transaction that reads its row again
+    /// and stores it, with the clustering model type of each model its
+    /// detectors name read within that transaction: sections the type no
+    /// longer allows are removed, and allowed sections are filled.
     ///
     /// A document that fails completion is logged as a warning, naming the
-    /// node id, agent key and error, and left unchanged; the call goes on
-    /// with the next instance. A document whose completion equals its stored
-    /// bytes is not written. Any other is stored completed with a new
-    /// revision, in a transaction of its own, so a later failure leaves
-    /// earlier changes in place. A `config` that another write changed after
-    /// this call read it is never overwritten. A commit that conflicts with
-    /// another write is retried.
+    /// node id, agent key and error, and left unchanged with its history; the
+    /// call goes on with the next instance. A document whose completion
+    /// equals its stored bytes is not written. Any other is stored completed
+    /// with a new revision, in a transaction of its own, so a later failure
+    /// leaves earlier changes in place. A `config` that another write changed
+    /// after this call read it is never overwritten. A commit that conflicts
+    /// with another write is retried. A draft is never changed.
     ///
     /// # Errors
     ///
     /// Returns a [`RecompletionError`], ending the call, on any error other
-    /// than a failure of the initial completion:
+    /// than a failure of completion:
     ///
-    /// * the agents, or the stored row of an instance being changed, cannot
-    ///   be read;
+    /// * the agents, the stored row of an instance being changed, or the
+    ///   record of a model an Unsupervised Engine document names, cannot be
+    ///   read;
     /// * the completed document cannot be converted into an [`AgentConfig`];
     /// * the agent update fails, whatever its error. This includes `old value
     ///   mismatch` after a successful completion, for a stored row whose
@@ -164,22 +172,24 @@ impl Store {
             let Some(config) = read.config.as_ref() else {
                 continue;
             };
-            let completed = match complete_engine_document(read.kind, config.as_ref()) {
-                Ok(completed) => completed,
-                Err(error) => {
-                    warn!(
-                        node_id = read.node_id,
-                        agent_key = %read.key,
-                        %error,
-                        "cannot complete the applied engine document; left unchanged"
-                    );
-                    continue;
+            let completed = if read.kind == AgentKind::Unsupervised {
+                None
+            } else {
+                match complete_engine_document(
+                    read.kind,
+                    config.as_ref(),
+                    &|_| None,
+                    CompletionMode::Recomplete,
+                ) {
+                    Ok(completed) if completed == config.as_ref() => continue,
+                    Ok(completed) => Some(completed),
+                    Err(error) => {
+                        warn_left_unchanged(&read, &error);
+                        continue;
+                    }
                 }
             };
-            if completed == config.as_ref() {
-                continue;
-            }
-            match self.store_recompleted(&agents, &read, completed) {
+            match self.store_recompleted(&agents, &read, completed.as_deref()) {
                 Ok(Some(entry)) => committed.push(entry),
                 Ok(None) => {}
                 Err(error) => return Err(RecompletionError { committed, error }),
@@ -188,22 +198,19 @@ impl Store {
         Ok(committed)
     }
 
-    /// Stores `completed` as the `config` of the agent `read` was read as,
+    /// Stores the completion of the `config` of the agent `read` was read as,
     /// with a new revision, unless the stored row no longer has the kind and
     /// `config` of `read`; returns the change, or `None` if it made none.
+    ///
+    /// The completion is `completed`, or, when it is `None`, made within the
+    /// transaction by [`Store::recomplete_in_transaction`].
     fn store_recompleted(
         &self,
         agents: &Table<'_, Agent>,
         read: &Agent,
-        completed: String,
+        completed: Option<&str>,
     ) -> Result<Option<RecompletedDocument>> {
         let key = read.unique_key_bytes();
-        let config = AgentConfig::try_from(completed)
-            .context("the completed engine document is not valid TOML")?;
-        let instance = ModelInstance {
-            node_id: read.node_id,
-            agent_key: read.key.clone(),
-        };
         loop {
             let txn = self.states.db().transaction();
             let Some(stored) = agents.get_for_update(&txn, &key)? else {
@@ -212,29 +219,24 @@ impl Store {
             if stored.kind != read.kind || stored.config != read.config {
                 return Ok(None);
             }
-            let mut new = stored.clone();
-            new.config = Some(config.clone());
-            let written = agents.update_in_transaction(&txn, &stored, &new, CustomerOf::Node)?;
-            let Some(revision) = written.revision else {
+            let staged = match completed {
+                Some(completed) => stage_recompleted(&txn, agents, &stored, completed.to_owned())?,
+                None => self.recomplete_in_transaction(&txn, agents, &stored)?,
+            };
+            let Some(entry) = staged else {
                 return Ok(None);
             };
             #[cfg(test)]
-            self.run_recompletion_hook(&instance)?;
+            self.run_recompletion_hook(&entry.instance)?;
             match txn.commit() {
-                Ok(()) => {
-                    return Ok(Some(RecompletedDocument {
-                        instance,
-                        revision,
-                        document: config.as_ref().to_owned(),
-                    }));
-                }
+                Ok(()) => return Ok(Some(entry)),
                 Err(e) => {
                     if !e.as_ref().starts_with("Resource busy:") {
                         return Err(e).with_context(|| {
                             format!(
                                 "failed to store the completed engine document of agent {} on \
                                  node {}",
-                                instance.agent_key, instance.node_id
+                                entry.instance.agent_key, entry.instance.node_id
                             )
                         });
                     }
@@ -242,6 +244,84 @@ impl Store {
             }
         }
     }
+
+    /// Completes the applied document of `stored`, an agent row read for
+    /// update within `txn`, again in [`CompletionMode::Recomplete`] within
+    /// `txn`, and stages it with a new revision when the completion differs
+    /// from the stored bytes; returns the change, or `None` if it staged none.
+    ///
+    /// A completion failure is logged as a warning, naming the node id, agent
+    /// key and error, and stages nothing.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a model record cannot be read, or if staging the
+    /// change fails.
+    pub(crate) fn recomplete_in_transaction(
+        &self,
+        txn: &rocksdb::Transaction<'_, rocksdb::OptimisticTransactionDB>,
+        agents: &Table<'_, Agent>,
+        stored: &Agent,
+    ) -> Result<Option<RecompletedDocument>> {
+        let Some(config) = stored.config.as_ref() else {
+            return Ok(None);
+        };
+        match self.states.config_revisions().complete_in_transaction(
+            txn,
+            stored.kind,
+            config.as_ref(),
+            CompletionMode::Recomplete,
+        )? {
+            Ok(completed) => stage_recompleted(txn, agents, stored, completed),
+            Err(error) => {
+                warn_left_unchanged(stored, &error);
+                Ok(None)
+            }
+        }
+    }
+}
+
+/// Stages, within `txn`, `completed` as the `config` of `stored`, an
+/// agent row read for update within `txn`, with a new revision, unless it
+/// equals the stored bytes; returns the change, or `None` if it staged
+/// none.
+fn stage_recompleted(
+    txn: &rocksdb::Transaction<'_, rocksdb::OptimisticTransactionDB>,
+    agents: &Table<'_, Agent>,
+    stored: &Agent,
+    completed: String,
+) -> Result<Option<RecompletedDocument>> {
+    if stored
+        .config
+        .as_ref()
+        .is_some_and(|config| config.as_ref() == completed)
+    {
+        return Ok(None);
+    }
+    let config = AgentConfig::try_from(completed)
+        .context("the completed engine document is not valid TOML")?;
+    let mut new = stored.clone();
+    new.config = Some(config.clone());
+    let written = agents.update_in_transaction(txn, stored, &new, CustomerOf::Node)?;
+    Ok(written.revision.map(|revision| RecompletedDocument {
+        instance: ModelInstance {
+            node_id: stored.node_id,
+            agent_key: stored.key.clone(),
+        },
+        revision,
+        document: config.as_ref().to_owned(),
+    }))
+}
+
+/// Logs that the applied document of `agent` failed completion and is left
+/// unchanged.
+fn warn_left_unchanged(agent: &Agent, error: &crate::DetectionModelsSectionError) {
+    warn!(
+        node_id = agent.node_id,
+        agent_key = %agent.key,
+        %error,
+        "cannot complete the applied engine document; left unchanged"
+    );
 }
 
 /// Returns every stored agent of an engine kind that has a `config`.
@@ -289,11 +369,14 @@ mod tests {
 
     use super::*;
     use crate::{
-        AgentKind, AgentStatus, DetectionModelsSectionError, EngineDocumentError,
-        EngineDocumentRefs, EngineDocumentWrite, Iterable, Node, NodeProfile, NodeTable, UniqueKey,
+        AgentKind, AgentStatus, ClusteringModelTypeRef, DetectionModelsSectionError,
+        EngineDocumentError, EngineDocumentRefs, EngineDocumentWrite, Iterable, ModelOwner, Node,
+        NodeProfile, NodeTable, TrainedWith, UniqueKey,
         collections::{Indexed, IndexedMap},
-        tables::{ConfigRevisions, HookPoint, InnerNode, NODES, Value as _, set_hook},
-        test::{DbGuard, acquire_db_permit},
+        tables::{
+            ConfigRevisions, HookPoint, InnerNode, NODES, Value as _, fail_model_reads, set_hook,
+        },
+        test::{DbGuard, acquire_db_permit, capture_warnings},
     };
 
     const CUSTOMER: u32 = 7;
@@ -330,7 +413,80 @@ mod tests {
     }
 
     fn completed(document: &str) -> String {
-        complete_engine_document(AgentKind::SemiSupervised, document).unwrap()
+        complete_engine_document(
+            AgentKind::SemiSupervised,
+            document,
+            &|_| None,
+            CompletionMode::Apply,
+        )
+        .unwrap()
+    }
+
+    /// An Unsupervised Engine model of the `http_url` type.
+    const WEB: &str = "web";
+    /// A custom Unsupervised Engine model.
+    const CUSTOM_MODEL: &str = "custom";
+    const FAR_OUTLIER: &str = "[detectors.detection_models.far_outlier]\nenabled = true\n";
+
+    fn http_url() -> ClusteringModelTypeRef {
+        ClusteringModelTypeRef::Catalog {
+            id: "http_url".to_string(),
+            version: 1,
+        }
+    }
+
+    /// Stores the model `name` of the clustering model type `model_type`
+    /// with [`Store::replace_model`], which changes no applied document.
+    fn put_model(store: &Store, name: &str, model_type: ClusteringModelTypeRef) {
+        let body = crate::model::Model {
+            id: 0,
+            name: name.to_string(),
+            version: 1,
+            kind: "Multifield".to_string(),
+            serialized_classifier: b"classifier".to_vec(),
+            max_event_id_num: 10,
+            raw_event_kind: "http".to_string(),
+            classification_id: 1,
+            batch_info: Vec::new(),
+            scores: [(1, 0.5)].into_iter().collect(),
+            log_kind: None,
+            clustering_model_type: model_type,
+            training_read: crate::TrainingRead::default(),
+            detection_model_states: Vec::new(),
+        };
+        store
+            .replace_model(
+                body,
+                ModelOwner {
+                    customer_id: CUSTOMER,
+                    instance: instance(1, UNSUPERVISED),
+                },
+                Timestamp::UNIX_EPOCH,
+                TrainedWith {
+                    run_id: 1,
+                    definition: "eps = 5.0".to_string(),
+                    sources: Vec::new(),
+                },
+            )
+            .unwrap();
+    }
+
+    /// An Unsupervised Engine document with one detector running `model`.
+    fn detector(model: &str) -> String {
+        format!("[[detectors]]\nmodel = \"{model}\"\n")
+    }
+
+    /// [`detector`] completed for a model of the `http_url` type.
+    fn complete_web(model: &str) -> String {
+        format!(
+            "{}\n[detectors.detection_models.label_db_match]\nenabled = true\nevent_range = \
+             100\nmin_events_ratio = 10\ncolumns = []\n\n{FAR_OUTLIER}",
+            detector(model)
+        )
+    }
+
+    fn unsupervised(node_id: u32, key: &str, config: Option<&str>) -> Agent {
+        agent(node_id, key, AgentKind::Unsupervised, config)
     }
 
     fn agent(node_id: u32, key: &str, kind: AgentKind, config: Option<&str>) -> Agent {
@@ -1428,17 +1584,13 @@ mod tests {
     fn recompletion_completes_incomplete_documents_once() {
         let f = setup();
         let store = &f.store;
+        put_model(store, WEB, http_url());
         let node = put_node(store, "n", CUSTOMER, Vec::new());
         put_raw(store, &hog(node.id, HOG, Some(HOG_A)));
         put_raw(store, &hog(node.id, OTHER_HOG, Some(FAILING_HOG)));
         put_raw(
             store,
-            &agent(
-                node.id,
-                UNSUPERVISED,
-                AgentKind::Unsupervised,
-                Some(UNSUPERVISED_A),
-            ),
+            &unsupervised(node.id, UNSUPERVISED, Some(&detector(WEB))),
         );
         put_raw(
             store,
@@ -1448,11 +1600,18 @@ mod tests {
         let changed = store.recomplete_applied_documents().unwrap();
         assert_eq!(
             changed,
-            vec![RecompletedDocument {
-                instance: instance(node.id, HOG),
-                revision: 1,
-                document: completed(HOG_A),
-            }]
+            vec![
+                RecompletedDocument {
+                    instance: instance(node.id, HOG),
+                    revision: 1,
+                    document: completed(HOG_A),
+                },
+                RecompletedDocument {
+                    instance: instance(node.id, UNSUPERVISED),
+                    revision: 1,
+                    document: complete_web(WEB),
+                },
+            ]
         );
         assert_eq!(
             config_of(&stored_agent(store, node.id, HOG).unwrap()),
@@ -1463,24 +1622,339 @@ mod tests {
         assert_eq!(first.customer_id, Some(CUSTOMER));
         assert_eq!(revision(store, node.id, HOG), Some(1));
         assert_eq!(
-            config_of(&stored_agent(store, node.id, OTHER_HOG).unwrap()),
-            Some(FAILING_HOG)
+            config_of(&stored_agent(store, node.id, UNSUPERVISED).unwrap()),
+            Some(complete_web(WEB).as_str())
         );
         assert_eq!(
-            config_of(&stored_agent(store, node.id, UNSUPERVISED).unwrap()),
-            Some(UNSUPERVISED_A)
+            recorded_document(store, node.id, UNSUPERVISED, 1),
+            Some(complete_web(WEB))
+        );
+        assert_eq!(
+            config_of(&stored_agent(store, node.id, OTHER_HOG).unwrap()),
+            Some(FAILING_HOG)
         );
         assert_eq!(
             config_of(&stored_agent(store, node.id, SENSOR).unwrap()),
             Some(HOG_A)
         );
-        for key in [OTHER_HOG, UNSUPERVISED, SENSOR] {
+        for key in [OTHER_HOG, SENSOR] {
             assert_eq!(revision(store, node.id, key), None);
         }
 
         assert_eq!(store.recomplete_applied_documents().unwrap(), Vec::new());
         assert_eq!(revision(store, node.id, HOG), Some(1));
         assert_eq!(record(store, node.id, HOG, 2), None);
+        assert_eq!(revision(store, node.id, UNSUPERVISED), Some(1));
+        assert_eq!(record(store, node.id, UNSUPERVISED, 2), None);
+    }
+
+    #[test]
+    fn recompletion_follows_the_model_types_of_unsupervised_documents() {
+        const FILLED: &str = "001.reconverge";
+        const PRUNED: &str = "002.reconverge";
+        const COMPLETE: &str = "003.reconverge";
+        const INVALID: &str = "004.reconverge";
+
+        let f = setup();
+        let store = &f.store;
+        put_model(store, WEB, http_url());
+        put_model(store, CUSTOM_MODEL, ClusteringModelTypeRef::Custom);
+        let node = put_node(store, "n", CUSTOMER, Vec::new());
+        let disallowed = format!("{}{FAR_OUTLIER}", detector(CUSTOM_MODEL));
+        let invalid = format!(
+            "{}[detectors.detection_models.far_outlier]\nenabled = 1\n",
+            detector(WEB)
+        );
+        // Revision 1 is recorded by a write, before the stored document
+        // becomes incomplete under the type its model has now.
+        store
+            .agents_map()
+            .put(&unsupervised(node.id, FILLED, Some(&detector("later"))))
+            .unwrap();
+        let mut filled = unsupervised(node.id, FILLED, Some(&detector(WEB)));
+        filled.draft = Some(document(&disallowed));
+        put_raw(store, &filled);
+        put_raw(store, &unsupervised(node.id, PRUNED, Some(&disallowed)));
+        put_raw(
+            store,
+            &unsupervised(node.id, COMPLETE, Some(&complete_web(WEB))),
+        );
+        put_raw(store, &unsupervised(node.id, INVALID, Some(&invalid)));
+
+        let (changed, warnings) = capture_warnings(|| store.recomplete_applied_documents());
+        assert_eq!(
+            changed.unwrap(),
+            vec![
+                RecompletedDocument {
+                    instance: instance(node.id, FILLED),
+                    revision: 2,
+                    document: complete_web(WEB),
+                },
+                RecompletedDocument {
+                    instance: instance(node.id, PRUNED),
+                    revision: 1,
+                    document: detector(CUSTOM_MODEL),
+                },
+            ]
+        );
+        let filled = stored_agent(store, node.id, FILLED).unwrap();
+        assert_eq!(config_of(&filled), Some(complete_web(WEB).as_str()));
+        assert_eq!(revision(store, node.id, FILLED), Some(2));
+        assert_eq!(
+            recorded_document(store, node.id, FILLED, 2),
+            Some(complete_web(WEB))
+        );
+        assert_eq!(
+            recorded_document(store, node.id, FILLED, 1),
+            Some(detector("later"))
+        );
+        assert_eq!(
+            filled.draft.as_ref().map(AsRef::as_ref),
+            Some(disallowed.as_str())
+        );
+        assert_eq!(
+            config_of(&stored_agent(store, node.id, PRUNED).unwrap()),
+            Some(detector(CUSTOM_MODEL).as_str())
+        );
+        assert_eq!(
+            recorded_document(store, node.id, PRUNED, 1),
+            Some(detector(CUSTOM_MODEL))
+        );
+        assert_eq!(
+            config_of(&stored_agent(store, node.id, COMPLETE).unwrap()),
+            Some(complete_web(WEB).as_str())
+        );
+        assert_eq!(
+            config_of(&stored_agent(store, node.id, INVALID).unwrap()),
+            Some(invalid.as_str())
+        );
+        for key in [COMPLETE, INVALID] {
+            assert_eq!(revision(store, node.id, key), None);
+            assert_eq!(record(store, node.id, key, 1), None);
+        }
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        let warning = &warnings[0];
+        assert!(
+            warning.contains(&format!("node_id={}", node.id))
+                && warning.contains(INVALID)
+                && warning.contains("must be a boolean"),
+            "{warning}"
+        );
+
+        assert_eq!(store.recomplete_applied_documents().unwrap(), Vec::new());
+    }
+
+    #[test]
+    fn a_model_read_failure_ends_recompletion_with_what_it_committed() {
+        let f = setup();
+        let store = &f.store;
+        put_model(store, WEB, http_url());
+        let node = put_node(store, "n", CUSTOMER, Vec::new());
+        put_raw(store, &hog(node.id, HOG, Some(HOG_A)));
+        put_raw(
+            store,
+            &unsupervised(node.id, UNSUPERVISED, Some(&detector(WEB))),
+        );
+
+        fail_model_reads(true);
+        let error = store.recomplete_applied_documents().unwrap_err();
+        fail_model_reads(false);
+        assert_eq!(
+            error.committed,
+            vec![RecompletedDocument {
+                instance: instance(node.id, HOG),
+                revision: 1,
+                document: completed(HOG_A),
+            }]
+        );
+        assert!(error.to_string().contains("injected failure"), "{error}");
+        assert_eq!(
+            config_of(&stored_agent(store, node.id, UNSUPERVISED).unwrap()),
+            Some(detector(WEB).as_str())
+        );
+        assert_eq!(revision(store, node.id, UNSUPERVISED), None);
+        assert_eq!(record(store, node.id, UNSUPERVISED, 1), None);
+    }
+
+    /// The writers that can replace a stored Unsupervised Engine agent: each
+    /// takes the stored row and its replacement under the same key.
+    fn unsupervised_replacing_paths() -> Vec<(&'static str, Replace)> {
+        let mut paths: Vec<(&'static str, Replace)> = vec![(
+            "NodeTable::update_with_engine_documents",
+            |store, old, new| {
+                let node = stored(store, old.node_id);
+                let documents = [EngineDocumentWrite {
+                    agent_key: new.key.clone(),
+                    applied: Some(EngineDocumentRefs::default()),
+                    pending: None,
+                }];
+                update_node_with_documents(store, &node, &with_agent(&node, new), &documents)
+                    .map(drop)
+            },
+        )];
+        paths.extend(
+            replacing_paths()
+                .into_iter()
+                .filter(|(name, _)| !name.starts_with("NodeTable")),
+        );
+        paths
+    }
+
+    #[test]
+    fn every_path_completes_an_unsupervised_document_in_apply_mode() {
+        for (name, replace) in unsupervised_replacing_paths() {
+            let f = setup();
+            let store = &f.store;
+            put_model(store, WEB, http_url());
+            put_model(store, CUSTOM_MODEL, ClusteringModelTypeRef::Custom);
+            let node = put_node(
+                store,
+                "n",
+                CUSTOMER,
+                vec![unsupervised(0, UNSUPERVISED, Some(&detector("missing")))],
+            );
+            assert_eq!(
+                config_of(&node.agents[0]),
+                Some(detector("missing").as_str()),
+                "{name}"
+            );
+            assert_eq!(revision(store, node.id, UNSUPERVISED), Some(1), "{name}");
+            let change = |config: &str| {
+                let old = stored_agent(store, node.id, UNSUPERVISED).unwrap();
+                let mut new = old.clone();
+                new.config = Some(document(config));
+                replace(store, &old, &new)
+            };
+
+            change(&detector(WEB)).unwrap();
+            let stored_config = || {
+                config_of(&stored_agent(store, node.id, UNSUPERVISED).unwrap())
+                    .map(ToOwned::to_owned)
+            };
+            assert_eq!(stored_config(), Some(complete_web(WEB)), "{name}");
+            assert_eq!(revision(store, node.id, UNSUPERVISED), Some(2), "{name}");
+            assert_eq!(
+                recorded_document(store, node.id, UNSUPERVISED, 2),
+                Some(complete_web(WEB)),
+                "{name}"
+            );
+
+            // Refused in apply mode, changing nothing.
+            let error = change(&format!("{}{FAR_OUTLIER}", detector(CUSTOM_MODEL))).unwrap_err();
+            match error.downcast_ref::<DetectionModelsSectionError>() {
+                Some(DetectionModelsSectionError::Detector(detector)) => assert_eq!(
+                    detector.error,
+                    DetectionModelsSectionError::DisallowedModel {
+                        section: "far_outlier".to_string()
+                    },
+                    "{name}"
+                ),
+                other => panic!("{name}: {other:?}: {error:#}"),
+            }
+            assert_eq!(stored_config(), Some(complete_web(WEB)), "{name}");
+            assert_eq!(revision(store, node.id, UNSUPERVISED), Some(2), "{name}");
+
+            // An input completing to the stored bytes records nothing.
+            change(&detector(WEB)).unwrap();
+            assert_eq!(stored_config(), Some(complete_web(WEB)), "{name}");
+            assert_eq!(revision(store, node.id, UNSUPERVISED), Some(2), "{name}");
+            assert_eq!(record(store, node.id, UNSUPERVISED, 3), None, "{name}");
+
+            // A model record read failure fails the write, changing nothing.
+            fail_model_reads(true);
+            let error = change(&detector(CUSTOM_MODEL)).unwrap_err();
+            fail_model_reads(false);
+            assert!(
+                error
+                    .downcast_ref::<DetectionModelsSectionError>()
+                    .is_none(),
+                "{name}: {error:#}"
+            );
+            assert!(format!("{error:#}").contains("injected failure"), "{name}");
+            assert_eq!(stored_config(), Some(complete_web(WEB)), "{name}");
+            assert_eq!(revision(store, node.id, UNSUPERVISED), Some(2), "{name}");
+            assert_eq!(record(store, node.id, UNSUPERVISED, 3), None, "{name}");
+        }
+    }
+
+    #[test]
+    fn every_creating_path_completes_an_unsupervised_document_in_apply_mode() {
+        let mut paths = creating_paths();
+        paths.push(("NodeTable::put", |store, node, new| {
+            store
+                .node_map()
+                .put(&new_node(
+                    &format!("{}-put", node.name),
+                    CUSTOMER,
+                    vec![new.clone()],
+                ))
+                .map(drop)
+        }));
+        for (name, create) in paths {
+            let f = setup();
+            let store = &f.store;
+            put_model(store, WEB, http_url());
+            put_model(store, CUSTOM_MODEL, ClusteringModelTypeRef::Custom);
+            let node = put_node(store, "n", CUSTOMER, Vec::new());
+            // `NodeTable::put` stores a node of its own, with the next id.
+            let node_id = if name == "NodeTable::put" {
+                node.id + 1
+            } else {
+                node.id
+            };
+
+            let refused = format!("{}{FAR_OUTLIER}", detector(CUSTOM_MODEL));
+            let error = create(
+                store,
+                &node,
+                &unsupervised(node_id, UNSUPERVISED, Some(&refused)),
+            )
+            .unwrap_err();
+            assert_completion_error(&error);
+            assert_eq!(revision(store, node_id, UNSUPERVISED), None, "{name}");
+
+            create(
+                store,
+                &node,
+                &unsupervised(node_id, UNSUPERVISED, Some(&detector(WEB))),
+            )
+            .unwrap();
+            let agent = stored_agent(store, node_id, UNSUPERVISED).unwrap();
+            assert_eq!(
+                config_of(&agent),
+                Some(complete_web(WEB).as_str()),
+                "{name}"
+            );
+            assert_eq!(revision(store, node_id, UNSUPERVISED), Some(1), "{name}");
+            assert_eq!(
+                recorded_document(store, node_id, UNSUPERVISED, 1),
+                Some(complete_web(WEB)),
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_write_keeping_an_unsupervised_config_looks_up_no_model() {
+        let f = setup();
+        let store = &f.store;
+        put_model(store, CUSTOM_MODEL, ClusteringModelTypeRef::Custom);
+        let node = put_node(store, "n", CUSTOMER, Vec::new());
+        // A stored document apply mode would refuse.
+        let refused = format!("{}{FAR_OUTLIER}", detector(CUSTOM_MODEL));
+        let stored_row = unsupervised(node.id, UNSUPERVISED, Some(&refused));
+        put_raw(store, &stored_row);
+
+        let mut new = stored_row.clone();
+        new.status = AgentStatus::Disabled;
+        fail_model_reads(true);
+        let result = store.agents_map().update(&stored_row, &new);
+        fail_model_reads(false);
+        result.unwrap();
+        let agent = stored_agent(store, node.id, UNSUPERVISED).unwrap();
+        assert_eq!(agent.status, AgentStatus::Disabled);
+        assert_eq!(config_of(&agent), Some(refused.as_str()));
+        assert_eq!(revision(store, node.id, UNSUPERVISED), None);
     }
 
     #[test]
