@@ -3,6 +3,7 @@ mod batch_info;
 mod category;
 mod classifier_fs;
 mod cluster;
+mod clustering_model_type;
 mod collections;
 mod column_statistics;
 mod config_revision;
@@ -41,14 +42,19 @@ use thiserror::Error;
 pub use self::batch_info::BatchInfo;
 pub use self::category::Category;
 pub use self::cluster::*;
+pub use self::clustering_model_type::{
+    ClusteringApproach, ClusteringModelType, ClusteringModelTypeRef, DefinitionValue,
+    DefinitionValueRange, DefinitionValueType, FixedValue, TypeOperatorValue,
+    clustering_model_type, clustering_model_types,
+};
 pub use self::collections::Indexable;
 pub(crate) use self::collections::{IndexedMap, IndexedMapUpdate, Map};
 pub use self::column_statistics::*;
 pub use self::config_revision::{RecompletedDocument, RecompletionError};
 pub use self::detection_model::{
-    DetectionFamily, DetectionModelProperties, DetectionModelsSectionError, OperatorValueKind,
-    OperatorValueSpec, OperatorValueType, PrimarySubjectKind, RoleSource, complete_engine_document,
-    properties,
+    CellError, CellErrorKind, CellKind, CellSpec, DetectionFamily, DetectionModelProperties,
+    DetectionModelsSectionError, OperatorValueKind, OperatorValueSpec, OperatorValueType,
+    PrimarySubjectKind, RoleSource, complete_engine_document, properties,
 };
 pub use self::event::{
     DetectionEventStamp, EventDb, MAX_RAW_EVENT_KEYS, PutOutcome, RawEventKey, StoredDetectionEvent,
