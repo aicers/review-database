@@ -7,11 +7,13 @@
 
 use std::collections::BTreeMap;
 use std::fmt;
+use std::sync::LazyLock;
 
 use review_protocol::types::{DetectionModel, RawEventKind, ThreatRole};
 use thiserror::Error;
-use toml_edit::{Array, Document, InlineTable, Item, Table, Value};
+use toml_edit::{Array, ArrayOfTables, Document, InlineTable, Item, Table, Value};
 
+use crate::clustering_model_type::raw_event_kinds_of;
 use crate::event::LearningMethod;
 use crate::{AgentKind, EventCategory};
 
@@ -24,7 +26,7 @@ const DETECTION_MODELS: &str = "detection_models";
 const ENABLED: &str = "enabled";
 
 /// Every detection model, in number order.
-const ALL_MODELS: [DetectionModel; 18] = [
+const ALL_MODELS: [DetectionModel; 20] = [
     DetectionModel::WatchlistMatch,
     DetectionModel::CryptocurrencyMiningPool,
     DetectionModel::LockyRansomware,
@@ -43,6 +45,26 @@ const ALL_MODELS: [DetectionModel; 18] = [
     DetectionModel::DomainGenerationAlgorithm,
     DetectionModel::DnsCovertChannel,
     DetectionModel::UnusualDestinationPattern,
+    DetectionModel::LabelDbMatch,
+    DetectionModel::FarOutlier,
+];
+
+/// Every event category, in number order.
+const ALL_CATEGORIES: [EventCategory; 14] = [
+    EventCategory::Reconnaissance,
+    EventCategory::InitialAccess,
+    EventCategory::Execution,
+    EventCategory::CredentialAccess,
+    EventCategory::Discovery,
+    EventCategory::LateralMovement,
+    EventCategory::CommandAndControl,
+    EventCategory::Exfiltration,
+    EventCategory::Impact,
+    EventCategory::Collection,
+    EventCategory::DefenseEvasion,
+    EventCategory::Persistence,
+    EventCategory::PrivilegeEscalation,
+    EventCategory::ResourceDevelopment,
 ];
 
 /// The operator values of a model that can only be turned on or off.
@@ -96,7 +118,8 @@ pub enum PrimarySubjectKind {
     Network(RoleSource),
 }
 
-/// The type of an operator value, without its default or range.
+/// The type of an operator value or of a cell of a table-list entry, without
+/// its default or range.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum OperatorValueType {
     /// A boolean.
@@ -107,6 +130,12 @@ pub enum OperatorValueType {
     Float,
     /// A list of strings.
     StringList,
+    /// A list of tables, each with the cells its specification names.
+    TableList,
+    /// A non-empty list of 64-bit signed integers; only a cell has this type.
+    IntegerList,
+    /// A non-empty string; only a cell has this type.
+    NonEmptyString,
 }
 
 impl fmt::Display for OperatorValueType {
@@ -116,22 +145,34 @@ impl fmt::Display for OperatorValueType {
             Self::Integer => "an integer",
             Self::Float => "a float",
             Self::StringList => "a list of strings",
+            Self::TableList => "a list of tables",
+            Self::IntegerList => "a non-empty list of integers",
+            Self::NonEmptyString => "a non-empty string",
         })
     }
 }
 
 /// The type of an operator value, with its default and, for a number, the
-/// inclusive range an operator may set it within.
+/// range an operator may set it within.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum OperatorValueKind {
     /// A boolean.
     Bool { default: bool },
     /// An integer within `min..=max`.
     Integer { min: i64, max: i64, default: i64 },
-    /// A float within `min..=max`.
-    Float { min: f64, max: f64, default: f64 },
+    /// A float within `min..=max`, or, when `min_exclusive` is set, greater
+    /// than `min` and at most `max`.
+    Float {
+        min: f64,
+        max: f64,
+        min_exclusive: bool,
+        default: f64,
+    },
     /// A list of strings.
     StringList { default: &'static [&'static str] },
+    /// A list of tables, each with exactly the cells of `cells`, less those
+    /// left out that have a default. The default is an empty list.
+    TableList { cells: &'static [CellSpec] },
 }
 
 impl OperatorValueKind {
@@ -143,6 +184,7 @@ impl OperatorValueKind {
             Self::Integer { .. } => OperatorValueType::Integer,
             Self::Float { .. } => OperatorValueType::Float,
             Self::StringList { .. } => OperatorValueType::StringList,
+            Self::TableList { .. } => OperatorValueType::TableList,
         }
     }
 
@@ -153,8 +195,82 @@ impl OperatorValueKind {
             Self::Integer { default, .. } => default.into(),
             Self::Float { default, .. } => default.into(),
             Self::StringList { default } => default.iter().copied().collect::<Array>().into(),
+            Self::TableList { .. } => Array::new().into(),
         }
     }
+}
+
+/// The type of a cell of a table-list entry, with its range where one applies
+/// and its default where one applies. A cell without a default must be
+/// present in every entry.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum CellKind {
+    /// A boolean.
+    Bool { default: Option<bool> },
+    /// An integer within `min..=max`.
+    Integer {
+        min: i64,
+        max: i64,
+        default: Option<i64>,
+    },
+    /// A float within `min..=max`, or, when `min_exclusive` is set, greater
+    /// than `min` and at most `max`.
+    Float {
+        min: f64,
+        max: f64,
+        min_exclusive: bool,
+        default: Option<f64>,
+    },
+    /// A list of strings.
+    StringList {
+        default: Option<&'static [&'static str]>,
+    },
+    /// A non-empty list of integers, each within `min..=max`.
+    IntegerList {
+        min: i64,
+        max: i64,
+        default: Option<&'static [i64]>,
+    },
+    /// A non-empty string.
+    NonEmptyString { default: Option<&'static str> },
+}
+
+impl CellKind {
+    /// Returns the type of the cell, without its default or range.
+    #[must_use]
+    pub fn value_type(&self) -> OperatorValueType {
+        match self {
+            Self::Bool { .. } => OperatorValueType::Bool,
+            Self::Integer { .. } => OperatorValueType::Integer,
+            Self::Float { .. } => OperatorValueType::Float,
+            Self::StringList { .. } => OperatorValueType::StringList,
+            Self::IntegerList { .. } => OperatorValueType::IntegerList,
+            Self::NonEmptyString { .. } => OperatorValueType::NonEmptyString,
+        }
+    }
+
+    /// Returns whether the cell has a default, which completion fills in
+    /// when the cell is left out.
+    #[must_use]
+    pub fn has_default(&self) -> bool {
+        match self {
+            Self::Bool { default } => default.is_some(),
+            Self::Integer { default, .. } => default.is_some(),
+            Self::Float { default, .. } => default.is_some(),
+            Self::StringList { default } => default.is_some(),
+            Self::IntegerList { default, .. } => default.is_some(),
+            Self::NonEmptyString { default } => default.is_some(),
+        }
+    }
+}
+
+/// A cell of the entries of a table-list operator value.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CellSpec {
+    /// The key of the cell in an entry.
+    pub name: &'static str,
+    /// The type of the cell, with its range and default.
+    pub kind: CellKind,
 }
 
 /// A value an operator may set for a detection model, in that model's section
@@ -211,7 +327,101 @@ const fn semi_supervised(
     }
 }
 
+/// The cells of an entry of `LabelDbMatch`'s `columns`.
+const LABEL_DB_MATCH_COLUMNS: &[CellSpec] = &[
+    CellSpec {
+        name: "column_ids",
+        kind: CellKind::IntegerList {
+            min: 0,
+            max: i64::MAX,
+            default: None,
+        },
+    },
+    CellSpec {
+        name: "db",
+        kind: CellKind::NonEmptyString { default: None },
+    },
+    CellSpec {
+        name: "min_score",
+        kind: CellKind::Float {
+            min: 0.0,
+            max: 1.0,
+            min_exclusive: true,
+            default: Some(0.7),
+        },
+    },
+];
+
+/// The operator values of `LabelDbMatch`.
+const LABEL_DB_MATCH_VALUES: &[OperatorValueSpec] = &[
+    OperatorValueSpec {
+        name: ENABLED,
+        kind: OperatorValueKind::Bool { default: true },
+    },
+    OperatorValueSpec {
+        name: "event_range",
+        kind: OperatorValueKind::Integer {
+            min: 1,
+            max: 100,
+            default: 100,
+        },
+    },
+    OperatorValueSpec {
+        name: "min_events_ratio",
+        kind: OperatorValueKind::Integer {
+            min: 0,
+            max: 100,
+            default: 10,
+        },
+    },
+    OperatorValueSpec {
+        name: "columns",
+        kind: OperatorValueKind::TableList {
+            cells: LABEL_DB_MATCH_COLUMNS,
+        },
+    },
+];
+
+/// The raw event kinds of `LabelDbMatch`, from the clustering model type
+/// catalog.
+static LABEL_DB_MATCH_KINDS: LazyLock<Vec<RawEventKind>> =
+    LazyLock::new(|| raw_event_kinds_of(DetectionModel::LabelDbMatch));
+
+/// The raw event kinds of `FarOutlier`, from the clustering model type catalog.
+static FAR_OUTLIER_KINDS: LazyLock<Vec<RawEventKind>> =
+    LazyLock::new(|| raw_event_kinds_of(DetectionModel::FarOutlier));
+
+static LABEL_DB_MATCH: LazyLock<DetectionModelProperties> =
+    LazyLock::new(|| DetectionModelProperties {
+        family: DetectionFamily::KnownThreat,
+        categories: &ALL_CATEGORIES,
+        learning_method: LearningMethod::Unsupervised,
+        raw_event_kinds: LABEL_DB_MATCH_KINDS.as_slice(),
+        primary_subject: PrimarySubjectKind::RawEvent,
+        score_meaning: "Rule confidence if the rule has one, otherwise the match score (share \
+                        of rule tokens matched for token rules, 1.0 for exact, URL, IP and \
+                        regex rules).",
+        requires_device_account_identification: false,
+        operator_values: LABEL_DB_MATCH_VALUES,
+    });
+
+static FAR_OUTLIER: LazyLock<DetectionModelProperties> =
+    LazyLock::new(|| DetectionModelProperties {
+        family: DetectionFamily::ClusteringAnomaly,
+        categories: &[],
+        learning_method: LearningMethod::Unsupervised,
+        raw_event_kinds: FAR_OUTLIER_KINDS.as_slice(),
+        primary_subject: PrimarySubjectKind::RawEvent,
+        score_meaning: "Token distance from the nearest known cluster prefix (1 \u{2212} \
+                        matched share).",
+        requires_device_account_identification: false,
+        operator_values: ENABLED_ONLY,
+    });
+
 /// Returns the static properties of a detection model.
+///
+/// The raw event kinds of a model the Unsupervised Engine runs are those of
+/// the clustering model types that allow it.
 ///
 /// The match is exhaustive with no wildcard arm on purpose: a model added by a
 /// later review-protocol release fails to compile until its row exists.
@@ -463,6 +673,8 @@ pub fn properties(model: DetectionModel) -> &'static DetectionModelProperties {
                 )
             }
         }
+        DetectionModel::LabelDbMatch => &LABEL_DB_MATCH,
+        DetectionModel::FarOutlier => &FAR_OUTLIER,
     }
 }
 
@@ -488,6 +700,8 @@ pub(crate) fn section_name(model: DetectionModel) -> &'static str {
         DetectionModel::DomainGenerationAlgorithm => "domain_generation_algorithm",
         DetectionModel::DnsCovertChannel => "dns_covert_channel",
         DetectionModel::UnusualDestinationPattern => "unusual_destination_pattern",
+        DetectionModel::LabelDbMatch => "label_db_match",
+        DetectionModel::FarOutlier => "far_outlier",
     }
 }
 
@@ -527,7 +741,8 @@ pub enum DetectionModelsSectionError {
         key: String,
         expected: OperatorValueType,
     },
-    /// A number is outside its specification's inclusive range.
+    /// A number is outside its specification's range. An exclusive `min` is
+    /// followed by ` (exclusive)`.
     #[error("`detection_models.{section}.{key}` is {value}, outside the range {min} to {max}")]
     OutOfRange {
         section: String,
@@ -536,7 +751,83 @@ pub enum DetectionModelsSectionError {
         min: String,
         max: String,
     },
+    /// An entry of a table-list value, at the 0-based position `index`, is
+    /// not a table.
+    #[error("`detection_models.{section}.{key}[{index}]` is not a table")]
+    EntryNotATable {
+        section: String,
+        key: String,
+        index: usize,
+    },
+    /// A cell of a table-list entry was rejected.
+    #[error("{0}")]
+    Cell(Box<CellError>),
 }
+
+/// The reason a cell of a table-list entry was rejected, with where the cell
+/// is.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CellError {
+    /// The model's section under `detection_models`.
+    pub section: String,
+    /// The table-list operator value.
+    pub key: String,
+    /// The 0-based position of the entry in the list.
+    pub index: usize,
+    /// The name of the cell.
+    pub cell: String,
+    /// What is wrong with the cell.
+    pub kind: CellErrorKind,
+}
+
+/// What is wrong with a cell of a table-list entry.
+#[derive(Clone, Debug, PartialEq)]
+pub enum CellErrorKind {
+    /// The entry has a cell its specification does not name.
+    Unknown,
+    /// The entry lacks a cell that has no default.
+    Missing,
+    /// The cell's type does not match its specification.
+    TypeMismatch { expected: OperatorValueType },
+    /// The cell's number, or a number in the cell's list, is outside the
+    /// cell's range. An exclusive `min` is followed by ` (exclusive)`.
+    OutOfRange {
+        value: String,
+        min: String,
+        max: String,
+    },
+    /// The cell, a list or a string that must not be empty, is empty.
+    Empty,
+}
+
+impl fmt::Display for CellError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let Self {
+            section,
+            key,
+            index,
+            cell,
+            kind,
+        } = self;
+        let entry = format!("`{DETECTION_MODELS}.{section}.{key}[{index}]");
+        match kind {
+            CellErrorKind::Unknown => write!(f, "{entry}` has no cell `{cell}`"),
+            CellErrorKind::Missing => {
+                write!(f, "{entry}` lacks the cell `{cell}`, which has no default")
+            }
+            CellErrorKind::TypeMismatch { expected } => {
+                write!(f, "{entry}.{cell}` must be {expected}")
+            }
+            CellErrorKind::OutOfRange { value, min, max } => write!(
+                f,
+                "{entry}.{cell}` has {value}, outside the range {min} to {max}"
+            ),
+            CellErrorKind::Empty => write!(f, "{entry}.{cell}` must not be empty"),
+        }
+    }
+}
+
+impl std::error::Error for CellError {}
 
 /// Checks the `[detection_models]` part of an engine configuration document
 /// and completes it with the defaults of the property table.
@@ -559,7 +850,10 @@ pub enum DetectionModelsSectionError {
 /// valid TOML; if `detection_models` is not a table; or if an entry under it
 /// is not a table, names no detection model or a model of another engine,
 /// has a key that is not one of the model's operator values, or has a value
-/// whose type or range does not match its specification.
+/// whose type or range does not match its specification. A table-list value
+/// is also rejected if an entry is not a table, or if an entry has a cell its
+/// specification does not name, lacks a cell that has no default, or has a
+/// cell whose type, range or emptiness does not match its specification.
 pub fn complete_engine_document(
     kind: AgentKind,
     document: &str,
@@ -590,6 +884,8 @@ enum Child<'a> {
     Node(Node<'a>),
     Value(&'a Value),
     /// An array of tables.
+    Tables(&'a ArrayOfTables),
+    /// Nothing.
     Other,
 }
 
@@ -598,7 +894,8 @@ impl<'a> Child<'a> {
         match item {
             Item::Table(t) => Self::Node(Node::Table(t)),
             Item::Value(v) => Self::from_value(v),
-            Item::ArrayOfTables(_) | Item::None => Self::Other,
+            Item::ArrayOfTables(t) => Self::Tables(t),
+            Item::None => Self::Other,
         }
     }
 
@@ -642,7 +939,7 @@ impl<'a> Node<'a> {
                 Child::Value(v) => v.span().map(|s| s.end),
                 Child::Node(node) if node.is_dotted() => node.last_value_end(),
                 Child::Node(Node::Inline(t)) => t.span().map(|s| s.end),
-                Child::Node(Node::Table(_)) | Child::Other => None,
+                Child::Node(Node::Table(_)) | Child::Tables(_) | Child::Other => None,
             })
             .max()
     }
@@ -671,7 +968,9 @@ fn complete<'p>(
         None => None,
         Some(item) => match Child::from_item(item) {
             Child::Node(node) => Some(node),
-            Child::Value(_) | Child::Other => return Err(DetectionModelsSectionError::NotATable),
+            Child::Value(_) | Child::Tables(_) | Child::Other => {
+                return Err(DetectionModelsSectionError::NotATable);
+            }
         },
     };
     let incomplete = check_sections(container, engine, models, &properties)?;
@@ -807,28 +1106,44 @@ fn append_section(
     }
 }
 
+/// Returns whether `value` is within `min..=max`, or, when `min_exclusive`
+/// is set, greater than `min` and at most `max`. `NaN` is within no range.
+fn float_in_range(value: f64, min: f64, max: f64, min_exclusive: bool) -> bool {
+    let above_min = if min_exclusive {
+        value > min
+    } else {
+        value >= min
+    };
+    above_min && value <= max
+}
+
+/// Returns the lower bound of a float range as an error states it.
+fn float_min_text(min: f64, min_exclusive: bool) -> String {
+    if min_exclusive {
+        format!("{min} (exclusive)")
+    } else {
+        min.to_string()
+    }
+}
+
 /// Checks a value against its specification.
 fn check_value(
     section: &str,
     spec: &OperatorValueSpec,
     child: &Child<'_>,
 ) -> Result<(), DetectionModelsSectionError> {
-    fn out_of_range<T: ToString + Copy>(
-        section: &str,
-        spec: &OperatorValueSpec,
-        value: T,
-        min: T,
-        max: T,
-    ) -> DetectionModelsSectionError {
-        DetectionModelsSectionError::OutOfRange {
+    let out_of_range =
+        |value: String, min: String, max: String| DetectionModelsSectionError::OutOfRange {
             section: section.to_owned(),
             key: spec.name.to_owned(),
-            value: value.to_string(),
-            min: min.to_string(),
-            max: max.to_string(),
-        }
-    }
+            value,
+            min,
+            max,
+        };
 
+    if let OperatorValueKind::TableList { cells } = spec.kind {
+        return check_table_list(section, spec, cells, child);
+    }
     let Child::Value(value) = child else {
         return Err(type_mismatch(section, spec));
     };
@@ -839,15 +1154,31 @@ fn check_value(
             if (min..=max).contains(&v) {
                 Ok(())
             } else {
-                Err(out_of_range(section, spec, v, min, max))
+                Err(out_of_range(
+                    v.to_string(),
+                    min.to_string(),
+                    max.to_string(),
+                ))
             }
         }
-        (OperatorValueKind::Float { min, max, .. }, Value::Float(v)) => {
+        (
+            OperatorValueKind::Float {
+                min,
+                max,
+                min_exclusive,
+                ..
+            },
+            Value::Float(v),
+        ) => {
             let v = *v.value();
-            if (min..=max).contains(&v) {
+            if float_in_range(v, min, max, min_exclusive) {
                 Ok(())
             } else {
-                Err(out_of_range(section, spec, v, min, max))
+                Err(out_of_range(
+                    v.to_string(),
+                    float_min_text(min, min_exclusive),
+                    max.to_string(),
+                ))
             }
         }
         (OperatorValueKind::StringList { .. }, Value::Array(items))
@@ -856,6 +1187,164 @@ fn check_value(
             Ok(())
         }
         _ => Err(type_mismatch(section, spec)),
+    }
+}
+
+/// Checks a table-list value against the cells of its specification.
+///
+/// Both an array of inline tables and an array of tables are a list of
+/// tables.
+fn check_table_list(
+    section: &str,
+    spec: &OperatorValueSpec,
+    cells: &[CellSpec],
+    child: &Child<'_>,
+) -> Result<(), DetectionModelsSectionError> {
+    let entries: Vec<Option<Node<'_>>> = match child {
+        Child::Value(Value::Array(items)) => items
+            .iter()
+            .map(|item| match item {
+                Value::InlineTable(t) => Some(Node::Inline(t)),
+                _ => None,
+            })
+            .collect(),
+        Child::Tables(tables) => tables.iter().map(|t| Some(Node::Table(t))).collect(),
+        _ => return Err(type_mismatch(section, spec)),
+    };
+    for (index, entry) in entries.into_iter().enumerate() {
+        let Some(entry) = entry else {
+            return Err(DetectionModelsSectionError::EntryNotATable {
+                section: section.to_owned(),
+                key: spec.name.to_owned(),
+                index,
+            });
+        };
+        let at = CellAt {
+            section,
+            key: spec.name,
+            index,
+        };
+        for (name, child) in entry.entries() {
+            let Some(cell) = cells.iter().find(|c| c.name == name) else {
+                return Err(at.error(name, CellErrorKind::Unknown));
+            };
+            at.check(cell, &child)?;
+        }
+        if let Some(cell) = cells
+            .iter()
+            .find(|c| !c.kind.has_default() && !entry.contains_key(c.name))
+        {
+            return Err(at.error(cell.name, CellErrorKind::Missing));
+        }
+    }
+    Ok(())
+}
+
+/// Where a cell is: its section, its table-list value and its entry.
+struct CellAt<'a> {
+    section: &'a str,
+    key: &'a str,
+    index: usize,
+}
+
+impl CellAt<'_> {
+    /// Returns the error of the cell `cell` of this entry.
+    fn error(&self, cell: &str, kind: CellErrorKind) -> DetectionModelsSectionError {
+        DetectionModelsSectionError::Cell(Box::new(CellError {
+            section: self.section.to_owned(),
+            key: self.key.to_owned(),
+            index: self.index,
+            cell: cell.to_owned(),
+            kind,
+        }))
+    }
+
+    /// Checks a cell against its specification.
+    fn check(&self, cell: &CellSpec, child: &Child<'_>) -> Result<(), DetectionModelsSectionError> {
+        let out_of_range = |value: String, min: String, max: String| {
+            self.error(cell.name, CellErrorKind::OutOfRange { value, min, max })
+        };
+        let empty = || self.error(cell.name, CellErrorKind::Empty);
+        let mismatch = || {
+            self.error(
+                cell.name,
+                CellErrorKind::TypeMismatch {
+                    expected: cell.kind.value_type(),
+                },
+            )
+        };
+
+        let Child::Value(value) = child else {
+            return Err(mismatch());
+        };
+        match (cell.kind, value) {
+            (CellKind::Bool { .. }, Value::Boolean(_)) => Ok(()),
+            (CellKind::Integer { min, max, .. }, Value::Integer(v)) => {
+                let v = *v.value();
+                if (min..=max).contains(&v) {
+                    Ok(())
+                } else {
+                    Err(out_of_range(
+                        v.to_string(),
+                        min.to_string(),
+                        max.to_string(),
+                    ))
+                }
+            }
+            (
+                CellKind::Float {
+                    min,
+                    max,
+                    min_exclusive,
+                    ..
+                },
+                Value::Float(v),
+            ) => {
+                let v = *v.value();
+                if float_in_range(v, min, max, min_exclusive) {
+                    Ok(())
+                } else {
+                    Err(out_of_range(
+                        v.to_string(),
+                        float_min_text(min, min_exclusive),
+                        max.to_string(),
+                    ))
+                }
+            }
+            (CellKind::StringList { .. }, Value::Array(items))
+                if items.iter().all(|item| matches!(item, Value::String(_))) =>
+            {
+                Ok(())
+            }
+            (CellKind::IntegerList { min, max, .. }, Value::Array(items)) => {
+                let mut integers = Vec::with_capacity(items.len());
+                for item in items {
+                    let Value::Integer(v) = item else {
+                        return Err(mismatch());
+                    };
+                    integers.push(*v.value());
+                }
+                if integers.is_empty() {
+                    return Err(empty());
+                }
+                match integers.into_iter().find(|v| !(min..=max).contains(v)) {
+                    None => Ok(()),
+                    Some(v) => Err(out_of_range(
+                        v.to_string(),
+                        min.to_string(),
+                        max.to_string(),
+                    )),
+                }
+            }
+            (CellKind::NonEmptyString { .. }, Value::String(v)) => {
+                if v.value().is_empty() {
+                    Err(empty())
+                } else {
+                    Ok(())
+                }
+            }
+            _ => Err(mismatch()),
+        }
     }
 }
 
@@ -1001,20 +1490,25 @@ mod tests {
         complete_engine_document(AgentKind::SemiSupervised, document)
     }
 
+    /// Returns every model the Semi-supervised Engine runs, in number order.
+    fn semi_models() -> impl Iterator<Item = DetectionModel> {
+        ALL_MODELS
+            .into_iter()
+            .filter(|m| properties(*m).learning_method == LearningMethod::SemiSupervised)
+    }
+
     /// Returns every section completion appends to an empty document.
     fn all_sections() -> String {
-        ALL_MODELS
-            .iter()
-            .map(|m| format!("[detection_models.{}]\nenabled = true\n", section_name(*m)))
+        semi_models()
+            .map(|m| format!("[detection_models.{}]\nenabled = true\n", section_name(m)))
             .collect::<Vec<_>>()
             .join("\n")
     }
 
     /// Returns the sections completion appends, without `skip`.
     fn sections_without(skip: &[&str]) -> String {
-        ALL_MODELS
-            .iter()
-            .map(|m| section_name(*m))
+        semi_models()
+            .map(section_name)
             .filter(|name| !skip.contains(name))
             .map(|name| format!("[detection_models.{name}]\nenabled = true\n"))
             .collect::<Vec<_>>()
@@ -1358,12 +1852,12 @@ key = 1
     #[test]
     fn complete_document_is_returned_byte_for_byte() {
         let mut document = String::from("# header comment\nkey   =   'value'  \n\n");
-        for (i, model) in ALL_MODELS.iter().enumerate() {
+        for (i, model) in semi_models().enumerate() {
             let enabled = i % 2 == 0;
             writeln!(
                 document,
                 "[detection_models.{}]   # c{i}\n  enabled=  {enabled}\n",
-                section_name(*model)
+                section_name(model)
             )
             .unwrap();
         }
@@ -1446,9 +1940,8 @@ rdp_brute_force.enabled = false
     fn inline_detection_models_is_completed_inside_its_braces() {
         let document = "detection_models = { port_scan = { enabled = false } }\nafter = 1\n";
         let output = semi(document).unwrap();
-        let added = ALL_MODELS
-            .iter()
-            .map(|m| section_name(*m))
+        let added = semi_models()
+            .map(section_name)
             .filter(|name| *name != "port_scan")
             .fold(String::new(), |mut added, name| {
                 write!(added, ", {name} = {{ enabled = true }}").unwrap();
@@ -1611,6 +2104,7 @@ rdp_brute_force.enabled = false
             kind: OperatorValueKind::Float {
                 min: 0.25,
                 max: 0.75,
+                min_exclusive: false,
                 default: 0.5,
             },
         },
@@ -1821,5 +2315,732 @@ rdp_brute_force.enabled = false
                 "{value}"
             );
         }
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn label_db_match_row() {
+        assert_eq!(ALL_MODELS.get(18), Some(&DetectionModel::LabelDbMatch));
+        assert_eq!(section_name(DetectionModel::LabelDbMatch), "label_db_match");
+        let expected = DetectionModelProperties {
+            family: DetectionFamily::KnownThreat,
+            categories: &[
+                C::Reconnaissance,
+                C::InitialAccess,
+                C::Execution,
+                C::CredentialAccess,
+                C::Discovery,
+                C::LateralMovement,
+                C::CommandAndControl,
+                C::Exfiltration,
+                C::Impact,
+                C::Collection,
+                C::DefenseEvasion,
+                C::Persistence,
+                C::PrivilegeEscalation,
+                C::ResourceDevelopment,
+            ],
+            learning_method: LearningMethod::Unsupervised,
+            raw_event_kinds: &[R::Http],
+            primary_subject: PrimarySubjectKind::RawEvent,
+            score_meaning: "Rule confidence if the rule has one, otherwise the match score \
+                            (share of rule tokens matched for token rules, 1.0 for exact, URL, \
+                            IP and regex rules).",
+            requires_device_account_identification: false,
+            operator_values: &[
+                OperatorValueSpec {
+                    name: "enabled",
+                    kind: OperatorValueKind::Bool { default: true },
+                },
+                OperatorValueSpec {
+                    name: "event_range",
+                    kind: OperatorValueKind::Integer {
+                        min: 1,
+                        max: 100,
+                        default: 100,
+                    },
+                },
+                OperatorValueSpec {
+                    name: "min_events_ratio",
+                    kind: OperatorValueKind::Integer {
+                        min: 0,
+                        max: 100,
+                        default: 10,
+                    },
+                },
+                OperatorValueSpec {
+                    name: "columns",
+                    kind: OperatorValueKind::TableList {
+                        cells: &[
+                            CellSpec {
+                                name: "column_ids",
+                                kind: CellKind::IntegerList {
+                                    min: 0,
+                                    max: i64::MAX,
+                                    default: None,
+                                },
+                            },
+                            CellSpec {
+                                name: "db",
+                                kind: CellKind::NonEmptyString { default: None },
+                            },
+                            CellSpec {
+                                name: "min_score",
+                                kind: CellKind::Float {
+                                    min: 0.0,
+                                    max: 1.0,
+                                    min_exclusive: true,
+                                    default: Some(0.7),
+                                },
+                            },
+                        ],
+                    },
+                },
+            ],
+        };
+        let row = properties(DetectionModel::LabelDbMatch);
+        assert_eq!(row, &expected);
+        assert_eq!(row.categories.len(), 14);
+        assert!(
+            row.categories
+                .windows(2)
+                .all(|w| (w[0] as u8) < (w[1] as u8))
+        );
+
+        let Some(OperatorValueKind::TableList { cells }) = row
+            .operator_values
+            .iter()
+            .find(|v| v.name == "columns")
+            .map(|v| v.kind)
+        else {
+            panic!("columns is not a table list");
+        };
+        let defaults: Vec<_> = cells
+            .iter()
+            .map(|c| (c.name, c.kind.has_default()))
+            .collect();
+        assert_eq!(
+            defaults,
+            [("column_ids", false), ("db", false), ("min_score", true)]
+        );
+        let min_score = cells.iter().find(|c| c.name == "min_score").unwrap();
+        assert!(matches!(
+            min_score.kind,
+            CellKind::Float {
+                default: Some(d),
+                ..
+            } if d.to_bits() == 0.7_f64.to_bits()
+        ));
+        let types: Vec<_> = cells.iter().map(|c| c.kind.value_type()).collect();
+        assert_eq!(
+            types,
+            [
+                OperatorValueType::IntegerList,
+                OperatorValueType::NonEmptyString,
+                OperatorValueType::Float,
+            ]
+        );
+        assert_eq!(
+            row.operator_values
+                .iter()
+                .map(|v| v.kind.value_type())
+                .collect::<Vec<_>>(),
+            [
+                OperatorValueType::Bool,
+                OperatorValueType::Integer,
+                OperatorValueType::Integer,
+                OperatorValueType::TableList,
+            ]
+        );
+    }
+
+    #[test]
+    fn far_outlier_row() {
+        assert_eq!(ALL_MODELS.get(19), Some(&DetectionModel::FarOutlier));
+        assert_eq!(section_name(DetectionModel::FarOutlier), "far_outlier");
+        let expected = DetectionModelProperties {
+            family: DetectionFamily::ClusteringAnomaly,
+            categories: &[],
+            learning_method: LearningMethod::Unsupervised,
+            raw_event_kinds: &[R::Http],
+            primary_subject: PrimarySubjectKind::RawEvent,
+            score_meaning: "Token distance from the nearest known cluster prefix \
+                            (1 \u{2212} matched share).",
+            requires_device_account_identification: false,
+            operator_values: ENABLED_TRUE,
+        };
+        assert_eq!(properties(DetectionModel::FarOutlier), &expected);
+    }
+
+    #[test]
+    fn unsupervised_raw_event_kinds_come_from_the_catalog() {
+        for model in [DetectionModel::LabelDbMatch, DetectionModel::FarOutlier] {
+            let mut from_catalog = Vec::new();
+            for t in crate::clustering_model_types() {
+                if t.detection_models.contains(&model) && !from_catalog.contains(&t.raw_event_kind)
+                {
+                    from_catalog.push(t.raw_event_kind);
+                }
+            }
+            assert_eq!(properties(model).raw_event_kinds, from_catalog, "{model:?}");
+            assert_eq!(properties(model).raw_event_kinds, [R::Http], "{model:?}");
+        }
+    }
+
+    #[test]
+    fn only_the_unsupervised_rows_are_unsupervised() {
+        let unsupervised: Vec<_> = ALL_MODELS
+            .into_iter()
+            .filter(|m| properties(*m).learning_method == LearningMethod::Unsupervised)
+            .collect();
+        assert_eq!(
+            unsupervised,
+            [DetectionModel::LabelDbMatch, DetectionModel::FarOutlier]
+        );
+        assert_eq!(semi_models().count(), 18);
+    }
+
+    #[test]
+    fn semi_supervised_completion_leaves_out_unsupervised_models() {
+        let output = semi("").unwrap();
+        let headers: Vec<_> = output
+            .lines()
+            .filter(|line| line.starts_with('['))
+            .collect();
+        assert_eq!(headers.len(), 18);
+        assert!(!output.contains("label_db_match"));
+        assert!(!output.contains("far_outlier"));
+        let output = semi("detection_models = {}").unwrap();
+        assert!(!output.contains("label_db_match") && !output.contains("far_outlier"));
+    }
+
+    #[test]
+    fn semi_supervised_document_with_an_unsupervised_section_is_rejected() {
+        for section in ["label_db_match", "far_outlier"] {
+            for document in [
+                format!("[detection_models.{section}]\nenabled = true\n"),
+                format!("[detection_models]\n{section} = {{}}\n"),
+            ] {
+                assert_eq!(
+                    semi(&document),
+                    Err(DetectionModelsSectionError::ModelOfAnotherEngine {
+                        section: section.to_owned(),
+                        model_engine: LearningMethod::Unsupervised,
+                        document_engine: LearningMethod::SemiSupervised,
+                    }),
+                    "{document}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn unsupervised_documents_are_returned_unchanged() {
+        for document in [
+            "[detection_models.label_db_match]\nenabled = true\n",
+            "[detection_models.far_outlier]\nenabled = 1\n",
+            "[detection_models.port_scan]\nenabled = true\n",
+        ] {
+            assert_eq!(
+                complete_engine_document(AgentKind::Unsupervised, document).as_deref(),
+                Ok(document)
+            );
+        }
+    }
+
+    // Table lists, checked with LabelDbMatch's real `columns` specification.
+
+    /// Checks `body` as the `label_db_match` section of an Unsupervised
+    /// document.
+    fn check_label_db_match(body: &str) -> Result<(), DetectionModelsSectionError> {
+        let document = format!("[detection_models.label_db_match]\n{body}\n");
+        let parsed = Document::parse(&document).unwrap();
+        let Some(Child::Node(container)) = parsed.get(DETECTION_MODELS).map(Child::from_item)
+        else {
+            panic!("no detection_models table");
+        };
+        check_sections(
+            Some(container),
+            LearningMethod::Unsupervised,
+            &ALL_MODELS,
+            &properties,
+        )
+        .map(|_| ())
+    }
+
+    /// Returns the cell error `error` carries, or panics.
+    fn cell_of(error: &DetectionModelsSectionError) -> &CellError {
+        match error {
+            DetectionModelsSectionError::Cell(cell) => cell,
+            other => panic!("not a cell error: {other:?}"),
+        }
+    }
+
+    fn cell_error(
+        section: &str,
+        key: &str,
+        index: usize,
+        cell: &str,
+        kind: CellErrorKind,
+    ) -> DetectionModelsSectionError {
+        DetectionModelsSectionError::Cell(Box::new(CellError {
+            section: section.to_owned(),
+            key: key.to_owned(),
+            index,
+            cell: cell.to_owned(),
+            kind,
+        }))
+    }
+
+    /// The name of the variant of a [`CellErrorKind`].
+    fn kind_name(kind: &CellErrorKind) -> &'static str {
+        match kind {
+            CellErrorKind::Unknown => "unknown",
+            CellErrorKind::Missing => "missing",
+            CellErrorKind::TypeMismatch { .. } => "type",
+            CellErrorKind::OutOfRange { .. } => "range",
+            CellErrorKind::Empty => "empty",
+        }
+    }
+
+    #[test]
+    fn table_list_accepts_valid_and_empty_lists() {
+        for body in [
+            "columns = []",
+            "columns = [{ column_ids = [14, 15], db = \"urls\", min_score = 0.5 }]",
+            "columns = [{ column_ids = [0], db = \"urls\" }, { column_ids = [9223372036854775807], \
+             db = \"x\", min_score = 1.0 }]",
+            "columns = [\n  { column_ids = [1], db = \"a\" },\n  { db = \"b\", column_ids = [2, 3] },\n]",
+            "enabled = false\nevent_range = 50\nmin_events_ratio = 0\ncolumns = []",
+            "enabled = true\n\n[[detection_models.label_db_match.columns]]\ncolumn_ids = [14]\n\
+             db = \"urls\"\n\n[[detection_models.label_db_match.columns]]\ncolumn_ids = [15]\n\
+             db = \"paths\"\nmin_score = 0.9",
+        ] {
+            assert_eq!(check_label_db_match(body), Ok(()), "{body}");
+        }
+    }
+
+    #[test]
+    fn table_list_rejects_a_value_that_is_not_a_list() {
+        for value in [
+            "1",
+            "\"columns\"",
+            "true",
+            "{ column_ids = [1], db = \"a\" }",
+        ] {
+            assert_eq!(
+                check_label_db_match(&format!("columns = {value}")),
+                Err(DetectionModelsSectionError::TypeMismatch {
+                    section: "label_db_match".to_owned(),
+                    key: "columns".to_owned(),
+                    expected: OperatorValueType::TableList,
+                }),
+                "{value}"
+            );
+        }
+        assert_eq!(
+            check_label_db_match("[detection_models.label_db_match.columns]\ndb = \"a\""),
+            Err(DetectionModelsSectionError::TypeMismatch {
+                section: "label_db_match".to_owned(),
+                key: "columns".to_owned(),
+                expected: OperatorValueType::TableList,
+            })
+        );
+    }
+
+    #[test]
+    fn table_list_rejects_an_entry_that_is_not_a_table() {
+        for (value, index) in [
+            ("[1]", 0),
+            ("[{ column_ids = [1], db = \"a\" }, \"b\"]", 1),
+            (
+                "[{ column_ids = [1], db = \"a\" }, { column_ids = [2], db = \"b\" }, [3]]",
+                2,
+            ),
+        ] {
+            assert_eq!(
+                check_label_db_match(&format!("columns = {value}")),
+                Err(DetectionModelsSectionError::EntryNotATable {
+                    section: "label_db_match".to_owned(),
+                    key: "columns".to_owned(),
+                    index,
+                }),
+                "{value}"
+            );
+        }
+    }
+
+    #[test]
+    fn table_list_rejects_cell_errors() {
+        const OK: &str = "{ column_ids = [1], db = \"a\" }";
+        let cases: &[(&str, &str, &str)] = &[
+            (
+                "{ column_ids = [1], db = \"a\", extra = 1 }",
+                "unknown",
+                "extra",
+            ),
+            ("{ db = \"a\" }", "missing", "column_ids"),
+            ("{ column_ids = [1] }", "missing", "db"),
+            ("{ min_score = 0.5 }", "missing", "column_ids"),
+            ("{ column_ids = [], db = \"a\" }", "empty", "column_ids"),
+            (
+                "{ column_ids = [1, -1], db = \"a\" }",
+                "range",
+                "column_ids",
+            ),
+            ("{ column_ids = [-5], db = \"a\" }", "range", "column_ids"),
+            ("{ column_ids = [1], db = \"\" }", "empty", "db"),
+            (
+                "{ column_ids = [1], db = \"a\", min_score = 0.0 }",
+                "range",
+                "min_score",
+            ),
+            (
+                "{ column_ids = [1], db = \"a\", min_score = -0.0 }",
+                "range",
+                "min_score",
+            ),
+            (
+                "{ column_ids = [1], db = \"a\", min_score = -0.5 }",
+                "range",
+                "min_score",
+            ),
+            (
+                "{ column_ids = [1], db = \"a\", min_score = 1.0000001 }",
+                "range",
+                "min_score",
+            ),
+            (
+                "{ column_ids = [1], db = \"a\", min_score = 2.0 }",
+                "range",
+                "min_score",
+            ),
+            (
+                "{ column_ids = [1], db = \"a\", min_score = nan }",
+                "range",
+                "min_score",
+            ),
+            (
+                "{ column_ids = [1], db = \"a\", min_score = 1 }",
+                "type",
+                "min_score",
+            ),
+            (
+                "{ column_ids = [1], db = \"a\", min_score = \"0.5\" }",
+                "type",
+                "min_score",
+            ),
+            ("{ column_ids = 1, db = \"a\" }", "type", "column_ids"),
+            ("{ column_ids = [1.0], db = \"a\" }", "type", "column_ids"),
+            (
+                "{ column_ids = [1, \"2\"], db = \"a\" }",
+                "type",
+                "column_ids",
+            ),
+            ("{ column_ids = [1], db = 1 }", "type", "db"),
+            ("{ column_ids = [1], db = [\"a\"] }", "type", "db"),
+            ("{ column_ids = [1], db = { name = \"a\" } }", "type", "db"),
+            ("{ column_ids = [1], db.name = \"a\" }", "type", "db"),
+        ];
+        for (entry, kind, cell) in cases {
+            for (value, index) in [(format!("[{entry}]"), 0), (format!("[{OK}, {entry}]"), 1)] {
+                let error = check_label_db_match(&format!("columns = {value}")).unwrap_err();
+                let error = cell_of(&error);
+                assert_eq!(
+                    (
+                        error.section.as_str(),
+                        error.key.as_str(),
+                        error.index,
+                        error.cell.as_str(),
+                        kind_name(&error.kind),
+                    ),
+                    ("label_db_match", "columns", index, *cell, *kind),
+                    "{value}"
+                );
+            }
+        }
+
+        // The same checks reach an array of tables.
+        let error = check_label_db_match(
+            "[[detection_models.label_db_match.columns]]\ncolumn_ids = [1]\ndb = \"a\"\n\
+             [[detection_models.label_db_match.columns]]\ncolumn_ids = [1]\ndb = \"\"",
+        )
+        .unwrap_err();
+        assert_eq!(
+            error,
+            cell_error("label_db_match", "columns", 1, "db", CellErrorKind::Empty)
+        );
+    }
+
+    #[test]
+    fn table_list_cell_errors_carry_their_details() {
+        let error = |cell: &str, kind| cell_error("label_db_match", "columns", 0, cell, kind);
+        assert_eq!(
+            check_label_db_match("columns = [{ column_ids = [3, -2], db = \"a\" }]"),
+            Err(error(
+                "column_ids",
+                CellErrorKind::OutOfRange {
+                    value: "-2".to_owned(),
+                    min: "0".to_owned(),
+                    max: i64::MAX.to_string(),
+                }
+            ))
+        );
+        assert_eq!(
+            check_label_db_match("columns = [{ column_ids = [3], db = \"a\", min_score = 0.0 }]"),
+            Err(error(
+                "min_score",
+                CellErrorKind::OutOfRange {
+                    value: "0".to_owned(),
+                    min: "0 (exclusive)".to_owned(),
+                    max: "1".to_owned(),
+                }
+            ))
+        );
+        assert_eq!(
+            check_label_db_match("columns = [{ column_ids = [3], db = 7 }]"),
+            Err(error(
+                "db",
+                CellErrorKind::TypeMismatch {
+                    expected: OperatorValueType::NonEmptyString,
+                }
+            ))
+        );
+        assert_eq!(
+            check_label_db_match("columns = [{ column_ids = [3], db = \"a\", min_score = 1.5 }]")
+                .unwrap_err()
+                .to_string(),
+            "`detection_models.label_db_match.columns[0].min_score` has 1.5, outside the range \
+             0 (exclusive) to 1"
+        );
+        assert_eq!(
+            check_label_db_match("columns = [{ column_ids = [3], db = [] }]")
+                .unwrap_err()
+                .to_string(),
+            "`detection_models.label_db_match.columns[0].db` must be a non-empty string"
+        );
+        assert_eq!(
+            check_label_db_match("columns = [{ column_ids = [3], db = \"a\", x = 1 }]")
+                .unwrap_err()
+                .to_string(),
+            "`detection_models.label_db_match.columns[0]` has no cell `x`"
+        );
+        assert_eq!(
+            check_label_db_match("columns = [{ db = \"a\" }]")
+                .unwrap_err()
+                .to_string(),
+            "`detection_models.label_db_match.columns[0]` lacks the cell `column_ids`, which \
+             has no default"
+        );
+        assert_eq!(
+            check_label_db_match("columns = [{ column_ids = [], db = \"a\" }]")
+                .unwrap_err()
+                .to_string(),
+            "`detection_models.label_db_match.columns[0].column_ids` must not be empty"
+        );
+        assert_eq!(
+            check_label_db_match("columns = [{ column_ids = [1], db = \"a\" }, 2]")
+                .unwrap_err()
+                .to_string(),
+            "`detection_models.label_db_match.columns[1]` is not a table"
+        );
+        assert_eq!(
+            check_label_db_match("columns = 2").unwrap_err().to_string(),
+            "`detection_models.label_db_match.columns` must be a list of tables"
+        );
+    }
+
+    #[test]
+    fn min_score_open_lower_bound() {
+        let check = |v: f64| {
+            check_label_db_match(&format!(
+                "columns = [{{ column_ids = [1], db = \"a\", min_score = {v:?} }}]"
+            ))
+        };
+        let smallest_above_zero = f64::from_bits(1);
+        assert!(check(0.0).is_err());
+        assert_eq!(check(smallest_above_zero), Ok(()));
+        assert_eq!(check(1e-9), Ok(()));
+        assert_eq!(check(0.7), Ok(()));
+        assert_eq!(check(1.0), Ok(()));
+        assert!(check(f64::from_bits(1.0_f64.to_bits() + 1)).is_err());
+    }
+
+    // Synthetic table lists, exercising the cell types LabelDbMatch does not
+    // use, and an open lower bound on an operator value itself.
+
+    const SYNTHETIC_CELLS: &[CellSpec] = &[
+        CellSpec {
+            name: "flag",
+            kind: CellKind::Bool {
+                default: Some(false),
+            },
+        },
+        CellSpec {
+            name: "count",
+            kind: CellKind::Integer {
+                min: 1,
+                max: 10,
+                default: None,
+            },
+        },
+        CellSpec {
+            name: "ratio",
+            kind: CellKind::Float {
+                min: 0.25,
+                max: 0.75,
+                min_exclusive: false,
+                default: Some(0.5),
+            },
+        },
+        CellSpec {
+            name: "names",
+            kind: CellKind::StringList {
+                default: Some(&["alpha"]),
+            },
+        },
+        CellSpec {
+            name: "ids",
+            kind: CellKind::IntegerList {
+                min: -3,
+                max: 3,
+                default: Some(&[0]),
+            },
+        },
+        CellSpec {
+            name: "label",
+            kind: CellKind::NonEmptyString { default: Some("x") },
+        },
+    ];
+
+    const SYNTHETIC_TABLE_VALUES: &[OperatorValueSpec] = &[
+        OperatorValueSpec {
+            name: "rows",
+            kind: OperatorValueKind::TableList {
+                cells: SYNTHETIC_CELLS,
+            },
+        },
+        OperatorValueSpec {
+            name: "share",
+            kind: OperatorValueKind::Float {
+                min: 0.5,
+                max: 2.0,
+                min_exclusive: true,
+                default: 1.0,
+            },
+        },
+    ];
+
+    const SYNTHETIC_TABLE: DetectionModelProperties = DetectionModelProperties {
+        operator_values: SYNTHETIC_TABLE_VALUES,
+        ..SYNTHETIC_SEMI
+    };
+
+    fn complete_synthetic_document(document: &str) -> Result<String, DetectionModelsSectionError> {
+        complete(
+            document,
+            LearningMethod::SemiSupervised,
+            &[DetectionModel::PortScan],
+            |_| &SYNTHETIC_TABLE,
+        )
+    }
+
+    fn complete_synthetic_table(line: &str) -> Result<String, DetectionModelsSectionError> {
+        complete_synthetic_document(&format!("[detection_models.port_scan]\n{line}\n"))
+    }
+
+    #[test]
+    fn synthetic_table_list_cells() {
+        assert!(complete_synthetic_table("rows = []").is_ok());
+        assert!(complete_synthetic_table("rows = [{ count = 1 }]").is_ok());
+        assert!(
+            complete_synthetic_table(
+                "rows = [{ count = 10, flag = true, ratio = 0.25, names = [], ids = [-3, 3], \
+                 label = \"y\" }, { count = 5, ratio = 0.75, names = [\"a\", 'b'] }]"
+            )
+            .is_ok()
+        );
+        let check = |line: &str, index: usize, cell: &str, kind: &str| {
+            let error = complete_synthetic_table(line).unwrap_err();
+            let error = cell_of(&error);
+            assert_eq!(
+                (
+                    error.section.as_str(),
+                    error.key.as_str(),
+                    error.index,
+                    error.cell.as_str(),
+                    kind_name(&error.kind),
+                ),
+                ("port_scan", "rows", index, cell, kind),
+                "{line}"
+            );
+        };
+        for (line, cell) in [
+            ("rows = [{ count = 1, flag = 1 }]", "flag"),
+            ("rows = [{ count = 1, ratio = 1 }]", "ratio"),
+            ("rows = [{ count = 1, names = [1] }]", "names"),
+            ("rows = [{ count = 1, names = \"a\" }]", "names"),
+            ("rows = [{ count = 1, ids = [true] }]", "ids"),
+            ("rows = [{ count = 1, label = 2 }]", "label"),
+            ("rows = [{ count = 1.0 }]", "count"),
+        ] {
+            check(line, 0, cell, "type");
+        }
+        for (line, cell) in [
+            ("rows = [{ count = 0 }]", "count"),
+            ("rows = [{ count = 11 }]", "count"),
+            ("rows = [{ count = 1, ratio = 0.2 }]", "ratio"),
+            ("rows = [{ count = 1, ratio = 0.8 }]", "ratio"),
+            ("rows = [{ count = 1, ids = [4] }]", "ids"),
+            ("rows = [{ count = 1, ids = [0, -4] }]", "ids"),
+        ] {
+            check(line, 0, cell, "range");
+        }
+        check("rows = [{ count = 1, ids = [] }]", 0, "ids", "empty");
+        check("rows = [{ count = 1, label = '' }]", 0, "label", "empty");
+        check(
+            "rows = [{ count = 1 }, { flag = true }]",
+            1,
+            "count",
+            "missing",
+        );
+        check("rows = [{ count = 1, other = 1 }]", 0, "other", "unknown");
+    }
+
+    #[test]
+    fn synthetic_table_list_completion_defaults_to_an_empty_list() {
+        let output = complete_synthetic_document("").unwrap();
+        assert_eq!(
+            output,
+            "[detection_models.port_scan]\nrows = []\nshare = 1.0\n"
+        );
+        assert_eq!(complete_synthetic_document(&output).unwrap(), output);
+    }
+
+    #[test]
+    fn synthetic_open_lower_bound() {
+        let smallest_above = f64::from_bits(0.5_f64.to_bits() + 1);
+        assert!(complete_synthetic_table(&format!("share = {smallest_above:?}")).is_ok());
+        assert!(complete_synthetic_table("share = 2.0").is_ok());
+        assert_eq!(
+            complete_synthetic_table("share = 0.5"),
+            Err(DetectionModelsSectionError::OutOfRange {
+                section: "port_scan".to_owned(),
+                key: "share".to_owned(),
+                value: "0.5".to_owned(),
+                min: "0.5 (exclusive)".to_owned(),
+                max: "2".to_owned(),
+            })
+        );
+        assert!(complete_synthetic_table("share = 0.4").is_err());
+        assert!(
+            complete_synthetic_table(&format!(
+                "share = {:?}",
+                f64::from_bits(2.0_f64.to_bits() + 1)
+            ))
+            .is_err()
+        );
+        // An inclusive range still accepts its lower bound.
+        assert!(synthetic_check("ratio = 0.25").is_ok());
     }
 }

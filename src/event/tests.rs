@@ -3,8 +3,8 @@ use std::collections::HashMap;
 use jiff::Timestamp;
 use review_protocol::types::EndpointRole::{Destination, Source};
 use review_protocol::types::{
-    Detail, DetectionEvent, DetectionModel, PrimarySubject, RawEventKind, Target, ThreatRole,
-    UnusualDestinationPatternDetail,
+    Detail, DetectionEvent, DetectionModel, LabelDbMatchDetail, PrimarySubject, RawEventKind,
+    Target, ThreatRole, UnusualDestinationPatternDetail,
 };
 
 use super::{
@@ -401,6 +401,65 @@ fn put_unless_stored_treats_negative_zero_as_zero() {
     assert_eq!(records(&db)[0].1.event(), &positive);
 }
 
+fn label_db_match_event(match_score: f32, rule_confidence: Option<f32>) -> DetectionEvent {
+    let mut event = raw_event_event(
+        time(),
+        SENSOR,
+        http_body(ip("192.0.2.1"), ip("198.51.100.1")),
+    );
+    event.detection_model = DetectionModel::LabelDbMatch;
+    event.detail = Detail::LabelDbMatch(LabelDbMatchDetail {
+        label_db: "synthetic-db".to_owned(),
+        rule_id: 7,
+        rule_name: "synthetic rule".to_owned(),
+        matched_to: "/synthetic/path".to_owned(),
+        cluster_id: 3,
+        rule_confidence,
+        match_score,
+    });
+    event
+}
+
+/// `-0.0` and `0.0` are equal `f32` values in a `LabelDbMatch` detail, so
+/// the events holding them encode to the same bytes.
+#[test]
+fn label_db_match_negative_zeros_encode_as_zeros() {
+    let negative = label_db_match_event(-0.0, None);
+    let positive = label_db_match_event(0.0, None);
+    assert_eq!(negative, positive);
+    assert_eq!(
+        super::record::encode_event(&negative).unwrap(),
+        super::record::encode_event(&positive).unwrap()
+    );
+
+    let negative = label_db_match_event(0.5, Some(-0.0));
+    let positive = label_db_match_event(0.5, Some(0.0));
+    assert_eq!(negative, positive);
+    assert_eq!(
+        super::record::encode_event(&negative).unwrap(),
+        super::record::encode_event(&positive).unwrap()
+    );
+
+    // A value other than a zero is kept as is.
+    assert_ne!(
+        super::record::encode_event(&label_db_match_event(0.5, Some(0.25))).unwrap(),
+        super::record::encode_event(&label_db_match_event(0.5, Some(0.0))).unwrap()
+    );
+
+    let (_permit, store) = setup_store();
+    let db = store.events();
+    let negative = label_db_match_event(-0.0, Some(-0.0));
+    let positive = label_db_match_event(0.0, Some(0.0));
+    assert!(matches!(
+        db.put_unless_stored(&negative, &stamp()).unwrap(),
+        PutOutcome::Stored(_)
+    ));
+    assert_eq!(
+        db.put_unless_stored(&positive, &stamp()).unwrap(),
+        PutOutcome::AlreadyStored
+    );
+}
+
 /// Concurrent calls for one event store it at most once, also when another
 /// event already holds the first key of its time and model.
 #[test]
@@ -679,8 +738,8 @@ fn iterator_skips_unknown_detection_models() {
     let valid = db.put(&event_at_nanos(2_000_000_000), &stamp()).unwrap();
     let value = db.inner.get(valid.to_be_bytes()).unwrap().unwrap();
 
-    // Model 18 is the first number review-protocol has not assigned.
-    for model in [18_i128, 9999, i128::from(u32::MAX)] {
+    // Model 20 is the first number review-protocol has not assigned.
+    for model in [20_i128, 9999, i128::from(u32::MAX)] {
         let key = (1_000_000_000_i128 << 64) | (model << 32);
         db.put_raw(&key.to_be_bytes(), &value);
     }

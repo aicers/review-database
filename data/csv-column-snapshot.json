@@ -1,0 +1,41 @@
+{
+  "giganto": "0.36.0",
+  "gigantoClient": "0.29.1",
+  "kinds": {
+    "http": [
+      "time",
+      "source",
+      "orig_addr",
+      "orig_port",
+      "resp_addr",
+      "resp_port",
+      "proto",
+      "start_time",
+      "duration",
+      "orig_pkts",
+      "resp_pkts",
+      "orig_l2_bytes",
+      "resp_l2_bytes",
+      "method",
+      "host",
+      "uri",
+      "referer",
+      "version",
+      "user_agent",
+      "request_len",
+      "response_len",
+      "status_code",
+      "status_msg",
+      "username",
+      "password",
+      "cookie",
+      "content_encoding",
+      "content_type",
+      "cache_control",
+      "filenames",
+      "mime_types",
+      "body",
+      "state"
+    ]
+  }
+}

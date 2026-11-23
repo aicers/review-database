@@ -15,6 +15,9 @@ use crate::{EventCategory, ModelInstance, geo::CountryLookup};
 /// The bit pattern of `-0.0_f64`.
 const NEGATIVE_ZERO_BITS: u64 = 0x8000_0000_0000_0000;
 
+/// The bit pattern of `-0.0_f32`.
+const NEGATIVE_ZERO_BITS_F32: u32 = 0x8000_0000;
+
 /// What the receiver of a detection event records about it at receive time.
 ///
 /// It is stored verbatim with the event; nothing in it is checked.
@@ -268,6 +271,20 @@ fn is_negative_zero(value: f64) -> bool {
     value.to_bits() == NEGATIVE_ZERO_BITS
 }
 
+/// Returns `value`, with a negative zero replaced by a positive one.
+fn positive_zero_f32(value: f32) -> f32 {
+    if is_negative_zero_f32(value) {
+        0.0
+    } else {
+        value
+    }
+}
+
+/// Returns whether `value` is a negative zero.
+fn is_negative_zero_f32(value: f32) -> bool {
+    value.to_bits() == NEGATIVE_ZERO_BITS_F32
+}
+
 /// Returns `event` with every negative zero replaced by a positive one.
 ///
 /// `-0.0` and `0.0` are equal values with different bytes; replacing one by
@@ -279,6 +296,10 @@ fn without_negative_zeros(event: &DetectionEvent) -> Cow<'_, DetectionEvent> {
                 || is_negative_zero(detail.std_deviation)
                 || is_negative_zero(detail.z_score)
         }
+        Detail::LabelDbMatch(detail) => {
+            is_negative_zero_f32(detail.match_score)
+                || detail.rule_confidence.is_some_and(is_negative_zero_f32)
+        }
         _ => false,
     };
     if !is_negative_zero(event.score) && !detail_has_negative_zero {
@@ -286,10 +307,17 @@ fn without_negative_zeros(event: &DetectionEvent) -> Cow<'_, DetectionEvent> {
     }
     let mut event = event.clone();
     event.score = positive_zero(event.score);
-    if let Detail::UnusualDestinationPattern(detail) = &mut event.detail {
-        detail.expected_mean = positive_zero(detail.expected_mean);
-        detail.std_deviation = positive_zero(detail.std_deviation);
-        detail.z_score = positive_zero(detail.z_score);
+    match &mut event.detail {
+        Detail::UnusualDestinationPattern(detail) => {
+            detail.expected_mean = positive_zero(detail.expected_mean);
+            detail.std_deviation = positive_zero(detail.std_deviation);
+            detail.z_score = positive_zero(detail.z_score);
+        }
+        Detail::LabelDbMatch(detail) => {
+            detail.match_score = positive_zero_f32(detail.match_score);
+            detail.rule_confidence = detail.rule_confidence.map(positive_zero_f32);
+        }
+        _ => {}
     }
     Cow::Owned(event)
 }
