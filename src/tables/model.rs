@@ -9,8 +9,8 @@ use super::UniqueKey;
 #[cfg(test)]
 use crate::IndexedMapUpdate;
 use crate::{
-    EXCLUSIVE, Indexable, IndexedMap, IndexedTable, Iterable, collections::Indexed,
-    types::FromKeyValue,
+    ClusteringModelTypeRef, DetectionModelState, EXCLUSIVE, Indexable, IndexedMap, IndexedTable,
+    Iterable, TrainingRead, collections::Indexed, types::FromKeyValue,
 };
 
 /// The record of a model: what the model is, who owns it, and which training
@@ -35,7 +35,8 @@ pub struct Model {
     /// such as `http`, a Sysmon kind or `log`.
     pub raw_event_kind: String,
     /// The log kind a model of `log` raw events reads, as the training
-    /// definition or the caller of
+    /// definition of [`Store::complete_run`](crate::Store::complete_run) or
+    /// the upload given to
     /// [`Store::replace_model`](crate::Store::replace_model) gave it.
     pub log_kind: Option<String>,
     /// The customer the model belongs to.
@@ -67,6 +68,15 @@ pub struct Model {
     /// A timeseries model's sources are sampling-policy IDs, and naming one
     /// here keeps that policy in use.
     pub trained_sources: Vec<String>,
+    /// The clustering model type the current classifier was trained as, as
+    /// the upload that created or replaced the model gave it.
+    pub clustering_model_type: ClusteringModelTypeRef,
+    /// What the training of the current classifier read, as the upload that
+    /// created or replaced the model gave it.
+    pub training_read: TrainingRead,
+    /// The detection model states of the last upload stored, which replaced
+    /// the earlier list as a whole.
+    pub detection_model_states: Vec<DetectionModelState>,
 }
 
 /// The engine instance a model belongs to, named as the agents table keys an
@@ -85,16 +95,13 @@ pub struct ModelOwner {
 }
 
 /// The run that produced a classifier, and that run's exact training
-/// definition text, sources and log kind.
+/// definition text and sources.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TrainedWith {
     pub run_id: u32,
     pub definition: String,
     /// The `sources` of the run's training definition.
     pub sources: Vec<String>,
-    /// The `log_kind` of the run's training definition, stored verbatim in
-    /// the model record.
-    pub log_kind: Option<String>,
 }
 
 /// The outcome of [`Store::replace_model`](crate::Store::replace_model).
@@ -471,6 +478,20 @@ mod tests {
             previous: None,
             clusters_applied: None,
             trained_sources: vec!["3".to_string()],
+            clustering_model_type: ClusteringModelTypeRef::Catalog {
+                id: "http_url".to_string(),
+                version: 1,
+            },
+            training_read: TrainingRead {
+                first: 1,
+                last: 2,
+                days: vec![crate::TrainingReadDay { start: 1, count: 3 }],
+            },
+            detection_model_states: vec![DetectionModelState {
+                model: 19,
+                state_version: 1,
+                state: vec![9],
+            }],
         }
     }
 

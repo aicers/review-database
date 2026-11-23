@@ -678,6 +678,7 @@ mod tests {
             installed_version: Some("1.0.0".to_string()),
             installed_commit: None,
             config_revision: Some(1),
+            clustering_model_type: None,
         }
     }
 

@@ -789,7 +789,9 @@ impl Store {
     /// The model is stored for the customer and instance of the definition
     /// the run's model names, trained now, with the run's id and the
     /// definition's text, sources and log kind as the training it records,
-    /// whether the model is created or replaced. For a training run that
+    /// and with the upload's clustering model type, training read and
+    /// detection model states, whether the model is created or replaced;
+    /// none of these is compared with the definition. For a training run that
     /// text is the one [`Store::start_training_run`] returned; for a clone
     /// it is the target definition [`Store::start_clone_run`] stored, which
     /// becomes both the clone's snapshot and its editable definition.
@@ -866,10 +868,16 @@ impl Store {
                 run_id,
                 definition: definition.definition.clone(),
                 sources: definition.sources.clone(),
-                log_kind: definition.log_kind.clone(),
             };
-            let pending =
-                self.replace_model_with_transaction(&files, &txn, &model, &owner, now, &trained)?;
+            let pending = self.replace_model_with_transaction(
+                &files,
+                &txn,
+                &model,
+                &owner,
+                now,
+                &trained,
+                definition.log_kind.as_deref(),
+            )?;
             definition.cloning = false;
             definitions.put(&txn, &definition)?;
             runs.put(
@@ -1557,6 +1565,10 @@ mod tests {
             classification_id: 1,
             batch_info: Vec::new(),
             scores: [(1, 0.5)].into_iter().collect(),
+            log_kind: None,
+            clustering_model_type: http_url_v1(),
+            training_read: crate::TrainingRead::default(),
+            detection_model_states: Vec::new(),
         }
     }
 
@@ -2101,6 +2113,129 @@ mod tests {
         assert_eq!(record.log_kind.as_deref(), Some("auth"));
     }
 
+    /// The clustering model type, training read and detection model states
+    /// of a model created or replaced by a run are the upload's, compared
+    /// with nothing.
+    #[test]
+    fn complete_run_stores_the_values_of_the_upload() {
+        let f = setup();
+        let store = f.store();
+        let engine = instance(f.node, ENGINE);
+        store
+            .insert_training_definition(new_definition("d", engine.clone()))
+            .unwrap();
+        let upload = |clustering_model_type, first, states| crate::model::Model {
+            clustering_model_type,
+            training_read: crate::TrainingRead {
+                first,
+                last: first + 1,
+                days: vec![crate::TrainingReadDay {
+                    start: first,
+                    count: 2,
+                }],
+            },
+            detection_model_states: states,
+            ..body("d")
+        };
+        let state = |model, byte| crate::DetectionModelState {
+            model,
+            state_version: 1,
+            state: vec![byte],
+        };
+
+        let first = store.start_training_run("d").unwrap();
+        let created = store
+            .complete_run(
+                first.run.id,
+                &engine,
+                upload(
+                    ClusteringModelTypeRef::Custom,
+                    10,
+                    vec![state(19, 1), state(3, 2)],
+                ),
+            )
+            .unwrap();
+        assert!(created.inserted);
+        let record = model(store, "d");
+        assert_eq!(record.clustering_model_type, ClusteringModelTypeRef::Custom);
+        assert_eq!(record.training_read.first, 10);
+        assert_eq!(
+            record.detection_model_states,
+            vec![state(19, 1), state(3, 2)]
+        );
+
+        let second = store.start_training_run("d").unwrap();
+        let replaced = store
+            .complete_run(
+                second.run.id,
+                &engine,
+                upload(http_url_v1(), 20, vec![state(19, 3)]),
+            )
+            .unwrap();
+        assert!(!replaced.inserted);
+        let record = model(store, "d");
+        assert_eq!(record.clustering_model_type, http_url_v1());
+        assert_eq!(record.training_read.first, 20);
+        assert_eq!(record.detection_model_states, vec![state(19, 3)]);
+        let loaded = store.load_model_by_name("d").unwrap();
+        assert_eq!(loaded.clustering_model_type, http_url_v1());
+        assert_eq!(loaded.training_read.first, 20);
+        assert_eq!(loaded.detection_model_states, vec![state(19, 3)]);
+    }
+
+    /// A detection event keeps the clustering model type stamped on it when
+    /// the model it is about is retrained as another type.
+    #[test]
+    fn a_retrain_keeps_the_type_stamped_on_events() {
+        let f = setup();
+        let store = f.store();
+        let engine = instance(f.node, ENGINE);
+        store
+            .insert_training_definition(new_definition("d", engine.clone()))
+            .unwrap();
+        let first = store.start_training_run("d").unwrap();
+        let created = store
+            .complete_run(
+                first.run.id,
+                &engine,
+                crate::model::Model {
+                    clustering_model_type: ClusteringModelTypeRef::Custom,
+                    ..body("d")
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            model(store, "d").clustering_model_type,
+            ClusteringModelTypeRef::Custom
+        );
+
+        let stamp = crate::DetectionEventStamp {
+            engine_instance: engine.clone(),
+            clustering_model_id: Some(created.id),
+            trained_at: None,
+            installed_version: None,
+            installed_commit: None,
+            config_revision: None,
+            clustering_model_type: Some(ClusteringModelTypeRef::Custom),
+        };
+        let event = crate::event::fixture::conn_event("192.0.2.1", "198.51.100.1");
+        store.events().put(&event, &stamp).unwrap();
+
+        let second = store.start_training_run("d").unwrap();
+        let replaced = store
+            .complete_run(second.run.id, &engine, body("d"))
+            .unwrap();
+        assert_eq!(replaced.id, created.id);
+        assert_eq!(model(store, "d").clustering_model_type, http_url_v1());
+
+        let stored: Vec<_> = store
+            .events()
+            .iter_forward()
+            .map(|item| item.unwrap().1.stamp().clone())
+            .collect();
+        assert_eq!(stored, vec![stamp]);
+    }
+
     #[test]
     fn definition_and_model_names_share_one_namespace() {
         let f = setup();
@@ -2132,7 +2267,6 @@ mod tests {
                     run_id: 0,
                     definition: eps("1.0"),
                     sources: Vec::new(),
-                    log_kind: None,
                 },
             )
             .unwrap();

@@ -1528,6 +1528,10 @@ mod test {
             classification_id: 1,
             batch_info: Vec::new(),
             scores: [(1, 0.5)].into_iter().collect(),
+            log_kind: None,
+            clustering_model_type: crate::ClusteringModelTypeRef::Custom,
+            training_read: crate::TrainingRead::default(),
+            detection_model_states: Vec::new(),
         };
         f.store
             .replace_model(
@@ -1541,7 +1545,6 @@ mod test {
                     run_id: 1,
                     definition: "eps = 5.0".to_string(),
                     sources: sources.to_vec(),
-                    log_kind: None,
                 },
             )
             .unwrap();

@@ -18,6 +18,7 @@ use std::{collections::BTreeMap, mem::size_of};
 
 use anyhow::{Context, Result, anyhow};
 use jiff::Timestamp;
+use review_protocol::types::{DetectionModelStatus, ExcludedCount};
 use rocksdb::{IteratorMode, OptimisticTransactionDB, Transaction};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -105,6 +106,13 @@ pub struct DetectorStatus {
     /// The number of events the detector's last round produced.
     pub events: u64,
     pub sources: Vec<DetectorSourceStatus>,
+    /// The status of each detection model in the detector's last round, as
+    /// the report listed them, stored verbatim and in order.
+    pub detection_models: Vec<DetectionModelStatus>,
+    /// The number of raw events the detector's last round skipped per
+    /// exclusion-list entry and day, as the report listed them, stored
+    /// verbatim and in order.
+    pub excluded: Vec<ExcludedCount>,
     /// When the Central Manager stored the report.
     #[serde(with = "crate::timestamp::ts_nanoseconds_saturating")]
     pub reported_at: Timestamp,

@@ -195,18 +195,21 @@ impl Store {
     /// `model.name`; `model.id` is ignored.
     ///
     /// - If no model has that name, a record is inserted for `owner` with
-    ///   the body's method and raw event kind, `trained_at`, `trained`'s run
-    ///   id, definition text, sources and log kind, its first classifier
-    ///   generation and no previous result, and the body's classifier, batch
-    ///   information and scores are stored.
+    ///   the body's method, raw event kind, log kind, clustering model type,
+    ///   training read and detection model states, `trained_at`,
+    ///   `trained`'s run id, definition text and sources, its first
+    ///   classifier generation and no previous result, and the body's
+    ///   classifier, batch information and scores are stored.
     /// - If one does, it keeps its id. Its current batch information,
     ///   scores, clusters, column statistics, CSV column extras, time series
     ///   and outliers become its previous training result, read through
     ///   [`Store::previous_training_results`], overwriting the earlier one;
     ///   the body's batch information and scores become current; and the
     ///   record's `previous` summarises the training replaced. The record
-    ///   takes `trained_at` and `trained`'s run id, definition text, sources
-    ///   and log kind. Its indicators stay with it. The new classifier is
+    ///   takes `trained_at`, `trained`'s run id, definition text and
+    ///   sources, and the body's log kind, clustering model type, training
+    ///   read and detection model states, which replace the stored list as a
+    ///   whole. Its indicators stay with it. The new classifier is
     ///   written to a new file and the record switches to it in the same
     ///   transaction that moves the rows; the earlier previous classifier
     ///   file is removed after that commits.
@@ -233,7 +236,13 @@ impl Store {
         loop {
             let txn = self.model_transaction();
             let pending = self.replace_model_with_transaction(
-                &files, &txn, &model, &owner, trained_at, &trained,
+                &files,
+                &txn,
+                &model,
+                &owner,
+                trained_at,
+                &trained,
+                model.log_kind.as_deref(),
             )?;
             #[cfg(test)]
             self.run_model_files_hook(ModelFilesPoint::BeforeCommit)?;
@@ -246,7 +255,8 @@ impl Store {
     }
 
     /// Inserts or replaces a model, as [`Store::replace_model`] describes,
-    /// within `txn`, which the caller commits.
+    /// within `txn`, which the caller commits, storing `log_kind` as the
+    /// record's log kind.
     ///
     /// The classifier file is written here, before the caller commits. A
     /// caller that holds `files` from before this call until after
@@ -256,7 +266,9 @@ impl Store {
     /// stops referring to.
     // The insert and the replace read one record and write one transaction;
     // splitting them would scatter the steps of that transaction.
-    #[allow(clippy::too_many_lines)]
+    // The log kind is an argument of its own because its source differs by
+    // caller: the training definition for a run, the body for a replace.
+    #[allow(clippy::too_many_lines, clippy::too_many_arguments)]
     pub(crate) fn replace_model_with_transaction(
         &self,
         files: &ModelFilesGuard<'_>,
@@ -265,6 +277,7 @@ impl Store {
         owner: &ModelOwner,
         trained_at: Timestamp,
         trained: &TrainedWith,
+        log_kind: Option<&str>,
     ) -> Result<PendingReplace> {
         files.check(self)?;
         let method = model.method()?;
@@ -287,7 +300,7 @@ impl Store {
                 max_event_id_num: model.max_event_id_num,
                 classification_id: Some(model.classification_id),
                 raw_event_kind: model.raw_event_kind.clone(),
-                log_kind: trained.log_kind.clone(),
+                log_kind: log_kind.map(ToString::to_string),
                 customer_id: owner.customer_id,
                 instance: Some(owner.instance.clone()),
                 trained_at,
@@ -297,6 +310,9 @@ impl Store {
                 previous: None,
                 clusters_applied: None,
                 trained_sources: trained.sources.clone(),
+                clustering_model_type: model.clustering_model_type.clone(),
+                training_read: model.training_read.clone(),
+                detection_model_states: model.detection_model_states.clone(),
             };
             let id = models.add_model_with_transaction(record, txn)?;
             self.classifier_fm.store_classifier(
@@ -348,7 +364,10 @@ impl Store {
             trained_run_id: trained.run_id,
             trained_definition: trained.definition.clone(),
             trained_sources: trained.sources.clone(),
-            log_kind: trained.log_kind.clone(),
+            log_kind: log_kind.map(ToString::to_string),
+            clustering_model_type: model.clustering_model_type.clone(),
+            training_read: model.training_read.clone(),
+            detection_model_states: model.detection_model_states.clone(),
             previous: Some(PreviousTraining {
                 trained_at: record.trained_at,
                 version: record.version,
@@ -389,16 +408,21 @@ impl Store {
     }
 
     /// Stores an analysis round's model: its classifier, batch information
-    /// and scores, and its version, maximum number of event ids and
-    /// classification id.
+    /// and scores, its version, maximum number of event ids and
+    /// classification id, and its detection model states.
     ///
     /// The model is looked up by `model.name`. Its owner, raw event kind,
-    /// log kind, training time, trained run and definition, previous result
-    /// and the classification id its clusters were last updated for stay as
-    /// they are. The classifier is written to a new file and the record
+    /// log kind, clustering model type, training read, training time,
+    /// trained run and definition, previous result and the classification id
+    /// its clusters were last updated for stay as they are; the body's
+    /// values of the log kind, clustering model type and training read are
+    /// not compared with them. The body's detection model states replace
+    /// the stored list as a whole, so a state the body does not carry is no
+    /// longer stored. The classifier is written to a new file and the record
     /// switches to it in the same transaction that stores the batch
-    /// information and scores, so a classification id read back always
-    /// comes with that upload's classifier, batch information and scores;
+    /// information, scores and detection model states, so a classification
+    /// id read back always comes with that upload's classifier, batch
+    /// information, scores and detection model states;
     /// the earlier current classifier file is removed after that commits.
     ///
     /// # Errors
@@ -455,6 +479,7 @@ impl Store {
                 max_event_id_num: model.max_event_id_num,
                 classification_id: Some(model.classification_id),
                 classifier_generation: generation,
+                detection_model_states: model.detection_model_states.clone(),
                 ..record.clone()
             };
             models.update_model_with_transaction(&record, &updated, &txn)?;
@@ -737,10 +762,12 @@ impl Store {
     /// Returns the model with the given name, with its current classifier
     /// and scores.
     ///
-    /// Model names are unique in the database. `raw_event_kind` comes from the
-    /// model's record and `scores` are the ones last stored for it (empty
-    /// when it has none), read under the model-files lock together with the
-    /// record and the classifier. `batch_info` is empty.
+    /// Model names are unique in the database. `raw_event_kind`, `log_kind`,
+    /// `clustering_model_type`, `training_read` and the detection model
+    /// states last stored come from the model's record, and `scores` are the
+    /// ones last stored for it (empty when it has none), read under the
+    /// model-files lock together with the record and the classifier.
+    /// `batch_info` is empty.
     ///
     /// # Errors
     ///
@@ -772,9 +799,13 @@ impl Store {
             serialized_classifier: classifier,
             max_event_id_num: record.max_event_id_num,
             raw_event_kind: record.raw_event_kind,
+            log_kind: record.log_kind,
             classification_id: record.classification_id.unwrap_or_default(),
             batch_info: Vec::new(),
             scores,
+            clustering_model_type: record.clustering_model_type,
+            training_read: record.training_read,
+            detection_model_states: record.detection_model_states,
         })
     }
 
@@ -1084,7 +1115,6 @@ mod tests {
             run_id,
             definition: definition.to_string(),
             sources: vec!["piglet.host".to_string()],
-            log_kind: None,
         }
     }
 
@@ -1119,6 +1149,10 @@ mod tests {
             classification_id,
             batch_info: vec![batch(classification_id)],
             scores: scores(0.5),
+            log_kind: None,
+            clustering_model_type: crate::ClusteringModelTypeRef::Custom,
+            training_read: crate::TrainingRead::default(),
+            detection_model_states: Vec::new(),
         }
     }
 
@@ -1367,6 +1401,9 @@ mod tests {
                 previous: None,
                 clusters_applied: None,
                 trained_sources: vec!["piglet.host".to_string()],
+                clustering_model_type: crate::ClusteringModelTypeRef::Custom,
+                training_read: crate::TrainingRead::default(),
+                detection_model_states: Vec::new(),
             }
         );
         assert_eq!(
@@ -1704,24 +1741,22 @@ mod tests {
     }
 
     #[test]
-    fn the_log_kind_follows_the_caller_of_a_replace() {
+    fn the_log_kind_follows_the_body_of_a_replace() {
         let ts = setup_store();
         let store = &ts.store;
-        let log_body = |classifier: &[u8], classification_id| crate::model::Model {
-            raw_event_kind: "log".to_string(),
-            ..body("alpha", classifier, classification_id)
-        };
-        let with_log_kind = |run_id, log_kind: &str| TrainedWith {
-            log_kind: Some(log_kind.to_string()),
-            ..trained(run_id, "eps = 5.0")
-        };
+        let log_body =
+            |classifier: &[u8], classification_id, log_kind: Option<&str>| crate::model::Model {
+                raw_event_kind: "log".to_string(),
+                log_kind: log_kind.map(ToString::to_string),
+                ..body("alpha", classifier, classification_id)
+            };
 
         let inserted = store
             .replace_model(
-                log_body(b"first", 1),
+                log_body(b"first", 1, Some("syslog")),
                 owner(),
                 at(100),
-                with_log_kind(1, "syslog"),
+                trained(1, "eps = 5.0"),
             )
             .unwrap();
         assert!(inserted.inserted);
@@ -1729,21 +1764,21 @@ mod tests {
         assert_eq!(record_after_insert.raw_event_kind, "log");
         assert_eq!(record_after_insert.log_kind.as_deref(), Some("syslog"));
 
-        // An analysis round keeps the record's log kind.
+        // An analysis round keeps the record's log kind, whatever the body's.
         store
             .update_model(crate::model::Model {
                 id: i32::try_from(inserted.id).unwrap(),
-                ..log_body(b"round", 2)
+                ..log_body(b"round", 2, Some("auth"))
             })
             .unwrap();
         assert_eq!(record(store, "alpha").log_kind.as_deref(), Some("syslog"));
 
         let replaced = store
             .replace_model(
-                log_body(b"second", 3),
+                log_body(b"second", 3, Some("auth")),
                 owner(),
                 at(200),
-                with_log_kind(2, "auth"),
+                trained(2, "eps = 5.0"),
             )
             .unwrap();
         assert!(!replaced.inserted);
@@ -1751,15 +1786,19 @@ mod tests {
         assert_eq!(record_after_replace.raw_event_kind, "log");
         assert_eq!(record_after_replace.log_kind.as_deref(), Some("auth"));
 
-        // The caller's `None` replaces a stored log kind too.
+        // The body's `None` replaces a stored log kind too.
         store
-            .replace_model(log_body(b"third", 4), owner(), at(300), trained(3, "x"))
+            .replace_model(
+                log_body(b"third", 4, None),
+                owner(),
+                at(300),
+                trained(3, "x"),
+            )
             .unwrap();
         assert_eq!(record(store, "alpha").log_kind, None);
-        assert_eq!(
-            store.load_model_by_name("alpha").unwrap().raw_event_kind,
-            "log"
-        );
+        let loaded = store.load_model_by_name("alpha").unwrap();
+        assert_eq!(loaded.raw_event_kind, "log");
+        assert_eq!(loaded.log_kind, None);
     }
 
     #[test]
@@ -2944,5 +2983,344 @@ mod tests {
                 .serialized_classifier,
             b"gamma"
         );
+    }
+
+    fn state(model: u32, state: &[u8]) -> crate::DetectionModelState {
+        crate::DetectionModelState {
+            model,
+            state_version: 1,
+            state: state.to_vec(),
+        }
+    }
+
+    fn http_url_v1() -> crate::ClusteringModelTypeRef {
+        crate::ClusteringModelTypeRef::Catalog {
+            id: "http_url".to_string(),
+            version: 1,
+        }
+    }
+
+    fn training_read(first: i64) -> crate::TrainingRead {
+        crate::TrainingRead {
+            first,
+            last: first + 10,
+            days: vec![crate::TrainingReadDay {
+                start: first,
+                count: 7,
+            }],
+        }
+    }
+
+    /// A body of `log` events with every value of format 3 set.
+    fn typed_body(
+        classifier: &[u8],
+        classification_id: i64,
+        clustering_model_type: crate::ClusteringModelTypeRef,
+        first: i64,
+        log_kind: &str,
+        states: Vec<crate::DetectionModelState>,
+    ) -> crate::model::Model {
+        crate::model::Model {
+            raw_event_kind: "log".to_string(),
+            log_kind: Some(log_kind.to_string()),
+            clustering_model_type,
+            training_read: training_read(first),
+            detection_model_states: states,
+            ..body("alpha", classifier, classification_id)
+        }
+    }
+
+    /// The upload's clustering model type, training read, detection model
+    /// states and log kind are stored by a replace that inserts and by one
+    /// that replaces, and returned by `load_model_by_name`.
+    #[test]
+    fn a_replace_stores_the_values_of_the_upload() {
+        let ts = setup_store();
+        let store = &ts.store;
+        let inserted = typed_body(
+            b"first",
+            1,
+            http_url_v1(),
+            100,
+            "syslog",
+            vec![state(19, b"a"), state(3, b"b")],
+        );
+        let outcome = store
+            .replace_model(inserted.clone(), owner(), at(100), trained(1, "x"))
+            .unwrap();
+        assert!(outcome.inserted);
+        let stored = record(store, "alpha");
+        assert_eq!(stored.clustering_model_type, http_url_v1());
+        assert_eq!(stored.training_read, training_read(100));
+        assert_eq!(
+            stored.detection_model_states,
+            vec![state(19, b"a"), state(3, b"b")]
+        );
+        assert_eq!(stored.log_kind.as_deref(), Some("syslog"));
+
+        let replacing = typed_body(
+            b"second",
+            2,
+            crate::ClusteringModelTypeRef::Custom,
+            200,
+            "auth",
+            vec![state(5, b"c")],
+        );
+        let outcome = store
+            .replace_model(replacing.clone(), owner(), at(200), trained(2, "y"))
+            .unwrap();
+        assert!(!outcome.inserted);
+        let stored = record(store, "alpha");
+        assert_eq!(
+            stored.clustering_model_type,
+            crate::ClusteringModelTypeRef::Custom
+        );
+        assert_eq!(stored.training_read, training_read(200));
+        assert_eq!(stored.detection_model_states, vec![state(5, b"c")]);
+        assert_eq!(stored.log_kind.as_deref(), Some("auth"));
+
+        // The model handed back is the upload, with its id and without its
+        // batch information, and serializes to format 3 with those values.
+        let loaded = store.load_model_by_name("alpha").unwrap();
+        let expected = crate::model::Model {
+            id: i32::try_from(outcome.id).unwrap(),
+            batch_info: Vec::new(),
+            ..replacing
+        };
+        assert_eq!(loaded, expected);
+        let serialized = loaded.into_serialized().unwrap();
+        assert_eq!(&serialized[4..8], 3_u32.to_le_bytes());
+        assert_eq!(
+            crate::model::Model::from_serialized(&serialized).unwrap(),
+            expected
+        );
+    }
+
+    /// A round keeps the record's clustering model type, training read and
+    /// log kind, whatever the upload's, and replaces the stored detection
+    /// model states as a whole with the upload's.
+    #[test]
+    fn a_round_replaces_only_the_detection_model_states() {
+        let ts = setup_store();
+        let store = &ts.store;
+        let id = store
+            .replace_model(
+                typed_body(
+                    b"first",
+                    1,
+                    http_url_v1(),
+                    100,
+                    "syslog",
+                    vec![state(19, b"a"), state(3, b"b")],
+                ),
+                owner(),
+                at(100),
+                trained(1, "x"),
+            )
+            .unwrap()
+            .id;
+        let round = |classifier: &[u8], states| crate::model::Model {
+            id: i32::try_from(id).unwrap(),
+            ..typed_body(
+                classifier,
+                2,
+                crate::ClusteringModelTypeRef::Custom,
+                900,
+                "auth",
+                states,
+            )
+        };
+
+        // A state the upload does not carry is no longer stored.
+        store
+            .update_model(round(b"round-1", vec![state(3, b"b2")]))
+            .unwrap();
+        let stored = record(store, "alpha");
+        assert_eq!(stored.clustering_model_type, http_url_v1());
+        assert_eq!(stored.training_read, training_read(100));
+        assert_eq!(stored.log_kind.as_deref(), Some("syslog"));
+        assert_eq!(stored.detection_model_states, vec![state(3, b"b2")]);
+        let loaded = store.load_model_by_name("alpha").unwrap();
+        assert_eq!(loaded.serialized_classifier, b"round-1");
+        assert_eq!(loaded.clustering_model_type, http_url_v1());
+        assert_eq!(loaded.training_read, training_read(100));
+        assert_eq!(loaded.log_kind.as_deref(), Some("syslog"));
+        assert_eq!(loaded.detection_model_states, vec![state(3, b"b2")]);
+
+        // An empty list leaves no state stored.
+        store.update_model(round(b"round-2", Vec::new())).unwrap();
+        assert_eq!(record(store, "alpha").detection_model_states, Vec::new());
+        let loaded = store.load_model_by_name("alpha").unwrap();
+        assert_eq!(loaded.serialized_classifier, b"round-2");
+        assert_eq!(loaded.detection_model_states, Vec::new());
+    }
+
+    #[test]
+    fn the_latest_classifier_and_states_survive_a_reopen() {
+        let _permit = acquire_db_permit();
+        let db_dir = tempfile::tempdir().unwrap();
+        let backup_dir = tempfile::tempdir().unwrap();
+        let store = Store::new(db_dir.path(), backup_dir.path(), None).unwrap();
+        let id = store
+            .replace_model(
+                typed_body(
+                    b"first",
+                    1,
+                    http_url_v1(),
+                    100,
+                    "syslog",
+                    vec![state(19, b"a"), state(3, b"b")],
+                ),
+                owner(),
+                at(100),
+                trained(1, "x"),
+            )
+            .unwrap()
+            .id;
+        store
+            .update_model(crate::model::Model {
+                id: i32::try_from(id).unwrap(),
+                ..typed_body(
+                    b"round",
+                    2,
+                    http_url_v1(),
+                    100,
+                    "syslog",
+                    vec![state(19, b"a2")],
+                )
+            })
+            .unwrap();
+        drop(store);
+
+        let store = Store::new(db_dir.path(), backup_dir.path(), None).unwrap();
+        let loaded = store.load_model_by_name("alpha").unwrap();
+        assert_eq!(loaded.serialized_classifier, b"round");
+        assert_eq!(loaded.detection_model_states, vec![state(19, b"a2")]);
+        assert_eq!(loaded.clustering_model_type, http_url_v1());
+        assert_eq!(loaded.training_read, training_read(100));
+        assert_eq!(loaded.log_kind.as_deref(), Some("syslog"));
+    }
+
+    /// A round or a replace that fails leaves the previous classifier and
+    /// the previous detection model states.
+    #[test]
+    fn a_failed_write_keeps_the_previous_classifier_and_states() {
+        let ts = setup_store();
+        let store = &ts.store;
+        let id = store
+            .replace_model(
+                typed_body(
+                    b"first",
+                    1,
+                    http_url_v1(),
+                    100,
+                    "syslog",
+                    vec![state(19, b"a"), state(3, b"b")],
+                ),
+                owner(),
+                at(100),
+                trained(1, "x"),
+            )
+            .unwrap()
+            .id;
+        let before = record(store, "alpha");
+
+        fail_before_commit(store);
+        assert!(
+            store
+                .update_model(crate::model::Model {
+                    id: i32::try_from(id).unwrap(),
+                    ..typed_body(
+                        b"round",
+                        2,
+                        http_url_v1(),
+                        100,
+                        "syslog",
+                        vec![state(19, b"a2")],
+                    )
+                })
+                .is_err()
+        );
+        assert!(
+            store
+                .replace_model(
+                    typed_body(
+                        b"second",
+                        3,
+                        crate::ClusteringModelTypeRef::Custom,
+                        200,
+                        "auth",
+                        Vec::new(),
+                    ),
+                    owner(),
+                    at(200),
+                    trained(2, "y"),
+                )
+                .is_err()
+        );
+        store.set_model_files_hook(None);
+
+        assert_eq!(record(store, "alpha"), before);
+        let loaded = store.load_model_by_name("alpha").unwrap();
+        assert_eq!(loaded.serialized_classifier, b"first");
+        assert_eq!(
+            loaded.detection_model_states,
+            vec![state(19, b"a"), state(3, b"b")]
+        );
+    }
+
+    /// Deleting a model, alone or with its customer's records, leaves none of
+    /// its detection model states: a model inserted under the same name and
+    /// id afterwards has only its own.
+    #[test]
+    fn a_removed_model_leaves_no_detection_model_states() {
+        let ts = setup_store();
+        let store = &ts.store;
+        let with_states = || {
+            typed_body(
+                b"first",
+                1,
+                http_url_v1(),
+                100,
+                "syslog",
+                vec![state(19, b"a"), state(3, b"b")],
+            )
+        };
+        let without_states = || typed_body(b"next", 1, http_url_v1(), 100, "syslog", Vec::new());
+
+        let id = store
+            .replace_model(with_states(), owner(), at(100), trained(1, "x"))
+            .unwrap()
+            .id;
+        store.delete_model("alpha").unwrap();
+        assert!(store.model_map().load_model_by_name("alpha").is_err());
+        let reinserted = store
+            .replace_model(without_states(), owner(), at(200), trained(2, "x"))
+            .unwrap();
+        assert_eq!(reinserted.id, id);
+        assert!(reinserted.inserted);
+        assert_eq!(
+            store
+                .load_model_by_name("alpha")
+                .unwrap()
+                .detection_model_states,
+            Vec::new()
+        );
+        store.delete_model("alpha").unwrap();
+
+        let id = store
+            .replace_model(with_states(), owner(), at(300), trained(3, "x"))
+            .unwrap()
+            .id;
+        assert_eq!(
+            store.remove_customer_unsupervised_records(1).unwrap(),
+            removed(&["alpha"], &[])
+        );
+        assert!(store.model_map().load_model_by_name("alpha").is_err());
+        let reinserted = store
+            .replace_model(without_states(), owner(), at(400), trained(4, "x"))
+            .unwrap();
+        assert_eq!(reinserted.id, id);
+        assert_eq!(record(store, "alpha").detection_model_states, Vec::new());
     }
 }

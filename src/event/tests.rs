@@ -17,7 +17,7 @@ use super::{
     },
 };
 use crate::{
-    ModelInstance,
+    ClusteringModelTypeRef, ModelInstance,
     test::acquire_db_permit,
     util::{COUNTRY_CODE_UNKNOWN, COUNTRY_CODE_UNRESOLVED},
 };
@@ -306,6 +306,68 @@ fn put_unless_stored_ignores_the_receive_time_stamp_fields() {
         );
     }
     assert_eq!(db.raw_count(), 1);
+}
+
+/// Two puts that differ only in the stamp's clustering model type store one
+/// record, the first.
+#[test]
+fn put_unless_stored_ignores_the_clustering_model_type() {
+    let (_permit, store) = setup_store();
+    let db = store.events();
+    let event = conn_event("192.0.2.1", "198.51.100.1");
+    let custom = DetectionEventStamp {
+        clustering_model_id: Some(3),
+        clustering_model_type: Some(ClusteringModelTypeRef::Custom),
+        ..stamp()
+    };
+    assert!(matches!(
+        db.put_unless_stored(&event, &custom).unwrap(),
+        PutOutcome::Stored(_)
+    ));
+    for clustering_model_type in [Some(http_url_v1()), None] {
+        let other = DetectionEventStamp {
+            clustering_model_type,
+            ..custom.clone()
+        };
+        assert_eq!(
+            db.put_unless_stored(&event, &other).unwrap(),
+            PutOutcome::AlreadyStored
+        );
+    }
+    assert_eq!(db.raw_count(), 1);
+    assert_eq!(records(&db)[0].1.stamp(), &custom);
+}
+
+/// The stamp's clustering model type is stored verbatim, whichever it is.
+#[test]
+fn the_clustering_model_type_of_the_stamp_round_trips() {
+    let (_permit, store) = setup_store();
+    let db = store.events();
+    let types = [
+        Some(http_url_v1()),
+        Some(ClusteringModelTypeRef::Custom),
+        None,
+    ];
+    for (offset, clustering_model_type) in types.iter().enumerate() {
+        let stamp = DetectionEventStamp {
+            clustering_model_type: clustering_model_type.clone(),
+            ..stamp()
+        };
+        db.put(&event_at_nanos(i64::try_from(offset).unwrap()), &stamp)
+            .unwrap();
+    }
+    let stored: Vec<_> = records(&db)
+        .into_iter()
+        .map(|(_, record)| record.stamp().clustering_model_type.clone())
+        .collect();
+    assert_eq!(stored, types);
+}
+
+fn http_url_v1() -> ClusteringModelTypeRef {
+    ClusteringModelTypeRef::Catalog {
+        id: "http_url".to_string(),
+        version: 1,
+    }
 }
 
 #[test]
@@ -1261,6 +1323,7 @@ fn put_stores_the_stamp_verbatim() {
             installed_version: None,
             installed_commit: None,
             config_revision: None,
+            clustering_model_type: None,
         },
     ];
     for (offset, stamp) in stamps.iter().enumerate() {

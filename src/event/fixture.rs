@@ -78,6 +78,7 @@ pub(crate) fn stamp() -> DetectionEventStamp {
         installed_version: Some("1.2.3".to_string()),
         installed_commit: Some("0123abcd".to_string()),
         config_revision: Some(7),
+        clustering_model_type: None,
     }
 }
 

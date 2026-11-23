@@ -361,6 +361,10 @@ mod tests {
             classification_id: 1,
             batch_info: Vec::new(),
             scores: [(1, 0.5)].into_iter().collect(),
+            log_kind: None,
+            clustering_model_type: crate::ClusteringModelTypeRef::Custom,
+            training_read: crate::TrainingRead::default(),
+            detection_model_states: Vec::new(),
         };
         store
             .replace_model(
@@ -374,7 +378,6 @@ mod tests {
                     run_id: 1,
                     definition: "eps = 5.0".to_string(),
                     sources: Vec::new(),
-                    log_kind: None,
                 },
             )
             .unwrap();
@@ -478,6 +481,8 @@ mod tests {
                 state: SourceState::Served,
                 reason: None,
             }],
+            detection_models: Vec::new(),
+            excluded: Vec::new(),
             reported_at: at(20),
         }
     }
