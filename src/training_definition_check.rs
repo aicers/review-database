@@ -1789,7 +1789,10 @@ mod tests {
         assert_eq!(refused(&table), r(FieldFixed, "csv.prefix_columns", "[14]"));
         let mut table = http_url();
         csv_mut(&mut table).insert("reader".to_string(), v("{ delimiter = 9 }"));
-        assert_eq!(refused(&table).0, FieldFixed,);
+        assert_eq!(
+            refused(&table),
+            r(FieldFixed, "csv.reader", "{ delimiter = 9 }")
+        );
         let mut table = http_url();
         csv_mut(&mut table).insert(
             "reader".to_string(),
