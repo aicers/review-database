@@ -1405,6 +1405,30 @@ fn section_insert(
             }
             (offset, text)
         }
+        Node::Table(table) if table.is_implicit() && !table.is_dotted() => {
+            // The section exists only through a header under it, such as
+            // `[[detection_models.<section>.<key>]]`. Its values would land in
+            // that header's table, so they go under a header of their own,
+            // which TOML allows after the headers under it.
+            let mut text = String::new();
+            if !document.is_empty() {
+                if !document.ends_with('\n') {
+                    text.push_str(newline);
+                }
+                text.push_str(newline);
+            }
+            text.push('[');
+            text.push_str(DETECTION_MODELS);
+            text.push('.');
+            text.push_str(&section.name_key());
+            text.push(']');
+            text.push_str(newline);
+            for spec in &section.missing {
+                text.push_str(&assignment(spec));
+                text.push_str(newline);
+            }
+            (document.len(), text)
+        }
         Node::Table(table) => {
             let prefix = if !table.is_dotted() {
                 String::new()
@@ -3015,6 +3039,42 @@ rdp_brute_force.enabled = false
             "[detection_models.port_scan]\nrows = []\nshare = 1.0\n"
         );
         assert_eq!(complete_synthetic_document(&output).unwrap(), output);
+    }
+
+    /// A section holding an array of tables gets its missing values in its
+    /// own body, never in an entry of the array.
+    #[test]
+    fn synthetic_table_list_as_array_of_tables_is_completed_outside_it() {
+        for (document, expected) in [
+            (
+                "[[detection_models.port_scan.rows]]\ncount = 1\n",
+                "[[detection_models.port_scan.rows]]\ncount = 1\n\n\
+                 [detection_models.port_scan]\nshare = 1.0\n",
+            ),
+            (
+                "[[detection_models.port_scan.rows]]\ncount = 1",
+                "[[detection_models.port_scan.rows]]\ncount = 1\n\n\
+                 [detection_models.port_scan]\nshare = 1.0\n",
+            ),
+            (
+                "[detection_models.port_scan]\n[[detection_models.port_scan.rows]]\ncount = 1\n",
+                "[detection_models.port_scan]\nshare = 1.0\n\
+                 [[detection_models.port_scan.rows]]\ncount = 1\n",
+            ),
+            (
+                "[[detection_models.port_scan.rows]]\ncount = 1\n[detection_models.port_scan]\n",
+                "[[detection_models.port_scan.rows]]\ncount = 1\n[detection_models.port_scan]\n\
+                 share = 1.0\n",
+            ),
+        ] {
+            let output = complete_synthetic_document(document).unwrap();
+            assert_eq!(output, expected, "{document}");
+            assert_eq!(
+                complete_synthetic_document(&output).unwrap(),
+                output,
+                "{document}"
+            );
+        }
     }
 
     #[test]
