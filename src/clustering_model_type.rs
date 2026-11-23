@@ -13,7 +13,7 @@ use jiff::SignedDuration;
 use review_protocol::types::{DetectionModel, RawEventKind};
 use serde::{Deserialize, Serialize};
 
-use crate::ModelMethod;
+use crate::{ModelMethod, time_series_types};
 
 /// How a clustering model type groups raw events.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -192,12 +192,19 @@ pub fn clustering_model_type(id: &str) -> Option<&'static ClusteringModelType> {
 }
 
 /// Returns the raw event kind of every catalog type that allows `model`,
-/// each kind once, in catalog order.
+/// each kind once: the clustering model types first, then the time-series
+/// types, each in catalog order.
 pub(crate) fn raw_event_kinds_of(model: DetectionModel) -> Vec<RawEventKind> {
+    let clustering = CATALOG
+        .iter()
+        .map(|t| (t.detection_models, t.raw_event_kind));
+    let series = time_series_types()
+        .iter()
+        .map(|t| (t.detection_models, t.raw_event_kind));
     let mut kinds = Vec::new();
-    for t in CATALOG {
-        if t.detection_models.contains(&model) && !kinds.contains(&t.raw_event_kind) {
-            kinds.push(t.raw_event_kind);
+    for (models, kind) in clustering.chain(series) {
+        if models.contains(&model) && !kinds.contains(&kind) {
+            kinds.push(kind);
         }
     }
     kinds
@@ -206,7 +213,7 @@ pub(crate) fn raw_event_kinds_of(model: DetectionModel) -> Vec<RawEventKind> {
 const CATALOG: &[ClusteringModelType] = &[HTTP_URL];
 
 /// The shortest training window of a type.
-const MIN_WINDOW: SignedDuration = SignedDuration::from_hours(7 * 24);
+pub(crate) const MIN_WINDOW: SignedDuration = SignedDuration::from_hours(7 * 24);
 
 /// Returns a `[csv]` `format` entry.
 const fn column(name: &'static str, data_type: &'static str, weight: f64) -> [FixedValue; 3] {

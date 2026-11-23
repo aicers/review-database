@@ -1,7 +1,8 @@
-//! The completion of the detection model sections of an Unsupervised Engine
-//! document: one `[detectors.detection_models.<section>]` table per detection
-//! model under each `[[detectors]]` entry, allowed by the clustering model
-//! type of the model the detector runs.
+//! The completion of an Unsupervised Engine document: one
+//! `[detectors.detection_models.<section>]` table per detection model under
+//! each `[[detectors]]` entry, allowed by the catalog type of the model the
+//! detector runs, and, for a detector of a time-series type's model, the
+//! sensors of its source policies in `source_sensors`.
 
 use std::ops::Range;
 
@@ -17,12 +18,122 @@ use super::{
 use crate::ClusteringModelTypeRef;
 use crate::clustering_model_type::clustering_model_type;
 use crate::event::LearningMethod;
+use crate::time_series_type::time_series_type;
 
 /// The key of the array of tables holding the detectors.
 const DETECTORS: &str = "detectors";
 
 /// The key of the model a detector runs.
 const MODEL: &str = "model";
+
+/// The key of a detector's source policy ids.
+const SOURCES: &str = "sources";
+
+/// The key of the sensors of a detector's source policies.
+const SOURCE_SENSORS: &str = "source_sensors";
+
+/// What the catalog type of a detector's model allows.
+struct TypeOf {
+    /// The detection models the detector may run.
+    allowed: Vec<DetectionModel>,
+    /// Whether the type is a time-series type, whose detector is given the
+    /// sensors of its source policies.
+    time_series: bool,
+}
+
+impl TypeOf {
+    /// Returns what `model_type`, the type of a detector's model, allows: a
+    /// catalog type, the detection models of the current clustering model
+    /// type of its id or, if there is none, the Unsupervised Engine models of
+    /// the time-series type of that id; anything else, nothing.
+    fn of(model_type: Option<ClusteringModelTypeRef>) -> Self {
+        let none = Self {
+            allowed: Vec::new(),
+            time_series: false,
+        };
+        let Some(ClusteringModelTypeRef::Catalog { id, .. }) = model_type else {
+            return none;
+        };
+        if let Some(t) = clustering_model_type(&id) {
+            return Self {
+                allowed: t.detection_models.to_vec(),
+                time_series: false,
+            };
+        }
+        if let Some(t) = time_series_type(&id) {
+            return Self {
+                allowed: t
+                    .detection_models
+                    .iter()
+                    .copied()
+                    .filter(|m| properties(*m).learning_method == LearningMethod::Unsupervised)
+                    .collect(),
+                time_series: true,
+            };
+        }
+        none
+    }
+}
+
+/// An entry of a detector's `sources` that may name a source policy: a
+/// string that parses as a policy id.
+struct SourceEntry<'a> {
+    /// The entry as written.
+    value: &'a toml_edit::Formatted<String>,
+    /// The policy id it parses as.
+    id: u32,
+}
+
+/// Returns the entries of `detector`'s `sources` that are strings parsing
+/// as a `u32`, in their order; empty if it has no `sources` list.
+fn source_entries(detector: &Table) -> Vec<SourceEntry<'_>> {
+    let Some(Item::Value(Value::Array(sources))) = detector.get(SOURCES) else {
+        return Vec::new();
+    };
+    sources
+        .iter()
+        .filter_map(|entry| match entry {
+            Value::String(value) => value
+                .value()
+                .parse()
+                .ok()
+                .map(|id| SourceEntry { value, id }),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Returns the id of every source policy that a detector of a time-series
+/// type's model names in `document`, as
+/// [`complete_engine_document`](super::complete_engine_document) looks them
+/// up for `source_sensors`, each once, in document order; empty if the
+/// document is not valid TOML or has no such detector.
+pub(crate) fn source_policy_ids(
+    document: &str,
+    model_type: &dyn Fn(&str) -> Option<ClusteringModelTypeRef>,
+) -> Vec<u32> {
+    let Ok(parsed) = Document::parse(document) else {
+        return Vec::new();
+    };
+    let Some(Item::ArrayOfTables(detectors)) = parsed.as_table().get(DETECTORS) else {
+        return Vec::new();
+    };
+    let mut ids = Vec::new();
+    for detector in detectors {
+        let Some(Item::Value(Value::String(name))) = detector.get(MODEL) else {
+            continue;
+        };
+        if !TypeOf::of(model_type(name.value())).time_series {
+            continue;
+        }
+        for entry in source_entries(detector) {
+            if !ids.contains(&entry.id) {
+                ids.push(entry.id);
+            }
+        }
+    }
+    ids
+}
 
 /// Completes the `detection_models` tables of every `[[detectors]]` entry of
 /// `document`, as
@@ -31,6 +142,7 @@ const MODEL: &str = "model";
 pub(super) fn complete(
     document: &str,
     model_type: &dyn Fn(&str) -> Option<ClusteringModelTypeRef>,
+    policy_sensors: &dyn Fn(u32) -> Option<Vec<String>>,
     mode: CompletionMode,
 ) -> Result<String, DetectionModelsSectionError> {
     let parsed = Document::parse(document)
@@ -50,7 +162,7 @@ pub(super) fn complete(
     };
     let mut edits = Edits::default();
     for (index, detector) in detectors.iter().enumerate() {
-        completion.detector(index, detector, model_type, &mut edits)?;
+        completion.detector(index, detector, model_type, policy_sensors, &mut edits)?;
     }
     Ok(edits.apply(document))
 }
@@ -122,6 +234,7 @@ impl Completion<'_> {
         index: usize,
         detector: &Table,
         model_type: &dyn Fn(&str) -> Option<ClusteringModelTypeRef>,
+        policy_sensors: &dyn Fn(u32) -> Option<Vec<String>>,
         edits: &mut Edits,
     ) -> Result<(), DetectionModelsSectionError> {
         let model = match detector.get(MODEL).map(Child::from_item) {
@@ -135,12 +248,11 @@ impl Completion<'_> {
                 ));
             }
         };
-        let allowed: &[DetectionModel] = match model_type(model) {
-            Some(ClusteringModelTypeRef::Catalog { id, .. }) => {
-                clustering_model_type(&id).map_or(&[], |t| t.detection_models)
-            }
-            Some(ClusteringModelTypeRef::Custom) | None => &[],
-        };
+        let type_of = TypeOf::of(model_type(model));
+        if type_of.time_series {
+            self.source_sensors(detector, policy_sensors, edits);
+        }
+        let allowed = type_of.allowed.as_slice();
         let container = match detector.get(DETECTION_MODELS).map(Child::from_item) {
             None => None,
             Some(Child::Node(node)) => Some(node),
@@ -194,6 +306,91 @@ impl Completion<'_> {
             }
         }
         Ok(())
+    }
+
+    /// Adds the edits that set the `source_sensors` of `detector`, a detector
+    /// of a time-series type's model, to the sensors `policy_sensors` gives
+    /// for its `sources`, unless it already holds an equal value.
+    fn source_sensors(
+        &self,
+        detector: &Table,
+        policy_sensors: &dyn Fn(u32) -> Option<Vec<String>>,
+        edits: &mut Edits,
+    ) {
+        let mut used: Vec<&str> = Vec::new();
+        let mut expected: Vec<(String, Vec<String>)> = Vec::new();
+        for entry in source_entries(detector) {
+            let name = entry.value.value().as_str();
+            if used.contains(&name) {
+                continue;
+            }
+            let Some(sensors) = policy_sensors(entry.id) else {
+                continue;
+            };
+            used.push(name);
+            expected.push((self.source_key(entry.value), sensors));
+        }
+
+        let present = detector.get(SOURCE_SENSORS).map(Child::from_item);
+        if present
+            .as_ref()
+            .is_some_and(|child| same_source_sensors(child, &used, &expected))
+        {
+            return;
+        }
+        let text = inline(expected.iter().map(|(key, sensors)| {
+            let list: Array = sensors.iter().map(String::as_str).collect();
+            format!("{key} = {}", Value::from(list).decorated("", ""))
+        }));
+        match present {
+            Some(Child::Value(value)) => {
+                let span = value.span().expect("a parsed value has a span");
+                edits.replace(span, text);
+                return;
+            }
+            Some(Child::Node(Node::Inline(table))) => {
+                let span = table.span().expect("a parsed inline table has a span");
+                edits.replace(span, text);
+                return;
+            }
+            Some(Child::Node(node)) => self.remove(node, false, edits),
+            Some(Child::Tables(tables)) => {
+                for table in tables {
+                    self.remove(Node::Table(table), false, edits);
+                }
+            }
+            Some(Child::Other) | None => {}
+        }
+        let anchor = Node::Table(detector)
+            .last_value_end()
+            .expect("a detector has at least its model, with a span");
+        // At the end of a document with no final line ending, the line is
+        // added without one too, so that a section header added at the same
+        // offset is preceded by one blank line only.
+        let line = format!("{SOURCE_SENSORS} = {text}");
+        let (offset, text) = match self.after_line(anchor) {
+            (offset, false) => (offset, format!("{line}{}", self.newline)),
+            (offset, true) => (offset, format!("{}{line}", self.newline)),
+        };
+        edits.insert(offset, text);
+    }
+
+    /// Returns the key of `source_sensors` for the `sources` entry `value`:
+    /// the entry as written, or, for a multi-line string, which cannot be a
+    /// key, the string as a basic string.
+    fn source_key(&self, value: &toml_edit::Formatted<String>) -> String {
+        value
+            .span()
+            .and_then(|span| self.document.get(span))
+            .filter(|text| !text.starts_with("\"\"\"") && !text.starts_with("'''"))
+            .map_or_else(
+                || {
+                    Value::from(value.value().as_str())
+                        .decorated("", "")
+                        .to_string()
+                },
+                str::to_owned,
+            )
     }
 
     /// Checks the sections of `container`, the detector's `detection_models`
@@ -665,6 +862,38 @@ impl Completion<'_> {
     }
 }
 
+/// Returns whether `present`, the `source_sensors` of a detector, holds
+/// exactly the keys `keys`, each with the list of strings `expected` gives
+/// for it at the same position; the order of the keys and the formatting
+/// are not compared.
+fn same_source_sensors(
+    present: &Child<'_>,
+    keys: &[&str],
+    expected: &[(String, Vec<String>)],
+) -> bool {
+    let Child::Node(node) = present else {
+        return false;
+    };
+    let entries = node.entries();
+    entries.len() == keys.len()
+        && entries.iter().all(|(key, child)| {
+            let Some(i) = keys.iter().position(|k| k == key) else {
+                return false;
+            };
+            let Child::Value(Value::Array(list)) = child else {
+                return false;
+            };
+            let Some((_, sensors)) = expected.get(i) else {
+                return false;
+            };
+            list.len() == sensors.len()
+                && list
+                    .iter()
+                    .zip(sensors)
+                    .all(|(item, sensor)| item.as_str() == Some(sensor.as_str()))
+        })
+}
+
 /// Returns the entries of a table-list value, each `None` if it is not a
 /// table; empty if the value is not a list.
 fn list_entries<'a>(child: &Child<'a>) -> Vec<Option<Node<'a>>> {
@@ -813,6 +1042,14 @@ mod tests {
     const CUSTOM: &str = "custom";
     /// A model of a catalog type the catalog does not have.
     const RETIRED: &str = "retired";
+    /// A model of the `server_daily_tls` time-series type.
+    const TLS: &str = "tls";
+    /// A model of the `server_daily_tls` time-series type at an earlier
+    /// version.
+    const OLD_TLS: &str = "old-tls";
+    /// A model of `host_daily_rdp`, a time-series type that allows no
+    /// detection model.
+    const RDP: &str = "rdp";
 
     fn types(name: &str) -> Option<ClusteringModelTypeRef> {
         let catalog = |id: &str, version| ClusteringModelTypeRef::Catalog {
@@ -824,18 +1061,39 @@ mod tests {
             OLD_WEB => Some(catalog("http_url", 0)),
             CUSTOM => Some(ClusteringModelTypeRef::Custom),
             RETIRED => Some(catalog("no_such_type", 1)),
+            TLS => Some(catalog("server_daily_tls", 1)),
+            OLD_TLS => Some(catalog("server_daily_tls", 0)),
+            RDP => Some(catalog("host_daily_rdp", 1)),
             _ => None,
         }
     }
 
+    /// The sensors of the policies 42, 43 and 44; no other policy exists.
+    fn policies(id: u32) -> Option<Vec<String>> {
+        let sensors: &[&str] = match id {
+            42 => &["s1", "s2"],
+            43 => &["s3"],
+            44 => &[],
+            _ => return None,
+        };
+        Some(sensors.iter().map(|s| (*s).to_owned()).collect())
+    }
+
     fn run(document: &str, mode: CompletionMode) -> Result<String, DetectionModelsSectionError> {
-        let output = complete_engine_document(AgentKind::Unsupervised, document, &types, mode);
+        let output =
+            complete_engine_document(AgentKind::Unsupervised, document, &types, &policies, mode);
         if let Ok(output) = &output {
             assert!(Document::parse(output).is_ok(), "invalid output:\n{output}");
             for mode in [CompletionMode::Apply, CompletionMode::Recomplete] {
                 assert_eq!(
-                    complete_engine_document(AgentKind::Unsupervised, output, &types, mode)
-                        .as_deref(),
+                    complete_engine_document(
+                        AgentKind::Unsupervised,
+                        output,
+                        &types,
+                        &policies,
+                        mode
+                    )
+                    .as_deref(),
                     Ok(output.as_str()),
                     "not a fixed point in {mode:?}:\n{output}"
                 );
@@ -1540,5 +1798,215 @@ mod tests {
         assert_eq!(detector_models(&document), ["b", "a"]);
         assert_eq!(detector_models("not [toml"), Vec::<String>::new());
         assert_eq!(detector_models("detectors = 1"), Vec::<String>::new());
+    }
+
+    const WINDOW_OUTLIER: &str = "[detectors.detection_models.window_outlier]\nenabled = true\n";
+
+    /// Returns a detector of `model` with `sources`, given as TOML.
+    fn sourced(model: &str, sources: &str) -> String {
+        format!("{}sources = {sources}\n", detector(model))
+    }
+
+    #[test]
+    fn time_series_detector_gets_its_models_and_source_sensors() {
+        let expected = format!(
+            "{}source_sensors = {{ \"42\" = [\"s1\", \"s2\"], \"43\" = [\"s3\"] }}\n\n{WINDOW_OUTLIER}",
+            sourced(TLS, r#"["42", "43"]"#)
+        );
+        both(&sourced(TLS, r#"["42", "43"]"#), &expected);
+        // The current entry decides, whatever version the model was
+        // trained with.
+        both(
+            &sourced(OLD_TLS, r#"["42", "43"]"#),
+            &expected.replacen(TLS, OLD_TLS, 1),
+        );
+        // A complete section is kept in both modes.
+        both(&expected, &expected);
+
+        // A type that allows no model gets `source_sensors` only.
+        both(
+            &sourced(RDP, r#"["43"]"#),
+            &format!(
+                "{}source_sensors = {{ \"43\" = [\"s3\"] }}\n",
+                sourced(RDP, r#"["43"]"#)
+            ),
+        );
+    }
+
+    #[test]
+    fn time_series_detector_refuses_or_removes_other_models() {
+        let document = format!("{}\n{FAR_OUTLIER}", sourced(TLS, r#"["43"]"#));
+        assert_eq!(
+            apply(&document),
+            Err(at(
+                0,
+                DetectionModelsSectionError::DisallowedModel {
+                    section: "far_outlier".to_owned()
+                },
+                None
+            ))
+        );
+        assert_eq!(
+            recomplete(&document).as_deref(),
+            Ok(format!(
+                "{}source_sensors = {{ \"43\" = [\"s3\"] }}\n\n{WINDOW_OUTLIER}",
+                sourced(TLS, r#"["43"]"#)
+            )
+            .as_str())
+        );
+    }
+
+    #[test]
+    fn source_sensors_use_each_known_policy_once() {
+        // An unknown id, a non-numeric or non-string entry and a repeated
+        // string are left out; "042" names 42 again but is another string.
+        let sources = r#"["99", "42", "x", 43, "-1", "042", '42', "44"]"#;
+        both(
+            &sourced(TLS, sources),
+            &format!(
+                "{}source_sensors = {{ \"42\" = [\"s1\", \"s2\"], \"042\" = [\"s1\", \"s2\"], \
+                 \"44\" = [] }}\n\n{WINDOW_OUTLIER}",
+                sourced(TLS, sources)
+            ),
+        );
+        // Each key is written as its entry is.
+        both(
+            &sourced(TLS, r#"['42', "\u0034\u0033"]"#),
+            &format!(
+                "{}source_sensors = {{ '42' = [\"s1\", \"s2\"], \"\\u0034\\u0033\" = [\"s3\"] \
+                 }}\n\n{WINDOW_OUTLIER}",
+                sourced(TLS, r#"['42', "\u0034\u0033"]"#)
+            ),
+        );
+        // A multi-line string, which cannot be a key, is written as a basic
+        // string.
+        both(
+            &sourced(TLS, r#"["""42""", '''43''']"#),
+            &format!(
+                "{}source_sensors = {{ \"42\" = [\"s1\", \"s2\"], \"43\" = [\"s3\"] \
+                 }}\n\n{WINDOW_OUTLIER}",
+                sourced(TLS, r#"["""42""", '''43''']"#)
+            ),
+        );
+        // No sources, no list and no entry used each give an empty table.
+        for sources in [None, Some(r#""42""#), Some("[]"), Some(r#"["99", "x"]"#)] {
+            let document = match sources {
+                Some(sources) => sourced(TLS, sources),
+                None => detector(TLS),
+            };
+            both(
+                &document,
+                &format!("{document}source_sensors = {{}}\n\n{WINDOW_OUTLIER}"),
+            );
+        }
+    }
+
+    #[test]
+    fn a_present_source_sensors_is_kept_if_equal_and_replaced_otherwise() {
+        let head = sourced(TLS, r#"["42", "43"]"#);
+        let completed = format!(
+            "{head}source_sensors = {{ \"42\" = [\"s1\", \"s2\"], \"43\" = [\"s3\"] }}\n\n\
+             {WINDOW_OUTLIER}"
+        );
+        // Equal, whatever the key order and the formatting.
+        for equal in [
+            "source_sensors = {\"43\"=[\"s3\"],42=['s1',\"s2\",]}\n".to_owned(),
+            "source_sensors.\"43\" = [\"s3\"]\nsource_sensors.42 = [\"s1\", \"s2\"]\n".to_owned(),
+        ] {
+            let document = format!("{head}{equal}\n{WINDOW_OUTLIER}");
+            both(&document, &document);
+        }
+        let document = format!(
+            "{head}\n{WINDOW_OUTLIER}\n[detectors.source_sensors]\n43 = [\"s3\"]\n42 = [\"s1\", \
+             \"s2\"]\n"
+        );
+        both(&document, &document);
+
+        // A value that differs is replaced where it is.
+        for differing in [
+            r#"{ "42" = ["s2", "s1"], "43" = ["s3"] }"#,
+            r#"{ "42" = ["s1", "s2"] }"#,
+            r#"{ "42" = ["s1", "s2"], "43" = ["s3"], "44" = [] }"#,
+            r#"{ "42" = ["s1", "s2"], "43" = "s3" }"#,
+            r#"{ "42" = ["s1", "s2"], "43" = { a = 1 } }"#,
+            r#""none""#,
+            "[]",
+        ] {
+            let document = format!("{head}source_sensors = {differing}\n\n{WINDOW_OUTLIER}");
+            both(&document, &completed);
+        }
+        // A header or dotted table that differs is removed, and the value is
+        // written after the detector's last value.
+        let document = format!("{head}\n[detectors.source_sensors]\n\"42\" = [\"s1\"]\n");
+        both(&document, &completed);
+        let document = format!("{head}source_sensors.\"42\" = [\"s1\"]\n");
+        both(&document, &completed);
+    }
+
+    #[test]
+    fn other_detectors_get_no_source_sensors() {
+        for model in [WEB, CUSTOM, RETIRED, "unknown"] {
+            let document = sourced(model, r#"["42"]"#);
+            let output = apply(&document).unwrap();
+            assert!(!output.contains("source_sensors"), "{model}:\n{output}");
+            // A present one is left as it is, whatever it holds.
+            let document = format!(
+                "{}source_sensors = \"anything\"\n",
+                sourced(model, "[\"42\"]")
+            );
+            let output = apply(&document).unwrap();
+            assert!(output.starts_with(&document), "{model}:\n{output}");
+            assert_eq!(output.matches("source_sensors").count(), 1, "{model}");
+        }
+    }
+
+    #[test]
+    fn source_sensors_follow_the_last_value_of_the_detector() {
+        // Before a table under the detector, and after a dotted section.
+        let document = format!(
+            "{}detection_models.window_outlier.enabled = false\n\n[detectors.extra]\nx = 1\n",
+            sourced(TLS, r#"["43"]"#)
+        );
+        both(
+            &document,
+            &format!(
+                "{}detection_models.window_outlier.enabled = false\nsource_sensors = {{ \"43\" = \
+                 [\"s3\"] }}\n\n[detectors.extra]\nx = 1\n",
+                sourced(TLS, r#"["43"]"#)
+            ),
+        );
+        // At the end of a document with no final line ending, and for each
+        // detector of several.
+        let document = format!(
+            "{}{}model = \"{TLS}\"\nsources = [\"42\"]",
+            sourced(TLS, r#"["43"]"#),
+            "[[detectors]]\n"
+        );
+        both(
+            &document,
+            &format!(
+                "{}source_sensors = {{ \"43\" = [\"s3\"] }}\n\n{WINDOW_OUTLIER}[[detectors]]\nmodel = \
+                 \"{TLS}\"\nsources = [\"42\"]\nsource_sensors = {{ \"42\" = [\"s1\", \"s2\"] \
+                 }}\n\n{WINDOW_OUTLIER}",
+                sourced(TLS, r#"["43"]"#)
+            ),
+        );
+    }
+
+    #[test]
+    fn source_policy_ids_lists_the_policies_of_time_series_detectors() {
+        let document = format!(
+            "{}{}{}{}",
+            sourced(TLS, r#"["43", "x", "42", 7]"#),
+            sourced(WEB, r#"["50"]"#),
+            sourced(RDP, r#"["042", "99"]"#),
+            sourced(CUSTOM, r#"["51"]"#),
+        );
+        assert_eq!(source_policy_ids(&document, &types), [43, 42, 99]);
+        assert_eq!(source_policy_ids("not [toml", &types), Vec::<u32>::new());
+        assert_eq!(
+            source_policy_ids("detectors = 1", &types),
+            Vec::<u32>::new()
+        );
     }
 }

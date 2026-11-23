@@ -1801,6 +1801,7 @@ mod test {
                         AgentKind::SemiSupervised,
                         &toml::to_string(&config).unwrap(),
                         &|_| None,
+                        &|_| None,
                         crate::CompletionMode::Apply,
                     )
                     .unwrap();

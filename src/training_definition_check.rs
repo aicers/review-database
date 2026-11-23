@@ -1,12 +1,13 @@
-//! The check of a training definition's text against its clustering model
-//! type, with the per-method key table and the defaults of a custom
-//! definition.
+//! The check of a training definition's text against its catalog type, with
+//! the per-method key table and the defaults of a custom definition.
 //!
-//! A training definition names a clustering model type in `type`: a catalog
-//! `id`, at the version in `type_version`, or `custom`. A catalog type fixes
-//! some values and bounds the ones the operator sets; a custom definition
-//! sets every value, within the key table of its method. The key table and
-//! the defaults are code, like the catalog; nothing about them is stored.
+//! A training definition names its type in `type`: a catalog `id`, at the
+//! version in `type_version`, or `custom`. A `timeseries` definition names a
+//! time-series type that the Unsupervised Engine trains on, and a definition
+//! of any other method a clustering model type. A catalog type fixes some
+//! values and bounds the ones the operator sets; a custom definition sets
+//! every value, within the key table of its method. The key table and the
+//! defaults are code, like the catalogs; nothing about them is stored.
 
 use std::collections::HashMap;
 
@@ -17,7 +18,10 @@ use toml::{Table, Value};
 
 use crate::{
     ClusteringModelType, ClusteringModelTypeRef, DefinitionValue, DefinitionValueRange,
-    DefinitionValueType, FixedValue, ModelMethod, clustering_model_type, clustering_model_types,
+    DefinitionValueType, FixedValue, ModelMethod, TimeSeriesType, TypeOperatorValue,
+    clustering_model_type, clustering_model_types,
+    tables::NETWORK_RAW_EVENT_KINDS,
+    time_series_type::{network_raw_event_kind_name, time_series_type},
 };
 
 /// The `type` of a definition whose every value the operator sets.
@@ -238,12 +242,31 @@ const TIMESERIES_KEYS: &[DefinitionKey] = &[
     required("algorithm"),
     required("eps"),
     required("precision"),
-    required("numbers_of_top_n"),
+    row(
+        "numbers_of_top_n",
+        DefinitionKeyStatus::Required,
+        Some(
+            "When shorter than the slots of a window, an empty list included, each remaining \
+             slot uses 30.",
+        ),
+    ),
     rejected("min_token_length"),
     rejected("long_pattern_len"),
     rejected("max_data_len"),
     rejected("max_token_length"),
     rejected("csv"),
+    required("slot_size"),
+    absent_means(
+        "group_by",
+        "Absent means the source policies are not grouped.",
+    ),
+    row(
+        "threat_role",
+        DefinitionKeyStatus::RequiredForCatalogType,
+        None,
+    ),
+    required("min_cluster_size"),
+    required("transform"),
 ];
 
 const fn default(key: &'static str, value: DefinitionValue) -> FixedValue {
@@ -263,6 +286,9 @@ const DEFAULT_MIN_TOKEN_LENGTH: FixedValue =
     default("min_token_length", DefinitionValue::Integer(2));
 const DEFAULT_LONG_PATTERN_LEN: FixedValue =
     default("long_pattern_len", DefinitionValue::Integer(16000));
+const DEFAULT_MIN_CLUSTER_SIZE: FixedValue =
+    default("min_cluster_size", DefinitionValue::Integer(3));
+const DEFAULT_TRANSFORM: FixedValue = default("transform", DefinitionValue::String("none"));
 
 const MULTIDIMENSION_DEFAULTS: &[FixedValue] = &[
     DEFAULT_TYPE,
@@ -292,15 +318,18 @@ const TIMESERIES_DEFAULTS: &[FixedValue] = &[
     DEFAULT_EPS,
     DEFAULT_PRECISION,
     DEFAULT_NUMBERS_OF_TOP_N,
+    DEFAULT_MIN_CLUSTER_SIZE,
+    DEFAULT_TRANSFORM,
 ];
 
 /// Returns the key table of `method`: one row per key, in the table's order,
 /// with each `[csv]` part of a `multidimension` definition as a row of its
 /// own right after `csv`.
 ///
-/// The time-series keys of the `timeseries` method are not defined yet, so
-/// its table does not list them, and a definition holding one is refused as
-/// unknown.
+/// The time-series keys (`slot_size`, `group_by`, `threat_role`,
+/// `min_cluster_size` and `transform`) are listed at the end of every table:
+/// the `timeseries` method uses them, and the other two methods reject
+/// them.
 #[must_use]
 pub fn definition_keys(method: ModelMethod) -> &'static [DefinitionKey] {
     match method {
@@ -348,8 +377,14 @@ fn multidimension_type_of(raw_event_kind: &str) -> Option<&'static ClusteringMod
     })
 }
 
-/// Checks a training definition's text against its clustering model type,
-/// and returns the type it names.
+/// Checks a training definition's text against its catalog type, and
+/// returns the type it names.
+///
+/// A `timeseries` definition names a time-series type the Unsupervised
+/// Engine trains on, and a definition of any other method a clustering model
+/// type; either is returned as [`ClusteringModelTypeRef::Catalog`] with the
+/// type's id and version. A time-series type id and a clustering model type
+/// id never coincide.
 ///
 /// It reads no store, so it leaves to the caller: the contents of
 /// `sources`, `[data_store]` and `suspicious_tokens`, which must name things
@@ -363,25 +398,35 @@ fn multidimension_type_of(raw_event_kind: &str) -> Option<&'static ClusteringMod
 /// Returns a [`TrainingDefinitionRefusal`] for the first rule the text
 /// breaks, the rules taken in this order:
 ///
-/// 1. The text, `type` and `type_version`: text that is not TOML, or an
-///    absent or non-string `type`, is `InvalidDocument`; a `type` that is
-///    neither a catalog type nor `custom` is `UnknownModelType`; for a
-///    catalog type, a `type_version` that is absent or another integer than
-///    the type's version is `ModelTypeVersionMismatch`, and one that is not
-///    an integer `InvalidDocument`.
-/// 2. `method` and unknown keys: an absent, non-string or unknown `method`
-///    is `InvalidDocument`, and a key outside the method's key table, at the
-///    top level or directly inside `[csv]`, is `UnknownField`.
-/// 3. A catalog type: another `method` is `FieldFixed`, another
+/// 1. The text and `method`: text that is not TOML, or an absent,
+///    non-string or unknown `method`, is `InvalidDocument`.
+/// 2. `type` and `type_version`: an absent or non-string `type` is
+///    `InvalidDocument`. The type is looked up by `method`: with
+///    `timeseries`, among the time-series types the Unsupervised Engine
+///    trains on, and with any other method among the clustering model
+///    types. A `type` that is neither one of those nor `custom` is
+///    `UnknownModelType`, so a time-series type that only Hog uses, a
+///    clustering model type under `timeseries` and a time-series type under
+///    another method are `UnknownModelType` too. For a catalog type, a
+///    `type_version` that is absent or another integer than the type's
+///    version is `ModelTypeVersionMismatch`, and one that is not an integer
+///    `InvalidDocument`.
+/// 3. Unknown keys: a key outside the method's key table, at the top level
+///    or directly inside `[csv]`, is `UnknownField`.
+/// 4. A catalog type: another `method` is `FieldFixed`, another
 ///    `raw_event_kind` `EventKindNotAllowed`; a key the type does not allow,
 ///    or an absent fixed value or required operator value, is
 ///    `FieldNotAllowed`; a fixed value that differs is `FieldFixed`; an
 ///    operator value outside its range is `BoundViolated`, except an empty
 ///    `sources`, which is `InvalidDocument`.
-/// 4. A custom definition: an absent required key or a present rejected one
+/// 5. A custom definition: an absent required key or a present rejected one
 ///    (`type_version` included) is `FieldNotAllowed`; a `raw_event_kind` the
-///    method does not take is `EventKindNotAllowed`; a `batch_size` above
-///    5,000,000 is `BoundViolated`.
+///    method does not take is `EventKindNotAllowed`, a `timeseries`
+///    definition taking only the snake-case name of a network kind, such as
+///    `conn` or `dce_rpc`; a `batch_size` above 5,000,000 is
+///    `BoundViolated`. The time-series keys of a custom `timeseries`
+///    definition are not checked further: matching them against the source
+///    policies is the caller's.
 ///
 /// A value of the wrong TOML type is `InvalidDocument` within the rule that
 /// reads it.
@@ -399,11 +444,11 @@ pub fn check_training_definition(
             format!("invalid training definition: {message}"),
         )
     })?;
-    let model_type = read_type(&document)?;
     let method = read_method(&document)?;
+    let model_type = read_type(&document, method)?;
     check_unknown_keys(&document, method)?;
     if let Some(t) = model_type {
-        check_catalog_type(&document, method, t)?;
+        check_catalog_type(&document, method, &t)?;
         Ok(ClusteringModelTypeRef::Catalog {
             id: t.id.to_owned(),
             version: t.version,
@@ -446,11 +491,75 @@ const fn method_name(method: ModelMethod) -> &'static str {
     }
 }
 
-/// Returns the catalog type `type` names, or `None` for `custom`, after
-/// checking `type_version` against it (rule 1).
+/// A catalog type a training definition may name: a clustering model type,
+/// or a time-series type the Unsupervised Engine trains on.
+#[derive(Clone, Copy)]
+struct CatalogType {
+    id: &'static str,
+    version: u32,
+    method: ModelMethod,
+    fixed: &'static [FixedValue],
+    operator_values: &'static [TypeOperatorValue],
+}
+
+impl CatalogType {
+    /// Returns the value the type fixes for the top-level definition key
+    /// `key`, or `None` if the type does not fix it.
+    fn fixed_value(&self, key: &str) -> Option<&'static DefinitionValue> {
+        self.fixed.iter().find(|f| f.key == key).map(|f| &f.value)
+    }
+
+    /// Returns the operator value `name`, or `None` if the type has none of
+    /// that name.
+    fn operator_value(&self, name: &str) -> Option<&'static TypeOperatorValue> {
+        self.operator_values.iter().find(|v| v.name == name)
+    }
+}
+
+impl From<&'static ClusteringModelType> for CatalogType {
+    fn from(t: &'static ClusteringModelType) -> Self {
+        Self {
+            id: t.id,
+            version: t.version,
+            method: t.method,
+            fixed: t.fixed,
+            operator_values: t.operator_values,
+        }
+    }
+}
+
+impl From<&'static TimeSeriesType> for CatalogType {
+    fn from(t: &'static TimeSeriesType) -> Self {
+        Self {
+            id: t.id,
+            version: t.version,
+            method: t.method,
+            fixed: t.fixed,
+            operator_values: t.operator_values,
+        }
+    }
+}
+
+/// Returns the catalog type of `id` a definition of `method` may name: a
+/// time-series type the Unsupervised Engine trains on for `timeseries`, and a
+/// clustering model type for any other method.
+fn catalog_type(method: ModelMethod, id: &str) -> Option<CatalogType> {
+    match method {
+        ModelMethod::Timeseries => time_series_type(id)
+            .filter(|t| t.trains())
+            .map(CatalogType::from),
+        ModelMethod::Multidimension | ModelMethod::Prefix => {
+            clustering_model_type(id).map(CatalogType::from)
+        }
+    }
+}
+
+/// Returns the catalog type `type` names for a definition of `method`, or
+/// `None` for `custom`, after checking `type_version` against it (rule 2).
 fn read_type(
     document: &Table,
-) -> Result<Option<&'static ClusteringModelType>, TrainingDefinitionRefusal> {
+    method: ModelMethod,
+) -> Result<Option<CatalogType>, TrainingDefinitionRefusal> {
     use TrainingDefinitionRefusalCode::{
         InvalidDocument, ModelTypeVersionMismatch, UnknownModelType,
     };
@@ -470,12 +579,19 @@ fn read_type(
     if id == CUSTOM {
         return Ok(None);
     }
-    let Some(t) = clustering_model_type(id) else {
+    let Some(t) = catalog_type(method, id) else {
+        let kind = match method {
+            ModelMethod::Timeseries => "a time-series type the Unsupervised Engine trains on",
+            ModelMethod::Multidimension | ModelMethod::Prefix => "a clustering model type",
+        };
         return Err(refusal(
             UnknownModelType,
             TYPE.key,
             id.as_str(),
-            format!("{id:?} is neither a clustering model type nor \"{CUSTOM}\""),
+            format!(
+                "{id:?} is neither {kind} of the {} method nor \"{CUSTOM}\"",
+                method_name(method)
+            ),
         ));
     };
     match document.get(TYPE_VERSION.key) {
@@ -504,7 +620,7 @@ fn read_type(
     }
 }
 
-/// Returns the method `method` names (rule 2).
+/// Returns the method `method` names (rule 1).
 fn read_method(document: &Table) -> Result<ModelMethod, TrainingDefinitionRefusal> {
     use TrainingDefinitionRefusalCode::InvalidDocument;
 
@@ -551,7 +667,7 @@ fn csv_part_row(rows: &'static [DefinitionKey], part: &str) -> Option<&'static D
 
 /// Refuses a key outside the key table of `method`, at the top level or,
 /// for a method whose table lists the `[csv]` parts, directly inside
-/// `[csv]` (rule 2).
+/// `[csv]` (rule 3).
 fn check_unknown_keys(
     document: &Table,
     method: ModelMethod,
@@ -733,7 +849,7 @@ fn element_text(actual: &Value, index: Option<usize>) -> String {
 /// Refuses `actual`, the value at `path`, if it is not the fixed value
 /// `expected` of `t`.
 fn check_fixed_value(
-    t: &ClusteringModelType,
+    t: &CatalogType,
     path: &str,
     expected: &DefinitionValue,
     actual: &Value,
@@ -770,11 +886,11 @@ fn check_fixed_value(
     }
 }
 
-/// Checks a definition of the catalog type `t` (rule 3).
+/// Checks a definition of the catalog type `t` (rule 4).
 fn check_catalog_type(
     document: &Table,
     method: ModelMethod,
-    t: &'static ClusteringModelType,
+    t: &CatalogType,
 ) -> Result<(), TrainingDefinitionRefusal> {
     use TrainingDefinitionRefusalCode::{
         EventKindNotAllowed, FieldFixed, FieldNotAllowed, InvalidDocument,
@@ -868,7 +984,7 @@ fn check_catalog_type(
 /// table `parts` it fixes: an absent part is `FieldNotAllowed`, and a part
 /// that differs, or one the fixed table lacks, `FieldFixed`.
 fn check_fixed_table(
-    t: &ClusteringModelType,
+    t: &CatalogType,
     key: &str,
     parts: &[FixedValue],
     actual: &Value,
@@ -997,7 +1113,7 @@ fn is_empty(value: &Value) -> bool {
 /// unless the catalog marks it optional, of its type and within its range.
 fn check_operator_values(
     document: &Table,
-    t: &ClusteringModelType,
+    t: &CatalogType,
 ) -> Result<(), TrainingDefinitionRefusal> {
     use TrainingDefinitionRefusalCode::{BoundViolated, FieldNotAllowed, InvalidDocument};
 
@@ -1075,7 +1191,7 @@ fn check_operator_values(
     Ok(())
 }
 
-/// Checks a custom definition of `method` (rule 4).
+/// Checks a custom definition of `method` (rule 5).
 fn check_custom(document: &Table, method: ModelMethod) -> Result<(), TrainingDefinitionRefusal> {
     use TrainingDefinitionRefusalCode::{BoundViolated, EventKindNotAllowed};
 
@@ -1085,7 +1201,9 @@ fn check_custom(document: &Table, method: ModelMethod) -> Result<(), TrainingDef
         let allowed = match method {
             ModelMethod::Multidimension => multidimension_type_of(kind).is_some(),
             ModelMethod::Prefix => kind == PREFIX_RAW_EVENT_KIND,
-            ModelMethod::Timeseries => true,
+            ModelMethod::Timeseries => NETWORK_RAW_EVENT_KINDS
+                .iter()
+                .any(|k| network_raw_event_kind_name(*k) == Some(kind.as_str())),
         };
         if !allowed {
             return Err(refusal(
@@ -1316,11 +1434,34 @@ mod tests {
                 eps = 2
                 precision = 2
                 numbers_of_top_n = [1, 2]
+                slot_size = 300
+                min_cluster_size = 3
+                transform = "none"
                 "#
             }
         };
         table.extend(toml::from_str::<Table>(text).unwrap());
         table
+    }
+
+    /// A complete definition of the time-series type `id` at version 1, of
+    /// which only the type and its version are taken from `id` when the type
+    /// fixes nothing.
+    fn series(id: &str) -> Table {
+        let t = time_series_type(id).unwrap();
+        let mut table = operator_values();
+        table.remove("suspicious_tokens");
+        table.insert("type".to_string(), Value::String(id.to_string()));
+        table.insert("type_version".to_string(), v("1"));
+        table.extend(toml_table(t.fixed));
+        table
+    }
+
+    fn series_v1(id: &str) -> ClusteringModelTypeRef {
+        ClusteringModelTypeRef::Catalog {
+            id: id.to_string(),
+            version: 1,
+        }
     }
 
     fn with(mut table: Table, key: &str, value: Value) -> Table {
@@ -1436,6 +1577,13 @@ mod tests {
             ("min_cluster_size", Rejected),
             ("transform", Rejected),
         ];
+        let timeseries_keys = [
+            ("slot_size", Required),
+            ("group_by", AbsentMeans),
+            ("threat_role", RequiredForCatalogType),
+            ("min_cluster_size", Required),
+            ("transform", Required),
+        ];
 
         let mut multidimension = common_head.to_vec();
         multidimension.push(("log_kind", Rejected));
@@ -1491,6 +1639,7 @@ mod tests {
             ("max_token_length", Rejected),
             ("csv", Rejected),
         ]);
+        timeseries.extend(timeseries_keys);
         assert_eq!(rows(ModelMethod::Timeseries), timeseries);
 
         // Every absent-means row states its meaning; the fill rules appear in
@@ -1536,7 +1685,20 @@ mod tests {
                 .unwrap()
                 .contains("centroid")
         );
-        assert_eq!(note(ModelMethod::Timeseries, "numbers_of_top_n"), None);
+        assert_eq!(
+            note(ModelMethod::Timeseries, "numbers_of_top_n"),
+            Some(
+                "When shorter than the slots of a window, an empty list included, each \
+                 remaining slot uses 30."
+            )
+        );
+        assert_eq!(
+            note(ModelMethod::Timeseries, "group_by"),
+            Some("Absent means the source policies are not grouped.")
+        );
+        for key in ["slot_size", "threat_role", "min_cluster_size", "transform"] {
+            assert_eq!(note(ModelMethod::Timeseries, key), None, "{key}");
+        }
         for method in METHODS {
             for k in definition_keys(method) {
                 let fill = k
@@ -1570,6 +1732,8 @@ mod tests {
         let top_n = ("numbers_of_top_n", DefinitionValue::IntegerList(&[]));
         let min_token_length = ("min_token_length", DefinitionValue::Integer(2));
         let long_pattern_len = ("long_pattern_len", DefinitionValue::Integer(16000));
+        let min_cluster_size = ("min_cluster_size", DefinitionValue::Integer(3));
+        let transform = ("transform", DefinitionValue::String("none"));
         assert_eq!(
             defaults(ModelMethod::Multidimension),
             [
@@ -1604,6 +1768,8 @@ mod tests {
                 eps,
                 precision,
                 top_n,
+                min_cluster_size,
+                transform,
             ]
         );
         // No default is given for a key the method rejects.
@@ -1663,13 +1829,48 @@ mod tests {
     }
 
     #[test]
-    fn rule_1_parse_type_and_version() {
+    fn rule_1_parse_and_method() {
         let refusal = check_training_definition("type = ").unwrap_err();
         assert_eq!(refusal.code, InvalidDocument);
         assert_eq!(refusal.key, "");
         assert_ne!(refusal.value, "");
         assert!(refusal.message.contains(&refusal.value));
 
+        // The method precedes the type, whatever is wrong with either.
+        for base in [
+            http_url(),
+            series("server_daily_tls"),
+            custom(ModelMethod::Prefix),
+        ] {
+            for (method, value) in [
+                (None, ""),
+                (Some(v("[1]")), "[1]"),
+                (Some(v(r#""distribution""#)), "distribution"),
+            ] {
+                let table = match method {
+                    Some(method) => with(base.clone(), "method", method),
+                    None => without(base.clone(), "method"),
+                };
+                for fault in [
+                    with(table.clone(), "type", v(r#""nope""#)),
+                    with(table.clone(), "type", v("1")),
+                    without(table.clone(), "type"),
+                    with(table.clone(), "type_version", v("7")),
+                    with(table.clone(), "event_kind", v(r#""http""#)),
+                    table,
+                ] {
+                    assert_eq!(
+                        refused(&fault),
+                        r(InvalidDocument, "method", value),
+                        "{value:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn rule_2_type_and_version() {
         assert_eq!(
             refused(&without(http_url(), "type")),
             r(InvalidDocument, "type", "")
@@ -1686,8 +1887,8 @@ mod tests {
             refused(&with(custom(ModelMethod::Prefix), "type", v(r#""Custom""#))),
             r(UnknownModelType, "type", "Custom")
         );
-        // The type precedes an unknown key and an absent method.
-        let unknown = with(without(http_url(), "method"), "event_kind", v(r#""http""#));
+        // The type precedes an unknown key.
+        let unknown = with(http_url(), "event_kind", v(r#""http""#));
         assert_eq!(
             refused(&with(unknown, "type", v(r#""nope""#))),
             r(UnknownModelType, "type", "nope")
@@ -1703,7 +1904,7 @@ mod tests {
             with(http_url(), "eps", v("3.0")),
             with(http_url(), "event_kind", v(r#""http""#)),
             with(http_url(), "batch_size", v(r#""large""#)),
-            with(http_url(), "method", v(r#""distribution""#)),
+            with(http_url(), "method", v(r#""prefix""#)),
             without(http_url(), "sources"),
             with(http_url(), "raw_event_kind", v(r#""log""#)),
         ];
@@ -1719,7 +1920,51 @@ mod tests {
     }
 
     #[test]
-    fn rule_2_method_and_unknown_keys() {
+    fn rule_2_type_is_looked_up_by_method() {
+        // A time-series type that only Hog uses, and a clustering model type,
+        // are unknown to timeseries.
+        for id in [
+            "host_daily_rdp",
+            "host_daily_external_inbound",
+            "server_daily_external_rdp",
+            "http_url",
+        ] {
+            let table = with(
+                series("server_daily_tls"),
+                "type",
+                Value::String(id.to_string()),
+            );
+            assert_eq!(refused(&table), r(UnknownModelType, "type", id), "{id}");
+        }
+        // A time-series type is unknown to the other methods.
+        for method in ["multidimension", "prefix"] {
+            for base in [http_url(), series("server_daily_tls")] {
+                let table = with(base, "method", Value::String(method.to_string()));
+                let table = with(table, "type", v(r#""server_daily_tls""#));
+                assert_eq!(
+                    refused(&table),
+                    r(UnknownModelType, "type", "server_daily_tls"),
+                    "{method}"
+                );
+            }
+        }
+        // `type_version` is checked against the type found.
+        for (version, expected) in [
+            (Some("2"), r(ModelTypeVersionMismatch, "type_version", "2")),
+            (None, r(ModelTypeVersionMismatch, "type_version", "")),
+            (Some(r#""1""#), r(InvalidDocument, "type_version", "1")),
+        ] {
+            let base = with(series("server_daily_tls"), "eps", v("3.0"));
+            let table = match version {
+                Some(version) => with(base, "type_version", v(version)),
+                None => without(base, "type_version"),
+            };
+            assert_eq!(refused(&table), expected, "{version:?}");
+        }
+    }
+
+    #[test]
+    fn rule_3_unknown_keys() {
         for base in [http_url(), custom(ModelMethod::Prefix)] {
             assert_eq!(
                 refused(&without(base.clone(), "method")),
@@ -1758,8 +2003,8 @@ mod tests {
             r(UnknownField, "csv.reader", "1")
         );
 
-        // The time-series keys are rejected by multidimension and prefix and
-        // unknown to timeseries.
+        // The time-series keys are rejected by multidimension and prefix, and
+        // known to timeseries.
         for key in [
             "slot_size",
             "group_by",
@@ -1777,10 +2022,12 @@ mod tests {
                 refused(&with(http_url(), key, v("1"))),
                 r(FieldNotAllowed, key, "1")
             );
-            assert_eq!(
-                refused(&with(custom(ModelMethod::Timeseries), key, v("1"))),
-                r(UnknownField, key, "1")
-            );
+            let table = with(custom(ModelMethod::Timeseries), key, v("1"));
+            if key == "threat_role" {
+                assert_eq!(refused(&table), r(FieldNotAllowed, key, "1"));
+            } else {
+                assert_eq!(check(&table), Ok(ClusteringModelTypeRef::Custom), "{key}");
+            }
         }
 
         // A key directly inside [csv] outside the key table is unknown.
@@ -2246,13 +2493,54 @@ mod tests {
                 r(EventKindNotAllowed, "raw_event_kind", kind)
             );
         }
-        for kind in ["http", "log", "anything", ""] {
+        // A custom timeseries definition takes the network kinds only.
+        for kind in [
+            "bootp",
+            "conn",
+            "dce_rpc",
+            "dhcp",
+            "dns",
+            "ftp",
+            "http",
+            "icmp",
+            "kerberos",
+            "ldap",
+            "malformed_dns",
+            "mqtt",
+            "nfs",
+            "ntlm",
+            "radius",
+            "rdp",
+            "smb",
+            "smtp",
+            "ssh",
+            "tls",
+        ] {
             let table = with(
                 custom(ModelMethod::Timeseries),
                 "raw_event_kind",
                 Value::String(kind.to_string()),
             );
             assert_eq!(check(&table), Ok(ClusteringModelTypeRef::Custom), "{kind}");
+        }
+        for kind in [
+            "timeseries",
+            "log",
+            "process_create",
+            "netflow5",
+            "TLS",
+            "DceRpc",
+            "anything",
+            "",
+        ] {
+            assert_eq!(
+                refused(&with(
+                    custom(ModelMethod::Timeseries),
+                    "raw_event_kind",
+                    Value::String(kind.to_string())
+                )),
+                r(EventKindNotAllowed, "raw_event_kind", kind)
+            );
         }
 
         for method in METHODS {
@@ -2276,5 +2564,109 @@ mod tests {
         let mut table = with(custom(ModelMethod::Multidimension), "eps", v("3.0"));
         csv_mut(&mut table).insert("prefix_columns".to_string(), v("[14]"));
         assert_eq!(check(&table), Ok(ClusteringModelTypeRef::Custom));
+    }
+
+    #[test]
+    fn trained_time_series_types_pass() {
+        let mut trained = 0;
+        for t in crate::time_series_types() {
+            if t.trains() {
+                trained += 1;
+                assert_eq!(check(&series(t.id)), Ok(series_v1(t.id)), "{}", t.id);
+            }
+        }
+        assert_eq!(trained, 9);
+    }
+
+    #[test]
+    fn server_daily_tls_definitions() {
+        let tls = || series("server_daily_tls");
+        assert_eq!(check(&tls()), Ok(series_v1("server_daily_tls")));
+        // An integer for the fixed float passes.
+        assert_eq!(
+            check(&with(tls(), "eps", v("2"))),
+            Ok(series_v1("server_daily_tls"))
+        );
+
+        for key in [
+            "group_by",
+            "algorithm",
+            "threat_role",
+            "slot_size",
+            "transform",
+        ] {
+            assert_eq!(
+                refused(&without(tls(), key)),
+                r(FieldNotAllowed, key, ""),
+                "{key}"
+            );
+        }
+        assert_eq!(
+            refused(&with(tls(), "suspicious_tokens", v(r#""tokens""#))),
+            r(FieldNotAllowed, "suspicious_tokens", "tokens")
+        );
+        for (key, value) in [
+            ("eps", "3.0"),
+            ("group_by", r#""source""#),
+            ("threat_role", r#""actor""#),
+            ("slot_size", "600"),
+            ("min_cluster_size", "4"),
+            ("transform", r#""log1p""#),
+            ("numbers_of_top_n", "[30]"),
+        ] {
+            let table = with(tls(), key, v(value));
+            assert_eq!(refused(&table).0, FieldFixed, "{key}");
+            assert_eq!(refused(&table).1, key, "{key}");
+        }
+        assert_eq!(
+            refused(&with(tls(), "raw_event_kind", v(r#""conn""#))),
+            r(EventKindNotAllowed, "raw_event_kind", "conn")
+        );
+
+        // The window spans at least 7 days.
+        let table = with(tls(), "window_end", v(r#""2026-01-07T00:00:00Z""#));
+        assert_eq!(
+            refused(&table),
+            r(BoundViolated, "window_end", "2026-01-07T00:00:00Z")
+        );
+        assert_eq!(
+            refused(&with(tls(), "batch_size", v("9999"))),
+            r(BoundViolated, "batch_size", "9999")
+        );
+        assert_eq!(
+            refused(&with(tls(), "sources", v("[]"))),
+            r(InvalidDocument, "sources", "")
+        );
+    }
+
+    #[test]
+    fn custom_timeseries_keys() {
+        let tls = || {
+            with(
+                custom(ModelMethod::Timeseries),
+                "raw_event_kind",
+                v(r#""tls""#),
+            )
+        };
+        assert_eq!(check(&tls()), Ok(ClusteringModelTypeRef::Custom));
+        assert_eq!(
+            check(&with(tls(), "group_by", v(r#""destination""#))),
+            Ok(ClusteringModelTypeRef::Custom)
+        );
+        assert_eq!(
+            refused(&with(tls(), "threat_role", v(r#""target""#))),
+            r(FieldNotAllowed, "threat_role", "target")
+        );
+        for key in ["slot_size", "min_cluster_size", "transform"] {
+            assert_eq!(
+                refused(&without(tls(), key)),
+                r(FieldNotAllowed, key, ""),
+                "{key}"
+            );
+        }
+        assert_eq!(
+            refused(&with(tls(), "raw_event_kind", v(r#""timeseries""#))),
+            r(EventKindNotAllowed, "raw_event_kind", "timeseries")
+        );
     }
 }
