@@ -935,6 +935,7 @@ mod tests {
             log_kind: None,
             sources: vec!["sensor-a".to_string()],
             indicator: None,
+            clustering_model_type: crate::ClusteringModelTypeRef::Custom,
             definition: "eps = 5.0".to_string(),
         }
     }
@@ -1034,6 +1035,7 @@ mod tests {
                     log_kind: stored.log_kind,
                     sources: stored.sources,
                     indicator: Some(indicator.to_string()),
+                    clustering_model_type: stored.clustering_model_type,
                     definition: stored.definition,
                 },
             )
@@ -2334,6 +2336,7 @@ mod tests {
                             log_kind: stored.log_kind,
                             sources: stored.sources,
                             indicator: indicator.map(ToString::to_string),
+                            clustering_model_type: stored.clustering_model_type,
                             definition: stored.definition,
                         },
                     )
@@ -2632,6 +2635,7 @@ mod tests {
                     log_kind: stored.log_kind,
                     sources: stored.sources,
                     indicator: None,
+                    clustering_model_type: stored.clustering_model_type,
                     definition: stored.definition,
                 },
             )

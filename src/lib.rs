@@ -23,6 +23,7 @@ mod test;
 pub mod timestamp;
 mod top_n;
 mod training;
+mod training_definition_check;
 pub mod types;
 mod util;
 
@@ -101,6 +102,10 @@ pub use self::top_n::{
 };
 pub use self::training::{
     FixedField, RunReconciliation, StartedTrainingRun, TrainingDefinitionState, TrainingError,
+};
+pub use self::training_definition_check::{
+    DefinitionKey, DefinitionKeyStatus, TrainingDefinitionRefusal, TrainingDefinitionRefusalCode,
+    check_training_definition, custom_csv_default, custom_defaults, definition_keys,
 };
 pub use self::types::{EventCategory, HostNetworkGroup, Qualifier, Role, Status};
 pub use self::util::{COUNTRY_CODE_UNKNOWN, COUNTRY_CODE_UNRESOLVED, find_ip_country};
