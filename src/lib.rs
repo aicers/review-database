@@ -7,6 +7,7 @@ mod clustering_model_type;
 mod collections;
 mod column_statistics;
 mod config_revision;
+mod dai;
 mod detection_model;
 mod engine_instance;
 pub mod event;
@@ -77,23 +78,24 @@ pub use self::tables::{
     BackupConfigUpdate, BuildSelector, Cluster, ClusterTimeSeries, ColumnStats, ColumnTimeSeries,
     ConfigRevisionRecord, CoreComponent, CsvColumnExtra as CsvColumnExtraConfig,
     CustomerDataDeletionJob, CustomerDataDeletionService, CustomerDataDeletionServiceResult,
-    CustomerDataDeletionStatus, DetectorSourceStatus, DetectorState, DetectorStatus,
+    CustomerDataDeletionStatus, DaiConfigError, DaiRelaySite, DaiRelaySites, DaiSettings,
+    DaiSettingsUpdate, DaiSite, DetectorSourceStatus, DetectorState, DetectorStatus,
     EngineDetectorRef, EngineDocumentError, EngineDocumentRefs, EngineDocumentWrite,
     EngineInstanceState, ExclusionReason, ExternalService, ExternalServiceConfig,
-    ExternalServiceKind, ExternalServiceStatus, Host, IndexedTable, InstallIntent,
-    InstanceAllocation, InstanceAllocationError, Iterable, LabelDb, LabelDbKind, LabelDbRule,
-    LabelDbRuleKind, Lifecycle, ListenerBinding, ListenerTransport, Model as ModelDigest,
-    ModelIndicator, ModelInstance, ModelMethod, ModelOwner, ModelRun, ModelUse, Network,
-    NetworkFilter, NetworkListEntry, NetworkListReplaceOutcome, NetworkListSet, NetworkListTable,
-    NetworkUpdate, NewTimeSeriesGenerationPolicy, NewTrainingDefinition, Node, NodeProfile,
-    NodeTable, NodeUpdate, OperationAction, OperationAttempt, OperationCleanupState,
-    OperationFailureKind, OperationOnFailure, OperationOutcome, OperationPhase,
-    OperationRetentionBound, OperationRetryPolicy, OutlierInfo, OutlierInfoKey, OutlierInfoValue,
-    OwnedNetwork, OwnedNetworkSet, OwnedNetworkTable, PacketAttr, PolicyState, PolicyUse,
-    PortAllocation, PortAllocationError, PortOwner, PreviousTraining, PreviousTrainingResults,
-    ProtocolPorts, ReplaceOutcome, ReplacedModel, ReportedRunState, RequestKeyError, Response,
-    ResponseKind, RetentionConfig, RetentionConfigUpdate, RoundOutcome, RunId, RunKind, RunState,
-    ScoreCondition, SentaEndpoint, SentaEndpointActiveList, SentaEndpointActiveListEntry,
+    ExternalServiceKind, ExternalServiceStatus, IndexedTable, InstallIntent, InstanceAllocation,
+    InstanceAllocationError, Iterable, LabelDb, LabelDbKind, LabelDbRule, LabelDbRuleKind,
+    Lifecycle, ListenerBinding, ListenerTransport, Model as ModelDigest, ModelIndicator,
+    ModelInstance, ModelMethod, ModelOwner, ModelRun, ModelUse, Network, NetworkFilter,
+    NetworkListEntry, NetworkListReplaceOutcome, NetworkListSet, NetworkListTable, NetworkUpdate,
+    NewTimeSeriesGenerationPolicy, NewTrainingDefinition, Node, NodeProfile, NodeTable, NodeUpdate,
+    OperationAction, OperationAttempt, OperationCleanupState, OperationFailureKind,
+    OperationOnFailure, OperationOutcome, OperationPhase, OperationRetentionBound,
+    OperationRetryPolicy, OutlierInfo, OutlierInfoKey, OutlierInfoValue, OwnedNetwork,
+    OwnedNetworkSet, OwnedNetworkTable, PacketAttr, PolicyState, PolicyUse, PortAllocation,
+    PortAllocationError, PortOwner, PreviousTraining, PreviousTrainingResults, ProtocolPorts,
+    ReplaceOutcome, ReplacedModel, ReportedRunState, RequestKeyError, Response, ResponseKind,
+    RetentionConfig, RetentionConfigUpdate, RoundOutcome, RunId, RunKind, RunState, ScoreCondition,
+    SentaEndpoint, SentaEndpointActiveList, SentaEndpointActiveListEntry,
     SentaEndpointActiveListTable, SentaEndpointAddressRoot, SentaEndpointCommand,
     SentaEndpointCommandState, SentaEndpointCurrentDocument, SentaEndpointCustomer,
     SentaEndpointDeletionState, SentaEndpointDocumentResult, SentaEndpointDocumentResultKey,
@@ -113,7 +115,7 @@ pub use self::tables::{
     TimeSeriesRange, TopColumnsOfCluster, TopMultimaps, TorExitNode, TrafficFilter, TrainedWith,
     TrainingDefinition, TrainingDefinitionUpdate, TriageExclusion, TriagePolicyInput,
     TriageResponse, TriageResponseUpdate, TrustedDomain, TrustedUserAgent, UniqueKey, Unstructured,
-    UnstructuredClusteringAlgorithm, UserAgent, ValueKind, WindowSize,
+    UnstructuredClusteringAlgorithm, ValueKind, WindowSize, sensor_name,
 };
 pub use self::time_series_type::{TimeSeriesType, time_series_type, time_series_types};
 pub use self::top_n::*;
@@ -1059,12 +1061,6 @@ impl Store {
     #[allow(clippy::missing_panics_doc)]
     pub fn traffic_filter_map(&self) -> Table<'_, TrafficFilter> {
         self.states.traffic_filters()
-    }
-
-    #[must_use]
-    #[allow(clippy::missing_panics_doc)]
-    pub fn hosts_map(&self) -> Table<'_, Host> {
-        self.states.hosts()
     }
 
     /// Returns the tag set for workflow.

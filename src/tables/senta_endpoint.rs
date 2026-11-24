@@ -29,6 +29,8 @@
 //! - a string as its UTF-8 bytes, each `0x00` byte written as `0x00 0xFF`,
 //!   followed by `0x00 0x00`, so strings sort in byte order and none is the
 //!   prefix of the encoding of another;
+//! - an IP address as one byte for its family, 4 or 6, followed by its
+//!   octets;
 //! - a Giganto node as its host name and then its instance.
 //!
 //! Every per-endpoint table starts its key with the endpoint id, whose
@@ -45,7 +47,7 @@ mod status_report;
 pub(super) mod trust;
 mod unenroll_request;
 
-use std::marker::PhantomData;
+use std::{marker::PhantomData, net::IpAddr};
 
 use anyhow::{Context, Result, anyhow};
 use rocksdb::{IteratorMode, OptimisticTransactionDB, WriteBatchWithTransaction};
@@ -78,6 +80,10 @@ const ESCAPED_ZERO: u8 = 0xFF;
 const STRING_END: u8 = 0x00;
 /// The sign bit of an `i64`, flipped so that its encoding sorts numerically.
 const SIGN_BIT: u64 = 1 << 63;
+/// The byte that starts an `IPv4` address.
+const IP_V4: u8 = 4;
+/// The byte that starts an `IPv6` address.
+const IP_V6: u8 = 6;
 
 /// A Giganto node, identified as its service row is elsewhere in `REview`:
 /// by the host name and the instance number of Giganto on that host.
@@ -252,7 +258,7 @@ fn decode<R: Row>(key: &[u8], value: &[u8]) -> Result<R> {
 /// Builds a key from its components, in the encoding the module
 /// documentation describes.
 #[derive(Default)]
-struct KeyWriter(Vec<u8>);
+pub(super) struct KeyWriter(Vec<u8>);
 
 impl KeyWriter {
     fn uuid(mut self, id: Uuid) -> Self {
@@ -260,7 +266,7 @@ impl KeyWriter {
         self
     }
 
-    fn u32(mut self, value: u32) -> Self {
+    pub(super) fn u32(mut self, value: u32) -> Self {
         self.0.extend_from_slice(&value.to_be_bytes());
         self
     }
@@ -270,7 +276,7 @@ impl KeyWriter {
         self
     }
 
-    fn i64(self, value: i64) -> Self {
+    pub(super) fn i64(self, value: i64) -> Self {
         self.u64(u64::from_be_bytes(value.to_be_bytes()) ^ SIGN_BIT)
     }
 
@@ -279,7 +285,7 @@ impl KeyWriter {
         self
     }
 
-    fn str(mut self, value: &str) -> Self {
+    pub(super) fn str(mut self, value: &str) -> Self {
         for &byte in value.as_bytes() {
             if byte == 0 {
                 self.0.extend_from_slice(&[0, ESCAPED_ZERO]);
@@ -291,22 +297,38 @@ impl KeyWriter {
         self
     }
 
+    /// Writes an IP address as one byte for its family, 4 or 6, followed by
+    /// its octets.
+    pub(super) fn ip(mut self, addr: IpAddr) -> Self {
+        match addr {
+            IpAddr::V4(v4) => {
+                self.0.push(IP_V4);
+                self.0.extend_from_slice(&v4.octets());
+            }
+            IpAddr::V6(v6) => {
+                self.0.push(IP_V6);
+                self.0.extend_from_slice(&v6.octets());
+            }
+        }
+        self
+    }
+
     fn node(self, node: &SentaEndpointGigantoNode) -> Self {
         self.str(&node.host).u32(node.instance)
     }
 
-    fn finish(self) -> Vec<u8> {
+    pub(super) fn finish(self) -> Vec<u8> {
         self.0
     }
 }
 
 /// Reads the components of a key written by [`KeyWriter`], in order.
-struct KeyReader<'a> {
+pub(super) struct KeyReader<'a> {
     rest: &'a [u8],
 }
 
 impl<'a> KeyReader<'a> {
-    fn new(key: &'a [u8]) -> Self {
+    pub(super) fn new(key: &'a [u8]) -> Self {
         Self { rest: key }
     }
 
@@ -323,7 +345,7 @@ impl<'a> KeyReader<'a> {
         Ok(Uuid::from_bytes(self.take()?))
     }
 
-    fn u32(&mut self) -> Result<u32> {
+    pub(super) fn u32(&mut self) -> Result<u32> {
         Ok(u32::from_be_bytes(self.take()?))
     }
 
@@ -331,7 +353,7 @@ impl<'a> KeyReader<'a> {
         Ok(u64::from_be_bytes(self.take()?))
     }
 
-    fn i64(&mut self) -> Result<i64> {
+    pub(super) fn i64(&mut self) -> Result<i64> {
         Ok(i64::from_be_bytes((self.u64()? ^ SIGN_BIT).to_be_bytes()))
     }
 
@@ -340,7 +362,7 @@ impl<'a> KeyReader<'a> {
         Ok(byte)
     }
 
-    fn str(&mut self) -> Result<String> {
+    pub(super) fn str(&mut self) -> Result<String> {
         let mut bytes = Vec::new();
         loop {
             match self.byte()? {
@@ -355,6 +377,14 @@ impl<'a> KeyReader<'a> {
         String::from_utf8(bytes).context("a string in the key is not UTF-8")
     }
 
+    pub(super) fn ip(&mut self) -> Result<IpAddr> {
+        match self.byte()? {
+            IP_V4 => Ok(IpAddr::from(self.take::<4>()?)),
+            IP_V6 => Ok(IpAddr::from(self.take::<16>()?)),
+            other => Err(anyhow!("invalid IP address family {other} in the key")),
+        }
+    }
+
     fn node(&mut self) -> Result<SentaEndpointGigantoNode> {
         let host = self.str()?;
         let instance = self.u32()?;
@@ -362,7 +392,7 @@ impl<'a> KeyReader<'a> {
     }
 
     /// Checks that every byte of the key has been read.
-    fn finish(self) -> Result<()> {
+    pub(super) fn finish(self) -> Result<()> {
         if self.rest.is_empty() {
             Ok(())
         } else {
