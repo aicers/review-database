@@ -46,8 +46,9 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use super::{
-    Dai, EngineInstanceRow, EngineInstances, Model, ModelInstance, ModelMethod, OwnedNetworkTable,
-    TrainingDefinition, TrainingDefinitions, UniqueKey, engine_instance_key, now_nanos,
+    Clock, Dai, EngineInstanceRow, EngineInstances, Model, ModelInstance, ModelMethod,
+    OwnedNetworkTable, TrainingDefinition, TrainingDefinitions, UniqueKey, engine_instance_key,
+    now_nanos,
 };
 use crate::{
     Agent, AgentKind, EXCLUSIVE, Indexable, IndexedMap, IndexedMapUpdate, IndexedTable, Iterable,
@@ -448,17 +449,17 @@ impl<'d> IndexedTable<'d, TimeSeriesGenerationPolicy> {
     /// policy has the name, the name is empty, or the database operation
     /// fails.
     pub fn insert(&self, policy: NewTimeSeriesGenerationPolicy) -> Result<u32> {
-        self.insert_with_catalog(policy, time_series_types(), now_nanos()?)
+        self.insert_with_catalog(policy, time_series_types(), &now_nanos)
     }
 
     /// Inserts a new policy as [`insert`](Self::insert) does, checking a
     /// policy made from a type against `catalog` and the site condition at
-    /// the time `now`.
+    /// the time `clock` gives in each attempt of the transaction.
     pub(crate) fn insert_with_catalog(
         &self,
         policy: NewTimeSeriesGenerationPolicy,
         catalog: &[TimeSeriesType],
-        now: i64,
+        clock: &dyn Clock,
     ) -> Result<u32> {
         let networks = self.customer_networks()?;
         let dai = self.dai()?;
@@ -486,6 +487,7 @@ impl<'d> IndexedTable<'d, TimeSeriesGenerationPolicy> {
         check_spec(&record, catalog)?;
         self.write(|txn| {
             dai.lock_customer(txn, record.customer_id)?;
+            let now = clock.now()?;
             check_internal_network(&networks, txn, &record)?;
             dai.check_policy_sites(txn, record.customer_id, &record.sensors, now)?;
             self.indexed_map
@@ -511,19 +513,19 @@ impl<'d> IndexedTable<'d, TimeSeriesGenerationPolicy> {
     /// and `new` has another spec; the first spec check that fails if the
     /// policy is a draft.
     pub fn update(&mut self, id: u32, old: &Update, new: &Update) -> Result<()> {
-        self.update_with_catalog(id, old, new, time_series_types(), now_nanos()?)
+        self.update_with_catalog(id, old, new, time_series_types(), &now_nanos)
     }
 
     /// Updates the policy as [`update`](Self::update) does, checking a draft
     /// made from a type against `catalog` and the site condition of a draft
-    /// at the time `now`.
+    /// at the time `clock` gives in each attempt of the transaction.
     pub(crate) fn update_with_catalog(
         &self,
         id: u32,
         old: &Update,
         new: &Update,
         catalog: &[TimeSeriesType],
-        now: i64,
+        clock: &dyn Clock,
     ) -> Result<()> {
         let networks = self.customer_networks()?;
         let dai = self.dai()?;
@@ -538,6 +540,7 @@ impl<'d> IndexedTable<'d, TimeSeriesGenerationPolicy> {
                 let updated = new.apply(stored)?;
                 check_spec(&updated, catalog)?;
                 dai.lock_customer(txn, updated.customer_id)?;
+                let now = clock.now()?;
                 check_internal_network(&networks, txn, &updated)?;
                 dai.check_policy_sites(txn, updated.customer_id, &updated.sensors, now)?;
             }
@@ -2358,7 +2361,7 @@ mod test {
 
     /// Inserts `policy`, checked against [`TEST_TYPES`].
     fn try_insert(f: &Fixture, policy: NewTimeSeriesGenerationPolicy) -> Result<u32> {
-        f.table().insert_with_catalog(policy, TEST_TYPES, 0)
+        f.table().insert_with_catalog(policy, TEST_TYPES, &0)
     }
 
     /// Inserts `policy`, checked against [`TEST_TYPES`], asserting that it
@@ -2997,7 +3000,7 @@ mod test {
         let old: TimeSeriesGenerationPolicyUpdate = f.policy(id).into();
         let stored = f.policy(id);
         let update = |new: &TimeSeriesGenerationPolicyUpdate| {
-            f.table().update_with_catalog(id, &old, new, TEST_TYPES, 0)
+            f.table().update_with_catalog(id, &old, new, TEST_TYPES, &0)
         };
         let ip = Some(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)));
         let type_ref = typed_policy("").time_series_type;
@@ -3119,7 +3122,7 @@ mod test {
             ..ungrouped.clone()
         };
         f.table()
-            .update_with_catalog(id, &ungrouped, &typed_update, TEST_TYPES, 0)
+            .update_with_catalog(id, &ungrouped, &typed_update, TEST_TYPES, &0)
             .unwrap();
         let policy = f.policy(id);
         assert!(typed_update.verify(&policy));

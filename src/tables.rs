@@ -75,7 +75,7 @@ pub use self::customer_data_deletion_job::{
     CustomerDataDeletionJob, CustomerDataDeletionService, CustomerDataDeletionServiceResult,
     CustomerDataDeletionStatus,
 };
-pub(crate) use self::dai::{Dai, now_nanos};
+pub(crate) use self::dai::{Clock, Dai, now_nanos};
 pub use self::dai::{
     DaiConfigError, DaiRelaySite, DaiRelaySites, DaiSettings, DaiSettingsUpdate, DaiSite,
 };

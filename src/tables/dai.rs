@@ -33,7 +33,8 @@
 //! update and increments it, before it reads any site, sensor site, relay
 //! entry or policy its checks use. Two such writes for one customer
 //! therefore conflict whichever commits first, and the retried one checks
-//! again against the new state.
+//! again against the new state, at the time it reads after that guard in
+//! each attempt rather than at the time of the first.
 
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
@@ -326,21 +327,28 @@ fn spanned_sites(
     Ok((sites.len() > 1).then(|| sites.into_iter().collect()))
 }
 
-/// A hook the tests run once, in the thread that set it, right after the
-/// next site condition check of a policy save or a site write, before that
-/// write commits.
+/// A hook the tests run once, in the thread that set it, at a point of a
+/// write or a read, to commit a concurrent change there.
 #[cfg(test)]
-type AfterChecksHook = Box<dyn FnOnce(&OptimisticTransactionDB)>;
+type TestHook = Box<dyn FnOnce(&OptimisticTransactionDB)>;
 
 #[cfg(test)]
 thread_local! {
-    static AFTER_CHECKS: std::cell::RefCell<Option<AfterChecksHook>> =
+    /// A hook the tests run once, in the thread that set it, right after the
+    /// next site condition check of a policy save or a site write, before
+    /// that write commits.
+    static AFTER_CHECKS: std::cell::RefCell<Option<TestHook>> =
+        const { std::cell::RefCell::new(None) };
+    /// A hook the tests run once, in the thread that set it, in
+    /// [`Dai::relay_sites`] between its read of the entries and its read of
+    /// the revision.
+    static RELAY_READ: std::cell::RefCell<Option<TestHook>> =
         const { std::cell::RefCell::new(None) };
 }
 
 /// Sets the hook the next site condition check in this thread runs.
 #[cfg(test)]
-fn set_after_checks_hook(hook: AfterChecksHook) {
+fn set_after_checks_hook(hook: TestHook) {
     AFTER_CHECKS.with(|cell| *cell.borrow_mut() = Some(hook));
 }
 
@@ -352,10 +360,52 @@ fn run_after_checks_hook(db: &OptimisticTransactionDB) {
     }
 }
 
+/// Sets the hook the next relay site table read in this thread runs.
+#[cfg(test)]
+fn set_relay_read_hook(hook: TestHook) {
+    RELAY_READ.with(|cell| *cell.borrow_mut() = Some(hook));
+}
+
+/// Runs, and clears, the relay read hook set in this thread, if any.
+#[cfg(test)]
+fn run_relay_read_hook(db: &OptimisticTransactionDB) {
+    if let Some(hook) = RELAY_READ.with(|cell| cell.borrow_mut().take()) {
+        hook(db);
+    }
+}
+
 /// Returns the current time in nanoseconds since the UNIX epoch.
 pub(crate) fn now_nanos() -> Result<i64> {
     i64::try_from(jiff::Timestamp::now().as_nanosecond())
         .context("the current time is out of the range of nanosecond timestamps")
+}
+
+/// A source of the time, in nanoseconds since the UNIX epoch, a write checks
+/// and records changes at.
+///
+/// A writer samples it inside each attempt of its transaction, after it has
+/// read the customer's guard, so an attempt retried after a commit conflict
+/// checks at the time of the retry rather than at the time of the first
+/// attempt: a stale time could pass a policy the assignment in effect by
+/// then refuses, or schedule a change at a boundary that has already passed.
+/// The store passes [`now_nanos`]; the tests pass fixed times and sequences.
+pub(crate) trait Clock {
+    /// Returns the current time.
+    fn now(&self) -> Result<i64>;
+}
+
+impl<F: Fn() -> Result<i64>> Clock for F {
+    fn now(&self) -> Result<i64> {
+        self()
+    }
+}
+
+/// A fixed time, for the tests.
+#[cfg(test)]
+impl Clock for i64 {
+    fn now(&self) -> Result<i64> {
+        Ok(*self)
+    }
 }
 
 /// Returns the first 5-minute boundary strictly after `now`.
@@ -571,17 +621,18 @@ impl<'d> Dai<'d> {
 
     /// Writes the customer's settings, given the expected settings revision,
     /// as [`Store::set_dai_settings`](crate::Store::set_dai_settings)
-    /// describes, at the time `now`, and returns the stored settings.
+    /// describes, at the time `clock` gives, and returns the stored settings.
     pub(crate) fn set_settings(
         &self,
         customer_id: u32,
         expected_revision: u64,
         update: &DaiSettingsUpdate,
-        now: i64,
+        clock: &dyn Clock,
     ) -> Result<DaiSettings> {
         check_settings(update)?;
         self.write(|txn| {
             self.lock_customer(txn, customer_id)?;
+            let now = clock.now()?;
             let stored = self.stored_settings(txn, customer_id)?.unwrap_or_default();
             if stored.revision != expected_revision {
                 return Err(DaiConfigError::StaleRevision {
@@ -692,34 +743,34 @@ impl<'d> Dai<'d> {
         })
     }
 
-    /// Creates a site at the time `now` and returns its token.
+    /// Creates a site at the time `clock` gives and returns its token.
     pub(crate) fn create_site(
         &self,
         customer_id: u32,
         name: &str,
         sensors: &[String],
-        now: i64,
+        clock: &dyn Clock,
     ) -> Result<String> {
-        self.write(|txn| self.write_site(txn, customer_id, None, name, sensors, now))
+        self.write(|txn| self.write_site(txn, customer_id, None, name, sensors, clock))
     }
 
-    /// Updates site `token` at the time `now`.
+    /// Updates site `token` at the time `clock` gives.
     pub(crate) fn update_site(
         &self,
         customer_id: u32,
         token: &str,
         name: &str,
         sensors: &[String],
-        now: i64,
+        clock: &dyn Clock,
     ) -> Result<()> {
         self.write(|txn| {
-            self.write_site(txn, customer_id, Some(token), name, sensors, now)
+            self.write_site(txn, customer_id, Some(token), name, sensors, clock)
                 .map(|_| ())
         })
     }
 
     /// Creates a site, or updates site `token`, within `txn` at the time
-    /// `now`, and returns its token.
+    /// `clock` gives once the guard is read, and returns its token.
     fn write_site(
         &self,
         txn: &Txn<'_>,
@@ -727,9 +778,10 @@ impl<'d> Dai<'d> {
         token: Option<&str>,
         name: &str,
         sensors: &[String],
-        now: i64,
+        clock: &dyn Clock,
     ) -> Result<String> {
         self.lock_customer(txn, customer_id)?;
+        let now = clock.now()?;
         let mut before = self.sites_in(txn, customer_id)?;
         self.ensure_default_site_in(txn, customer_id, &mut before)?;
         if let Some(token) = token {
@@ -813,10 +865,16 @@ impl<'d> Dai<'d> {
         Ok(token)
     }
 
-    /// Removes site `token` at the time `now`.
-    pub(crate) fn remove_site(&self, customer_id: u32, token: &str, now: i64) -> Result<()> {
+    /// Removes site `token` at the time `clock` gives.
+    pub(crate) fn remove_site(
+        &self,
+        customer_id: u32,
+        token: &str,
+        clock: &dyn Clock,
+    ) -> Result<()> {
         self.write(|txn| {
             self.lock_customer(txn, customer_id)?;
+            let now = clock.now()?;
             let mut before = self.sites_in(txn, customer_id)?;
             self.ensure_default_site_in(txn, customer_id, &mut before)?;
             let Some(site) = before.iter().find(|site| site.token == token) else {
@@ -983,16 +1041,34 @@ impl<'d> Dai<'d> {
     }
 
     /// Returns the customer's relay site table and its revision.
+    ///
+    /// Both are read from one snapshot of the database: the store's
+    /// transactions take none, so two reads through one could see a
+    /// replacement committed between them, and return the old entries with
+    /// the new revision, a revision a caller could then pass to overwrite
+    /// the replacement it never saw.
     pub(crate) fn relay_sites(&self, customer_id: u32) -> Result<DaiRelaySites> {
-        self.read(|txn| {
-            Ok(DaiRelaySites {
-                entries: self.relay_entries(txn, customer_id)?,
-                revision: self
-                    .stored_settings(txn, customer_id)?
-                    .unwrap_or_default()
-                    .relay_revision,
+        let snapshot = self.db.snapshot();
+        let prefix = customer_key(customer_id);
+        let mut opts = rocksdb::ReadOptions::default();
+        opts.set_iterate_range(rocksdb::PrefixRange(prefix.as_slice()));
+        let entries = snapshot
+            .iterator_cf_opt(self.relay_sites.cf, opts, IteratorMode::Start)
+            .map(|entry| {
+                let (key, value) = entry.context("cannot read DAI relay sites")?;
+                decode_relay(&key, &value)
             })
-        })
+            .collect::<Result<Vec<_>>>()?;
+        #[cfg(test)]
+        run_relay_read_hook(self.db);
+        let revision = snapshot
+            .get_cf(self.settings.cf, &prefix)
+            .context("cannot read DAI customer settings")?
+            .map(|value| super::deserialize::<DaiSettings>(&value))
+            .transpose()?
+            .unwrap_or_default()
+            .relay_revision;
+        Ok(DaiRelaySites { entries, revision })
     }
 
     /// Replaces the customer's relay site table, given the expected relay

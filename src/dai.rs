@@ -66,7 +66,7 @@ impl Store {
         update: &DaiSettingsUpdate,
     ) -> Result<DaiSettings> {
         self.dai()
-            .set_settings(customer_id, expected_revision, update, now_nanos()?)
+            .set_settings(customer_id, expected_revision, update, &now_nanos)
     }
 
     /// Creates the customer's default site if it has none, and returns its
@@ -132,7 +132,7 @@ impl Store {
         sensors: &[String],
     ) -> Result<String> {
         self.dai()
-            .create_site(customer_id, name, sensors, now_nanos()?)
+            .create_site(customer_id, name, sensors, &now_nanos)
     }
 
     /// Replaces the display name and the sensors of the customer's site
@@ -159,7 +159,7 @@ impl Store {
         sensors: &[String],
     ) -> Result<()> {
         self.dai()
-            .update_site(customer_id, token, name, sensors, now_nanos()?)
+            .update_site(customer_id, token, name, sensors, &now_nanos)
     }
 
     /// Removes the customer's site `token`, incrementing the configuration
@@ -175,7 +175,7 @@ impl Store {
     /// scheduled, still puts a sensor in it. Returns an error if the
     /// database operation fails.
     pub fn remove_dai_site(&self, customer_id: u32, token: &str) -> Result<()> {
-        self.dai().remove_site(customer_id, token, now_nanos()?)
+        self.dai().remove_site(customer_id, token, &now_nanos)
     }
 
     /// Returns the token of the site `sensor` was in, in the customer's

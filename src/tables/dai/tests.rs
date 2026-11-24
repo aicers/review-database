@@ -42,6 +42,36 @@ fn at(minutes: i64, seconds: i64) -> i64 {
     NOON + (minutes * 60 + seconds) * NS
 }
 
+/// A clock that gives a list of times in turn, one per sample, and the last
+/// of them from then on.
+struct SequenceClock {
+    times: Vec<i64>,
+    samples: std::cell::Cell<usize>,
+}
+
+impl SequenceClock {
+    fn new(times: &[i64]) -> Self {
+        Self {
+            times: times.to_vec(),
+            samples: std::cell::Cell::new(0),
+        }
+    }
+
+    /// Returns how many times the clock was sampled.
+    fn samples(&self) -> usize {
+        self.samples.get()
+    }
+}
+
+impl Clock for SequenceClock {
+    fn now(&self) -> Result<i64> {
+        let sample = self.samples.get();
+        self.samples.set(sample + 1);
+        let time = self.times.get(sample).or(self.times.last());
+        Ok(*time.expect("the clock has a time"))
+    }
+}
+
 /// A store whose nodes give [`CUSTOMER`] the sensors [`A`], [`B`] and
 /// [`C`] and [`OTHER_CUSTOMER`] the sensor [`D`]; [`CUSTOMER`] also has a
 /// node `e.example` without a sensor agent.
@@ -101,18 +131,19 @@ impl Fixture {
     }
 
     fn create(&self, name: &str, sensors: &[&str], now: i64) -> Result<String> {
-        self.dai().create_site(CUSTOMER, name, &names(sensors), now)
+        self.dai()
+            .create_site(CUSTOMER, name, &names(sensors), &now)
     }
 
     fn update(&self, token: &str, name: &str, sensors: &[&str], now: i64) -> Result<()> {
         self.dai()
-            .update_site(CUSTOMER, token, name, &names(sensors), now)
+            .update_site(CUSTOMER, token, name, &names(sensors), &now)
     }
 
     fn insert_policy(&self, policy: NewTimeSeriesGenerationPolicy, now: i64) -> Result<u32> {
         self.store
             .time_series_generation_policy_map()
-            .insert_with_catalog(policy, time_series_types(), now)
+            .insert_with_catalog(policy, time_series_types(), &now)
     }
 }
 
@@ -293,7 +324,7 @@ fn a_settings_write_checks_the_revision_and_ensures_the_default_site() {
     let dai = f.dai();
     let before = f.dump();
     let err = dai
-        .set_settings(CUSTOMER, 1, &settings_update(false), at(0, 0))
+        .set_settings(CUSTOMER, 1, &settings_update(false), &at(0, 0))
         .unwrap_err();
     assert_eq!(
         dai_error(&err),
@@ -302,7 +333,7 @@ fn a_settings_write_checks_the_revision_and_ensures_the_default_site() {
     assert_eq!(f.dump(), before);
 
     let stored = dai
-        .set_settings(CUSTOMER, 0, &settings_update(false), at(0, 0))
+        .set_settings(CUSTOMER, 0, &settings_update(false), &at(0, 0))
         .unwrap();
     assert_eq!(stored.revision, 1);
     assert_eq!(stored.relay_revision, 0);
@@ -325,7 +356,7 @@ fn a_settings_write_checks_the_revision_and_ensures_the_default_site() {
     dai.replace_relay_sites(CUSTOMER, 0, &[]).unwrap();
     let before = f.dump();
     let err = dai
-        .set_settings(CUSTOMER, 0, &settings_update(false), at(0, 0))
+        .set_settings(CUSTOMER, 0, &settings_update(false), &at(0, 0))
         .unwrap_err();
     assert_eq!(
         dai_error(&err),
@@ -333,7 +364,7 @@ fn a_settings_write_checks_the_revision_and_ensures_the_default_site() {
     );
     assert_eq!(f.dump(), before);
     let stored = dai
-        .set_settings(CUSTOMER, 1, &settings_update(false), at(0, 0))
+        .set_settings(CUSTOMER, 1, &settings_update(false), &at(0, 0))
         .unwrap();
     assert_eq!((stored.revision, stored.relay_revision), (2, 1));
     assert_eq!(f.store.dai_sites(CUSTOMER).unwrap(), sites);
@@ -344,20 +375,20 @@ fn turning_the_setting_on_records_when_and_turning_it_off_keeps_it() {
     let f = setup();
     let dai = f.dai();
     let on = dai
-        .set_settings(CUSTOMER, 0, &settings_update(true), at(1, 0))
+        .set_settings(CUSTOMER, 0, &settings_update(true), &at(1, 0))
         .unwrap();
     assert_eq!(on.last_enabled_time, Some(at(1, 0)));
     let still_on = dai
-        .set_settings(CUSTOMER, 1, &settings_update(true), at(2, 0))
+        .set_settings(CUSTOMER, 1, &settings_update(true), &at(2, 0))
         .unwrap();
     assert_eq!(still_on.last_enabled_time, Some(at(1, 0)));
     let off = dai
-        .set_settings(CUSTOMER, 2, &settings_update(false), at(3, 0))
+        .set_settings(CUSTOMER, 2, &settings_update(false), &at(3, 0))
         .unwrap();
     assert!(!off.device_account_identification);
     assert_eq!(off.last_enabled_time, Some(at(1, 0)));
     let again = dai
-        .set_settings(CUSTOMER, 3, &settings_update(true), at(4, 0))
+        .set_settings(CUSTOMER, 3, &settings_update(true), &at(4, 0))
         .unwrap();
     assert_eq!(again.last_enabled_time, Some(at(4, 0)));
 }
@@ -563,7 +594,7 @@ fn the_default_site_cannot_be_updated_or_removed() {
     );
     let err = f
         .dai()
-        .remove_site(CUSTOMER, &default, at(0, 0))
+        .remove_site(CUSTOMER, &default, &at(0, 0))
         .unwrap_err();
     assert_eq!(
         dai_error(&err),
@@ -580,7 +611,7 @@ fn the_default_site_cannot_be_updated_or_removed() {
     );
     let err = f
         .dai()
-        .remove_site(CUSTOMER, "unknown0", at(0, 0))
+        .remove_site(CUSTOMER, "unknown0", &at(0, 0))
         .unwrap_err();
     assert!(matches!(
         dai_error(&err),
@@ -637,7 +668,7 @@ fn a_site_is_removed_only_when_nothing_puts_a_sensor_in_it() {
     let dai = f.dai();
     let site = f.create("Seoul", &[A], at(0, 0)).unwrap();
     let before = f.dump();
-    let err = dai.remove_site(CUSTOMER, &site, at(10, 0)).unwrap_err();
+    let err = dai.remove_site(CUSTOMER, &site, &at(10, 0)).unwrap_err();
     assert_eq!(
         dai_error(&err),
         &DaiConfigError::SiteHasSensors {
@@ -650,7 +681,7 @@ fn a_site_is_removed_only_when_nothing_puts_a_sensor_in_it() {
     f.update(&site, "Seoul", &[], at(12, 0)).unwrap();
     let before = f.dump();
     for now in [at(12, 0), at(14, 59)] {
-        let err = dai.remove_site(CUSTOMER, &site, now).unwrap_err();
+        let err = dai.remove_site(CUSTOMER, &site, &now).unwrap_err();
         assert_eq!(
             dai_error(&err),
             &DaiConfigError::SiteStillAssigned {
@@ -664,7 +695,7 @@ fn a_site_is_removed_only_when_nothing_puts_a_sensor_in_it() {
     dai.replace_relay_sites(CUSTOMER, 0, &[relay("10.0.0.1", "10.1.0.1", &site)])
         .unwrap();
     let before = f.dump();
-    let err = dai.remove_site(CUSTOMER, &site, at(15, 0)).unwrap_err();
+    let err = dai.remove_site(CUSTOMER, &site, &at(15, 0)).unwrap_err();
     assert_eq!(
         dai_error(&err),
         &DaiConfigError::SiteInRelayTable {
@@ -674,7 +705,7 @@ fn a_site_is_removed_only_when_nothing_puts_a_sensor_in_it() {
     assert_eq!(f.dump(), before);
     dai.replace_relay_sites(CUSTOMER, 1, &[]).unwrap();
 
-    dai.remove_site(CUSTOMER, &site, at(15, 0)).unwrap();
+    dai.remove_site(CUSTOMER, &site, &at(15, 0)).unwrap();
     assert_eq!(f.store.dai_site(CUSTOMER, &site).unwrap(), None);
     assert_eq!(f.store.dai_sites(CUSTOMER).unwrap().len(), 1);
 }
@@ -691,7 +722,7 @@ fn a_site_a_row_in_effect_or_scheduled_names_is_not_removed() {
     // change that empties it replaces the row, so the earlier time is used
     // to observe it.
     for now in [at(3, 0), at(5, 0), at(9, 59)] {
-        let err = dai.remove_site(CUSTOMER, &site, now).unwrap_err();
+        let err = dai.remove_site(CUSTOMER, &site, &now).unwrap_err();
         assert_eq!(
             dai_error(&err),
             &DaiConfigError::SiteStillAssigned {
@@ -699,12 +730,12 @@ fn a_site_a_row_in_effect_or_scheduled_names_is_not_removed() {
             }
         );
     }
-    dai.remove_site(CUSTOMER, &site, at(10, 0)).unwrap();
+    dai.remove_site(CUSTOMER, &site, &at(10, 0)).unwrap();
 
     // A site joined and left before one boundary is not assigned.
     let busan = f.create("Busan", &[B], at(20, 0)).unwrap();
     f.update(&busan, "Busan", &[], at(21, 0)).unwrap();
-    dai.remove_site(CUSTOMER, &busan, at(22, 0)).unwrap();
+    dai.remove_site(CUSTOMER, &busan, &at(22, 0)).unwrap();
 }
 
 #[test]
@@ -873,13 +904,55 @@ fn the_relay_table_is_replaced_whole() {
 }
 
 #[test]
+fn the_relay_table_is_read_with_its_own_revision() {
+    let f = setup();
+    let dai = f.dai();
+    let default = f.store.ensure_default_site(CUSTOMER).unwrap();
+    let old = vec![relay("10.0.0.1", "10.1.0.1", &default)];
+    dai.replace_relay_sites(CUSTOMER, 0, &old).unwrap();
+    // A replacement commits after the read of the entries and before the
+    // read of the revision.
+    let new = vec![relay("10.0.0.2", "10.1.0.1", &default)];
+    let replacement = new.clone();
+    set_relay_read_hook(Box::new(move |db| {
+        Dai::open(db)
+            .unwrap()
+            .replace_relay_sites(CUSTOMER, 1, &replacement)
+            .unwrap();
+    }));
+    let read = f.store.dai_relay_sites(CUSTOMER).unwrap();
+    assert_eq!(
+        read,
+        DaiRelaySites {
+            entries: old,
+            revision: 1,
+        }
+    );
+    // So a write built on what was read cannot overwrite the replacement.
+    let err = dai
+        .replace_relay_sites(CUSTOMER, read.revision, &read.entries)
+        .unwrap_err();
+    assert_eq!(
+        dai_error(&err),
+        &DaiConfigError::StaleRevision { stored: 2 }
+    );
+    assert_eq!(
+        f.store.dai_relay_sites(CUSTOMER).unwrap(),
+        DaiRelaySites {
+            entries: new,
+            revision: 2,
+        }
+    );
+}
+
+#[test]
 fn invalid_relay_tables_are_refused() {
     let f = setup();
     let dai = f.dai();
     let site = f.create("Seoul", &[], at(0, 0)).unwrap();
     let other = f
         .dai()
-        .create_site(OTHER_CUSTOMER, "Other", &[], at(0, 0))
+        .create_site(OTHER_CUSTOMER, "Other", &[], &at(0, 0))
         .unwrap();
     dai.replace_relay_sites(CUSTOMER, 0, &[relay("10.0.0.1", "10.1.0.1", &site)])
         .unwrap();
@@ -975,14 +1048,14 @@ fn configuration_writes_increment_every_sensor_epoch() {
     let f = setup();
     let dai = f.dai();
     // A write that does not toggle the setting increments nothing.
-    dai.set_settings(CUSTOMER, 0, &settings_update(false), at(0, 0))
+    dai.set_settings(CUSTOMER, 0, &settings_update(false), &at(0, 0))
         .unwrap();
     assert_eq!(f.epochs(&[A, B, C, D, NOT_A_SENSOR]), [0, 0, 0, 0, 0]);
     // Toggling it increments every sensor of the customer.
-    dai.set_settings(CUSTOMER, 1, &settings_update(true), at(0, 0))
+    dai.set_settings(CUSTOMER, 1, &settings_update(true), &at(0, 0))
         .unwrap();
     assert_eq!(f.epochs(&[A, B, C, D, NOT_A_SENSOR]), [1, 1, 1, 0, 0]);
-    dai.set_settings(CUSTOMER, 2, &settings_update(true), at(0, 0))
+    dai.set_settings(CUSTOMER, 2, &settings_update(true), &at(0, 0))
         .unwrap();
     assert_eq!(f.epochs(&[A, B, C]), [1, 1, 1]);
     // A site write.
@@ -997,7 +1070,7 @@ fn configuration_writes_increment_every_sensor_epoch() {
     f.update(&site, "Seoul", &[], at(0, 0)).unwrap();
     assert_eq!(f.epochs(&[A, B, C, D]), [4, 4, 4, 0]);
     // A removal.
-    dai.remove_site(CUSTOMER, &site, at(10, 0)).unwrap();
+    dai.remove_site(CUSTOMER, &site, &at(10, 0)).unwrap();
     assert_eq!(f.epochs(&[A, B, C, D]), [4, 5, 5, 0]);
 }
 
@@ -1007,7 +1080,7 @@ fn the_epoch_never_returns_to_an_earlier_value() {
     let dai = f.dai();
     let mut seen = vec![f.epochs(&[A])[0]];
     for (revision, enabled) in [(0, true), (1, false), (2, true), (3, false), (4, true)] {
-        dai.set_settings(CUSTOMER, revision, &settings_update(enabled), at(0, 0))
+        dai.set_settings(CUSTOMER, revision, &settings_update(enabled), &at(0, 0))
             .unwrap();
         seen.push(f.epochs(&[A])[0]);
     }
@@ -1148,7 +1221,7 @@ fn a_draft_update_checks_the_site_condition() {
     new.sensors = names(&[A, C]);
     let before = f.dump();
     let err = table
-        .update_with_catalog(id, &old, &new, time_series_types(), at(10, 0))
+        .update_with_catalog(id, &old, &new, time_series_types(), &at(10, 0))
         .unwrap_err();
     let mut expected = vec![(seoul, names(&[C])), (default, names(&[A]))];
     expected.sort_unstable();
@@ -1163,7 +1236,7 @@ fn a_draft_update_checks_the_site_condition() {
     // Under the scheduled assignment too: at 12:01 C is still in the
     // default site, but scheduled for Seoul.
     let err = table
-        .update_with_catalog(id, &old, &new, time_series_types(), at(1, 0))
+        .update_with_catalog(id, &old, &new, time_series_types(), &at(1, 0))
         .unwrap_err();
     assert!(matches!(
         policy_error(&err),
@@ -1178,7 +1251,7 @@ fn a_draft_update_checks_the_site_condition() {
     let mut renamed = old.clone();
     renamed.name = "renamed".to_string();
     table
-        .update_with_catalog(id, &old, &renamed, time_series_types(), at(10, 0))
+        .update_with_catalog(id, &old, &renamed, time_series_types(), &at(10, 0))
         .unwrap();
     assert_eq!(table.get_by_id(id).unwrap().unwrap().name, "renamed");
 }
@@ -1251,7 +1324,7 @@ fn a_policy_save_racing_a_site_change_is_checked_again() {
     set_after_checks_hook(Box::new(move |db| {
         Dai::open(db)
             .unwrap()
-            .update_site(CUSTOMER, &token, "Seoul", &names(&[A]), at(10, 0))
+            .update_site(CUSTOMER, &token, "Seoul", &names(&[A]), &at(10, 0))
             .unwrap();
     }));
     let err = f
@@ -1285,7 +1358,7 @@ fn a_site_change_racing_a_policy_save_is_checked_again() {
     set_after_checks_hook(Box::new(|db| {
         IndexedTable::<TimeSeriesGenerationPolicy>::open(db)
             .unwrap()
-            .insert_with_catalog(policy("p", &[A, B]), time_series_types(), at(10, 0))
+            .insert_with_catalog(policy("p", &[A, B]), time_series_types(), &at(10, 0))
             .unwrap();
     }));
     let err = f.update(&seoul, "Seoul", &[A], at(10, 0)).unwrap_err();
@@ -1307,6 +1380,94 @@ fn a_site_change_racing_a_policy_save_is_checked_again() {
         f.store.dai_site(CUSTOMER, &seoul).unwrap().unwrap().sensors,
         Vec::<String>::new()
     );
+}
+
+#[test]
+fn a_retried_policy_save_checks_at_the_time_of_the_retry() {
+    let f = setup();
+    let default = f.store.ensure_default_site(CUSTOMER).unwrap();
+    let seoul = f.create("Seoul", &[], at(0, 0)).unwrap();
+    let token = seoul.clone();
+    // The first attempt, at 12:04:58, finds A and B in the default site both
+    // in effect and in the site table. Before it commits, A moves into Seoul
+    // effective 12:05, and then B effective 12:10.
+    set_after_checks_hook(Box::new(move |db| {
+        let dai = Dai::open(db).unwrap();
+        dai.update_site(CUSTOMER, &token, "Seoul", &names(&[A]), &at(4, 59))
+            .unwrap();
+        dai.update_site(CUSTOMER, &token, "Seoul", &names(&[A, B]), &at(5, 0))
+            .unwrap();
+    }));
+    // The retry runs at 12:05:01, when A is in Seoul and B still in the
+    // default site. Checked at 12:04:58 again, both would be in the default
+    // site in effect and in Seoul in the site table, and the policy would
+    // span two sites from 12:05 to 12:10.
+    let clock = SequenceClock::new(&[at(4, 58), at(5, 1)]);
+    let err = f
+        .store
+        .time_series_generation_policy_map()
+        .insert_with_catalog(policy("p", &[A, B]), time_series_types(), &clock)
+        .unwrap_err();
+    assert_eq!(clock.samples(), 2);
+    let mut expected = vec![(seoul, names(&[A])), (default, names(&[B]))];
+    expected.sort_unstable();
+    assert_eq!(
+        policy_error(&err),
+        &TimeSeriesGenerationPolicyError::SensorsSpanSites {
+            customer_id: CUSTOMER,
+            sites: expected,
+        }
+    );
+    assert_eq!(
+        f.store.time_series_generation_policy_map().count().unwrap(),
+        0
+    );
+}
+
+#[test]
+fn a_retried_site_write_schedules_at_the_boundary_after_the_retry() {
+    let f = setup();
+    let default = f.store.ensure_default_site(CUSTOMER).unwrap();
+    let seoul = f.create("Seoul", &[A], at(2, 0)).unwrap();
+    // A write of the customer's DAI configuration commits before the first
+    // attempt, at 12:04:58, does.
+    set_after_checks_hook(Box::new(|db| {
+        Dai::open(db)
+            .unwrap()
+            .ensure_default_site(CUSTOMER)
+            .unwrap();
+    }));
+    // The retry runs at 12:05:01, after the 12:05 row has taken effect, so
+    // it schedules A's return to the default site at 12:10 and leaves that
+    // row as it is rather than rewriting it.
+    let clock = SequenceClock::new(&[at(4, 58), at(5, 1)]);
+    f.dai()
+        .update_site(CUSTOMER, &seoul, "Seoul", &[], &clock)
+        .unwrap();
+    assert_eq!(clock.samples(), 2);
+    assert_eq!(
+        f.history(),
+        [
+            (
+                A.to_string(),
+                at(5, 0),
+                SensorSite {
+                    customer_id: CUSTOMER,
+                    site: seoul.clone()
+                }
+            ),
+            (
+                A.to_string(),
+                at(10, 0),
+                SensorSite {
+                    customer_id: CUSTOMER,
+                    site: default.clone()
+                }
+            ),
+        ]
+    );
+    assert_eq!(f.site_at(A, at(5, 0)), seoul);
+    assert_eq!(f.site_at(A, at(10, 0)), default);
 }
 
 #[test]
@@ -1367,7 +1528,7 @@ fn deleting_a_customer_removes_its_rows_only() {
     let f = setup();
     let dai = f.dai();
     // CUSTOMER: settings, sites, relay table, history and states.
-    dai.set_settings(CUSTOMER, 0, &settings_update(true), at(0, 0))
+    dai.set_settings(CUSTOMER, 0, &settings_update(true), &at(0, 0))
         .unwrap();
     let seoul = f.create("Seoul", &[A, B], at(0, 0)).unwrap();
     dai.replace_relay_sites(CUSTOMER, 0, &[relay("10.0.0.1", "10.1.0.1", &seoul)])
@@ -1376,10 +1537,10 @@ fn deleting_a_customer_removes_its_rows_only() {
     // in no site, with a state row.
     dai.record_config_hash("piglet.gone.example", b"h").unwrap();
     // OTHER_CUSTOMER: the same kinds of rows.
-    dai.set_settings(OTHER_CUSTOMER, 0, &settings_update(true), at(0, 0))
+    dai.set_settings(OTHER_CUSTOMER, 0, &settings_update(true), &at(0, 0))
         .unwrap();
     let other_site = dai
-        .create_site(OTHER_CUSTOMER, "Other", &names(&[D]), at(0, 0))
+        .create_site(OTHER_CUSTOMER, "Other", &names(&[D]), &at(0, 0))
         .unwrap();
     dai.replace_relay_sites(
         OTHER_CUSTOMER,
