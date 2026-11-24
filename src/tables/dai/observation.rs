@@ -1040,7 +1040,19 @@ impl Dai<'_> {
         now: i64,
     ) -> Result<()> {
         let lost_slot = slot_floor(lost_before)?;
-        let existing = self.gaps_in(txn, sensor, kind)?;
+        // The scan is not tracked, so only the starts it finds are used: each
+        // gap is reread for update, and a commit conflicts if another
+        // transaction changes or deletes it after that read.
+        let scanned = self.gaps_in(txn, sensor, kind)?;
+        #[cfg(test)]
+        super::run_gaps_scanned_hook(self.db);
+        let mut existing = Vec::with_capacity(scanned.len());
+        for (start, _) in scanned {
+            let key = gap_key(sensor, kind, start);
+            if let Some(end) = Self::get_row::<i64>(txn, &self.catchup_gaps, &key)? {
+                existing.push((start, end));
+            }
+        }
         let mut gaps = vec![(row.cursor, lost_before)];
         for (end, counted_from) in &row.confirmed {
             gaps = subtract(&gaps, *counted_from, *end);

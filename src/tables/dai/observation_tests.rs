@@ -509,6 +509,104 @@ fn the_identifier_hash_covers_the_identifier_fields_only() {
     );
 }
 
+#[test]
+fn the_identifier_hash_follows_the_formula_for_every_other_variant() {
+    // Distinct values in the fields of each tuple, so that a field in the
+    // wrong place, missing or added changes the encoding.
+    let server = ip("10.0.0.3");
+    let identifier = ip("10.0.0.4");
+    assert_eq!(
+        identifier_hash(&DaiObservationBody::DhcpServer {
+            server_ip: server,
+            server_id: Some(identifier),
+        })
+        .unwrap(),
+        expected_hash(&(server, Some(identifier)))
+    );
+
+    let client_ip = ip("10.0.0.2");
+    let realm = "EXAMPLE.COM";
+    let cname = vec!["alice".to_string()];
+    let sname = vec!["krbtgt".to_string(), "CORP.EXAMPLE.COM".to_string()];
+    let msg_type: u8 = 30;
+    let preauth: u8 = 2;
+    let error_code: u32 = 24;
+    assert_eq!(
+        identifier_hash(&DaiObservationBody::Kerberos {
+            client_ip,
+            realm: realm.to_string(),
+            cname: cname.clone(),
+            sname: sname.clone(),
+            msg_type,
+            accepted: false,
+            preauth,
+            error_code: Some(error_code),
+        })
+        .unwrap(),
+        expected_hash(&(
+            client_ip,
+            realm,
+            &cname,
+            &sname,
+            msg_type,
+            false,
+            preauth,
+            Some(error_code),
+        ))
+    );
+
+    let addr = ip("10.0.0.5");
+    assert_eq!(
+        identifier_hash(&DaiObservationBody::Ntlm {
+            ip: addr,
+            workstation: "WS01".to_string(),
+            user: "alice".to_string(),
+            domain: "CORP".to_string(),
+            success: true,
+        })
+        .unwrap(),
+        expected_hash(&(addr, "WS01", "alice", "CORP", true))
+    );
+
+    let port: u16 = 443;
+    let proto: u8 = 6;
+    assert_eq!(
+        identifier_hash(&DaiObservationBody::Service {
+            server_ip: server,
+            port,
+            proto,
+            external_client: true,
+        })
+        .unwrap(),
+        expected_hash(&(server, port, proto))
+    );
+
+    assert_eq!(
+        identifier_hash(&DaiObservationBody::SoftwareString {
+            ip: addr,
+            side: DaiSide::Server,
+            source: DaiSoftwareSource::TlsCertSubject,
+            text: "OpenSSH_9.6".to_string(),
+        })
+        .unwrap(),
+        expected_hash(&(
+            addr,
+            DaiSide::Server,
+            DaiSoftwareSource::TlsCertSubject,
+            "OpenSSH_9.6",
+        ))
+    );
+
+    assert_eq!(
+        identifier_hash(&DaiObservationBody::IpActivity {
+            ip: addr,
+            side: DaiSide::Server,
+        })
+        .unwrap(),
+        expected_hash(&(addr, DaiSide::Server))
+    );
+}
+
 /// A change of an observation body, for the tests.
 type Edit = Box<dyn Fn(&mut DaiObservationBody)>;
 
@@ -2108,6 +2206,117 @@ fn a_second_catch_up_skip_counts_each_slot_once() {
     let row = f.row(A, Kind::DnsName).unwrap();
     assert_eq!(row.cursor, at(25));
     assert_eq!(row.read_floor, at(27));
+}
+
+/// A write that races a catch-up skip on the gap starting at `at(0)`,
+/// committed straight to the catch-up gap family.
+#[derive(Clone, Copy, Debug)]
+enum GapRace {
+    Delete,
+    /// Moves the end to `at(11)`.
+    Shorten,
+}
+
+/// Leaves (`A`, `DnsName`) as the first skip of
+/// [`a_second_catch_up_skip_counts_each_slot_once`] does, and returns the
+/// second send with the raw key of the gap starting at `at(0)`.
+fn first_skip_done(f: &Fixture) -> (DaiObservationBatch, Box<[u8]>) {
+    f.cursors(&[A], at(0));
+    let mut first = f.batch(A, Kind::DnsName, at(20), Vec::new());
+    first.lost_before = Some(at(12));
+    f.stored(&first, at(26));
+    assert_eq!(f.gaps(A, Kind::DnsName), [(at(0), at(12))]);
+    assert_eq!(f.row(A, Kind::DnsName).unwrap().cursor, at(10));
+    assert_eq!(
+        f.counter(CUSTOMER, DaiCounterKind::SkippedByCatchup, at(26)),
+        3
+    );
+    let [(key, _)] = f
+        .rows(super::super::DAI_CATCHUP_GAPS)
+        .try_into()
+        .expect("one gap row");
+    let mut second = f.batch(A, Kind::DnsName, at(30), Vec::new());
+    second.lost_before = Some(at(27));
+    (second, key)
+}
+
+/// Returns a hook committing `race` on the gap row under `key`.
+fn gap_race(race: GapRace, key: Box<[u8]>) -> TestHook {
+    Box::new(move |db| {
+        let cf = db
+            .cf_handle(super::super::DAI_CATCHUP_GAPS)
+            .expect("the catch-up gap family exists");
+        match race {
+            GapRace::Delete => db.delete_cf(cf, &key).unwrap(),
+            GapRace::Shorten => db
+                .put_cf(cf, &key, super::super::serialize(&at(11)).unwrap())
+                .unwrap(),
+        }
+    })
+}
+
+/// Asserts the state a second skip leaves after `race` changed the gap
+/// starting at `at(0)` before the skip's decision.
+fn assert_skipped_after(f: &Fixture, race: GapRace) {
+    let (gaps, count) = match race {
+        // Slots 10, 15 and 25 are new: the deleted gap no longer covers 10.
+        GapRace::Delete => (vec![(at(10), at(20)), (at(25), at(27))], 6),
+        // Slots 15 and 25 are new: the shortened gap still covers 10.
+        GapRace::Shorten => (vec![(at(0), at(11)), (at(11), at(20)), (at(25), at(27))], 5),
+    };
+    assert_eq!(f.gaps(A, Kind::DnsName), gaps, "{race:?}");
+    assert_eq!(
+        f.counter(CUSTOMER, DaiCounterKind::SkippedByCatchup, at(36)),
+        count,
+        "{race:?}"
+    );
+    let row = f.row(A, Kind::DnsName).unwrap();
+    assert_eq!(row.cursor, at(25), "{race:?}");
+    assert_eq!(row.read_floor, at(27), "{race:?}");
+}
+
+/// Runs the second skip with `race` committed between the skip's scan of the
+/// gaps and its reads of them.
+fn race_after_gap_scan(race: GapRace) {
+    let f = setup();
+    let (second, key) = first_skip_done(&f);
+    set_gaps_scanned_hook(gap_race(race, key));
+    f.stored(&second, at(36));
+    assert_skipped_after(&f, race);
+}
+
+/// Runs the second skip with `race` committed after the skip read the gaps,
+/// right before the store commits. The retry no longer runs the hook.
+///
+/// The shrinking of gaps later in the same store also reads the gap for
+/// update, so this race conflicts even without the skip's own tracked read;
+/// it checks that the retry, not the first attempt, decides the result.
+fn race_before_commit(race: GapRace) {
+    let f = setup();
+    let (second, key) = first_skip_done(&f);
+    set_before_commit_hook(gap_race(race, key));
+    f.stored(&second, at(36));
+    assert_skipped_after(&f, race);
+}
+
+#[test]
+fn a_catch_up_skip_ignores_a_gap_deleted_after_its_scan() {
+    race_after_gap_scan(GapRace::Delete);
+}
+
+#[test]
+fn a_catch_up_skip_uses_a_gap_changed_after_its_scan_as_it_reads_it() {
+    race_after_gap_scan(GapRace::Shorten);
+}
+
+#[test]
+fn a_catch_up_skip_racing_a_gap_deletion_is_retried() {
+    race_before_commit(GapRace::Delete);
+}
+
+#[test]
+fn a_catch_up_skip_racing_a_gap_change_is_retried() {
+    race_before_commit(GapRace::Shorten);
 }
 
 #[test]
