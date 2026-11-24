@@ -993,8 +993,10 @@ fn prepare_restore(store: &Store) -> i64 {
 
 /// Asserts that every cursor of [`restore_rows`] moved back as expected,
 /// keeping its read floor, marks and delays, with no confirmed slot, and
-/// that the restore generation is not one of `earlier`.
+/// that the restore generation is not one of `earlier` and no restore
+/// marker is left.
 fn assert_restored(store: &Store, base: i64, earlier: &mut Vec<u64>) {
+    assert!(!is_marked_restored(store.states.db()).unwrap());
     let generation = store.dai_restore_generation().unwrap();
     assert!(!earlier.contains(&generation), "{generation} {earlier:?}");
     earlier.push(generation);

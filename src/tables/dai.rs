@@ -44,8 +44,8 @@
 //! (see `senta_endpoint`), so a prefix read by customer id, by sensor name or
 //! by (sensor, kind) returns exactly those rows. A *slot* is
 //! `[slot_start, slot_start + 300 s)` with `slot_start` a multiple of 300 s,
-//! and a *date* the UTC day of a time, as days since the UNIX epoch. Times are `i64`
-//! nanoseconds since the UNIX epoch (UTC).
+//! and a *date* the UTC day of a time, as days since the UNIX epoch. Times
+//! are `i64` nanoseconds since the UNIX epoch (UTC).
 //!
 //! # Transactions
 //!

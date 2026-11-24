@@ -421,7 +421,9 @@ fn select_sensors<'a>(
 
 /// Leaves, in the restored states database at `path`, a marker the next
 /// open of the store applies: a new restore generation and every cursor
-/// moved back, as after an online restore.
+/// moved back. An offline restore leaves it for the next store; an online
+/// restore leaves it before it reopens the database and applies it right
+/// after, so a process stopped in between applies it at its next open.
 ///
 /// A database without the `dai meta` and `dai cursors` families, which an
 /// earlier build left, needs nothing: its first opened store draws a fresh

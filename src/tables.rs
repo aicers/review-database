@@ -965,10 +965,11 @@ impl StateDb {
     /// [`crate::backup::restore_states_offline`] followed by
     /// [`crate::write_version_markers`].
     ///
-    /// Returns an error if the backup engine fails to restore the backup or
-    /// the restored database cannot be reopened, in which case the database
-    /// is left closed, or if the DAI state of the reopened database cannot
-    /// be written.
+    /// Returns an error if the backup engine fails to restore the backup, or
+    /// the restored database cannot be marked for the DAI restore step or
+    /// reopened, in which case the database is left closed, or if the DAI
+    /// state of the reopened database cannot be written, in which case the
+    /// next open of the database writes it.
     pub fn restore_from_latest_backup(&mut self) -> Result<()> {
         let mut engine = open_rocksdb_backup_engine(self.backup.as_path())?;
 
@@ -987,8 +988,7 @@ impl StateDb {
 
         engine.restore_from_backup(&self.db, &self.db, &opts, latest)?;
 
-        self.reboot()?;
-        self.dai().after_restore(now_nanos()?)
+        self.finish_restore()
     }
 
     /// Restores backup `id` over the database and reopens it.
@@ -1007,10 +1007,11 @@ impl StateDb {
     /// [`crate::backup::restore_states_offline`] followed by
     /// [`crate::write_version_markers`].
     ///
-    /// Returns an error if the backup engine fails to restore the backup or
-    /// the restored database cannot be reopened, in which case the database
-    /// is left closed, or if the DAI state of the reopened database cannot
-    /// be written.
+    /// Returns an error if the backup engine fails to restore the backup, or
+    /// the restored database cannot be marked for the DAI restore step or
+    /// reopened, in which case the database is left closed, or if the DAI
+    /// state of the reopened database cannot be written, in which case the
+    /// next open of the database writes it.
     pub fn restore_from_backup(&mut self, id: u32) -> Result<()> {
         let mut engine = open_rocksdb_backup_engine(self.backup.as_path())?;
 
@@ -1020,6 +1021,18 @@ impl StateDb {
 
         restore_rocksdb_backup(&mut engine, &self.db, id)?;
 
+        self.finish_restore()
+    }
+
+    /// Marks the restored, still closed, database for the DAI restore step,
+    /// reopens it and runs that step.
+    ///
+    /// The marker is written before the reopen, so a process that stops
+    /// before the step commits leaves it to the next open of the database,
+    /// as after an offline restore; the step removes it in the transaction
+    /// that writes the new restore generation.
+    fn finish_restore(&mut self) -> Result<()> {
+        mark_restored(&self.db)?;
         self.reboot()?;
         self.dai().after_restore(now_nanos()?)
     }

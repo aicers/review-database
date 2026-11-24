@@ -1149,7 +1149,8 @@ impl Store {
     /// sensor's customer, nor later than it was restored. Its confirmed
     /// slots are cleared; its read floor and re-extract marks stay. The same
     /// happens through [`backup::restore`], and, at the next open of the
-    /// store, after [`backup::restore_states_offline`].
+    /// store, after [`backup::restore_states_offline`] or after a restore
+    /// whose process stopped before this step was written.
     ///
     /// # Errors
     ///
