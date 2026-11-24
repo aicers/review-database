@@ -621,8 +621,8 @@ mod tests {
         DEFAULT_STATES, DetectionEventStamp, ModelInstance, Store,
         migration::DATABASE_FORMAT_VERSION,
         tables::{
-            ADDED_WITHIN_FORMAT, CONFIG_REVISION_HISTORY, CONFIG_REVISIONS, FORMAT_0_63, MAP_NAMES,
-            TIME_SERIES_GENERATION_POLICY, open_rocksdb_backup_engine,
+            ADDED_WITHIN_FORMAT, FORMAT_0_63, MAP_NAMES, TIME_SERIES_GENERATION_POLICY,
+            open_rocksdb_backup_engine,
         },
     };
 
@@ -1289,7 +1289,9 @@ mod tests {
 
     /// Adds to the backup engine in `backup_dir` a backup of a store in the
     /// current format holding `events` events, as an earlier build of the
-    /// format left it: without the [`ADDED_WITHIN_FORMAT`] families.
+    /// format left it: without the [`ADDED_WITHIN_FORMAT`] families, which
+    /// are the configuration revision families and the observation tables of
+    /// `senta` endpoints.
     fn add_earlier_build_backup(backup_dir: &Path, events: usize) {
         let source = tempfile::tempdir().unwrap();
         let source_backup = tempfile::tempdir().unwrap();
@@ -1313,9 +1315,11 @@ mod tests {
     }
 
     /// A backup taken by an earlier build of the current format lacks the
-    /// configuration revision families, which that build did not have. It is
-    /// in the current format, so it restores online by id and as the latest,
-    /// and the restored store records configuration revisions.
+    /// [`ADDED_WITHIN_FORMAT`] families — the configuration revision families
+    /// and the observation tables of `senta` endpoints — which that build did
+    /// not have. It is in the current format, so it restores online by id and
+    /// as the latest, the restored store has every family of the format, it
+    /// records configuration revisions, and it stores an observation.
     #[test]
     fn online_restore_accepts_an_earlier_build_backup_of_the_current_format() {
         let _permit = acquire_db_permit();
@@ -1366,6 +1370,17 @@ mod tests {
                 agent_key: "001.hog".to_string(),
             };
             assert_eq!(store.config_revision(&instance).unwrap(), Some(1));
+
+            let db = store.states.db();
+            assert!(MAP_NAMES.iter().all(|name| db.cf_handle(name).is_some()));
+            let request = crate::SentaEndpointUnenrollRequest {
+                endpoint_id: uuid::Uuid::from_bytes([1; 16]),
+                received_at: 1,
+            };
+            let requests = store.senta_endpoint_unenroll_request_map();
+            assert_eq!(requests.iter().count(), 0);
+            requests.put(&request).unwrap();
+            assert_eq!(requests.get(request.endpoint_id).unwrap(), Some(request));
         }
         drop(store);
         assert_eq!(event_count(data_dir.path(), backup_dir.path()), 2);
@@ -1379,7 +1394,13 @@ mod tests {
     /// The column families every backup of an older format lacks, quoted and
     /// in the order the refusal lists them.
     const MISSING_FROM_OLDER: &str = "\"config revision history\", \"config revisions\", \
-                                      \"format 0.63\", \"time series generation policy\"";
+                                      \"format 0.63\", \"senta active list\", \
+                                      \"senta document results\", \"senta endpoint events\", \
+                                      \"senta giganto entries\", \
+                                      \"senta giganto last received\", \
+                                      \"senta giganto losses\", \"senta status reports\", \
+                                      \"senta unenroll requests\", \
+                                      \"time series generation policy\"";
 
     /// The current column families with the time series generation policy
     /// area replaced by [`RETIRED_POLICY_AREA`].
@@ -1397,7 +1418,7 @@ mod tests {
     }
 
     /// The column families of a `0.62` database: the current ones without
-    /// `format 0.63` and the two configuration revision families, with
+    /// `format 0.63` and the [`ADDED_WITHIN_FORMAT`] families, with
     /// [`RETIRED_POLICY_AREA`] in place of the time series generation policy
     /// area, and the `format 0.61` and `format 0.62` marker families.
     ///
@@ -1407,7 +1428,7 @@ mod tests {
     fn families_v0_62() -> Vec<&'static str> {
         let families: Vec<&str> = families_with_the_retired_policy_area()
             .into_iter()
-            .filter(|name| ![FORMAT_0_63, CONFIG_REVISIONS, CONFIG_REVISION_HISTORY].contains(name))
+            .filter(|name| *name != FORMAT_0_63 && !ADDED_WITHIN_FORMAT.contains(name))
             .chain(["format 0.61", "format 0.62"])
             .collect();
         assert_eq!(families.len(), 51);
@@ -1425,7 +1446,7 @@ mod tests {
 
     /// The column families of a `0.60` database: those of `0.62` without
     /// `format 0.61` and `format 0.62`, which are those of the current format
-    /// without `format 0.63` and the two configuration revision families.
+    /// without `format 0.63` and the [`ADDED_WITHIN_FORMAT`] families.
     fn families_v0_60() -> Vec<&'static str> {
         families_v0_61()
             .into_iter()

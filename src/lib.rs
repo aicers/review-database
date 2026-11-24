@@ -92,14 +92,22 @@ pub use self::tables::{
     PortAllocation, PortAllocationError, PortOwner, PreviousTraining, PreviousTrainingResults,
     ProtocolPorts, ReplaceOutcome, ReplacedModel, ReportedRunState, RequestKeyError, Response,
     ResponseKind, RetentionConfig, RetentionConfigUpdate, RoundOutcome, RunId, RunKind, RunState,
-    ScoreCondition, SlotSize, SourceState, Structured, StructuredClusteringAlgorithm,
-    SystemInstallRecord, SystemLogCollector, SystemLogCollectorRefusal, SystemLogCollectorTable,
-    Table, Template, TimeSeries, TimeSeriesGenerationPolicy, TimeSeriesGenerationPolicyError,
-    TimeSeriesGenerationPolicyUpdate, TimeSeriesRange, TopColumnsOfCluster, TopMultimaps,
-    TorExitNode, TrafficFilter, TrainedWith, TrainingDefinition, TrainingDefinitionUpdate,
-    TriageExclusion, TriagePolicyInput, TriageResponse, TriageResponseUpdate, TrustedDomain,
-    TrustedUserAgent, UniqueKey, Unstructured, UnstructuredClusteringAlgorithm, UserAgent,
-    ValueKind, WindowSize,
+    ScoreCondition, SentaEndpointActiveList, SentaEndpointActiveListEntry,
+    SentaEndpointActiveListTable, SentaEndpointDocumentResult, SentaEndpointDocumentResultKey,
+    SentaEndpointDocumentResultTable, SentaEndpointEvent, SentaEndpointEventKey,
+    SentaEndpointEventSource, SentaEndpointEventTable, SentaEndpointGigantoEntry,
+    SentaEndpointGigantoEntryTable, SentaEndpointGigantoLastReceived,
+    SentaEndpointGigantoLastReceivedKey, SentaEndpointGigantoLastReceivedTable,
+    SentaEndpointGigantoLoss, SentaEndpointGigantoLossKey, SentaEndpointGigantoLossTable,
+    SentaEndpointGigantoNode, SentaEndpointStatusReport, SentaEndpointStatusReportTable,
+    SentaEndpointUnenrollRequest, SentaEndpointUnenrollRequestTable, SlotSize, SourceState,
+    Structured, StructuredClusteringAlgorithm, SystemInstallRecord, SystemLogCollector,
+    SystemLogCollectorRefusal, SystemLogCollectorTable, Table, Template, TimeSeries,
+    TimeSeriesGenerationPolicy, TimeSeriesGenerationPolicyError, TimeSeriesGenerationPolicyUpdate,
+    TimeSeriesRange, TopColumnsOfCluster, TopMultimaps, TorExitNode, TrafficFilter, TrainedWith,
+    TrainingDefinition, TrainingDefinitionUpdate, TriageExclusion, TriagePolicyInput,
+    TriageResponse, TriageResponseUpdate, TrustedDomain, TrustedUserAgent, UniqueKey, Unstructured,
+    UnstructuredClusteringAlgorithm, UserAgent, ValueKind, WindowSize,
 };
 pub use self::time_series_type::{TimeSeriesType, time_series_type, time_series_types};
 pub use self::top_n::*;
@@ -723,6 +731,83 @@ impl Store {
     #[must_use]
     pub fn customer_data_deletion_map(&self) -> Table<'_, CustomerDataDeletionJob> {
         self.states.customer_data_deletion_jobs()
+    }
+
+    /// Returns the table of the active list `REview` applied to its `senta`
+    /// endpoints.
+    #[must_use]
+    // `StateDb::open` creates the column family the table opens, so the
+    // getter's `expect` cannot fire on an opened store.
+    #[allow(clippy::missing_panics_doc)]
+    pub fn senta_endpoint_active_list_map(&self) -> SentaEndpointActiveListTable<'_> {
+        self.states.senta_endpoint_active_list()
+    }
+
+    /// Returns the table of the endpoint entry state of each Giganto node.
+    #[must_use]
+    // `StateDb::open` creates the column family the table opens, so the
+    // getter's `expect` cannot fire on an opened store.
+    #[allow(clippy::missing_panics_doc)]
+    pub fn senta_endpoint_giganto_entry_map(&self) -> SentaEndpointGigantoEntryTable<'_> {
+        self.states.senta_endpoint_giganto_entries()
+    }
+
+    /// Returns the table of the unenroll requests of `senta` endpoints.
+    #[must_use]
+    // `StateDb::open` creates the column family the table opens, so the
+    // getter's `expect` cannot fire on an opened store.
+    #[allow(clippy::missing_panics_doc)]
+    pub fn senta_endpoint_unenroll_request_map(&self) -> SentaEndpointUnenrollRequestTable<'_> {
+        self.states.senta_endpoint_unenroll_requests()
+    }
+
+    /// Returns the table of the last document result of each `senta`
+    /// endpoint and document.
+    #[must_use]
+    // `StateDb::open` creates the column family the table opens, so the
+    // getter's `expect` cannot fire on an opened store.
+    #[allow(clippy::missing_panics_doc)]
+    pub fn senta_endpoint_document_result_map(&self) -> SentaEndpointDocumentResultTable<'_> {
+        self.states.senta_endpoint_document_results()
+    }
+
+    /// Returns the table of the last status report of each `senta` endpoint.
+    #[must_use]
+    // `StateDb::open` creates the column family the table opens, so the
+    // getter's `expect` cannot fire on an opened store.
+    #[allow(clippy::missing_panics_doc)]
+    pub fn senta_endpoint_status_report_map(&self) -> SentaEndpointStatusReportTable<'_> {
+        self.states.senta_endpoint_status_reports()
+    }
+
+    /// Returns the table of the `DuplicateKey` events of `senta` endpoints.
+    #[must_use]
+    // `StateDb::open` creates the column family the table opens, so the
+    // getter's `expect` cannot fire on an opened store.
+    #[allow(clippy::missing_panics_doc)]
+    pub fn senta_endpoint_event_map(&self) -> SentaEndpointEventTable<'_> {
+        self.states.senta_endpoint_events()
+    }
+
+    /// Returns the table of the loss records fetched from Giganto nodes.
+    #[must_use]
+    // `StateDb::open` creates the column family the table opens, so the
+    // getter's `expect` cannot fire on an opened store.
+    #[allow(clippy::missing_panics_doc)]
+    pub fn senta_endpoint_giganto_loss_map(&self) -> SentaEndpointGigantoLossTable<'_> {
+        self.states.senta_endpoint_giganto_losses()
+    }
+
+    /// Returns the table of when each Giganto node last received data from
+    /// each `senta` endpoint.
+    #[must_use]
+    // `StateDb::open` creates the column family the table opens, so the
+    // getter's `expect` cannot fire on an opened store.
+    #[allow(clippy::missing_panics_doc)]
+    pub fn senta_endpoint_giganto_last_received_map(
+        &self,
+    ) -> SentaEndpointGigantoLastReceivedTable<'_> {
+        self.states.senta_endpoint_giganto_last_received()
     }
 
     /// Returns the tag set for event.
