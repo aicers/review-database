@@ -1989,6 +1989,40 @@ fn a_catch_up_skip_never_moves_the_read_floor_earlier() {
 }
 
 #[test]
+fn a_second_catch_up_skip_counts_each_slot_once() {
+    let f = setup();
+    f.cursors(&[A], at(0));
+    let mut first = f.batch(A, Kind::DnsName, at(20), Vec::new());
+    first.lost_before = Some(at(12));
+    f.stored(&first, at(26));
+    assert_eq!(f.gaps(A, Kind::DnsName), [(at(0), at(12))]);
+    let row = f.row(A, Kind::DnsName).unwrap();
+    assert_eq!(row.cursor, at(10));
+    assert_eq!(
+        f.counter(CUSTOMER, DaiCounterKind::SkippedByCatchup, at(26)),
+        3
+    );
+
+    // The second skip starts in the slot the first one's gap reaches into,
+    // and passes the slot the first send confirmed.
+    let mut second = f.batch(A, Kind::DnsName, at(30), Vec::new());
+    second.lost_before = Some(at(27));
+    f.stored(&second, at(36));
+    assert_eq!(
+        f.gaps(A, Kind::DnsName),
+        [(at(0), at(12)), (at(12), at(20)), (at(25), at(27))]
+    );
+    // Slots 0, 5 and 10 by the first skip, 15 and 25 by the second.
+    assert_eq!(
+        f.counter(CUSTOMER, DaiCounterKind::SkippedByCatchup, at(36)),
+        5
+    );
+    let row = f.row(A, Kind::DnsName).unwrap();
+    assert_eq!(row.cursor, at(25));
+    assert_eq!(row.read_floor, at(27));
+}
+
+#[test]
 fn finishing_slots_shrinks_the_gaps_in_either_order() {
     for skip_first in [false, true] {
         let f = setup();

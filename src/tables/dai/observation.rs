@@ -524,6 +524,15 @@ fn next_slot(slot_start: i64) -> Result<i64> {
         .ok_or_else(|| anyhow!("slot {slot_start} has no slot after it"))
 }
 
+/// Returns the slots the non-empty range `[start, end)` touches, as the
+/// start of the first and the end of the last.
+fn slot_span(start: i64, end: i64) -> Result<(i64, i64)> {
+    let last = end
+        .checked_sub(1)
+        .ok_or_else(|| anyhow!("range end {end} has no time before it"))?;
+    Ok((slot_floor(start)?, next_slot(slot_floor(last)?)?))
+}
+
 impl Dai<'_> {
     /// Stores one part of a send of observations at the time `now`, as
     /// [`Store::store_dai_observations`](crate::Store::store_dai_observations)
@@ -998,31 +1007,33 @@ impl Dai<'_> {
             gaps = subtract(&gaps, *counted_from, *end);
         }
         // A gap written by an earlier skip may reach past the cursor, into
-        // the slot that skip moved the cursor to.
-        let mut counted_through = None;
+        // the slot that skip moved the cursor to. Its range is not written
+        // again, and the slots it touches were counted by that skip.
         for (start, end) in &existing {
             gaps = subtract(&gaps, *start, *end);
-            if *end > row.cursor {
-                let last = slot_floor(end - 1)?;
-                counted_through = Some(counted_through.map_or(last, |t: i64| t.max(last)));
-            }
         }
 
-        let mut skipped = 0_u64;
+        // The slots the new gaps touch, as ordered, disjoint ranges of slot
+        // starts, less those an existing gap touches.
+        let mut slots: Vec<(i64, i64)> = Vec::new();
         for (start, end) in &gaps {
-            let mut first = slot_floor(*start)?;
-            let last = slot_floor(end - 1)?;
-            if let Some(through) = counted_through {
-                first = first.max(next_slot(through)?);
+            let (first, past) = slot_span(*start, *end)?;
+            match slots.last_mut() {
+                Some(last) if first <= last.1 => last.1 = last.1.max(past),
+                _ => slots.push((first, past)),
             }
-            if last >= first {
-                skipped += u64::try_from((last - first) / FIVE_MINUTES + 1)
-                    .context("a slot count is negative")?;
-            }
-            counted_through = Some(counted_through.map_or(last, |t| t.max(last)));
             let key = gap_key(sensor, kind, *start);
             Self::get_row::<i64>(txn, &self.catchup_gaps, &key)?;
             Self::put_row(txn, &self.catchup_gaps, &key, end)?;
+        }
+        for (start, end) in &existing {
+            let (first, past) = slot_span(*start, *end)?;
+            slots = subtract(&slots, first, past);
+        }
+        let mut skipped = 0_u64;
+        for (first, past) in &slots {
+            skipped +=
+                u64::try_from((past - first) / FIVE_MINUTES).context("a slot count is negative")?;
         }
         if skipped > 0 {
             self.add_counter(
