@@ -56,12 +56,13 @@ impl Dai<'_> {
         self.delete_where(&self.counters, |key, _| {
             let (_, _, date) = decode_counter_key(key)?;
             Ok(i64::from(date) < oldest_counter)
-        })
+        })?;
+        self.expire_range_rows(now)
     }
 
     /// Deletes every row of `map` that `expired` selects, each read for
     /// update and checked again in the transaction that deletes it.
-    fn delete_where(
+    pub(super) fn delete_where(
         &self,
         map: &Map<'_>,
         expired: impl Fn(&[u8], &[u8]) -> Result<bool>,
@@ -251,10 +252,10 @@ impl Dai<'_> {
 
     // ---- Customer deletion ----
 
-    /// Deletes the sensor-keyed observation rows of the names `names` owns,
-    /// and, for each name it collected that the node table shows as a
-    /// sensor of another customer, the `dai observations` rows naming the
-    /// customer.
+    /// Deletes the sensor-keyed observation and range day rows of the names
+    /// `names` owns, and, for each name it collected that the node table
+    /// shows as a sensor of another customer, the `dai observations` rows
+    /// naming the customer.
     pub(super) fn delete_observation_rows(
         &self,
         customer_id: u32,
@@ -268,6 +269,7 @@ impl Dai<'_> {
             &self.sensor_kind_state,
             &self.observations,
             &self.summaries,
+            &self.range_days,
         ];
         for name in &names.own {
             let prefix = sensor_key(name);
@@ -351,10 +353,14 @@ impl Dai<'_> {
         Ok(())
     }
 
-    /// Deletes the customer's counters and address activity.
+    /// Deletes the customer's counters, address activity, range blocks,
+    /// range subnets and ignored ranges.
     pub(super) fn delete_customer_observation_rows(&self, customer_id: u32) -> Result<()> {
         let prefix = customer_key(customer_id);
         self.delete_prefix(&self.counters, &prefix)?;
-        self.delete_prefix(&self.ip_activity, &prefix)
+        self.delete_prefix(&self.ip_activity, &prefix)?;
+        self.delete_prefix(&self.range_blocks, &prefix)?;
+        self.delete_prefix(&self.range_subnets, &prefix)?;
+        self.delete_prefix(&self.range_ignores, &prefix)
     }
 }

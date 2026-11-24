@@ -27,7 +27,7 @@ pub(in crate::tables) const RESTORE_MARKER: &[u8] = b"dai restore pending";
 /// The number of nanoseconds in a day.
 pub(super) const DAY: i64 = 24 * 60 * 60 * 1_000_000_000;
 /// The shortest lookback window of a restore: 24 hours.
-const LOOKBACK: i64 = DAY;
+pub(super) const LOOKBACK: i64 = DAY;
 /// The number of days arrival delays and re-extract marks are kept.
 pub(super) const RECENT_DAYS: i32 = 30;
 /// The list a request names to mean every customer sensor.
@@ -63,7 +63,7 @@ impl CursorRow {
 
     /// Returns the longest arrival delay recorded on a date within the
     /// [`RECENT_DAYS`] days up to `today`.
-    fn longest_recent_delay(&self, today: i32) -> i64 {
+    pub(super) fn longest_recent_delay(&self, today: i32) -> i64 {
         self.delays
             .iter()
             .filter(|(date, _)| is_recent(**date, today))
@@ -82,9 +82,9 @@ impl CursorRow {
 }
 
 /// Returns whether `date` is one of the [`RECENT_DAYS`] days ending with
-/// `today`.
-fn is_recent(date: i32, today: i32) -> bool {
-    i64::from(date) > i64::from(today) - i64::from(RECENT_DAYS)
+/// `today`; a date after `today` is not.
+pub(super) fn is_recent(date: i32, today: i32) -> bool {
+    i64::from(date) > i64::from(today) - i64::from(RECENT_DAYS) && date <= today
 }
 
 /// Returns the start of the slot holding `time`.
@@ -258,10 +258,11 @@ impl Dai<'_> {
                         .collect(),
                 })
                 .collect();
+            let range_days = self.range_days_in(txn, selected.keys().copied(), now)?;
             let cursors = DaiCursors {
                 restore_generation,
                 entries,
-                range_days: Vec::new(),
+                range_days,
             };
             #[cfg(test)]
             if create {
@@ -274,14 +275,18 @@ impl Dai<'_> {
     /// Returns the first cursor time of `sensor`, the time of the cursor
     /// read that created its first cursor row, or `None` if it has none.
     pub(crate) fn first_cursor_time(&self, sensor: &str) -> Result<Option<i64>> {
-        self.read(|txn| {
-            Ok(txn
-                .get_cf(self.sensor_state.cf, sensor_key(sensor))
-                .context("cannot read DAI sensor state")?
-                .map(|value| super::super::deserialize::<super::SensorState>(&value))
-                .transpose()?
-                .and_then(|state| state.first_cursor_time))
-        })
+        self.read(|txn| self.first_cursor_time_in(txn, sensor))
+    }
+
+    /// Returns the first cursor time of `sensor` as `txn` sees it, without
+    /// reading it for update.
+    pub(super) fn first_cursor_time_in(&self, txn: &Txn<'_>, sensor: &str) -> Result<Option<i64>> {
+        Ok(txn
+            .get_cf(self.sensor_state.cf, sensor_key(sensor))
+            .context("cannot read DAI sensor state")?
+            .map(|value| super::super::deserialize::<super::SensorState>(&value))
+            .transpose()?
+            .and_then(|state| state.first_cursor_time))
     }
 
     /// Moves, within `txn`, every cursor row of `sensors` to the enable time
@@ -312,8 +317,11 @@ impl Dai<'_> {
 
     /// Brings the restored state up to date at the time `now`, in one
     /// transaction: writes a new random restore generation, removes the
-    /// restore marker, and moves every cursor back by its lookback window,
-    /// as [`Store::restore_from_backup`](crate::Store::restore_from_backup)
+    /// restore marker, gives every range day a new lease token ending at
+    /// `now` and marks for recollection the stored range days within each
+    /// sensor's lookback window, and moves every cursor back by its lookback
+    /// window, as
+    /// [`Store::restore_from_backup`](crate::Store::restore_from_backup)
     /// describes.
     ///
     /// The cursor rows are read, as restored, before any of them moves; a
@@ -328,6 +336,7 @@ impl Dai<'_> {
             txn.delete(RESTORE_MARKER)
                 .context("cannot delete the DAI restore marker")?;
             let restored = self.restored_cursors(txn)?;
+            self.restore_range_days(txn, &restored, now)?;
             self.move_cursors_back(txn, restored, now)
         })
     }

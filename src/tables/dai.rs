@@ -40,9 +40,24 @@
 //! - `dai ip activity`: when each address of each customer's site was
 //!   active.
 //!
+//! Four more hold the per-day address counts agents send to propose
+//! unregistered internal ranges, and the ranges an operator ignores; see
+//! `range`:
+//!
+//! - `dai range blocks`: the counts of each address block, keyed by
+//!   (customer, sensor, date, evidence, block);
+//! - `dai range subnets`: the DHCP subnets seen, keyed by (customer, sensor,
+//!   date, subnet);
+//! - `dai range days`: the lease, version, recollect mark, late subnets and
+//!   longest reported delay of each range day, keyed by (sensor, date,
+//!   evidence);
+//! - `dai range ignores`: the ranges each customer ignores, keyed by
+//!   (customer, range).
+//!
 //! Keys use the component encoding of the `senta` endpoint observation tables
-//! (see `senta_endpoint`), so a prefix read by customer id, by sensor name or
-//! by (sensor, kind) returns exactly those rows. A *slot* is
+//! (see `senta_endpoint`), so a prefix read by customer id, by sensor name,
+//! by (sensor, kind), by (customer, sensor[, date]) or by (sensor, date)
+//! returns exactly those rows. A *slot* is
 //! `[slot_start, slot_start + 300 s)` with `slot_start` a multiple of 300 s,
 //! and a *date* the UTC day of a time, as days since the UNIX epoch. Times
 //! are `i64` nanoseconds since the UNIX epoch (UTC).
@@ -63,6 +78,7 @@
 mod cursor;
 mod hash;
 mod observation;
+mod range;
 mod retention;
 
 use std::{
@@ -79,6 +95,8 @@ use thiserror::Error;
 pub(crate) use self::cursor::{is_marked_restored, mark_restored};
 pub use self::hash::{DaiNetworks, dai_network_digest};
 pub use self::observation::{DaiBatchError, DaiStoreOutcome};
+pub use self::range::{DaiIgnoredRange, DaiRangeCandidate, DaiRangeError};
+pub(super) use self::range::{evidence_from_number, evidence_number};
 use super::senta_endpoint::{KeyReader, KeyWriter};
 use crate::{
     EXCLUSIVE, IndexedTable, Map, NodeTable, TimeSeriesGenerationPolicy,
@@ -473,8 +491,9 @@ thread_local! {
     static RELAY_READ: std::cell::RefCell<Option<TestHook>> =
         const { std::cell::RefCell::new(None) };
     /// A hook the tests run once, in the thread that set it, right before
-    /// the next cursor read that creates rows, or the next store of a part
-    /// that stages or finishes it, commits.
+    /// the next cursor read that creates rows, the next store of a part
+    /// that stages or finishes it, or the next range day send that stores
+    /// its counts, commits.
     static BEFORE_COMMIT: std::cell::RefCell<Option<TestHook>> =
         const { std::cell::RefCell::new(None) };
     /// A hook the tests run once, in the thread that set it, in the next
@@ -706,6 +725,10 @@ pub(crate) struct Dai<'d> {
     summaries: Map<'d>,
     pending: Map<'d>,
     ip_activity: Map<'d>,
+    range_blocks: Map<'d>,
+    range_subnets: Map<'d>,
+    range_days: Map<'d>,
+    range_ignores: Map<'d>,
 }
 
 impl<'d> Dai<'d> {
@@ -732,6 +755,10 @@ impl<'d> Dai<'d> {
             summaries: Map::open(db, super::DAI_OBSERVATION_SUMMARIES)?,
             pending: Map::open(db, super::DAI_PENDING)?,
             ip_activity: Map::open(db, super::DAI_IP_ACTIVITY)?,
+            range_blocks: Map::open(db, super::DAI_RANGE_BLOCKS)?,
+            range_subnets: Map::open(db, super::DAI_RANGE_SUBNETS)?,
+            range_days: Map::open(db, super::DAI_RANGE_DAYS)?,
+            range_ignores: Map::open(db, super::DAI_RANGE_IGNORES)?,
         })
     }
 
@@ -1730,5 +1757,7 @@ fn check_site_name(name: &str) -> Result<(), DaiConfigError> {
 
 #[cfg(test)]
 mod observation_tests;
+#[cfg(test)]
+mod range_tests;
 #[cfg(test)]
 mod tests;
