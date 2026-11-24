@@ -1320,8 +1320,8 @@ mod tests {
     /// format left it: without the [`ADDED_WITHIN_FORMAT`] families, which
     /// are the configuration revision families, the Clumit Endpoint
     /// (`senta`) families, the device identification (DAI) configuration
-    /// families, the DAI observation, cursor and restore families and the
-    /// DAI unregistered range families.
+    /// families, the DAI observation, cursor and restore families, the DAI
+    /// unregistered range families and the DAI device families.
     fn add_earlier_build_backup(backup_dir: &Path, events: usize) {
         let source = tempfile::tempdir().unwrap();
         let source_backup = tempfile::tempdir().unwrap();
@@ -1348,15 +1348,16 @@ mod tests {
     /// [`ADDED_WITHIN_FORMAT`] families — the configuration revision
     /// families, the Clumit Endpoint (`senta`) families, the DAI
     /// configuration families, the DAI observation, cursor and restore
-    /// families and the DAI unregistered range families — which that build
-    /// did not have. It is in the current format, so it restores online by
-    /// id and as the latest, the restored store has every family of the
-    /// format, it records configuration revisions, it stores an observation,
-    /// it registers a senta endpoint install, its DAI configuration families
-    /// are empty and written to, its DAI observation, cursor and restore
-    /// families hold only the restore generation the restore drew and are
-    /// written to, and its DAI unregistered range families are empty and
-    /// written to.
+    /// families, the DAI unregistered range families and the DAI device
+    /// families — which that build did not have. It is in the current
+    /// format, so it restores online by id and as the latest, the restored
+    /// store has every family of the format, it records configuration
+    /// revisions, it stores an observation, it registers a senta endpoint
+    /// install, its DAI configuration families are empty and written to, its
+    /// DAI observation, cursor and restore families hold only the restore
+    /// generation the restore drew and are written to, its DAI unregistered
+    /// range families are empty and written to, and its DAI device families
+    /// are empty and written to by a slot application.
     #[test]
     fn online_restore_accepts_an_earlier_build_backup_of_the_current_format() {
         let _permit = acquire_db_permit();
@@ -1432,7 +1433,8 @@ mod tests {
 
     /// Asserts that the DAI families of `store`, restored from an earlier
     /// build's backup, are empty but for the restore generation the restore
-    /// drew, and that they are written to.
+    /// drew, and that they are written to, the device families by a slot
+    /// application.
     fn assert_dai_tables_start_empty(store: &Store) {
         let db = store.states.db();
         for name in [
@@ -1457,6 +1459,19 @@ mod tests {
             "dai range subnets",
             "dai range days",
             "dai range ignores",
+            "dai resolver points",
+            "dai devices",
+            "dai device identifiers",
+            "dai device aliases",
+            "dai bindings",
+            "dai device bindings",
+            "dai evidence",
+            "dai ip state",
+            "dai fixed ips",
+            "dai conflicts",
+            "dai services",
+            "dai software strings",
+            "dai device changes",
         ] {
             let cf = db.cf_handle(name).unwrap();
             assert_eq!(
@@ -1501,6 +1516,19 @@ mod tests {
             range.trunc()
         );
         assert_eq!(store.dai_ignored_ranges(1).unwrap().len(), 1);
+        // A slot application with nothing pending writes the resolver point.
+        assert_eq!(
+            store
+                .apply_dai_slot("piglet.host", 0, crate::DAI_APPLY_DEFAULT_MAX_COUNT, 0)
+                .unwrap(),
+            None
+        );
+        let points = db.cf_handle("dai resolver points").unwrap();
+        assert_eq!(
+            db.iterator_cf(points, rocksdb::IteratorMode::Start).count(),
+            1
+        );
+        assert_eq!(store.dai_pending_heads().unwrap(), Vec::new());
     }
 
     /// The area that held the policies of the Time Series Generator before
@@ -1511,17 +1539,25 @@ mod tests {
     /// The column families every backup of an older format lacks, quoted and
     /// in the order the refusal lists them.
     const MISSING_FROM_OLDER: &str = "\"config revision history\", \"config revisions\", \
-                                      \"dai catchup gaps\", \"dai counters\", \"dai cursors\", \
-                                      \"dai customer settings\", \"dai earliest pending\", \
-                                      \"dai ip activity\", \"dai meta\", \
-                                      \"dai observation summaries\", \"dai observations\", \
-                                      \"dai pending\", \"dai range blocks\", \"dai range days\", \
+                                      \"dai bindings\", \"dai catchup gaps\", \"dai conflicts\", \
+                                      \"dai counters\", \"dai cursors\", \
+                                      \"dai customer settings\", \"dai device aliases\", \
+                                      \"dai device bindings\", \"dai device changes\", \
+                                      \"dai device identifiers\", \"dai devices\", \
+                                      \"dai earliest pending\", \"dai evidence\", \
+                                      \"dai fixed ips\", \"dai ip activity\", \"dai ip state\", \
+                                      \"dai meta\", \"dai observation summaries\", \
+                                      \"dai observations\", \"dai pending\", \
+                                      \"dai range blocks\", \"dai range days\", \
                                       \"dai range ignores\", \"dai range subnets\", \
-                                      \"dai relay sites\", \"dai send parts\", \
+                                      \"dai relay sites\", \"dai resolver points\", \
+                                      \"dai send parts\", \
                                       \"dai sensor kind state\", \"dai sensor sites\", \
-                                      \"dai sensor state\", \"dai site policy guard\", \
-                                      \"dai sites\", \"dai slot sends\", \"format 0.63\", \
-                                      \"senta active list\", \"senta document results\", \
+                                      \"dai sensor state\", \"dai services\", \
+                                      \"dai site policy guard\", \"dai sites\", \
+                                      \"dai slot sends\", \"dai software strings\", \
+                                      \"format 0.63\", \"senta active list\", \
+                                      \"senta document results\", \
                                       \"senta endpoint address roots\", \
                                       \"senta endpoint commands\", \
                                       \"senta endpoint current documents\", \

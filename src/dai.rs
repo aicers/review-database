@@ -1,7 +1,8 @@
 //! Device identification (DAI): the configuration (the settings, the sites,
 //! the relay site table, the sensor site history and the configuration
-//! epochs of each customer's sensors), and the observations agents send,
-//! their read cursors and the restore generation.
+//! epochs of each customer's sensors), the observations agents send, their
+//! read cursors and the restore generation, and the devices, bindings and
+//! device attributes slot application derives from the observations.
 //!
 //! Every write here is one optimistic transaction, retried from the start on
 //! a commit conflict, and a refusal commits nothing. Every write of a
@@ -41,16 +42,28 @@
 //! [`Store::begin_dai_range_day`] to [`Store::dai_ignored_ranges`], apply to
 //! customers with device identification off as well.
 //!
-//! Every method here that writes observations or cursors is one optimistic
-//! transaction, retried from the start on a commit conflict, except
-//! [`Store::apply_dai_retention`] and [`Store::delete_dai_customer`], which
-//! commit in several. "Now" is passed in by the caller.
+//! Every method here that writes observations, cursors or devices is one
+//! optimistic transaction, retried from the start on a commit conflict,
+//! except [`Store::apply_dai_retention`] and [`Store::delete_dai_customer`],
+//! which commit in several. "Now" is passed in by the caller.
+//!
+//! # Devices
+//!
+//! [`Store::apply_dai_slot`] turns a sensor's pending observations into
+//! *devices*, each identified by a random UUID v4 and holding strong
+//! identifiers (a MAC, an operator asset id, a machine account), into
+//! *bindings*, a device holding an IP address at a site from a start to an
+//! end, and into device attributes. A (site, IP) with no binding at a time
+//! is an *IP device*: a placeholder, never a row. O1 means `DhcpLease`, O3
+//! `DhcpServer`, O4 `Kerberos`, O5 `Ntlm`, O7 `Service`, O8 `SoftwareString`
+//! and O22 `DnsName`.
 
 use anyhow::Result;
 use review_protocol::types::{DaiCursors, DaiObservationBatch};
 
 use crate::{
-    DaiRelaySite, DaiRelaySites, DaiSettings, DaiSettingsUpdate, DaiSite, DaiStoreOutcome, Store,
+    DaiPendingHead, DaiRelaySite, DaiRelaySites, DaiSettings, DaiSettingsUpdate, DaiSite,
+    DaiStoreOutcome, Store,
     tables::{Dai, now_nanos},
 };
 
@@ -307,13 +320,19 @@ impl Store {
     /// It deletes, in this order and in separate transactions: the cursors,
     /// sends, staged parts, catch-up gaps, sensor kind states, earliest
     /// pending slots, observations, summaries, range days and pending
-    /// observations of the names it owns, and, for a name it collected that
-    /// the node table shows as a sensor of another customer, the
-    /// observations naming this customer; every sensor site history row
-    /// naming the customer, and the sensor state rows of the names it owns;
-    /// the customer's counters, address activity, range blocks, range
-    /// subnets and ignored ranges; then the customer's settings, sites,
-    /// relay site table and site policy guard. The restore generation stays. An
+    /// observations of the names it owns, each name's resolver point after
+    /// its pending observations, and, for a name it collected that the node
+    /// table shows as a sensor of another customer, the observations naming
+    /// this customer; every sensor site history row naming the customer, and
+    /// the sensor state rows of the names it owns; the customer's counters,
+    /// address activity, range blocks, range subnets and ignored ranges; the
+    /// customer's devices, device identifiers, device aliases, bindings and
+    /// their reverse index, evidence, IP states, fixed IPs, conflicts,
+    /// services, software strings and device changes; then the customer's
+    /// settings, sites, relay site table and site policy guard. Every
+    /// customer-keyed row is deleted after every sensor-keyed one, so an
+    /// application racing the deletion conflicts on the pending observations
+    /// it reads. The restore generation stays. An
     /// interrupted call repeated with the same names removes the rest, and a
     /// repeated call after success changes nothing. The customer's time
     /// series generation policies are left to
@@ -449,13 +468,45 @@ impl Store {
     /// It folds the per-slot observations whose slot started more than 7
     /// days ago into the summaries; deletes the pending observations whose
     /// slot started more than 30 days ago, counting each as not applied for
-    /// its sensor's current customer; deletes the sends created more than
-    /// one day ago, finished or not, with their staged parts; removes the
-    /// re-extract marks whose slot started more than 30 days ago; and
-    /// deletes the summaries and address activity last seen more than 180
-    /// days ago, the catch-up gaps that ended more than 180 days ago, and
-    /// the counters, range blocks, range subnets and range days dated more
-    /// than 30 days before the date of `now`. Ignored ranges stay.
+    /// its sensor's current customer, and, in the transaction that deletes a
+    /// sensor's expired pending observations, recomputes its earliest
+    /// pending slots and rewrites its resolver point, if it has one, as
+    /// [`apply_dai_slot`](Self::apply_dai_slot) computes it; deletes the
+    /// sends created more than one day ago, finished or not, with their
+    /// staged parts; removes the re-extract marks whose slot started more
+    /// than 30 days ago; and deletes the summaries and address activity last
+    /// seen more than 180 days ago, the catch-up gaps that ended more than
+    /// 180 days ago, and the counters, range blocks, range subnets and range
+    /// days dated more than 30 days before the date of `now`. Ignored ranges
+    /// stay.
+    ///
+    /// Then, for the device tables, it:
+    ///
+    /// 1. gives every binding with no end whose last strong evidence time
+    ///    plus inactivity time is before `now` that time as its end, marked
+    ///    estimated (a rule applying an observation timed before it treats
+    ///    the binding as it did before the end was written);
+    /// 2. makes every active device holding a MAC or an operator asset id
+    ///    last seen more than 90 days ago "not seen", with one change entry
+    ///    of source expiry; a hidden device stays hidden;
+    /// 3. deletes, when their time is more than 180 days ago: the ended
+    ///    bindings (by end) with their reverse index rows; the evidence (by
+    ///    last seen), except binding evidence at or after the start of a
+    ///    stored binding of its (site, IP) that has no end or ended within
+    ///    180 days, which a recomputation may still replay; the device
+    ///    aliases (by change time); the device changes (by time); the
+    ///    conflicts (by last time); the services and software strings (by
+    ///    last seen); the IP states (by the time of their order key); and the
+    ///    earlier owners of an identifier (by the time the identifier left
+    ///    them), except one whose device still has a stored binding with that
+    ///    identifier as its evidence identifier;
+    /// 4. removes the names of source DHCP or DNS last seen more than 180
+    ///    days ago, with one change entry of source expiry per device; a name
+    ///    an operator set never expires.
+    ///
+    /// Devices, identifiers and fixed IPs are never removed by retention.
+    /// A step that changes a binding or evidence row reads the address's IP
+    /// state for update first and writes it back.
     ///
     /// It commits in several transactions, each row's change atomic.
     ///
@@ -464,5 +515,111 @@ impl Store {
     /// Returns an error if the database operation fails.
     pub fn apply_dai_retention(&self, now: i64) -> Result<()> {
         self.dai().apply_retention(now)
+    }
+
+    /// Applies up to `max_count` of the pending observations of `sensor`'s
+    /// slot starting at `slot_start`, in apply order, and returns the
+    /// sensor's resolver point.
+    ///
+    /// [`DAI_APPLY_DEFAULT_MAX_COUNT`](crate::DAI_APPLY_DEFAULT_MAX_COUNT)
+    /// is the default `max_count`. In one optimistic transaction, retried
+    /// from the start on a commit conflict, it applies the observations by
+    /// the rules below, deletes them, recomputes the earliest pending slot of
+    /// each (sensor, kind) it took observations of, and sets the sensor's
+    /// resolver point: the earliest slot start among its remaining pending
+    /// observations of any kind, or `None`, "caught up", if none remain. The
+    /// resolver point is written even when nothing was applied, so a caller
+    /// can call again for the sensor until it is caught up. `now` is used
+    /// only for the date of a counter.
+    ///
+    /// The rules read only the pending observation (body, first seen, last
+    /// seen), so the observations of a slot already folded into the
+    /// summaries apply too. The customer is the sensor's current customer;
+    /// the pending observations of a sensor that is not a customer sensor
+    /// are deleted unapplied with a warning. The customer's settings are
+    /// read at apply time and apply to this application only; device
+    /// identification being off does not stop it.
+    ///
+    /// - **Order.** Observations apply by order key (time, rank, identifier
+    ///   hash): the time is `DhcpLease.time` for O1 and the first seen time
+    ///   otherwise; O1 messages rank DECLINE, RELEASE, ACK, INFORM ACK, and
+    ///   the other kinds after them by kind number.
+    /// - **Site.** An observation's site is the sensor's site at the slot
+    ///   start. A relayed O1 (a `giaddr` that is not unspecified) takes the
+    ///   relay site table's entry for its `server_ip` and `giaddr`, else,
+    ///   for a customer that is not multi-site, the sensor's site; a
+    ///   multi-site customer without an entry does not apply it and counts it
+    ///   as relay DHCP whose site could not be determined. A customer without
+    ///   a default site does not apply it and counts it as not applied.
+    /// - **Evidence.** Every O1, O4 and O5 applied is indexed at its site and
+    ///   IP; the same observation applied again (stored again with a filled
+    ///   value or wider times, or from another sensor of the site) merges
+    ///   into the evidence of its slot, kind and identifier hash and changes
+    ///   no binding.
+    /// - **Bindings.** O1 ACK, RELEASE and DECLINE and a verified O4 are
+    ///   binding evidence, the only observations that start, extend or close
+    ///   bindings. An ACK whose `chaddr` is a MAC (6 bytes, not all `00` or
+    ///   `FF`, group bit 0) creates the MAC's device if no device holds it,
+    ///   extends that device's open binding at the address, or closes another
+    ///   device's and starts its own, with an inactivity time fixed from its
+    ///   `lease_secs` and the settings; an ACK with any other `chaddr` closes
+    ///   the open binding. RELEASE and DECLINE close the open binding with
+    ///   their MAC and `server_id`. Past its last strong evidence time plus
+    ///   inactivity time a binding counts as ended.
+    /// - **Late evidence.** Binding evidence earlier in order than the latest
+    ///   applied at its address recomputes that address's bindings from the
+    ///   binding in effect at its time, replaying the stored evidence, so
+    ///   the bindings equal those of applying everything in order under the
+    ///   identifier ownership history.
+    /// - **Evidence aging.** An ACK whose MAC was last confirmed more than the
+    ///   evidence aging time before it moves the MAC to a new device, unless
+    ///   its device has an operator asset id or is confirmed.
+    /// - **Other kinds.** An INFORM ACK confirms the open binding of its MAC.
+    ///   O4, O5, O3, O7, O8 and O22 act only on the device of the one binding
+    ///   in effect over their whole first-to-last-seen range: they confirm
+    ///   it, and a verified O4 attaches its machine account (or records a
+    ///   conflict if another device holds it) and moves the binding's last
+    ///   strong evidence time, O3 sets the DHCP server flag, O7 widens a
+    ///   service, O8 a software string and O22 adds a DNS name. None of them
+    ///   creates a device or a binding.
+    /// - **History.** Each substantive device change increments its version
+    ///   and writes one change entry.
+    ///
+    /// The transaction reads the customer's `dai site policy guard` row for
+    /// update, without incrementing it, before the configuration, so a
+    /// configuration write racing it conflicts; reads every `dai earliest
+    /// pending` row of the sensor for update before it scans the slot, so a
+    /// store adding an observation the scan misses conflicts; reads each
+    /// pending observation it applies for update, so a store overwriting it
+    /// conflicts; and reads each address's `dai ip state` row for update
+    /// before its bindings or evidence, writing it whenever it changes them,
+    /// so two applications at one address conflict.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error, writing nothing, if `max_count` is 0, and an error
+    /// if the database operation fails.
+    pub fn apply_dai_slot(
+        &self,
+        sensor: &str,
+        slot_start: i64,
+        max_count: usize,
+        now: i64,
+    ) -> Result<Option<i64>> {
+        self.dai().apply_slot(sensor, slot_start, max_count, now)
+    }
+
+    /// Returns, ordered by sensor name, every sensor with pending DAI
+    /// observations and its earliest pending slot start, of any kind.
+    ///
+    /// Sensors that are not customer sensors are listed too. A caller uses
+    /// it to find the (sensor, slot) to pass to
+    /// [`apply_dai_slot`](Self::apply_dai_slot) next.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database operation fails.
+    pub fn dai_pending_heads(&self) -> Result<Vec<DaiPendingHead>> {
+        self.dai().pending_heads()
     }
 }

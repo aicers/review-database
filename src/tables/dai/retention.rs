@@ -57,7 +57,8 @@ impl Dai<'_> {
             let (_, _, date) = decode_counter_key(key)?;
             Ok(i64::from(date) < oldest_counter)
         })?;
-        self.expire_range_rows(now)
+        self.expire_range_rows(now)?;
+        self.apply_device_retention(now)
     }
 
     /// Deletes every row of `map` that `expired` selects, each read for
@@ -126,8 +127,8 @@ impl Dai<'_> {
     /// Deletes the pending observations whose slot started more than 30
     /// days before `now`, adding each to the "not applied" counter of its
     /// sensor's current customer, and recomputes the earliest pending slot
-    /// of each (sensor, kind) it deleted from, in one transaction per
-    /// sensor.
+    /// of each (sensor, kind) it deleted from and the sensor's resolver
+    /// point, if it has one, in one transaction per sensor.
     fn expire_pending(&self, now: i64) -> Result<()> {
         let oldest = now.saturating_sub(RECENT_AGE);
         let rows = self.scan_rows(&self.pending, &[], |key, _| {
@@ -158,7 +159,12 @@ impl Dai<'_> {
                     {
                         self.add_counter(txn, customer, DaiCounterKind::NotApplied, now, deleted)?;
                     }
-                    self.recompute_earliest_pending_of(txn, &sensor, kinds)
+                    self.recompute_earliest_pending_of(txn, &sensor, kinds)?;
+                    let point = super::device::resolver_point_key(&sensor);
+                    if Self::get_row::<Option<i64>>(txn, &self.resolver_points, &point)?.is_some() {
+                        self.write_resolver_point(txn, &sensor)?;
+                    }
+                    Ok(())
                 })?;
             }
         }
@@ -253,9 +259,9 @@ impl Dai<'_> {
     // ---- Customer deletion ----
 
     /// Deletes the sensor-keyed observation and range day rows of the names
-    /// `names` owns, and, for each name it collected that the node table
-    /// shows as a sensor of another customer, the `dai observations` rows
-    /// naming the customer.
+    /// `names` owns, with their resolver points after their pending rows,
+    /// and, for each name it collected that the node table shows as a sensor
+    /// of another customer, the `dai observations` rows naming the customer.
     pub(super) fn delete_observation_rows(
         &self,
         customer_id: u32,
@@ -277,6 +283,7 @@ impl Dai<'_> {
                 self.delete_prefix(map, &prefix)?;
             }
             self.delete_pending_of(name)?;
+            self.delete_resolver_point(name)?;
         }
         for name in &names.collected_of_others {
             let rows = self.scan_rows(&self.observations, &sensor_key(name), |_, value| {

@@ -54,6 +54,28 @@
 //! - `dai range ignores`: the ranges each customer ignores, keyed by
 //!   (customer, range).
 //!
+//! Thirteen more hold the devices that slot application derives from the
+//! pending observations; see `device` (their rows and the IP state lock),
+//! `binding` (the binding rules), `apply` (slot application) and
+//! `device_retention`:
+//!
+//! - `dai resolver points`: the resolver point of each sensor;
+//! - `dai devices`, `dai device identifiers` and `dai device aliases`: the
+//!   devices of each customer, the device holding each strong identifier,
+//!   and the current device of each id merged away;
+//! - `dai bindings` and `dai device bindings`: each device holding an IP
+//!   address at a site from a start to an end, keyed by (customer, site, IP,
+//!   start), and its reverse index by device;
+//! - `dai evidence` and `dai ip state`: the observations applied at each
+//!   (customer, site, IP), and the order key of the latest binding evidence
+//!   applied there;
+//! - `dai fixed ips`: the device an operator fixed at a (customer, site,
+//!   IP);
+//! - `dai conflicts`: the devices that claimed a strong identifier another
+//!   device holds;
+//! - `dai services`, `dai software strings` and `dai device changes`: the
+//!   services, software strings and change history of each device.
+//!
 //! Keys use the component encoding of the `senta` endpoint observation tables
 //! (see `senta_endpoint`), so a prefix read by customer id, by sensor name,
 //! by (sensor, kind), by (customer, sensor[, date]) or by (sensor, date)
@@ -75,7 +97,11 @@
 //! again against the new state, at the time it reads after that guard in
 //! each attempt rather than at the time of the first.
 
+mod apply;
+mod binding;
 mod cursor;
+mod device;
+mod device_retention;
 mod hash;
 mod observation;
 mod range;
@@ -92,6 +118,7 @@ use rocksdb::{IteratorMode, OptimisticTransactionDB, Transaction};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use thiserror::Error;
 
+pub use self::apply::{DAI_APPLY_DEFAULT_MAX_COUNT, DaiPendingHead};
 pub(crate) use self::cursor::{is_marked_restored, mark_restored};
 pub use self::hash::{DaiNetworks, dai_network_digest};
 pub use self::observation::{DaiBatchError, DaiStoreOutcome};
@@ -729,6 +756,19 @@ pub(crate) struct Dai<'d> {
     range_subnets: Map<'d>,
     range_days: Map<'d>,
     range_ignores: Map<'d>,
+    resolver_points: Map<'d>,
+    devices: Map<'d>,
+    identifiers: Map<'d>,
+    aliases: Map<'d>,
+    bindings: Map<'d>,
+    device_bindings: Map<'d>,
+    evidence: Map<'d>,
+    ip_state: Map<'d>,
+    fixed_ips: Map<'d>,
+    conflicts: Map<'d>,
+    services: Map<'d>,
+    software: Map<'d>,
+    changes: Map<'d>,
 }
 
 impl<'d> Dai<'d> {
@@ -759,6 +799,19 @@ impl<'d> Dai<'d> {
             range_subnets: Map::open(db, super::DAI_RANGE_SUBNETS)?,
             range_days: Map::open(db, super::DAI_RANGE_DAYS)?,
             range_ignores: Map::open(db, super::DAI_RANGE_IGNORES)?,
+            resolver_points: Map::open(db, super::DAI_RESOLVER_POINTS)?,
+            devices: Map::open(db, super::DAI_DEVICES)?,
+            identifiers: Map::open(db, super::DAI_DEVICE_IDENTIFIERS)?,
+            aliases: Map::open(db, super::DAI_DEVICE_ALIASES)?,
+            bindings: Map::open(db, super::DAI_BINDINGS)?,
+            device_bindings: Map::open(db, super::DAI_DEVICE_BINDINGS)?,
+            evidence: Map::open(db, super::DAI_EVIDENCE)?,
+            ip_state: Map::open(db, super::DAI_IP_STATE)?,
+            fixed_ips: Map::open(db, super::DAI_FIXED_IPS)?,
+            conflicts: Map::open(db, super::DAI_CONFLICTS)?,
+            services: Map::open(db, super::DAI_SERVICES)?,
+            software: Map::open(db, super::DAI_SOFTWARE_STRINGS)?,
+            changes: Map::open(db, super::DAI_DEVICE_CHANGES)?,
         })
     }
 
@@ -1649,6 +1702,7 @@ impl<'d> Dai<'d> {
         self.delete_observation_rows(customer_id, &names)?;
         self.delete_sensor_rows(customer_id, &names)?;
         self.delete_customer_observation_rows(customer_id)?;
+        self.delete_customer_device_rows(customer_id)?;
         self.delete_customer_rows(customer_id)
     }
 
@@ -1755,6 +1809,8 @@ fn check_site_name(name: &str) -> Result<(), DaiConfigError> {
     Ok(())
 }
 
+#[cfg(test)]
+mod apply_tests;
 #[cfg(test)]
 mod observation_tests;
 #[cfg(test)]

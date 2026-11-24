@@ -112,9 +112,6 @@ pub(crate) enum DaiCounterKind {
     /// Pending observations deleted before they were applied.
     NotApplied,
     /// Relay DHCP observations whose site could not be determined.
-    // Written by the change that applies pending observations, which this
-    // one prepares the counter for.
-    #[allow(dead_code)]
     RelaySiteUnknown,
     /// Slots skipped by the catch-up limit.
     SkippedByCatchup,
@@ -375,7 +372,7 @@ fn check_batch(batch: &DaiObservationBatch) -> Result<i64, DaiBatchError> {
 }
 
 /// Returns the kind of the observations of `body`'s variant.
-fn body_kind(body: &DaiObservationBody) -> DaiObservationKind {
+pub(super) fn body_kind(body: &DaiObservationBody) -> DaiObservationKind {
     match body {
         DaiObservationBody::DhcpLease { .. } => DaiObservationKind::DhcpLease,
         DaiObservationBody::DhcpServer { .. } => DaiObservationKind::DhcpServer,
