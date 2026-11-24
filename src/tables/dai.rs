@@ -123,6 +123,7 @@ impl Default for DaiSettings {
 /// [`Store::set_dai_settings`](crate::Store::set_dai_settings).
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DaiSettingsUpdate {
+    /// Whether device account identification is enabled.
     pub device_account_identification: bool,
     /// At least 1.
     pub inactivity_multiplier: u32,
@@ -152,7 +153,9 @@ pub struct DaiSite {
 /// DHCP traffic the relay `giaddr` forwards to `dhcp_server`.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DaiRelaySite {
+    /// The DHCP server the relay forwards to.
     pub dhcp_server: IpAddr,
+    /// The relay agent address; never unspecified.
     pub giaddr: IpAddr,
     /// The token of the site.
     pub site: String,

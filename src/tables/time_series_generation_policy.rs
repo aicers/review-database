@@ -437,8 +437,9 @@ impl<'d> IndexedTable<'d, TimeSeriesGenerationPolicy> {
     /// Inserts a new policy, a [`PolicyState::Draft`] with no assignee and no
     /// Data Store, and returns its ID.
     ///
-    /// The spec is checked first; the customer's networks are read in the
-    /// transaction that writes the policy.
+    /// The spec is checked first; the customer's networks, and its DAI sites
+    /// for the site condition, are read in the transaction that writes the
+    /// policy.
     ///
     /// # Errors
     ///

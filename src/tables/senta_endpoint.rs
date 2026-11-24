@@ -261,7 +261,7 @@ fn decode<R: Row>(key: &[u8], value: &[u8]) -> Result<R> {
 pub(super) struct KeyWriter(Vec<u8>);
 
 impl KeyWriter {
-    pub(super) fn uuid(mut self, id: Uuid) -> Self {
+    fn uuid(mut self, id: Uuid) -> Self {
         self.0.extend_from_slice(id.as_bytes());
         self
     }
@@ -271,7 +271,7 @@ impl KeyWriter {
         self
     }
 
-    pub(super) fn u64(mut self, value: u64) -> Self {
+    fn u64(mut self, value: u64) -> Self {
         self.0.extend_from_slice(&value.to_be_bytes());
         self
     }
@@ -280,7 +280,7 @@ impl KeyWriter {
         self.u64(u64::from_be_bytes(value.to_be_bytes()) ^ SIGN_BIT)
     }
 
-    pub(super) fn byte(mut self, value: u8) -> Self {
+    fn byte(mut self, value: u8) -> Self {
         self.0.push(value);
         self
     }
@@ -313,7 +313,7 @@ impl KeyWriter {
         self
     }
 
-    pub(super) fn node(self, node: &SentaEndpointGigantoNode) -> Self {
+    fn node(self, node: &SentaEndpointGigantoNode) -> Self {
         self.str(&node.host).u32(node.instance)
     }
 
@@ -341,7 +341,7 @@ impl<'a> KeyReader<'a> {
         Ok(*head)
     }
 
-    pub(super) fn uuid(&mut self) -> Result<Uuid> {
+    fn uuid(&mut self) -> Result<Uuid> {
         Ok(Uuid::from_bytes(self.take()?))
     }
 
@@ -349,7 +349,7 @@ impl<'a> KeyReader<'a> {
         Ok(u32::from_be_bytes(self.take()?))
     }
 
-    pub(super) fn u64(&mut self) -> Result<u64> {
+    fn u64(&mut self) -> Result<u64> {
         Ok(u64::from_be_bytes(self.take()?))
     }
 
@@ -357,7 +357,7 @@ impl<'a> KeyReader<'a> {
         Ok(i64::from_be_bytes((self.u64()? ^ SIGN_BIT).to_be_bytes()))
     }
 
-    pub(super) fn byte(&mut self) -> Result<u8> {
+    fn byte(&mut self) -> Result<u8> {
         let [byte] = self.take()?;
         Ok(byte)
     }
@@ -385,7 +385,7 @@ impl<'a> KeyReader<'a> {
         }
     }
 
-    pub(super) fn node(&mut self) -> Result<SentaEndpointGigantoNode> {
+    fn node(&mut self) -> Result<SentaEndpointGigantoNode> {
         let host = self.str()?;
         let instance = self.u32()?;
         Ok(SentaEndpointGigantoNode { host, instance })
