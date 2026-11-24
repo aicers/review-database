@@ -3,17 +3,19 @@
 use anyhow::{Context, Result, bail};
 use rocksdb::OptimisticTransactionDB;
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 use crate::{EXCLUSIVE, Map, Table, UniqueKey, tables::Value as ValueTrait, types::FromKeyValue};
 
 const RESOURCE_BUSY_PREFIX: &str = "Resource busy:";
 
 /// The stored value of a customer deletion job: its service results, its
-/// periodic time series IDs and its abandoned hosts.
+/// periodic time series IDs, its abandoned hosts and its endpoint IDs.
 pub(crate) type StoredCustomerDataDeletionJob = (
     Vec<CustomerDataDeletionServiceResult>,
     Vec<String>,
     Vec<String>,
+    Vec<Uuid>,
 );
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -27,6 +29,15 @@ pub struct CustomerDataDeletionJob {
     /// The hosts a System Administrator gave up on, sorted and without duplicates. Each one is a
     /// host FQDN of the job's `Review` result.
     pub abandoned_hosts: Vec<String>,
+    /// The IDs of the customer's Clumit Endpoint (`senta`) endpoints, sorted and without
+    /// duplicates, whose rows the deletion removes.
+    ///
+    /// The list is fixed when the job is first created by
+    /// [`Store::create_customer_data_deletion_job`](crate::Store::create_customer_data_deletion_job),
+    /// which reads it from the endpoint table in the same transaction; [`Table::update`] and
+    /// [`Table::give_up`] refuse to change it, and [`Table::add_service`] and
+    /// [`Table::update_service`] keep it as stored.
+    pub endpoint_ids: Vec<Uuid>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -64,8 +75,8 @@ pub enum CustomerDataDeletionStatus {
 }
 
 impl CustomerDataDeletionJob {
-    /// Creates a job with the given service results, no periodic time series IDs and no
-    /// abandoned hosts.
+    /// Creates a job with the given service results, no periodic time series IDs, no abandoned
+    /// hosts and no endpoint IDs.
     #[must_use]
     pub fn new(customer_id: u32, service_results: Vec<CustomerDataDeletionServiceResult>) -> Self {
         Self {
@@ -73,11 +84,21 @@ impl CustomerDataDeletionJob {
             service_results,
             periodic_time_series_ids: Vec::new(),
             abandoned_hosts: Vec::new(),
+            endpoint_ids: Vec::new(),
         }
     }
 
+    /// Returns whether any service result of the job is not `Succeeded`.
+    ///
+    /// A job with no service result has none that is not `Succeeded`.
+    pub(crate) fn is_unfinished(&self) -> bool {
+        self.service_results
+            .iter()
+            .any(|result| result.status != CustomerDataDeletionStatus::Succeeded)
+    }
+
     /// Validates every service result and the abandoned hosts.
-    fn validate(&self) -> Result<()> {
+    pub(crate) fn validate(&self) -> Result<()> {
         for (index, result) in self.service_results.iter().enumerate() {
             result.validate().with_context(|| {
                 format!("invalid customer deletion service result at index {index}")
@@ -116,6 +137,7 @@ impl CustomerDataDeletionJob {
             &self.service_results,
             &self.periodic_time_series_ids,
             &self.abandoned_hosts,
+            &self.endpoint_ids,
         ))
     }
 }
@@ -181,13 +203,14 @@ impl FromKeyValue for CustomerDataDeletionJob {
             key.try_into()
                 .context("customer deletion job key must be four bytes")?,
         );
-        let (service_results, periodic_time_series_ids, abandoned_hosts): StoredCustomerDataDeletionJob =
+        let (service_results, periodic_time_series_ids, abandoned_hosts, endpoint_ids): StoredCustomerDataDeletionJob =
             super::deserialize(value)?;
         Ok(Self {
             customer_id,
             service_results,
             periodic_time_series_ids,
             abandoned_hosts,
+            endpoint_ids,
         })
     }
 }
@@ -217,23 +240,42 @@ impl<'d> Table<'d, CustomerDataDeletionJob> {
         )?))
     }
 
-    /// Replaces a deletion job if its stored value has not changed.
-    ///
-    /// The service results, the periodic time series IDs and the abandoned hosts are compared and
-    /// written together.
+    /// Returns the deletion job for the given customer, read for update within `txn`.
     ///
     /// # Errors
     ///
-    /// Returns an error if the customer IDs differ, a new service result is invalid, the new
-    /// abandoned hosts are not sorted, have duplicates or name a host outside the `Review` result,
-    /// the job does not exist, the stored value does not match `old`, or a database operation
-    /// fails.
+    /// Returns an error if the stored value is invalid or the database operation fails.
+    pub(crate) fn get_for_update(
+        &self,
+        txn: &rocksdb::Transaction<'_, OptimisticTransactionDB>,
+        customer_id: u32,
+    ) -> Result<Option<CustomerDataDeletionJob>> {
+        let key = customer_id.to_be_bytes();
+        txn.get_for_update_cf(self.map.cf, key, EXCLUSIVE)
+            .context("cannot read customer deletion job")?
+            .map(|value| CustomerDataDeletionJob::from_key_value(&key, &value))
+            .transpose()
+    }
+
+    /// Replaces a deletion job if its stored value has not changed.
+    ///
+    /// The service results, the periodic time series IDs, the abandoned hosts and the endpoint
+    /// IDs are compared and written together. The endpoint IDs are fixed when the job is first
+    /// created, so `new` must carry those of `old`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the customer IDs differ, the endpoint IDs of `new` differ from those of
+    /// `old`, a new service result is invalid, the new abandoned hosts are not sorted, have
+    /// duplicates or name a host outside the `Review` result, the job does not exist, the stored
+    /// value does not match `old`, or a database operation fails.
     pub fn update(
         &self,
         old: &CustomerDataDeletionJob,
         new: &CustomerDataDeletionJob,
     ) -> Result<()> {
         check_same_customer(old, new)?;
+        check_same_endpoints(old, new)?;
         new.validate()?;
 
         let key = old.unique_key();
@@ -244,21 +286,23 @@ impl<'d> Table<'d, CustomerDataDeletionJob> {
     ///
     /// `new` is written whole: its service results, which carry the retry's status reset, its
     /// periodic time series IDs, which may have been read again, and its abandoned hosts, which
-    /// must keep every host of `old` and may add more.
+    /// must keep every host of `old` and may add more. Its endpoint IDs must be those of `old`.
     ///
     /// # Errors
     ///
-    /// Returns an error if the customer IDs differ, a new service result is invalid, the new
-    /// abandoned hosts are not sorted, have duplicates, name a host outside the `Review` result or
-    /// leave out one of `old`'s, the service results of `new` differ from those of `old` in length
-    /// or in the service or host FQDNs at any position, the job does not exist, the stored value
-    /// does not match `old`, or a database operation fails.
+    /// Returns an error if the customer IDs differ, the endpoint IDs of `new` differ from those of
+    /// `old`, a new service result is invalid, the new abandoned hosts are not sorted, have
+    /// duplicates, name a host outside the `Review` result or leave out one of `old`'s, the service
+    /// results of `new` differ from those of `old` in length or in the service or host FQDNs at any
+    /// position, the job does not exist, the stored value does not match `old`, or a database
+    /// operation fails.
     pub fn give_up(
         &self,
         old: &CustomerDataDeletionJob,
         new: &CustomerDataDeletionJob,
     ) -> Result<()> {
         check_same_customer(old, new)?;
+        check_same_endpoints(old, new)?;
         new.validate()?;
         let same_results = old.service_results.len() == new.service_results.len()
             && old
@@ -283,7 +327,7 @@ impl<'d> Table<'d, CustomerDataDeletionJob> {
 
     /// Adds a service result to an existing customer deletion job.
     ///
-    /// The job's periodic time series IDs and abandoned hosts are left unchanged.
+    /// The job's periodic time series IDs, abandoned hosts and endpoint IDs are left unchanged.
     ///
     /// # Errors
     ///
@@ -305,7 +349,7 @@ impl<'d> Table<'d, CustomerDataDeletionJob> {
             else {
                 bail!("customer deletion job does not exist");
             };
-            let (mut service_results, periodic_time_series_ids, abandoned_hosts): StoredCustomerDataDeletionJob =
+            let (mut service_results, periodic_time_series_ids, abandoned_hosts, endpoint_ids): StoredCustomerDataDeletionJob =
                 super::deserialize(value.as_ref())?;
             if service_results
                 .iter()
@@ -319,6 +363,7 @@ impl<'d> Table<'d, CustomerDataDeletionJob> {
                 &service_results,
                 &periodic_time_series_ids,
                 &abandoned_hosts,
+                &endpoint_ids,
             ))?;
             txn.put_cf(self.map.cf, key, value)
                 .context("failed to write customer deletion job")?;
@@ -334,7 +379,7 @@ impl<'d> Table<'d, CustomerDataDeletionJob> {
 
     /// Updates a service result in an existing customer deletion job.
     ///
-    /// The job's periodic time series IDs and abandoned hosts are left unchanged.
+    /// The job's periodic time series IDs, abandoned hosts and endpoint IDs are left unchanged.
     ///
     /// # Errors
     ///
@@ -356,7 +401,7 @@ impl<'d> Table<'d, CustomerDataDeletionJob> {
             else {
                 bail!("customer deletion job does not exist");
             };
-            let (mut service_results, periodic_time_series_ids, abandoned_hosts): StoredCustomerDataDeletionJob =
+            let (mut service_results, periodic_time_series_ids, abandoned_hosts, endpoint_ids): StoredCustomerDataDeletionJob =
                 super::deserialize(value.as_ref())?;
             let Some(existing) = service_results
                 .iter_mut()
@@ -373,6 +418,7 @@ impl<'d> Table<'d, CustomerDataDeletionJob> {
                 &service_results,
                 &periodic_time_series_ids,
                 &abandoned_hosts,
+                &endpoint_ids,
             ))?;
             txn.put_cf(self.map.cf, key, value)
                 .context("failed to write customer deletion job")?;
@@ -385,6 +431,22 @@ impl<'d> Table<'d, CustomerDataDeletionJob> {
             }
         }
     }
+}
+
+/// Refuses a `new` job whose endpoint IDs differ from those of `old`, which are fixed when the
+/// job is first created.
+fn check_same_endpoints(
+    old: &CustomerDataDeletionJob,
+    new: &CustomerDataDeletionJob,
+) -> Result<()> {
+    if old.endpoint_ids != new.endpoint_ids {
+        bail!(
+            "endpoint IDs of the customer deletion job of customer {} are fixed when it is \
+             created and cannot change",
+            old.customer_id
+        );
+    }
+    Ok(())
 }
 
 fn check_same_customer(old: &CustomerDataDeletionJob, new: &CustomerDataDeletionJob) -> Result<()> {
@@ -491,6 +553,7 @@ mod tests {
                 &overwritten.service_results,
                 Vec::<String>::new(),
                 Vec::<String>::new(),
+                Vec::<Uuid>::new(),
             ))
             .unwrap()
         );
@@ -1165,6 +1228,7 @@ mod tests {
         assert_eq!(job.service_results.len(), 1);
         assert_eq!(job.periodic_time_series_ids, Vec::<String>::new());
         assert_eq!(job.abandoned_hosts, Vec::<String>::new());
+        assert_eq!(job.endpoint_ids, Vec::<Uuid>::new());
     }
 
     #[test]
@@ -1342,6 +1406,7 @@ mod tests {
             ],
             periodic_time_series_ids: vec!["3".to_owned(), "10".to_owned()],
             abandoned_hosts: vec!["a.example".to_owned()],
+            endpoint_ids: vec![Uuid::from_u128(1), Uuid::from_u128(0x0102)],
         }
     }
 
@@ -1361,6 +1426,7 @@ mod tests {
                 &job.service_results,
                 &job.periodic_time_series_ids,
                 &job.abandoned_hosts,
+                &job.endpoint_ids,
             ))
             .unwrap()
         );
@@ -1624,5 +1690,70 @@ mod tests {
 
         assert!(table.give_up(&old, &new).is_err());
         assert_eq!(table.get(old.customer_id).unwrap(), Some(old));
+    }
+
+    #[test]
+    fn endpoint_ids_round_trip_and_survive_service_writes() {
+        let (_permit, _db_dir, _backup_dir, store) = setup_store();
+        let table = store.customer_data_deletion_map();
+        let job = job_with_data_store(29);
+        table.insert(&job).unwrap();
+        assert_eq!(table.get(job.customer_id).unwrap(), Some(job.clone()));
+        let listed = table
+            .iter(Direction::Forward, None)
+            .collect::<Result<Vec<_>>>()
+            .unwrap();
+        assert_eq!(listed, vec![job.clone()]);
+
+        let sensor = service_result(
+            CustomerDataDeletionService::Sensor,
+            &["a.example"],
+            CustomerDataDeletionStatus::InProgress,
+            5,
+        );
+        table.add_service(job.customer_id, &sensor).unwrap();
+        let finished = CustomerDataDeletionServiceResult {
+            status: CustomerDataDeletionStatus::Succeeded,
+            completed_at: Some(6),
+            ..sensor
+        };
+        table.update_service(job.customer_id, &finished).unwrap();
+        let stored = table.get(job.customer_id).unwrap().unwrap();
+        assert_eq!(stored.endpoint_ids, job.endpoint_ids);
+        assert_eq!(stored.service_results.last(), Some(&finished));
+    }
+
+    #[test]
+    fn update_and_give_up_refuse_a_change_of_endpoint_ids() {
+        let (_permit, _db_dir, _backup_dir, store) = setup_store();
+        let table = store.customer_data_deletion_map();
+        let old = job_with_data_store(30);
+        table.insert(&old).unwrap();
+
+        let mut added = old.clone();
+        added.endpoint_ids.push(Uuid::from_u128(0x0103));
+        let mut removed = old.clone();
+        removed.endpoint_ids.pop();
+        let mut cleared = old.clone();
+        cleared.endpoint_ids.clear();
+        for (case, mut new) in [("added", added), ("removed", removed), ("cleared", cleared)] {
+            assert!(table.update(&old, &new).is_err(), "{case} must be refused");
+            new.abandoned_hosts = vec!["a.example".to_owned(), "b.example".to_owned()];
+            assert!(table.give_up(&old, &new).is_err(), "{case} must be refused");
+            assert_eq!(
+                table.get(old.customer_id).unwrap().as_ref(),
+                Some(&old),
+                "{case} must change nothing"
+            );
+        }
+
+        // The same list is accepted.
+        let mut new = old.clone();
+        new.periodic_time_series_ids.push("11".to_owned());
+        table.update(&old, &new).unwrap();
+        let mut given_up = new.clone();
+        given_up.abandoned_hosts = vec!["a.example".to_owned(), "b.example".to_owned()];
+        table.give_up(&new, &given_up).unwrap();
+        assert_eq!(table.get(old.customer_id).unwrap(), Some(given_up));
     }
 }

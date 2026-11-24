@@ -120,6 +120,16 @@ pub use self::port_allocation::{
 };
 pub use self::previous_training::PreviousTrainingResults;
 pub use self::retention_config::{RetentionConfig, RetentionConfigUpdate};
+pub use self::senta_endpoint::trust::{
+    SentaEndpoint, SentaEndpointAddressRoot, SentaEndpointCommand, SentaEndpointCommandState,
+    SentaEndpointCurrentDocument, SentaEndpointCustomer, SentaEndpointDeletionState,
+    SentaEndpointEnrollmentAttempt, SentaEndpointEnrollmentResult, SentaEndpointError,
+    SentaEndpointInstall, SentaEndpointKeysetDocument, SentaEndpointKeysetVersion,
+    SentaEndpointRecoveryKeyDocument,
+};
+pub(crate) use self::senta_endpoint::trust::{
+    Txn as SentaEndpointTxn, is_conflict as is_senta_endpoint_conflict, keys as senta_endpoint_keys,
+};
 pub use self::senta_endpoint::{
     SentaEndpointActiveList, SentaEndpointActiveListEntry, SentaEndpointActiveListTable,
     SentaEndpointDocumentResult, SentaEndpointDocumentResultKey, SentaEndpointDocumentResultTable,
@@ -247,6 +257,19 @@ pub(super) const SENTA_GIGANTO_LOSSES: &str = "senta giganto losses";
 pub(super) const SENTA_STATUS_REPORTS: &str = "senta status reports";
 /// The unenroll request of each endpoint.
 pub(super) const SENTA_UNENROLL_REQUESTS: &str = "senta unenroll requests";
+// The trust-state, document, enrollment and command tables of Clumit
+// Endpoint (`senta`) agents, one column family each; see
+// `senta_endpoint::trust`.
+pub(super) const SENTA_ENDPOINT_ADDRESS_ROOTS: &str = "senta endpoint address roots";
+pub(super) const SENTA_ENDPOINT_COMMANDS: &str = "senta endpoint commands";
+pub(super) const SENTA_ENDPOINT_CURRENT_DOCUMENTS: &str = "senta endpoint current documents";
+pub(super) const SENTA_ENDPOINT_CUSTOMERS: &str = "senta endpoint customers";
+pub(super) const SENTA_ENDPOINT_ENROLLMENT_ATTEMPTS: &str = "senta endpoint enrollment attempts";
+pub(super) const SENTA_ENDPOINT_INSTALLS: &str = "senta endpoint installs";
+pub(super) const SENTA_ENDPOINT_KEYSET_DOCUMENTS: &str = "senta endpoint keyset documents";
+pub(super) const SENTA_ENDPOINT_RECOVERY_KEY_DOCUMENTS: &str =
+    "senta endpoint recovery key documents";
+pub(super) const SENTA_ENDPOINTS: &str = "senta endpoints";
 pub(super) const STATUSES: &str = "statuses";
 pub(super) const TEMPLATES: &str = "templates";
 pub(super) const LABEL_DB: &str = "label database";
@@ -270,11 +293,15 @@ pub(super) const TRUSTED_USER_AGENTS: &str = "trusted user agents";
 /// - the configuration revisions start with the first write that records
 ///   one;
 /// - the observation tables of `senta` endpoints start with the first
-///   observation `REview` stores, and no build without them observed any.
-///   They are listed here although no release yet carries a build without
-///   them, so that a backup of such a build is accepted whichever is
-///   released first.
-pub(super) const ADDED_WITHIN_FORMAT: [&str; 10] = [
+///   observation `REview` stores, and no build without them observed any;
+/// - the trust-state, document, enrollment and command tables of `senta`
+///   endpoints start with the first registration of an install, a customer
+///   or an enrollment attempt.
+///
+/// The `senta` endpoint tables are listed here although no release yet
+/// carries a build without them, so that a backup of such a build is
+/// accepted whichever is released first.
+pub(super) const ADDED_WITHIN_FORMAT: [&str; 19] = [
     CONFIG_REVISIONS,
     CONFIG_REVISION_HISTORY,
     SENTA_ACTIVE_LIST,
@@ -285,9 +312,18 @@ pub(super) const ADDED_WITHIN_FORMAT: [&str; 10] = [
     SENTA_GIGANTO_LOSSES,
     SENTA_STATUS_REPORTS,
     SENTA_UNENROLL_REQUESTS,
+    SENTA_ENDPOINT_ADDRESS_ROOTS,
+    SENTA_ENDPOINT_COMMANDS,
+    SENTA_ENDPOINT_CURRENT_DOCUMENTS,
+    SENTA_ENDPOINT_CUSTOMERS,
+    SENTA_ENDPOINT_ENROLLMENT_ATTEMPTS,
+    SENTA_ENDPOINT_INSTALLS,
+    SENTA_ENDPOINT_KEYSET_DOCUMENTS,
+    SENTA_ENDPOINT_RECOVERY_KEY_DOCUMENTS,
+    SENTA_ENDPOINTS,
 ];
 
-pub(crate) const MAP_NAMES: [&str; 60] = [
+pub(crate) const MAP_NAMES: [&str; 69] = [
     AGENTS,
     BATCH_INFO,
     CATEGORY,
@@ -347,6 +383,19 @@ pub(crate) const MAP_NAMES: [&str; 60] = [
     TRAINING_DEFINITIONS,
     TRIAGE_RESPONSE,
     TRUSTED_DNS_SERVERS,
+    // The Clumit Endpoint trust-state, document, enrollment and command
+    // families stay before the last entry, which a backup test drops to see a
+    // missing family refused; a missing member of `ADDED_WITHIN_FORMAT` would
+    // be accepted.
+    SENTA_ENDPOINT_ADDRESS_ROOTS,
+    SENTA_ENDPOINT_COMMANDS,
+    SENTA_ENDPOINT_CURRENT_DOCUMENTS,
+    SENTA_ENDPOINT_CUSTOMERS,
+    SENTA_ENDPOINT_ENROLLMENT_ATTEMPTS,
+    SENTA_ENDPOINT_INSTALLS,
+    SENTA_ENDPOINT_KEYSET_DOCUMENTS,
+    SENTA_ENDPOINT_RECOVERY_KEY_DOCUMENTS,
+    SENTA_ENDPOINTS,
     TRUSTED_USER_AGENTS,
 ];
 
@@ -667,6 +716,14 @@ impl StateDb {
             .expect("StateDb::open creates the senta giganto last received family")
     }
 
+    /// Returns the Clumit Endpoint (`senta`) trust-state, document, enrollment
+    /// or command table of `R`.
+    #[must_use]
+    pub(crate) fn senta_endpoint_table<R: senta_endpoint::trust::Row>(&self) -> Table<'_, R> {
+        Table::<R>::open_senta_endpoint(self.db())
+            .expect("StateDb::open creates the senta endpoint column families")
+    }
+
     pub(crate) fn config_revisions(&self) -> ConfigRevisions<'_> {
         ConfigRevisions::open(self.db())
             .expect("StateDb::open creates the config revision families")
@@ -935,6 +992,15 @@ mod iteration {
     impl Eligible for tables::Network {}
     impl Eligible for tables::OutlierInfo {}
     impl Eligible for types::Qualifier {}
+    impl Eligible for tables::SentaEndpoint {}
+    impl Eligible for tables::SentaEndpointAddressRoot {}
+    impl Eligible for tables::SentaEndpointCommand {}
+    impl Eligible for tables::SentaEndpointCurrentDocument {}
+    impl Eligible for tables::SentaEndpointCustomer {}
+    impl Eligible for tables::SentaEndpointEnrollmentAttempt {}
+    impl Eligible for tables::SentaEndpointInstall {}
+    impl Eligible for tables::SentaEndpointKeysetDocument {}
+    impl Eligible for tables::SentaEndpointRecoveryKeyDocument {}
     impl Eligible for types::Status {}
     impl Eligible for tables::Template {}
     impl Eligible for tables::TimeSeries {}
@@ -955,8 +1021,12 @@ mod iteration {
 /// `tables::Agent` is deliberately absent: an agent row that gives an engine
 /// instance its applied configuration document is stored completed, with the
 /// instance's configuration revision recorded in the same transaction, so the
-/// agent table has writers of its own. As with [`iteration`], the trait is not
-/// exported, so nothing outside the crate can add a type to the list.
+/// agent table has writers of its own. The trust-state, document, enrollment
+/// and command record types of Clumit Endpoint (`senta`) agents are absent
+/// too: their rows are created only by the `Store` transaction methods, which
+/// check the customer's data deletion job, and by the narrow writers of
+/// `senta_endpoint::trust`. As with [`iteration`], the trait is
+/// not exported, so nothing outside the crate can add a type to the list.
 mod plain_writes {
     use crate::tables;
 

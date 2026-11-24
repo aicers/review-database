@@ -16,6 +16,7 @@ mod model;
 mod model_guard;
 mod model_lifecycle;
 mod scores;
+mod senta_endpoint;
 mod tables;
 mod tags;
 #[cfg(test)]
@@ -92,16 +93,21 @@ pub use self::tables::{
     PortAllocation, PortAllocationError, PortOwner, PreviousTraining, PreviousTrainingResults,
     ProtocolPorts, ReplaceOutcome, ReplacedModel, ReportedRunState, RequestKeyError, Response,
     ResponseKind, RetentionConfig, RetentionConfigUpdate, RoundOutcome, RunId, RunKind, RunState,
-    ScoreCondition, SentaEndpointActiveList, SentaEndpointActiveListEntry,
-    SentaEndpointActiveListTable, SentaEndpointDocumentResult, SentaEndpointDocumentResultKey,
-    SentaEndpointDocumentResultTable, SentaEndpointEvent, SentaEndpointEventKey,
+    ScoreCondition, SentaEndpoint, SentaEndpointActiveList, SentaEndpointActiveListEntry,
+    SentaEndpointActiveListTable, SentaEndpointAddressRoot, SentaEndpointCommand,
+    SentaEndpointCommandState, SentaEndpointCurrentDocument, SentaEndpointCustomer,
+    SentaEndpointDeletionState, SentaEndpointDocumentResult, SentaEndpointDocumentResultKey,
+    SentaEndpointDocumentResultTable, SentaEndpointEnrollmentAttempt,
+    SentaEndpointEnrollmentResult, SentaEndpointError, SentaEndpointEvent, SentaEndpointEventKey,
     SentaEndpointEventSource, SentaEndpointEventTable, SentaEndpointGigantoEntry,
     SentaEndpointGigantoEntryTable, SentaEndpointGigantoLastReceived,
     SentaEndpointGigantoLastReceivedKey, SentaEndpointGigantoLastReceivedTable,
     SentaEndpointGigantoLoss, SentaEndpointGigantoLossKey, SentaEndpointGigantoLossTable,
-    SentaEndpointGigantoNode, SentaEndpointStatusReport, SentaEndpointStatusReportTable,
-    SentaEndpointUnenrollRequest, SentaEndpointUnenrollRequestTable, SlotSize, SourceState,
-    Structured, StructuredClusteringAlgorithm, SystemInstallRecord, SystemLogCollector,
+    SentaEndpointGigantoNode, SentaEndpointInstall, SentaEndpointKeysetDocument,
+    SentaEndpointKeysetVersion, SentaEndpointRecoveryKeyDocument, SentaEndpointStatusReport,
+    SentaEndpointStatusReportTable, SentaEndpointUnenrollRequest,
+    SentaEndpointUnenrollRequestTable, SlotSize, SourceState, Structured,
+    StructuredClusteringAlgorithm, SystemInstallRecord, SystemLogCollector,
     SystemLogCollectorRefusal, SystemLogCollectorTable, Table, Template, TimeSeries,
     TimeSeriesGenerationPolicy, TimeSeriesGenerationPolicyError, TimeSeriesGenerationPolicyUpdate,
     TimeSeriesRange, TopColumnsOfCluster, TopMultimaps, TorExitNode, TrafficFilter, TrainedWith,
@@ -145,6 +151,8 @@ pub struct Store {
     training_hook: Mutex<Option<training::TrainingHook>>,
     #[cfg(test)]
     recompletion_hook: Mutex<Option<config_revision::RecompletionHook>>,
+    #[cfg(test)]
+    senta_endpoint_hook: Mutex<Option<senta_endpoint::SentaEndpointHook>>,
 }
 
 impl Store {
@@ -199,6 +207,8 @@ impl Store {
             training_hook: Mutex::new(None),
             #[cfg(test)]
             recompletion_hook: Mutex::new(None),
+            #[cfg(test)]
+            senta_endpoint_hook: Mutex::new(None),
         };
         Ok(store)
     }
