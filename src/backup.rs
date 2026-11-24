@@ -12,7 +12,9 @@ use rocksdb::backup::BackupEngineInfo;
 
 use crate::{
     DEFAULT_STATES, Store,
-    tables::{DirId, open_rocksdb_backup_engine, open_state_dbs, restore_rocksdb_backup},
+    tables::{
+        DirId, mark_restored, open_rocksdb_backup_engine, open_state_dbs, restore_rocksdb_backup,
+    },
 };
 
 /// The number of names [`restore_states_offline`] tries for its working
@@ -185,6 +187,20 @@ pub enum OfflineRestoreError {
         #[source]
         source: rocksdb::Error,
     },
+    /// The restored database could not be marked for the next open of the
+    /// store to write a new DAI restore generation and move the DAI cursors
+    /// back; the states database is left as it was.
+    #[error(
+        "cannot mark the restored states database {} for the DAI restore step",
+        database.display()
+    )]
+    DaiRestoreMarker {
+        /// The directory the backup was restored into.
+        database: PathBuf,
+        /// The error RocksDB reported.
+        #[source]
+        source: rocksdb::Error,
+    },
     /// The restored database could not take the place of the states
     /// database, which is left as it was.
     #[error("cannot replace states database {} with the restored backup", database.display())]
@@ -276,7 +292,11 @@ pub enum OfflineRestoreError {
 ///    after taking the lock and before reading anything.
 /// 2. The backup is restored into `restored` inside a working directory,
 ///    `states.db.restore-<pid>-<n>`, which this call creates beside the
-///    database under a name nothing else holds.
+///    database under a name nothing else holds. If the restored database has
+///    the device identification (DAI) cursor families, a marker is written
+///    into it, and the next [`Store`] opened on it writes a new DAI restore
+///    generation and moves the DAI cursors back, as an online restore does
+///    (see [`Store::restore_from_backup`]).
 /// 3. The lock is probed again, catching a process that opened the database
 ///    during the restore. The [`Store`] check above is repeated first, and
 ///    held from here until step 5 has moved the restored database in.
@@ -442,6 +462,13 @@ fn restore_through(
             database: restored.clone(),
             source,
         }
+    })?;
+    // The restored database carries the marker into the swap, so the store
+    // opened on it next renews the DAI restore generation and moves the DAI
+    // cursors back, as an online restore does.
+    mark_restored(&restored).map_err(|source| OfflineRestoreError::DaiRestoreMarker {
+        database: restored.clone(),
+        source,
     })?;
 
     let replace_err = |source| OfflineRestoreError::Replace {
@@ -1292,8 +1319,8 @@ mod tests {
     /// current format holding `events` events, as an earlier build of the
     /// format left it: without the [`ADDED_WITHIN_FORMAT`] families, which
     /// are the configuration revision families, the Clumit Endpoint
-    /// (`senta`) families and the device identification (DAI) configuration
-    /// families.
+    /// (`senta`) families, the device identification (DAI) configuration
+    /// families and the DAI observation, cursor and restore families.
     fn add_earlier_build_backup(backup_dir: &Path, events: usize) {
         let source = tempfile::tempdir().unwrap();
         let source_backup = tempfile::tempdir().unwrap();
@@ -1318,13 +1345,15 @@ mod tests {
 
     /// A backup taken by an earlier build of the current format lacks the
     /// [`ADDED_WITHIN_FORMAT`] families — the configuration revision
-    /// families, the Clumit Endpoint (`senta`) families and the DAI
-    /// configuration families — which that build did not have. It is in the
-    /// current format, so it restores online by id and as the latest, the
-    /// restored store has every family of the format, it records
-    /// configuration revisions, it stores an observation, it registers a
-    /// senta endpoint install, and its DAI configuration families are empty
-    /// and written to.
+    /// families, the Clumit Endpoint (`senta`) families, the DAI
+    /// configuration families and the DAI observation, cursor and restore
+    /// families — which that build did not have. It is in the current
+    /// format, so it restores online by id and as the latest, the restored
+    /// store has every family of the format, it records configuration
+    /// revisions, it stores an observation, it registers a senta endpoint
+    /// install, its DAI configuration families are empty and written to, and
+    /// its DAI observation, cursor and restore families hold only the
+    /// restore generation the restore drew and are written to.
     #[test]
     fn online_restore_accepts_an_earlier_build_backup_of_the_current_format() {
         let _permit = acquire_db_permit();
@@ -1392,41 +1421,70 @@ mod tests {
             assert!(installs.register("install", "{}", 1).unwrap());
             assert!(installs.get("install").unwrap().is_some());
 
-            for name in [
-                "dai customer settings",
-                "dai relay sites",
-                "dai sensor sites",
-                "dai sensor state",
-                "dai site policy guard",
-                "dai sites",
-            ] {
-                let cf = db.cf_handle(name).unwrap();
-                assert_eq!(
-                    db.iterator_cf(cf, rocksdb::IteratorMode::Start).count(),
-                    0,
-                    "{name}"
-                );
-            }
-            assert_eq!(
-                store.dai_settings(1).unwrap(),
-                crate::DaiSettings::default()
-            );
-            assert_eq!(store.dai_sites(1).unwrap(), Vec::new());
-            let token = store.ensure_default_site(1).unwrap();
-            assert_eq!(store.dai_sites(1).unwrap().len(), 1);
-            assert_eq!(
-                store.dai_sensor_site(1, "piglet.host", 0).unwrap(),
-                Some(token)
-            );
-            assert_eq!(
-                store
-                    .record_dai_sensor_config_hash("piglet.host", b"h")
-                    .unwrap(),
-                1
-            );
+            assert_dai_tables_start_empty(&store);
         }
         drop(store);
         assert_eq!(event_count(data_dir.path(), backup_dir.path()), 2);
+    }
+
+    /// Asserts that the DAI families of `store`, restored from an earlier
+    /// build's backup, are empty but for the restore generation the restore
+    /// drew, and that they are written to.
+    fn assert_dai_tables_start_empty(store: &Store) {
+        let db = store.states.db();
+        for name in [
+            "dai customer settings",
+            "dai relay sites",
+            "dai sensor sites",
+            "dai sensor state",
+            "dai site policy guard",
+            "dai sites",
+            "dai cursors",
+            "dai slot sends",
+            "dai send parts",
+            "dai catchup gaps",
+            "dai sensor kind state",
+            "dai counters",
+            "dai earliest pending",
+            "dai observations",
+            "dai observation summaries",
+            "dai pending",
+            "dai ip activity",
+        ] {
+            let cf = db.cf_handle(name).unwrap();
+            assert_eq!(
+                db.iterator_cf(cf, rocksdb::IteratorMode::Start).count(),
+                0,
+                "{name}"
+            );
+        }
+        // The restore drew a restore generation, its only row.
+        let meta = db.cf_handle("dai meta").unwrap();
+        assert_eq!(
+            db.iterator_cf(meta, rocksdb::IteratorMode::Start).count(),
+            1
+        );
+        let generation = store.dai_restore_generation().unwrap();
+        let cursors = store.dai_cursors(&["all".to_string()], 0).unwrap();
+        assert_eq!(cursors.restore_generation, generation);
+        assert_eq!(cursors.entries, Vec::new());
+        assert_eq!(
+            store.dai_settings(1).unwrap(),
+            crate::DaiSettings::default()
+        );
+        assert_eq!(store.dai_sites(1).unwrap(), Vec::new());
+        let token = store.ensure_default_site(1).unwrap();
+        assert_eq!(store.dai_sites(1).unwrap().len(), 1);
+        assert_eq!(
+            store.dai_sensor_site(1, "piglet.host", 0).unwrap(),
+            Some(token)
+        );
+        assert_eq!(
+            store
+                .record_dai_sensor_config_hash("piglet.host", b"h")
+                .unwrap(),
+            1
+        );
     }
 
     /// The area that held the policies of the Time Series Generator before
@@ -1437,24 +1495,26 @@ mod tests {
     /// The column families every backup of an older format lacks, quoted and
     /// in the order the refusal lists them.
     const MISSING_FROM_OLDER: &str = "\"config revision history\", \"config revisions\", \
-                                      \"dai customer settings\", \"dai relay sites\", \
-                                      \"dai sensor sites\", \"dai sensor state\", \
-                                      \"dai site policy guard\", \"dai sites\", \
-                                      \"format 0.63\", \"senta active list\", \
-                                      \"senta document results\", \
+                                      \"dai catchup gaps\", \"dai counters\", \"dai cursors\", \
+                                      \"dai customer settings\", \"dai earliest pending\", \
+                                      \"dai ip activity\", \"dai meta\", \
+                                      \"dai observation summaries\", \"dai observations\", \
+                                      \"dai pending\", \"dai relay sites\", \"dai send parts\", \
+                                      \"dai sensor kind state\", \"dai sensor sites\", \
+                                      \"dai sensor state\", \"dai site policy guard\", \
+                                      \"dai sites\", \"dai slot sends\", \"format 0.63\", \
+                                      \"senta active list\", \"senta document results\", \
                                       \"senta endpoint address roots\", \
                                       \"senta endpoint commands\", \
                                       \"senta endpoint current documents\", \
                                       \"senta endpoint customers\", \
                                       \"senta endpoint enrollment attempts\", \
-                                      \"senta endpoint events\", \
-                                      \"senta endpoint installs\", \
+                                      \"senta endpoint events\", \"senta endpoint installs\", \
                                       \"senta endpoint keyset documents\", \
                                       \"senta endpoint recovery key documents\", \
                                       \"senta endpoints\", \"senta giganto entries\", \
-                                      \"senta giganto last received\", \
-                                      \"senta giganto losses\", \"senta status reports\", \
-                                      \"senta unenroll requests\", \
+                                      \"senta giganto last received\", \"senta giganto losses\", \
+                                      \"senta status reports\", \"senta unenroll requests\", \
                                       \"time series generation policy\"";
 
     /// The current column families with the time series generation policy

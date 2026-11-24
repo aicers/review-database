@@ -78,24 +78,24 @@ pub use self::tables::{
     BackupConfigUpdate, BuildSelector, Cluster, ClusterTimeSeries, ColumnStats, ColumnTimeSeries,
     ConfigRevisionRecord, CoreComponent, CsvColumnExtra as CsvColumnExtraConfig,
     CustomerDataDeletionJob, CustomerDataDeletionService, CustomerDataDeletionServiceResult,
-    CustomerDataDeletionStatus, DaiConfigError, DaiRelaySite, DaiRelaySites, DaiSettings,
-    DaiSettingsUpdate, DaiSite, DetectorSourceStatus, DetectorState, DetectorStatus,
-    EngineDetectorRef, EngineDocumentError, EngineDocumentRefs, EngineDocumentWrite,
-    EngineInstanceState, ExclusionReason, ExternalService, ExternalServiceConfig,
-    ExternalServiceKind, ExternalServiceStatus, IndexedTable, InstallIntent, InstanceAllocation,
-    InstanceAllocationError, Iterable, LabelDb, LabelDbKind, LabelDbRule, LabelDbRuleKind,
-    Lifecycle, ListenerBinding, ListenerTransport, Model as ModelDigest, ModelIndicator,
-    ModelInstance, ModelMethod, ModelOwner, ModelRun, ModelUse, Network, NetworkFilter,
-    NetworkListEntry, NetworkListReplaceOutcome, NetworkListSet, NetworkListTable, NetworkUpdate,
-    NewTimeSeriesGenerationPolicy, NewTrainingDefinition, Node, NodeProfile, NodeTable, NodeUpdate,
-    OperationAction, OperationAttempt, OperationCleanupState, OperationFailureKind,
-    OperationOnFailure, OperationOutcome, OperationPhase, OperationRetentionBound,
-    OperationRetryPolicy, OutlierInfo, OutlierInfoKey, OutlierInfoValue, OwnedNetwork,
-    OwnedNetworkSet, OwnedNetworkTable, PacketAttr, PolicyState, PolicyUse, PortAllocation,
-    PortAllocationError, PortOwner, PreviousTraining, PreviousTrainingResults, ProtocolPorts,
-    ReplaceOutcome, ReplacedModel, ReportedRunState, RequestKeyError, Response, ResponseKind,
-    RetentionConfig, RetentionConfigUpdate, RoundOutcome, RunId, RunKind, RunState, ScoreCondition,
-    SentaEndpoint, SentaEndpointActiveList, SentaEndpointActiveListEntry,
+    CustomerDataDeletionStatus, DaiBatchError, DaiConfigError, DaiNetworks, DaiRelaySite,
+    DaiRelaySites, DaiSettings, DaiSettingsUpdate, DaiSite, DaiStoreOutcome, DetectorSourceStatus,
+    DetectorState, DetectorStatus, EngineDetectorRef, EngineDocumentError, EngineDocumentRefs,
+    EngineDocumentWrite, EngineInstanceState, ExclusionReason, ExternalService,
+    ExternalServiceConfig, ExternalServiceKind, ExternalServiceStatus, IndexedTable, InstallIntent,
+    InstanceAllocation, InstanceAllocationError, Iterable, LabelDb, LabelDbKind, LabelDbRule,
+    LabelDbRuleKind, Lifecycle, ListenerBinding, ListenerTransport, Model as ModelDigest,
+    ModelIndicator, ModelInstance, ModelMethod, ModelOwner, ModelRun, ModelUse, Network,
+    NetworkFilter, NetworkListEntry, NetworkListReplaceOutcome, NetworkListSet, NetworkListTable,
+    NetworkUpdate, NewTimeSeriesGenerationPolicy, NewTrainingDefinition, Node, NodeProfile,
+    NodeTable, NodeUpdate, OperationAction, OperationAttempt, OperationCleanupState,
+    OperationFailureKind, OperationOnFailure, OperationOutcome, OperationPhase,
+    OperationRetentionBound, OperationRetryPolicy, OutlierInfo, OutlierInfoKey, OutlierInfoValue,
+    OwnedNetwork, OwnedNetworkSet, OwnedNetworkTable, PacketAttr, PolicyState, PolicyUse,
+    PortAllocation, PortAllocationError, PortOwner, PreviousTraining, PreviousTrainingResults,
+    ProtocolPorts, ReplaceOutcome, ReplacedModel, ReportedRunState, RequestKeyError, Response,
+    ResponseKind, RetentionConfig, RetentionConfigUpdate, RoundOutcome, RunId, RunKind, RunState,
+    ScoreCondition, SentaEndpoint, SentaEndpointActiveList, SentaEndpointActiveListEntry,
     SentaEndpointActiveListTable, SentaEndpointAddressRoot, SentaEndpointCommand,
     SentaEndpointCommandState, SentaEndpointCurrentDocument, SentaEndpointCustomer,
     SentaEndpointDeletionState, SentaEndpointDocumentResult, SentaEndpointDocumentResultKey,
@@ -115,7 +115,7 @@ pub use self::tables::{
     TimeSeriesRange, TopColumnsOfCluster, TopMultimaps, TorExitNode, TrafficFilter, TrainedWith,
     TrainingDefinition, TrainingDefinitionUpdate, TriageExclusion, TriagePolicyInput,
     TriageResponse, TriageResponseUpdate, TrustedDomain, TrustedUserAgent, UniqueKey, Unstructured,
-    UnstructuredClusteringAlgorithm, ValueKind, WindowSize, sensor_name,
+    UnstructuredClusteringAlgorithm, ValueKind, WindowSize, dai_network_digest, sensor_name,
 };
 pub use self::time_series_type::{TimeSeriesType, time_series_type, time_series_types};
 pub use self::top_n::*;
@@ -1139,6 +1139,18 @@ impl Store {
 
     /// Restore from the backup with `backup_id` on file
     ///
+    /// After the restored database is reopened, device identification (DAI)
+    /// gets a new random restore generation, so an agent holding the old one
+    /// is answered with a resync, and every DAI cursor moves back by its
+    /// lookback window: the longer of 24 hours and the longest arrival delay
+    /// its row recorded in the last 30 days, rounded down to a slot
+    /// boundary. A cursor never moves before the start of the slot holding
+    /// its read floor, nor of the slot holding the last-enabled time of the
+    /// sensor's customer, nor later than it was restored. Its confirmed
+    /// slots are cleared; its read floor and re-extract marks stay. The same
+    /// happens through [`backup::restore`], and, at the next open of the
+    /// store, after [`backup::restore_states_offline`].
+    ///
     /// # Errors
     ///
     /// Returns an error, before closing anything, if no backup has id
@@ -1156,6 +1168,9 @@ impl Store {
     }
 
     /// Restore from the latest backup on file
+    ///
+    /// The DAI restore generation and cursors change as after
+    /// [`restore_from_backup`](Self::restore_from_backup).
     ///
     /// # Errors
     ///

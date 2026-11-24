@@ -1598,7 +1598,8 @@ fn an_interrupted_deletion_is_completed_by_a_repeated_call() {
     f.create("Seoul", &[A], at(0, 0)).unwrap();
     // A call interrupted after its first transaction leaves the customer's
     // sites.
-    dai.delete_sensor_rows(CUSTOMER, &[]).unwrap();
+    let names = dai.deletion_names(CUSTOMER, &[]).unwrap();
+    dai.delete_sensor_rows(CUSTOMER, &names).unwrap();
     assert_eq!(f.history(), Vec::new());
     assert_eq!(f.epochs(&[A, B, C]), [0, 0, 0]);
     assert_eq!(f.store.dai_sites(CUSTOMER).unwrap().len(), 2);
