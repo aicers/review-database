@@ -542,7 +542,6 @@ impl Dai<'_> {
         batch: &DaiObservationBatch,
         now: i64,
     ) -> Result<DaiStoreOutcome> {
-        self.restore_generation()?;
         let send = send_key(&batch.sensor, batch.kind, batch.slot_start, batch.send_id);
         self.write_if(|txn| self.store_attempt(txn, batch, &send, now))
     }
@@ -835,6 +834,61 @@ impl Dai<'_> {
             .ok_or_else(|| anyhow!("customer {customer} has no default DAI site"))
     }
 
+    /// Widens, within `txn`, the summary of an observation of a slot that
+    /// started more than 7 days ago, and returns the body and times to
+    /// enqueue if it changed.
+    ///
+    /// A per-slot row retention has not folded yet is folded here first, so
+    /// the summary and the pending row start from what the slot already
+    /// stored rather than losing a filled value to this observation.
+    fn upsert_summary(
+        &self,
+        txn: &Txn<'_>,
+        at: &Upsert<'_>,
+        hash: &IdHash,
+        observation: &DaiObservation,
+    ) -> Result<Option<(DaiObservationBody, i64, i64)>> {
+        let (sensor, kind) = (at.sensor, at.kind);
+        let first = observation.first_seen;
+        let last = observation.last_seen;
+        let key = summary_key(sensor, kind, hash);
+        let summary: Option<SeenRow> = Self::get_row(txn, &self.summaries, &key)?;
+        let slot_key = observation_key(sensor, kind, at.slot_start, hash);
+        let slot_row: Option<ObservationRow> = Self::get_row(txn, &self.observations, &slot_key)?;
+        let stored = match (&summary, &slot_row) {
+            (Some(summary), Some(row)) => {
+                Some(summary.widened(&row.body, row.first_seen, row.last_seen))
+            }
+            (Some(summary), None) => Some(summary.clone()),
+            (None, Some(row)) => Some(SeenRow {
+                body: row.body.clone(),
+                first_seen: row.first_seen,
+                last_seen: row.last_seen,
+            }),
+            (None, None) => None,
+        };
+        let merged = stored.as_ref().map_or_else(
+            || SeenRow {
+                body: observation.body.clone(),
+                first_seen: first,
+                last_seen: last,
+            },
+            |stored| stored.widened(&observation.body, first, last),
+        );
+        if slot_row.is_some() {
+            Self::delete_row(txn, &self.observations, &slot_key)?;
+        }
+        if summary.as_ref() != Some(&merged) {
+            Self::put_row(txn, &self.summaries, &key, &merged)?;
+        }
+        // The slot's own times stay inside the slot, unlike the
+        // summary's.
+        let (first, last) = slot_row.as_ref().map_or((first, last), |row| {
+            (row.first_seen.min(first), row.last_seen.max(last))
+        });
+        Ok((stored.as_ref() != Some(&merged)).then_some((merged.body, first, last)))
+    }
+
     /// Upserts one observation within `txn`, enqueues it if it changed, and
     /// widens the address activity of an `IpActivity` observation.
     fn upsert(&self, txn: &Txn<'_>, at: &Upsert<'_>, observation: &DaiObservation) -> Result<()> {
@@ -843,22 +897,7 @@ impl Dai<'_> {
         let first = observation.first_seen;
         let last = observation.last_seen;
         let enqueued = if at.summary_only {
-            let key = summary_key(sensor, kind, &hash);
-            let existing: Option<SeenRow> = Self::get_row(txn, &self.summaries, &key)?;
-            let merged = existing.as_ref().map_or_else(
-                || SeenRow {
-                    body: observation.body.clone(),
-                    first_seen: first,
-                    last_seen: last,
-                },
-                |summary| summary.widened(&observation.body, first, last),
-            );
-            if existing.as_ref() == Some(&merged) {
-                None
-            } else {
-                Self::put_row(txn, &self.summaries, &key, &merged)?;
-                Some((merged.body, first, last))
-            }
+            self.upsert_summary(txn, at, &hash, observation)?
         } else {
             let key = observation_key(sensor, kind, at.slot_start, &hash);
             let existing: Option<ObservationRow> = Self::get_row(txn, &self.observations, &key)?;

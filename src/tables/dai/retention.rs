@@ -14,7 +14,7 @@ use review_protocol::types::DaiObservationKind;
 
 use super::{
     Dai, DeletionNames, ROWS_PER_TRANSACTION, Txn,
-    cursor::{CursorRow, DAY, RECENT_DAYS, date_of, pair_key},
+    cursor::{CursorRow, DAY, RECENT_DAYS, date_of, decode_pair_key, pair_key},
     customer_key,
     observation::{
         ActivityRow, DaiCounterKind, ObservationRow, PER_SLOT_AGE, SeenRow, SendRow,
@@ -157,12 +157,7 @@ impl Dai<'_> {
                     {
                         self.add_counter(txn, customer, DaiCounterKind::NotApplied, now, deleted)?;
                     }
-                    for number in kinds {
-                        if let Some(kind) = super::kind_from_number(number) {
-                            self.recompute_earliest_pending(txn, &sensor, kind)?;
-                        }
-                    }
-                    Ok(())
+                    self.recompute_earliest_pending_of(txn, &sensor, kinds)
                 })?;
             }
         }
@@ -271,16 +266,15 @@ impl Dai<'_> {
             &self.send_parts,
             &self.catchup_gaps,
             &self.sensor_kind_state,
-            &self.earliest_pending,
             &self.observations,
             &self.summaries,
-            &self.pending,
         ];
         for name in &names.own {
             let prefix = sensor_key(name);
             for map in maps {
                 self.delete_prefix(map, &prefix)?;
             }
+            self.delete_pending_of(name)?;
         }
         for name in &names.collected_of_others {
             let rows = self.scan_rows(&self.observations, &sensor_key(name), |_, value| {
@@ -300,6 +294,58 @@ impl Dai<'_> {
                     }
                     Ok(())
                 })?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Deletes the pending observations of `sensor` and its earliest
+    /// pending rows.
+    ///
+    /// Each transaction that deletes pending rows recomputes the earliest
+    /// pending slot of every (sensor, kind) it deleted from, so the earliest
+    /// pending rows stay correct between the transactions and after an
+    /// interrupted call; the last one recomputes those of the kinds that
+    /// still have an earliest pending row.
+    fn delete_pending_of(&self, sensor: &str) -> Result<()> {
+        let prefix = sensor_key(sensor);
+        let rows = self.scan_rows(&self.pending, &prefix, |_, _| Ok(true))?;
+        for chunk in rows.chunks(ROWS_PER_TRANSACTION) {
+            self.write(|txn| {
+                let mut kinds = BTreeSet::new();
+                for (key, _) in chunk {
+                    if Self::get_row::<SeenRow>(txn, &self.pending, key)?.is_none() {
+                        continue;
+                    }
+                    let (_, _, kind, _) = decode_pending_key(key)?;
+                    Self::delete_row(txn, &self.pending, key)?;
+                    kinds.insert(super::kind_number(kind));
+                }
+                self.recompute_earliest_pending_of(txn, sensor, kinds)
+            })?;
+        }
+        let mut kinds = BTreeSet::new();
+        for (key, _) in self.scan_rows(&self.earliest_pending, &prefix, |_, _| Ok(true))? {
+            let (_, kind) = decode_pair_key(&key)?;
+            kinds.insert(super::kind_number(kind));
+        }
+        if kinds.is_empty() {
+            return Ok(());
+        }
+        self.write(|txn| self.recompute_earliest_pending_of(txn, sensor, kinds.clone()))
+    }
+
+    /// Recomputes, within `txn`, the earliest pending slot of (`sensor`,
+    /// kind) for each kind number in `kinds`.
+    fn recompute_earliest_pending_of(
+        &self,
+        txn: &Txn<'_>,
+        sensor: &str,
+        kinds: BTreeSet<u8>,
+    ) -> Result<()> {
+        for number in kinds {
+            if let Some(kind) = super::kind_from_number(number) {
+                self.recompute_earliest_pending(txn, sensor, kind)?;
             }
         }
         Ok(())

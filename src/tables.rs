@@ -356,10 +356,10 @@ pub(super) const TRUSTED_USER_AGENTS: &str = "trusted user agents";
 ///   were never written and that has no site, so its policies pass the site
 ///   condition;
 /// - the DAI observation, cursor and restore tables start with the first
-///   cursor read, observation send or restore of a build that has them: no
-///   build without them answered a cursor read or stored a send, a missing
-///   restore generation is drawn afresh at its first read, and a sensor with
-///   no cursor row gets one at the next cursor read.
+///   open, cursor read, observation send or restore of a build that has
+///   them: no build without them answered a cursor read or stored a send, a
+///   missing restore generation is drawn afresh when the store is opened,
+///   and a sensor with no cursor row gets one at the next cursor read.
 ///
 /// The `senta` endpoint and DAI tables are listed here although no release
 /// yet carries a build without them, so that a backup of such a build is
@@ -582,6 +582,9 @@ impl StateDb {
         if dai::is_marked_restored(state.db())? {
             state.dai().after_restore(now_nanos()?)?;
         }
+        // The DAI restore generation is drawn here, not by the first call
+        // that reads it, so a call promised to write nothing never writes it.
+        state.dai().restore_generation()?;
         Ok(state)
     }
 

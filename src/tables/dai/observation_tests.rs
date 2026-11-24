@@ -915,8 +915,52 @@ fn a_creation_racing_an_enable_ends_after_the_enable_time() {
 }
 
 #[test]
+fn opening_a_store_draws_the_generation() {
+    let f = setup();
+    let generation = f.rows(super::super::DAI_META);
+    assert_eq!(generation.len(), 1);
+    let generation: u64 = super::super::deserialize(&generation[0].1).unwrap();
+    assert_eq!(f.generation(), generation);
+}
+
+#[test]
+fn calls_that_write_nothing_write_nothing_on_a_new_store() {
+    // No call has read the restore generation before `before` is taken.
+    let f = setup();
+    let before = f.dump();
+    let cursors = f.cursors(&[SHARED, "piglet.unknown"], at(0));
+    assert!(cursors.entries.is_empty(), "{:?}", cursors.entries);
+    assert_eq!(f.dump(), before);
+
+    let not_collected = f.batch(SHARED, Kind::DnsName, at(0), Vec::new());
+    assert!(matches!(
+        f.store(&not_collected, at(6)),
+        DaiStoreOutcome::NotCollected { .. }
+    ));
+    let mut invalid = f.batch(A, Kind::DnsName, at(0), Vec::new());
+    invalid.slot_len_secs = 60;
+    let error = f.store.store_dai_observations(&invalid, at(6)).unwrap_err();
+    assert_eq!(batch_error(&error), &DaiBatchError::SlotLength { secs: 60 });
+    // B has no cursor row.
+    let resync = f.batch(B, Kind::DnsName, at(0), Vec::new());
+    assert!(matches!(
+        f.store(&resync, at(6)),
+        DaiStoreOutcome::Resync { .. }
+    ));
+    assert_eq!(f.dump(), before);
+}
+
+#[test]
 fn concurrent_first_reads_return_one_generation() {
     let f = setup();
+    let dai = f.dai();
+    dai.write(|txn| Dai::delete_row(txn, &dai.meta, b"restore generation"))
+        .unwrap();
+    assert!(
+        f.rows(super::super::DAI_META).is_empty(),
+        "{:?}",
+        f.rows(super::super::DAI_META)
+    );
     let generations: Vec<u64> = std::thread::scope(|scope| {
         let handles: Vec<_> = (0..8)
             .map(|_| scope.spawn(|| f.store.dai_restore_generation().unwrap()))
@@ -1806,6 +1850,50 @@ fn an_old_slot_goes_to_the_summary_and_folding_keeps_pending() {
     assert_eq!(f.pending().len(), 2);
 }
 
+#[test]
+fn an_old_slot_folds_the_per_slot_row_retention_has_not_folded_yet() {
+    let f = setup();
+    f.cursors(&[A], at(0));
+    let now = at(0) + 8 * DAY;
+    let store = |kind, observation, now| {
+        f.stored(&f.batch(A, kind, at(0), vec![observation]), now);
+    };
+
+    // A filled hostname stored recently, then sent again without it once
+    // the slot is old, before retention folded the per-slot row.
+    store(Kind::DhcpLease, lease(at(1), Some("host")), at(6));
+    store(Kind::DhcpLease, lease(at(1), None), now);
+    assert!(f.observations().is_empty(), "{:?}", f.observations());
+    let summaries = f.summaries();
+    assert_eq!(summaries.len(), 1);
+    assert_eq!(summaries[0].body, lease_body(at(1), Some("host")));
+    let pending = f.pending();
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].3.body, lease_body(at(1), Some("host")));
+    f.clear_pending();
+    store(Kind::DhcpLease, lease(at(1), None), now);
+    assert!(f.pending().is_empty(), "{:?}", f.pending());
+
+    // The pending row of a widened observation starts from the slot's own
+    // times, not only the observation's.
+    store(Kind::DnsName, dns("x", at(1), at(3), 1), at(6));
+    f.clear_pending();
+    store(Kind::DnsName, dns("x", at(2), at(4), 1), now);
+    let pending = f.pending();
+    assert_eq!(pending.len(), 1);
+    assert_eq!(
+        (pending[0].3.first_seen, pending[0].3.last_seen),
+        (at(1), at(4))
+    );
+    assert_eq!(f.earliest(A, Kind::DnsName), Some(at(0)));
+
+    // Retention then has nothing left to fold.
+    let summaries = f.summaries();
+    f.store.apply_dai_retention(now).unwrap();
+    assert_eq!(f.summaries(), summaries);
+    assert_eq!(f.pending(), pending);
+}
+
 // ---- Cursors, marks, skips and gaps ----
 
 #[test]
@@ -2413,6 +2501,46 @@ fn deleting_a_customer_removes_its_observation_rows_only() {
 }
 
 // ---- Keys ----
+
+#[test]
+fn an_interrupted_deletion_keeps_the_earliest_pending_slots() {
+    let f = setup();
+    f.cursors(&[A], at(0));
+    for (kind, slot, observation) in [
+        (Kind::DnsName, at(5), dns("x", at(5), at(5), 1)),
+        (Kind::DnsName, at(0), dns("y", at(0), at(0), 1)),
+        (Kind::DhcpLease, at(10), lease(at(10), None)),
+    ] {
+        f.stored(&f.batch(A, kind, slot, vec![observation]), at(16));
+    }
+
+    // The deletion stops while it deletes the pending rows.
+    set_pending_scanned_hook(Box::new(|_| panic!("deletion interrupted")));
+    let interrupted = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        f.store.delete_dai_customer(CUSTOMER, &[A.to_string()])
+    }));
+    assert!(interrupted.is_err());
+    let slots: Vec<(Kind, i64)> = f
+        .pending()
+        .iter()
+        .map(|(_, slot, kind, _)| (*kind, *slot))
+        .collect();
+    assert_eq!(
+        slots,
+        [
+            (Kind::DnsName, at(0)),
+            (Kind::DnsName, at(5)),
+            (Kind::DhcpLease, at(10))
+        ]
+    );
+    assert_eq!(f.earliest(A, Kind::DnsName), Some(at(0)));
+    assert_eq!(f.earliest(A, Kind::DhcpLease), Some(at(10)));
+
+    f.store
+        .delete_dai_customer(CUSTOMER, &[A.to_string()])
+        .unwrap();
+    assert!(sensor_rows(&f, A).is_empty(), "{:?}", sensor_rows(&f, A));
+}
 
 #[test]
 fn observation_keys_read_back_and_order_by_their_components() {

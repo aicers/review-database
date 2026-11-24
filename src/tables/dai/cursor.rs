@@ -108,7 +108,7 @@ pub(super) fn pair_key(sensor: &str, kind: DaiObservationKind) -> Vec<u8> {
 }
 
 /// Decodes the key of a row keyed by (sensor, kind).
-fn decode_pair_key(key: &[u8]) -> Result<(String, DaiObservationKind)> {
+pub(super) fn decode_pair_key(key: &[u8]) -> Result<(String, DaiObservationKind)> {
     let mut reader = super::KeyReader::new(key);
     let sensor = reader.str()?;
     let kind = reader.dai_kind()?;
@@ -145,7 +145,9 @@ impl Dai<'_> {
     /// store has none.
     ///
     /// The key is read for update, so concurrent first reads return the
-    /// same value.
+    /// same value. Opening the states database calls this, so the store,
+    /// cursor and restore methods always find a generation and never draw
+    /// one.
     pub(crate) fn restore_generation(&self) -> Result<u64> {
         self.write_if(|txn| {
             if let Some(generation) = self.generation_in(txn)? {
@@ -157,8 +159,11 @@ impl Dai<'_> {
         })
     }
 
-    /// Returns the restore generation within `txn`, read for update; the
-    /// caller has made sure the store has one.
+    /// Returns the restore generation within `txn`, read for update.
+    ///
+    /// Opening the states database draws one if it has none, so it is
+    /// missing only if a restore reopened the database and failed to write
+    /// the new one, which the next open then writes.
     pub(super) fn current_generation(&self, txn: &Txn<'_>) -> Result<u64> {
         self.generation_in(txn)?
             .context("the DAI restore generation is missing")
@@ -192,7 +197,6 @@ impl Dai<'_> {
     /// the missing rows, as
     /// [`Store::dai_cursors`](crate::Store::dai_cursors) describes.
     pub(crate) fn cursors(&self, sensors: &[String], now: i64) -> Result<DaiCursors> {
-        self.restore_generation()?;
         self.write_if(|txn| {
             let restore_generation = self.current_generation(txn)?;
             let customers = self.customer_sensors_in(txn)?;

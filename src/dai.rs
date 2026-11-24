@@ -316,9 +316,10 @@ impl Store {
 
     /// Returns the DAI restore generation.
     ///
-    /// A store that has none gets a random one first, in a transaction that
-    /// reads it for update, so concurrent first reads return the same value.
-    /// Every restore of a backup replaces it with a new random one.
+    /// A store that has none gets a random one when it is opened, in a
+    /// transaction that reads it for update, so concurrent first reads return
+    /// the same value, and a method that writes nothing never draws it. Every
+    /// restore of a backup replaces it with a new random one.
     ///
     /// # Errors
     ///
@@ -394,7 +395,10 @@ impl Store {
     ///    filtered and stored, the catch-up skip, the re-extract mark, the
     ///    cursor, the catch-up gaps, the late-slot marks and the sensor's
     ///    state are updated, and the outcome is [`DaiStoreOutcome::Stored`]
-    ///    with the marks assigned to the late slots.
+    ///    with the marks assigned to the late slots. An observation of a slot
+    ///    that started more than 7 days before `now` widens the summary
+    ///    instead of a per-slot row, first folding into it the slot's
+    ///    per-slot row that retention has not folded yet.
     ///
     /// The method reads the customer's `dai site policy guard` row for update
     /// before it reads the settings, the configuration epoch, the site or
