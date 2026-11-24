@@ -29,6 +29,7 @@ mod previous_training;
 mod qualifier;
 mod retention_config;
 mod scores;
+mod senta_endpoint;
 mod status;
 mod system_log_collector;
 mod template;
@@ -119,6 +120,16 @@ pub use self::port_allocation::{
 };
 pub use self::previous_training::PreviousTrainingResults;
 pub use self::retention_config::{RetentionConfig, RetentionConfigUpdate};
+pub use self::senta_endpoint::{
+    SentaEndpointActiveList, SentaEndpointActiveListEntry, SentaEndpointActiveListTable,
+    SentaEndpointDocumentResult, SentaEndpointDocumentResultKey, SentaEndpointDocumentResultTable,
+    SentaEndpointEvent, SentaEndpointEventKey, SentaEndpointEventSource, SentaEndpointEventTable,
+    SentaEndpointGigantoEntry, SentaEndpointGigantoEntryTable, SentaEndpointGigantoLastReceived,
+    SentaEndpointGigantoLastReceivedKey, SentaEndpointGigantoLastReceivedTable,
+    SentaEndpointGigantoLoss, SentaEndpointGigantoLossKey, SentaEndpointGigantoLossTable,
+    SentaEndpointGigantoNode, SentaEndpointStatusReport, SentaEndpointStatusReportTable,
+    SentaEndpointUnenrollRequest, SentaEndpointUnenrollRequestTable,
+};
 pub use self::system_log_collector::{
     SystemInstallRecord, SystemLogCollector, SystemLogCollectorRefusal, SystemLogCollectorTable,
 };
@@ -218,6 +229,24 @@ pub(super) const PREVIOUS_TIME_SERIES: &str = "previous time series";
 pub(super) const QUALIFIERS: &str = "qualifiers";
 pub(super) const EXTERNAL_SERVICES: &str = "external services";
 pub(super) const SCORES: &str = "scores";
+// The observation tables of Clumit Endpoint (`senta`) agents, one column
+// family each; see `senta_endpoint`.
+/// The active list `REview` applied: a single row.
+pub(super) const SENTA_ACTIVE_LIST: &str = "senta active list";
+/// The last document result of each endpoint and document.
+pub(super) const SENTA_DOCUMENT_RESULTS: &str = "senta document results";
+/// The `DuplicateKey` events of each endpoint.
+pub(super) const SENTA_ENDPOINT_EVENTS: &str = "senta endpoint events";
+/// The state of the endpoint entry of each Giganto node.
+pub(super) const SENTA_GIGANTO_ENTRIES: &str = "senta giganto entries";
+/// When each Giganto node last received data from each endpoint.
+pub(super) const SENTA_GIGANTO_LAST_RECEIVED: &str = "senta giganto last received";
+/// The loss records fetched from Giganto nodes.
+pub(super) const SENTA_GIGANTO_LOSSES: &str = "senta giganto losses";
+/// The last status report of each endpoint.
+pub(super) const SENTA_STATUS_REPORTS: &str = "senta status reports";
+/// The unenroll request of each endpoint.
+pub(super) const SENTA_UNENROLL_REQUESTS: &str = "senta unenroll requests";
 pub(super) const STATUSES: &str = "statuses";
 pub(super) const TEMPLATES: &str = "templates";
 pub(super) const LABEL_DB: &str = "label database";
@@ -236,11 +265,29 @@ pub(super) const TRUSTED_USER_AGENTS: &str = "trusted user agents";
 ///
 /// A store of that format opened by this build gets them, empty, as it opens,
 /// so a backup of the format may lack them; [`check_backup_format`] accepts
-/// one that does. They hold nothing such a build could have written: the
-/// configuration revisions start with the first write that records one.
-pub(super) const ADDED_WITHIN_FORMAT: [&str; 2] = [CONFIG_REVISIONS, CONFIG_REVISION_HISTORY];
+/// one that does. They hold nothing such a build could have written:
+///
+/// - the configuration revisions start with the first write that records
+///   one;
+/// - the observation tables of `senta` endpoints start with the first
+///   observation `REview` stores, and no build without them observed any.
+///   They are listed here although no release yet carries a build without
+///   them, so that a backup of such a build is accepted whichever is
+///   released first.
+pub(super) const ADDED_WITHIN_FORMAT: [&str; 10] = [
+    CONFIG_REVISIONS,
+    CONFIG_REVISION_HISTORY,
+    SENTA_ACTIVE_LIST,
+    SENTA_DOCUMENT_RESULTS,
+    SENTA_ENDPOINT_EVENTS,
+    SENTA_GIGANTO_ENTRIES,
+    SENTA_GIGANTO_LAST_RECEIVED,
+    SENTA_GIGANTO_LOSSES,
+    SENTA_STATUS_REPORTS,
+    SENTA_UNENROLL_REQUESTS,
+];
 
-pub(crate) const MAP_NAMES: [&str; 52] = [
+pub(crate) const MAP_NAMES: [&str; 60] = [
     AGENTS,
     BATCH_INFO,
     CATEGORY,
@@ -281,6 +328,14 @@ pub(crate) const MAP_NAMES: [&str; 52] = [
     EXTERNAL_SERVICES,
     FORMAT_0_63,
     SCORES,
+    SENTA_ACTIVE_LIST,
+    SENTA_DOCUMENT_RESULTS,
+    SENTA_ENDPOINT_EVENTS,
+    SENTA_GIGANTO_ENTRIES,
+    SENTA_GIGANTO_LAST_RECEIVED,
+    SENTA_GIGANTO_LOSSES,
+    SENTA_STATUS_REPORTS,
+    SENTA_UNENROLL_REQUESTS,
     STATUSES,
     SYSTEM_LOG_COLLECTORS,
     TEMPLATES,
@@ -568,6 +623,48 @@ impl StateDb {
             .expect("table access requires a successfully opened StateDb");
         Table::<InstanceAllocation>::open(inner)
             .expect("StateDb::open initializes the instance allocation column family")
+    }
+
+    pub(crate) fn senta_endpoint_active_list(&self) -> SentaEndpointActiveListTable<'_> {
+        SentaEndpointActiveListTable::open(self.db())
+            .expect("StateDb::open creates the senta active list family")
+    }
+
+    pub(crate) fn senta_endpoint_giganto_entries(&self) -> SentaEndpointGigantoEntryTable<'_> {
+        SentaEndpointGigantoEntryTable::open(self.db())
+            .expect("StateDb::open creates the senta giganto entries family")
+    }
+
+    pub(crate) fn senta_endpoint_unenroll_requests(&self) -> SentaEndpointUnenrollRequestTable<'_> {
+        SentaEndpointUnenrollRequestTable::open(self.db())
+            .expect("StateDb::open creates the senta unenroll requests family")
+    }
+
+    pub(crate) fn senta_endpoint_document_results(&self) -> SentaEndpointDocumentResultTable<'_> {
+        SentaEndpointDocumentResultTable::open(self.db())
+            .expect("StateDb::open creates the senta document results family")
+    }
+
+    pub(crate) fn senta_endpoint_status_reports(&self) -> SentaEndpointStatusReportTable<'_> {
+        SentaEndpointStatusReportTable::open(self.db())
+            .expect("StateDb::open creates the senta status reports family")
+    }
+
+    pub(crate) fn senta_endpoint_events(&self) -> SentaEndpointEventTable<'_> {
+        SentaEndpointEventTable::open(self.db())
+            .expect("StateDb::open creates the senta endpoint events family")
+    }
+
+    pub(crate) fn senta_endpoint_giganto_losses(&self) -> SentaEndpointGigantoLossTable<'_> {
+        SentaEndpointGigantoLossTable::open(self.db())
+            .expect("StateDb::open creates the senta giganto losses family")
+    }
+
+    pub(crate) fn senta_endpoint_giganto_last_received(
+        &self,
+    ) -> SentaEndpointGigantoLastReceivedTable<'_> {
+        SentaEndpointGigantoLastReceivedTable::open(self.db())
+            .expect("StateDb::open creates the senta giganto last received family")
     }
 
     pub(crate) fn config_revisions(&self) -> ConfigRevisions<'_> {
