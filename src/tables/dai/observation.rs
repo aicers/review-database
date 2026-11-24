@@ -822,13 +822,7 @@ impl Dai<'_> {
     /// Returns the token of the site `sensor` was in, in the customer's
     /// network, at the time `time`, as `txn` sees it.
     fn site_at(&self, txn: &Txn<'_>, customer: u32, sensor: &str, time: i64) -> Result<String> {
-        if let Some(site) = self.history_site(txn, customer, sensor, time)? {
-            return Ok(site);
-        }
-        self.sites_in(txn, customer)?
-            .into_iter()
-            .find(|site| site.is_default)
-            .map(|site| site.token)
+        self.sensor_site_in(txn, customer, sensor, time)?
             .ok_or_else(|| anyhow!("customer {customer} has no default DAI site"))
     }
 

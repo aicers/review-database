@@ -477,6 +477,26 @@ thread_local! {
     /// that stages or finishes it, commits.
     static BEFORE_COMMIT: std::cell::RefCell<Option<TestHook>> =
         const { std::cell::RefCell::new(None) };
+    /// A hook the tests run once, in the thread that set it, in the next
+    /// recomputation of an earliest pending slot, right after its scan of
+    /// the pending rows.
+    static PENDING_SCANNED: std::cell::RefCell<Option<TestHook>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Sets the hook the next recomputation of an earliest pending slot in this
+/// thread runs after its scan of the pending rows.
+#[cfg(test)]
+fn set_pending_scanned_hook(hook: TestHook) {
+    PENDING_SCANNED.with(|cell| *cell.borrow_mut() = Some(hook));
+}
+
+/// Runs, and clears, the pending-scanned hook set in this thread, if any.
+#[cfg(test)]
+fn run_pending_scanned_hook(db: &OptimisticTransactionDB) {
+    if let Some(hook) = PENDING_SCANNED.with(|cell| cell.borrow_mut().take()) {
+        hook(db);
+    }
 }
 
 /// Sets the hook the next DAI cursor creation or store in this thread runs
@@ -728,7 +748,7 @@ impl<'d> Dai<'d> {
                         e.kind(),
                         rocksdb::ErrorKind::Busy | rocksdb::ErrorKind::TryAgain
                     ) => {}
-                Err(e) => return Err(e).context("failed to commit DAI configuration changes"),
+                Err(e) => return Err(e).context("failed to commit DAI changes"),
             }
         }
     }
@@ -1279,16 +1299,27 @@ impl<'d> Dai<'d> {
         sensor: &str,
         time: i64,
     ) -> Result<Option<String>> {
-        self.read(|txn| {
-            if let Some(site) = self.history_site(txn, customer_id, sensor, time)? {
-                return Ok(Some(site));
-            }
-            Ok(self
-                .sites_in(txn, customer_id)?
-                .into_iter()
-                .find(|site| site.is_default)
-                .map(|site| site.token))
-        })
+        self.read(|txn| self.sensor_site_in(txn, customer_id, sensor, time))
+    }
+
+    /// Returns the site token of `sensor` in the customer's network at the
+    /// time `time`, as `txn` sees it, or `None` if the customer has no
+    /// default site.
+    fn sensor_site_in(
+        &self,
+        txn: &Txn<'_>,
+        customer_id: u32,
+        sensor: &str,
+        time: i64,
+    ) -> Result<Option<String>> {
+        if let Some(site) = self.history_site(txn, customer_id, sensor, time)? {
+            return Ok(Some(site));
+        }
+        Ok(self
+            .sites_in(txn, customer_id)?
+            .into_iter()
+            .find(|site| site.is_default)
+            .map(|site| site.token))
     }
 
     // ---- Relay site table ----

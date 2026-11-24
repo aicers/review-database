@@ -172,22 +172,29 @@ impl Dai<'_> {
     /// Sets, within `txn`, the earliest pending slot of (`sensor`, `kind`)
     /// to the earliest slot start among its pending rows as `txn` sees them,
     /// or removes it if there is none.
+    ///
+    /// The earliest pending row is read for update before the untracked scan
+    /// of the pending rows, so a store that adds a pending row after that
+    /// read, and so writes the earliest pending row, conflicts with `txn`;
+    /// one that committed before it is seen by the scan.
     pub(super) fn recompute_earliest_pending(
         &self,
         txn: &Txn<'_>,
         sensor: &str,
         kind: DaiObservationKind,
     ) -> Result<()> {
+        let key = pair_key(sensor, kind);
+        Self::get_row::<i64>(txn, &self.earliest_pending, &key)?;
         let mut earliest = None;
-        for (key, _) in Self::scan(&self.pending, txn, &sensor_key(sensor))? {
-            let (_, slot_start, row_kind, _) = decode_pending_key(&key)?;
+        for (pending, _) in Self::scan(&self.pending, txn, &sensor_key(sensor))? {
+            let (_, slot_start, row_kind, _) = decode_pending_key(&pending)?;
             if row_kind == kind {
                 earliest = Some(slot_start);
                 break;
             }
         }
-        let key = pair_key(sensor, kind);
-        Self::get_row::<i64>(txn, &self.earliest_pending, &key)?;
+        #[cfg(test)]
+        super::run_pending_scanned_hook(self.db);
         match earliest {
             Some(slot_start) => Self::put_row(txn, &self.earliest_pending, &key, &slot_start),
             None => Self::delete_row(txn, &self.earliest_pending, &key),

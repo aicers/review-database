@@ -832,7 +832,7 @@ impl StateDb {
     }
 
     pub(crate) fn dai(&self) -> Dai<'_> {
-        Dai::open(self.db()).expect("StateDb::open creates the DAI configuration families")
+        Dai::open(self.db()).expect("StateDb::open creates the DAI families")
     }
 
     pub(crate) fn config_revisions(&self) -> ConfigRevisions<'_> {

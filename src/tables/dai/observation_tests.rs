@@ -2179,6 +2179,40 @@ fn expiring_pending_rows_counts_for_the_current_customer_only() {
     assert_eq!(f.counter(OTHER, DaiCounterKind::NotApplied, now), 1);
 }
 
+#[test]
+fn expiring_pending_rows_conflicts_with_a_store_adding_an_earlier_one() {
+    let f = setup();
+    let now = at(0) + 40 * DAY;
+    let expired = at(0);
+    let recent = now - 2 * DAY;
+    let added = now - 10 * DAY;
+    f.cursors(&[A], at(-5));
+    for slot in [expired, recent] {
+        f.stored(
+            &f.batch(A, Kind::DnsName, slot, vec![dns("x", slot, slot, 1)]),
+            slot + 6 * MINUTE,
+        );
+    }
+    assert_eq!(f.earliest(A, Kind::DnsName), Some(expired));
+
+    // While retention recomputes the earliest pending slot from its scan, a
+    // store of an older slot adds a pending row before the recent one.
+    let batch = f.batch(A, Kind::DnsName, added, vec![dns("y", added, added, 1)]);
+    set_pending_scanned_hook(Box::new(move |db| {
+        let outcome = Dai::open(db).unwrap().store_observations(&batch, now);
+        assert!(
+            matches!(outcome, Ok(DaiStoreOutcome::Stored { .. })),
+            "{outcome:?}"
+        );
+    }));
+    f.store.apply_dai_retention(now).unwrap();
+
+    let slots: Vec<i64> = f.pending().iter().map(|(_, slot, _, _)| *slot).collect();
+    assert_eq!(slots, [added, recent]);
+    assert_eq!(f.earliest(A, Kind::DnsName), Some(added));
+    assert_eq!(f.counter(CUSTOMER, DaiCounterKind::NotApplied, now), 1);
+}
+
 // ---- Customer deletion ----
 
 /// Moves the node named `name` to `customer`.
