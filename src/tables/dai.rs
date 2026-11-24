@@ -15,13 +15,37 @@
 //! - `dai site policy guard`: a revision per customer that every write of the
 //!   customer's DAI configuration, and every time series generation policy
 //!   save, reads for update and increments;
-//! - `dai sensor state`: the configuration epoch and configuration hash of
-//!   each sensor, keyed by sensor name.
+//! - `dai sensor state`: the configuration epoch, the configuration hash and
+//!   the observation state (last record and store times, next mark number,
+//!   first cursor time) of each sensor, keyed by sensor name.
+//!
+//! Twelve more hold the observations agents send and the agents' read
+//! positions; see `cursor` (the restore generation and the cursors),
+//! `observation` (storing a send) and `retention`:
+//!
+//! - `dai meta`: the restore generation, under a fixed key;
+//! - `dai cursors`: the cursor, read floor, confirmed slots, re-extract
+//!   marks and arrival delays of each (sensor, kind);
+//! - `dai slot sends` and `dai send parts`: each send of a slot and its
+//!   staged parts, keyed by (sensor, kind, slot start, send id[, part]);
+//! - `dai catchup gaps`: the ranges each (sensor, kind) skipped by the
+//!   catch-up limit, keyed by their start;
+//! - `dai sensor kind state`: when each (sensor, kind) last stored an
+//!   observation;
+//! - `dai counters`: per customer, counter kind and date;
+//! - `dai earliest pending`: the earliest slot start among the `dai pending`
+//!   rows of each (sensor, kind);
+//! - `dai observations`, `dai observation summaries` and `dai pending`: the
+//!   observations per slot, folded out of their slots, and not yet applied;
+//! - `dai ip activity`: when each address of each customer's site was
+//!   active.
 //!
 //! Keys use the component encoding of the `senta` endpoint observation tables
-//! (see `senta_endpoint`), so a prefix read by customer id or by sensor name
-//! returns exactly that customer's or that sensor's rows. Times are `i64`
-//! nanoseconds since the UNIX epoch (UTC).
+//! (see `senta_endpoint`), so a prefix read by customer id, by sensor name or
+//! by (sensor, kind) returns exactly those rows. A *slot* is
+//! `[slot_start, slot_start + 300 s)` with `slot_start` a multiple of 300 s,
+//! and a *date* the UTC day of a time, as days since the UNIX epoch. Times
+//! are `i64` nanoseconds since the UNIX epoch (UTC).
 //!
 //! # Transactions
 //!
@@ -36,16 +60,25 @@
 //! again against the new state, at the time it reads after that guard in
 //! each attempt rather than at the time of the first.
 
+mod cursor;
+mod hash;
+mod observation;
+mod retention;
+
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     net::IpAddr,
 };
 
 use anyhow::{Context, Result, anyhow};
+use review_protocol::types::DaiObservationKind;
 use rocksdb::{IteratorMode, OptimisticTransactionDB, Transaction};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use thiserror::Error;
 
+pub(crate) use self::cursor::{is_marked_restored, mark_restored};
+pub use self::hash::{DaiNetworks, dai_network_digest};
+pub use self::observation::{DaiBatchError, DaiStoreOutcome};
 use super::senta_endpoint::{KeyReader, KeyWriter};
 use crate::{
     EXCLUSIVE, IndexedTable, Map, NodeTable, TimeSeriesGenerationPolicy,
@@ -67,6 +100,19 @@ const SITE_TOKEN_LEN: usize = 8;
 const SITE_TOKEN_CHARS: &[u8] = b"abcdefghijklmnopqrstuvwxyz0123456789";
 /// The characters a site's display name may not contain.
 const FORBIDDEN_SITE_NAME_CHARS: [char; 4] = ['|', ';', ',', '"'];
+/// The observation kinds, in the order of their numbers.
+const KINDS: [DaiObservationKind; 8] = [
+    DaiObservationKind::DhcpLease,
+    DaiObservationKind::DhcpServer,
+    DaiObservationKind::Kerberos,
+    DaiObservationKind::Ntlm,
+    DaiObservationKind::Service,
+    DaiObservationKind::SoftwareString,
+    DaiObservationKind::DnsName,
+    DaiObservationKind::IpActivity,
+];
+/// The number of rows a retention or deletion transaction handles at most.
+const ROWS_PER_TRANSACTION: usize = 1_000;
 
 pub(crate) type Txn<'a> = Transaction<'a, OptimisticTransactionDB>;
 
@@ -277,6 +323,88 @@ struct SensorState {
     epoch: u64,
     /// The hash of the sensor's configuration content, as last recorded.
     config_hash: Option<Vec<u8>>,
+    /// The latest `last_record_time` of a finished send.
+    last_record_time: Option<i64>,
+    /// When a send of the sensor last finished.
+    last_store_time: Option<i64>,
+    /// The number the next re-extract mark of the sensor gets.
+    next_mark: u64,
+    /// The time of the cursor read that created the sensor's first cursor
+    /// row; never changed afterwards.
+    first_cursor_time: Option<i64>,
+}
+
+impl SensorState {
+    /// Returns the next mark number and advances it.
+    fn take_mark(&mut self) -> u64 {
+        let mark = self.next_mark;
+        self.next_mark = self.next_mark.wrapping_add(1);
+        mark
+    }
+}
+
+/// Returns the number of an observation kind, the byte its keys hold.
+pub(super) fn kind_number(kind: DaiObservationKind) -> u8 {
+    match kind {
+        DaiObservationKind::DhcpLease => 1,
+        DaiObservationKind::DhcpServer => 3,
+        DaiObservationKind::Kerberos => 4,
+        DaiObservationKind::Ntlm => 5,
+        DaiObservationKind::Service => 7,
+        DaiObservationKind::SoftwareString => 8,
+        DaiObservationKind::DnsName => 22,
+        DaiObservationKind::IpActivity => 34,
+    }
+}
+
+/// Returns the observation kind of number `number`, or `None` if no kind has
+/// it.
+pub(super) fn kind_from_number(number: u8) -> Option<DaiObservationKind> {
+    KINDS.into_iter().find(|kind| kind_number(*kind) == number)
+}
+
+/// The customer of each customer sensor.
+///
+/// A sensor's customer is the customer of the node carrying it: the one
+/// customer for which [`NodeTable::sensor_names_in_transaction`] lists the
+/// name. A name it lists for no customer, or for two or more, is not a
+/// customer sensor, since no customer can be chosen for it. Every DAI read or
+/// write that needs a sensor's customer decides it here.
+#[derive(Debug, Default)]
+pub(crate) struct CustomerSensors {
+    customers: BTreeMap<String, u32>,
+}
+
+impl CustomerSensors {
+    /// Builds the customer sensors from the (customer, name) pairs of the
+    /// node table.
+    pub(crate) fn new(names: BTreeSet<(u32, String)>) -> Self {
+        let mut customers = BTreeMap::new();
+        let mut ambiguous = BTreeSet::new();
+        for (customer, name) in names {
+            if ambiguous.contains(&name) {
+                continue;
+            }
+            if customers.insert(name.clone(), customer).is_some() {
+                customers.remove(&name);
+                ambiguous.insert(name);
+            }
+        }
+        Self { customers }
+    }
+
+    /// Returns the customer of `sensor`, or `None` if it is not a customer
+    /// sensor.
+    pub(crate) fn customer(&self, sensor: &str) -> Option<u32> {
+        self.customers.get(sensor).copied()
+    }
+
+    /// Returns every customer sensor with its customer, in name order.
+    pub(crate) fn iter(&self) -> impl Iterator<Item = (&str, u32)> {
+        self.customers
+            .iter()
+            .map(|(name, customer)| (name.as_str(), *customer))
+    }
 }
 
 /// A site table: the site each sensor is in, as the sites list them.
@@ -344,6 +472,46 @@ thread_local! {
     /// the revision.
     static RELAY_READ: std::cell::RefCell<Option<TestHook>> =
         const { std::cell::RefCell::new(None) };
+    /// A hook the tests run once, in the thread that set it, right before
+    /// the next cursor read that creates rows, or the next store of a part
+    /// that stages or finishes it, commits.
+    static BEFORE_COMMIT: std::cell::RefCell<Option<TestHook>> =
+        const { std::cell::RefCell::new(None) };
+    /// A hook the tests run once, in the thread that set it, in the next
+    /// recomputation of an earliest pending slot, right after its scan of
+    /// the pending rows.
+    static PENDING_SCANNED: std::cell::RefCell<Option<TestHook>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Sets the hook the next recomputation of an earliest pending slot in this
+/// thread runs after its scan of the pending rows.
+#[cfg(test)]
+fn set_pending_scanned_hook(hook: TestHook) {
+    PENDING_SCANNED.with(|cell| *cell.borrow_mut() = Some(hook));
+}
+
+/// Runs, and clears, the pending-scanned hook set in this thread, if any.
+#[cfg(test)]
+fn run_pending_scanned_hook(db: &OptimisticTransactionDB) {
+    if let Some(hook) = PENDING_SCANNED.with(|cell| cell.borrow_mut().take()) {
+        hook(db);
+    }
+}
+
+/// Sets the hook the next DAI cursor creation or store in this thread runs
+/// before it commits.
+#[cfg(test)]
+fn set_before_commit_hook(hook: TestHook) {
+    BEFORE_COMMIT.with(|cell| *cell.borrow_mut() = Some(hook));
+}
+
+/// Runs, and clears, the before-commit hook set in this thread, if any.
+#[cfg(test)]
+fn run_before_commit_hook(db: &OptimisticTransactionDB) {
+    if let Some(hook) = BEFORE_COMMIT.with(|cell| cell.borrow_mut().take()) {
+        hook(db);
+    }
 }
 
 /// Sets the hook the next site condition check in this thread runs.
@@ -496,8 +664,8 @@ fn decode_sensor_site(key: &[u8], value: &[u8]) -> Result<(String, i64, SensorSi
     Ok((sensor, effective, super::deserialize(value)?))
 }
 
-/// The six DAI configuration column families, with the node and policy
-/// tables their checks read.
+/// The DAI column families, with the node, network and policy tables their
+/// checks read.
 pub(crate) struct Dai<'d> {
     db: &'d OptimisticTransactionDB,
     settings: Map<'d>,
@@ -506,11 +674,23 @@ pub(crate) struct Dai<'d> {
     sensor_sites: Map<'d>,
     guard: Map<'d>,
     sensor_state: Map<'d>,
+    meta: Map<'d>,
+    cursors: Map<'d>,
+    slot_sends: Map<'d>,
+    send_parts: Map<'d>,
+    catchup_gaps: Map<'d>,
+    sensor_kind_state: Map<'d>,
+    counters: Map<'d>,
+    earliest_pending: Map<'d>,
+    observations: Map<'d>,
+    summaries: Map<'d>,
+    pending: Map<'d>,
+    ip_activity: Map<'d>,
 }
 
 impl<'d> Dai<'d> {
-    /// Opens the DAI configuration tables, or returns `None` if one of them
-    /// does not exist.
+    /// Opens the DAI tables, or returns `None` if one of them does not
+    /// exist.
     pub(crate) fn open(db: &'d OptimisticTransactionDB) -> Option<Self> {
         Some(Self {
             db,
@@ -520,6 +700,18 @@ impl<'d> Dai<'d> {
             sensor_sites: Map::open(db, super::DAI_SENSOR_SITES)?,
             guard: Map::open(db, super::DAI_SITE_POLICY_GUARD)?,
             sensor_state: Map::open(db, super::DAI_SENSOR_STATE)?,
+            meta: Map::open(db, super::DAI_META)?,
+            cursors: Map::open(db, super::DAI_CURSORS)?,
+            slot_sends: Map::open(db, super::DAI_SLOT_SENDS)?,
+            send_parts: Map::open(db, super::DAI_SEND_PARTS)?,
+            catchup_gaps: Map::open(db, super::DAI_CATCHUP_GAPS)?,
+            sensor_kind_state: Map::open(db, super::DAI_SENSOR_KIND_STATE)?,
+            counters: Map::open(db, super::DAI_COUNTERS)?,
+            earliest_pending: Map::open(db, super::DAI_EARLIEST_PENDING)?,
+            observations: Map::open(db, super::DAI_OBSERVATIONS)?,
+            summaries: Map::open(db, super::DAI_OBSERVATION_SUMMARIES)?,
+            pending: Map::open(db, super::DAI_PENDING)?,
+            ip_activity: Map::open(db, super::DAI_IP_ACTIVITY)?,
         })
     }
 
@@ -536,9 +728,19 @@ impl<'d> Dai<'d> {
     /// from the start on a commit conflict. A refusal `attempt` returns ends
     /// the write without committing.
     fn write<T>(&self, mut attempt: impl FnMut(&Txn<'_>) -> Result<T>) -> Result<T> {
+        self.write_if(|txn| attempt(txn).map(|value| (value, true)))
+    }
+
+    /// Runs `attempt` in an optimistic transaction and, if it returns `true`
+    /// with its value, commits it, retrying from the start on a commit
+    /// conflict. With `false`, or a refusal, nothing is committed.
+    fn write_if<T>(&self, mut attempt: impl FnMut(&Txn<'_>) -> Result<(T, bool)>) -> Result<T> {
         loop {
             let txn = self.db.transaction();
-            let value = attempt(&txn)?;
+            let (value, commit) = attempt(&txn)?;
+            if !commit {
+                return Ok(value);
+            }
             match txn.commit() {
                 Ok(()) => return Ok(value),
                 Err(e)
@@ -546,7 +748,7 @@ impl<'d> Dai<'d> {
                         e.kind(),
                         rocksdb::ErrorKind::Busy | rocksdb::ErrorKind::TryAgain
                     ) => {}
-                Err(e) => return Err(e).context("failed to commit DAI configuration changes"),
+                Err(e) => return Err(e).context("failed to commit DAI changes"),
             }
         }
     }
@@ -570,6 +772,82 @@ impl<'d> Dai<'d> {
         };
         iter.map(|entry| entry.context("cannot read DAI configuration"))
             .collect()
+    }
+
+    /// Returns the keys of the rows of `map` whose key starts with `prefix`,
+    /// read outside any transaction, in key order.
+    fn scan_keys(&self, map: &Map<'_>, prefix: &[u8]) -> Result<Vec<Box<[u8]>>> {
+        self.scan_rows(map, prefix, |_, _| Ok(true))
+            .map(|rows| rows.into_iter().map(|(key, _)| key).collect())
+    }
+
+    /// Returns the rows of `map` whose key starts with `prefix` and that
+    /// `select` selects, read outside any transaction, in key order.
+    fn scan_rows(
+        &self,
+        map: &Map<'_>,
+        prefix: &[u8],
+        mut select: impl FnMut(&[u8], &[u8]) -> Result<bool>,
+    ) -> Result<Vec<RawRow>> {
+        let mode = IteratorMode::Start;
+        let iter = if prefix.is_empty() {
+            self.db.iterator_cf(map.cf, mode)
+        } else {
+            let mut opts = rocksdb::ReadOptions::default();
+            opts.set_iterate_range(rocksdb::PrefixRange(prefix));
+            self.db.iterator_cf_opt(map.cf, opts, mode)
+        };
+        let mut rows = Vec::new();
+        for entry in iter {
+            let (key, value) = entry.context("cannot read DAI tables")?;
+            if select(&key, &value)? {
+                rows.push((key, value));
+            }
+        }
+        Ok(rows)
+    }
+
+    /// Deletes every row of `map` whose key starts with `prefix`, in
+    /// transactions of at most [`ROWS_PER_TRANSACTION`] rows.
+    fn delete_prefix(&self, map: &Map<'_>, prefix: &[u8]) -> Result<()> {
+        for chunk in self.scan_keys(map, prefix)?.chunks(ROWS_PER_TRANSACTION) {
+            self.write(|txn| {
+                for key in chunk {
+                    txn.delete_cf(map.cf, key)
+                        .context("cannot delete DAI rows")?;
+                }
+                Ok(())
+            })?;
+        }
+        Ok(())
+    }
+
+    /// Returns the row of `map` stored under `key`, read for update within
+    /// `txn`, or `None` if there is none.
+    fn get_row<T: DeserializeOwned>(txn: &Txn<'_>, map: &Map<'_>, key: &[u8]) -> Result<Option<T>> {
+        txn.get_for_update_cf(map.cf, key, EXCLUSIVE)
+            .context("cannot read DAI tables")?
+            .map(|value| super::deserialize(&value))
+            .transpose()
+    }
+
+    /// Stores `value` under `key` in `map` within `txn`.
+    fn put_row<T: Serialize>(txn: &Txn<'_>, map: &Map<'_>, key: &[u8], value: &T) -> Result<()> {
+        txn.put_cf(map.cf, key, super::serialize(value)?)
+            .context("cannot write DAI tables")
+    }
+
+    /// Deletes the row of `map` stored under `key` within `txn`.
+    fn delete_row(txn: &Txn<'_>, map: &Map<'_>, key: &[u8]) -> Result<()> {
+        txn.delete_cf(map.cf, key)
+            .context("cannot delete from DAI tables")
+    }
+
+    /// Returns the customer sensors as `txn` sees the node table.
+    pub(crate) fn customer_sensors_in(&self, txn: &Txn<'_>) -> Result<CustomerSensors> {
+        Ok(CustomerSensors::new(
+            self.nodes()?.sensor_names_in_transaction(txn)?,
+        ))
     }
 
     // ---- The guard ----
@@ -663,6 +941,9 @@ impl<'d> Dai<'d> {
             if toggled {
                 let sensors = self.customer_sensors(txn, customer_id, &sites, &[])?;
                 self.bump_epochs(txn, &sensors)?;
+                if update.device_account_identification {
+                    self.move_cursors_to_enable(txn, &sensors, now)?;
+                }
             }
             self.put_settings(txn, customer_id, &settings)?;
             Ok(settings)
@@ -1018,16 +1299,27 @@ impl<'d> Dai<'d> {
         sensor: &str,
         time: i64,
     ) -> Result<Option<String>> {
-        self.read(|txn| {
-            if let Some(site) = self.history_site(txn, customer_id, sensor, time)? {
-                return Ok(Some(site));
-            }
-            Ok(self
-                .sites_in(txn, customer_id)?
-                .into_iter()
-                .find(|site| site.is_default)
-                .map(|site| site.token))
-        })
+        self.read(|txn| self.sensor_site_in(txn, customer_id, sensor, time))
+    }
+
+    /// Returns the site token of `sensor` in the customer's network at the
+    /// time `time`, as `txn` sees it, or `None` if the customer has no
+    /// default site.
+    fn sensor_site_in(
+        &self,
+        txn: &Txn<'_>,
+        customer_id: u32,
+        sensor: &str,
+        time: i64,
+    ) -> Result<Option<String>> {
+        if let Some(site) = self.history_site(txn, customer_id, sensor, time)? {
+            return Ok(Some(site));
+        }
+        Ok(self
+            .sites_in(txn, customer_id)?
+            .into_iter()
+            .find(|site| site.is_default)
+            .map(|site| site.token))
     }
 
     // ---- Relay site table ----
@@ -1302,19 +1594,22 @@ impl<'d> Dai<'d> {
 
     // ---- Customer deletion ----
 
-    /// Deletes the customer's rows from the six DAI configuration tables, as
+    /// Deletes the customer's rows from the DAI tables, as
     /// [`Store::delete_dai_customer`](crate::Store::delete_dai_customer)
     /// describes.
     pub(crate) fn delete_customer(&self, customer_id: u32, sensors: &[String]) -> Result<()> {
-        self.delete_sensor_rows(customer_id, sensors)?;
+        let names = self.deletion_names(customer_id, sensors)?;
+        self.delete_observation_rows(customer_id, &names)?;
+        self.delete_sensor_rows(customer_id, &names)?;
+        self.delete_customer_observation_rows(customer_id)?;
         self.delete_customer_rows(customer_id)
     }
 
-    /// Deletes, in one transaction, every `dai sensor sites` row naming the
-    /// customer, and the `dai sensor state` rows of `sensors`, the names the
-    /// customer's sites list and the customer's sensors per the node table,
-    /// except a name the node table shows as a sensor of another customer.
-    fn delete_sensor_rows(&self, customer_id: u32, sensors: &[String]) -> Result<()> {
+    /// Returns the sensor names a deletion of the customer works on:
+    /// `sensors`, the names the customer's sites list and the customer's
+    /// sensors per the node table, less the names the node table shows as a
+    /// sensor of another customer; and those other customers' names.
+    fn deletion_names(&self, customer_id: u32, sensors: &[String]) -> Result<DeletionNames> {
         let (names, of_others) = self.read(|txn| {
             let mut names: BTreeSet<String> = sensors.iter().cloned().collect();
             for site in self.sites_in(txn, customer_id)? {
@@ -1330,7 +1625,15 @@ impl<'d> Dai<'d> {
             }
             Ok((names, of_others))
         })?;
+        Ok(DeletionNames {
+            own: names.difference(&of_others).cloned().collect(),
+            collected_of_others: names.intersection(&of_others).cloned().collect(),
+        })
+    }
 
+    /// Deletes, in one transaction, every `dai sensor sites` row naming the
+    /// customer, and the `dai sensor state` rows of the names `names` owns.
+    fn delete_sensor_rows(&self, customer_id: u32, names: &DeletionNames) -> Result<()> {
         self.write(|txn| {
             for (key, value) in Self::scan(&self.sensor_sites, txn, &[])? {
                 let (_, _, row) = decode_sensor_site(&key, &value)?;
@@ -1339,7 +1642,7 @@ impl<'d> Dai<'d> {
                         .context("cannot delete DAI sensor site")?;
                 }
             }
-            for name in names.difference(&of_others) {
+            for name in &names.own {
                 txn.delete_cf(self.sensor_state.cf, sensor_key(name))
                     .context("cannot delete DAI sensor state")?;
             }
@@ -1366,6 +1669,15 @@ impl<'d> Dai<'d> {
                 .context("cannot delete the DAI site policy guard")
         })
     }
+}
+
+/// The sensor names a deletion of a customer works on.
+struct DeletionNames {
+    /// The names whose sensor-keyed rows are deleted.
+    own: BTreeSet<String>,
+    /// The names the deletion collected that the node table shows as a
+    /// sensor of another customer.
+    collected_of_others: BTreeSet<String>,
 }
 
 /// Checks the ranges of a settings update.
@@ -1396,5 +1708,7 @@ fn check_site_name(name: &str) -> Result<(), DaiConfigError> {
     Ok(())
 }
 
+#[cfg(test)]
+mod observation_tests;
 #[cfg(test)]
 mod tests;

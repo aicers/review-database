@@ -75,9 +75,10 @@ pub use self::customer_data_deletion_job::{
     CustomerDataDeletionJob, CustomerDataDeletionService, CustomerDataDeletionServiceResult,
     CustomerDataDeletionStatus,
 };
-pub(crate) use self::dai::{Clock, Dai, now_nanos};
+pub(crate) use self::dai::{Clock, Dai, mark_restored, now_nanos};
 pub use self::dai::{
-    DaiConfigError, DaiRelaySite, DaiRelaySites, DaiSettings, DaiSettingsUpdate, DaiSite,
+    DaiBatchError, DaiConfigError, DaiNetworks, DaiRelaySite, DaiRelaySites, DaiSettings,
+    DaiSettingsUpdate, DaiSite, DaiStoreOutcome, dai_network_digest,
 };
 pub(crate) use self::engine_instance::{
     DetectorIdMarks, EngineInstances, Row as EngineInstanceRow, key as engine_instance_key,
@@ -207,13 +208,41 @@ pub(super) const DAI_CUSTOMER_SETTINGS: &str = "dai customer settings";
 pub(super) const DAI_RELAY_SITES: &str = "dai relay sites";
 /// The history of the site of each sensor.
 pub(super) const DAI_SENSOR_SITES: &str = "dai sensor sites";
-/// The configuration epoch and configuration hash of each sensor.
+/// The configuration epoch, configuration hash and observation state of each
+/// sensor.
 pub(super) const DAI_SENSOR_STATE: &str = "dai sensor state";
 /// The revision every write of a customer's DAI configuration, and every
 /// time series generation policy save, reads for update and increments.
 pub(super) const DAI_SITE_POLICY_GUARD: &str = "dai site policy guard";
 /// The sites of each customer.
 pub(super) const DAI_SITES: &str = "dai sites";
+// The observation, cursor and restore tables of device identification (DAI),
+// one column family each; see `dai`.
+/// The restore generation.
+pub(super) const DAI_META: &str = "dai meta";
+/// The read cursor of each sensor and observation kind.
+pub(super) const DAI_CURSORS: &str = "dai cursors";
+/// The sends of each slot of each sensor and observation kind.
+pub(super) const DAI_SLOT_SENDS: &str = "dai slot sends";
+/// The staged parts of each send.
+pub(super) const DAI_SEND_PARTS: &str = "dai send parts";
+/// The ranges a sensor skipped by the catch-up limit.
+pub(super) const DAI_CATCHUP_GAPS: &str = "dai catchup gaps";
+/// When each sensor and observation kind last stored an observation.
+pub(super) const DAI_SENSOR_KIND_STATE: &str = "dai sensor kind state";
+/// The DAI counters of each customer, per counter kind and date.
+pub(super) const DAI_COUNTERS: &str = "dai counters";
+/// The earliest slot start of the pending observations of each sensor and
+/// observation kind.
+pub(super) const DAI_EARLIEST_PENDING: &str = "dai earliest pending";
+/// The observations of each slot.
+pub(super) const DAI_OBSERVATIONS: &str = "dai observations";
+/// The observations folded out of their slots.
+pub(super) const DAI_OBSERVATION_SUMMARIES: &str = "dai observation summaries";
+/// The observations not yet applied.
+pub(super) const DAI_PENDING: &str = "dai pending";
+/// When each address of each site of each customer was active.
+pub(super) const DAI_IP_ACTIVITY: &str = "dai ip activity";
 pub(super) const DETECTOR_ID_MARKS: &str = "detector id marks";
 pub(super) const ENGINE_INSTANCES: &str = "engine instances";
 /// An empty column family that exists only so that `check_backup_format` can
@@ -325,14 +354,31 @@ pub(super) const TRUSTED_USER_AGENTS: &str = "trusted user agents";
 ///   sensor's configuration hash, none of which a build without them could
 ///   make; a customer with no row in them reads as one whose DAI settings
 ///   were never written and that has no site, so its policies pass the site
-///   condition.
+///   condition;
+/// - the DAI observation, cursor and restore tables start with the first
+///   open, cursor read, observation send or restore of a build that has
+///   them: no build without them answered a cursor read or stored a send, a
+///   missing restore generation is drawn afresh when the store is opened,
+///   and a sensor with no cursor row gets one at the next cursor read.
 ///
 /// The `senta` endpoint and DAI tables are listed here although no release
 /// yet carries a build without them, so that a backup of such a build is
 /// accepted whichever is released first.
-pub(super) const ADDED_WITHIN_FORMAT: [&str; 25] = [
+pub(super) const ADDED_WITHIN_FORMAT: [&str; 37] = [
     CONFIG_REVISIONS,
     CONFIG_REVISION_HISTORY,
+    DAI_CATCHUP_GAPS,
+    DAI_COUNTERS,
+    DAI_CURSORS,
+    DAI_EARLIEST_PENDING,
+    DAI_IP_ACTIVITY,
+    DAI_META,
+    DAI_OBSERVATIONS,
+    DAI_OBSERVATION_SUMMARIES,
+    DAI_PENDING,
+    DAI_SEND_PARTS,
+    DAI_SENSOR_KIND_STATE,
+    DAI_SLOT_SENDS,
     DAI_CUSTOMER_SETTINGS,
     DAI_RELAY_SITES,
     DAI_SENSOR_SITES,
@@ -358,7 +404,7 @@ pub(super) const ADDED_WITHIN_FORMAT: [&str; 25] = [
     SENTA_ENDPOINTS,
 ];
 
-pub(crate) const MAP_NAMES: [&str; 75] = [
+pub(crate) const MAP_NAMES: [&str; 87] = [
     AGENTS,
     BATCH_INFO,
     CATEGORY,
@@ -431,14 +477,26 @@ pub(crate) const MAP_NAMES: [&str; 75] = [
     SENTA_ENDPOINT_KEYSET_DOCUMENTS,
     SENTA_ENDPOINT_RECOVERY_KEY_DOCUMENTS,
     SENTA_ENDPOINTS,
-    // The DAI configuration families stay before the last entry for the same
-    // reason.
+    // The DAI configuration, observation, cursor and restore families stay
+    // before the last entry for the same reason.
     DAI_CUSTOMER_SETTINGS,
     DAI_RELAY_SITES,
     DAI_SENSOR_SITES,
     DAI_SENSOR_STATE,
     DAI_SITE_POLICY_GUARD,
     DAI_SITES,
+    DAI_META,
+    DAI_CURSORS,
+    DAI_SLOT_SENDS,
+    DAI_SEND_PARTS,
+    DAI_CATCHUP_GAPS,
+    DAI_SENSOR_KIND_STATE,
+    DAI_COUNTERS,
+    DAI_EARLIEST_PENDING,
+    DAI_OBSERVATIONS,
+    DAI_OBSERVATION_SUMMARIES,
+    DAI_PENDING,
+    DAI_IP_ACTIVITY,
     TRUSTED_USER_AGENTS,
 ];
 
@@ -513,12 +571,21 @@ pub(crate) struct StateDb {
 impl StateDb {
     pub fn open(path: &Path, backup: PathBuf) -> Result<Self> {
         let open = Self::record_open(path)?;
-        Self::open_db(path).map(|db| Self {
+        let state = Self::open_db(path).map(|db| Self {
             inner: Some(db),
             backup,
             db: path.to_owned(),
             _open: open,
-        })
+        })?;
+        // An offline restore leaves the move of the DAI cursors to the first
+        // open of the restored database.
+        if dai::is_marked_restored(state.db())? {
+            state.dai().after_restore(now_nanos()?)?;
+        }
+        // The DAI restore generation is drawn here, not by the first call
+        // that reads it, so a call promised to write nothing never writes it.
+        state.dai().restore_generation()?;
+        Ok(state)
     }
 
     /// Records the database directory at `path` in [`OPEN_STATE_DBS`],
@@ -768,7 +835,7 @@ impl StateDb {
     }
 
     pub(crate) fn dai(&self) -> Dai<'_> {
-        Dai::open(self.db()).expect("StateDb::open creates the DAI configuration families")
+        Dai::open(self.db()).expect("StateDb::open creates the DAI families")
     }
 
     pub(crate) fn config_revisions(&self) -> ConfigRevisions<'_> {
@@ -886,6 +953,10 @@ impl StateDb {
 
     /// Restores the latest backup over the database and reopens it.
     ///
+    /// The reopened database gets a new DAI restore generation and every DAI
+    /// cursor moved back by its lookback window (see
+    /// [`crate::Store::restore_from_backup`]).
+    ///
     /// # Errors
     ///
     /// Returns an error, before closing anything, if there is no backup, or
@@ -897,9 +968,11 @@ impl StateDb {
     /// [`crate::backup::restore_states_offline`] followed by
     /// [`crate::write_version_markers`].
     ///
-    /// Returns an error if the backup engine fails to restore the backup or
-    /// the restored database cannot be reopened, in which case the database
-    /// is left closed.
+    /// Returns an error if the backup engine fails to restore the backup, or
+    /// the restored database cannot be marked for the DAI restore step or
+    /// reopened, in which case the database is left closed, or if the DAI
+    /// state of the reopened database cannot be written, in which case the
+    /// next open of the database writes it.
     pub fn restore_from_latest_backup(&mut self) -> Result<()> {
         let mut engine = open_rocksdb_backup_engine(self.backup.as_path())?;
 
@@ -918,10 +991,14 @@ impl StateDb {
 
         engine.restore_from_backup(&self.db, &self.db, &opts, latest)?;
 
-        self.reboot()
+        self.finish_restore()
     }
 
     /// Restores backup `id` over the database and reopens it.
+    ///
+    /// The reopened database gets a new DAI restore generation and every DAI
+    /// cursor moved back by its lookback window (see
+    /// [`crate::Store::restore_from_backup`]).
     ///
     /// # Errors
     ///
@@ -933,9 +1010,11 @@ impl StateDb {
     /// [`crate::backup::restore_states_offline`] followed by
     /// [`crate::write_version_markers`].
     ///
-    /// Returns an error if the backup engine fails to restore the backup or
-    /// the restored database cannot be reopened, in which case the database
-    /// is left closed.
+    /// Returns an error if the backup engine fails to restore the backup, or
+    /// the restored database cannot be marked for the DAI restore step or
+    /// reopened, in which case the database is left closed, or if the DAI
+    /// state of the reopened database cannot be written, in which case the
+    /// next open of the database writes it.
     pub fn restore_from_backup(&mut self, id: u32) -> Result<()> {
         let mut engine = open_rocksdb_backup_engine(self.backup.as_path())?;
 
@@ -945,7 +1024,20 @@ impl StateDb {
 
         restore_rocksdb_backup(&mut engine, &self.db, id)?;
 
-        self.reboot()
+        self.finish_restore()
+    }
+
+    /// Marks the restored, still closed, database for the DAI restore step,
+    /// reopens it and runs that step.
+    ///
+    /// The marker is written before the reopen, so a process that stops
+    /// before the step commits leaves it to the next open of the database,
+    /// as after an offline restore; the step removes it in the transaction
+    /// that writes the new restore generation.
+    fn finish_restore(&mut self) -> Result<()> {
+        mark_restored(&self.db)?;
+        self.reboot()?;
+        self.dai().after_restore(now_nanos()?)
     }
 
     pub fn get_backup_info(&self) -> Result<Vec<rocksdb::backup::BackupEngineInfo>> {

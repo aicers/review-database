@@ -223,9 +223,52 @@ impl tracing::Subscriber for WarningLog {
     fn exit(&self, _: &tracing::span::Id) {}
 }
 
+/// A subscriber that wants no event but keeps every callsite asking the
+/// current subscriber, registered once for the rest of the test process by
+/// [`capture_warnings`].
+///
+/// While only one dispatcher is registered, `tracing` decides the interest
+/// of a callsite first hit on any thread from that thread's own subscriber.
+/// A test thread without one then caches the callsite as unwanted, and a
+/// warning a concurrent [`capture_warnings`] logs there is dropped. With this
+/// one always registered beside the capturing one, every callsite is decided
+/// from both, and is asked per event.
+struct KeepInterest;
+
+impl tracing::Subscriber for KeepInterest {
+    fn register_callsite(
+        &self,
+        _: &'static tracing::Metadata<'static>,
+    ) -> tracing::subscriber::Interest {
+        tracing::subscriber::Interest::sometimes()
+    }
+
+    fn enabled(&self, _: &tracing::Metadata<'_>) -> bool {
+        false
+    }
+
+    fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+        tracing::span::Id::from_u64(1)
+    }
+
+    fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
+
+    fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+
+    fn event(&self, _: &tracing::Event<'_>) {}
+
+    fn enter(&self, _: &tracing::span::Id) {}
+
+    fn exit(&self, _: &tracing::span::Id) {}
+}
+
+/// The [`KeepInterest`] dispatcher, registered while it lives.
+static KEEP_INTEREST: std::sync::OnceLock<tracing::Dispatch> = std::sync::OnceLock::new();
+
 /// Runs `f` with every warning logged on this thread recorded, and returns
 /// its output with the warnings, each as one line of ` name=value` pairs.
 pub(crate) fn capture_warnings<T>(f: impl FnOnce() -> T) -> (T, Vec<String>) {
+    KEEP_INTEREST.get_or_init(|| tracing::Dispatch::new(KeepInterest));
     let log = std::sync::Arc::new(Mutex::new(Vec::new()));
     let output = tracing::subscriber::with_default(WarningLog(log.clone()), || {
         // A callsite caches whether any subscriber wants it when it is first
@@ -242,4 +285,20 @@ pub(crate) fn capture_warnings<T>(f: impl FnOnce() -> T) -> (T, Vec<String>) {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .clone();
     (output, warnings)
+}
+
+mod tests {
+    /// Logs a warning from a callsite no other code hits.
+    fn warn_once_more() {
+        tracing::warn!(probe = 1, "capture probe");
+    }
+
+    #[test]
+    fn a_warning_is_captured_after_another_thread_first_hits_its_callsite() {
+        let ((), warnings) = super::capture_warnings(|| {
+            std::thread::spawn(warn_once_more).join().unwrap();
+            warn_once_more();
+        });
+        assert_eq!(warnings, [" message=capture probe probe=1"]);
+    }
 }

@@ -31,7 +31,13 @@
 //!   prefix of the encoding of another;
 //! - an IP address as one byte for its family, 4 or 6, followed by its
 //!   octets;
-//! - a Giganto node as its host name and then its instance.
+//! - a Giganto node as its host name and then its instance;
+//! - a device identification (DAI) observation kind as one byte, its
+//!   `DaiObservationKind` number, and a DAI counter kind as one byte, its
+//!   number;
+//! - a DAI identifier hash as its 16 bytes;
+//! - a date (days since the UNIX epoch) as an `i32` big-endian with its sign
+//!   bit flipped.
 //!
 //! Every per-endpoint table starts its key with the endpoint id, whose
 //! encoding has a fixed length, so a read by endpoint id covers exactly the
@@ -80,6 +86,8 @@ const ESCAPED_ZERO: u8 = 0xFF;
 const STRING_END: u8 = 0x00;
 /// The sign bit of an `i64`, flipped so that its encoding sorts numerically.
 const SIGN_BIT: u64 = 1 << 63;
+/// The sign bit of an `i32`, flipped so that its encoding sorts numerically.
+const SIGN_BIT_32: u32 = 1 << 31;
 /// The byte that starts an `IPv4` address.
 const IP_V4: u8 = 4;
 /// The byte that starts an `IPv6` address.
@@ -271,7 +279,7 @@ impl KeyWriter {
         self
     }
 
-    fn u64(mut self, value: u64) -> Self {
+    pub(super) fn u64(mut self, value: u64) -> Self {
         self.0.extend_from_slice(&value.to_be_bytes());
         self
     }
@@ -280,8 +288,25 @@ impl KeyWriter {
         self.u64(u64::from_be_bytes(value.to_be_bytes()) ^ SIGN_BIT)
     }
 
-    fn byte(mut self, value: u8) -> Self {
+    /// Writes a date, days since the UNIX epoch, as an `i32` big-endian with
+    /// its sign bit flipped.
+    pub(super) fn date(self, value: i32) -> Self {
+        self.u32(u32::from_be_bytes(value.to_be_bytes()) ^ SIGN_BIT_32)
+    }
+
+    pub(super) fn byte(mut self, value: u8) -> Self {
         self.0.push(value);
+        self
+    }
+
+    /// Writes a DAI observation kind as one byte, its number.
+    pub(super) fn dai_kind(self, kind: review_protocol::types::DaiObservationKind) -> Self {
+        self.byte(super::dai::kind_number(kind))
+    }
+
+    /// Writes a DAI identifier hash as its 16 bytes.
+    pub(super) fn hash(mut self, hash: &[u8; 16]) -> Self {
+        self.0.extend_from_slice(hash);
         self
     }
 
@@ -349,7 +374,7 @@ impl<'a> KeyReader<'a> {
         Ok(u32::from_be_bytes(self.take()?))
     }
 
-    fn u64(&mut self) -> Result<u64> {
+    pub(super) fn u64(&mut self) -> Result<u64> {
         Ok(u64::from_be_bytes(self.take()?))
     }
 
@@ -357,9 +382,28 @@ impl<'a> KeyReader<'a> {
         Ok(i64::from_be_bytes((self.u64()? ^ SIGN_BIT).to_be_bytes()))
     }
 
-    fn byte(&mut self) -> Result<u8> {
+    /// Reads a date written by [`KeyWriter::date`].
+    pub(super) fn date(&mut self) -> Result<i32> {
+        Ok(i32::from_be_bytes(
+            (self.u32()? ^ SIGN_BIT_32).to_be_bytes(),
+        ))
+    }
+
+    pub(super) fn byte(&mut self) -> Result<u8> {
         let [byte] = self.take()?;
         Ok(byte)
+    }
+
+    /// Reads a DAI observation kind written by [`KeyWriter::dai_kind`].
+    pub(super) fn dai_kind(&mut self) -> Result<review_protocol::types::DaiObservationKind> {
+        let number = self.byte()?;
+        super::dai::kind_from_number(number)
+            .ok_or_else(|| anyhow!("invalid DAI observation kind {number} in the key"))
+    }
+
+    /// Reads a DAI identifier hash written by [`KeyWriter::hash`].
+    pub(super) fn hash(&mut self) -> Result<[u8; 16]> {
+        self.take()
     }
 
     pub(super) fn str(&mut self) -> Result<String> {
