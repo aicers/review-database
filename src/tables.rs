@@ -77,8 +77,9 @@ pub use self::customer_data_deletion_job::{
 };
 pub(crate) use self::dai::{Clock, Dai, mark_restored, now_nanos};
 pub use self::dai::{
-    DaiBatchError, DaiConfigError, DaiNetworks, DaiRelaySite, DaiRelaySites, DaiSettings,
-    DaiSettingsUpdate, DaiSite, DaiStoreOutcome, dai_network_digest,
+    DaiBatchError, DaiConfigError, DaiIgnoredRange, DaiNetworks, DaiRangeCandidate, DaiRangeError,
+    DaiRelaySite, DaiRelaySites, DaiSettings, DaiSettingsUpdate, DaiSite, DaiStoreOutcome,
+    dai_network_digest,
 };
 pub(crate) use self::engine_instance::{
     DetectorIdMarks, EngineInstances, Row as EngineInstanceRow, key as engine_instance_key,
@@ -243,6 +244,16 @@ pub(super) const DAI_OBSERVATION_SUMMARIES: &str = "dai observation summaries";
 pub(super) const DAI_PENDING: &str = "dai pending";
 /// When each address of each site of each customer was active.
 pub(super) const DAI_IP_ACTIVITY: &str = "dai ip activity";
+// The unregistered range tables of device identification (DAI), one column
+// family each; see `dai`.
+/// The address block counts of each range day of each customer's sensors.
+pub(super) const DAI_RANGE_BLOCKS: &str = "dai range blocks";
+/// The DHCP subnets each customer's sensors saw on each date.
+pub(super) const DAI_RANGE_SUBNETS: &str = "dai range subnets";
+/// The lease, version, recollect mark and late subnets of each range day.
+pub(super) const DAI_RANGE_DAYS: &str = "dai range days";
+/// The candidate ranges each customer ignores.
+pub(super) const DAI_RANGE_IGNORES: &str = "dai range ignores";
 pub(super) const DETECTOR_ID_MARKS: &str = "detector id marks";
 pub(super) const ENGINE_INSTANCES: &str = "engine instances";
 /// An empty column family that exists only so that `check_backup_format` can
@@ -359,12 +370,17 @@ pub(super) const TRUSTED_USER_AGENTS: &str = "trusted user agents";
 ///   open, cursor read, observation send or restore of a build that has
 ///   them: no build without them answered a cursor read or stored a send, a
 ///   missing restore generation is drawn afresh when the store is opened,
-///   and a sensor with no cursor row gets one at the next cursor read.
+///   and a sensor with no cursor row gets one at the next cursor read;
+/// - the DAI unregistered range tables start with the first range request,
+///   late range report or range ignore of a build that has them: no build
+///   without them granted a range day, stored its counts or ignored a
+///   candidate range, and a range day with no row reads as one never
+///   granted, stored or marked.
 ///
 /// The `senta` endpoint and DAI tables are listed here although no release
 /// yet carries a build without them, so that a backup of such a build is
 /// accepted whichever is released first.
-pub(super) const ADDED_WITHIN_FORMAT: [&str; 37] = [
+pub(super) const ADDED_WITHIN_FORMAT: [&str; 41] = [
     CONFIG_REVISIONS,
     CONFIG_REVISION_HISTORY,
     DAI_CATCHUP_GAPS,
@@ -376,6 +392,10 @@ pub(super) const ADDED_WITHIN_FORMAT: [&str; 37] = [
     DAI_OBSERVATIONS,
     DAI_OBSERVATION_SUMMARIES,
     DAI_PENDING,
+    DAI_RANGE_BLOCKS,
+    DAI_RANGE_DAYS,
+    DAI_RANGE_IGNORES,
+    DAI_RANGE_SUBNETS,
     DAI_SEND_PARTS,
     DAI_SENSOR_KIND_STATE,
     DAI_SLOT_SENDS,
@@ -404,7 +424,7 @@ pub(super) const ADDED_WITHIN_FORMAT: [&str; 37] = [
     SENTA_ENDPOINTS,
 ];
 
-pub(crate) const MAP_NAMES: [&str; 87] = [
+pub(crate) const MAP_NAMES: [&str; 91] = [
     AGENTS,
     BATCH_INFO,
     CATEGORY,
@@ -477,8 +497,8 @@ pub(crate) const MAP_NAMES: [&str; 87] = [
     SENTA_ENDPOINT_KEYSET_DOCUMENTS,
     SENTA_ENDPOINT_RECOVERY_KEY_DOCUMENTS,
     SENTA_ENDPOINTS,
-    // The DAI configuration, observation, cursor and restore families stay
-    // before the last entry for the same reason.
+    // The DAI configuration, observation, cursor, restore and unregistered
+    // range families stay before the last entry for the same reason.
     DAI_CUSTOMER_SETTINGS,
     DAI_RELAY_SITES,
     DAI_SENSOR_SITES,
@@ -497,6 +517,10 @@ pub(crate) const MAP_NAMES: [&str; 87] = [
     DAI_OBSERVATION_SUMMARIES,
     DAI_PENDING,
     DAI_IP_ACTIVITY,
+    DAI_RANGE_BLOCKS,
+    DAI_RANGE_SUBNETS,
+    DAI_RANGE_DAYS,
+    DAI_RANGE_IGNORES,
     TRUSTED_USER_AGENTS,
 ];
 

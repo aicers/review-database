@@ -37,7 +37,11 @@
 //!   number;
 //! - a DAI identifier hash as its 16 bytes;
 //! - a date (days since the UNIX epoch) as an `i32` big-endian with its sign
-//!   bit flipped.
+//!   bit flipped;
+//! - a DAI range evidence as one byte, its number: 1 for `Sensor`, later
+//!   variants taking the next numbers;
+//! - an IP network as its address, encoded as an IP address above, followed
+//!   by its prefix length as one byte.
 //!
 //! Every per-endpoint table starts its key with the endpoint id, whose
 //! encoding has a fixed length, so a read by endpoint id covers exactly the
@@ -56,6 +60,7 @@ mod unenroll_request;
 use std::{marker::PhantomData, net::IpAddr};
 
 use anyhow::{Context, Result, anyhow};
+use ipnet::IpNet;
 use rocksdb::{IteratorMode, OptimisticTransactionDB, WriteBatchWithTransaction};
 use uuid::Uuid;
 
@@ -338,6 +343,17 @@ impl KeyWriter {
         self
     }
 
+    /// Writes a DAI range evidence as one byte, its number.
+    pub(super) fn range_evidence(self, evidence: review_protocol::types::DaiRangeEvidence) -> Self {
+        self.byte(super::dai::evidence_number(evidence))
+    }
+
+    /// Writes an IP network as its address followed by its prefix length as
+    /// one byte.
+    pub(super) fn ip_net(self, net: IpNet) -> Self {
+        self.ip(net.addr()).byte(net.prefix_len())
+    }
+
     fn node(self, node: &SentaEndpointGigantoNode) -> Self {
         self.str(&node.host).u32(node.instance)
     }
@@ -427,6 +443,21 @@ impl<'a> KeyReader<'a> {
             IP_V6 => Ok(IpAddr::from(self.take::<16>()?)),
             other => Err(anyhow!("invalid IP address family {other} in the key")),
         }
+    }
+
+    /// Reads a DAI range evidence written by [`KeyWriter::range_evidence`].
+    pub(super) fn range_evidence(&mut self) -> Result<review_protocol::types::DaiRangeEvidence> {
+        let number = self.byte()?;
+        super::dai::evidence_from_number(number)
+            .ok_or_else(|| anyhow!("invalid DAI range evidence {number} in the key"))
+    }
+
+    /// Reads an IP network written by [`KeyWriter::ip_net`].
+    pub(super) fn ip_net(&mut self) -> Result<IpNet> {
+        let addr = self.ip()?;
+        let prefix_len = self.byte()?;
+        IpNet::new(addr, prefix_len)
+            .map_err(|_| anyhow!("invalid prefix length {prefix_len} of {addr} in the key"))
     }
 
     fn node(&mut self) -> Result<SentaEndpointGigantoNode> {

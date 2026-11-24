@@ -30,6 +30,17 @@
 //! node table names the sensor for exactly one customer; a name it gives
 //! for no customer, or for two or more, is not a *customer sensor*.
 //!
+//! # Unregistered ranges
+//!
+//! Per sensor and per UTC date, an agent also sends the counts of the
+//! private and CGNAT addresses it saw outside the customer's registered
+//! networks, as a *range day* collected under a lease, and reports the late
+//! records that mark a stored day for recollection. The store folds the
+//! counts into candidate unregistered internal ranges, which an operator
+//! registers or ignores. These methods, from
+//! [`Store::begin_dai_range_day`] to [`Store::dai_ignored_ranges`], apply to
+//! customers with device identification off as well.
+//!
 //! Every method here that writes observations or cursors is one optimistic
 //! transaction, retried from the start on a commit conflict, except
 //! [`Store::apply_dai_retention`] and [`Store::delete_dai_customer`], which
@@ -295,13 +306,14 @@ impl Store {
     ///
     /// It deletes, in this order and in separate transactions: the cursors,
     /// sends, staged parts, catch-up gaps, sensor kind states, earliest
-    /// pending slots, observations, summaries and pending observations of
-    /// the names it owns, and, for a name it collected that the node table
-    /// shows as a sensor of another customer, the observations naming this
-    /// customer; every sensor site history row naming the customer, and the
-    /// sensor state rows of the names it owns; the customer's counters and
-    /// address activity; then the customer's settings, sites, relay site
-    /// table and site policy guard. The restore generation stays. An
+    /// pending slots, observations, summaries, range days and pending
+    /// observations of the names it owns, and, for a name it collected that
+    /// the node table shows as a sensor of another customer, the
+    /// observations naming this customer; every sensor site history row
+    /// naming the customer, and the sensor state rows of the names it owns;
+    /// the customer's counters, address activity, range blocks, range
+    /// subnets and ignored ranges; then the customer's settings, sites,
+    /// relay site table and site policy guard. The restore generation stays. An
     /// interrupted call repeated with the same names removes the rest, and a
     /// repeated call after success changes nothing. The customer's time
     /// series generation policies are left to
@@ -336,8 +348,17 @@ impl Store {
     /// other names are skipped. For each such sensor and each of the eight
     /// observation kinds, an entry holds the cursor, the read floor and the
     /// slots marked for re-extraction with their marks, ordered by slot
-    /// start. Entries are ordered by sensor name and then kind number, and
-    /// `range_days` is empty.
+    /// start. Entries are ordered by sensor name and then kind number.
+    ///
+    /// `range_days` lists, for each such sensor and each range evidence, the
+    /// dates within the 30 days ending with the date of `now`, strictly
+    /// after the date of the sensor's first cursor time as this read sees it
+    /// (so a sensor whose first cursor row this read creates lists none),
+    /// whose end plus 5 minutes plus 1 hour is at or before `now`, and that
+    /// carry a recollect mark or have no stored version, including dates
+    /// with no range day row. Each entry carries the day's mark and stored
+    /// version, both `None` for a date with no row, and they are ordered by
+    /// sensor name, then date, then evidence. Listing them writes nothing.
     ///
     /// A missing (sensor, kind) row is created in the same transaction, for
     /// a disabled customer's sensor too: its read floor is `now`, or, for an
@@ -433,7 +454,8 @@ impl Store {
     /// re-extract marks whose slot started more than 30 days ago; and
     /// deletes the summaries and address activity last seen more than 180
     /// days ago, the catch-up gaps that ended more than 180 days ago, and
-    /// the counters dated more than 30 days before the date of `now`.
+    /// the counters, range blocks, range subnets and range days dated more
+    /// than 30 days before the date of `now`. Ignored ranges stay.
     ///
     /// It commits in several transactions, each row's change atomic.
     ///

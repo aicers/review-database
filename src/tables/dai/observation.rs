@@ -68,8 +68,9 @@ pub enum DaiStoreOutcome {
         /// The current restore generation.
         restore_generation: u64,
     },
-    /// The sensor is not collected: it is not a customer sensor, or its
-    /// customer has device identification off. Nothing was written.
+    /// The sensor is not collected: for observations, it is not a customer
+    /// sensor or its customer has device identification off; for a range
+    /// day, it is not a customer sensor. Nothing was written.
     NotCollected {
         /// The current restore generation.
         restore_generation: u64,

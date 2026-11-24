@@ -78,24 +78,25 @@ pub use self::tables::{
     BackupConfigUpdate, BuildSelector, Cluster, ClusterTimeSeries, ColumnStats, ColumnTimeSeries,
     ConfigRevisionRecord, CoreComponent, CsvColumnExtra as CsvColumnExtraConfig,
     CustomerDataDeletionJob, CustomerDataDeletionService, CustomerDataDeletionServiceResult,
-    CustomerDataDeletionStatus, DaiBatchError, DaiConfigError, DaiNetworks, DaiRelaySite,
-    DaiRelaySites, DaiSettings, DaiSettingsUpdate, DaiSite, DaiStoreOutcome, DetectorSourceStatus,
-    DetectorState, DetectorStatus, EngineDetectorRef, EngineDocumentError, EngineDocumentRefs,
-    EngineDocumentWrite, EngineInstanceState, ExclusionReason, ExternalService,
-    ExternalServiceConfig, ExternalServiceKind, ExternalServiceStatus, IndexedTable, InstallIntent,
-    InstanceAllocation, InstanceAllocationError, Iterable, LabelDb, LabelDbKind, LabelDbRule,
-    LabelDbRuleKind, Lifecycle, ListenerBinding, ListenerTransport, Model as ModelDigest,
-    ModelIndicator, ModelInstance, ModelMethod, ModelOwner, ModelRun, ModelUse, Network,
-    NetworkFilter, NetworkListEntry, NetworkListReplaceOutcome, NetworkListSet, NetworkListTable,
-    NetworkUpdate, NewTimeSeriesGenerationPolicy, NewTrainingDefinition, Node, NodeProfile,
-    NodeTable, NodeUpdate, OperationAction, OperationAttempt, OperationCleanupState,
-    OperationFailureKind, OperationOnFailure, OperationOutcome, OperationPhase,
-    OperationRetentionBound, OperationRetryPolicy, OutlierInfo, OutlierInfoKey, OutlierInfoValue,
-    OwnedNetwork, OwnedNetworkSet, OwnedNetworkTable, PacketAttr, PolicyState, PolicyUse,
-    PortAllocation, PortAllocationError, PortOwner, PreviousTraining, PreviousTrainingResults,
-    ProtocolPorts, ReplaceOutcome, ReplacedModel, ReportedRunState, RequestKeyError, Response,
-    ResponseKind, RetentionConfig, RetentionConfigUpdate, RoundOutcome, RunId, RunKind, RunState,
-    ScoreCondition, SentaEndpoint, SentaEndpointActiveList, SentaEndpointActiveListEntry,
+    CustomerDataDeletionStatus, DaiBatchError, DaiConfigError, DaiIgnoredRange, DaiNetworks,
+    DaiRangeCandidate, DaiRangeError, DaiRelaySite, DaiRelaySites, DaiSettings, DaiSettingsUpdate,
+    DaiSite, DaiStoreOutcome, DetectorSourceStatus, DetectorState, DetectorStatus,
+    EngineDetectorRef, EngineDocumentError, EngineDocumentRefs, EngineDocumentWrite,
+    EngineInstanceState, ExclusionReason, ExternalService, ExternalServiceConfig,
+    ExternalServiceKind, ExternalServiceStatus, IndexedTable, InstallIntent, InstanceAllocation,
+    InstanceAllocationError, Iterable, LabelDb, LabelDbKind, LabelDbRule, LabelDbRuleKind,
+    Lifecycle, ListenerBinding, ListenerTransport, Model as ModelDigest, ModelIndicator,
+    ModelInstance, ModelMethod, ModelOwner, ModelRun, ModelUse, Network, NetworkFilter,
+    NetworkListEntry, NetworkListReplaceOutcome, NetworkListSet, NetworkListTable, NetworkUpdate,
+    NewTimeSeriesGenerationPolicy, NewTrainingDefinition, Node, NodeProfile, NodeTable, NodeUpdate,
+    OperationAction, OperationAttempt, OperationCleanupState, OperationFailureKind,
+    OperationOnFailure, OperationOutcome, OperationPhase, OperationRetentionBound,
+    OperationRetryPolicy, OutlierInfo, OutlierInfoKey, OutlierInfoValue, OwnedNetwork,
+    OwnedNetworkSet, OwnedNetworkTable, PacketAttr, PolicyState, PolicyUse, PortAllocation,
+    PortAllocationError, PortOwner, PreviousTraining, PreviousTrainingResults, ProtocolPorts,
+    ReplaceOutcome, ReplacedModel, ReportedRunState, RequestKeyError, Response, ResponseKind,
+    RetentionConfig, RetentionConfigUpdate, RoundOutcome, RunId, RunKind, RunState, ScoreCondition,
+    SentaEndpoint, SentaEndpointActiveList, SentaEndpointActiveListEntry,
     SentaEndpointActiveListTable, SentaEndpointAddressRoot, SentaEndpointCommand,
     SentaEndpointCommandState, SentaEndpointCurrentDocument, SentaEndpointCustomer,
     SentaEndpointDeletionState, SentaEndpointDocumentResult, SentaEndpointDocumentResultKey,
@@ -1147,10 +1148,22 @@ impl Store {
     /// boundary. A cursor never moves before the start of the slot holding
     /// its read floor, nor of the slot holding the last-enabled time of the
     /// sensor's customer, nor later than it was restored. Its confirmed
-    /// slots are cleared; its read floor and re-extract marks stay. The same
-    /// happens through [`backup::restore`], and, at the next open of the
-    /// store, after [`backup::restore_states_offline`] or after a restore
-    /// whose process stopped before this step was written.
+    /// slots are cleared; its read floor and re-extract marks stay.
+    ///
+    /// In the same step, every DAI range day gets a new random lease token
+    /// whose lease ends at once, so no token issued before the restore is
+    /// accepted and the next begin is granted. For each sensor with cursor
+    /// rows, every range day with a stored version dated on or after the
+    /// date of R − L gets a new recollect mark from the sensor's mark
+    /// counter, replacing any earlier mark: R is the latest of the sensor's
+    /// cursors as restored, and L the longest of 24 hours, the longest
+    /// arrival delay any of its cursor rows recorded in the last 30 days and
+    /// the longest late delay reported for its range days dated in the last
+    /// 30 days.
+    ///
+    /// The same happens through [`backup::restore`], and, at the next open
+    /// of the store, after [`backup::restore_states_offline`] or after a
+    /// restore whose process stopped before this step was written.
     ///
     /// # Errors
     ///
