@@ -482,6 +482,11 @@ thread_local! {
     /// the pending rows.
     static PENDING_SCANNED: std::cell::RefCell<Option<TestHook>> =
         const { std::cell::RefCell::new(None) };
+    /// A hook the tests run once, in the thread that set it, in the next
+    /// catch-up skip, right after its scan of the existing gaps and before
+    /// its tracked reads of them.
+    static GAPS_SCANNED: std::cell::RefCell<Option<TestHook>> =
+        const { std::cell::RefCell::new(None) };
 }
 
 /// Sets the hook the next recomputation of an earliest pending slot in this
@@ -495,6 +500,21 @@ fn set_pending_scanned_hook(hook: TestHook) {
 #[cfg(test)]
 fn run_pending_scanned_hook(db: &OptimisticTransactionDB) {
     if let Some(hook) = PENDING_SCANNED.with(|cell| cell.borrow_mut().take()) {
+        hook(db);
+    }
+}
+
+/// Sets the hook the next catch-up skip in this thread runs after its scan
+/// of the existing gaps.
+#[cfg(test)]
+fn set_gaps_scanned_hook(hook: TestHook) {
+    GAPS_SCANNED.with(|cell| *cell.borrow_mut() = Some(hook));
+}
+
+/// Runs, and clears, the gaps-scanned hook set in this thread, if any.
+#[cfg(test)]
+fn run_gaps_scanned_hook(db: &OptimisticTransactionDB) {
+    if let Some(hook) = GAPS_SCANNED.with(|cell| cell.borrow_mut().take()) {
         hook(db);
     }
 }
