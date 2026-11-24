@@ -2,7 +2,7 @@
 
 use std::{
     borrow::Cow,
-    collections::{HashMap, HashSet},
+    collections::{BTreeSet, HashMap, HashSet},
     fmt::Display,
 };
 
@@ -75,6 +75,34 @@ impl Display for Config {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.inner)
     }
+}
+
+/// Returns the sensor name of `node`: the [`AgentKind::Sensor`] package-id,
+/// a dot and the hostname of the node's applied profile.
+///
+/// Returns `None` if the node has no applied profile, its hostname is empty,
+/// or none of its agents is an [`AgentKind::Sensor`] agent.
+#[must_use]
+pub fn sensor_name(node: &Node) -> Option<String> {
+    let profile = node.profile.as_ref()?;
+    if !node
+        .agents
+        .iter()
+        .any(|agent| agent.kind == AgentKind::Sensor)
+    {
+        return None;
+    }
+    sensor_name_of(&profile.hostname)
+}
+
+/// Returns the sensor name of a node with the applied hostname `hostname`
+/// that carries a sensor agent, or `None` if `hostname` is empty.
+fn sensor_name_of(hostname: &str) -> Option<String> {
+    if hostname.is_empty() {
+        return None;
+    }
+    let package_id = AgentKind::Sensor.package_id()?;
+    Some(format!("{package_id}.{hostname}"))
 }
 
 #[derive(Clone, Deserialize, Serialize, PartialEq, Debug)]
@@ -309,6 +337,48 @@ impl<'d> Table<'d> {
             }
         }
         Ok(false)
+    }
+
+    /// Returns every sensor name the nodes give as `txn` sees them, each with
+    /// the customer of the node that gives it, ordered by customer and then
+    /// name: for each node whose applied profile has a non-empty hostname and
+    /// that carries an [`AgentKind::Sensor`] agent, the customer of that
+    /// profile and the [`AgentKind::Sensor`] package-id, a dot and the
+    /// hostname. A name given by nodes of two customers is listed for each.
+    ///
+    /// Nothing is read for update, and the scan is not tracked.
+    pub(crate) fn sensor_names_in_transaction(
+        &self,
+        txn: &rocksdb::Transaction<OptimisticTransactionDB>,
+    ) -> Result<BTreeSet<(u32, String)>> {
+        let mut names = BTreeSet::new();
+        for item in txn.iterator_cf(self.node.raw().cf(), rocksdb::IteratorMode::Start) {
+            let (key, value) = item.context("cannot read nodes")?;
+            if key.is_empty() {
+                continue;
+            }
+            let inner: Inner = super::deserialize(&value)?;
+            let Some(profile) = inner.profile.as_ref() else {
+                continue;
+            };
+            let Some(name) = sensor_name_of(&profile.hostname) else {
+                continue;
+            };
+            for agent_key in &inner.agents {
+                let key = engine_instance::key(inner.id, agent_key);
+                let is_sensor = txn
+                    .get_cf(self.agent.raw().cf, &key)
+                    .context("cannot read agent")?
+                    .map(|value| Agent::from_key_value(&key, &value))
+                    .transpose()?
+                    .is_some_and(|agent| agent.kind == AgentKind::Sensor);
+                if is_sensor {
+                    names.insert((profile.customer_id, name));
+                    break;
+                }
+            }
+        }
+        Ok(names)
     }
 
     /// Returns the applied profile of node `id`, read for update within

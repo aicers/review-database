@@ -1291,8 +1291,9 @@ mod tests {
     /// Adds to the backup engine in `backup_dir` a backup of a store in the
     /// current format holding `events` events, as an earlier build of the
     /// format left it: without the [`ADDED_WITHIN_FORMAT`] families, which
-    /// are the configuration revision families and the Clumit Endpoint
-    /// (`senta`) families.
+    /// are the configuration revision families, the Clumit Endpoint
+    /// (`senta`) families and the device identification (DAI) configuration
+    /// families.
     fn add_earlier_build_backup(backup_dir: &Path, events: usize) {
         let source = tempfile::tempdir().unwrap();
         let source_backup = tempfile::tempdir().unwrap();
@@ -1316,12 +1317,14 @@ mod tests {
     }
 
     /// A backup taken by an earlier build of the current format lacks the
-    /// [`ADDED_WITHIN_FORMAT`] families — the configuration revision families
-    /// and the Clumit Endpoint (`senta`) families — which that build did not
-    /// have. It is in the current format, so it restores online by id and as
-    /// the latest, the restored store has every family of the format, it
-    /// records configuration revisions, it stores an observation, and it
-    /// registers a senta endpoint install.
+    /// [`ADDED_WITHIN_FORMAT`] families — the configuration revision
+    /// families, the Clumit Endpoint (`senta`) families and the DAI
+    /// configuration families — which that build did not have. It is in the
+    /// current format, so it restores online by id and as the latest, the
+    /// restored store has every family of the format, it records
+    /// configuration revisions, it stores an observation, it registers a
+    /// senta endpoint install, and its DAI configuration families are empty
+    /// and written to.
     #[test]
     fn online_restore_accepts_an_earlier_build_backup_of_the_current_format() {
         let _permit = acquire_db_permit();
@@ -1388,6 +1391,39 @@ mod tests {
             assert_eq!(store.senta_endpoint_customer_map().get(1).unwrap(), None);
             assert!(installs.register("install", "{}", 1).unwrap());
             assert!(installs.get("install").unwrap().is_some());
+
+            for name in [
+                "dai customer settings",
+                "dai relay sites",
+                "dai sensor sites",
+                "dai sensor state",
+                "dai site policy guard",
+                "dai sites",
+            ] {
+                let cf = db.cf_handle(name).unwrap();
+                assert_eq!(
+                    db.iterator_cf(cf, rocksdb::IteratorMode::Start).count(),
+                    0,
+                    "{name}"
+                );
+            }
+            assert_eq!(
+                store.dai_settings(1).unwrap(),
+                crate::DaiSettings::default()
+            );
+            assert_eq!(store.dai_sites(1).unwrap(), Vec::new());
+            let token = store.ensure_default_site(1).unwrap();
+            assert_eq!(store.dai_sites(1).unwrap().len(), 1);
+            assert_eq!(
+                store.dai_sensor_site(1, "piglet.host", 0).unwrap(),
+                Some(token)
+            );
+            assert_eq!(
+                store
+                    .record_dai_sensor_config_hash("piglet.host", b"h")
+                    .unwrap(),
+                1
+            );
         }
         drop(store);
         assert_eq!(event_count(data_dir.path(), backup_dir.path()), 2);
@@ -1401,6 +1437,9 @@ mod tests {
     /// The column families every backup of an older format lacks, quoted and
     /// in the order the refusal lists them.
     const MISSING_FROM_OLDER: &str = "\"config revision history\", \"config revisions\", \
+                                      \"dai customer settings\", \"dai relay sites\", \
+                                      \"dai sensor sites\", \"dai sensor state\", \
+                                      \"dai site policy guard\", \"dai sites\", \
                                       \"format 0.63\", \"senta active list\", \
                                       \"senta document results\", \
                                       \"senta endpoint address roots\", \
@@ -1738,6 +1777,41 @@ mod tests {
         assert_still_open(&store, data_dir.path(), backup_dir.path(), &before);
         drop(store);
         assert_eq!(event_count(data_dir.path(), backup_dir.path()), 2);
+    }
+
+    /// A backup holding rows of the removed `hosts` table is still in the
+    /// current format: the family stays in the format until the next
+    /// version, and the restored rows are left as they are.
+    #[test]
+    fn online_restore_accepts_a_backup_with_hosts_rows() {
+        let _permit = acquire_db_permit();
+        let data_dir = tempfile::tempdir().unwrap();
+        let backup_dir = tempfile::tempdir().unwrap();
+        let store = open_current_store(data_dir.path(), backup_dir.path());
+        {
+            let store = store.read().expect("test holds no other locks");
+            let db = store.states.db();
+            let hosts = db.cf_handle("hosts").unwrap();
+            db.put_cf(hosts, b"host key", b"host value").unwrap();
+        }
+        put_event(&store);
+        create(&store, true, 3).unwrap();
+        put_event(&store);
+
+        store
+            .write()
+            .expect("test holds no other locks")
+            .restore_from_backup(1)
+            .unwrap();
+
+        assert_eq!(live_event_count(&store), 1);
+        let store = store.read().expect("test holds no other locks");
+        let db = store.states.db();
+        let hosts = db.cf_handle("hosts").unwrap();
+        assert_eq!(
+            db.get_cf(hosts, b"host key").unwrap().as_deref(),
+            Some(&b"host value"[..])
+        );
     }
 
     #[test]

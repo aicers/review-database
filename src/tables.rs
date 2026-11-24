@@ -9,9 +9,9 @@ mod config_revision;
 mod core_component;
 mod csv_column_extra;
 mod customer_data_deletion_job;
+mod dai;
 mod engine_instance;
 mod external_service;
-mod hosts;
 mod instance_allocation;
 mod label_db;
 mod lifecycle;
@@ -75,6 +75,10 @@ pub use self::customer_data_deletion_job::{
     CustomerDataDeletionJob, CustomerDataDeletionService, CustomerDataDeletionServiceResult,
     CustomerDataDeletionStatus,
 };
+pub(crate) use self::dai::{Dai, now_nanos};
+pub use self::dai::{
+    DaiConfigError, DaiRelaySite, DaiRelaySites, DaiSettings, DaiSettingsUpdate, DaiSite,
+};
 pub(crate) use self::engine_instance::{
     DetectorIdMarks, EngineInstances, Row as EngineInstanceRow, key as engine_instance_key,
 };
@@ -84,7 +88,6 @@ pub use self::engine_instance::{
     SourceState,
 };
 pub use self::external_service::{ExternalService, ExternalServiceKind};
-pub use self::hosts::{Host, UserAgent};
 pub use self::instance_allocation::{InstanceAllocation, InstanceAllocationError};
 pub use self::label_db::{
     Kind as LabelDbKind, LabelDb, Rule as LabelDbRule, RuleKind as LabelDbRuleKind,
@@ -104,7 +107,7 @@ pub(crate) use self::node::Inner as InnerNode;
 pub use self::node::{
     Config as AgentConfig, Config as ExternalServiceConfig, Node, Profile as NodeProfile,
     Status as AgentStatus, Status as ExternalServiceStatus, Table as NodeTable,
-    Update as NodeUpdate,
+    Update as NodeUpdate, sensor_name,
 };
 pub use self::operation_attempt::{
     Action as OperationAction, AddressAllocationError, BuildSelector,
@@ -196,6 +199,21 @@ pub(super) const CORE_COMPONENTS: &str = "core components";
 pub(super) const CSV_COLUMN_EXTRAS: &str = "csv column extras";
 pub(super) const CUSTOMER_DELETION_JOBS: &str = "customer deletion jobs";
 pub(super) const CUSTOMER_NETWORKS: &str = "customer networks";
+// The configuration tables of device identification (DAI), one column family
+// each; see `dai`.
+/// The DAI settings of each customer.
+pub(super) const DAI_CUSTOMER_SETTINGS: &str = "dai customer settings";
+/// The site of each DHCP relay of each customer.
+pub(super) const DAI_RELAY_SITES: &str = "dai relay sites";
+/// The history of the site of each sensor.
+pub(super) const DAI_SENSOR_SITES: &str = "dai sensor sites";
+/// The configuration epoch and configuration hash of each sensor.
+pub(super) const DAI_SENSOR_STATE: &str = "dai sensor state";
+/// The revision every write of a customer's DAI configuration, and every
+/// time series generation policy save, reads for update and increments.
+pub(super) const DAI_SITE_POLICY_GUARD: &str = "dai site policy guard";
+/// The sites of each customer.
+pub(super) const DAI_SITES: &str = "dai sites";
 pub(super) const DETECTOR_ID_MARKS: &str = "detector id marks";
 pub(super) const ENGINE_INSTANCES: &str = "engine instances";
 /// An empty column family that exists only so that `check_backup_format` can
@@ -207,6 +225,10 @@ pub(super) const ENGINE_INSTANCES: &str = "engine instances";
 /// taken before 0.63 lacks it and is refused. Nothing reads or writes rows in
 /// it.
 pub(super) const FORMAT_0_63: &str = "format 0.63";
+/// The column family of the removed `hosts` table. Nothing reads or writes
+/// it; it is kept only so that backups taken by older builds of the current
+/// format, which have it, are still accepted, and goes with the next format
+/// version.
 pub(super) const HOSTS: &str = "hosts";
 pub(super) const INSTANCE_ALLOCATIONS: &str = "instance allocations";
 pub(super) const MODELS: &str = "models";
@@ -296,14 +318,27 @@ pub(super) const TRUSTED_USER_AGENTS: &str = "trusted user agents";
 ///   observation `REview` stores, and no build without them observed any;
 /// - the trust-state, document, enrollment and command tables of `senta`
 ///   endpoints start with the first registration of an install, a customer
-///   or an enrollment attempt.
+///   or an enrollment attempt;
+/// - the device identification (DAI) configuration tables start with the
+///   first write of a customer's DAI settings, sites or relay site table, the
+///   first time series generation policy save, or the first recording of a
+///   sensor's configuration hash, none of which a build without them could
+///   make; a customer with no row in them reads as one whose DAI settings
+///   were never written and that has no site, so its policies pass the site
+///   condition.
 ///
-/// The `senta` endpoint tables are listed here although no release yet
-/// carries a build without them, so that a backup of such a build is
+/// The `senta` endpoint and DAI tables are listed here although no release
+/// yet carries a build without them, so that a backup of such a build is
 /// accepted whichever is released first.
-pub(super) const ADDED_WITHIN_FORMAT: [&str; 19] = [
+pub(super) const ADDED_WITHIN_FORMAT: [&str; 25] = [
     CONFIG_REVISIONS,
     CONFIG_REVISION_HISTORY,
+    DAI_CUSTOMER_SETTINGS,
+    DAI_RELAY_SITES,
+    DAI_SENSOR_SITES,
+    DAI_SENSOR_STATE,
+    DAI_SITE_POLICY_GUARD,
+    DAI_SITES,
     SENTA_ACTIVE_LIST,
     SENTA_DOCUMENT_RESULTS,
     SENTA_ENDPOINT_EVENTS,
@@ -323,7 +358,7 @@ pub(super) const ADDED_WITHIN_FORMAT: [&str; 19] = [
     SENTA_ENDPOINTS,
 ];
 
-pub(crate) const MAP_NAMES: [&str; 69] = [
+pub(crate) const MAP_NAMES: [&str; 75] = [
     AGENTS,
     BATCH_INFO,
     CATEGORY,
@@ -396,6 +431,14 @@ pub(crate) const MAP_NAMES: [&str; 69] = [
     SENTA_ENDPOINT_KEYSET_DOCUMENTS,
     SENTA_ENDPOINT_RECOVERY_KEY_DOCUMENTS,
     SENTA_ENDPOINTS,
+    // The DAI configuration families stay before the last entry for the same
+    // reason.
+    DAI_CUSTOMER_SETTINGS,
+    DAI_RELAY_SITES,
+    DAI_SENSOR_SITES,
+    DAI_SENSOR_STATE,
+    DAI_SITE_POLICY_GUARD,
+    DAI_SITES,
     TRUSTED_USER_AGENTS,
 ];
 
@@ -724,6 +767,10 @@ impl StateDb {
             .expect("StateDb::open creates the senta endpoint column families")
     }
 
+    pub(crate) fn dai(&self) -> Dai<'_> {
+        Dai::open(self.db()).expect("StateDb::open creates the DAI configuration families")
+    }
+
     pub(crate) fn config_revisions(&self) -> ConfigRevisions<'_> {
         ConfigRevisions::open(self.db())
             .expect("StateDb::open creates the config revision families")
@@ -811,12 +858,6 @@ impl StateDb {
     pub(crate) fn configs(&self) -> Table<'_, String> {
         let inner = self.inner.as_ref().expect("database must be open");
         Table::<String>::open(inner).expect("{CONFIGS} table must be present")
-    }
-
-    #[must_use]
-    pub(crate) fn hosts(&self) -> Table<'_, Host> {
-        let inner = self.inner.as_ref().expect("database must be open");
-        Table::<Host>::open(inner).expect("{HOSTS} table must be present")
     }
 
     #[must_use]
@@ -983,7 +1024,6 @@ mod iteration {
     impl Eligible for tables::CsvColumnExtra {}
     impl Eligible for tables::CustomerDataDeletionJob {}
     impl Eligible for tables::ExternalService {}
-    impl Eligible for tables::Host {}
     impl Eligible for tables::InstanceAllocation {}
     impl Eligible for tables::InnerNode {}
     impl Eligible for tables::LabelDb {}
@@ -1038,7 +1078,6 @@ mod plain_writes {
     impl Eligible for tables::CoreComponent {}
     impl Eligible for tables::CustomerDataDeletionJob {}
     impl Eligible for tables::ExternalService {}
-    impl Eligible for tables::Host {}
     impl Eligible for tables::OutlierInfo {}
     impl Eligible for crate::Scores {}
     impl Eligible for tables::TimeSeries {}
