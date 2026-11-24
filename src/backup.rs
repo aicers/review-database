@@ -614,11 +614,12 @@ mod tests {
         Detail, DetectionEvent, DetectionModel, EventCategory, RawEventBody, RawEventKind, Target,
         raw_event,
     };
+    use rocksdb::Direction;
 
     use super::{OfflineRestoreError, create, list, restore, restore_states_offline};
     use crate::test::acquire_db_permit;
     use crate::{
-        DEFAULT_STATES, DetectionEventStamp, ModelInstance, Store,
+        DEFAULT_STATES, DetectionEventStamp, Iterable, ModelInstance, Store,
         migration::DATABASE_FORMAT_VERSION,
         tables::{
             ADDED_WITHIN_FORMAT, FORMAT_0_63, MAP_NAMES, TIME_SERIES_GENERATION_POLICY,
@@ -1290,8 +1291,8 @@ mod tests {
     /// Adds to the backup engine in `backup_dir` a backup of a store in the
     /// current format holding `events` events, as an earlier build of the
     /// format left it: without the [`ADDED_WITHIN_FORMAT`] families, which
-    /// are the configuration revision families and the observation tables of
-    /// `senta` endpoints.
+    /// are the configuration revision families and the Clumit Endpoint
+    /// (`senta`) families.
     fn add_earlier_build_backup(backup_dir: &Path, events: usize) {
         let source = tempfile::tempdir().unwrap();
         let source_backup = tempfile::tempdir().unwrap();
@@ -1316,10 +1317,11 @@ mod tests {
 
     /// A backup taken by an earlier build of the current format lacks the
     /// [`ADDED_WITHIN_FORMAT`] families — the configuration revision families
-    /// and the observation tables of `senta` endpoints — which that build did
-    /// not have. It is in the current format, so it restores online by id and
-    /// as the latest, the restored store has every family of the format, it
-    /// records configuration revisions, and it stores an observation.
+    /// and the Clumit Endpoint (`senta`) families — which that build did not
+    /// have. It is in the current format, so it restores online by id and as
+    /// the latest, the restored store has every family of the format, it
+    /// records configuration revisions, it stores an observation, and it
+    /// registers a senta endpoint install.
     #[test]
     fn online_restore_accepts_an_earlier_build_backup_of_the_current_format() {
         let _permit = acquire_db_permit();
@@ -1381,6 +1383,11 @@ mod tests {
             assert_eq!(requests.iter().count(), 0);
             requests.put(&request).unwrap();
             assert_eq!(requests.get(request.endpoint_id).unwrap(), Some(request));
+            let installs = store.senta_endpoint_install_map();
+            assert_eq!(installs.iter(Direction::Forward, None).count(), 0);
+            assert_eq!(store.senta_endpoint_customer_map().get(1).unwrap(), None);
+            assert!(installs.register("install", "{}", 1).unwrap());
+            assert!(installs.get("install").unwrap().is_some());
         }
         drop(store);
         assert_eq!(event_count(data_dir.path(), backup_dir.path()), 2);
@@ -1395,8 +1402,17 @@ mod tests {
     /// in the order the refusal lists them.
     const MISSING_FROM_OLDER: &str = "\"config revision history\", \"config revisions\", \
                                       \"format 0.63\", \"senta active list\", \
-                                      \"senta document results\", \"senta endpoint events\", \
-                                      \"senta giganto entries\", \
+                                      \"senta document results\", \
+                                      \"senta endpoint address roots\", \
+                                      \"senta endpoint commands\", \
+                                      \"senta endpoint current documents\", \
+                                      \"senta endpoint customers\", \
+                                      \"senta endpoint enrollment attempts\", \
+                                      \"senta endpoint events\", \
+                                      \"senta endpoint installs\", \
+                                      \"senta endpoint keyset documents\", \
+                                      \"senta endpoint recovery key documents\", \
+                                      \"senta endpoints\", \"senta giganto entries\", \
                                       \"senta giganto last received\", \
                                       \"senta giganto losses\", \"senta status reports\", \
                                       \"senta unenroll requests\", \

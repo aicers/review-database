@@ -1,4 +1,10 @@
-//! The observation tables of Clumit Endpoint (`senta`) agents.
+//! The tables of Clumit Endpoint (`senta`) agents.
+//!
+//! The nine tables holding the customers' trust states, the signed
+//! documents, the enrolled endpoints, their enrollment attempts and their
+//! commands, which the deletion-guarded transaction methods of
+//! [`Store`](crate::Store) write together, are in `trust`, with their own
+//! key encoding. The rest of this module is the observation tables.
 //!
 //! `REview` keeps what it observes of its endpoints in eight tables: the
 //! active list it applied, the state of each Giganto node's endpoint entry,
@@ -36,6 +42,7 @@ mod giganto_entry;
 mod giganto_last_received;
 mod giganto_loss;
 mod status_report;
+pub(super) mod trust;
 mod unenroll_request;
 
 use std::marker::PhantomData;

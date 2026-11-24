@@ -54,6 +54,15 @@ mod private {
     impl Sealed for tables::OutlierInfo {}
     impl Sealed for tables::PortAllocation {}
     impl Sealed for types::Qualifier {}
+    impl Sealed for tables::SentaEndpoint {}
+    impl Sealed for tables::SentaEndpointAddressRoot {}
+    impl Sealed for tables::SentaEndpointCommand {}
+    impl Sealed for tables::SentaEndpointCurrentDocument {}
+    impl Sealed for tables::SentaEndpointCustomer {}
+    impl Sealed for tables::SentaEndpointEnrollmentAttempt {}
+    impl Sealed for tables::SentaEndpointInstall {}
+    impl Sealed for tables::SentaEndpointKeysetDocument {}
+    impl Sealed for tables::SentaEndpointRecoveryKeyDocument {}
     impl Sealed for tables::ExternalService {}
     impl Sealed for types::Status {}
     impl Sealed for tables::Template {}
