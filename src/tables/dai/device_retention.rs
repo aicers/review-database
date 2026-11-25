@@ -7,9 +7,16 @@
 //! for update and checked again before it is changed. A step that changes
 //! a binding or evidence row first reads the address's `dai ip state` row
 //! for update and writes it back, as every writer of those rows does.
+//!
+//! A customer's deletion deletes its bindings with their reverse index
+//! rows, its evidence and its IP states address by address: each of its
+//! transactions reads the address's IP state for update before it reads
+//! the address's bindings and evidence, and writes the IP state, deleting
+//! it in the transaction that leaves the address no row. The other device
+//! tables it deletes by customer prefix.
 
 use std::{
-    collections::{HashMap, hash_map::Entry},
+    collections::{BTreeMap, HashMap, hash_map::Entry},
     net::IpAddr,
 };
 
@@ -23,7 +30,7 @@ use super::{
     device::{
         Activity, AliasRow, BindingRow, ChangeEntry, ChangeSource, ConflictRow, DeviceEdits,
         DeviceRow, EvidenceRow, Identifier, IdentifierKind, IdentifierRow, IpStateLock, NameSource,
-        OrderKey, SeenTimes, ServiceRow, binding_key, decode_binding_key,
+        OrderKey, SeenTimes, ServiceRow, address_key, binding_key, decode_binding_key,
         decode_device_binding_key, decode_evidence_key, device_binding_key, resolver_point_key,
     },
 };
@@ -49,6 +56,33 @@ thread_local! {
 #[cfg(test)]
 pub(super) fn set_owners_checked_hook(hook: super::TestHook) {
     OWNERS_CHECKED.with(|cell| *cell.borrow_mut() = Some(hook));
+}
+
+#[cfg(test)]
+thread_local! {
+    /// A hook the tests run once, in the thread that set it, in the next
+    /// transaction of a customer deletion deleting an address's rows, after
+    /// it read the address's bindings and evidence and before it deletes or
+    /// writes any row.
+    static ADDRESS_READ: std::cell::RefCell<Option<super::TestHook>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Sets the hook the next address deletion transaction of a customer
+/// deletion in this thread runs after its reads.
+#[cfg(test)]
+pub(super) fn set_address_read_hook(hook: super::TestHook) {
+    ADDRESS_READ.with(|cell| *cell.borrow_mut() = Some(hook));
+}
+
+/// Decodes the key of a `dai ip state` row.
+fn decode_address_key(key: &[u8]) -> Result<(u32, String, IpAddr)> {
+    let mut reader = KeyReader::new(key);
+    let customer = reader.u32()?;
+    let site = reader.str()?;
+    let ip = reader.ip()?;
+    reader.finish()?;
+    Ok((customer, site, ip))
 }
 
 /// Decodes the key of a `dai devices` row.
@@ -387,16 +421,18 @@ impl Dai<'_> {
     }
 
     /// Deletes the customer's rows of every customer-keyed device table.
+    ///
+    /// The bindings with their reverse index rows, the evidence and the IP
+    /// states are deleted address by address, as
+    /// [`delete_customer_addresses`](Self::delete_customer_addresses) does;
+    /// the other tables by prefix.
     pub(super) fn delete_customer_device_rows(&self, customer_id: u32) -> Result<()> {
         let prefix = customer_key(customer_id);
+        for map in [&self.devices, &self.identifiers, &self.aliases] {
+            self.delete_prefix(map, &prefix)?;
+        }
+        self.delete_customer_addresses(customer_id)?;
         for map in [
-            &self.devices,
-            &self.identifiers,
-            &self.aliases,
-            &self.bindings,
-            &self.device_bindings,
-            &self.evidence,
-            &self.ip_state,
             &self.fixed_ips,
             &self.conflicts,
             &self.services,
@@ -406,5 +442,123 @@ impl Dai<'_> {
             self.delete_prefix(map, &prefix)?;
         }
         Ok(())
+    }
+
+    /// Deletes the customer's bindings with their reverse index rows, its
+    /// evidence and its IP states, one address at a time.
+    ///
+    /// The addresses are those the keys of the four tables under the
+    /// customer hold, scanned outside any transaction, in key order. Each
+    /// address's rows are deleted by
+    /// [`delete_address_rows`](Self::delete_address_rows), in transactions
+    /// that read the address's IP state for update and write it.
+    fn delete_customer_addresses(&self, customer_id: u32) -> Result<()> {
+        /// The address key of each address, with its site, its IP and the
+        /// reverse index keys found under it.
+        type Addresses = BTreeMap<Vec<u8>, (String, IpAddr, Vec<Box<[u8]>>)>;
+        /// Returns the reverse index keys of the address, adding it first.
+        fn add(
+            addresses: &mut Addresses,
+            customer: u32,
+            site: String,
+            ip: IpAddr,
+        ) -> &mut Vec<Box<[u8]>> {
+            &mut addresses
+                .entry(address_key(customer, &site, ip))
+                .or_insert_with(|| (site, ip, Vec::new()))
+                .2
+        }
+        let prefix = customer_key(customer_id);
+        let mut addresses: Addresses = BTreeMap::new();
+        for key in self.scan_keys(&self.bindings, &prefix)? {
+            let (_, site, ip, _) = decode_binding_key(&key)?;
+            add(&mut addresses, customer_id, site, ip);
+        }
+        for key in self.scan_keys(&self.device_bindings, &prefix)? {
+            let (_, _, site, ip, _) = decode_device_binding_key(&key)?;
+            add(&mut addresses, customer_id, site, ip).push(key);
+        }
+        for key in self.scan_keys(&self.evidence, &prefix)? {
+            let decoded = decode_evidence_key(&key)?;
+            add(&mut addresses, customer_id, decoded.site, decoded.ip);
+        }
+        for key in self.scan_keys(&self.ip_state, &prefix)? {
+            let (_, site, ip) = decode_address_key(&key)?;
+            add(&mut addresses, customer_id, site, ip);
+        }
+        for (site, ip, reverse) in addresses.into_values() {
+            self.delete_address_rows(customer_id, &site, ip, reverse)?;
+        }
+        Ok(())
+    }
+
+    /// Deletes the bindings of (`customer`, `site`, `ip`) with their reverse
+    /// index rows, its evidence, the reverse index rows of `reverse`, found
+    /// under the address, that no binding backs, and its IP state.
+    ///
+    /// Each transaction reads the address's IP state for update before it
+    /// reads the address's bindings and evidence, deletes at most
+    /// [`ROWS_PER_TRANSACTION`] of those rows, and writes the IP state back:
+    /// unchanged while rows are left, and deleting its key in the
+    /// transaction that leaves none. So a writer of the address racing a
+    /// transaction makes it conflict, and its retry sees what the writer
+    /// added.
+    fn delete_address_rows(
+        &self,
+        customer: u32,
+        site: &str,
+        ip: IpAddr,
+        mut reverse: Vec<Box<[u8]>>,
+    ) -> Result<()> {
+        let prefix = address_key(customer, site, ip);
+        loop {
+            let (done, handled) = self.write(|txn| {
+                let mut lock = self.lock_ip_state(txn, customer, site, ip)?;
+                let stored = self.bindings_in(txn, customer, site, ip)?;
+                let evidence = Self::scan(&self.evidence, txn, &prefix)?;
+                #[cfg(test)]
+                if let Some(hook) = ADDRESS_READ.with(|cell| cell.borrow_mut().take()) {
+                    hook(self.db);
+                }
+                let mut budget = ROWS_PER_TRANSACTION;
+                let kept: BTreeMap<i64, BindingRow> = stored
+                    .iter()
+                    .skip(budget)
+                    .map(|(start, row)| (*start, row.clone()))
+                    .collect();
+                budget -= stored.len() - kept.len();
+                self.write_bindings(txn, customer, site, ip, &stored, &kept)?;
+                let mut evidence_left = evidence.len();
+                for (key, _) in evidence.iter().take(budget) {
+                    Self::delete_row(txn, &self.evidence, key)?;
+                    evidence_left -= 1;
+                    budget -= 1;
+                }
+                // The leading reverse index keys handled: those a binding
+                // backs, which go with it, and those deleted here.
+                let mut handled = 0;
+                for key in &reverse {
+                    let (_, device, _, _, start) = decode_device_binding_key(key)?;
+                    if stored.get(&start).is_none_or(|row| row.device != device) {
+                        if budget == 0 {
+                            break;
+                        }
+                        Self::delete_row(txn, &self.device_bindings, key)?;
+                        budget -= 1;
+                    }
+                    handled += 1;
+                }
+                let done = kept.is_empty() && evidence_left == 0 && handled == reverse.len();
+                if done {
+                    lock.current = None;
+                }
+                self.write_ip_state(txn, &lock)?;
+                Ok((done, handled))
+            })?;
+            if done {
+                return Ok(());
+            }
+            reverse.drain(..handled);
+        }
     }
 }

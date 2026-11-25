@@ -326,14 +326,17 @@ impl Store {
     /// this customer; every sensor site history row naming the customer, and
     /// the sensor state rows of the names it owns; the customer's counters,
     /// address activity, range blocks, range subnets and ignored ranges; the
-    /// customer's devices, device identifiers, device aliases, bindings and
-    /// their reverse index, evidence, IP states, fixed IPs, conflicts,
-    /// services, software strings and device changes; then the customer's
-    /// settings, sites, relay site table and site policy guard. Every
-    /// customer-keyed row is deleted after every sensor-keyed one, so an
-    /// application racing the deletion conflicts on the pending observations
-    /// it reads. The restore generation stays. An
-    /// interrupted call repeated with the same names removes the rest, and a
+    /// customer's devices, device identifiers and device aliases; its
+    /// bindings with their reverse index rows, evidence and IP states, one
+    /// address at a time, in transactions that read the address's IP state
+    /// for update before its bindings and evidence and write it, so a writer
+    /// of the address racing the deletion conflicts; its fixed IPs,
+    /// conflicts, services, software strings and device changes; then the
+    /// customer's settings, sites, relay site table and site policy guard.
+    /// Every customer-keyed row is deleted after every sensor-keyed one, so
+    /// an application racing the deletion conflicts on the pending
+    /// observations it reads. The restore generation stays. An interrupted
+    /// call repeated with the same names removes the rest, and a
     /// repeated call after success changes nothing. The customer's time
     /// series generation policies are left to
     /// [`IndexedTable::remove_customer_policies`](crate::IndexedTable::remove_customer_policies).
