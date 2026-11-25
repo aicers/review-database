@@ -2469,3 +2469,4 @@ fn customer_deletion_deletes_an_address_over_several_transactions() {
 }
 
 mod operator_tests;
+mod read_tests;

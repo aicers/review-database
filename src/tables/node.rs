@@ -105,6 +105,44 @@ fn sensor_name_of(hostname: &str) -> Option<String> {
     Some(format!("{package_id}.{hostname}"))
 }
 
+/// Returns every sensor name the node rows `nodes` give, each with the
+/// customer of the node that gives it, reading the agents through
+/// `get_agent`: for each node whose applied profile has a non-empty hostname
+/// and that carries an [`AgentKind::Sensor`] agent, the customer of that
+/// profile and its sensor name.
+fn sensor_names_from(
+    nodes: impl Iterator<Item = Result<(Box<[u8]>, Box<[u8]>), rocksdb::Error>>,
+    get_agent: impl Fn(&[u8]) -> Result<Option<Vec<u8>>, rocksdb::Error>,
+) -> Result<BTreeSet<(u32, String)>> {
+    let mut names = BTreeSet::new();
+    for item in nodes {
+        let (key, value) = item.context("cannot read nodes")?;
+        if key.is_empty() {
+            continue;
+        }
+        let inner: Inner = super::deserialize(&value)?;
+        let Some(profile) = inner.profile.as_ref() else {
+            continue;
+        };
+        let Some(name) = sensor_name_of(&profile.hostname) else {
+            continue;
+        };
+        for agent_key in &inner.agents {
+            let key = engine_instance::key(inner.id, agent_key);
+            let is_sensor = get_agent(&key)
+                .context("cannot read agent")?
+                .map(|value| Agent::from_key_value(&key, &value))
+                .transpose()?
+                .is_some_and(|agent| agent.kind == AgentKind::Sensor);
+            if is_sensor {
+                names.insert((profile.customer_id, name));
+                break;
+            }
+        }
+    }
+    Ok(names)
+}
+
 #[derive(Clone, Deserialize, Serialize, PartialEq, Debug)]
 pub struct Node {
     pub id: u32,
@@ -351,34 +389,24 @@ impl<'d> Table<'d> {
         &self,
         txn: &rocksdb::Transaction<OptimisticTransactionDB>,
     ) -> Result<BTreeSet<(u32, String)>> {
-        let mut names = BTreeSet::new();
-        for item in txn.iterator_cf(self.node.raw().cf(), rocksdb::IteratorMode::Start) {
-            let (key, value) = item.context("cannot read nodes")?;
-            if key.is_empty() {
-                continue;
-            }
-            let inner: Inner = super::deserialize(&value)?;
-            let Some(profile) = inner.profile.as_ref() else {
-                continue;
-            };
-            let Some(name) = sensor_name_of(&profile.hostname) else {
-                continue;
-            };
-            for agent_key in &inner.agents {
-                let key = engine_instance::key(inner.id, agent_key);
-                let is_sensor = txn
-                    .get_cf(self.agent.raw().cf, &key)
-                    .context("cannot read agent")?
-                    .map(|value| Agent::from_key_value(&key, &value))
-                    .transpose()?
-                    .is_some_and(|agent| agent.kind == AgentKind::Sensor);
-                if is_sensor {
-                    names.insert((profile.customer_id, name));
-                    break;
-                }
-            }
-        }
-        Ok(names)
+        sensor_names_from(
+            txn.iterator_cf(self.node.raw().cf(), rocksdb::IteratorMode::Start),
+            |key| txn.get_cf(self.agent.raw().cf, key),
+        )
+    }
+
+    /// Returns every sensor name the nodes give as `snapshot` holds them,
+    /// each with the customer of the node that gives it, as
+    /// [`sensor_names_in_transaction`](Self::sensor_names_in_transaction)
+    /// lists them.
+    pub(crate) fn sensor_names_in_snapshot(
+        &self,
+        snapshot: &rocksdb::SnapshotWithThreadMode<OptimisticTransactionDB>,
+    ) -> Result<BTreeSet<(u32, String)>> {
+        sensor_names_from(
+            snapshot.iterator_cf(self.node.raw().cf(), rocksdb::IteratorMode::Start),
+            |key| snapshot.get_cf(self.agent.raw().cf, key),
+        )
     }
 
     /// Returns the applied profile of node `id`, read for update within

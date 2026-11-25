@@ -48,6 +48,10 @@ pub(super) struct CursorRow {
     /// The longest arrival delay of a late record, in nanoseconds, per date
     /// it was recorded on, for the last [`RECENT_DAYS`] days.
     pub(super) delays: BTreeMap<i32, i64>,
+    /// Whether a send of the pair's kind has finished since the row was
+    /// created. Until one has, the pair is left out of the sensor's
+    /// compared time: its cursor still sits where the row was created.
+    pub(super) first_send_finished: bool,
 }
 
 impl CursorRow {
@@ -291,7 +295,9 @@ impl Dai<'_> {
 
     /// Moves, within `txn`, every cursor row of `sensors` to the enable time
     /// `enabled_at`: the read floor to it, the cursor to the start of the
-    /// slot holding it, with no confirmed slot and no re-extract mark.
+    /// slot holding it, with no confirmed slot and no re-extract mark. The
+    /// arrival delays and whether a send has finished stay: the row is moved,
+    /// not created.
     pub(super) fn move_cursors_to_enable(
         &self,
         txn: &Txn<'_>,
@@ -305,6 +311,7 @@ impl Dai<'_> {
                 };
                 let moved = CursorRow {
                     delays: row.delays,
+                    first_send_finished: row.first_send_finished,
                     ..CursorRow::at(enabled_at)?
                 };
                 Self::put_row(txn, &self.cursors, &key, &moved)?;

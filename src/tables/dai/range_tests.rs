@@ -379,7 +379,10 @@ impl Fixture {
     fn candidates(&self, customer: u32) -> Vec<DaiRangeCandidate> {
         let candidates = self.store.dai_range_candidates(customer, NOW).unwrap();
         assert_eq!(
-            self.store.dai_range_candidate_count(customer, NOW).unwrap(),
+            self.store
+                .dai_collection_status(customer, NOW)
+                .unwrap()
+                .candidate_ranges,
             candidates.len()
         );
         candidates

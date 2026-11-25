@@ -132,6 +132,21 @@ impl<'d> OwnedNetworkTable<'d> {
             .transpose()
     }
 
+    /// Returns the networks owned by the customer `customer_id` as `reader`
+    /// sees them, without reading them for update, or `None` if none were
+    /// stored for it.
+    pub(crate) fn get_with(
+        &self,
+        reader: &(impl super::DaiRead + ?Sized),
+        customer_id: u32,
+    ) -> Result<Option<OwnedNetworkSet>> {
+        reader
+            .value(&self.map, &customer_id.to_be_bytes())
+            .with_context(|| format!("failed to read networks of customer {customer_id}"))?
+            .map(|stored| decode(customer_id, &stored))
+            .transpose()
+    }
+
     /// Replaces the networks owned by the customer `customer_id` with
     /// `networks`, recorded at `revision` and the current time.
     ///

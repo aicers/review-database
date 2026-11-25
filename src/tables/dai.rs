@@ -25,7 +25,8 @@
 //!
 //! - `dai meta`: the restore generation, under a fixed key;
 //! - `dai cursors`: the cursor, read floor, confirmed slots, re-extract
-//!   marks and arrival delays of each (sensor, kind);
+//!   marks and arrival delays of each (sensor, kind), and whether a send of
+//!   it has finished since the row was created;
 //! - `dai slot sends` and `dai send parts`: each send of a slot and its
 //!   staged parts, keyed by (sensor, kind, slot start, send id[, part]);
 //! - `dai catchup gaps`: the ranges each (sensor, kind) skipped by the
@@ -97,17 +98,26 @@
 //! therefore conflict whichever commits first, and the retried one checks
 //! again against the new state, at the time it reads after that guard in
 //! each attempt rather than at the time of the first.
+//!
+//! The reads that answer operators and lookups (`resolve`, `device_read`
+//! and `status`, on the state `view` loads) read through one database
+//! [`Snapshot`] each instead of a transaction, so each answers from one
+//! consistent state.
 
 mod apply;
 mod binding;
 mod cursor;
 mod device;
+mod device_read;
 mod device_retention;
 mod hash;
 mod observation;
 mod operator;
 mod range;
+mod resolve;
 mod retention;
+mod status;
+mod view;
 
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
@@ -122,6 +132,14 @@ use thiserror::Error;
 
 pub use self::apply::{DAI_APPLY_DEFAULT_MAX_COUNT, DaiPendingHead};
 pub(crate) use self::cursor::{is_marked_restored, mark_restored};
+pub use self::device_read::{
+    DAI_SEARCH_MAX_MATCHES, DaiActivity, DaiAliasReason, DaiBindingSpan, DaiChangeKind,
+    DaiChangeOp, DaiChangeSource, DaiCurrentIp, DaiDeviceAlias, DaiDeviceBinding, DaiDeviceChange,
+    DaiDeviceDetail, DaiDeviceFilter, DaiDeviceIdentifier, DaiDeviceListRow, DaiDeviceName,
+    DaiFieldChange, DaiIpDeviceFilter, DaiIpDeviceRow, DaiNameSource, DaiOrigin, DaiPage,
+    DaiPageDirection, DaiPageRequest, DaiSearchMatch, DaiSearchMatchKind, DaiSearchResult,
+    DaiSearchTarget, DaiService, DaiSoftware, DaiTimeRange,
+};
 pub use self::hash::{DaiNetworks, dai_network_digest};
 pub use self::observation::{DaiBatchError, DaiStoreOutcome};
 pub use self::operator::{
@@ -131,6 +149,16 @@ pub use self::operator::{
 };
 pub use self::range::{DaiIgnoredRange, DaiRangeCandidate, DaiRangeError};
 pub(super) use self::range::{evidence_from_number, evidence_number};
+pub use self::resolve::{
+    DAI_EXPLANATION_EVIDENCE_ROWS, DAI_RESOLVE_MAX_ITEMS, DaiDecidingBinding, DaiEvidenceRef,
+    DaiEvidenceSource, DaiExplanation, DaiGapCause, DaiResolveAnswer, DaiResolveError,
+    DaiResolveItem, DaiResolveItemError, DaiResolveWhen, DaiSubjectKind,
+};
+pub use self::status::{
+    DaiCatchupGap, DaiCollectionStatus, DaiCursorLag, DaiDailyCount, DaiKindReceipt,
+    DaiSensorCollection, DaiSiteCollection,
+};
+pub use self::view::DaiComparedValue;
 use super::senta_endpoint::{KeyReader, KeyWriter};
 use crate::{
     EXCLUSIVE, IndexedTable, Map, NodeTable, TimeSeriesGenerationPolicy,
@@ -737,6 +765,57 @@ fn decode_sensor_site(key: &[u8], value: &[u8]) -> Result<(String, i64, SensorSi
     Ok((sensor, effective, super::deserialize(value)?))
 }
 
+/// A database snapshot, which the reads that answer from one consistent
+/// state read through.
+pub(crate) type Snapshot<'d> = rocksdb::SnapshotWithThreadMode<'d, OptimisticTransactionDB>;
+
+/// A reader of the DAI tables: a transaction, whose plain reads are not
+/// tracked, or a [`Snapshot`].
+pub(crate) trait DaiRead {
+    /// Returns an iterator over the rows of `map` that `opts` selects,
+    /// starting as `mode` says.
+    fn iter_rows<'s>(
+        &'s self,
+        map: &Map<'_>,
+        opts: rocksdb::ReadOptions,
+        mode: IteratorMode,
+    ) -> Box<dyn Iterator<Item = Result<RawRow, rocksdb::Error>> + 's>;
+
+    /// Returns the value of `map` stored under `key`, without reading it for
+    /// update.
+    fn value(&self, map: &Map<'_>, key: &[u8]) -> Result<Option<Vec<u8>>, rocksdb::Error>;
+}
+
+impl DaiRead for Txn<'_> {
+    fn iter_rows<'s>(
+        &'s self,
+        map: &Map<'_>,
+        opts: rocksdb::ReadOptions,
+        mode: IteratorMode,
+    ) -> Box<dyn Iterator<Item = Result<RawRow, rocksdb::Error>> + 's> {
+        Box::new(self.iterator_cf_opt(map.cf, opts, mode))
+    }
+
+    fn value(&self, map: &Map<'_>, key: &[u8]) -> Result<Option<Vec<u8>>, rocksdb::Error> {
+        self.get_cf(map.cf, key)
+    }
+}
+
+impl DaiRead for Snapshot<'_> {
+    fn iter_rows<'s>(
+        &'s self,
+        map: &Map<'_>,
+        opts: rocksdb::ReadOptions,
+        mode: IteratorMode,
+    ) -> Box<dyn Iterator<Item = Result<RawRow, rocksdb::Error>> + 's> {
+        Box::new(self.iterator_cf_opt(map.cf, opts, mode))
+    }
+
+    fn value(&self, map: &Map<'_>, key: &[u8]) -> Result<Option<Vec<u8>>, rocksdb::Error> {
+        self.get_cf(map.cf, key)
+    }
+}
+
 /// The DAI column families, with the node, network and policy tables their
 /// checks read.
 pub(crate) struct Dai<'d> {
@@ -867,17 +946,14 @@ impl<'d> Dai<'d> {
     }
 
     /// Returns the rows of `map` whose key starts with `prefix`, as `txn`
-    /// sees them, in key order. The scan is not tracked.
-    fn scan(map: &Map<'_>, txn: &Txn<'_>, prefix: &[u8]) -> Result<Vec<RawRow>> {
-        let mode = IteratorMode::Start;
-        let iter = if prefix.is_empty() {
-            txn.iterator_cf(map.cf, mode)
-        } else {
-            let mut opts = rocksdb::ReadOptions::default();
+    /// sees them, in key order. A transaction's scan is not tracked.
+    fn scan(map: &Map<'_>, txn: &(impl DaiRead + ?Sized), prefix: &[u8]) -> Result<Vec<RawRow>> {
+        let mut opts = rocksdb::ReadOptions::default();
+        if !prefix.is_empty() {
             opts.set_iterate_range(rocksdb::PrefixRange(prefix));
-            txn.iterator_cf_opt(map.cf, opts, mode)
-        };
-        iter.map(|entry| entry.context("cannot read DAI configuration"))
+        }
+        txn.iter_rows(map, opts, IteratorMode::Start)
+            .map(|entry| entry.context("cannot read DAI configuration"))
             .collect()
     }
 
@@ -1060,7 +1136,7 @@ impl<'d> Dai<'d> {
     // ---- Sites ----
 
     /// Returns the customer's sites as `txn` sees them, in token order.
-    fn sites_in(&self, txn: &Txn<'_>, customer_id: u32) -> Result<Vec<DaiSite>> {
+    fn sites_in(&self, txn: &(impl DaiRead + ?Sized), customer_id: u32) -> Result<Vec<DaiSite>> {
         Self::scan(&self.sites, txn, &customer_key(customer_id))?
             .into_iter()
             .map(|(key, value)| decode_site(&key, &value).map(|(_, site)| site))
