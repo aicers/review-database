@@ -1413,6 +1413,80 @@ fn ip_device_rows_list_recent_unbound_addresses() {
     assert_eq!(devices.total, 2);
 }
 
+#[test]
+fn a_page_from_an_old_device_id_starts_at_the_current_device() {
+    let f = setup();
+    f.store.ensure_default_site(CUSTOMER).unwrap();
+    for (n, addr) in (1..).zip(["10.0.0.1", "10.0.0.2", "10.0.0.3", "10.0.0.4", "10.0.0.5"]) {
+        f.applied(A, &Lease::ack(m(0), addr, n));
+    }
+    // The lowest id absorbs the highest, so the old id lies on the far side
+    // of every other device.
+    let mut owners: Vec<Uuid> = (1..=5).map(|n| f.owner(n)).collect();
+    owners.sort_unstable();
+    let (survivor, absorbed) = (owners[0], owners[4]);
+    f.store
+        .merge_dai_devices(CUSTOMER, survivor, &[absorbed])
+        .unwrap();
+    let ids = |request: DaiPageRequest<Uuid>| -> Vec<Uuid> {
+        f.store
+            .dai_devices(CUSTOMER, &DaiDeviceFilter::default(), &request, NOW)
+            .unwrap()
+            .rows
+            .into_iter()
+            .map(|row| row.device)
+            .collect()
+    };
+    let all = ids(forward(None, 10));
+    assert_eq!(all.len(), 4);
+    assert!(!all.contains(&absorbed));
+    let at = all.iter().position(|id| *id == survivor).unwrap();
+    let (before, after) = (all[..at].to_vec(), all[at + 1..].to_vec());
+
+    assert_eq!(ids(forward(Some(survivor), 10)), after);
+    assert_eq!(ids(forward(Some(absorbed), 10)), after);
+    assert_eq!(ids(backward(Some(survivor), 10)), before);
+    assert_eq!(ids(backward(Some(absorbed), 10)), before);
+}
+
+#[test]
+fn ip_device_rows_and_search_leave_out_activity_after_now() {
+    let f = setup();
+    let default = f.store.ensure_default_site(CUSTOMER).unwrap();
+    set_activity(&f, &default, "10.0.0.1", m(0), NOW);
+    set_activity(&f, &default, "10.0.0.2", NOW - 31 * DAY, NOW - 30 * DAY);
+    set_activity(&f, &default, "10.0.0.3", m(0), NOW + 1);
+    set_activity(&f, &default, "10.0.0.4", m(0), NOW + DAY);
+    let list = f
+        .store
+        .dai_ip_only_devices(
+            CUSTOMER,
+            &DaiIpDeviceFilter::default(),
+            &forward(None, 10),
+            NOW,
+        )
+        .unwrap();
+    let addrs: Vec<IpAddr> = list.rows.iter().map(|row| row.ip).collect();
+    assert_eq!(addrs, [ip("10.0.0.1"), ip("10.0.0.2")]);
+    assert_eq!(list.total, 2);
+
+    let search = |text: &str| f.store.dai_search(CUSTOMER, text, NOW).unwrap().matches;
+    assert_eq!(
+        search("10.0.0.1"),
+        [DaiSearchMatch {
+            matched: DaiSearchMatchKind::Ip,
+            target: DaiSearchTarget::IpDevice {
+                site: default.clone(),
+                ip: ip("10.0.0.1"),
+                last_seen: NOW,
+            },
+        }]
+    );
+    assert_eq!(search("10.0.0.2").len(), 1);
+    assert_none(&search("10.0.0.3"));
+    assert_none(&search("10.0.0.4"));
+}
+
 // ---- The device detail ----
 
 #[test]

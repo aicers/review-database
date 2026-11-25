@@ -963,6 +963,9 @@ impl Store {
     /// range matches a device whose first-to-last seen range overlaps it; a
     /// device never observed never matches it.
     ///
+    /// A starting device id in `page` that is an old id is followed through
+    /// its alias, so the page starts at the current device's place.
+    ///
     /// # Errors
     ///
     /// Returns an error if the database operation fails.
@@ -980,9 +983,9 @@ impl Store {
     /// match `filter`, ordered by (site, IP), with their number, as one
     /// database snapshot holds them at `now`.
     ///
-    /// An IP device row is a `dai ip activity` row last seen within 30 days
-    /// before `now` at whose last seen time no binding of its (site, IP) is
-    /// in effect. It is not a device.
+    /// An IP device row is a `dai ip activity` row last seen within the 30
+    /// days up to `now`, not after it, at whose last seen time no binding of
+    /// its (site, IP) is in effect. It is not a device.
     ///
     /// # Errors
     ///

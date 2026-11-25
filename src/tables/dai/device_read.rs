@@ -615,6 +615,16 @@ impl Dai<'_> {
         now: i64,
     ) -> Result<DaiPage<DaiDeviceListRow>> {
         let snapshot = self.db.snapshot();
+        // A starting id is followed through its alias like any other device
+        // id, so a page from an old id starts where the current device is.
+        let request = DaiPageRequest {
+            from: request
+                .from
+                .map(|from| self.current_or_same(&snapshot, customer, from))
+                .transpose()?,
+            direction: request.direction,
+            limit: request.limit,
+        };
         let sites = filter.sites.as_deref();
         let network = filter.network.as_ref();
         let mut rows = Vec::new();
@@ -695,7 +705,7 @@ impl Dai<'_> {
                 },
             ));
         }
-        Ok(page(rows, request))
+        Ok(page(rows, &request))
     }
 
     /// Returns the customer's IP device rows that match `filter`, at `now`,
@@ -715,7 +725,7 @@ impl Dai<'_> {
         for (key, value) in Self::scan(&self.ip_activity, &snapshot, &customer_key(customer))? {
             let (_, site, ip) = decode_address_key(&key)?;
             let activity: ActivityRow = super::super::deserialize(&value)?;
-            if activity.last_seen < oldest
+            if !(oldest..=now).contains(&activity.last_seen)
                 || !location_matches(filter.sites.as_deref(), filter.network.as_ref(), &site, ip)
                 || filter
                     .seen
@@ -1038,7 +1048,7 @@ impl Dai<'_> {
             }
             if let Some(activity) =
                 Self::value_in::<ActivityRow>(snapshot, &self.ip_activity, &key)?
-                && activity.last_seen >= oldest
+                && (oldest..=now).contains(&activity.last_seen)
                 && !bindings
                     .iter()
                     .any(|(start, row)| in_effect_at(*start, row, activity.last_seen))
