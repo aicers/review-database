@@ -5,6 +5,15 @@ file is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), and
 this project adheres to [Semantic
 Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.70.0](https://github.com/aicers/review-database/compare/0.69.0...0.70.0) - 2026-11-25
+
+### Added
+
+- [**breaking**] index detection events by arrival order and read them in that order ([#1159](https://github.com/aicers/review-database/pull/1159))
+- [**breaking**] replace the result JWS of an approved senta enrollment ([#1158](https://github.com/aicers/review-database/pull/1158))
+- [**breaking**] rename the [csv] time_intervals setting to slot_sizes ([#1157](https://github.com/aicers/review-database/pull/1157))
+- [**breaking**] rename network lists to exclusion list and watchlist, store Hog exclusion counts, and remove triage-policy exclusion ([#1147](https://github.com/aicers/review-database/pull/1147))
+
 ## [0.69.0](https://github.com/aicers/review-database/compare/0.68.0...0.69.0) - 2026-11-25
 
 ### Added
