@@ -20,7 +20,7 @@
 //! with the agent, and each customer's exclusion count totals, read from
 //! those reports and from the Unsupervised Engine detectors' statuses.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 
 use anyhow::{Context, Result};
 use review_protocol::types::{EngineExclusionReport, ExcludedCount};
@@ -252,7 +252,8 @@ impl Store {
     /// customer. For each [`AgentKind::SemiSupervised`] agent the counts of
     /// its stored exclusion report are added, and for each
     /// [`AgentKind::Unsupervised`] agent the `excluded` counts of every stored
-    /// detector status. The two kinds are summed apart, so an entry and day
+    /// detector status. An agent a node lists more than once counts once.
+    /// The two kinds are summed apart, so an entry and day
     /// can have one total of each; no other kind has totals. Sums saturate
     /// at `u64::MAX`. A customer with no counts gets an empty vector.
     ///
@@ -279,7 +280,13 @@ impl Store {
             {
                 continue;
             }
+            // A node may list the same agent more than once, and every
+            // listing reads the same stored row, so each key counts once.
+            let mut seen = HashSet::new();
             for agent in &node.agents {
+                if !seen.insert(agent.key.as_str()) {
+                    continue;
+                }
                 match agent.kind {
                     AgentKind::SemiSupervised => {
                         let key = tables::engine_instance_key(node.id, &agent.key);
@@ -2158,5 +2165,50 @@ mod tests {
                 total(AgentKind::SemiSupervised, 13, 16, u64::MAX),
             ]
         );
+    }
+
+    #[test]
+    fn exclusion_totals_count_an_agent_listed_twice_once() {
+        let t = setup_store();
+        let store = &t.store;
+        let node = insert_node_at(store, "a", "a", hog_agents());
+        let node = set_engine_excluded(
+            store,
+            &node,
+            "a",
+            [vec![excluded(10, 14, 4)], vec![excluded(10, 14, 6)]],
+        );
+        store
+            .set_engine_exclusion_report(
+                &instance(node.id, HOG),
+                &report(vec![excluded(10, 14, 5)]),
+            )
+            .unwrap();
+        let expected = vec![
+            total(AgentKind::Unsupervised, 10, 14, 10),
+            total(AgentKind::SemiSupervised, 10, 14, 5),
+        ];
+        assert_eq!(store.engine_exclusion_totals(1).unwrap(), expected);
+
+        // The node lists `ENGINE` and `HOG` a second time; both listings
+        // read the same stored rows.
+        let mut doubled = node.clone();
+        let again: Vec<Agent> = node
+            .agents
+            .iter()
+            .filter(|a| a.key == ENGINE || a.key == HOG)
+            .cloned()
+            .collect();
+        doubled.agents.extend(again);
+        let doubled = update(store, &node, &doubled).unwrap();
+        assert_eq!(
+            doubled
+                .agents
+                .iter()
+                .filter(|a| a.key == ENGINE || a.key == HOG)
+                .count(),
+            4
+        );
+        assert_eq!(store.engine_exclusion_totals(1).unwrap(), expected);
     }
 }
