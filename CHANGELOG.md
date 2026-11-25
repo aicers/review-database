@@ -5,6 +5,33 @@ file is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), and
 this project adheres to [Semantic
 Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.69.0](https://github.com/aicers/review-database/compare/0.68.0...0.69.0) - 2026-11-25
+
+### Added
+
+- [**breaking**] filter header-less time-series events by their policy's sensors and record the cluster count at training ([#1155](https://github.com/aicers/review-database/pull/1155))
+- count an extranet network inside an intranet as outside the customer ([#1152](https://github.com/aicers/review-database/pull/1152))
+- add DAI resolve, device list, detail, search and collection status reads ([#1148](https://github.com/aicers/review-database/pull/1148))
+- add DAI device import, merge, split, state change and service removal ([#1146](https://github.com/aicers/review-database/pull/1146))
+- apply pending DAI observations to devices and bindings with device retention and customer deletion ([#1140](https://github.com/aicers/review-database/pull/1140))
+- collect DAI unregistered range days and list candidate ranges with ignore and unignore ([#1139](https://github.com/aicers/review-database/pull/1139))
+- [**breaking**] store DAI observations with read cursors, restore generations and retention ([#1132](https://github.com/aicers/review-database/pull/1132))
+- [**breaking**] add DAI customer settings, sites and sensor site history, keep time series generation policies within one site and remove the hosts table ([#1131](https://github.com/aicers/review-database/pull/1131))
+- [**breaking**] add senta endpoint trust-state, document, enrollment and command tables with deletion-guarded transactions and list endpoint ids in customer data deletion jobs ([#1123](https://github.com/aicers/review-database/pull/1123))
+- add senta endpoint observation tables for the active list, Giganto entries, document results, status reports, events and losses ([#1122](https://github.com/aicers/review-database/pull/1122))
+- [**breaking**] add twelve IP-unit time-series types, check timeseries training definitions against them and fill detector source_sensors ([#1118](https://github.com/aicers/review-database/pull/1118))
+- [**breaking**] replace sampling policies with time-series generation policies checked at save ([#1117](https://github.com/aicers/review-database/pull/1117))
+
+### Fixed
+
+- conflict-check the existing gaps a DAI catch-up skip relies on ([#1138](https://github.com/aicers/review-database/pull/1138))
+
+### Other
+
+- keep owned-network test data within private and documentation ranges ([#1154](https://github.com/aicers/review-database/pull/1154))
+- delete a DAI customer's bindings and evidence per address under the IP state lock ([#1145](https://github.com/aicers/review-database/pull/1145))
+- cover model read failures on the creating write paths ([#1110](https://github.com/aicers/review-database/pull/1110))
+
 ## [0.68.0](https://github.com/aicers/review-database/compare/0.67.0...0.68.0) - 2026-11-23
 
 ### Added
