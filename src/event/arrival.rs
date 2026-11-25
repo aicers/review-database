@@ -130,9 +130,12 @@ pub(crate) enum ArrivalHookPoint {
     /// After the write stamped this arrival time, holding the lock, before
     /// it commits.
     Stamped(i64),
+    /// After a removal wrote one batch of deletions, before it goes on.
+    Removed,
 }
 
-/// A hook the tests run at every [`ArrivalHookPoint`] of a write.
+/// A hook the tests run at every [`ArrivalHookPoint`] of a write or a
+/// removal.
 #[cfg(test)]
 pub(crate) type ArrivalHook = Arc<dyn Fn(ArrivalHookPoint) + Send + Sync>;
 
@@ -142,9 +145,14 @@ pub(crate) type ArrivalHook = Arc<dyn Fn(ArrivalHookPoint) + Send + Sync>;
 /// It guards the last arrival time stamped, `None` until it has been read
 /// from the `meta` column family. A write holds it from stamping its arrival
 /// time until the write commits.
+///
+/// It also holds the removal lock, which a removal of records holds from
+/// taking its snapshot until it has deleted the last of them; see
+/// [`super::EventDb::remove_before`].
 #[derive(Default)]
 pub(crate) struct ArrivalState {
     last: Mutex<Option<i64>>,
+    removal: Mutex<()>,
     #[cfg(test)]
     clock: Mutex<Option<Arc<dyn Clock + Send + Sync>>>,
     #[cfg(test)]
@@ -157,6 +165,13 @@ impl ArrivalState {
         // The last arrival time changes only after a commit succeeds, so a
         // panic while holding the lock leaves it as true as before.
         self.last.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Takes the removal lock.
+    pub(super) fn lock_removal(&self) -> MutexGuard<'_, ()> {
+        // It guards no data, so a panic while holding it leaves nothing to
+        // repair.
+        self.removal.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     /// Forgets the last arrival time, so that the next write reads it from
@@ -189,7 +204,8 @@ impl ArrivalState {
         *self.clock.lock().unwrap_or_else(PoisonError::into_inner) = Some(clock);
     }
 
-    /// Makes the writes run `hook` at every [`ArrivalHookPoint`].
+    /// Makes the writes and the removals run `hook` at every
+    /// [`ArrivalHookPoint`].
     #[cfg(test)]
     pub(crate) fn set_hook(&self, hook: Option<ArrivalHook>) {
         *self.hook.lock().unwrap_or_else(PoisonError::into_inner) = hook;

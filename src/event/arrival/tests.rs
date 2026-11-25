@@ -472,6 +472,7 @@ fn a_stalled_write_keeps_a_later_one_behind_it() {
                     b_stamped_tx.send((arrival, committed)).unwrap();
                 }
             }
+            ArrivalHookPoint::Removed => {}
         })));
 
     let (key_a, key_b, seen) = std::thread::scope(|scope| {
@@ -698,4 +699,81 @@ fn remove_by_sensors_removes_the_rows_of_the_records_it_removes() {
     kept.sort_unstable();
     assert_eq!(records, kept);
     assert_eq!(rows, kept);
+}
+
+/// Removes, through `remove`, the record of `removed` and keeps the one of
+/// `retained`, stored after it; when the first batch of deletions is
+/// written, stores `removed` again, which takes the key just freed, and
+/// reads the index. Checks that the read and the store afterwards have the
+/// retained record before the new one, each once.
+fn check_a_freed_key_reused_during_a_removal(
+    removed: &DetectionEvent,
+    retained: &DetectionEvent,
+    remove: impl FnOnce(&EventDb),
+) {
+    let (_permit, store) = setup_store();
+    let db = store.events();
+    let key_removed = db.put(removed, &stamp()).unwrap();
+    let key_retained = db.put(retained, &stamp()).unwrap();
+
+    let (read_tx, read_rx) = mpsc::channel::<(i128, Vec<i128>)>();
+    let read_tx = Mutex::new(Some(read_tx));
+    let weak: Weak<Store> = Arc::downgrade(&store);
+    let event = removed.clone();
+    store.states.arrival().set_hook(Some(Arc::new(move |point| {
+        if point != ArrivalHookPoint::Removed {
+            return;
+        }
+        let Some(read_tx) = read_tx.lock().unwrap().take() else {
+            return;
+        };
+        let store = weak.upgrade().unwrap();
+        let db = store.events();
+        let reused = db.put(&event, &stamp()).unwrap();
+        let page = db.read_by_arrival(&all(), None, 10, NO_CAP).unwrap();
+        read_tx.send((reused, event_keys(&page))).unwrap();
+    })));
+    remove(&db);
+    store.states.arrival().set_hook(None);
+
+    let (reused, read) = read_rx.recv().unwrap();
+    assert_eq!(reused, key_removed, "the new record takes the freed key");
+    assert_eq!(read, [key_retained, reused]);
+    let page = db.read_by_arrival(&all(), None, 10, NO_CAP).unwrap();
+    assert_eq!(event_keys(&page), [key_retained, reused]);
+    assert_eq!(index_event_keys(&db), [key_retained, reused]);
+}
+
+#[test]
+fn remove_before_leaves_no_row_to_name_a_record_stored_under_a_freed_key() {
+    check_a_freed_key_reused_during_a_removal(
+        &sensor_event(SENSOR, 0),
+        &sensor_event(SENSOR, 10),
+        |db| assert_eq!(db.remove_before(after(time(), 5)).unwrap(), 1),
+    );
+}
+
+#[test]
+fn remove_by_sensors_leaves_no_row_to_name_a_record_stored_under_a_freed_key() {
+    check_a_freed_key_reused_during_a_removal(
+        &sensor_event("a1", 0),
+        &sensor_event("b1", 1),
+        |db| db.remove_by_sensors(&["a1".to_string()]).unwrap(),
+    );
+}
+
+/// A row before the cutoff whose record is already gone is removed with the
+/// records, and a row of a record kept is not.
+#[test]
+fn remove_before_removes_a_row_left_without_its_record() {
+    let (_permit, store) = setup_store();
+    let db = store.events();
+    let gone = db.put(&sensor_event(SENSOR, 0), &stamp()).unwrap();
+    let kept = db.put(&sensor_event(SENSOR, 10), &stamp()).unwrap();
+    db.inner.delete(gone.to_be_bytes()).unwrap();
+    assert_eq!(index_event_keys(&db), [gone, kept]);
+
+    assert_eq!(db.remove_before(after(time(), 5)).unwrap(), 0);
+    assert_eq!(index_event_keys(&db), [kept]);
+    assert_eq!(record_keys(&db), [kept]);
 }

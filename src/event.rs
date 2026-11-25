@@ -642,163 +642,112 @@ impl<'a> EventDb<'a> {
     /// `before` is retained, and cutoffs outside the supported `i64`
     /// epoch-nanosecond range delete none or all records as appropriate.
     ///
-    /// The arrival index rows of the records removed are removed after them,
-    /// and no other row is.
+    /// Each record removed goes in the same write as its arrival index rows,
+    /// so that no row outlives its record and comes to name a record stored
+    /// later under the same key. Rows before `before` whose record was
+    /// already gone are removed as well; no other row is. The rows of the
+    /// records removed are held in memory until they are deleted.
     ///
     /// Returns the number of records deleted.
     ///
     /// # Errors
     ///
-    /// Returns an error if a database operation fails.
+    /// Returns an error if a database operation fails, including when the
+    /// database lacks the arrival index column family.
     pub fn remove_before(&self, before: Timestamp) -> Result<u64> {
+        const CONTEXT: &str = "failed to delete expired events";
+
         let cutoff_nanos = before.as_nanosecond();
         if cutoff_nanos <= i128::from(i64::MIN) {
             return Ok(0);
         }
 
+        // Held until the last record is removed, so that no other removal
+        // deletes a record stored under a key this one freed; see
+        // `Removal`.
+        let _removal = self.arrival.lock_removal();
         // The records and the index rows removed are those of one snapshot,
         // so that a record stored meanwhile keeps its index row.
         let snapshot = self.inner.snapshot();
         if cutoff_nanos > i128::from(i64::MAX) {
-            let negative = self.delete_event_region(&snapshot, EventKeyRegion::Negative, None)?;
-            let non_negative =
-                self.delete_event_region(&snapshot, EventKeyRegion::NonNegative, None)?;
-            self.delete_arrival_rows(&snapshot, |_| true)?;
-            return Ok(negative + non_negative);
+            let mut removal = Removal::new(self, self.arrival_rows(&snapshot, |_| true)?, CONTEXT)?;
+            removal.remove_region(&snapshot, EventKeyRegion::Negative, None)?;
+            removal.remove_region(&snapshot, EventKeyRegion::NonNegative, None)?;
+            return removal.finish();
         }
 
         let cutoff_nanos = i64::try_from(cutoff_nanos)
             .context("cutoff within the checked i64 epoch-nanosecond range")?;
         let cutoff = i128::from(cutoff_nanos) << 64;
         let cutoff_key = cutoff.to_be_bytes();
-        let deleted = if cutoff_nanos < 0 {
-            self.delete_event_region(&snapshot, EventKeyRegion::Negative, Some(cutoff_key))?
+        let mut removal = Removal::new(
+            self,
+            self.arrival_rows(&snapshot, |key| key < cutoff)?,
+            CONTEXT,
+        )?;
+        if cutoff_nanos < 0 {
+            removal.remove_region(&snapshot, EventKeyRegion::Negative, Some(cutoff_key))?;
         } else {
-            let negative = self.delete_event_region(&snapshot, EventKeyRegion::Negative, None)?;
-            let non_negative = if cutoff_key == FIRST_NON_NEGATIVE_EVENT_KEY {
-                0
-            } else {
-                self.delete_event_region(&snapshot, EventKeyRegion::NonNegative, Some(cutoff_key))?
-            };
-            negative + non_negative
-        };
-        self.delete_arrival_rows(&snapshot, |key| key < cutoff)?;
-        Ok(deleted)
+            removal.remove_region(&snapshot, EventKeyRegion::Negative, None)?;
+            if cutoff_key != FIRST_NON_NEGATIVE_EVENT_KEY {
+                removal.remove_region(&snapshot, EventKeyRegion::NonNegative, Some(cutoff_key))?;
+            }
+        }
+        removal.finish()
     }
 
-    fn delete_event_region(
+    /// Returns the arrival index rows in `snapshot` whose record key
+    /// `removed` accepts, sorted by record key and then by arrival time.
+    fn arrival_rows(
         &self,
         snapshot: &PhysicalEventSnapshot<'_>,
-        region: EventKeyRegion,
-        upper_bound: Option<[u8; 16]>,
-    ) -> Result<u64> {
-        let mut readopts = event_region_read_options(region);
-        if let Some(upper_bound) = upper_bound {
-            readopts.set_iterate_upper_bound(upper_bound);
-        }
-        let mode = match region {
-            EventKeyRegion::NonNegative => IteratorMode::Start,
-            EventKeyRegion::Negative => {
-                IteratorMode::From(&FIRST_NEGATIVE_EVENT_KEY, Direction::Forward)
-            }
-        };
-        let iter = snapshot.iterator_opt(mode, readopts);
-        let mut batch = rocksdb::WriteBatchWithTransaction::<true>::default();
-        let mut batch_count = 0_usize;
-        let mut deleted = 0_u64;
-
-        for item in iter {
-            let (key, _value) = item.context("cannot read from event database")?;
-            if signed_event_key(&key).is_none() {
-                continue;
-            }
-            batch.delete(&key);
-            batch_count += 1;
-
-            if batch_count == EVENT_DELETION_BATCH_SIZE {
-                self.inner
-                    .write(std::mem::take(&mut batch))
-                    .context("failed to delete expired events")?;
-                deleted += u64::try_from(batch_count).expect("batch size fits in u64");
-                batch_count = 0;
-            }
-        }
-
-        if batch_count > 0 {
-            self.inner
-                .write(batch)
-                .context("failed to delete expired events")?;
-            deleted += u64::try_from(batch_count).expect("batch size fits in u64");
-        }
-        Ok(deleted)
-    }
-
-    /// Removes the arrival index rows in `snapshot` whose record key
-    /// `deleted` accepts.
-    ///
-    /// The caller has removed those records as `snapshot` held them. A record
-    /// stored after `snapshot` was taken, under a key `deleted` accepts,
-    /// keeps its row, which is not in `snapshot`.
-    fn delete_arrival_rows(
-        &self,
-        snapshot: &PhysicalEventSnapshot<'_>,
-        deleted: impl Fn(i128) -> bool,
-    ) -> Result<()> {
-        let index = self.arrival_cf()?;
-        let rows =
-            snapshot.iterator_cf_opt(index, rocksdb::ReadOptions::default(), IteratorMode::Start);
-        let mut batch = rocksdb::WriteBatchWithTransaction::<true>::default();
-        let mut batch_count = 0_usize;
+        removed: impl Fn(i128) -> bool,
+    ) -> Result<Vec<ArrivalKey>> {
+        let rows = snapshot.iterator_cf_opt(
+            self.arrival_cf()?,
+            rocksdb::ReadOptions::default(),
+            IteratorMode::Start,
+        );
+        let mut found = Vec::new();
         for row in rows {
             let (row_key, _) = row.context("cannot read the detection-event arrival index")?;
             let Ok(key) = ArrivalKey::try_from(&*row_key) else {
                 continue;
             };
-            if !deleted(key.event_key()) {
-                continue;
-            }
-            batch.delete_cf(index, &row_key);
-            batch_count += 1;
-            if batch_count == EVENT_DELETION_BATCH_SIZE {
-                self.inner
-                    .write(std::mem::take(&mut batch))
-                    .context("failed to delete detection-event arrival index rows")?;
-                batch_count = 0;
+            if removed(key.event_key()) {
+                found.push(key);
             }
         }
-        if batch_count > 0 {
-            self.inner
-                .write(batch)
-                .context("failed to delete detection-event arrival index rows")?;
-        }
-        Ok(())
+        found.sort_unstable_by_key(|key| (key.event_key(), key.arrival()));
+        Ok(found)
     }
 
     /// Removes all records whose event's `sensor` is `Some` and exactly
     /// matches one of `sensors`. A record with no sensor is kept.
     ///
-    /// The arrival index rows of the records removed are removed after them,
-    /// and no other row is.
+    /// Each record removed goes in the same write as its arrival index rows,
+    /// as in [`EventDb::remove_before`], and no other row is removed. The
+    /// keys of the records removed, and their rows, are held in memory until
+    /// they are deleted.
     ///
     /// # Errors
     ///
     /// Returns an error if a record cannot be read or decoded, or if a
-    /// database operation fails.
+    /// database operation fails, including when the database lacks the
+    /// arrival index column family.
     pub fn remove_by_sensors(&self, sensors: &[String]) -> Result<()> {
         if sensors.is_empty() {
             return Ok(());
         }
 
         let sensors: HashSet<&str> = sensors.iter().map(String::as_str).collect();
+        // Held until the last record is removed; see `remove_before`.
+        let _removal = self.arrival.lock_removal();
         // The records and the index rows removed are those of one snapshot,
         // so that a record stored meanwhile keeps its index row.
         let snapshot = self.inner.snapshot();
-        let iter = snapshot.iterator(IteratorMode::Start);
-        let mut batch = rocksdb::WriteBatchWithTransaction::<true>::default();
-        let mut batch_count = 0;
-        let mut deleted = Vec::new();
-
-        for item in iter {
+        let mut removed = Vec::new();
+        for item in snapshot.iterator(IteratorMode::Start) {
             let (key, value) = item.context("cannot read from event database")?;
             let Some(signed_key) = signed_event_key(&key) else {
                 bail!("event key must be 16 bytes, got {}", key.len());
@@ -810,29 +759,20 @@ impl<'a> EventDb<'a> {
                 .as_deref()
                 .is_some_and(|sensor| sensors.contains(sensor))
             {
-                batch.delete(&key);
-                batch_count += 1;
-                deleted.push(signed_key);
-            }
-
-            if batch_count >= EVENT_DELETION_BATCH_SIZE {
-                self.inner
-                    .write(std::mem::take(&mut batch))
-                    .context("failed to delete events by sensor")?;
-                batch_count = 0;
+                removed.push(signed_key);
             }
         }
-
-        if batch_count > 0 {
-            self.inner
-                .write(batch)
-                .context("failed to delete events by sensor")?;
+        if removed.is_empty() {
+            return Ok(());
         }
 
-        if !deleted.is_empty() {
-            deleted.sort_unstable();
-            self.delete_arrival_rows(&snapshot, |key| deleted.binary_search(&key).is_ok())?;
+        removed.sort_unstable();
+        let rows = self.arrival_rows(&snapshot, |key| removed.binary_search(&key).is_ok())?;
+        let mut removal = Removal::new(self, rows, "failed to delete events by sensor")?;
+        for key in removed {
+            removal.remove(key)?;
         }
+        removal.finish()?;
         Ok(())
     }
 
@@ -865,6 +805,131 @@ impl<'a> EventDb<'a> {
                 Ok(Some(key_bytes))
             }
         }
+    }
+}
+
+/// A removal of records, written in batches that each hold the records'
+/// arrival index rows along with them.
+///
+/// A record and its rows are deleted in one write, so that a reader of the
+/// index never sees a row whose record key is free: a record stored under
+/// that key later would be read where the old row sorts, ahead of records
+/// that arrived before it. The removal lock, held by the caller, keeps a
+/// second removal from deleting, by a key it read before this one freed it,
+/// a record stored there since, which would leave that record's row behind
+/// in the same way.
+struct Removal<'d> {
+    inner: &'d rocksdb::OptimisticTransactionDB,
+    #[cfg(test)]
+    arrival: &'d ArrivalState,
+    index: &'d rocksdb::ColumnFamily,
+    /// The rows to remove, sorted by record key and then by arrival time.
+    rows: Vec<ArrivalKey>,
+    /// Whether each of `rows` has been put in a batch.
+    queued: Vec<bool>,
+    context: &'static str,
+    batch: rocksdb::WriteBatchWithTransaction<true>,
+    batch_count: usize,
+    removed: u64,
+}
+
+impl<'d> Removal<'d> {
+    /// Starts a removal of records whose arrival index rows are among
+    /// `rows`, with `context` for the errors of its writes.
+    fn new(db: &'d EventDb<'_>, rows: Vec<ArrivalKey>, context: &'static str) -> Result<Self> {
+        Ok(Self {
+            inner: db.inner,
+            #[cfg(test)]
+            arrival: &db.arrival,
+            index: db.arrival_cf()?,
+            queued: vec![false; rows.len()],
+            rows,
+            context,
+            batch: rocksdb::WriteBatchWithTransaction::default(),
+            batch_count: 0,
+            removed: 0,
+        })
+    }
+
+    /// Removes the record `key` and its rows, in the same batch.
+    fn remove(&mut self, key: i128) -> Result<()> {
+        self.batch.delete(key.to_be_bytes());
+        self.batch_count += 1;
+        let start = self.rows.partition_point(|row| row.event_key() < key);
+        // `partition_point` returns at most `rows.len()`.
+        for (row, queued) in self.rows[start..]
+            .iter()
+            .zip(&mut self.queued[start..])
+            .take_while(|(row, _)| row.event_key() == key)
+        {
+            self.batch.delete_cf(self.index, row.to_bytes());
+            self.batch_count += 1;
+            *queued = true;
+        }
+        self.removed += 1;
+        if self.batch_count >= EVENT_DELETION_BATCH_SIZE {
+            self.write()?;
+        }
+        Ok(())
+    }
+
+    /// Removes the records of `region` in `snapshot` whose key is before
+    /// `upper_bound`, or all of them.
+    fn remove_region(
+        &mut self,
+        snapshot: &PhysicalEventSnapshot<'_>,
+        region: EventKeyRegion,
+        upper_bound: Option<[u8; 16]>,
+    ) -> Result<()> {
+        let mut readopts = event_region_read_options(region);
+        if let Some(upper_bound) = upper_bound {
+            readopts.set_iterate_upper_bound(upper_bound);
+        }
+        let mode = match region {
+            EventKeyRegion::NonNegative => IteratorMode::Start,
+            EventKeyRegion::Negative => {
+                IteratorMode::From(&FIRST_NEGATIVE_EVENT_KEY, Direction::Forward)
+            }
+        };
+        for item in snapshot.iterator_opt(mode, readopts) {
+            let (key, _value) = item.context("cannot read from event database")?;
+            let Some(key) = signed_event_key(&key) else {
+                continue;
+            };
+            self.remove(key)?;
+        }
+        Ok(())
+    }
+
+    /// Removes the rows whose record was not removed, which were left
+    /// behind with no record, writes what remains, and returns the number
+    /// of records removed.
+    fn finish(mut self) -> Result<u64> {
+        let rows = std::mem::take(&mut self.rows);
+        let queued = std::mem::take(&mut self.queued);
+        for (row, _) in rows.iter().zip(queued).filter(|(_, queued)| !queued) {
+            self.batch.delete_cf(self.index, row.to_bytes());
+            self.batch_count += 1;
+            if self.batch_count >= EVENT_DELETION_BATCH_SIZE {
+                self.write()?;
+            }
+        }
+        self.write()?;
+        Ok(self.removed)
+    }
+
+    /// Writes the batch, if it holds anything.
+    fn write(&mut self) -> Result<()> {
+        if self.batch_count == 0 {
+            return Ok(());
+        }
+        self.inner
+            .write(std::mem::take(&mut self.batch))
+            .context(self.context)?;
+        self.batch_count = 0;
+        #[cfg(test)]
+        self.arrival.run_hook(ArrivalHookPoint::Removed);
+        Ok(())
     }
 }
 
