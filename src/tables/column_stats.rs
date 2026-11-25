@@ -1045,6 +1045,57 @@ mod tests {
     use crate::Store;
     use crate::test::{DbGuard, acquire_db_permit};
 
+    /// The stored bytes of a `column stats` row are pinned: they are the same
+    /// with `structured` 0.17 and 0.18, so rows written by either decode with
+    /// the other.
+    #[test]
+    fn stored_column_stats_bytes_are_pinned() {
+        use std::net::{IpAddr, Ipv4Addr};
+
+        let count = |value, count| ElementCount { value, count };
+        let stats = ColumnStats {
+            model_id: 1,
+            cluster_id: 2,
+            batch_ts: 3,
+            column_index: 4,
+            description: Description::new(
+                5,
+                Some(1.5),
+                Some(0.25),
+                Some(Element::Int(-3)),
+                Some(Element::Int(7)),
+            ),
+            n_largest_count: NLargestCount::new(
+                5,
+                vec![
+                    count(Element::Int(-3), 4),
+                    count(Element::Float(2.5), 3),
+                    count(Element::Text("ab".to_string()), 2),
+                    count(Element::IpAddr(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1))), 1),
+                    count(
+                        Element::DateTime(
+                            structured::DateTime::new(2024, 6, 15, 10, 30, 45, 123_000_000)
+                                .unwrap(),
+                        ),
+                        1,
+                    ),
+                ],
+                Some(Element::Int(-3)),
+            ),
+        };
+
+        let value = stats.value();
+        assert_eq!(value.len(), 81);
+        assert_eq!(
+            data_encoding::HEXLOWER.encode(&value),
+            "0501000000000000f83f01000000000000d03f01000501000e050500050403000000000000044003\
+             050261620207000a000001010817323032342d30362d31355431303a33303a34352e313233010100\
+             05"
+        );
+        let decoded = ColumnStats::from_key_value(&stats.unique_key(), &value).unwrap();
+        assert_eq!(decoded, stats);
+    }
+
     #[test]
     fn test_column_stats() {
         use structured::{Description, NLargestCount};

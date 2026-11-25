@@ -14,15 +14,21 @@
 //! under the instance's agent lookup key, and is never removed: a detector id
 //! is never reused on an instance, also after the engine is removed and
 //! installed again on the same host.
+//!
+//! Also the last exclusion report of each Semi-supervised Engine instance,
+//! written in a transaction that reads the instance's agent row and removed
+//! with the agent, and each customer's exclusion count totals, read from
+//! those reports and from the Unsupervised Engine detectors' statuses.
 
 use std::collections::BTreeMap;
 
 use anyhow::{Context, Result};
-use rocksdb::{OptimisticTransactionDB, Transaction};
+use review_protocol::types::{EngineExclusionReport, ExcludedCount};
+use rocksdb::{Direction, OptimisticTransactionDB, Transaction};
 
 use crate::{
-    Agent, AgentKind, DetectorStatus, EXCLUSIVE, EngineDocumentError, EngineInstanceState,
-    ModelInstance, ModelUse, Store,
+    Agent, AgentKind, DetectorStatus, EXCLUSIVE, EngineDocumentError, EngineExclusionTotal,
+    EngineInstanceState, ModelInstance, ModelUse, Store,
     tables::{self, EngineInstanceRow as Row},
     training::INSTANCE_STOPPED,
     types::FromKeyValue,
@@ -171,6 +177,142 @@ impl Store {
             }
             Ok(())
         })
+    }
+
+    /// Stores the exclusion report a Semi-supervised Engine instance sent,
+    /// replacing the one stored before entirely: a count the earlier report
+    /// had and `report` lacks is gone.
+    ///
+    /// The write is one transaction that reads the instance's agent row for
+    /// update, so a write racing the agent's removal conflicts with it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error, and changes nothing, if the database operation
+    /// fails. Returns an [`EngineDocumentError`] inside the error, and changes
+    /// nothing, if the instance's agent row is missing or is not an
+    /// [`AgentKind::SemiSupervised`] agent.
+    pub fn set_engine_exclusion_report(
+        &self,
+        instance: &ModelInstance,
+        report: &EngineExclusionReport,
+    ) -> Result<()> {
+        let db = self.states.db();
+        let agents = self.states.agents();
+        let counts = self.states.engine_exclusion_counts();
+        let key = tables::engine_instance_key(instance.node_id, &instance.agent_key);
+        loop {
+            let txn = db.transaction();
+            if agent_for_update(&txn, agents.raw().cf, &key)?
+                .is_none_or(|agent| agent.kind != AgentKind::SemiSupervised)
+            {
+                return Err(EngineDocumentError::NotSemiSupervisedAgent {
+                    node_id: instance.node_id,
+                    agent_key: instance.agent_key.clone(),
+                }
+                .into());
+            }
+            counts.put(&txn, &key, report)?;
+            match txn.commit() {
+                Ok(()) => return Ok(()),
+                Err(e) => {
+                    if !e.as_ref().starts_with("Resource busy:") {
+                        return Err(e).context("failed to write engine exclusion counts");
+                    }
+                }
+            }
+        }
+    }
+
+    /// Returns the last exclusion report a Semi-supervised Engine instance
+    /// sent, or `None` if none is stored.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database operation fails or the stored report
+    /// cannot be decoded.
+    pub fn engine_exclusion_report(
+        &self,
+        instance: &ModelInstance,
+    ) -> Result<Option<EngineExclusionReport>> {
+        self.states
+            .engine_exclusion_counts()
+            .get(&tables::engine_instance_key(
+                instance.node_id,
+                &instance.agent_key,
+            ))
+    }
+
+    /// Returns the exclusion counts of the engine instances of customer
+    /// `customer_id`, summed per engine kind, exclusion-list entry and UTC
+    /// day, ordered by engine kind, then entry, then day.
+    ///
+    /// An instance belongs to the customer when its node's applied profile
+    /// has the customer's id; a node with no applied profile belongs to no
+    /// customer. For each [`AgentKind::SemiSupervised`] agent the counts of
+    /// its stored exclusion report are added, and for each
+    /// [`AgentKind::Unsupervised`] agent the `excluded` counts of every stored
+    /// detector status. The two kinds are summed apart, so an entry and day
+    /// can have one total of each; no other kind has totals. Sums saturate
+    /// at `u64::MAX`. A customer with no counts gets an empty vector.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database operation fails or a stored record
+    /// cannot be decoded.
+    pub fn engine_exclusion_totals(&self, customer_id: u32) -> Result<Vec<EngineExclusionTotal>> {
+        let engine_instances = self.states.engine_instances();
+        let exclusion_counts = self.states.engine_exclusion_counts();
+        let mut totals: BTreeMap<(AgentKind, u64, jiff::civil::Date), u64> = BTreeMap::new();
+        let mut add = |engine: AgentKind, counts: &[ExcludedCount]| {
+            for count in counts {
+                let total = totals.entry((engine, count.entry, count.day)).or_default();
+                *total = total.saturating_add(count.count);
+            }
+        };
+        for node in self.node_map().iter(Direction::Forward, None) {
+            let node = node?;
+            if node
+                .profile
+                .as_ref()
+                .is_none_or(|profile| profile.customer_id != customer_id)
+            {
+                continue;
+            }
+            for agent in &node.agents {
+                match agent.kind {
+                    AgentKind::SemiSupervised => {
+                        let key = tables::engine_instance_key(node.id, &agent.key);
+                        if let Some(report) = exclusion_counts.get(&key)? {
+                            add(agent.kind, &report.counts);
+                        }
+                    }
+                    AgentKind::Unsupervised => {
+                        let instance = ModelInstance {
+                            node_id: node.id,
+                            agent_key: agent.key.clone(),
+                        };
+                        if let Some(row) = engine_instances.get(&instance)? {
+                            for status in row.statuses.values() {
+                                add(agent.kind, &status.excluded);
+                            }
+                        }
+                    }
+                    AgentKind::Sensor
+                    | AgentKind::TimeSeriesGenerator
+                    | AgentKind::LogCollector => {}
+                }
+            }
+        }
+        Ok(totals
+            .into_iter()
+            .map(|((engine, entry, day), count)| EngineExclusionTotal {
+                engine,
+                entry,
+                day,
+                count,
+            })
+            .collect())
     }
 
     /// Changes the record of `instance` with `change`, in a transaction that
@@ -612,6 +754,7 @@ mod tests {
             | EngineDocumentError::DuplicateModel { model, .. } => model.as_str(),
             EngineDocumentError::IndicatorNotFound { indicator, .. } => indicator.as_str(),
             EngineDocumentError::NotUnsupervisedAgent { agent_key, .. }
+            | EngineDocumentError::NotSemiSupervisedAgent { agent_key, .. }
             | EngineDocumentError::DuplicateAgentKey { agent_key }
             | EngineDocumentError::KindChanged { agent_key }
             | EngineDocumentError::DraftWithoutReferences { agent_key }
@@ -1657,5 +1800,363 @@ mod tests {
 
         let store = Store::new(db_dir.path(), backup_dir.path(), None).unwrap();
         assert!(!store.engine_instance_state(&engine).unwrap().stopped);
+    }
+
+    // =========================================================================
+    // Engine exclusion counts
+    // =========================================================================
+
+    const HOG: &str = "hog";
+    const OTHER_HOG: &str = "hog-2";
+
+    fn excluded(entry: u64, day: i8, count: u64) -> ExcludedCount {
+        ExcludedCount {
+            entry,
+            day: jiff::civil::date(2026, 3, day),
+            count,
+        }
+    }
+
+    fn report(counts: Vec<ExcludedCount>) -> EngineExclusionReport {
+        EngineExclusionReport { counts }
+    }
+
+    /// The agents of a node with two Semi-supervised Engine instances besides
+    /// [`agents`].
+    fn hog_agents() -> Vec<Agent> {
+        let mut agents = agents();
+        agents.push(agent(HOG, AgentKind::SemiSupervised, None, None));
+        agents.push(agent(OTHER_HOG, AgentKind::SemiSupervised, None, None));
+        agents
+    }
+
+    /// Returns the number of rows in the `engine exclusion counts` family.
+    fn exclusion_count_rows(store: &Store) -> usize {
+        let db = store.states.db();
+        let cf = db.cf_handle(tables::ENGINE_EXCLUSION_COUNTS).unwrap();
+        db.iterator_cf(cf, rocksdb::IteratorMode::Start).count()
+    }
+
+    #[test]
+    fn an_exclusion_report_is_stored_and_replaced_completely() {
+        let t = setup_store();
+        let store = &t.store;
+        let node = insert_node(store, "node", hog_agents());
+        let hog = instance(node.id, HOG);
+        let other_hog = instance(node.id, OTHER_HOG);
+        assert_eq!(store.engine_exclusion_report(&hog).unwrap(), None);
+
+        let first = report(vec![
+            excluded((1 << 53) + 3, 14, 5),
+            excluded(2, 14, 3),
+            excluded(2, 15, u64::MAX),
+        ]);
+        store.set_engine_exclusion_report(&hog, &first).unwrap();
+        assert_eq!(
+            store.engine_exclusion_report(&hog).unwrap(),
+            Some(first.clone())
+        );
+        assert_eq!(store.engine_exclusion_report(&other_hog).unwrap(), None);
+
+        // The second report replaces the first: entry 2 is gone.
+        let second = report(vec![excluded(1, 16, 9)]);
+        store.set_engine_exclusion_report(&hog, &second).unwrap();
+        assert_eq!(
+            store.engine_exclusion_report(&hog).unwrap(),
+            Some(second.clone())
+        );
+
+        // An empty report is stored as such.
+        store
+            .set_engine_exclusion_report(&other_hog, &report(Vec::new()))
+            .unwrap();
+        assert_eq!(
+            store.engine_exclusion_report(&other_hog).unwrap(),
+            Some(report(Vec::new()))
+        );
+        assert_eq!(store.engine_exclusion_report(&hog).unwrap(), Some(second));
+        assert_eq!(exclusion_count_rows(store), 2);
+
+        // No engine instance record is written for it.
+        assert_eq!(
+            store.engine_instance_states().unwrap(),
+            Vec::<EngineInstanceState>::new()
+        );
+    }
+
+    #[test]
+    fn exclusion_reports_of_other_agents_are_refused() {
+        let t = setup_store();
+        let store = &t.store;
+        let mut agents = hog_agents();
+        agents.push(agent("tsg", AgentKind::TimeSeriesGenerator, None, None));
+        agents.push(agent("logs", AgentKind::LogCollector, None, None));
+        let node = insert_node(store, "node", agents);
+        let counts = report(vec![excluded(1, 14, 5)]);
+
+        for refused in [
+            instance(node.id, ENGINE),
+            instance(node.id, SENSOR),
+            instance(node.id, "tsg"),
+            instance(node.id, "logs"),
+            instance(node.id, "missing"),
+            instance(node.id + 1, HOG),
+        ] {
+            let error = store
+                .set_engine_exclusion_report(&refused, &counts)
+                .unwrap_err();
+            assert_eq!(
+                engine_error(&error),
+                &EngineDocumentError::NotSemiSupervisedAgent {
+                    node_id: refused.node_id,
+                    agent_key: refused.agent_key.clone(),
+                },
+                "{refused:?}"
+            );
+            assert!(error.to_string().contains(&refused.agent_key));
+            assert_eq!(store.engine_exclusion_report(&refused).unwrap(), None);
+        }
+        assert_eq!(exclusion_count_rows(store), 0);
+        assert_eq!(
+            store.engine_instance_states().unwrap(),
+            Vec::<EngineInstanceState>::new()
+        );
+
+        // A refused write leaves a stored report as it is.
+        let hog = instance(node.id, HOG);
+        store.set_engine_exclusion_report(&hog, &counts).unwrap();
+        let other = report(vec![excluded(2, 15, 1)]);
+        assert!(
+            store
+                .set_engine_exclusion_report(&instance(node.id, ENGINE), &other)
+                .is_err()
+        );
+        assert_eq!(store.engine_exclusion_report(&hog).unwrap(), Some(counts));
+        assert_eq!(exclusion_count_rows(store), 1);
+    }
+
+    /// Stores a report for both Semi-supervised Engine agents of `node`.
+    fn populate_hogs(store: &Store, node: &Node) {
+        for key in [HOG, OTHER_HOG] {
+            store
+                .set_engine_exclusion_report(
+                    &instance(node.id, key),
+                    &report(vec![excluded(1, 14, 5)]),
+                )
+                .unwrap();
+        }
+    }
+
+    #[test]
+    fn removing_the_agent_through_update_removes_its_exclusion_report() {
+        let t = setup_store();
+        let store = &t.store;
+        let node = insert_node(store, "node", hog_agents());
+        populate_hogs(store, &node);
+
+        let removed = without_agent(&node, HOG);
+        update(store, &node, &removed).unwrap();
+        assert_eq!(
+            store
+                .engine_exclusion_report(&instance(node.id, HOG))
+                .unwrap(),
+            None
+        );
+        assert_eq!(
+            store
+                .engine_exclusion_report(&instance(node.id, OTHER_HOG))
+                .unwrap(),
+            Some(report(vec![excluded(1, 14, 5)]))
+        );
+        assert_eq!(exclusion_count_rows(store), 1);
+
+        // The agent is installed again under the same key with no report.
+        update(store, &removed, &node).unwrap();
+        assert_eq!(
+            store
+                .engine_exclusion_report(&instance(node.id, HOG))
+                .unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn removing_the_agent_through_update_with_engine_documents_removes_its_exclusion_report() {
+        let t = setup_store();
+        let store = &t.store;
+        let node = insert_node(store, "node", hog_agents());
+        populate_hogs(store, &node);
+
+        update_with_documents(store, &node, &without_agent(&node, OTHER_HOG), &[]).unwrap();
+        assert_eq!(
+            store
+                .engine_exclusion_report(&instance(node.id, OTHER_HOG))
+                .unwrap(),
+            None
+        );
+        assert_eq!(
+            store
+                .engine_exclusion_report(&instance(node.id, HOG))
+                .unwrap(),
+            Some(report(vec![excluded(1, 14, 5)]))
+        );
+        assert_eq!(exclusion_count_rows(store), 1);
+    }
+
+    #[test]
+    fn removing_the_node_removes_the_exclusion_reports_of_its_agents() {
+        let t = setup_store();
+        let store = &t.store;
+        let node = insert_node(store, "node", hog_agents());
+        let kept = insert_node(store, "kept", hog_agents());
+        populate_hogs(store, &node);
+        populate_hogs(store, &kept);
+        assert_eq!(exclusion_count_rows(store), 4);
+
+        store.node_map().remove(node.id).unwrap();
+        for key in [HOG, OTHER_HOG] {
+            assert_eq!(
+                store
+                    .engine_exclusion_report(&instance(node.id, key))
+                    .unwrap(),
+                None
+            );
+            assert_eq!(
+                store
+                    .engine_exclusion_report(&instance(kept.id, key))
+                    .unwrap(),
+                Some(report(vec![excluded(1, 14, 5)]))
+            );
+        }
+        assert_eq!(exclusion_count_rows(store), 2);
+    }
+
+    fn total(engine: AgentKind, entry: u64, day: i8, count: u64) -> EngineExclusionTotal {
+        EngineExclusionTotal {
+            engine,
+            entry,
+            day: jiff::civil::date(2026, 3, day),
+            count,
+        }
+    }
+
+    /// Gives `ENGINE` of `node` detectors 1 and 2, serving `<prefix>1` and
+    /// `<prefix>2`, and a status of each with the `excluded` counts given,
+    /// returning the node as updated.
+    fn set_engine_excluded(
+        store: &Store,
+        node: &Node,
+        prefix: &str,
+        excluded: [Vec<ExcludedCount>; 2],
+    ) -> Node {
+        let engine = instance(node.id, ENGINE);
+        let ids = [1, 2];
+        add_detector_models(store, node.id, prefix, &ids);
+        let node = apply_detectors(store, node, prefix, &ids).unwrap();
+        for (id, excluded) in ids.into_iter().zip(excluded) {
+            let mut status = status(1);
+            status.excluded = excluded;
+            store.set_detector_status(&engine, id, &status).unwrap();
+        }
+        node
+    }
+
+    #[test]
+    fn exclusion_totals_sum_each_engine_kind_apart_per_customer() {
+        let t = setup_store();
+        let store = &t.store;
+        let customer_2 = NodeProfile {
+            customer_id: 2,
+            description: String::new(),
+            hostname: "c2".to_string(),
+        };
+        let node_a = insert_node_at(store, "a", "a", hog_agents());
+        let node_b = insert_node_at(store, "b", "b", hog_agents());
+        let node_c = insert_node_with_profiles(store, "c", Some(customer_2), None, hog_agents());
+        // A node with only a draft profile belongs to no customer.
+        let node_d = insert_node_with_profiles(store, "d", None, Some(profile("d")), hog_agents());
+        // A node with no profile at all belongs to no customer either.
+        let node_e = insert_node(store, "e", hog_agents());
+
+        // Customer 1: two REconverge detectors share (10, 14), and three Hog
+        // instances share (10, 14). (11, 14) is REconverge's only, and
+        // (12, 15) and (13, 16) are Hog's only; (13, 16) saturates.
+        let node_a = set_engine_excluded(
+            store,
+            &node_a,
+            "a",
+            [
+                vec![excluded(10, 14, 4), excluded(11, 14, 1)],
+                vec![excluded(10, 14, 6)],
+            ],
+        );
+        let set = |node: &Node, key: &str, counts| {
+            store
+                .set_engine_exclusion_report(&instance(node.id, key), &report(counts))
+                .unwrap();
+        };
+        set(
+            &node_a,
+            HOG,
+            vec![excluded(10, 14, 100), excluded(12, 15, 7)],
+        );
+        set(
+            &node_a,
+            OTHER_HOG,
+            vec![excluded(10, 14, 200), excluded(13, 16, 1)],
+        );
+        set(
+            &node_b,
+            HOG,
+            vec![excluded(13, 16, u64::MAX), excluded(10, 14, 3)],
+        );
+
+        // Customer 2 has the same pair from both kinds.
+        set_engine_excluded(
+            store,
+            &node_c,
+            "c",
+            [vec![excluded(10, 14, 77)], Vec::new()],
+        );
+        set(&node_c, HOG, vec![excluded(10, 14, 1000)]);
+
+        // Nodes of no customer.
+        set(&node_d, HOG, vec![excluded(10, 14, 5000)]);
+        set(&node_e, OTHER_HOG, vec![excluded(10, 14, 9000)]);
+
+        assert_eq!(
+            store.engine_exclusion_totals(1).unwrap(),
+            vec![
+                total(AgentKind::Unsupervised, 10, 14, 10),
+                total(AgentKind::Unsupervised, 11, 14, 1),
+                total(AgentKind::SemiSupervised, 10, 14, 303),
+                total(AgentKind::SemiSupervised, 12, 15, 7),
+                total(AgentKind::SemiSupervised, 13, 16, u64::MAX),
+            ]
+        );
+        assert_eq!(
+            store.engine_exclusion_totals(2).unwrap(),
+            vec![
+                total(AgentKind::Unsupervised, 10, 14, 77),
+                total(AgentKind::SemiSupervised, 10, 14, 1000),
+            ]
+        );
+        assert_eq!(
+            store.engine_exclusion_totals(3).unwrap(),
+            Vec::<EngineExclusionTotal>::new()
+        );
+
+        // A removed agent's counts leave the totals with it.
+        update(store, &node_a, &without_agent(&node_a, OTHER_HOG)).unwrap();
+        assert_eq!(
+            store.engine_exclusion_totals(1).unwrap(),
+            vec![
+                total(AgentKind::Unsupervised, 10, 14, 10),
+                total(AgentKind::Unsupervised, 11, 14, 1),
+                total(AgentKind::SemiSupervised, 10, 14, 103),
+                total(AgentKind::SemiSupervised, 12, 15, 7),
+                total(AgentKind::SemiSupervised, 13, 16, u64::MAX),
+            ]
+        );
     }
 }

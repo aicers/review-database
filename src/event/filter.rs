@@ -1168,7 +1168,6 @@ mod tests {
             id,
             name: format!("policy-{id}"),
             creation_time: time(),
-            triage_exclusion: Vec::new(),
             packet_attr: Vec::new(),
             score: conditions,
             response: minimum_scores

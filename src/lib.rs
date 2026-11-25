@@ -95,12 +95,12 @@ pub use self::tables::{
     DaiSettings, DaiSettingsUpdate, DaiSite, DaiSiteCollection, DaiSoftware, DaiStoreOutcome,
     DaiSubjectKind, DaiTimeRange, DaiVerdict, DetectorSourceStatus, DetectorState, DetectorStatus,
     EngineDetectorRef, EngineDocumentError, EngineDocumentRefs, EngineDocumentWrite,
-    EngineInstanceState, ExclusionReason, ExternalService, ExternalServiceConfig,
+    EngineExclusionTotal, EngineInstanceState, ExternalService, ExternalServiceConfig,
     ExternalServiceKind, ExternalServiceStatus, IndexedTable, InstallIntent, InstanceAllocation,
     InstanceAllocationError, Iterable, LabelDb, LabelDbKind, LabelDbRule, LabelDbRuleKind,
     Lifecycle, ListenerBinding, ListenerTransport, Model as ModelDigest, ModelIndicator,
-    ModelInstance, ModelMethod, ModelOwner, ModelRun, ModelUse, Network, NetworkFilter,
-    NetworkListEntry, NetworkListReplaceOutcome, NetworkListSet, NetworkListTable, NetworkUpdate,
+    ModelInstance, ModelMethod, ModelOwner, ModelRun, ModelUse, Network, NetworkListEntry,
+    NetworkListReplaceOutcome, NetworkListSet, NetworkListTable, NetworkUpdate,
     NewTimeSeriesGenerationPolicy, NewTrainingDefinition, Node, NodeProfile, NodeTable, NodeUpdate,
     OperationAction, OperationAttempt, OperationCleanupState, OperationFailureKind,
     OperationOnFailure, OperationOutcome, OperationPhase, OperationRetentionBound,
@@ -127,8 +127,8 @@ pub use self::tables::{
     SystemLogCollectorRefusal, SystemLogCollectorTable, Table, Template, TimeSeries,
     TimeSeriesGenerationPolicy, TimeSeriesGenerationPolicyError, TimeSeriesGenerationPolicyUpdate,
     TimeSeriesRange, TopColumnsOfCluster, TopMultimaps, TorExitNode, TrafficFilter, TrainedWith,
-    TrainingDefinition, TrainingDefinitionUpdate, TriageExclusion, TriagePolicyInput,
-    TriageResponse, TriageResponseUpdate, TrustedDomain, TrustedUserAgent, UniqueKey, Unstructured,
+    TrainingDefinition, TrainingDefinitionUpdate, TriagePolicyInput, TriageResponse,
+    TriageResponseUpdate, TrustedDomain, TrustedUserAgent, UniqueKey, Unstructured,
     UnstructuredClusteringAlgorithm, ValueKind, WindowSize, dai_network_digest, sensor_name,
 };
 pub use self::time_series_type::{TimeSeriesType, time_series_type, time_series_types};
@@ -741,7 +741,7 @@ impl Store {
         self.states.customer_networks()
     }
 
-    /// Returns the table of each customer's allowlist and blocklist.
+    /// Returns the table of each customer's exclusion list and watchlist.
     #[must_use]
     pub fn network_lists_map(&self) -> NetworkListTable<'_> {
         self.states.network_lists()

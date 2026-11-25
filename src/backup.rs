@@ -649,8 +649,8 @@ mod tests {
         DEFAULT_STATES, DetectionEventStamp, Iterable, ModelInstance, Store,
         migration::DATABASE_FORMAT_VERSION,
         tables::{
-            ADDED_WITHIN_FORMAT, FORMAT_0_63, MAP_NAMES, TIME_SERIES_GENERATION_POLICY,
-            open_rocksdb_backup_engine,
+            ADDED_WITHIN_FORMAT, ENGINE_EXCLUSION_COUNTS, FORMAT_0_63, MAP_NAMES,
+            TIME_SERIES_GENERATION_POLICY, open_rocksdb_backup_engine,
         },
     };
 
@@ -1321,8 +1321,16 @@ mod tests {
     /// are the configuration revision families, the Clumit Endpoint
     /// (`senta`) families, the device identification (DAI) configuration
     /// families, the DAI observation, cursor and restore families, the DAI
-    /// unregistered range families and the DAI device families.
+    /// unregistered range families, the DAI device families and the engine
+    /// exclusion counts family.
     fn add_earlier_build_backup(backup_dir: &Path, events: usize) {
+        add_backup_without_families(backup_dir, events, &ADDED_WITHIN_FORMAT);
+    }
+
+    /// Adds to the backup engine in `backup_dir` a backup of a store in the
+    /// current format holding `events` events, without the `dropped` column
+    /// families.
+    fn add_backup_without_families(backup_dir: &Path, events: usize, dropped: &[&str]) {
         let source = tempfile::tempdir().unwrap();
         let source_backup = tempfile::tempdir().unwrap();
         {
@@ -1337,7 +1345,7 @@ mod tests {
         let states = source.path().join(DEFAULT_STATES);
         let mut db =
             rocksdb::DB::open_cf(&rocksdb::Options::default(), &states, MAP_NAMES).unwrap();
-        for name in ADDED_WITHIN_FORMAT {
+        for name in dropped {
             db.drop_cf(name).unwrap();
         }
         let mut engine = open_rocksdb_backup_engine(&backup_dir.join(DEFAULT_STATES)).unwrap();
@@ -1348,16 +1356,18 @@ mod tests {
     /// [`ADDED_WITHIN_FORMAT`] families — the configuration revision
     /// families, the Clumit Endpoint (`senta`) families, the DAI
     /// configuration families, the DAI observation, cursor and restore
-    /// families, the DAI unregistered range families and the DAI device
-    /// families — which that build did not have. It is in the current
+    /// families, the DAI unregistered range families, the DAI device
+    /// families and the engine exclusion counts family — which that build
+    /// did not have. It is in the current
     /// format, so it restores online by id and as the latest, the restored
     /// store has every family of the format, it records configuration
     /// revisions, it stores an observation, it registers a senta endpoint
     /// install, its DAI configuration families are empty and written to, its
     /// DAI observation, cursor and restore families hold only the restore
     /// generation the restore drew and are written to, its DAI unregistered
-    /// range families are empty and written to, and its DAI device families
-    /// are empty and written to by a slot application.
+    /// range families are empty and written to, its DAI device families
+    /// are empty and written to by a slot application, and its engine
+    /// exclusion counts family is empty and written to.
     #[test]
     fn online_restore_accepts_an_earlier_build_backup_of_the_current_format() {
         let _permit = acquire_db_permit();
@@ -1426,9 +1436,98 @@ mod tests {
             assert!(installs.get("install").unwrap().is_some());
 
             assert_dai_tables_start_empty(&store);
+            assert_engine_exclusion_counts_start_empty(&store);
         }
         drop(store);
         assert_eq!(event_count(data_dir.path(), backup_dir.path()), 2);
+    }
+
+    /// A backup in the current format taken by a build without the `engine
+    /// exclusion counts` family, which no earlier build of the format wrote,
+    /// passes the format check and restores, online by id and as the
+    /// latest; the restored store has the family, empty, and stores an
+    /// exclusion report in it.
+    #[test]
+    fn online_restore_accepts_a_backup_without_engine_exclusion_counts() {
+        let _permit = acquire_db_permit();
+        let data_dir = tempfile::tempdir().unwrap();
+        let backup_dir = tempfile::tempdir().unwrap();
+        let store = open_current_store(data_dir.path(), backup_dir.path());
+        put_event(&store);
+        add_backup_without_families(backup_dir.path(), 2, &[ENGINE_EXCLUSION_COUNTS]);
+        let families = rocksdb::DB::list_cf(
+            &rocksdb::Options::default(),
+            private_dir(backup_dir.path(), 1),
+        )
+        .unwrap();
+        assert!(
+            !families
+                .iter()
+                .any(|family| family == ENGINE_EXCLUSION_COUNTS)
+        );
+        assert_eq!(families.len(), MAP_NAMES.len());
+
+        store
+            .write()
+            .expect("test holds no other locks")
+            .restore_from_latest_backup()
+            .unwrap();
+        assert_eq!(live_event_count(&store), 2);
+        put_event(&store);
+        store
+            .write()
+            .expect("test holds no other locks")
+            .restore_from_backup(1)
+            .unwrap();
+        assert_eq!(live_event_count(&store), 2);
+
+        {
+            let store = store.read().expect("test holds no other locks");
+            let db = store.states.db();
+            assert!(MAP_NAMES.iter().all(|name| db.cf_handle(name).is_some()));
+            assert_engine_exclusion_counts_start_empty(&store);
+        }
+        drop(store);
+        assert_eq!(event_count(data_dir.path(), backup_dir.path()), 2);
+    }
+
+    /// Asserts that the `engine exclusion counts` family of `store`, restored
+    /// from a backup without it, is empty and is written to.
+    fn assert_engine_exclusion_counts_start_empty(store: &Store) {
+        let db = store.states.db();
+        let cf = db.cf_handle(ENGINE_EXCLUSION_COUNTS).unwrap();
+        assert_eq!(db.iterator_cf(cf, rocksdb::IteratorMode::Start).count(), 0);
+
+        let agent = crate::Agent::new(
+            7,
+            "hog".to_string(),
+            crate::AgentKind::SemiSupervised,
+            crate::AgentStatus::Enabled,
+            None,
+            None,
+        )
+        .unwrap();
+        store.agents_map().put(&agent).unwrap();
+        let instance = ModelInstance {
+            node_id: 7,
+            agent_key: "hog".to_string(),
+        };
+        assert_eq!(store.engine_exclusion_report(&instance).unwrap(), None);
+        let report = review_protocol::types::EngineExclusionReport {
+            counts: vec![review_protocol::types::ExcludedCount {
+                entry: 1,
+                day: jiff::civil::date(2026, 3, 14),
+                count: 5,
+            }],
+        };
+        store
+            .set_engine_exclusion_report(&instance, &report)
+            .unwrap();
+        assert_eq!(
+            store.engine_exclusion_report(&instance).unwrap(),
+            Some(report)
+        );
+        assert_eq!(db.iterator_cf(cf, rocksdb::IteratorMode::Start).count(), 1);
     }
 
     /// Asserts that the DAI families of `store`, restored from an earlier
@@ -1556,6 +1655,7 @@ mod tests {
                                       \"dai sensor state\", \"dai services\", \
                                       \"dai site policy guard\", \"dai sites\", \
                                       \"dai slot sends\", \"dai software strings\", \
+                                      \"engine exclusion counts\", \
                                       \"format 0.63\", \"senta active list\", \
                                       \"senta document results\", \
                                       \"senta endpoint address roots\", \

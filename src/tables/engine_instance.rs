@@ -13,18 +13,23 @@
 //! its host, where the engine keeps each detector's state under its id, so a
 //! mark outlives the instance's row, its agent and node rows and a reinstall
 //! under the same key, as that directory does. Nothing deletes a mark.
+//!
+//! Also the `engine exclusion counts` table: the last
+//! [`EngineExclusionReport`] each Semi-supervised Engine instance sent, keyed
+//! as the instance's agent row. The `NodeTable` writer that removes the agent
+//! deletes the row with it.
 
 use std::{collections::BTreeMap, mem::size_of};
 
 use anyhow::{Context, Result, anyhow};
 use jiff::Timestamp;
-use review_protocol::types::{DetectionModelStatus, ExcludedCount};
+use review_protocol::types::{DetectionModelStatus, EngineExclusionReport, ExcludedCount};
 use rocksdb::{IteratorMode, OptimisticTransactionDB, Transaction};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use super::ModelInstance;
-use crate::{EXCLUSIVE, Map};
+use crate::{AgentKind, EXCLUSIVE, Map};
 
 /// What one `[[detectors]]` entry of an engine document references.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -79,6 +84,26 @@ pub struct EngineInstanceState {
     /// a written document naming an id at most this that neither stored
     /// document names is refused.
     pub last_detector_id: i32,
+}
+
+/// The number of raw events the engine instances of one customer skipped
+/// for one exclusion-list entry on one UTC day, summed over the instances of
+/// one engine kind.
+///
+/// A Semi-supervised Engine's count is of the raw events it skipped before
+/// detection; an Unsupervised Engine's is of the raw events its detectors
+/// removed from their detection results. The two count different things, so
+/// they are never added together.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct EngineExclusionTotal {
+    /// [`AgentKind::SemiSupervised`] or [`AgentKind::Unsupervised`].
+    pub engine: AgentKind,
+    /// The id of the exclusion-list entry.
+    pub entry: u64,
+    /// The UTC day the counted raw events fall on.
+    pub day: jiff::civil::Date,
+    /// The sum of the counts, saturating at `u64::MAX`.
+    pub count: u64,
 }
 
 /// A detector of an engine instance whose applied or pending document names
@@ -150,8 +175,9 @@ pub enum SourceState {
     Failed,
 }
 
-/// A refusal to write an engine document's references, a detector status or
-/// an engine instance's stopped state.
+/// A refusal to write an engine document's references, a detector status, an
+/// engine instance's stopped state or a Semi-supervised Engine instance's
+/// exclusion report.
 ///
 /// It is returned inside the `anyhow::Error` of the refusing method, so a
 /// caller can `downcast_ref` it.
@@ -160,6 +186,10 @@ pub enum EngineDocumentError {
     /// The agent key does not name an Unsupervised Engine agent of the node.
     #[error("agent {agent_key:?} of node {node_id} is not an Unsupervised Engine agent")]
     NotUnsupervisedAgent { node_id: u32, agent_key: String },
+    /// The agent key does not name a Semi-supervised Engine agent of the
+    /// node.
+    #[error("agent {agent_key:?} of node {node_id} is not a Semi-supervised Engine agent")]
+    NotSemiSupervisedAgent { node_id: u32, agent_key: String },
     /// The agent key is listed twice among the documents to write.
     #[error("agent {agent_key:?} is listed more than once")]
     DuplicateAgentKey { agent_key: String },
@@ -408,5 +438,46 @@ impl<'d> DetectorIdMarks<'d> {
             &super::serialize(&last_detector_id)?,
             txn,
         )
+    }
+}
+
+/// The `engine exclusion counts` column family.
+pub(crate) struct EngineExclusionCounts<'d> {
+    map: Map<'d>,
+}
+
+impl<'d> EngineExclusionCounts<'d> {
+    pub(crate) fn open(db: &'d OptimisticTransactionDB) -> Option<Self> {
+        Map::open(db, super::ENGINE_EXCLUSION_COUNTS).map(|map| Self { map })
+    }
+
+    /// Returns the report stored at `key`.
+    pub(crate) fn get(&self, key: &[u8]) -> Result<Option<EngineExclusionReport>> {
+        self.map
+            .get(key)?
+            .map(|value| super::deserialize(value.as_ref()))
+            .transpose()
+            .context("cannot read engine exclusion counts")
+    }
+
+    /// Writes `report` at `key` within `txn`, replacing the stored one.
+    pub(crate) fn put(
+        &self,
+        txn: &Transaction<OptimisticTransactionDB>,
+        key: &[u8],
+        report: &EngineExclusionReport,
+    ) -> Result<()> {
+        self.map
+            .put_with_transaction(key, &super::serialize(report)?, txn)
+    }
+
+    /// Deletes the report at `key` within `txn`; an absent row is not an
+    /// error.
+    pub(crate) fn delete(
+        &self,
+        txn: &Transaction<OptimisticTransactionDB>,
+        key: &[u8],
+    ) -> Result<()> {
+        self.map.delete_with_transaction(key, txn)
     }
 }

@@ -94,12 +94,13 @@ pub use self::dai::{
     DaiStoreOutcome, DaiSubjectKind, DaiTimeRange, DaiVerdict, dai_network_digest,
 };
 pub(crate) use self::engine_instance::{
-    DetectorIdMarks, EngineInstances, Row as EngineInstanceRow, key as engine_instance_key,
+    DetectorIdMarks, EngineExclusionCounts, EngineInstances, Row as EngineInstanceRow,
+    key as engine_instance_key,
 };
 pub use self::engine_instance::{
     DetectorSourceStatus, DetectorState, DetectorStatus, EngineDetectorRef, EngineDocumentError,
-    EngineDocumentRefs, EngineDocumentWrite, EngineInstanceState, ModelUse, RoundOutcome,
-    SourceState,
+    EngineDocumentRefs, EngineDocumentWrite, EngineExclusionTotal, EngineInstanceState, ModelUse,
+    RoundOutcome, SourceState,
 };
 pub use self::external_service::{ExternalService, ExternalServiceKind};
 pub use self::instance_allocation::{InstanceAllocation, InstanceAllocationError};
@@ -179,8 +180,7 @@ pub use self::training_definition::{
     ModelMethod, NewTrainingDefinition, TrainingDefinition, TrainingDefinitionUpdate,
 };
 pub use self::triage_policy::{
-    AttrCmpKind, ExclusionReason, NetworkFilter, PacketAttr, Response, ResponseKind,
-    ScoreCondition, TriageExclusion, TriagePolicyInput, ValueKind,
+    AttrCmpKind, PacketAttr, Response, ResponseKind, ScoreCondition, TriagePolicyInput, ValueKind,
 };
 pub use self::triage_response::{TriageResponse, Update as TriageResponseUpdate};
 pub use self::trusted_domain::TrustedDomain;
@@ -296,6 +296,8 @@ pub(super) const DAI_SOFTWARE_STRINGS: &str = "dai software strings";
 /// The change history of each device.
 pub(super) const DAI_DEVICE_CHANGES: &str = "dai device changes";
 pub(super) const DETECTOR_ID_MARKS: &str = "detector id marks";
+/// The last exclusion report of each Semi-supervised Engine instance.
+pub(super) const ENGINE_EXCLUSION_COUNTS: &str = "engine exclusion counts";
 pub(super) const ENGINE_INSTANCES: &str = "engine instances";
 /// An empty column family that exists only so that `check_backup_format` can
 /// tell a 0.63 backup from an older one.
@@ -422,12 +424,16 @@ pub(super) const TRUSTED_USER_AGENTS: &str = "trusted user agents";
 ///   IPs, conflicts, services, software strings and device changes) start
 ///   with the first `apply_dai_slot` of a build that has them, which no
 ///   earlier build could run; a sensor with no resolver point reads as one
-///   never applied.
+///   never applied;
+/// - the `engine exclusion counts` table starts with the first exclusion
+///   report a build that has it stores: earlier builds of the format never
+///   wrote the family, so their backups lack it, and an instance with no row
+///   reads as one that has sent no report.
 ///
 /// The `senta` endpoint and DAI tables are listed here although no release
 /// yet carries a build without them, so that a backup of such a build is
 /// accepted whichever is released first.
-pub(super) const ADDED_WITHIN_FORMAT: [&str; 54] = [
+pub(super) const ADDED_WITHIN_FORMAT: [&str; 55] = [
     CONFIG_REVISIONS,
     CONFIG_REVISION_HISTORY,
     DAI_CATCHUP_GAPS,
@@ -465,6 +471,7 @@ pub(super) const ADDED_WITHIN_FORMAT: [&str; 54] = [
     DAI_RESOLVER_POINTS,
     DAI_SERVICES,
     DAI_SOFTWARE_STRINGS,
+    ENGINE_EXCLUSION_COUNTS,
     SENTA_ACTIVE_LIST,
     SENTA_DOCUMENT_RESULTS,
     SENTA_ENDPOINT_EVENTS,
@@ -484,7 +491,7 @@ pub(super) const ADDED_WITHIN_FORMAT: [&str; 54] = [
     SENTA_ENDPOINTS,
 ];
 
-pub(crate) const MAP_NAMES: [&str; 104] = [
+pub(crate) const MAP_NAMES: [&str; 105] = [
     AGENTS,
     BATCH_INFO,
     CATEGORY,
@@ -595,6 +602,9 @@ pub(crate) const MAP_NAMES: [&str; 104] = [
     DAI_SERVICES,
     DAI_SOFTWARE_STRINGS,
     DAI_DEVICE_CHANGES,
+    // The engine exclusion counts family stays before the last entry for the
+    // same reason.
+    ENGINE_EXCLUSION_COUNTS,
     TRUSTED_USER_AGENTS,
 ];
 
@@ -943,6 +953,11 @@ impl StateDb {
 
     pub(crate) fn engine_instances(&self) -> EngineInstances<'_> {
         EngineInstances::open(self.db()).expect("StateDb::open creates the engine instances family")
+    }
+
+    pub(crate) fn engine_exclusion_counts(&self) -> EngineExclusionCounts<'_> {
+        EngineExclusionCounts::open(self.db())
+            .expect("StateDb::open creates the engine exclusion counts family")
     }
 
     pub(crate) fn training_definitions(&self) -> TrainingDefinitions<'_> {
