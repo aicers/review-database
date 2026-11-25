@@ -1,7 +1,7 @@
 //! Tests of DAI slot application, the device tables, their retention and
 //! their part of a customer's deletion.
 
-use std::{collections::BTreeMap, net::IpAddr};
+use std::{cell::Cell, collections::BTreeMap, net::IpAddr, rc::Rc};
 
 use review_protocol::types::{
     DaiDhcpMsg, DaiObservation, DaiObservationBatch, DaiObservationBody,
@@ -15,10 +15,11 @@ use super::cursor::{DAY, date_of, pair_key, slot_floor};
 use super::device::{
     Activity, AliasReason, AliasRow, BindingRow, ChangeEntry, ChangeKind, ChangeOp, ChangeSource,
     ConflictRow, DeviceName, DeviceRow, EvidenceRow, Identifier, IdentifierKind, IdentifierRow,
-    NameSource, OrderKey, SeenTimes, ServiceRow, Verdict, address_key, decode_binding_key,
-    decode_evidence_key, device_key, identifier_key, resolver_point_key, service_key,
+    NameSource, OrderKey, SeenTimes, ServiceRow, Verdict, address_key, binding_key,
+    decode_binding_key, decode_evidence_key, device_binding_key, device_key, evidence_key,
+    identifier_key, resolver_point_key, service_key,
 };
-use super::device_retention::set_owners_checked_hook;
+use super::device_retention::{set_address_read_hook, set_owners_checked_hook};
 use super::hash::identifier_hash;
 use super::observation::{DaiCounterKind, SeenRow, pending_key};
 use super::*;
@@ -174,6 +175,16 @@ fn dns(name: &str, addr: &str) -> DaiObservationBody {
     DaiObservationBody::DnsName {
         name: name.to_string(),
         ip: ip(addr),
+    }
+}
+
+/// Returns an O22 body: an SSH server software string `text` at `addr`.
+fn software(addr: &str, text: &str) -> DaiObservationBody {
+    DaiObservationBody::SoftwareString {
+        ip: ip(addr),
+        side: DaiSide::Server,
+        source: DaiSoftwareSource::Ssh,
+        text: text.to_string(),
     }
 }
 
@@ -337,6 +348,26 @@ impl Fixture {
 
     fn count(&self, family: &str) -> usize {
         self.rows(family).len()
+    }
+
+    /// Returns the rows of `family` whose key starts with `customer`'s id.
+    fn rows_of(&self, family: &str, customer: u32) -> Vec<RawRow> {
+        self.rows(family)
+            .into_iter()
+            .filter(|(key, _)| key.starts_with(&customer_key(customer)))
+            .collect()
+    }
+
+    /// Returns the (key, first seen, last seen) of each software string row
+    /// of `customer`.
+    fn software_of(&self, customer: u32) -> Vec<(Box<[u8]>, i64, i64)> {
+        self.rows_of(super::super::DAI_SOFTWARE_STRINGS, customer)
+            .into_iter()
+            .map(|(key, value)| {
+                let times: SeenTimes = super::super::deserialize(&value).unwrap();
+                (key, times.first_seen, times.last_seen)
+            })
+            .collect()
     }
 
     /// Returns the bindings of [`CUSTOMER`], in key order.
@@ -1921,6 +1952,8 @@ fn retention_deletes_old_history_and_keeps_what_a_replay_needs() {
     );
     f.applied(A, &Lease::release(NOON + MINUTE, "10.0.0.1", 1));
     let ended = f.owner(1);
+    let old_software = software("10.0.0.1", "SSH-2.0-OpenSSH_8.0");
+    f.observed(A, &old_software, NOON + 30 * NS, NOON + 30 * NS);
     // A binding open since day 0, kept open by an ACK on day 175, with an
     // INFORM ACK on day 0.
     f.applied(A, &forever(NOON, "10.0.0.2", 2));
@@ -1985,6 +2018,23 @@ fn retention_deletes_old_history_and_keeps_what_a_replay_needs() {
     let day175 = NOON + 175 * DAY;
     f.update_settings(|update| update.evidence_aging_secs = 180 * 86_400);
     f.applied(A, &forever(day175, "10.0.0.2", 2));
+    // A software string last seen recently, through the open binding.
+    let recent_software = software("10.0.0.2", "SSH-2.0-OpenSSH_9.6");
+    f.observed(A, &recent_software, day175 + MINUTE, day175 + MINUTE);
+    // Both rows exist before retention; the keys hold random device ids, so
+    // the rows are compared by their times.
+    let mut software_before = f.software_of(CUSTOMER);
+    software_before.sort_unstable_by_key(|(_, _, last)| *last);
+    assert_eq!(
+        software_before
+            .iter()
+            .map(|(_, first, last)| (*first, *last))
+            .collect::<Vec<_>>(),
+        [
+            (NOON + 30 * NS, NOON + 30 * NS),
+            (day175 + MINUTE, day175 + MINUTE)
+        ]
+    );
     let devices_before = f.devices().len();
     let identifiers_before = f.count(super::super::DAI_DEVICE_IDENTIFIERS);
 
@@ -2019,7 +2069,11 @@ fn retention_deletes_old_history_and_keeps_what_a_replay_needs() {
     assert_eq!(f.count(super::super::DAI_DEVICE_ALIASES), 0);
     assert_eq!(f.count(super::super::DAI_CONFLICTS), 0);
     assert_eq!(f.count(super::super::DAI_SERVICES), 0);
-    assert_eq!(f.count(super::super::DAI_SOFTWARE_STRINGS), 0);
+    // The software string last seen more than 180 days before `now` is
+    // gone; the recent one stays as it was.
+    assert!(software_before[0].2 < now - 180 * DAY);
+    assert_eq!(f.software_of(CUSTOMER), software_before[1..]);
+    assert_eq!(f.count(super::super::DAI_SOFTWARE_STRINGS), 1);
     assert!(
         f.rows(super::super::DAI_DEVICE_CHANGES)
             .iter()
@@ -2088,9 +2142,17 @@ fn pending_expiry_rewrites_the_resolver_point() {
 // ---- Customer deletion ----
 
 #[test]
+#[allow(clippy::too_many_lines)] // One fixture, checked before and after two deletions.
 fn customer_deletion_removes_the_device_rows_of_the_customer_only() {
     let f = setup();
     let other_site = f.store.ensure_default_site(OTHER).unwrap();
+    let service = DaiObservationBody::Service {
+        server_ip: ip("10.0.0.1"),
+        port: 80,
+        proto: 6,
+        external_client: false,
+    };
+    let ssh = software("10.0.0.1", "SSH-2.0-OpenSSH_9.6");
     f.applied(
         A,
         &Lease {
@@ -2098,18 +2160,11 @@ fn customer_deletion_removes_the_device_rows_of_the_customer_only() {
             ..Lease::ack(t(10), "10.0.0.1", 1)
         },
     );
-    f.observed(
-        A,
-        &DaiObservationBody::Service {
-            server_ip: ip("10.0.0.1"),
-            port: 80,
-            proto: 6,
-            external_client: false,
-        },
-        t(20),
-        t(20),
-    );
+    f.observed(A, &service, t(20), t(20));
+    f.observed(A, &ssh, t(25), t(25));
     f.applied(D, &Lease::ack(t(10), "10.0.0.1", 1));
+    f.observed(D, &service, t(30), t(30));
+    f.observed(D, &ssh, t(35), t(35));
     for customer in [CUSTOMER, OTHER] {
         f.put(
             super::super::DAI_FIXED_IPS,
@@ -2136,25 +2191,59 @@ fn customer_deletion_removes_the_device_rows_of_the_customer_only() {
         );
     }
     f.lease(A, &Lease::ack(m(10), "10.0.0.1", 1));
-    let other_rows = |f: &Fixture| -> Vec<usize> {
+    // The rows of the other customer, keys and values, in every device
+    // family.
+    let other_rows = |f: &Fixture| -> Vec<Vec<RawRow>> {
         DEVICE_FAMILIES
             .iter()
             .map(|family| {
-                f.rows(family)
-                    .iter()
-                    .filter(|(key, _)| {
-                        if *family == super::super::DAI_RESOLVER_POINTS {
-                            key.as_ref() == resolver_point_key(D).as_slice()
-                        } else {
-                            key.starts_with(&customer_key(OTHER))
-                        }
-                    })
-                    .count()
+                if *family == super::super::DAI_RESOLVER_POINTS {
+                    f.rows(family)
+                        .into_iter()
+                        .filter(|(key, _)| key.as_ref() == resolver_point_key(D).as_slice())
+                        .collect()
+                } else {
+                    f.rows_of(family, OTHER)
+                }
             })
             .collect()
     };
     let before = other_rows(&f);
-    assert!(before.iter().filter(|count| **count > 0).count() >= 10);
+    for (family, rows) in DEVICE_FAMILIES.iter().zip(&before) {
+        assert!(!rows.is_empty(), "{family}");
+    }
+    // The populated rows the deletion removes and the ones it keeps.
+    let software = f.software_of(CUSTOMER);
+    assert_eq!(
+        software
+            .iter()
+            .map(|(_, first, last)| (*first, *last))
+            .collect::<Vec<_>>(),
+        [(t(25), t(25))]
+    );
+    assert_eq!(f.rows_of(super::super::DAI_SERVICES, CUSTOMER).len(), 1);
+    let other_services: Vec<ServiceRow> = f
+        .rows_of(super::super::DAI_SERVICES, OTHER)
+        .iter()
+        .map(|(_, value)| super::super::deserialize(value).unwrap())
+        .collect();
+    assert_eq!(
+        other_services,
+        [ServiceRow {
+            external_client: false,
+            first_seen: t(30),
+            last_seen: t(30),
+            removed: false
+        }]
+    );
+    let other_software = f.software_of(OTHER);
+    assert_eq!(
+        other_software
+            .iter()
+            .map(|(_, first, last)| (*first, *last))
+            .collect::<Vec<_>>(),
+        [(t(35), t(35))]
+    );
 
     let sensors = [A.to_string(), B.to_string()];
     f.store.delete_dai_customer(CUSTOMER, &sensors).unwrap();
@@ -2173,11 +2262,197 @@ fn customer_deletion_removes_the_device_rows_of_the_customer_only() {
             .count();
         assert_eq!(customer_rows, 0, "{family}");
     }
+    assert!(
+        f.rows(super::super::DAI_SOFTWARE_STRINGS)
+            .iter()
+            .all(|(key, _)| *key != software[0].0)
+    );
     assert_eq!(other_rows(&f), before);
+    assert_eq!(f.software_of(OTHER), other_software);
     assert_eq!(f.count(super::super::DAI_PENDING), 0);
     assert_eq!(f.bindings_of(OTHER).len(), 1);
 
     // A repeated call changes nothing.
+    let snapshot: Vec<_> = DEVICE_FAMILIES
+        .iter()
+        .map(|family| f.rows(family))
+        .collect();
+    f.store.delete_dai_customer(CUSTOMER, &sensors).unwrap();
+    let again: Vec<_> = DEVICE_FAMILIES
+        .iter()
+        .map(|family| f.rows(family))
+        .collect();
+    assert_eq!(snapshot, again);
+    assert_eq!(other_rows(&f), before);
+    assert_eq!(f.software_of(CUSTOMER), []);
+}
+
+/// The DAI device column families a customer deletion deletes address by
+/// address.
+const ADDRESS_FAMILIES: [&str; 4] = [
+    super::super::DAI_BINDINGS,
+    super::super::DAI_DEVICE_BINDINGS,
+    super::super::DAI_EVIDENCE,
+    super::super::DAI_IP_STATE,
+];
+
+#[test]
+fn customer_deletion_deletes_what_a_writer_adds_to_an_address_it_read() {
+    let f = setup();
+    f.store.ensure_default_site(OTHER).unwrap();
+    f.applied(A, &Lease::ack(t(10), "10.0.0.1", 1));
+    f.applied(D, &Lease::ack(t(10), "10.0.0.1", 1));
+    // The customer's only address has a binding, its reverse row, evidence
+    // and an IP state.
+    let bindings = f.binding_rows(CUSTOMER);
+    assert_eq!(bindings.len(), 1);
+    let (site, addr, start, row) = bindings[0].clone();
+    let address = address_key(CUSTOMER, &site, addr);
+    for family in ADDRESS_FAMILIES {
+        let rows = f.rows_of(family, CUSTOMER);
+        assert!(!rows.is_empty(), "{family}");
+        if family != super::super::DAI_DEVICE_BINDINGS {
+            assert!(rows.iter().all(|(key, _)| key.starts_with(&address)));
+        }
+    }
+    let (evidence, evidence_row) = f
+        .rows_of(super::super::DAI_EVIDENCE, CUSTOMER)
+        .pop()
+        .unwrap();
+    let evidence = decode_evidence_key(&evidence).unwrap();
+    let evidence_row: EvidenceRow = super::super::deserialize(&evidence_row).unwrap();
+    let other_before: Vec<Vec<RawRow>> = ADDRESS_FAMILIES
+        .iter()
+        .map(|family| f.rows_of(family, OTHER))
+        .collect();
+    assert!(other_before.iter().all(|rows| !rows.is_empty()));
+
+    // After the deletion read the address, a writer following the protocol
+    // adds a binding with its reverse row and evidence and raises the IP
+    // state, and commits first.
+    let added_start = start + MINUTE;
+    let added_device = Uuid::from_bytes([9; 16]);
+    let added_evidence = evidence_key(
+        CUSTOMER,
+        &site,
+        addr,
+        evidence.last_seen + MINUTE,
+        evidence.kind,
+        &evidence.hash,
+    );
+    let ran = Rc::new(Cell::new(false));
+    let hook_ran = Rc::clone(&ran);
+    let hook_site = site.clone();
+    set_address_read_hook(Box::new(move |db| {
+        let dai = Dai::open(db).unwrap();
+        dai.write(|txn| {
+            let mut lock = dai.lock_ip_state(txn, CUSTOMER, &hook_site, addr)?;
+            let stored = dai.bindings_in(txn, CUSTOMER, &hook_site, addr)?;
+            assert!(!stored.contains_key(&added_start));
+            let mut current = stored.clone();
+            current.insert(
+                added_start,
+                BindingRow {
+                    device: added_device,
+                    ..row.clone()
+                },
+            );
+            dai.write_bindings(txn, CUSTOMER, &hook_site, addr, &stored, &current)?;
+            Dai::put_row(txn, &dai.evidence, &added_evidence, &evidence_row)?;
+            let order = lock.current.expect("the address has an IP state");
+            lock.raise(OrderKey {
+                time: order.time + MINUTE,
+                ..order
+            });
+            dai.write_ip_state(txn, &lock)
+        })
+        .unwrap();
+        hook_ran.set(true);
+    }));
+
+    f.store
+        .delete_dai_customer(CUSTOMER, &[A.to_string(), B.to_string()])
+        .unwrap();
+    assert!(ran.get());
+    for family in ADDRESS_FAMILIES {
+        assert_eq!(f.rows_of(family, CUSTOMER), [], "{family}");
+    }
+    let other_after: Vec<Vec<RawRow>> = ADDRESS_FAMILIES
+        .iter()
+        .map(|family| f.rows_of(family, OTHER))
+        .collect();
+    assert_eq!(other_after, other_before);
+}
+
+#[test]
+fn customer_deletion_deletes_an_address_over_several_transactions() {
+    let f = setup();
+    f.applied(A, &Lease::ack(t(10), "10.0.0.1", 1));
+    let (site, addr, start, row) = f.binding_rows(CUSTOMER).pop().unwrap();
+    let (evidence, evidence_row) = f
+        .rows_of(super::super::DAI_EVIDENCE, CUSTOMER)
+        .pop()
+        .unwrap();
+    let evidence = decode_evidence_key(&evidence).unwrap();
+    let evidence_row: EvidenceRow = super::super::deserialize(&evidence_row).unwrap();
+    // More bindings and more evidence rows at the address than one
+    // transaction deletes, and reverse rows no binding backs.
+    let extra = i64::try_from(ROWS_PER_TRANSACTION).unwrap() + 200;
+    let stray = Uuid::from_bytes([8; 16]);
+    for i in 1..=extra {
+        let at = start + i * NS;
+        f.put(
+            super::super::DAI_BINDINGS,
+            &binding_key(CUSTOMER, &site, addr, at),
+            &row,
+        );
+        f.put(
+            super::super::DAI_DEVICE_BINDINGS,
+            &device_binding_key(CUSTOMER, row.device, &site, addr, at),
+            &(),
+        );
+        f.put(
+            super::super::DAI_EVIDENCE,
+            &evidence_key(
+                CUSTOMER,
+                &site,
+                addr,
+                evidence.last_seen + i * NS,
+                evidence.kind,
+                &evidence.hash,
+            ),
+            &evidence_row,
+        );
+        if i % 4 == 0 {
+            f.put(
+                super::super::DAI_DEVICE_BINDINGS,
+                &device_binding_key(CUSTOMER, stray, &site, addr, at),
+                &(),
+            );
+        }
+    }
+    // An address with only a reverse row, and one with only an IP state.
+    f.put(
+        super::super::DAI_DEVICE_BINDINGS,
+        &device_binding_key(CUSTOMER, stray, &site, ip("10.0.0.8"), start),
+        &(),
+    );
+    let order: OrderKey =
+        super::super::deserialize(&f.rows_of(super::super::DAI_IP_STATE, CUSTOMER)[0].1).unwrap();
+    f.put(
+        super::super::DAI_IP_STATE,
+        &address_key(CUSTOMER, &site, ip("10.0.0.9")),
+        &order,
+    );
+    let total = usize::try_from(extra).unwrap() + 1;
+    assert_eq!(f.rows_of(super::super::DAI_BINDINGS, CUSTOMER).len(), total);
+    assert_eq!(f.rows_of(super::super::DAI_EVIDENCE, CUSTOMER).len(), total);
+
+    let sensors = [A.to_string(), B.to_string()];
+    f.store.delete_dai_customer(CUSTOMER, &sensors).unwrap();
+    for family in ADDRESS_FAMILIES {
+        assert_eq!(f.rows_of(family, CUSTOMER), [], "{family}");
+    }
     let snapshot: Vec<_> = DEVICE_FAMILIES
         .iter()
         .map(|family| f.rows(family))
