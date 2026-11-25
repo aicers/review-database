@@ -410,6 +410,9 @@ pub struct DaiDeviceChange {
     /// The device version the change made.
     pub version: u64,
     pub kind: DaiChangeKind,
+    /// The other device of the change, as its current device id. A merge
+    /// entry therefore names the device itself; the absorbed ids are in
+    /// the detail's aliases.
     pub related_device: Option<Uuid>,
     pub fields: Vec<DaiFieldChange>,
     pub time: i64,
@@ -900,10 +903,14 @@ impl Dai<'_> {
             let version = reader.u64()?;
             reader.finish()?;
             let entry: ChangeEntry = super::super::deserialize(&value)?;
+            let related_device = entry
+                .related_device
+                .map(|device| self.current_or_same(snapshot, customer, device))
+                .transpose()?;
             changes.push(DaiDeviceChange {
                 version,
                 kind: entry.kind.into(),
-                related_device: entry.related_device,
+                related_device,
                 fields: entry
                     .fields
                     .into_iter()
@@ -937,13 +944,17 @@ impl Dai<'_> {
     /// Searches the customer's devices and IP device rows for `text`, as
     /// [`Store::dai_search`](crate::Store::dai_search) describes.
     pub(crate) fn search(&self, customer: u32, text: &str, now: i64) -> Result<DaiSearchResult> {
-        let text = text.trim();
         if text.is_empty() {
             return Ok(DaiSearchResult::default());
         }
         let snapshot = self.db.snapshot();
         let view = self.customer_view(&snapshot, customer)?;
         let mut found = Found::default();
+        // An operator asset id is stored as imported, surrounding spaces
+        // included, so it is matched against the text as given; every
+        // other rule takes the text trimmed.
+        let given = text;
+        let text = text.trim();
 
         if let Ok(ip) = text.parse::<IpAddr>() {
             self.search_ip(&snapshot, &view, ip, now, &mut found)?;
@@ -956,10 +967,13 @@ impl Dai<'_> {
             customer,
             &Identifier {
                 kind: IdentifierKind::OperatorAssetId,
-                value: text.to_string(),
+                value: given.to_string(),
             },
             &mut found,
         )?;
+        if text.is_empty() {
+            return Ok(found.finish());
+        }
         if let Ok(id) = Uuid::parse_str(text) {
             if snapshot
                 .value(&self.devices, &device_key(customer, id))

@@ -911,7 +911,8 @@ impl Store {
     ///   earliest pending slots of every kind. A site's compared time at a
     ///   time `u` is the earliest compared time among the sensors whose site
     ///   at `u` is the site and whose last received record time is within
-    ///   24 hours before `now`, or, if none is, that of the one with the
+    ///   24 hours before `now` (and not after it), or, if none is, that of
+    ///   the one with the
     ///   latest last received record time.
     /// - `t` (a part of the window) lies in a catch-up gap of an O1, O4 or
     ///   O5 pair of one of the customer's sensors whose site at that time
@@ -1023,21 +1024,24 @@ impl Store {
     /// Searches the customer's devices and IP device rows for `text`, as one
     /// database snapshot holds them at `now`.
     ///
-    /// `text`, trimmed, matches by each rule it fits, each match once:
+    /// `text` matches by each rule it fits, each match once; every rule but
+    /// the operator asset id takes it with surrounding whitespace trimmed:
     ///
     /// - an IP address: every device with a stored binding or a fixed IP at
     ///   it in any site, and its IP device rows (as
     ///   [`dai_ip_only_devices`](Self::dai_ip_only_devices) lists them);
     /// - a MAC as `aa:bb:cc:dd:ee:ff`, `aa-bb-cc-dd-ee-ff` or
     ///   `aabb.ccdd.eeff`, in any case: the device holding it now;
-    /// - an operator asset id, exactly: the device holding it;
+    /// - an operator asset id, exactly as given (an asset id is stored as
+    ///   imported, spaces included): the device holding it;
     /// - a device id: the device with that current id, or the current
     ///   device of that old id;
     /// - a case-insensitive substring of any of a device's names.
     ///
     /// Machine accounts and user names are not searched. At most
     /// [`DAI_SEARCH_MAX_MATCHES`] matches are returned, with `truncated` set
-    /// if there were more. An empty text matches nothing.
+    /// if there were more. An empty text, or one of whitespace alone that
+    /// no asset id equals, matches nothing.
     ///
     /// # Errors
     ///

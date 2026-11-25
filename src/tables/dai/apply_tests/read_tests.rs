@@ -851,6 +851,14 @@ fn quiet_sensors_are_left_out_unless_every_sensor_is_quiet() {
     let status = f.store.dai_collection_status(CUSTOMER, NOW).unwrap();
     assert_eq!(status.sites[0].quiet_sensors, [A.to_string()]);
 
+    // A last received record time after now is not within the 24 hours
+    // before now: A, with its old cursor, is still left out.
+    set_last_record(&f, A, NOW + DAY);
+    assert_eq!(compared_cause(&f, at(None, "10.0.0.1", m(5))), None);
+    let status = f.store.dai_collection_status(CUSTOMER, NOW).unwrap();
+    assert_eq!(status.sites[0].quiet_sensors, [A.to_string()]);
+    set_last_record(&f, A, NOW - 2 * DAY);
+
     // Both quiet: the latest last received record time decides, though B's
     // compared time is earlier.
     set_last_record(&f, B, NOW - 3 * DAY);
@@ -1536,11 +1544,18 @@ fn the_detail_follows_an_alias_and_holds_every_attribute() {
     let versions: Vec<u64> = detail.changes.iter().map(|c| c.version).collect();
     assert!(versions.windows(2).all(|w| w[0] < w[1]));
     assert_eq!(versions.last(), Some(&detail.version));
+    let merged = detail
+        .changes
+        .iter()
+        .find(|c| c.kind == crate::DaiChangeKind::Merged)
+        .expect("the merge is in the history");
+    // The absorbed id is answered as the current one; it is in the aliases.
+    assert_eq!(merged.related_device, Some(one));
     assert!(
         detail
             .changes
             .iter()
-            .any(|c| c.kind == crate::DaiChangeKind::Merged)
+            .all(|c| c.related_device.is_none_or(|related| related != two))
     );
 
     // Another customer's device, and an unknown id.
@@ -1627,6 +1642,16 @@ fn search_finds_by_each_kind() {
         device(DaiSearchMatchKind::AssetId, fixed)
     );
     assert_none(&search("asset"));
+    // An asset id is matched as given, its spaces included.
+    let spaced = import(&f, CUSTOMER, import_row(" asset-9 ", &[], &[]));
+    assert_eq!(
+        search(" asset-9 "),
+        device(DaiSearchMatchKind::AssetId, spaced)
+    );
+    assert_eq!(
+        search("asset-9"),
+        device(DaiSearchMatchKind::AssetId, fixed)
+    );
     assert_eq!(
         search(&one.to_string()),
         device(DaiSearchMatchKind::DeviceId, one)

@@ -37,7 +37,8 @@ pub(super) const EVIDENCE_KINDS: [DaiObservationKind; 3] = [
     DaiObservationKind::Ntlm,
 ];
 /// How recent a sensor's last received record time must be for the sensor
-/// to count toward its site's compared time: 24 hours.
+/// to count toward its site's compared time: 24 hours, ending at "now"; a
+/// time after "now" is not recent.
 pub(super) const QUIET_AFTER: i64 = DAY;
 
 /// The value of a sensor that set its compared time.
@@ -176,7 +177,8 @@ impl CustomerView {
     /// `collections`, the sensors' collection states, at `now`.
     ///
     /// Of the sensors whose site at `time` is `site`, those whose last
-    /// received record time is within [`QUIET_AFTER`] before `now` count,
+    /// received record time is within [`QUIET_AFTER`] before `now`, and not
+    /// after `now`, count,
     /// and the earliest of their compared times is the site's; if none
     /// does, the one with the latest last received record time decides.
     pub(super) fn select(
@@ -195,7 +197,7 @@ impl CustomerView {
             };
             if collection
                 .last_record_time
-                .is_some_and(|last| last >= recent_from)
+                .is_some_and(|last| (recent_from..=now).contains(&last))
             {
                 active.push((sensor, collection));
             } else {
