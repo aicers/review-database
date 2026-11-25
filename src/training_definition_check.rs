@@ -182,7 +182,7 @@ const MULTIDIMENSION_KEYS: &[DefinitionKey] = &[
         "Absent means none, and the model uses the centroid approach.",
     ),
     absent_means(
-        "csv.time_intervals",
+        "csv.slot_sizes",
         "When absent or shorter than the DateTime columns, each remaining DateTime column \
          uses 3600 seconds.",
     ),
@@ -1603,7 +1603,7 @@ mod tests {
             ("csv.time_column", AbsentMeans),
             ("csv.count_columns", AbsentMeans),
             ("csv.prefix_columns", AbsentMeans),
-            ("csv.time_intervals", AbsentMeans),
+            ("csv.slot_sizes", AbsentMeans),
         ]);
         multidimension.extend(series_keys);
         assert_eq!(rows(ModelMethod::Multidimension), multidimension);
@@ -1678,8 +1678,8 @@ mod tests {
         );
         let top_n = note(ModelMethod::Multidimension, "numbers_of_top_n").unwrap();
         assert!(top_n.contains("336") && top_n.contains("30"), "{top_n}");
-        let intervals = note(ModelMethod::Multidimension, "csv.time_intervals").unwrap();
-        assert!(intervals.contains("3600"), "{intervals}");
+        let slot_sizes = note(ModelMethod::Multidimension, "csv.slot_sizes").unwrap();
+        assert!(slot_sizes.contains("3600"), "{slot_sizes}");
         assert!(
             note(ModelMethod::Multidimension, "csv.prefix_columns")
                 .unwrap()
@@ -1707,7 +1707,7 @@ mod tests {
                 assert_eq!(
                     fill,
                     method == ModelMethod::Multidimension
-                        && ["numbers_of_top_n", "csv.time_intervals"].contains(&k.key),
+                        && ["numbers_of_top_n", "csv.slot_sizes"].contains(&k.key),
                     "{method:?} {}",
                     k.key
                 );
@@ -1788,7 +1788,9 @@ mod tests {
             custom_csv_default("http").map(DefinitionValue::Table),
             http_url.fixed_value(CSV).copied()
         );
-        assert_eq!(custom_csv_default("http").map(<[_]>::len), Some(6));
+        let http = custom_csv_default("http").unwrap();
+        assert_eq!(http.len(), 6);
+        assert!(http.iter().any(|f| f.key == "slot_sizes"));
         for kind in ["log", "conn", "dns", "process_create", "", "HTTP"] {
             assert_eq!(custom_csv_default(kind), None, "{kind}");
         }
@@ -1817,11 +1819,20 @@ mod tests {
             ("time_column", "0"),
             ("count_columns", "[0]"),
             ("prefix_columns", "[0]"),
-            ("time_intervals", "[60]"),
+            ("slot_sizes", "[60]"),
         ] {
             csv.insert(part.to_string(), v(value));
         }
         assert_eq!(check(&full), Ok(ClusteringModelTypeRef::Custom));
+        // The setting's former name is not a [csv] part.
+        let mut renamed = full.clone();
+        let csv = csv_mut(&mut renamed);
+        let slot_sizes = csv.remove("slot_sizes").unwrap();
+        csv.insert("time_intervals".to_string(), slot_sizes);
+        assert_eq!(
+            refused(&renamed),
+            r(UnknownField, "csv.time_intervals", "[60]")
+        );
         let mut full = custom(ModelMethod::Prefix);
         full.insert("max_data_len".to_string(), v("30"));
         full.insert("max_token_length".to_string(), v("40"));
@@ -2466,7 +2477,7 @@ mod tests {
             );
         }
         let mut table = custom(ModelMethod::Multidimension);
-        csv_mut(&mut table).insert("time_intervals".to_string(), v(r#""x""#));
+        csv_mut(&mut table).insert("slot_sizes".to_string(), v(r#""x""#));
         assert_eq!(check(&table), Ok(ClusteringModelTypeRef::Custom));
     }
 

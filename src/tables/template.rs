@@ -63,7 +63,7 @@ pub struct Structured {
     pub algorithm: Option<StructuredClusteringAlgorithm>,
     pub eps: Option<f32>,
     pub format: Option<String>,
-    pub time_intervals: Option<Vec<i64>>,
+    pub slot_sizes: Option<Vec<i64>>,
     pub numbers_of_top_n: Option<Vec<i32>>,
 }
 
@@ -142,7 +142,7 @@ mod tests {
             algorithm: None,
             eps: None,
             format: None,
-            time_intervals: None,
+            slot_sizes: Some(vec![60]),
             numbers_of_top_n: None,
         };
 
