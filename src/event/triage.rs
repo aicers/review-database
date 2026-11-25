@@ -56,8 +56,7 @@ impl StoredDetectionEvent {
     ///
     /// A policy qualifies, and yields a [`TriageScore`], when its score
     /// reaches the `minimum_score` of at least one of its `response` entries;
-    /// a policy with no `response` entries never qualifies. A policy's
-    /// `triage_exclusion` affects no score.
+    /// a policy with no `response` entries never qualifies.
     #[must_use]
     pub fn score_against_policies(&self, policies: &[TriagePolicyInput]) -> Vec<TriageScore> {
         policies
@@ -1133,8 +1132,8 @@ mod tests {
 
     use super::{AttrValue, attr_value, is_attr_matched};
     use crate::{
-        AttrCmpKind, EventCategory, ExclusionReason, HostNetworkGroup, PacketAttr, Response,
-        ResponseKind, ScoreCondition, TriageExclusion, TriagePolicyInput, ValueKind,
+        AttrCmpKind, EventCategory, PacketAttr, Response, ResponseKind, ScoreCondition,
+        TriagePolicyInput, ValueKind,
         event::{
             StoredDetectionEvent,
             fixture::{
@@ -1190,7 +1189,6 @@ mod tests {
             id,
             name: format!("policy-{id}"),
             creation_time: time(),
-            triage_exclusion: Vec::new(),
             packet_attr,
             score,
             response: vec![Response {
@@ -1324,7 +1322,7 @@ mod tests {
         let mut any_response = policy(4, attrs, conditions, 9.0);
         any_response.response.push(Response {
             minimum_score: 1.0,
-            kind: ResponseKind::Blacklist,
+            kind: ResponseKind::Watchlist,
         });
 
         let scores = record.score_against_policies(&[reached, missed, no_response, any_response]);
@@ -1614,7 +1612,7 @@ mod tests {
     }
 
     #[test]
-    fn triage_exclusion_changes_no_score() {
+    fn watchlist_and_exclusion_list_responses_qualify_like_manual() {
         let conn = on(conn_body(ip("192.0.2.1"), ip("198.51.100.1")));
         let attrs = vec![addr_equal(
             RawEventKind::Conn,
@@ -1628,44 +1626,60 @@ mod tests {
             0.5,
             None,
         )];
-        let plain = policy(1, attrs.clone(), conditions.clone(), 1.5);
-        let mut excluded = policy(2, attrs, conditions, 1.5);
-        excluded.triage_exclusion = vec![
-            TriageExclusion::try_from(ExclusionReason::IpAddress(HostNetworkGroup::new(
-                vec![ip("192.0.2.1"), ip("198.51.100.1")],
-                Vec::new(),
-                Vec::new(),
-            )))
-            .unwrap(),
-            TriageExclusion::try_from(ExclusionReason::Domain(vec!["example.com".to_string()]))
-                .unwrap(),
-            TriageExclusion::Hostname(vec!["example.com".to_string()]),
-            TriageExclusion::Uri(vec!["/".to_string()]),
+        let with_kind = |id, minimum_score, kind| {
+            let mut input = policy(id, attrs.clone(), conditions.clone(), minimum_score);
+            input.response = vec![Response {
+                minimum_score,
+                kind,
+            }];
+            input
+        };
+
+        // Each kind qualifies at the policy's score and not above it.
+        let policies = [
+            with_kind(1, 1.5, ResponseKind::Manual),
+            with_kind(2, 1.5, ResponseKind::Watchlist),
+            with_kind(3, 1.5, ResponseKind::ExclusionList),
+            with_kind(4, 1.51, ResponseKind::Manual),
+            with_kind(5, 1.51, ResponseKind::Watchlist),
+            with_kind(6, 1.51, ResponseKind::ExclusionList),
         ];
+        let scores = conn.score_against_policies(&policies);
+        let ids: Vec<_> = scores.iter().map(|score| score.policy_id).collect();
+        assert_eq!(ids, [1, 2, 3]);
+        for score in &scores {
+            assert_score(score.score, 1.5);
+        }
 
-        let scores = conn.score_against_policies(&[plain, excluded.clone()]);
-        assert_eq!(scores.len(), 2);
+        // Mixed kinds in one policy qualify when any one is reached.
+        let mut mixed = with_kind(7, 9.0, ResponseKind::Watchlist);
+        mixed.response.push(Response {
+            minimum_score: 1.0,
+            kind: ResponseKind::ExclusionList,
+        });
+        mixed.response.push(Response {
+            minimum_score: 8.0,
+            kind: ResponseKind::Manual,
+        });
+        let scores = conn.score_against_policies(&[mixed]);
+        assert_eq!(scores.len(), 1);
         assert_score(scores[0].score, 1.5);
-        assert_score(scores[1].score, 1.5);
+    }
 
-        let filter = crate::event::EventFilter::new(
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            Some(vec![excluded]),
-        );
-        let (matched, scores) = conn.matches(&filter).unwrap();
-        assert!(matched);
-        assert_score(scores.unwrap()[0].score, 1.5);
+    #[test]
+    fn response_kind_keeps_its_stored_positions() {
+        // `Watchlist` and `ExclusionList` take the variant indexes the
+        // previous names held, so stored responses decode unchanged.
+        for (kind, index) in [
+            (ResponseKind::Manual, 0_u32),
+            (ResponseKind::Watchlist, 1),
+            (ResponseKind::ExclusionList, 2),
+        ] {
+            let bytes = bincode::serialize(&kind).unwrap();
+            assert_eq!(bytes, index.to_le_bytes());
+            let back: ResponseKind = bincode::deserialize(&bytes).unwrap();
+            assert!(back == kind);
+        }
     }
 
     /// Every attribute of a kind attrievent names resolves and reads a value

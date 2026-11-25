@@ -14,8 +14,8 @@ use serde::{Deserialize, Serialize};
 use strum_macros::EnumString;
 
 use super::{
-    CustomerOf, DetectorIdMarks, EngineInstances, Model, ModelInstance, ModelRuns, TableIter as TI,
-    TimeSeriesGenerationPolicy, TrainingDefinitions,
+    CustomerOf, DetectorIdMarks, EngineExclusionCounts, EngineInstances, Model, ModelInstance,
+    ModelRuns, TableIter as TI, TimeSeriesGenerationPolicy, TrainingDefinitions,
     agent::sensor_hostname,
     engine_instance::{self, EngineDetectorRef, EngineDocumentError, EngineDocumentWrite},
 };
@@ -218,6 +218,7 @@ pub struct Table<'d> {
     agent: CrateTable<'d, Agent>,
     external_service: CrateTable<'d, ExternalService>,
     engine_instances: EngineInstances<'d>,
+    engine_exclusion_counts: EngineExclusionCounts<'d>,
     detector_id_marks: DetectorIdMarks<'d>,
     model: IndexedTable<'d, Model>,
     model_indicator: Map<'d>,
@@ -251,6 +252,7 @@ impl<'d> Table<'d> {
         let agent = Map::open(db, super::AGENTS).map(CrateTable::new)?;
         let external_service = Map::open(db, super::EXTERNAL_SERVICES).map(CrateTable::new)?;
         let engine_instances = EngineInstances::open(db)?;
+        let engine_exclusion_counts = EngineExclusionCounts::open(db)?;
         let detector_id_marks = DetectorIdMarks::open(db)?;
         let model = IndexedTable::<Model>::open(db)?;
         let model_indicator = Map::open(db, super::MODEL_INDICATORS)?;
@@ -262,6 +264,7 @@ impl<'d> Table<'d> {
             agent,
             external_service,
             engine_instances,
+            engine_exclusion_counts,
             detector_id_marks,
             model,
             model_indicator,
@@ -293,16 +296,17 @@ impl<'d> Table<'d> {
     /// definition it reserved, as does a clone creating a definition on the
     /// instance; its models and training definitions are left with no
     /// instance; its `engine instances` row, with its references, detector
-    /// statuses and stopped state, is deleted; and every time series
-    /// generation policy assigned to it is left unassigned, its `data_store`
-    /// unchanged, since a later agent of a reused node id and the same key
-    /// would otherwise inherit the assignment.
+    /// statuses and stopped state, is deleted, as is its `engine exclusion
+    /// counts` row; and every time series generation policy assigned to it
+    /// is left unassigned, its `data_store` unchanged, since a later agent of
+    /// a reused node id and the same key would otherwise inherit the
+    /// assignment.
     ///
     /// Every writer that removes an agent calls this for each agent key it
     /// removes, whatever the agent's kind: the agent row may already be
     /// missing, and an agent without records changes nothing. The run id
     /// counter, the runs, definitions and models it changes and the deleted
-    /// row are tracked by the transaction, so a concurrent write of any of
+    /// rows are tracked by the transaction, so a concurrent write of any of
     /// them conflicts with the removal instead of leaving a record behind;
     /// a record that gains the instance after the scans conflicts through
     /// the counter or the agent row the writer removes.
@@ -323,6 +327,8 @@ impl<'d> Table<'d> {
             engine_instances: &self.engine_instances,
         }
         .detach(txn, &instance, INSTANCE_REMOVED)?;
+        self.engine_exclusion_counts
+            .delete(txn, &engine_instance::key(node_id, agent_key))?;
         self.time_series_generation_policies
             .unassign_in_transaction(txn, &instance)
     }
