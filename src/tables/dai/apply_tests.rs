@@ -437,7 +437,10 @@ impl Fixture {
 
     /// Returns the device holding MAC `n`.
     fn owner(&self, n: u8) -> Uuid {
-        self.identifier(&mac_id(n)).expect("the MAC is held").device
+        self.identifier(&mac_id(n))
+            .expect("the MAC is held")
+            .device
+            .expect("a device holds the MAC")
     }
 
     fn evidence(&self) -> Vec<(i64, Kind, EvidenceRow)> {
@@ -847,7 +850,7 @@ fn only_an_ack_with_a_valid_mac_creates_a_device() {
     assert_eq!(device.origin, super::device::Origin::Observation);
     assert_eq!(
         (device.first_seen, device.last_seen, device.version),
-        (t(40), t(40), 1)
+        (Some(t(40)), Some(t(40)), 1)
     );
     let binding = f.binding("10.0.0.3", t(40));
     assert_eq!(binding.device, id);
@@ -952,14 +955,14 @@ fn inform_ack_o5_and_weak_o4_never_change_a_binding() {
     f.observed(A, &krb("10.0.0.1", REALM, "HOST$", 11, 1), m(8), m(8));
     assert_eq!(f.binding("10.0.0.1", t(10)), before);
     let device = f.device(f.owner(1));
-    assert_eq!(device.last_seen, m(8));
+    assert_eq!(device.last_seen, Some(m(8)));
     assert_eq!(device.representative_name(), Some("informed"));
     assert_eq!(f.identifier(&mac_id(1)).unwrap().last_confirmed, m(5));
     // Past the binding, an INFORM ACK creates nothing and confirms nothing.
     f.applied(A, &Lease::new(DaiDhcpMsg::InformAck, m(30), "10.0.0.1", 1));
     f.applied(A, &Lease::new(DaiDhcpMsg::InformAck, m(9), "10.0.0.5", 1));
     assert_eq!(f.bindings().len(), 1);
-    assert_eq!(f.device(f.owner(1)).last_seen, m(8));
+    assert_eq!(f.device(f.owner(1)).last_seen, Some(m(8)));
     assert_eq!(f.identifier(&mac_id(1)).unwrap().last_confirmed, m(5));
 }
 
@@ -970,9 +973,9 @@ fn a_binding_counts_as_ended_after_its_inactivity_time_and_retention_writes_it()
     f.applied(A, &Lease::ack(m(0), "10.0.0.1", 1));
     // Not covered past 12:10.
     f.observed(A, &ntlm("10.0.0.1"), m(11), m(11));
-    assert_eq!(f.device(f.owner(1)).last_seen, m(0));
+    assert_eq!(f.device(f.owner(1)).last_seen, Some(m(0)));
     f.observed(A, &ntlm("10.0.0.1"), m(9), m(9));
-    assert_eq!(f.device(f.owner(1)).last_seen, m(9));
+    assert_eq!(f.device(f.owner(1)).last_seen, Some(m(9)));
     // A same-MAC ACK past it starts a new binding.
     f.applied(A, &Lease::ack(m(12), "10.0.0.1", 1));
     assert_eq!(f.spans("10.0.0.1"), [(m(0), None), (m(12), None)]);
@@ -1224,7 +1227,7 @@ fn a_late_verified_o4_is_replayed_at_its_position() {
         kind: IdentifierKind::MachineAccount,
         value: "HOST1$@CORP.EXAMPLE".to_string(),
     };
-    assert_eq!(f.identifier(&id).unwrap().device, f.owner(1));
+    assert_eq!(f.identifier(&id).unwrap().device, Some(f.owner(1)));
     assert!(f.device(f.owner(1)).identifiers.contains(&id));
 }
 
@@ -1244,7 +1247,7 @@ fn a_late_verified_o4_has_its_device_effects_against_the_recomputed_bindings() {
     assert!(f.identifier(&id).is_none());
     let row = f.device(device);
     assert!(!row.identifiers.contains(&id));
-    assert_eq!((row.last_seen, row.version), (t(10), 1));
+    assert_eq!((row.last_seen, row.version), (Some(t(10)), 1));
 }
 
 #[test]
@@ -1346,7 +1349,7 @@ fn a_verified_o4_re_sent_with_wider_times_moves_the_last_strong_time() {
     assert_eq!(f.binding("10.0.0.1", m(0)).last_strong, m(4));
     // Covered until 12:14, so an O5 at 12:12 confirms the device.
     f.observed(A, &ntlm("10.0.0.1"), m(12), m(12));
-    assert_eq!(f.device(device).last_seen, m(12));
+    assert_eq!(f.device(device).last_seen, Some(m(12)));
     assert_eq!(f.spans("10.0.0.1"), [(m(0), None)]);
 }
 
@@ -1368,7 +1371,7 @@ fn an_o4_first_applied_unverified_is_binding_evidence_once_re_sent_verified() {
     assert_eq!(f.binding("10.0.0.1", m(0)).last_strong, m(0));
     f.update_settings(|update| update.kerberos_preauth_realms = vec![REALM.to_string()]);
     f.observed(A, &o4, m(1), m(3));
-    assert_eq!(f.identifier(&account).unwrap().device, device);
+    assert_eq!(f.identifier(&account).unwrap().device, Some(device));
     assert_eq!(f.binding("10.0.0.1", m(0)).last_strong, m(3));
     let rows: Vec<_> = f
         .evidence()
@@ -1399,7 +1402,7 @@ fn a_late_o4_first_applied_unverified_recomputes_once_re_sent_verified() {
         kind: IdentifierKind::MachineAccount,
         value: "HOST1$@CORP.EXAMPLE".to_string(),
     };
-    assert_eq!(f.identifier(&account).unwrap().device, f.owner(1));
+    assert_eq!(f.identifier(&account).unwrap().device, Some(f.owner(1)));
 }
 
 #[test]
@@ -1437,13 +1440,13 @@ fn a_verified_o4_attaches_a_machine_account_and_moves_the_last_strong_time() {
         value: name.to_string(),
     };
     let host1 = account("HOST1$@CORP.EXAMPLE");
-    assert_eq!(f.identifier(&host1).unwrap().device, device);
+    assert_eq!(f.identifier(&host1).unwrap().device, Some(device));
     assert_eq!(f.identifier(&host1).unwrap().last_confirmed, m(6));
     assert_eq!(f.binding("10.0.0.1", m(0)).last_strong, m(6));
     assert_eq!(f.device(device).version, 2);
     // Now covered until 12:16.
     f.observed(A, &ntlm("10.0.0.1"), m(14), m(15));
-    assert_eq!(f.device(device).last_seen, m(15));
+    assert_eq!(f.device(device).last_seen, Some(m(15)));
     // Weak O4s only confirm.
     for (n, (msg_type, preauth)) in [(11, 1), (11, 0), (13, 2), (10, 2), (30, 2)]
         .into_iter()
@@ -1459,25 +1462,25 @@ fn a_verified_o4_attaches_a_machine_account_and_moves_the_last_strong_time() {
     }
     assert_eq!(f.binding("10.0.0.1", m(0)).last_strong, m(6));
     assert_eq!(f.device(device).identifiers.len(), 2);
-    assert_eq!(f.device(device).last_seen, m(15) + 4 * NS);
+    assert_eq!(f.device(device).last_seen, Some(m(15) + 4 * NS));
 
     // A second device claiming the account: a conflict, the account stays.
     f.applied(A, &Lease::ack(m(1), "10.0.0.2", 2));
     let other = f.owner(2);
     f.observed(A, &verified("10.0.0.2", "HOST1$"), m(7), m(8));
-    assert_eq!(f.identifier(&host1).unwrap().device, device);
+    assert_eq!(f.identifier(&host1).unwrap().device, Some(device));
     assert_eq!(f.binding("10.0.0.2", m(1)).last_strong, m(1));
     let (_, value) = f.rows(super::super::DAI_CONFLICTS).pop().unwrap();
     let conflict: ConflictRow = super::super::deserialize(&value).unwrap();
     assert_eq!(conflict.devices, [device, other].into_iter().collect());
     assert_eq!((conflict.first, conflict.last), (m(7), m(8)));
-    assert_eq!(f.device(other).last_seen, m(8));
+    assert_eq!(f.device(other).last_seen, Some(m(8)));
 
     // Without the realm confirmed, a verified-looking O4 attaches nothing.
     f.update_settings(|update| update.kerberos_preauth_realms.clear());
     let when = m(15) + 10 * NS;
     f.observed(A, &verified("10.0.0.1", "HOST2$"), when, when);
-    assert_eq!(f.device(device).last_seen, when);
+    assert_eq!(f.device(device).last_seen, Some(when));
     assert!(f.identifier(&account("HOST2$@CORP.EXAMPLE")).is_none());
     assert_eq!(f.binding("10.0.0.1", m(0)).last_strong, m(6));
 }
@@ -1669,7 +1672,7 @@ fn a_late_ack_after_a_move_applies_to_the_device_of_its_time() {
         [(NOON, a), (NOON + DAY, a), (NOON + 2 * DAY, b)]
     );
     assert_eq!(f.device(a).representative_name(), Some("day1"));
-    assert_eq!(f.device(a).last_seen, NOON + DAY);
+    assert_eq!(f.device(a).last_seen, Some(NOON + DAY));
     assert_eq!(f.devices().len(), 2);
 }
 
@@ -1686,7 +1689,7 @@ fn an_older_ack_or_inform_ack_leaves_the_last_confirmed_time() {
     assert_eq!(f.devices().len(), 1);
     // A late observation never moves first seen later or last seen earlier.
     let row = f.device(device);
-    assert_eq!((row.first_seen, row.last_seen), (m(0), m(4)));
+    assert_eq!((row.first_seen, row.last_seen), (Some(m(0)), Some(m(4))));
 }
 
 // ---- Attributes and history ----
@@ -1871,7 +1874,7 @@ fn an_unseen_device_becomes_not_seen_and_returns_to_active() {
     f.applied(A, &Lease::ack(NOON + 93 * DAY, "10.0.0.1", 1));
     assert_eq!(f.device(device).activity, Activity::Hidden);
     hidden.activity = Activity::NotSeen;
-    hidden.last_seen = NOON + 93 * DAY;
+    hidden.last_seen = Some(NOON + 93 * DAY);
     f.put(
         super::super::DAI_DEVICES,
         &device_key(CUSTOMER, device),
@@ -1921,7 +1924,7 @@ fn an_ack_binding_an_earlier_owner_racing_its_expiry_keeps_it() {
         .collect();
     assert_eq!(bound, [(NOON + DAY, old)]);
     let identifier = f.identifier(&mac_id(1)).unwrap();
-    assert_eq!(identifier.device, new);
+    assert_eq!(identifier.device, Some(new));
     assert_eq!(
         identifier
             .earlier_owners
@@ -2464,3 +2467,5 @@ fn customer_deletion_deletes_an_address_over_several_transactions() {
         .collect();
     assert_eq!(snapshot, again);
 }
+
+mod operator_tests;

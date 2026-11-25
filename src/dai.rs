@@ -57,13 +57,38 @@
 //! is an *IP device*: a placeholder, never a row. O1 means `DhcpLease`, O3
 //! `DhcpServer`, O4 `Kerberos`, O5 `Ntlm`, O7 `Service`, O8 `SoftwareString`
 //! and O22 `DnsName`.
+//!
+//! An operator changes them with [`Store::import_dai_devices`],
+//! [`Store::merge_dai_devices`], [`Store::split_dai_device`],
+//! [`Store::set_dai_device_states`] and [`Store::remove_dai_service`]. Each
+//! is scoped to one customer, accepts an old device id (one a merge made an
+//! alias) wherever it takes one and acts on the current device, and is one
+//! optimistic transaction per unit (a whole call, or one import row),
+//! retried from the start on a commit conflict, so one racing slot
+//! application, retention or another operation is never refused for that
+//! and never loses the other's change. A device's version and change
+//! history follow its row: only a change to an identifier, a name, the
+//! operator asset id, the memo, the origin, the verdict or the activity, or
+//! a merge or a split, increments the version and writes one change entry,
+//! and only when a value actually changes. Their refusals are a
+//! [`DaiDeviceError`](crate::DaiDeviceError) inside the error.
+//!
+//! The *MAC ownership history* of a MAC is the device that held it at each
+//! time: the device a late ACK, or the replay of one by a recomputation,
+//! binds. Evidence aging, import, merge and split each leave it consistent
+//! with the bindings: a MAC an import removes from a device belongs to no
+//! device from the removal until a device next takes it, which then holds
+//! it from the removal on; a merge makes the survivor the owner wherever an
+//! absorbed device was; a split makes the new device the owner of each
+//! moved identifier wherever the device split was.
 
 use anyhow::Result;
 use review_protocol::types::{DaiCursors, DaiObservationBatch};
+use uuid::Uuid;
 
 use crate::{
-    DaiPendingHead, DaiRelaySite, DaiRelaySites, DaiSettings, DaiSettingsUpdate, DaiSite,
-    DaiStoreOutcome, Store,
+    DaiActivityChange, DaiIdentifier, DaiImportOutcome, DaiImportRow, DaiPendingHead, DaiRelaySite,
+    DaiRelaySites, DaiSettings, DaiSettingsUpdate, DaiSite, DaiStoreOutcome, DaiVerdict, Store,
     tables::{Dai, now_nanos},
 };
 
@@ -491,23 +516,29 @@ impl Store {
     ///    the binding as it did before the end was written);
     /// 2. makes every active device holding a MAC or an operator asset id
     ///    last seen more than 90 days ago "not seen", with one change entry
-    ///    of source expiry; a hidden device stays hidden;
+    ///    of source expiry; a device no observation has applied to yet, as
+    ///    one an import created, has no last seen time and counts from its
+    ///    creation, until the first observation applied to it sets its
+    ///    first and last seen times and makes it active; a hidden device
+    ///    stays hidden;
     /// 3. deletes, when their time is more than 180 days ago: the ended
     ///    bindings (by end) with their reverse index rows; the evidence (by
     ///    last seen), except binding evidence at or after the start of a
     ///    stored binding of its (site, IP) that has no end or ended within
     ///    180 days, which a recomputation may still replay; the device
-    ///    aliases (by change time); the device changes (by time); the
-    ///    conflicts (by last time); the services and software strings (by
-    ///    last seen); the IP states (by the time of their order key); and the
-    ///    earlier owners of an identifier (by the time the identifier left
-    ///    them), except one whose device still has a stored binding with that
-    ///    identifier as its evidence identifier;
+    ///    aliases (by the time they became one); the device changes (by
+    ///    time); the conflicts (by last time); the services and software
+    ///    strings (by last seen); the IP states (by the time of their order
+    ///    key); and the earlier owners of an identifier (by the time the
+    ///    identifier left them), except one whose device still has a stored
+    ///    binding with that identifier as its evidence identifier;
     /// 4. removes the names of source DHCP or DNS last seen more than 180
     ///    days ago, with one change entry of source expiry per device; a name
     ///    an operator set never expires.
     ///
-    /// Devices, identifiers and fixed IPs are never removed by retention.
+    /// Devices, identifiers (including the ownership history of a MAC an
+    /// import removed from its device) and fixed IPs are never removed by
+    /// retention.
     /// A step that changes a binding or evidence row reads the address's IP
     /// state for update first and writes it back.
     ///
@@ -610,6 +641,191 @@ impl Store {
         now: i64,
     ) -> Result<Option<i64>> {
         self.dai().apply_slot(sensor, slot_start, max_count, now)
+    }
+
+    /// Imports operator device rows for the customer, and returns one outcome
+    /// per row, in order.
+    ///
+    /// The rows are applied in order, each in its own optimistic
+    /// transaction at the time of its attempt, so each row sees the effect
+    /// of the earlier ones; a row's writes are atomic, a refused row writes
+    /// nothing, and the other rows are written regardless. A row is refused,
+    /// as a [`DaiImportOutcome::Error`] with the reason, if its operator
+    /// asset id is empty or an earlier row of the request has it, a MAC is
+    /// not exactly 6 bytes, is all `00` or all `FF` or has the group bit of
+    /// its first byte set, a fixed IP names a token that is not one of the
+    /// customer's sites, its asset id and MACs name two or more devices
+    /// ("merge first", with those devices), its asset id is new but its MACs
+    /// belong to a device with another asset id, or a fixed IP is fixed to
+    /// another device. Duplicates within a row are collapsed.
+    ///
+    /// The row's device is the one holding its asset id, which it
+    /// **updates**; else the one device holding any of its MACs, to which it
+    /// **attaches** the asset id, keeping the device's origin; else a new
+    /// device it **creates**: a random UUID v4, verdict observed, activity
+    /// active, origin import, holding the asset id, with no first and last
+    /// seen time until an observation applies to it. Afterwards the device's
+    /// operator name, MACs, fixed IPs and memo are the row's: an empty name
+    /// or memo removes it, a MAC the row does not list leaves the device
+    /// (its bindings stay, and the MAC belongs to no device from the import
+    /// time until a device next takes it), and a fixed IP it does not list
+    /// is deleted. Its machine accounts and observed names stay. A MAC or
+    /// asset id the row adds is last confirmed at the import time. A row that
+    /// changes the device writes one version and one change entry of source
+    /// import (kind created or changed); a row equal to the stored values
+    /// writes none and is reported as updated.
+    ///
+    /// # Errors
+    ///
+    /// Returns, writing nothing,
+    /// [`DaiDeviceError::TooManyImportRows`](crate::DaiDeviceError::TooManyImportRows)
+    /// inside the error if there are more than
+    /// [`DAI_IMPORT_MAX_ROWS`](crate::DAI_IMPORT_MAX_ROWS) rows. Returns an
+    /// error if the database operation fails, the rows before the failing
+    /// one being written.
+    pub fn import_dai_devices(
+        &self,
+        customer_id: u32,
+        rows: &[DaiImportRow],
+    ) -> Result<Vec<DaiImportOutcome>> {
+        self.dai().import_devices(customer_id, rows, &now_nanos)
+    }
+
+    /// Merges the devices `others` into `survivor` in one transaction, and
+    /// returns the survivor's current id.
+    ///
+    /// The survivor takes the absorbed devices' bindings with their reverse
+    /// index rows, identifiers, names (the union), DHCP server flag (or),
+    /// services (a service both have widens its times, ors its external
+    /// client flag and stays removed only if both were), software strings
+    /// (widening times) and fixed IPs; its first and last seen times widen,
+    /// a time it has none of taking the absorbed one's; an operator asset id
+    /// or a memo only an absorbed device has moves to it; it keeps its
+    /// verdict, activity and origin. Each absorbed device's row is deleted
+    /// and its id becomes an alias of the survivor, reason merged; every
+    /// alias, conflict, fixed IP and ownership history entry that named an
+    /// absorbed device names the survivor. Where one merged device's ACK
+    /// took an address over from another's binding, the two now name one
+    /// device and the ACK extends that binding instead, as a recomputation
+    /// would replay it; likewise a verified O4 of an absorbed device's
+    /// machine account now extends the survivor's binding it covers. So the
+    /// bindings of each address any merged device holds are derived again
+    /// from the earliest one of any merged device there, by the new
+    /// ownership, and a later recomputation reproduces them. The extended
+    /// binding keeps its own inactivity time, so it may
+    /// end earlier than the one it absorbed did. The survivor and each
+    /// absorbed device get one change entry of kind merged, source operator,
+    /// naming the other side (the survivor's names the first absorbed
+    /// device).
+    ///
+    /// # Errors
+    ///
+    /// Returns, inside the error and changing nothing, a
+    /// [`DaiDeviceError`](crate::DaiDeviceError): `NoDevicesToMerge` if
+    /// `others` is empty; `UnknownDevice` if an id names no device of the
+    /// customer; `SurvivorAmongOthers` if one of `others` is, or is an alias
+    /// of, the survivor; `AssetIdConflict` if two of the devices carry
+    /// different operator asset ids. Returns an error if the database
+    /// operation fails.
+    pub fn merge_dai_devices(
+        &self,
+        customer_id: u32,
+        survivor: Uuid,
+        others: &[Uuid],
+    ) -> Result<Uuid> {
+        self.dai()
+            .merge_devices(customer_id, survivor, others, &now_nanos)
+    }
+
+    /// Moves the identifiers `identifiers` of `device` to a new device in
+    /// one transaction, and returns the new device's id.
+    ///
+    /// The new device is a random UUID v4, verdict observed, activity
+    /// active, of origin import with the operator asset id if that moves and
+    /// of origin observation otherwise. Each moved identifier belongs to the
+    /// new device wherever it belonged to the device split, and the new
+    /// device takes exactly the bindings of the device whose evidence
+    /// identifier moves, with their reverse index rows. Where an identifier
+    /// that stays extended such a binding, or a moved one extended a binding
+    /// that stays, the binding is divided where a recomputation would divide
+    /// it: the bindings of each address the device split holds are derived
+    /// again from its earliest one there, by the new ownership, so a later
+    /// recomputation reproduces them. A verified O4 extends a binding only
+    /// for the device holding its machine account, so an O4 of an account
+    /// that stays no longer extends a moved binding, nor one of a moved
+    /// account a binding that stays. The new device's first and last seen
+    /// times are the earliest start and the latest last strong evidence time
+    /// of its bindings, or the time of the split if it has none. Names,
+    /// services, software strings, fixed IPs and the memo stay. Both devices
+    /// get one change entry of kind split, source operator, naming the
+    /// other.
+    ///
+    /// # Errors
+    ///
+    /// Returns, inside the error and changing nothing, a
+    /// [`DaiDeviceError`](crate::DaiDeviceError): `EmptySplit` if
+    /// `identifiers` is empty; `UnknownDevice` if `device` names no device of
+    /// the customer; `IdentifierNotOnDevice` if one is not on it;
+    /// `SplitAllIdentifiers` if they are all of its identifiers. Returns an
+    /// error if the database operation fails.
+    pub fn split_dai_device(
+        &self,
+        customer_id: u32,
+        device: Uuid,
+        identifiers: &[DaiIdentifier],
+    ) -> Result<Uuid> {
+        self.dai()
+            .split_device(customer_id, device, identifiers, &now_nanos)
+    }
+
+    /// Sets the verdict, the activity, or both, of up to
+    /// [`DAI_STATE_CHANGE_MAX_DEVICES`](crate::DAI_STATE_CHANGE_MAX_DEVICES)
+    /// devices in one transaction.
+    ///
+    /// "Not seen" cannot be set; setting active on a device that is not seen
+    /// makes it active. Each device whose values change gets one version and
+    /// one change entry of source operator; the others get none. No binding
+    /// changes.
+    ///
+    /// # Errors
+    ///
+    /// Returns, inside the error and changing nothing, a
+    /// [`DaiDeviceError`](crate::DaiDeviceError): `TooManyDevices` if
+    /// `devices` has more ids than the limit; `UnknownDevice` if one names no
+    /// device of the customer. Returns an error if the database operation
+    /// fails.
+    pub fn set_dai_device_states(
+        &self,
+        customer_id: u32,
+        devices: &[Uuid],
+        verdict: Option<DaiVerdict>,
+        activity: Option<DaiActivityChange>,
+    ) -> Result<()> {
+        self.dai()
+            .set_device_states(customer_id, devices, verdict, activity, &now_nanos)
+    }
+
+    /// Sets the operator-removed flag of the service of `device` on `port`
+    /// of the IP protocol number `protocol`.
+    ///
+    /// A later observation of the service keeps the flag. The device's
+    /// version does not change.
+    ///
+    /// # Errors
+    ///
+    /// Returns, inside the error and changing nothing, a
+    /// [`DaiDeviceError`](crate::DaiDeviceError): `UnknownDevice` if `device`
+    /// names no device of the customer; `UnknownService` if it has no such
+    /// service. Returns an error if the database operation fails.
+    pub fn remove_dai_service(
+        &self,
+        customer_id: u32,
+        device: Uuid,
+        port: u16,
+        protocol: u8,
+    ) -> Result<()> {
+        self.dai()
+            .remove_service(customer_id, device, port, protocol)
     }
 
     /// Returns, ordered by sensor name, every sensor with pending DAI

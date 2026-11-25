@@ -24,19 +24,20 @@ use anyhow::Result;
 use uuid::Uuid;
 
 use super::{
-    Dai, KeyReader, ROWS_PER_TRANSACTION, Txn,
+    Dai, ROWS_PER_TRANSACTION, Txn,
     cursor::DAY,
     customer_key,
     device::{
         Activity, AliasRow, BindingRow, ChangeEntry, ChangeSource, ConflictRow, DeviceEdits,
-        DeviceRow, EvidenceRow, Identifier, IdentifierKind, IdentifierRow, IpStateLock, NameSource,
-        OrderKey, SeenTimes, ServiceRow, address_key, binding_key, decode_binding_key,
-        decode_device_binding_key, decode_evidence_key, device_binding_key, resolver_point_key,
+        DeviceRow, EvidenceRow, Identifier, IdentifierRow, IpStateLock, NameSource, OrderKey,
+        SeenTimes, ServiceRow, address_key, binding_key, decode_address_key, decode_binding_key,
+        decode_device_binding_key, decode_device_key, decode_evidence_key, decode_identifier_key,
+        device_binding_key, resolver_point_key,
     },
 };
 
 /// The time after which a device holding a MAC or an operator asset id that
-/// was not seen becomes "not seen": 90 days.
+/// was not seen, or, if it never was, created, becomes "not seen": 90 days.
 const NOT_SEEN_AGE: i64 = 90 * DAY;
 /// The age after which the history rows of the device tables are deleted:
 /// 180 days.
@@ -73,37 +74,6 @@ thread_local! {
 #[cfg(test)]
 pub(super) fn set_address_read_hook(hook: super::TestHook) {
     ADDRESS_READ.with(|cell| *cell.borrow_mut() = Some(hook));
-}
-
-/// Decodes the key of a `dai ip state` row.
-fn decode_address_key(key: &[u8]) -> Result<(u32, String, IpAddr)> {
-    let mut reader = KeyReader::new(key);
-    let customer = reader.u32()?;
-    let site = reader.str()?;
-    let ip = reader.ip()?;
-    reader.finish()?;
-    Ok((customer, site, ip))
-}
-
-/// Decodes the key of a `dai devices` row.
-fn decode_device_key(key: &[u8]) -> Result<(u32, Uuid)> {
-    let mut reader = KeyReader::new(key);
-    let customer = reader.u32()?;
-    let device = reader.uuid()?;
-    reader.finish()?;
-    Ok((customer, device))
-}
-
-/// Decodes the key of a `dai device identifiers` row.
-fn decode_identifier_key(key: &[u8]) -> Result<(u32, Identifier)> {
-    let mut reader = KeyReader::new(key);
-    let customer = reader.u32()?;
-    let number = reader.byte()?;
-    let value = reader.str()?;
-    reader.finish()?;
-    let kind = IdentifierKind::from_number(number)
-        .ok_or_else(|| anyhow::anyhow!("invalid DAI identifier kind {number} in the key"))?;
-    Ok((customer, Identifier { kind, value }))
 }
 
 /// The IP state locks one retention transaction took, keyed by address.
@@ -307,14 +277,15 @@ impl Dai<'_> {
     }
 
     /// Makes every active device holding a MAC or an operator asset id last
-    /// seen more than 90 days before `now` "not seen".
+    /// seen more than 90 days before `now` "not seen"; a device no
+    /// observation has applied to yet counts from its creation.
     fn expire_activity(&self, now: i64) -> Result<()> {
         let oldest = now.saturating_sub(NOT_SEEN_AGE);
         self.change_devices(
             now,
             |row| {
                 row.activity == Activity::Active
-                    && row.last_seen < oldest
+                    && row.last_seen.unwrap_or(row.created) < oldest
                     && row.has_strong_hardware_identifier()
             },
             |edit| edit.set_activity(Activity::NotSeen),
@@ -395,10 +366,7 @@ impl Dai<'_> {
         device: Uuid,
         id: &Identifier,
     ) -> Result<bool> {
-        let prefix = super::KeyWriter::default()
-            .u32(customer)
-            .uuid(device)
-            .finish();
+        let prefix = super::device::device_prefix(customer, device);
         for (key, _) in Self::scan(&self.device_bindings, txn, &prefix)? {
             let (_, _, site, ip, start) = decode_device_binding_key(&key)?;
             let binding = txn

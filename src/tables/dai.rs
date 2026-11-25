@@ -55,9 +55,10 @@
 //!   (customer, range).
 //!
 //! Thirteen more hold the devices that slot application derives from the
-//! pending observations; see `device` (their rows and the IP state lock),
-//! `binding` (the binding rules), `apply` (slot application) and
-//! `device_retention`:
+//! pending observations and the operator operations change; see `device`
+//! (their rows and the IP state lock), `binding` (the binding rules),
+//! `apply` (slot application), `operator` (import, merge, split, state
+//! change and service removal) and `device_retention`:
 //!
 //! - `dai resolver points`: the resolver point of each sensor;
 //! - `dai devices`, `dai device identifiers` and `dai device aliases`: the
@@ -104,6 +105,7 @@ mod device;
 mod device_retention;
 mod hash;
 mod observation;
+mod operator;
 mod range;
 mod retention;
 
@@ -122,6 +124,11 @@ pub use self::apply::{DAI_APPLY_DEFAULT_MAX_COUNT, DaiPendingHead};
 pub(crate) use self::cursor::{is_marked_restored, mark_restored};
 pub use self::hash::{DaiNetworks, dai_network_digest};
 pub use self::observation::{DaiBatchError, DaiStoreOutcome};
+pub use self::operator::{
+    DAI_IMPORT_MAX_ROWS, DAI_STATE_CHANGE_MAX_DEVICES, DaiActivityChange, DaiDeviceError,
+    DaiIdentifier, DaiIdentifierKind, DaiImportOutcome, DaiImportRow, DaiImportRowError,
+    DaiVerdict,
+};
 pub use self::range::{DaiIgnoredRange, DaiRangeCandidate, DaiRangeError};
 pub(super) use self::range::{evidence_from_number, evidence_number};
 use super::senta_endpoint::{KeyReader, KeyWriter};
