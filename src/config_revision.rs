@@ -455,6 +455,7 @@ mod tests {
             clustering_model_type: model_type,
             training_read: crate::TrainingRead::default(),
             detection_model_states: Vec::new(),
+            cluster_count_at_training: None,
         };
         store
             .replace_model(

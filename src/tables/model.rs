@@ -77,6 +77,11 @@ pub struct Model {
     /// The detection model states of the last upload stored, which replaced
     /// the earlier list as a whole.
     pub detection_model_states: Vec<DetectionModelState>,
+    /// The number of clusters the current classifier had right after its
+    /// training, as the upload that created or replaced the model gave it.
+    /// An analysis round does not change it, so it can be compared with the
+    /// model's current cluster count.
+    pub cluster_count_at_training: Option<u32>,
 }
 
 /// The engine instance a model belongs to, named as the agents table keys an
@@ -526,6 +531,7 @@ mod tests {
                 state_version: 1,
                 state: vec![9],
             }],
+            cluster_count_at_training: None,
         }
     }
 

@@ -29,7 +29,7 @@ use serde::{Deserialize, Serialize};
 use tracing::warn;
 
 pub use self::{
-    filter::{EventFilter, InternalNetworks, LearningMethod},
+    filter::{EventFilter, InternalNetworks, LearningMethod, TimeSeriesPolicySensors},
     record::{DetectionEventStamp, StoredDetectionEvent},
     triage::TriageScore,
 };

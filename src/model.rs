@@ -39,6 +39,10 @@ pub struct Model {
     pub training_read: TrainingRead,
     /// The state of each detection model that keeps one for the model.
     pub detection_model_states: Vec<DetectionModelState>,
+    /// The number of clusters the model had right after its training, which
+    /// the engine sets for a time-series model. This crate does not check it
+    /// against the method.
+    pub cluster_count_at_training: Option<u32>,
 }
 
 /// A summary of the raw events the training of a model read.
@@ -133,6 +137,7 @@ impl Model {
             clustering_model_type: model.clustering_model_type,
             training_read: model.training_read,
             detection_model_states: model.detection_model_states,
+            cluster_count_at_training: model.cluster_count_at_training,
         })
     }
 
@@ -157,6 +162,7 @@ impl Model {
             clustering_model_type: self.clustering_model_type,
             training_read: self.training_read,
             detection_model_states: self.detection_model_states,
+            cluster_count_at_training: self.cluster_count_at_training,
         };
         buf.extend(bincode::DefaultOptions::new().serialize(&model)?);
         Ok(buf)
@@ -282,6 +288,7 @@ struct Body {
     clustering_model_type: ClusteringModelTypeRef,
     training_read: TrainingRead,
     detection_model_states: Vec<DetectionModelState>,
+    cluster_count_at_training: Option<u32>,
 }
 
 #[cfg(test)]
@@ -297,13 +304,37 @@ mod tests {
     const TEST_MODEL_1: &[u8] = include_bytes!("../tests/fixtures/model_format_3/test_model_1.bin");
     /// The fixture of test model 2, which the engine's codec writes too.
     const TEST_MODEL_2: &[u8] = include_bytes!("../tests/fixtures/model_format_3/test_model_2.bin");
+    /// The fixture of test model 3, which the engine's codec writes too.
+    const TEST_MODEL_3: &[u8] = include_bytes!("../tests/fixtures/model_format_3/test_model_3.bin");
     /// The engine's fixture of test model 1, from petabi/reconverge commit
-    /// c64aa9ab59e6425845fb896c82e8032ab345f6cf.
+    /// bcfcb8609b312f3ec1fdc2cffc6ab7edcd35e67a.
     const ENGINE_TEST_MODEL_1: &[u8] =
         include_bytes!("../tests/fixtures/model_format_3/engine/test_model_1.bin");
     /// The engine's fixture of test model 2, from the same commit.
     const ENGINE_TEST_MODEL_2: &[u8] =
         include_bytes!("../tests/fixtures/model_format_3/engine/test_model_2.bin");
+    /// The engine's fixture of test model 3, from the same commit.
+    const ENGINE_TEST_MODEL_3: &[u8] =
+        include_bytes!("../tests/fixtures/model_format_3/engine/test_model_3.bin");
+    /// The bytes of test model 3, as the format spells them out.
+    const TEST_MODEL_3_BYTES: &str = concat!(
+        "52434d00030000000300000001000000",
+        "0e016d0301020332",
+        "03746c73",
+        "00",
+        "54",
+        "00",
+        "00",
+        "00",
+        "10",
+        "7365727665725f6461696c795f746c73",
+        "01",
+        "0204",
+        "01",
+        "0203",
+        "00",
+        "0104",
+    );
 
     /// Test model 1 of the fixture shared with the engine.
     fn test_model_1() -> Model {
@@ -333,6 +364,7 @@ mod tests {
                 state_version: 1,
                 state: vec![9],
             }],
+            cluster_count_at_training: None,
         }
     }
 
@@ -342,6 +374,22 @@ mod tests {
             raw_event_kind: "log".to_owned(),
             log_kind: Some("syslog".to_owned()),
             clustering_model_type: ClusteringModelTypeRef::Custom,
+            ..test_model_1()
+        }
+    }
+
+    /// Test model 3: test model 1 as a time-series model of the
+    /// `server_daily_tls` type, with a cluster count at training.
+    fn test_model_3() -> Model {
+        Model {
+            kind: "Timeseries".to_owned(),
+            raw_event_kind: "tls".to_owned(),
+            clustering_model_type: ClusteringModelTypeRef::Catalog {
+                id: "server_daily_tls".to_owned(),
+                version: 1,
+            },
+            detection_model_states: vec![],
+            cluster_count_at_training: Some(4),
             ..test_model_1()
         }
     }
@@ -398,6 +446,7 @@ mod tests {
                     state: vec![],
                 },
             ],
+            cluster_count_at_training: Some(17),
         }
     }
 
@@ -460,6 +509,7 @@ mod tests {
             ClusteringModelTypeRef,
             TrainingRead,
             Vec<DetectionModelState>,
+            Option<u32>,
         ) = (
             model.id,
             model.name.clone(),
@@ -473,6 +523,7 @@ mod tests {
             model.clustering_model_type.clone(),
             model.training_read.clone(),
             model.detection_model_states.clone(),
+            model.cluster_count_at_training,
         );
         let header: Vec<u8> = model.header().unwrap().into();
         let body = bincode::DefaultOptions::new().serialize(&fields).unwrap();
@@ -488,17 +539,60 @@ mod tests {
         assert_eq!(Model::from_serialized(&serialized).unwrap(), full_model());
     }
 
+    /// Both values of the cluster count at training round-trip, and the
+    /// field is the last of the body: `None` is one zero byte, `Some(n)` a
+    /// one byte followed by `n` as a varint.
+    #[test]
+    fn the_cluster_count_at_training_round_trips_as_the_last_field() {
+        let without = Model {
+            cluster_count_at_training: None,
+            ..full_model()
+        };
+        let without_bytes = without.clone().into_serialized().unwrap();
+        assert_eq!(without_bytes.last(), Some(&0));
+        assert_eq!(Model::from_serialized(&without_bytes).unwrap(), without);
+
+        for (count, encoded) in [
+            (0, vec![1, 0]),
+            (4, vec![1, 4]),
+            (300, vec![1, 0xfb, 0x2c, 0x01]),
+            (u32::MAX, vec![1, 0xfc, 0xff, 0xff, 0xff, 0xff]),
+        ] {
+            let with = Model {
+                cluster_count_at_training: Some(count),
+                ..full_model()
+            };
+            let with_bytes = with.clone().into_serialized().unwrap();
+            let (rest, last) = with_bytes.split_at(with_bytes.len() - encoded.len());
+            assert_eq!(last, encoded.as_slice());
+            assert_eq!(rest, &without_bytes[..without_bytes.len() - 1]);
+            assert_eq!(Model::from_serialized(&with_bytes).unwrap(), with);
+        }
+    }
+
     #[test]
     fn test_models_match_the_fixture() {
         for (model, fixture) in [
             (test_model_1(), TEST_MODEL_1),
             (test_model_2(), TEST_MODEL_2),
+            (test_model_3(), TEST_MODEL_3),
         ] {
             assert_eq!(model.clone().into_serialized().unwrap(), fixture);
             assert_eq!(Model::from_serialized(fixture).unwrap(), model);
         }
-        assert_eq!(TEST_MODEL_1.len(), 54);
-        assert_eq!(TEST_MODEL_2.len(), 50);
+        assert_eq!(TEST_MODEL_1.len(), 55);
+        assert_eq!(
+            TEST_MODEL_1[TEST_MODEL_1.len() - 6..],
+            [1, 0x13, 1, 1, 9, 0]
+        );
+        assert_eq!(TEST_MODEL_2.len(), 51);
+        assert_eq!(TEST_MODEL_3.len(), 59);
+        assert_eq!(
+            TEST_MODEL_3,
+            data_encoding::HEXLOWER
+                .decode(TEST_MODEL_3_BYTES.as_bytes())
+                .unwrap()
+        );
     }
 
     /// The engine's fixture is byte-identical to this crate's, and this
@@ -507,9 +601,11 @@ mod tests {
     fn test_models_match_the_engine_fixture() {
         assert_eq!(ENGINE_TEST_MODEL_1, TEST_MODEL_1);
         assert_eq!(ENGINE_TEST_MODEL_2, TEST_MODEL_2);
+        assert_eq!(ENGINE_TEST_MODEL_3, TEST_MODEL_3);
         for (model, fixture) in [
             (test_model_1(), ENGINE_TEST_MODEL_1),
             (test_model_2(), ENGINE_TEST_MODEL_2),
+            (test_model_3(), ENGINE_TEST_MODEL_3),
         ] {
             assert_eq!(model.clone().into_serialized().unwrap(), fixture);
             assert_eq!(Model::from_serialized(fixture).unwrap(), model);
@@ -542,7 +638,7 @@ mod tests {
 
     #[test]
     fn a_byte_after_the_body_is_refused() {
-        for fixture in [TEST_MODEL_1, TEST_MODEL_2] {
+        for fixture in [TEST_MODEL_1, TEST_MODEL_2, TEST_MODEL_3] {
             let mut serialized = fixture.to_vec();
             serialized.push(0);
             assert!(Model::from_serialized(&serialized).is_err());
@@ -551,6 +647,8 @@ mod tests {
 
     #[test]
     fn a_truncated_body_is_refused() {
-        assert!(Model::from_serialized(&TEST_MODEL_1[..TEST_MODEL_1.len() - 1]).is_err());
+        for fixture in [TEST_MODEL_1, TEST_MODEL_2, TEST_MODEL_3] {
+            assert!(Model::from_serialized(&fixture[..fixture.len() - 1]).is_err());
+        }
     }
 }

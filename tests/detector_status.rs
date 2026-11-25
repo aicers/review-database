@@ -62,6 +62,7 @@ fn engine_with_detector(store: &Store) -> ModelInstance {
                 clustering_model_type: ClusteringModelTypeRef::Custom,
                 training_read: TrainingRead::default(),
                 detection_model_states: Vec::new(),
+                cluster_count_at_training: None,
             },
             ModelOwner {
                 customer_id: 1,

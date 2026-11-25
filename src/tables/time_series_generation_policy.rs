@@ -31,7 +31,7 @@
 
 use std::{
     borrow::Cow,
-    collections::{BTreeMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     fmt,
     net::IpAddr,
 };
@@ -807,6 +807,42 @@ impl<'d> IndexedTable<'d, TimeSeriesGenerationPolicy> {
         };
         self.put_row(txn, &policy)?;
         Ok(Some(policy.sensors))
+    }
+
+    /// Returns each policy's id with the policy's sensors that belong to its
+    /// customer, reading the policies and `nodes` from one snapshot of this
+    /// table's database, which `nodes` must be of.
+    ///
+    /// A sensor belongs to the customer when a node of that customer gives
+    /// it as its name, as
+    /// [`NodeTable::sensor_names_in_snapshot`] lists them. A policy keeps its
+    /// own order of sensors; one none of whose sensors belongs to its
+    /// customer maps to an empty list.
+    pub(crate) fn customer_sensors(
+        &self,
+        nodes: &NodeTable<'_>,
+    ) -> Result<HashMap<u32, Vec<String>>> {
+        let snapshot = self.indexed_map.db().snapshot();
+        let mut names: HashMap<u32, HashSet<String>> = HashMap::new();
+        for (customer, name) in nodes.sensor_names_in_snapshot(&snapshot)? {
+            names.entry(customer).or_default().insert(name);
+        }
+        let mut sensors = HashMap::new();
+        for entry in snapshot.iterator_cf(self.indexed_map.cf(), IteratorMode::Start) {
+            let (key, value) = entry.context("cannot read time series generation policies")?;
+            if key.is_empty() {
+                continue;
+            }
+            let policy: TimeSeriesGenerationPolicy = super::deserialize(&value)?;
+            let of_customer = names.get(&policy.customer_id);
+            let owned = policy
+                .sensors
+                .into_iter()
+                .filter(|sensor| of_customer.is_some_and(|names| names.contains(sensor)))
+                .collect();
+            sensors.insert(policy.id, owned);
+        }
+        Ok(sensors)
     }
 
     /// Returns the policy `id`, read for update within `txn`, refusing an ID
@@ -2026,6 +2062,7 @@ mod test {
             clustering_model_type: crate::ClusteringModelTypeRef::Custom,
             training_read: crate::TrainingRead::default(),
             detection_model_states: Vec::new(),
+            cluster_count_at_training: None,
         };
         f.store
             .replace_model(
@@ -3238,5 +3275,199 @@ mod test {
             assert!(f.table().update(id, &old, &new).is_err());
             assert_eq!(f.policy(id).name, "a");
         }
+    }
+
+    /// The sensor of `second.example`, a node of [`CUSTOMER`].
+    const SECOND_SENSOR_NAME: &str = "piglet.second.example";
+    /// The sensor of `third.example`, a node of [`CUSTOMER`].
+    const THIRD_SENSOR_NAME: &str = "piglet.third.example";
+
+    /// Adds the sensor nodes `second.example` and `third.example` of
+    /// [`CUSTOMER`].
+    fn add_sensor_nodes(f: &Fixture) {
+        for host in ["second.example", "third.example"] {
+            insert_node(
+                &f.store,
+                host,
+                CUSTOMER,
+                host,
+                vec![agent(SENSOR, AgentKind::Sensor, None)],
+            );
+        }
+    }
+
+    /// Moves the applied profile of the node named `name` to `customer_id`.
+    fn move_node(f: &Fixture, name: &str, customer_id: u32) {
+        let mut nodes = f.store.node_map();
+        let node = nodes
+            .iter(Direction::Forward, None)
+            .map(Result::unwrap)
+            .find(|node| node.name == name)
+            .unwrap();
+        let old = crate::NodeUpdate::from(node.clone());
+        let mut new = crate::NodeUpdate::from(node.clone());
+        new.profile.as_mut().unwrap().customer_id = customer_id;
+        nodes.update(node.id, &old, &new).unwrap();
+    }
+
+    fn policy_with_sensors(name: &str, sensors: &[&str]) -> NewTimeSeriesGenerationPolicy {
+        NewTimeSeriesGenerationPolicy {
+            sensors: sensors.iter().map(ToString::to_string).collect(),
+            ..new_policy(name)
+        }
+    }
+
+    #[test]
+    fn the_policy_sensor_lookup_holds_only_sensors_of_the_policy_customer() {
+        let f = setup();
+        // `generators.example` has no sensor agent and `nowhere.example` no
+        // node, so neither gives a sensor of the customer.
+        let id = f
+            .table()
+            .insert(policy_with_sensors(
+                "p",
+                &[
+                    OTHER_SENSOR_NAME,
+                    SENSOR_NAME,
+                    "piglet.generators.example",
+                    "piglet.nowhere.example",
+                ],
+            ))
+            .unwrap();
+        let other = f
+            .table()
+            .insert(policy_with_sensors("q", &[OTHER_SENSOR_NAME]))
+            .unwrap();
+        assert_eq!(
+            f.store.time_series_policy_sensors().unwrap(),
+            crate::event::TimeSeriesPolicySensors::new(HashMap::from([
+                (id, vec![SENSOR_NAME.to_string()]),
+                (other, Vec::new()),
+            ]))
+        );
+    }
+
+    /// A header-less `WindowOutlier` event of the series `time_series_id`.
+    fn header_less_window_outlier(time_series_id: &str) -> review_protocol::types::DetectionEvent {
+        use review_protocol::types::{Detail, PrimarySubject, WindowOutlierDetail};
+
+        let mut event = crate::event::fixture::subject_event(
+            PrimarySubject::Host {
+                ip: "192.0.2.1".parse().unwrap(),
+                role: ThreatRole::Actor,
+            },
+            Vec::new(),
+        );
+        event.sensor = None;
+        event.detection_model = DetectionModel::WindowOutlier;
+        event.raw_event_kind = RawEventKind::Tls;
+        event.category = None;
+        event.detail = Detail::WindowOutlier(WindowOutlierDetail {
+            time_series_id: time_series_id.to_string(),
+            window_start: crate::event::fixture::time(),
+            nearest_cluster_id: 1,
+            distance: 2.0,
+            top_slots: Vec::new(),
+            truncated: 0,
+            pcap_truncated: None,
+        });
+        event
+    }
+
+    /// Returns whether the stored event `event` is selected by a `sensors`
+    /// condition listing `sensors` with the lookup built now.
+    fn selected_by(
+        f: &Fixture,
+        event: &crate::event::StoredDetectionEvent,
+        sensors: &[&str],
+    ) -> bool {
+        let lookup = f.store.time_series_policy_sensors().unwrap();
+        selected_with(event, sensors, lookup)
+    }
+
+    fn selected_with(
+        event: &crate::event::StoredDetectionEvent,
+        sensors: &[&str],
+        lookup: crate::event::TimeSeriesPolicySensors,
+    ) -> bool {
+        let filter = crate::event::EventFilter::new(
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some((sensors.iter().map(ToString::to_string).collect(), lookup)),
+            None,
+            None,
+            None,
+        );
+        event.matches(&filter).unwrap().0
+    }
+
+    /// Stores `event` and returns it as read back.
+    fn store_event(
+        f: &Fixture,
+        event: &review_protocol::types::DetectionEvent,
+    ) -> crate::event::StoredDetectionEvent {
+        let db = f.store.events();
+        let key = db.put(event, &crate::event::fixture::stamp()).unwrap();
+        let (_, record) = db
+            .iter_forward()
+            .map(Result::unwrap)
+            .find(|(stored, _)| *stored == key)
+            .unwrap();
+        assert_eq!(record.event(), event);
+        record
+    }
+
+    #[test]
+    fn a_header_less_time_series_event_is_selected_by_the_sensors_of_its_policy() {
+        let f = setup();
+        add_sensor_nodes(&f);
+        let (s1, s2, s3) = (SENSOR_NAME, SECOND_SENSOR_NAME, THIRD_SENSOR_NAME);
+        let p = f
+            .table()
+            .insert(policy_with_sensors("p", &[s1, s2]))
+            .unwrap();
+        let event = store_event(&f, &header_less_window_outlier(&format!("{p}/192.0.2.1")));
+
+        assert!(selected_by(&f, &event, &[s2]));
+        assert!(selected_by(&f, &event, &[s1]));
+        assert!(!selected_by(&f, &event, &[s3]));
+        assert!(!selected_by(&f, &event, &[]));
+
+        // A sensor moved to another customer no longer selects it.
+        let before = f.store.time_series_policy_sensors().unwrap();
+        move_node(&f, "second.example", OTHER_CUSTOMER);
+        assert!(!selected_by(&f, &event, &[s2]));
+        assert!(selected_by(&f, &event, &[s1]));
+        // A lookup built before the move still holds the sensor.
+        assert!(selected_with(&event, &[s2], before));
+
+        // With every sensor moved, no list selects it.
+        move_node(&f, "node", OTHER_CUSTOMER);
+        assert!(!selected_by(&f, &event, &[s1]));
+        assert!(!selected_by(&f, &event, &[s2]));
+        assert!(!selected_by(&f, &event, &[s1, s2, s3, OTHER_SENSOR_NAME]));
+
+        // Moved back, the sensors select it again.
+        move_node(&f, "node", CUSTOMER);
+        move_node(&f, "second.example", CUSTOMER);
+        assert!(selected_by(&f, &event, &[s1]));
+        assert!(selected_by(&f, &event, &[s2]));
+
+        // An id whose policy part is not a number is selected by no list.
+        let not_a_number = store_event(&f, &header_less_window_outlier("p/192.0.2.1"));
+        assert!(!selected_by(&f, &not_a_number, &[s1, s2, s3]));
+
+        // Once the policy is deleted, nothing selects it.
+        f.table().remove_unused(p).unwrap();
+        assert!(!selected_by(&f, &event, &[s1]));
+        assert!(!selected_by(&f, &event, &[s2]));
+        assert!(!selected_by(&f, &event, &[s1, s2, s3]));
     }
 }
