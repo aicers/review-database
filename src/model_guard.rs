@@ -963,6 +963,7 @@ mod tests {
             clustering_model_type: crate::ClusteringModelTypeRef::Custom,
             training_read: crate::TrainingRead::default(),
             detection_model_states: Vec::new(),
+            cluster_count_at_training: None,
         }
     }
 

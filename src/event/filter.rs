@@ -56,6 +56,43 @@ impl InternalNetworks {
     }
 }
 
+/// The sensors of each time-series generation policy that belong to the
+/// policy's customer, for the `sensors` field of an [`EventFilter`].
+///
+/// A header-less time-series event, which has no header `sensor` and whose
+/// detail has a time-series id, is selected by `sensors` through the policy
+/// its time-series id names. The lookup is built by
+/// [`Store::time_series_policy_sensors`](crate::Store::time_series_policy_sensors)
+/// from the policies and nodes as they are when it is called; a policy none
+/// of whose sensors belongs to its customer selects nothing.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TimeSeriesPolicySensors {
+    sensors: HashMap<u32, Vec<String>>,
+}
+
+impl TimeSeriesPolicySensors {
+    /// Creates the lookup from each policy id and that policy's sensors that
+    /// belong to its customer.
+    pub(crate) fn new(sensors: HashMap<u32, Vec<String>>) -> Self {
+        Self { sensors }
+    }
+
+    /// Returns the sensors of the policy that the time-series id
+    /// `time_series_id` names: its part before the first `/`, or all of it
+    /// when it has no `/`, read as a `u32`. An id whose policy part does not
+    /// parse, or that names a policy the lookup does not hold, has none.
+    fn sensors_of(&self, time_series_id: &str) -> &[String] {
+        let policy = time_series_id
+            .split_once('/')
+            .map_or(time_series_id, |(policy, _)| policy);
+        policy
+            .parse::<u32>()
+            .ok()
+            .and_then(|id| self.sensors.get(&id))
+            .map_or(&[], Vec::as_slice)
+    }
+}
+
 /// A filter used to query stored detection events.
 ///
 /// Every condition that is `Some` must hold for an event to match.
@@ -87,7 +124,16 @@ impl InternalNetworks {
 /// `detection_models`, `raw_event_kinds`, `categories`, `learning_methods`
 /// and `sensors` select an event exactly when its value is listed, so an
 /// empty list selects no event. `None` in `categories` selects an event with
-/// no category, and an event with no sensor never matches `sensors`.
+/// no category.
+///
+/// `sensors` selects an event with a header `sensor` when that sensor is
+/// listed. An event without one whose detail has a time-series id is
+/// selected when at least one sensor that the [`TimeSeriesPolicySensors`]
+/// given with the list holds for the policy the id names is listed: the
+/// policy's sensors that belonged to its customer when the lookup was
+/// built. Every other event without a header `sensor` never matches
+/// `sensors`.
+///
 /// `learning_methods` reads the learning method of the event's detection
 /// model from [`properties`]. `score_min` and `score_max` are inclusive
 /// bounds on the event's `score`, compared exactly.
@@ -106,7 +152,7 @@ pub struct EventFilter {
     pub(super) detection_models: Option<Vec<DetectionModel>>,
     pub(super) raw_event_kinds: Option<Vec<RawEventKind>>,
     pub(super) learning_methods: Option<Vec<LearningMethod>>,
-    pub(super) sensors: Option<Vec<String>>,
+    pub(super) sensors: Option<(Vec<String>, TimeSeriesPolicySensors)>,
     pub(super) score_min: Option<f64>,
     pub(super) score_max: Option<f64>,
     pub(super) triage_policies: Option<Vec<TriagePolicyInput>>,
@@ -126,7 +172,7 @@ impl EventFilter {
         detection_models: Option<Vec<DetectionModel>>,
         raw_event_kinds: Option<Vec<RawEventKind>>,
         learning_methods: Option<Vec<LearningMethod>>,
-        sensors: Option<Vec<String>>,
+        sensors: Option<(Vec<String>, TimeSeriesPolicySensors)>,
         score_min: Option<f64>,
         score_max: Option<f64>,
         triage_policies: Option<Vec<TriagePolicyInput>>,
@@ -255,13 +301,19 @@ impl StoredDetectionEvent {
             return false;
         }
 
-        if let Some(sensors) = &filter.sensors
-            && !event
-                .sensor
-                .as_ref()
-                .is_some_and(|sensor| sensors.contains(sensor))
-        {
-            return false;
+        if let Some((sensors, policies)) = &filter.sensors {
+            let selected = match &event.sensor {
+                Some(sensor) => sensors.contains(sensor),
+                None => event.detail.time_series_id().is_some_and(|id| {
+                    policies
+                        .sensors_of(id)
+                        .iter()
+                        .any(|sensor| sensors.contains(sensor))
+                }),
+            };
+            if !selected {
+                return false;
+            }
         }
 
         if let Some(endpoints) = &filter.endpoints
@@ -564,11 +616,11 @@ mod tests {
     use std::{collections::HashMap, net::IpAddr};
 
     use review_protocol::types::{
-        DetectionModel, EndpointRole::Destination, EndpointRole::Source, EventCategory as Protocol,
-        PrimarySubject, RawEventKind, ThreatRole,
+        Detail, DetectionModel, EndpointRole::Destination, EndpointRole::Source,
+        EventCategory as Protocol, PrimarySubject, RawEventKind, ThreatRole, WindowOutlierDetail,
     };
 
-    use super::{EventFilter, FlowKind, InternalNetworks, LearningMethod};
+    use super::{EventFilter, FlowKind, InternalNetworks, LearningMethod, TimeSeriesPolicySensors};
     use crate::{
         EventCategory, HostNetworkGroup, Network, OwnedNetwork, OwnedNetworkSet, Response,
         ResponseKind, ScoreCondition, TriagePolicyInput,
@@ -779,24 +831,133 @@ mod tests {
         assert!(!selects(&record, &methods(Vec::new())));
     }
 
-    #[test]
-    fn sensors_never_match_an_event_with_no_sensor() {
-        let sensors = |sensors: Vec<&str>| EventFilter {
-            sensors: Some(sensors.into_iter().map(str::to_string).collect()),
-            ..empty()
-        };
-        let record = conn();
-        assert!(selects(&record, &sensors(vec![SENSOR])));
-        assert!(selects(&record, &sensors(vec!["other", SENSOR])));
-        assert!(!selects(&record, &sensors(vec!["other"])));
-        assert!(!selects(&record, &sensors(Vec::new())));
+    /// A lookup in which policy 7 has the sensors `s1` and `s2`, and policy
+    /// 8 none.
+    fn policies() -> TimeSeriesPolicySensors {
+        TimeSeriesPolicySensors::new(HashMap::from([
+            (7, vec!["s1".to_string(), "s2".to_string()]),
+            (8, Vec::new()),
+        ]))
+    }
 
+    fn sensors_with(sensors: &[&str], policies: TimeSeriesPolicySensors) -> EventFilter {
+        EventFilter {
+            sensors: Some((sensors.iter().map(ToString::to_string).collect(), policies)),
+            ..empty()
+        }
+    }
+
+    fn sensors(sensors: &[&str]) -> EventFilter {
+        sensors_with(sensors, policies())
+    }
+
+    /// A `WindowOutlier` event of the time series `time_series_id` with the
+    /// header sensor `sensor`.
+    fn window_outlier(sensor: Option<&str>, time_series_id: &str) -> StoredDetectionEvent {
+        let mut event = subject_event(host("192.0.2.1"), Vec::new());
+        event.sensor = sensor.map(ToString::to_string);
+        event.detection_model = DetectionModel::WindowOutlier;
+        event.raw_event_kind = RawEventKind::Tls;
+        event.detail = Detail::WindowOutlier(WindowOutlierDetail {
+            time_series_id: time_series_id.to_string(),
+            window_start: time(),
+            nearest_cluster_id: 1,
+            distance: 2.0,
+            top_slots: Vec::new(),
+            truncated: 0,
+            pcap_truncated: None,
+        });
+        stored(event)
+    }
+
+    #[test]
+    fn sensors_select_an_event_with_a_header_sensor_by_that_sensor_only() {
+        let record = conn();
+        assert!(selects(&record, &sensors(&[SENSOR])));
+        assert!(selects(&record, &sensors(&["other", SENSOR])));
+        assert!(!selects(&record, &sensors(&["other"])));
+        assert!(!selects(&record, &sensors(&[])));
+
+        // The lookup does not matter for an event with a header sensor, even
+        // a time-series one.
+        let series = window_outlier(Some(SENSOR), "7/192.0.2.1");
+        for policies in [
+            policies(),
+            TimeSeriesPolicySensors::new(HashMap::new()),
+            TimeSeriesPolicySensors::new(HashMap::from([(7, vec![SENSOR.to_string()])])),
+        ] {
+            assert!(selects(&series, &sensors_with(&[SENSOR], policies.clone())));
+            assert!(!selects(&series, &sensors_with(&["s1"], policies.clone())));
+            assert!(!selects(&series, &sensors_with(&["s1", "s2"], policies)));
+        }
+    }
+
+    #[test]
+    fn sensors_never_match_a_header_less_event_without_a_time_series() {
         let mut no_sensor = subject_event(host("192.0.2.9"), Vec::new());
         no_sensor.sensor = None;
         let no_sensor = stored(no_sensor);
         assert!(selects(&no_sensor, &empty()));
-        assert!(!selects(&no_sensor, &sensors(vec![SENSOR])));
-        assert!(!selects(&no_sensor, &sensors(vec![""])));
+        assert!(!selects(&no_sensor, &sensors(&[SENSOR])));
+        assert!(!selects(&no_sensor, &sensors(&[""])));
+        assert!(!selects(&no_sensor, &sensors(&["s1", "s2"])));
+    }
+
+    #[test]
+    fn sensors_select_a_header_less_time_series_event_by_its_policy() {
+        let record = window_outlier(None, "7/192.0.2.1");
+        assert!(selects(&record, &empty()));
+        assert!(selects(&record, &sensors(&["s1"])));
+        assert!(selects(&record, &sensors(&["s2"])));
+        assert!(selects(&record, &sensors(&["s3", "s2"])));
+        assert!(!selects(&record, &sensors(&["s3"])));
+        assert!(!selects(&record, &sensors(&[])));
+        assert!(!selects(&record, &sensors(&[""])));
+
+        // An id without a `/` is all policy id.
+        assert!(selects(&window_outlier(None, "7"), &sensors(&["s1"])));
+
+        // A policy the lookup does not hold, one with no sensor of its
+        // customer, and an id whose policy part is not a number select
+        // nothing.
+        for id in [
+            "9/192.0.2.1",
+            "8/192.0.2.1",
+            "x/192.0.2.1",
+            "/192.0.2.1",
+            "",
+            "-7/192.0.2.1",
+            "7.0/192.0.2.1",
+            " 7/192.0.2.1",
+            "4294967303/192.0.2.1",
+        ] {
+            let record = window_outlier(None, id);
+            assert!(!selects(&record, &sensors(&["s1", "s2", "s3"])), "{id:?}");
+            assert!(selects(&record, &empty()), "{id:?}");
+        }
+
+        // The policy part ends at the first `/`.
+        assert!(selects(&window_outlier(None, "7/a/b"), &sensors(&["s1"])));
+        assert!(!selects(&window_outlier(None, "a/7/b"), &sensors(&["s1"])));
+    }
+
+    /// The other conditions are not affected: `directions` still finds no
+    /// internal network for a header-less event.
+    #[test]
+    fn directions_find_no_internal_network_for_a_header_less_time_series_event() {
+        let record = window_outlier(None, "7/192.0.2.1");
+        let internal = InternalNetworks::PerSensor(HashMap::from([
+            ("s1".to_string(), vec![group(&["192.0.2.0/24"])]),
+            (SENSOR.to_string(), vec![group(&["192.0.2.0/24"])]),
+        ]));
+        let filter = EventFilter {
+            directions: Some((
+                vec![FlowKind::Internal, FlowKind::Inbound, FlowKind::Outbound],
+                internal,
+            )),
+            ..sensors(&["s1"])
+        };
+        assert!(!selects(&record, &filter));
     }
 
     #[test]

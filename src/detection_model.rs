@@ -2781,6 +2781,54 @@ rdp_brute_force.enabled = false
         );
     }
 
+    /// A time-series detection model, one whose primary subject is a host
+    /// whose role a time-series type gives, is listed by the time-series
+    /// types only and reads exactly their raw event kinds, and every model
+    /// a time-series type lists is one.
+    #[test]
+    fn time_series_detection_models_agree_with_the_time_series_catalog() {
+        let is_time_series = |model: DetectionModel| {
+            properties(model).primary_subject
+                == PrimarySubjectKind::Host(RoleSource::TimeSeriesType)
+        };
+        let time_series_models: Vec<_> = ALL_MODELS
+            .into_iter()
+            .filter(|model| is_time_series(*model))
+            .collect();
+        assert_eq!(time_series_models, [DetectionModel::WindowOutlier]);
+
+        for model in time_series_models {
+            let listing: Vec<_> = crate::time_series_types()
+                .iter()
+                .filter(|t| t.detection_models.contains(&model))
+                .collect();
+            assert!(!listing.is_empty(), "{model:?}");
+            assert!(
+                crate::clustering_model_types()
+                    .iter()
+                    .all(|t| !t.detection_models.contains(&model)),
+                "{model:?}"
+            );
+            let mut from_catalog = Vec::new();
+            for t in listing {
+                if !from_catalog.contains(&t.raw_event_kind) {
+                    from_catalog.push(t.raw_event_kind);
+                }
+            }
+            assert_eq!(properties(model).raw_event_kinds, from_catalog, "{model:?}");
+        }
+
+        for t in crate::time_series_types() {
+            for model in t.detection_models {
+                assert!(is_time_series(*model), "{} lists {model:?}", t.id);
+            }
+        }
+        assert_eq!(
+            properties(DetectionModel::WindowOutlier).raw_event_kinds,
+            [R::Tls]
+        );
+    }
+
     #[test]
     fn unsupervised_raw_event_kinds_come_from_the_catalog() {
         for model in [DetectionModel::LabelDbMatch, DetectionModel::FarOutlier] {

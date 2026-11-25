@@ -196,10 +196,11 @@ impl Store {
     ///
     /// - If no model has that name, a record is inserted for `owner` with
     ///   the body's method, raw event kind, log kind, clustering model type,
-    ///   training read and detection model states, `trained_at`,
-    ///   `trained`'s run id, definition text and sources, its first
-    ///   classifier generation and no previous result, and the body's
-    ///   classifier, batch information and scores are stored.
+    ///   training read, detection model states and cluster count at
+    ///   training, `trained_at`, `trained`'s run id, definition text and
+    ///   sources, its first classifier generation and no previous result,
+    ///   and the body's classifier, batch information and scores are
+    ///   stored.
     /// - If one does, it keeps its id. Its current batch information,
     ///   scores, clusters, column statistics, CSV column extras, time series
     ///   and outliers become its previous training result, read through
@@ -208,11 +209,11 @@ impl Store {
     ///   record's `previous` summarises the training replaced. The record
     ///   takes `trained_at`, `trained`'s run id, definition text and
     ///   sources, and the body's log kind, clustering model type, training
-    ///   read and detection model states, which replace the stored list as a
-    ///   whole. Its indicators stay with it. The new classifier is
-    ///   written to a new file and the record switches to it in the same
-    ///   transaction that moves the rows; the earlier previous classifier
-    ///   file is removed after that commits.
+    ///   read, cluster count at training and detection model states, which
+    ///   replace the stored list as a whole. Its indicators stay with it.
+    ///   The new classifier is written to a new file and the record
+    ///   switches to it in the same transaction that moves the rows; the
+    ///   earlier previous classifier file is removed after that commits.
     ///
     /// # Errors
     ///
@@ -313,6 +314,7 @@ impl Store {
                 clustering_model_type: model.clustering_model_type.clone(),
                 training_read: model.training_read.clone(),
                 detection_model_states: model.detection_model_states.clone(),
+                cluster_count_at_training: model.cluster_count_at_training,
             };
             let id = models.add_model_with_transaction(record, txn)?;
             self.classifier_fm.store_classifier(
@@ -368,6 +370,7 @@ impl Store {
             clustering_model_type: model.clustering_model_type.clone(),
             training_read: model.training_read.clone(),
             detection_model_states: model.detection_model_states.clone(),
+            cluster_count_at_training: model.cluster_count_at_training,
             previous: Some(PreviousTraining {
                 trained_at: record.trained_at,
                 version: record.version,
@@ -412,18 +415,19 @@ impl Store {
     /// classification id, and its detection model states.
     ///
     /// The model is looked up by `model.name`. Its owner, raw event kind,
-    /// log kind, clustering model type, training read, training time,
-    /// trained run and definition, previous result and the classification id
-    /// its clusters were last updated for stay as they are; the body's
-    /// values of the log kind, clustering model type and training read are
-    /// not compared with them. The body's detection model states replace
-    /// the stored list as a whole, so a state the body does not carry is no
-    /// longer stored. The classifier is written to a new file and the record
-    /// switches to it in the same transaction that stores the batch
-    /// information, scores and detection model states, so a classification
-    /// id read back always comes with that upload's classifier, batch
-    /// information, scores and detection model states;
-    /// the earlier current classifier file is removed after that commits.
+    /// log kind, clustering model type, training read, cluster count at
+    /// training, training time, trained run and definition, previous result
+    /// and the classification id its clusters were last updated for stay as
+    /// they are; the body's values of the log kind, clustering model type,
+    /// training read and cluster count at training are not compared with
+    /// them. The body's detection model states replace the stored list as a
+    /// whole, so a state the body does not carry is no longer stored. The
+    /// classifier is written to a new file and the record switches to it in
+    /// the same transaction that stores the batch information, scores and
+    /// detection model states, so a classification id read back always comes
+    /// with that upload's classifier, batch information, scores and
+    /// detection model states; the earlier current classifier file is
+    /// removed after that commits.
     ///
     /// # Errors
     ///
@@ -763,10 +767,11 @@ impl Store {
     /// and scores.
     ///
     /// Model names are unique in the database. `raw_event_kind`, `log_kind`,
-    /// `clustering_model_type`, `training_read` and the detection model
-    /// states last stored come from the model's record, and `scores` are the
-    /// ones last stored for it (empty when it has none), read under the
-    /// model-files lock together with the record and the classifier.
+    /// `clustering_model_type`, `training_read`, `cluster_count_at_training`
+    /// and the detection model states last stored come from the model's
+    /// record, and `scores` are the ones last stored for it (empty when it
+    /// has none), read under the model-files lock together with the record
+    /// and the classifier.
     /// `batch_info` is empty.
     ///
     /// # Errors
@@ -806,6 +811,7 @@ impl Store {
             clustering_model_type: record.clustering_model_type,
             training_read: record.training_read,
             detection_model_states: record.detection_model_states,
+            cluster_count_at_training: record.cluster_count_at_training,
         })
     }
 
@@ -1153,6 +1159,7 @@ mod tests {
             clustering_model_type: crate::ClusteringModelTypeRef::Custom,
             training_read: crate::TrainingRead::default(),
             detection_model_states: Vec::new(),
+            cluster_count_at_training: None,
         }
     }
 
@@ -1404,6 +1411,7 @@ mod tests {
                 clustering_model_type: crate::ClusteringModelTypeRef::Custom,
                 training_read: crate::TrainingRead::default(),
                 detection_model_states: Vec::new(),
+                cluster_count_at_training: None,
             }
         );
         assert_eq!(
@@ -3153,6 +3161,89 @@ mod tests {
         let loaded = store.load_model_by_name("alpha").unwrap();
         assert_eq!(loaded.serialized_classifier, b"round-2");
         assert_eq!(loaded.detection_model_states, Vec::new());
+    }
+
+    /// A time-series body of `tls` events named `alpha`, as test model 3 of
+    /// the format 3 fixture has it, with `cluster_count_at_training`.
+    fn time_series_body(
+        classifier: &[u8],
+        classification_id: i64,
+        cluster_count_at_training: Option<u32>,
+    ) -> crate::model::Model {
+        crate::model::Model {
+            kind: "Timeseries".to_string(),
+            raw_event_kind: "tls".to_string(),
+            clustering_model_type: crate::ClusteringModelTypeRef::Catalog {
+                id: "server_daily_tls".to_string(),
+                version: 1,
+            },
+            cluster_count_at_training,
+            ..body("alpha", classifier, classification_id)
+        }
+    }
+
+    /// The cluster count at training is the upload's on an insert and on a
+    /// replace, and neither a round nor a cluster update changes it.
+    #[test]
+    fn the_cluster_count_at_training_follows_only_a_replace() {
+        let ts = setup_store();
+        let store = &ts.store;
+        let count = |store: &Store| record(store, "alpha").cluster_count_at_training;
+
+        let id = store
+            .replace_model(
+                time_series_body(b"first", 1, Some(4)),
+                owner(),
+                at(100),
+                trained(1, "x"),
+            )
+            .unwrap()
+            .id;
+        assert_eq!(count(store), Some(4));
+        assert_eq!(
+            store
+                .load_model_by_name("alpha")
+                .unwrap()
+                .cluster_count_at_training,
+            Some(4)
+        );
+
+        store
+            .update_model(crate::model::Model {
+                id: i32::try_from(id).unwrap(),
+                ..time_series_body(b"round", 2, Some(9))
+            })
+            .unwrap();
+        assert_eq!(count(store), Some(4));
+        assert_eq!(
+            store
+                .load_model_by_name("alpha")
+                .unwrap()
+                .cluster_count_at_training,
+            Some(4)
+        );
+
+        let updates = [update_request(1, 100, 4), update_request(2, 200, 6)];
+        assert!(store.update_clusters(id, &updates).unwrap());
+        assert_eq!(count(store), Some(4));
+
+        let replaced = store
+            .replace_model(
+                time_series_body(b"second", 3, Some(6)),
+                owner(),
+                at(200),
+                trained(2, "y"),
+            )
+            .unwrap();
+        assert!(!replaced.inserted);
+        assert_eq!(count(store), Some(6));
+
+        // A multidimension upload without a count is stored without one.
+        let inserted = store
+            .replace_model(body("beta", b"beta", 1), owner(), at(300), trained(3, "z"))
+            .unwrap();
+        assert!(inserted.inserted);
+        assert_eq!(record(store, "beta").cluster_count_at_training, None);
     }
 
     #[test]

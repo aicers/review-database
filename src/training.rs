@@ -803,8 +803,9 @@ impl Store {
     /// The model is stored for the customer and instance of the definition
     /// the run's model names, trained now, with the run's id and the
     /// definition's text, sources and log kind as the training it records,
-    /// and with the upload's clustering model type, training read and
-    /// detection model states, whether the model is created or replaced;
+    /// and with the upload's clustering model type, training read,
+    /// detection model states and cluster count at training, whether the
+    /// model is created or replaced;
     /// none of these is compared with the definition. For a training run that
     /// text is the one [`Store::start_training_run`] returned; for a clone
     /// it is the target definition [`Store::start_clone_run`] stored, which
@@ -1657,6 +1658,7 @@ mod tests {
             clustering_model_type: http_url_v1(),
             training_read: crate::TrainingRead::default(),
             detection_model_states: Vec::new(),
+            cluster_count_at_training: None,
         }
     }
 
@@ -2203,6 +2205,46 @@ mod tests {
         let record = model(store, "d");
         assert_eq!(record.raw_event_kind, "log");
         assert_eq!(record.log_kind.as_deref(), Some("auth"));
+    }
+
+    /// Run completion records the upload's cluster count at training,
+    /// whether it creates or replaces the model, and does not check it
+    /// against the method.
+    #[test]
+    fn complete_run_records_the_cluster_count_at_training_of_the_upload() {
+        let f = setup();
+        let store = f.store();
+        let engine = instance(f.node, ENGINE);
+        store
+            .insert_training_definition(new_definition("d", engine.clone()))
+            .unwrap();
+        let upload = |cluster_count_at_training| crate::model::Model {
+            cluster_count_at_training,
+            ..body("d")
+        };
+
+        let first = store.start_training_run("d").unwrap();
+        let created = store
+            .complete_run(first.run.id, &engine, upload(None))
+            .unwrap()
+            .model;
+        assert!(created.inserted);
+        assert_eq!(model(store, "d").cluster_count_at_training, None);
+
+        let second = store.start_training_run("d").unwrap();
+        let replaced = store
+            .complete_run(second.run.id, &engine, upload(Some(5)))
+            .unwrap()
+            .model;
+        assert!(!replaced.inserted);
+        assert_eq!(model(store, "d").cluster_count_at_training, Some(5));
+        assert_eq!(
+            store
+                .load_model_by_name("d")
+                .unwrap()
+                .cluster_count_at_training,
+            Some(5)
+        );
     }
 
     /// The clustering model type, training read and detection model states

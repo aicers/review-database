@@ -1011,6 +1011,30 @@ impl Store {
         self.states.time_series_generation_policies().uses(id)
     }
 
+    /// Returns the lookup an [`EventFilter`](crate::event::EventFilter)'s
+    /// `sensors` condition selects header-less time-series events with: the
+    /// sensors of each time series generation policy that belong to the
+    /// policy's customer, as the policies and nodes are now.
+    ///
+    /// A sensor belongs to a customer when it is the [`AgentKind::Sensor`]
+    /// package id, a dot and the non-empty hostname of the applied profile of
+    /// a node of that customer that carries an [`AgentKind::Sensor`] agent.
+    /// The policies and the nodes are read from one snapshot, and the lookup
+    /// does not follow later changes: a policy deleted, or a sensor moved to
+    /// another customer, after it is built is reflected only by a lookup
+    /// built again.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database operation fails.
+    pub fn time_series_policy_sensors(&self) -> Result<crate::event::TimeSeriesPolicySensors> {
+        let sensors = self
+            .states
+            .time_series_generation_policies()
+            .customer_sensors(&self.states.nodes())?;
+        Ok(crate::event::TimeSeriesPolicySensors::new(sensors))
+    }
+
     #[must_use]
     #[allow(clippy::missing_panics_doc)]
     pub fn qualifier_map(&self) -> IndexedTable<'_, types::Qualifier> {
