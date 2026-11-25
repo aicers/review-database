@@ -9,8 +9,7 @@ use aws_lc_rs::digest;
 use review_protocol::types::{DaiObservationBody, HostNetworkGroup as ProtocolGroup};
 use serde::Serialize;
 
-use super::super::owned_network::merge_groups;
-use crate::{HostNetworkGroup, OwnedNetworkSet, event::NetworkType};
+use crate::{HostNetworkGroup, OwnedNetworkSet};
 
 /// The number of bytes of an identifier hash.
 pub(super) const IDENTIFIER_HASH_LEN: usize = 16;
@@ -21,8 +20,9 @@ const DIGEST_LEN: usize = 8;
 /// agent, with their digest.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct DaiNetworks {
-    /// The customer's `Intranet` and `Gateway` networks merged into one
-    /// group.
+    /// The customer's internal addresses, the
+    /// [`OwnedNetworkSet::internal_group`] of its networks: those whose
+    /// narrowest containing network is an `Intranet` or `Gateway` network.
     pub internal: ProtocolGroup,
     /// All of the customer's networks, of any kind, merged into one group.
     pub registered: ProtocolGroup,
@@ -34,16 +34,24 @@ pub struct DaiNetworks {
 /// `customer networks` row or `None` if it has none, as device
 /// identification hands them to an agent, with their network digest.
 ///
-/// `internal` merges the `Intranet` and `Gateway` networks into one group and
-/// `registered` merges all networks, of any kind. Each list inside both
+/// `internal` is [`OwnedNetworkSet::internal_group`]: the addresses whose
+/// narrowest containing network is an `Intranet` or `Gateway` network, with
+/// no `Extranet` network containing them as narrowly. It keeps every entry
+/// of an `Intranet` or `Gateway` network that holds no other address, and
+/// adds the internal addresses of the rest as ranges, so a set in which no
+/// `Extranet` entry overlaps an `Intranet` or `Gateway` entry gives the
+/// merge of its `Intranet` and `Gateway` networks. `registered` merges all
+/// networks, of any kind. Each list inside both
 /// groups is sorted ascending (`hosts` and `networks` by their `Ord`,
 /// `ip_ranges` by `(start, end)`) and has no duplicates. The digest is the
 /// first 8 bytes of SHA-256, read as a little-endian `u64`, over the bincode 2
 /// `config::standard()` serde encoding of `(internal, registered)`, the rule
 /// `review-protocol` documents for `network_digest`. It depends only on the
 /// content of the two groups: not on the order or the names of the networks,
-/// nor on a network whose entries the others already hold. No row gives two
-/// empty groups.
+/// nor on an `Intranet` or `Gateway` network whose entries other networks of
+/// those types already hold. An `Extranet` network can change both groups,
+/// since an entry it shares with an `Intranet` network leaves that entry's
+/// addresses out of `internal`. No row gives two empty groups.
 ///
 /// # Errors
 ///
@@ -51,20 +59,7 @@ pub struct DaiNetworks {
 pub fn dai_network_digest(networks: Option<&OwnedNetworkSet>) -> Result<DaiNetworks> {
     let (internal, registered) = networks.map_or_else(
         || (HostNetworkGroup::default(), HostNetworkGroup::default()),
-        |set| {
-            let internal = merge_groups(
-                set.networks
-                    .iter()
-                    .filter(|network| {
-                        matches!(
-                            network.network_type,
-                            NetworkType::Intranet | NetworkType::Gateway
-                        )
-                    })
-                    .map(|network| &network.group),
-            );
-            (internal, set.merged_group())
-        },
+        |set| (set.internal_group(), set.merged_group()),
     );
     let internal = protocol_group(&internal);
     let registered = protocol_group(&registered);
