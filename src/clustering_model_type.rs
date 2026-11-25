@@ -296,7 +296,7 @@ const HTTP_URL_CSV: &[FixedValue] = &[
         value: DefinitionValue::IntegerList(&[14, 15]),
     },
     FixedValue {
-        key: "time_intervals",
+        key: "slot_sizes",
         value: DefinitionValue::IntegerList(&[60]),
     },
     FixedValue {
@@ -621,7 +621,7 @@ mod tests {
                 "reader",
                 "format",
                 "prefix_columns",
-                "time_intervals",
+                "slot_sizes",
                 "time_column",
                 "count_columns",
             ]
@@ -640,7 +640,7 @@ mod tests {
             ])
         );
         assert_eq!(integer_list(csv, "prefix_columns"), [14, 15]);
-        assert_eq!(integer_list(csv, "time_intervals"), [60]);
+        assert_eq!(integer_list(csv, "slot_sizes"), [60]);
         assert_eq!(
             table_value(csv, "time_column"),
             &DefinitionValue::Integer(0)
