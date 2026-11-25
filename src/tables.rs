@@ -48,7 +48,7 @@ use std::{
     io,
     os::unix::fs::MetadataExt,
     path::{Path, PathBuf},
-    sync::{Mutex, MutexGuard, PoisonError},
+    sync::{Arc, Mutex, MutexGuard, PoisonError},
 };
 
 use anyhow::{Result, anyhow};
@@ -295,6 +295,10 @@ pub(super) const DAI_SERVICES: &str = "dai services";
 pub(super) const DAI_SOFTWARE_STRINGS: &str = "dai software strings";
 /// The change history of each device.
 pub(super) const DAI_DEVICE_CHANGES: &str = "dai device changes";
+/// The arrival-order index of the detection events: one empty row per
+/// stored record, keyed by its arrival time and its key; see
+/// `event::arrival`.
+pub(crate) const DETECTION_EVENT_ARRIVAL: &str = "detection event arrival";
 pub(super) const DETECTOR_ID_MARKS: &str = "detector id marks";
 /// The last exclusion report of each Semi-supervised Engine instance.
 pub(super) const ENGINE_EXCLUSION_COUNTS: &str = "engine exclusion counts";
@@ -428,12 +432,16 @@ pub(super) const TRUSTED_USER_AGENTS: &str = "trusted user agents";
 /// - the `engine exclusion counts` table starts with the first exclusion
 ///   report a build that has it stores: earlier builds of the format never
 ///   wrote the family, so their backups lack it, and an instance with no row
-///   reads as one that has sent no report.
+///   reads as one that has sent no report;
+/// - the `detection event arrival` index starts with the first detection
+///   event a build that has it stores: earlier builds of the format never
+///   wrote the family, so their backups lack it, and the detection events
+///   those builds stored have no index rows and are not added to it.
 ///
 /// The `senta` endpoint and DAI tables are listed here although no release
 /// yet carries a build without them, so that a backup of such a build is
 /// accepted whichever is released first.
-pub(super) const ADDED_WITHIN_FORMAT: [&str; 55] = [
+pub(super) const ADDED_WITHIN_FORMAT: [&str; 56] = [
     CONFIG_REVISIONS,
     CONFIG_REVISION_HISTORY,
     DAI_CATCHUP_GAPS,
@@ -471,6 +479,7 @@ pub(super) const ADDED_WITHIN_FORMAT: [&str; 55] = [
     DAI_RESOLVER_POINTS,
     DAI_SERVICES,
     DAI_SOFTWARE_STRINGS,
+    DETECTION_EVENT_ARRIVAL,
     ENGINE_EXCLUSION_COUNTS,
     SENTA_ACTIVE_LIST,
     SENTA_DOCUMENT_RESULTS,
@@ -491,7 +500,7 @@ pub(super) const ADDED_WITHIN_FORMAT: [&str; 55] = [
     SENTA_ENDPOINTS,
 ];
 
-pub(crate) const MAP_NAMES: [&str; 105] = [
+pub(crate) const MAP_NAMES: [&str; 106] = [
     AGENTS,
     BATCH_INFO,
     CATEGORY,
@@ -602,9 +611,10 @@ pub(crate) const MAP_NAMES: [&str; 105] = [
     DAI_SERVICES,
     DAI_SOFTWARE_STRINGS,
     DAI_DEVICE_CHANGES,
-    // The engine exclusion counts family stays before the last entry for the
-    // same reason.
+    // The engine exclusion counts and detection event arrival families stay
+    // before the last entry for the same reason.
     ENGINE_EXCLUSION_COUNTS,
+    DETECTION_EVENT_ARRIVAL,
     TRUSTED_USER_AGENTS,
 ];
 
@@ -614,6 +624,11 @@ pub(super) const WORKFLOW_TAGS: &[u8] = b"workflow tags";
 /// The last allocated model run id, as a big-endian `u32`; absent before the
 /// first run.
 pub(super) const MODEL_RUN_ID_COUNTER: &[u8] = b"model run id counter";
+/// The last arrival time stamped on a detection event, in epoch nanoseconds
+/// as a big-endian `i64`; absent before the first event a build with the
+/// arrival index stored. It is written with every index row, so arrival
+/// times continue from it, never decreasing, after the store is reopened.
+pub(crate) const LAST_DETECTION_EVENT_ARRIVAL: &[u8] = b"last detection event arrival";
 
 /// The directories of the states databases a [`StateDb`] in this process has
 /// open.
@@ -669,6 +684,8 @@ impl Drop for OpenStateDb {
 #[allow(clippy::module_name_repetitions)]
 pub(crate) struct StateDb {
     inner: Option<rocksdb::OptimisticTransactionDB>,
+    /// The arrival lock every detection-event view of the database shares.
+    arrival: Arc<event::ArrivalState>,
     backup: PathBuf,
     db: PathBuf,
     /// Declared after `inner` so that the database is closed by the time the
@@ -681,6 +698,7 @@ impl StateDb {
         let open = Self::record_open(path)?;
         let state = Self::open_db(path).map(|db| Self {
             inner: Some(db),
+            arrival: Arc::default(),
             backup,
             db: path.to_owned(),
             _open: open,
@@ -1007,7 +1025,13 @@ impl StateDb {
         country_lookup: Option<crate::geo::SharedCountryLookup>,
     ) -> event::EventDb<'_> {
         let inner = self.inner.as_ref().expect("database must be open");
-        event::EventDb::new_with_country_lookup(inner, country_lookup)
+        event::EventDb::new_with_country_lookup(inner, Arc::clone(&self.arrival), country_lookup)
+    }
+
+    /// Returns the arrival lock every detection-event view shares.
+    #[cfg(test)]
+    pub(crate) fn arrival(&self) -> &event::ArrivalState {
+        &self.arrival
     }
 
     #[must_use]
@@ -1185,6 +1209,9 @@ impl StateDb {
         let db = rocksdb::OptimisticTransactionDB::open_cf(&opts, &self.db, MAP_NAMES)?;
 
         self.inner = Some(db);
+        // The reopened database may be a restored one, so the last arrival
+        // time is read from its `meta` again.
+        self.arrival.forget();
         Ok(())
     }
 

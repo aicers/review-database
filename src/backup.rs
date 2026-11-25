@@ -649,8 +649,8 @@ mod tests {
         DEFAULT_STATES, DetectionEventStamp, Iterable, ModelInstance, Store,
         migration::DATABASE_FORMAT_VERSION,
         tables::{
-            ADDED_WITHIN_FORMAT, ENGINE_EXCLUSION_COUNTS, FORMAT_0_63, MAP_NAMES,
-            TIME_SERIES_GENERATION_POLICY, open_rocksdb_backup_engine,
+            ADDED_WITHIN_FORMAT, DETECTION_EVENT_ARRIVAL, ENGINE_EXCLUSION_COUNTS, FORMAT_0_63,
+            MAP_NAMES, TIME_SERIES_GENERATION_POLICY, open_rocksdb_backup_engine,
         },
     };
 
@@ -1321,8 +1321,8 @@ mod tests {
     /// are the configuration revision families, the Clumit Endpoint
     /// (`senta`) families, the device identification (DAI) configuration
     /// families, the DAI observation, cursor and restore families, the DAI
-    /// unregistered range families, the DAI device families and the engine
-    /// exclusion counts family.
+    /// unregistered range families, the DAI device families, the engine
+    /// exclusion counts family and the detection event arrival index.
     fn add_earlier_build_backup(backup_dir: &Path, events: usize) {
         add_backup_without_families(backup_dir, events, &ADDED_WITHIN_FORMAT);
     }
@@ -1357,8 +1357,8 @@ mod tests {
     /// families, the Clumit Endpoint (`senta`) families, the DAI
     /// configuration families, the DAI observation, cursor and restore
     /// families, the DAI unregistered range families, the DAI device
-    /// families and the engine exclusion counts family — which that build
-    /// did not have. It is in the current
+    /// families, the engine exclusion counts family and the detection event
+    /// arrival index — which that build did not have. It is in the current
     /// format, so it restores online by id and as the latest, the restored
     /// store has every family of the format, it records configuration
     /// revisions, it stores an observation, it registers a senta endpoint
@@ -1366,8 +1366,9 @@ mod tests {
     /// DAI observation, cursor and restore families hold only the restore
     /// generation the restore drew and are written to, its DAI unregistered
     /// range families are empty and written to, its DAI device families
-    /// are empty and written to by a slot application, and its engine
-    /// exclusion counts family is empty and written to.
+    /// are empty and written to by a slot application, its engine
+    /// exclusion counts family is empty and written to, and its detection
+    /// event arrival index is empty and written to.
     #[test]
     fn online_restore_accepts_an_earlier_build_backup_of_the_current_format() {
         let _permit = acquire_db_permit();
@@ -1437,9 +1438,12 @@ mod tests {
 
             assert_dai_tables_start_empty(&store);
             assert_engine_exclusion_counts_start_empty(&store);
+            assert_detection_event_arrival_starts_empty(&store);
         }
         drop(store);
-        assert_eq!(event_count(data_dir.path(), backup_dir.path()), 2);
+        // The two events of the backup and the one the arrival index check
+        // stored.
+        assert_eq!(event_count(data_dir.path(), backup_dir.path()), 3);
     }
 
     /// A backup in the current format taken by a build without the `engine
@@ -1489,6 +1493,84 @@ mod tests {
         }
         drop(store);
         assert_eq!(event_count(data_dir.path(), backup_dir.path()), 2);
+    }
+
+    /// A backup in the current format taken by a build without the
+    /// `detection event arrival` index, which no earlier build of the format
+    /// wrote, passes the format check and restores, online by id and as the
+    /// latest; the restored store has the index, empty, with no rows for the
+    /// events of the backup, and writes a row for the next event it stores.
+    #[test]
+    fn online_restore_accepts_a_backup_without_the_detection_event_arrival_index() {
+        let _permit = acquire_db_permit();
+        let data_dir = tempfile::tempdir().unwrap();
+        let backup_dir = tempfile::tempdir().unwrap();
+        let store = open_current_store(data_dir.path(), backup_dir.path());
+        put_event(&store);
+        add_backup_without_families(backup_dir.path(), 2, &[DETECTION_EVENT_ARRIVAL]);
+        let families = rocksdb::DB::list_cf(
+            &rocksdb::Options::default(),
+            private_dir(backup_dir.path(), 1),
+        )
+        .unwrap();
+        assert!(
+            !families
+                .iter()
+                .any(|family| family == DETECTION_EVENT_ARRIVAL)
+        );
+        assert_eq!(families.len(), MAP_NAMES.len());
+
+        store
+            .write()
+            .expect("test holds no other locks")
+            .restore_from_latest_backup()
+            .unwrap();
+        assert_eq!(live_event_count(&store), 2);
+        put_event(&store);
+        store
+            .write()
+            .expect("test holds no other locks")
+            .restore_from_backup(1)
+            .unwrap();
+        assert_eq!(live_event_count(&store), 2);
+
+        {
+            let store = store.read().expect("test holds no other locks");
+            let db = store.states.db();
+            assert!(MAP_NAMES.iter().all(|name| db.cf_handle(name).is_some()));
+            assert_detection_event_arrival_starts_empty(&store);
+        }
+        drop(store);
+        assert_eq!(event_count(data_dir.path(), backup_dir.path()), 3);
+    }
+
+    /// Asserts that the `detection event arrival` index of `store`, restored
+    /// from a backup without it, is empty although the store holds events,
+    /// and that the next event stored gets a row the arrival-order read
+    /// follows.
+    fn assert_detection_event_arrival_starts_empty(store: &Store) {
+        let db = store.states.db();
+        let cf = db.cf_handle(DETECTION_EVENT_ARRIVAL).unwrap();
+        assert_eq!(db.iterator_cf(cf, rocksdb::IteratorMode::Start).count(), 0);
+        assert!(store.events().iter_forward().count() > 0);
+
+        let key = store
+            .events()
+            .put(&example_event(), &example_stamp())
+            .unwrap();
+        assert_eq!(db.iterator_cf(cf, rocksdb::IteratorMode::Start).count(), 1);
+        let filter = crate::event::EventFilter::new(
+            None, None, None, None, None, None, None, None, None, None, None, None, None,
+        );
+        let page = store
+            .events()
+            .read_by_arrival(&filter, None, 10, 10)
+            .unwrap();
+        assert_eq!(
+            page.events.iter().map(|(key, _)| *key).collect::<Vec<_>>(),
+            [key]
+        );
+        assert!(!page.has_more);
     }
 
     /// Asserts that the `engine exclusion counts` family of `store`, restored
@@ -1655,7 +1737,7 @@ mod tests {
                                       \"dai sensor state\", \"dai services\", \
                                       \"dai site policy guard\", \"dai sites\", \
                                       \"dai slot sends\", \"dai software strings\", \
-                                      \"engine exclusion counts\", \
+                                      \"detection event arrival\", \"engine exclusion counts\", \
                                       \"format 0.63\", \"senta active list\", \
                                       \"senta document results\", \
                                       \"senta endpoint address roots\", \

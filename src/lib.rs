@@ -65,7 +65,8 @@ pub use self::detection_model::{
     properties,
 };
 pub use self::event::{
-    DetectionEventStamp, EventDb, MAX_RAW_EVENT_KEYS, PutOutcome, RawEventKey, StoredDetectionEvent,
+    ArrivalKey, ArrivalKeyLengthError, ArrivalPage, DetectionEventStamp, EventDb,
+    MAX_RAW_EVENT_KEYS, PutOutcome, RawEventKey, StoredDetectionEvent,
 };
 pub use self::migration::{migrate_data_dir, write_version_markers};
 pub use self::model::{DetectionModelState, Digest, Model, TrainingRead, TrainingReadDay};

@@ -7,7 +7,11 @@
 //! `(time_ns << 64) | (detection_model << 32) | seq`, where `time_ns` is the
 //! event's `time` in signed epoch nanoseconds, `detection_model` the number
 //! of its [`DetectionModel`], and `seq` tells apart records sharing both.
+//!
+//! Each record also has a row in the arrival-order index, which
+//! [`EventDb::read_by_arrival`] follows; see [`ArrivalKey`].
 
+mod arrival;
 mod filter;
 mod record;
 mod triage;
@@ -17,7 +21,7 @@ pub(crate) mod fixture;
 #[cfg(test)]
 mod key_baseline;
 
-use std::collections::HashSet;
+use std::{collections::HashSet, sync::Arc};
 
 use anyhow::{Context, Result, bail};
 use jiff::Timestamp;
@@ -28,12 +32,17 @@ use rocksdb::IteratorMode;
 use serde::{Deserialize, Serialize};
 use tracing::warn;
 
+#[cfg(test)]
+pub(crate) use self::arrival::ArrivalHookPoint;
+pub(crate) use self::arrival::ArrivalState;
 pub use self::{
+    arrival::{ArrivalKey, ArrivalKeyLengthError, ArrivalPage},
     filter::{EventFilter, InternalNetworks, LearningMethod, TimeSeriesPolicySensors},
     record::{DetectionEventStamp, StoredDetectionEvent},
     triage::TriageScore,
 };
 use super::timestamp;
+use crate::tables::{DETECTION_EVENT_ARRIVAL, LAST_DETECTION_EVENT_ARRIVAL, META};
 
 const EVENT_DELETION_BATCH_SIZE: usize = 1000;
 const FIRST_NON_NEGATIVE_EVENT_KEY: [u8; 16] = 0_i128.to_be_bytes();
@@ -126,12 +135,24 @@ fn event_key_base(event: &DetectionEvent) -> i128 {
         | (i128::from(u32::from(event.detection_model)) << 32)
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Makes [`free_event_key`] find no free key on this thread, so that the
+    /// tests can reach the outcome of a full time and detection model
+    /// without writing 2^32 records.
+    static NO_FREE_KEY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
 /// Returns a key no record occupies with the time and detection model of
 /// `base`, read for update within `txn`, or `None` if every one is taken.
 fn free_event_key(
     txn: &rocksdb::Transaction<rocksdb::OptimisticTransactionDB>,
     base: i128,
 ) -> Result<Option<i128>> {
+    #[cfg(test)]
+    if NO_FREE_KEY.get() {
+        return Ok(None);
+    }
     let mut key = base;
     if txn
         .get_for_update(key.to_be_bytes(), super::EXCLUSIVE)
@@ -159,14 +180,25 @@ fn free_event_key(
 #[allow(clippy::module_name_repetitions)]
 pub struct EventDb<'a> {
     inner: &'a rocksdb::OptimisticTransactionDB,
+    /// The arrival lock, shared by every view of an opened store.
+    arrival: Arc<ArrivalState>,
     country_lookup: Option<crate::geo::SharedCountryLookup>,
 }
 
 impl<'a> EventDb<'a> {
+    /// Creates a view of `inner` with an arrival lock of its own, not shared
+    /// with any other view.
+    ///
+    /// Writes through it and through another view of the same database are
+    /// not stamped under one lock, so a reader of the arrival index could
+    /// miss a record; only the tests, which open a database by itself, use
+    /// it.
+    #[cfg(test)]
     #[must_use]
-    pub fn new(inner: &'a rocksdb::OptimisticTransactionDB) -> EventDb<'a> {
+    pub(crate) fn new(inner: &'a rocksdb::OptimisticTransactionDB) -> EventDb<'a> {
         Self {
             inner,
+            arrival: Arc::default(),
             country_lookup: None,
         }
     }
@@ -174,12 +206,78 @@ impl<'a> EventDb<'a> {
     #[must_use]
     pub(crate) fn new_with_country_lookup(
         inner: &'a rocksdb::OptimisticTransactionDB,
+        arrival: Arc<ArrivalState>,
         country_lookup: Option<crate::geo::SharedCountryLookup>,
     ) -> EventDb<'a> {
         Self {
             inner,
+            arrival,
             country_lookup,
         }
+    }
+
+    /// Returns the column family of the arrival index.
+    fn arrival_cf(&self) -> Result<&rocksdb::ColumnFamily> {
+        self.inner
+            .cf_handle(DETECTION_EVENT_ARRIVAL)
+            .with_context(|| format!("the column family \"{DETECTION_EVENT_ARRIVAL}\" is missing"))
+    }
+
+    /// Returns the `meta` column family.
+    fn meta_cf(&self) -> Result<&rocksdb::ColumnFamily> {
+        self.inner
+            .cf_handle(META)
+            .with_context(|| format!("the column family \"{META}\" is missing"))
+    }
+
+    /// Returns the arrival time to stamp on the next record, holding the
+    /// arrival lock as `last`.
+    ///
+    /// The last arrival time is read from the `meta` column family the first
+    /// time; `last` is not changed otherwise, so a write that does not commit
+    /// leaves it as it was.
+    fn stamp_arrival(&self, last: &mut Option<i64>) -> Result<i64> {
+        if last.is_none() {
+            *last = self
+                .inner
+                .get_cf(self.meta_cf()?, LAST_DETECTION_EVENT_ARRIVAL)
+                .context("cannot read the last detection-event arrival time")?
+                .map(|value| arrival::decode_last_arrival(&value))
+                .transpose()?;
+        }
+        let arrival = arrival::next_arrival(self.arrival.now()?, *last)?;
+        #[cfg(test)]
+        self.arrival.run_hook(ArrivalHookPoint::Stamped(arrival));
+        Ok(arrival)
+    }
+
+    /// Writes, within `txn`, the index row of the record `key` arriving at
+    /// `arrival`, and `arrival` as the last arrival time.
+    fn put_arrival(
+        &self,
+        txn: &rocksdb::Transaction<rocksdb::OptimisticTransactionDB>,
+        arrival: i64,
+        key: i128,
+    ) -> Result<()> {
+        txn.put_cf(
+            self.arrival_cf()?,
+            ArrivalKey::new(arrival, key).to_bytes(),
+            [],
+        )
+        .context("cannot write the detection-event arrival index")?;
+        txn.put_cf(
+            self.meta_cf()?,
+            LAST_DETECTION_EVENT_ARRIVAL,
+            arrival.to_be_bytes(),
+        )
+        .context("cannot write the last detection-event arrival time")
+    }
+
+    /// Takes the arrival lock.
+    fn lock_arrival(&self) -> std::sync::MutexGuard<'_, Option<i64>> {
+        #[cfg(test)]
+        self.arrival.run_hook(ArrivalHookPoint::BeforeLock);
+        self.arrival.lock()
     }
 
     /// Creates an iterator over the stored records, starting inclusively
@@ -258,10 +356,15 @@ impl<'a> EventDb<'a> {
     /// each endpoint address is looked up and stored with the record; without
     /// a country lookup every one is [`crate::COUNTRY_CODE_UNRESOLVED`].
     ///
+    /// The record's row in the arrival index is written with it, under an
+    /// arrival time later than every one stamped before; see [`ArrivalKey`].
+    ///
     /// # Errors
     ///
     /// Returns an error if the event cannot be serialized, if no key is free
-    /// at its time and detection model, or if a database operation fails.
+    /// at its time and detection model, or if a database operation fails,
+    /// including when the database lacks the arrival index or `meta` column
+    /// family.
     pub fn put(&self, event: &DetectionEvent, stamp: &DetectionEventStamp) -> Result<i128> {
         let event_bytes = record::encode_event(event)?;
         let value = record::encode_record(
@@ -270,6 +373,9 @@ impl<'a> EventDb<'a> {
             &record::country_codes(event, self.country_lookup.as_deref()),
         )?;
         let base = event_key_base(event);
+        // Held until the write commits, so that the records commit in the
+        // order of their arrival times.
+        let mut last = self.lock_arrival();
         loop {
             let txn = self.inner.transaction();
             let Some(key) = free_event_key(&txn, base)? else {
@@ -277,8 +383,13 @@ impl<'a> EventDb<'a> {
             };
             txn.put(key.to_be_bytes(), value.as_slice())
                 .context("cannot write event")?;
+            let arrival = self.stamp_arrival(&mut last)?;
+            self.put_arrival(&txn, arrival, key)?;
             match txn.commit() {
-                Ok(()) => return Ok(key),
+                Ok(()) => {
+                    *last = Some(arrival);
+                    return Ok(key);
+                }
                 Err(e) => {
                     if !e.as_ref().starts_with("Resource busy:") {
                         return Err(e).context("failed to store event");
@@ -301,10 +412,13 @@ impl<'a> EventDb<'a> {
     /// with its key. An event that can never be stored — it cannot be
     /// serialized, or no key is free at its time and detection model — is
     /// [`PutOutcome::Rejected`] with the reason, and nothing is written.
+    /// A stored record gets its row in the arrival index as with
+    /// [`EventDb::put`]; an event already stored or rejected gets none.
     ///
     /// # Errors
     ///
-    /// Returns an error only if a database operation fails.
+    /// Returns an error only if a database operation fails, including when
+    /// the database lacks the arrival index or `meta` column family.
     pub fn put_unless_stored(
         &self,
         event: &DetectionEvent,
@@ -326,6 +440,9 @@ impl<'a> EventDb<'a> {
         let key = base.to_be_bytes();
         // An `i128` key is 16 bytes, longer than its time and model.
         let prefix = &key[..EVENT_KEY_TIME_AND_MODEL_LEN];
+        // Held until the write commits, so that the records commit in the
+        // order of their arrival times.
+        let mut last = self.lock_arrival();
         loop {
             let txn = self.inner.transaction();
             // The scan below is not tracked for conflicts, and two calls for
@@ -354,8 +471,13 @@ impl<'a> EventDb<'a> {
             };
             txn.put(key.to_be_bytes(), value.as_slice())
                 .context("cannot write event")?;
+            let arrival = self.stamp_arrival(&mut last)?;
+            self.put_arrival(&txn, arrival, key)?;
             match txn.commit() {
-                Ok(()) => return Ok(PutOutcome::Stored(key)),
+                Ok(()) => {
+                    *last = Some(arrival);
+                    return Ok(PutOutcome::Stored(key));
+                }
                 Err(e) => {
                     if !e.as_ref().starts_with("Resource busy:") {
                         return Err(e).context("failed to store event");
@@ -429,12 +551,99 @@ impl<'a> EventDb<'a> {
             .collect()
     }
 
+    /// Reads the records matching `filter` in the order they arrived,
+    /// following the arrival index from the row after `after`, or from its
+    /// start when `after` is `None`.
+    ///
+    /// The read stops once it has `first` matching records or has scanned
+    /// `max_scan` index rows, whichever comes first, or at the end of the
+    /// index. Every row it looks at counts as scanned: one whose record
+    /// matches, one whose record does not, and one whose record is gone,
+    /// which is skipped. A row whose record has an unknown detection model
+    /// number or cannot be decoded is skipped with a warning and counted as
+    /// scanned too, so that the next read goes past it.
+    ///
+    /// A record matches exactly when [`StoredDetectionEvent::matches`]
+    /// says it does, as in the reads in key order; the read adds no condition
+    /// and drops none. The index and the records are read from one snapshot.
+    ///
+    /// A row committed after another always has a later key, so a read from
+    /// the last row a read scanned misses no record stored since.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database lacks the arrival index, if an index
+    /// key is not 24 bytes long, or if a database operation fails.
+    pub fn read_by_arrival(
+        &self,
+        filter: &EventFilter,
+        after: Option<ArrivalKey>,
+        first: usize,
+        max_scan: usize,
+    ) -> Result<ArrivalPage> {
+        let index = self.arrival_cf()?;
+        let snapshot = self.inner.snapshot();
+        let start = after.map(|key| key.to_bytes());
+        let mode = match &start {
+            Some(start) => IteratorMode::From(start, Direction::Forward),
+            None => IteratorMode::Start,
+        };
+        let mut rows = snapshot.iterator_cf_opt(index, rocksdb::ReadOptions::default(), mode);
+        let mut page = ArrivalPage {
+            events: Vec::new(),
+            last_scanned: None,
+            has_more: false,
+        };
+        let mut scanned = 0_usize;
+        for row in &mut rows {
+            let (row_key, _) = row.context("cannot read the detection-event arrival index")?;
+            let row_key = ArrivalKey::try_from(&*row_key)
+                .context("invalid detection-event arrival index key")?;
+            if Some(row_key) == after {
+                continue;
+            }
+            if scanned == max_scan || page.events.len() == first {
+                page.has_more = true;
+                break;
+            }
+            scanned += 1;
+            page.last_scanned = Some(row_key);
+
+            let key = row_key.event_key();
+            let Some(value) = snapshot
+                .get(key.to_be_bytes())
+                .context("cannot read from event database")?
+            else {
+                continue;
+            };
+            let model = key_detection_model_number(key);
+            if DetectionModel::try_from(model).is_err() {
+                warn!("Unknown detection model: {model} at event key {key}; skipped");
+                continue;
+            }
+            let record = match record::decode_record(&value) {
+                Ok(record) => record,
+                Err(e) => {
+                    warn!("Invalid event record at key {key}: {e:#}; skipped");
+                    continue;
+                }
+            };
+            if record.matches(filter)?.0 {
+                page.events.push((key, record));
+            }
+        }
+        Ok(page)
+    }
+
     /// Removes all records whose timestamp is strictly before `before`.
     ///
     /// Event keys are interpreted in signed `i128` chronological order. The
     /// upper 64 bits encode signed epoch nanoseconds. A record exactly at
     /// `before` is retained, and cutoffs outside the supported `i64`
     /// epoch-nanosecond range delete none or all records as appropriate.
+    ///
+    /// The arrival index rows of the records removed are removed after them,
+    /// and no other row is.
     ///
     /// Returns the number of records deleted.
     ///
@@ -447,30 +656,39 @@ impl<'a> EventDb<'a> {
             return Ok(0);
         }
 
+        // The records and the index rows removed are those of one snapshot,
+        // so that a record stored meanwhile keeps its index row.
+        let snapshot = self.inner.snapshot();
         if cutoff_nanos > i128::from(i64::MAX) {
-            let negative = self.delete_event_region(EventKeyRegion::Negative, None)?;
-            let non_negative = self.delete_event_region(EventKeyRegion::NonNegative, None)?;
+            let negative = self.delete_event_region(&snapshot, EventKeyRegion::Negative, None)?;
+            let non_negative =
+                self.delete_event_region(&snapshot, EventKeyRegion::NonNegative, None)?;
+            self.delete_arrival_rows(&snapshot, |_| true)?;
             return Ok(negative + non_negative);
         }
 
         let cutoff_nanos = i64::try_from(cutoff_nanos)
             .context("cutoff within the checked i64 epoch-nanosecond range")?;
-        let cutoff_key = (i128::from(cutoff_nanos) << 64).to_be_bytes();
-        if cutoff_nanos < 0 {
-            self.delete_event_region(EventKeyRegion::Negative, Some(cutoff_key))
+        let cutoff = i128::from(cutoff_nanos) << 64;
+        let cutoff_key = cutoff.to_be_bytes();
+        let deleted = if cutoff_nanos < 0 {
+            self.delete_event_region(&snapshot, EventKeyRegion::Negative, Some(cutoff_key))?
         } else {
-            let negative = self.delete_event_region(EventKeyRegion::Negative, None)?;
+            let negative = self.delete_event_region(&snapshot, EventKeyRegion::Negative, None)?;
             let non_negative = if cutoff_key == FIRST_NON_NEGATIVE_EVENT_KEY {
                 0
             } else {
-                self.delete_event_region(EventKeyRegion::NonNegative, Some(cutoff_key))?
+                self.delete_event_region(&snapshot, EventKeyRegion::NonNegative, Some(cutoff_key))?
             };
-            Ok(negative + non_negative)
-        }
+            negative + non_negative
+        };
+        self.delete_arrival_rows(&snapshot, |key| key < cutoff)?;
+        Ok(deleted)
     }
 
     fn delete_event_region(
         &self,
+        snapshot: &PhysicalEventSnapshot<'_>,
         region: EventKeyRegion,
         upper_bound: Option<[u8; 16]>,
     ) -> Result<u64> {
@@ -484,7 +702,7 @@ impl<'a> EventDb<'a> {
                 IteratorMode::From(&FIRST_NEGATIVE_EVENT_KEY, Direction::Forward)
             }
         };
-        let iter = self.inner.iterator_opt(mode, readopts);
+        let iter = snapshot.iterator_opt(mode, readopts);
         let mut batch = rocksdb::WriteBatchWithTransaction::<true>::default();
         let mut batch_count = 0_usize;
         let mut deleted = 0_u64;
@@ -515,8 +733,52 @@ impl<'a> EventDb<'a> {
         Ok(deleted)
     }
 
+    /// Removes the arrival index rows in `snapshot` whose record key
+    /// `deleted` accepts.
+    ///
+    /// The caller has removed those records as `snapshot` held them. A record
+    /// stored after `snapshot` was taken, under a key `deleted` accepts,
+    /// keeps its row, which is not in `snapshot`.
+    fn delete_arrival_rows(
+        &self,
+        snapshot: &PhysicalEventSnapshot<'_>,
+        deleted: impl Fn(i128) -> bool,
+    ) -> Result<()> {
+        let index = self.arrival_cf()?;
+        let rows =
+            snapshot.iterator_cf_opt(index, rocksdb::ReadOptions::default(), IteratorMode::Start);
+        let mut batch = rocksdb::WriteBatchWithTransaction::<true>::default();
+        let mut batch_count = 0_usize;
+        for row in rows {
+            let (row_key, _) = row.context("cannot read the detection-event arrival index")?;
+            let Ok(key) = ArrivalKey::try_from(&*row_key) else {
+                continue;
+            };
+            if !deleted(key.event_key()) {
+                continue;
+            }
+            batch.delete_cf(index, &row_key);
+            batch_count += 1;
+            if batch_count == EVENT_DELETION_BATCH_SIZE {
+                self.inner
+                    .write(std::mem::take(&mut batch))
+                    .context("failed to delete detection-event arrival index rows")?;
+                batch_count = 0;
+            }
+        }
+        if batch_count > 0 {
+            self.inner
+                .write(batch)
+                .context("failed to delete detection-event arrival index rows")?;
+        }
+        Ok(())
+    }
+
     /// Removes all records whose event's `sensor` is `Some` and exactly
     /// matches one of `sensors`. A record with no sensor is kept.
+    ///
+    /// The arrival index rows of the records removed are removed after them,
+    /// and no other row is.
     ///
     /// # Errors
     ///
@@ -528,15 +790,19 @@ impl<'a> EventDb<'a> {
         }
 
         let sensors: HashSet<&str> = sensors.iter().map(String::as_str).collect();
-        let iter = self.inner.iterator(IteratorMode::Start);
+        // The records and the index rows removed are those of one snapshot,
+        // so that a record stored meanwhile keeps its index row.
+        let snapshot = self.inner.snapshot();
+        let iter = snapshot.iterator(IteratorMode::Start);
         let mut batch = rocksdb::WriteBatchWithTransaction::<true>::default();
         let mut batch_count = 0;
+        let mut deleted = Vec::new();
 
         for item in iter {
             let (key, value) = item.context("cannot read from event database")?;
-            if signed_event_key(&key).is_none() {
+            let Some(signed_key) = signed_event_key(&key) else {
                 bail!("event key must be 16 bytes, got {}", key.len());
-            }
+            };
             let record = record::decode_record(&value).context("invalid event value")?;
             if record
                 .event
@@ -546,6 +812,7 @@ impl<'a> EventDb<'a> {
             {
                 batch.delete(&key);
                 batch_count += 1;
+                deleted.push(signed_key);
             }
 
             if batch_count >= EVENT_DELETION_BATCH_SIZE {
@@ -562,6 +829,10 @@ impl<'a> EventDb<'a> {
                 .context("failed to delete events by sensor")?;
         }
 
+        if !deleted.is_empty() {
+            deleted.sort_unstable();
+            self.delete_arrival_rows(&snapshot, |key| deleted.binary_search(&key).is_ok())?;
+        }
         Ok(())
     }
 

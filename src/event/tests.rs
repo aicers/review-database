@@ -710,8 +710,12 @@ fn iteration_stops_on_corrupt_sst() {
     let dir = tempfile::tempdir().unwrap();
     let mut options = rocksdb::Options::default();
     options.create_if_missing(true);
+    options.create_missing_column_families(true);
+    // `put` writes the arrival index and the last arrival time too.
+    let families = [crate::tables::DETECTION_EVENT_ARRIVAL, crate::tables::META];
     {
-        let raw = rocksdb::OptimisticTransactionDB::open(&options, dir.path()).unwrap();
+        let raw =
+            rocksdb::OptimisticTransactionDB::open_cf(&options, dir.path(), families).unwrap();
         let db = EventDb::new(&raw);
         for nanos in -3..0 {
             db.put(&event_at_nanos(nanos), &stamp()).unwrap();
@@ -724,7 +728,7 @@ fn iteration_stops_on_corrupt_sst() {
         drop(raw);
         crate::test::corrupt_new_sst(dir.path(), &before);
     }
-    let raw = rocksdb::OptimisticTransactionDB::open(&options, dir.path()).unwrap();
+    let raw = rocksdb::OptimisticTransactionDB::open_cf(&options, dir.path(), families).unwrap();
     let db = EventDb::new(&raw);
     let mut forward = db.iter_forward();
     for nanos in -3..0 {
@@ -906,6 +910,40 @@ fn iterator_errors_on_malformed_key_and_value() {
         db.iter_forward().next(),
         Some(Err(InvalidEvent::Value(_)))
     ));
+}
+
+/// After an undecodable value or a malformed key, the iterator goes on to
+/// the next valid record.
+#[test]
+fn iterator_yields_the_next_record_after_an_invalid_key_or_value() {
+    let (_permit, store) = setup_store();
+    let db = store.events();
+    let before = db.put(&event_at_nanos(1_000_000_000), &stamp()).unwrap();
+    let key = (2_000_000_000_i128 << 64) | (i128::from(u32::from(DetectionModel::PortScan)) << 32);
+    db.put_raw(&key.to_be_bytes(), b"dummy");
+    let after = db.put(&event_at_nanos(3_000_000_000), &stamp()).unwrap();
+
+    let mut iter = db.iter_forward();
+    assert_eq!(iter.next().unwrap().unwrap().0, before);
+    assert!(matches!(iter.next(), Some(Err(InvalidEvent::Value(_)))));
+    assert_eq!(iter.next().unwrap().unwrap().0, after);
+    assert!(iter.next().is_none());
+
+    let (_permit, store) = setup_store();
+    let db = store.events();
+    // An 8-byte key in the region of negative keys, followed there by a
+    // record whose time starts with the next byte.
+    db.put_raw(&[0xAB; 8], b"dummy");
+    let next = db
+        .put(
+            &event_at_nanos(i64::from_be_bytes([0xAC, 0, 0, 0, 0, 0, 0, 0])),
+            &stamp(),
+        )
+        .unwrap();
+    let mut iter = db.iter_forward();
+    assert!(matches!(iter.next(), Some(Err(InvalidEvent::Key(_)))));
+    assert_eq!(iter.next().unwrap().unwrap().0, next);
+    assert!(iter.next().is_none());
 }
 
 #[test]
