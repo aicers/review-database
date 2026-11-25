@@ -163,7 +163,8 @@ enum O4Mode {
     Replay,
     /// Applied: it attaches its machine account, records a conflict and
     /// confirms; `extend` tells whether it also moves the binding's last
-    /// strong evidence time, which an O4 applied again does not.
+    /// strong evidence time, which a late O4 does not: the recomputation
+    /// already moved it, or, for the same O4 applied again, nothing does.
     Live { extend: bool },
 }
 
@@ -457,7 +458,7 @@ impl<'e> Env<'e> {
 
     /// Writes the evidence row of `pending` at (`site`, `ip`), merging it
     /// into the row of the same slot, kind and identifier hash if there is
-    /// one, and returns whether there was.
+    /// one, and returns, if there was, whether that row was verified.
     fn index_evidence(
         &self,
         address: &mut Address,
@@ -465,7 +466,7 @@ impl<'e> Env<'e> {
         ip: IpAddr,
         pending: &Pending<'_>,
         verified: bool,
-    ) -> Result<bool> {
+    ) -> Result<Option<bool>> {
         let prefix = || KeyWriter::default().u32(self.customer).str(site).ip(ip);
         let from = prefix().i64(pending.slot_start).finish();
         let to = prefix()
@@ -522,7 +523,7 @@ impl<'e> Env<'e> {
         );
         Dai::put_row(self.txn, &self.dai.evidence, &key, &merged)?;
         address.written = true;
-        Ok(existing.is_some())
+        Ok(existing.map(|(_, _, stored)| stored.verified))
     }
 
     /// Applies an O1.
@@ -549,7 +550,9 @@ impl<'e> Env<'e> {
         let time = *time;
         let mac = valid_mac(chaddr);
         let address = self.address(addresses, site, *ip)?;
-        let existed = self.index_evidence(address, site, *ip, pending, false)?;
+        let existed = self
+            .index_evidence(address, site, *ip, pending, false)?
+            .is_some();
 
         // The identifier steps.
         let device = match (msg, &mac) {
@@ -557,14 +560,17 @@ impl<'e> Env<'e> {
             _ => None,
         };
 
-        // The binding steps.
-        if is_binding_evidence(&pending.row.body, false) && !existed {
+        // The binding steps. Late evidence recomputes unless it is the same
+        // message applied again, which the bindings already reflect.
+        if is_binding_evidence(&pending.row.body, false) {
             let late = address
                 .lock
                 .current
                 .is_some_and(|latest| pending.order < latest);
             if late {
-                self.recompute(address, site, *ip, time)?;
+                if !existed {
+                    self.recompute(address, site, *ip, time)?;
+                }
             } else {
                 match (msg, &mac, device) {
                     (DaiDhcpMsg::Ack, Some(mac), Some(device)) => address.bindings.ack(
@@ -694,22 +700,15 @@ impl<'e> Env<'e> {
         let (first, last) = (pending.row.first_seen, pending.row.last_seen);
         let verified = verified_machine_account(body, &self.settings).is_some();
         let address = self.address(addresses, site, ip)?;
-        let existed = self.index_evidence(address, site, ip, pending, verified)?;
+        // Whether this slot's row of the same O4 already was binding
+        // evidence: one first applied unverified is not reflected in the
+        // bindings yet.
+        let existed = self.index_evidence(address, site, ip, pending, verified)? == Some(true);
         if !verified {
             if let Some(device) = covering_device(address, first, last) {
                 self.touch(edits, device, first, last)?;
             }
             return Ok(());
-        }
-        if existed {
-            return self.verified_o4(
-                address,
-                edits,
-                body,
-                first,
-                last,
-                O4Mode::Live { extend: false },
-            );
         }
         let late = address
             .lock
@@ -717,8 +716,11 @@ impl<'e> Env<'e> {
             .is_some_and(|latest| pending.order < latest);
         if late {
             // The replay moves the bindings only, this O4 among them; its
-            // remaining effects apply against the recomputed bindings.
-            self.recompute(address, site, ip, pending.order.time)?;
+            // remaining effects apply against the recomputed bindings. The
+            // same O4 applied again changes no binding.
+            if !existed {
+                self.recompute(address, site, ip, pending.order.time)?;
+            }
             self.verified_o4(
                 address,
                 edits,

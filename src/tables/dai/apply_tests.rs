@@ -1295,6 +1295,83 @@ fn a_re_sent_observation_is_one_evidence_row() {
 }
 
 #[test]
+fn a_verified_o4_re_sent_with_wider_times_moves_the_last_strong_time() {
+    let f = setup();
+    f.applied(A, &Lease::ack(m(0), "10.0.0.1", 1));
+    let device = f.owner(1);
+    let o4 = verified("10.0.0.1", "HOST1$");
+    f.observed(A, &o4, m(1), m(1));
+    assert_eq!(f.binding("10.0.0.1", m(0)).last_strong, m(1));
+    // Re-sent in the same slot with a later last seen; not late, so it
+    // moves the binding as it would have arrived with those times.
+    f.observed(A, &o4, m(1), m(4));
+    let rows: Vec<_> = f
+        .evidence()
+        .into_iter()
+        .filter(|(_, kind, _)| *kind == Kind::Kerberos)
+        .collect();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].0, m(4));
+    assert_eq!(f.binding("10.0.0.1", m(0)).last_strong, m(4));
+    // Covered until 12:14, so an O5 at 12:12 confirms the device.
+    f.observed(A, &ntlm("10.0.0.1"), m(12), m(12));
+    assert_eq!(f.device(device).last_seen, m(12));
+    assert_eq!(f.spans("10.0.0.1"), [(m(0), None)]);
+}
+
+#[test]
+fn an_o4_first_applied_unverified_is_binding_evidence_once_re_sent_verified() {
+    let f = setup();
+    let account = Identifier {
+        kind: IdentifierKind::MachineAccount,
+        value: "HOST1$@CORP.EXAMPLE".to_string(),
+    };
+    let o4 = verified("10.0.0.1", "HOST1$");
+
+    // Not late: it attaches the account and moves the binding.
+    f.applied(A, &Lease::ack(m(0), "10.0.0.1", 1));
+    let device = f.owner(1);
+    f.update_settings(|update| update.kerberos_preauth_realms.clear());
+    f.observed(A, &o4, m(1), m(1));
+    assert!(f.identifier(&account).is_none());
+    assert_eq!(f.binding("10.0.0.1", m(0)).last_strong, m(0));
+    f.update_settings(|update| update.kerberos_preauth_realms = vec![REALM.to_string()]);
+    f.observed(A, &o4, m(1), m(3));
+    assert_eq!(f.identifier(&account).unwrap().device, device);
+    assert_eq!(f.binding("10.0.0.1", m(0)).last_strong, m(3));
+    let rows: Vec<_> = f
+        .evidence()
+        .into_iter()
+        .filter(|(_, kind, _)| *kind == Kind::Kerberos)
+        .collect();
+    assert_eq!(rows.len(), 1);
+    assert!(rows[0].2.verified);
+}
+
+#[test]
+fn a_late_o4_first_applied_unverified_recomputes_once_re_sent_verified() {
+    let f = setup();
+    f.applied(A, &Lease::ack(m(0), "10.0.0.1", 1));
+    let o4 = verified("10.0.0.1", "HOST1$");
+    f.update_settings(|update| update.kerberos_preauth_realms.clear());
+    f.observed(A, &o4, m(1), m(1));
+    // Past the 10-minute inactivity time: a new binding.
+    f.applied(A, &Lease::ack(m(14), "10.0.0.1", 1));
+    assert_eq!(f.spans("10.0.0.1"), [(m(0), None), (m(14), None)]);
+    // Re-sent verified, it is late; in order it would have kept the first
+    // binding open past 12:14.
+    f.update_settings(|update| update.kerberos_preauth_realms = vec![REALM.to_string()]);
+    f.observed(A, &o4, m(1), m(8));
+    assert_eq!(f.spans("10.0.0.1"), [(m(0), None)]);
+    assert_eq!(f.binding("10.0.0.1", m(0)).last_strong, m(14));
+    let account = Identifier {
+        kind: IdentifierKind::MachineAccount,
+        value: "HOST1$@CORP.EXAMPLE".to_string(),
+    };
+    assert_eq!(f.identifier(&account).unwrap().device, f.owner(1));
+}
+
+#[test]
 fn the_same_ack_from_two_sensors_triggers_no_recomputation() {
     let f = setup();
     f.applied(A, &Lease::ack(t(10), "10.0.0.1", 1));
