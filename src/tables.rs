@@ -75,13 +75,23 @@ pub use self::customer_data_deletion_job::{
     CustomerDataDeletionJob, CustomerDataDeletionService, CustomerDataDeletionServiceResult,
     CustomerDataDeletionStatus,
 };
-pub(crate) use self::dai::{Clock, Dai, mark_restored, now_nanos};
+pub(crate) use self::dai::{Clock, Dai, DaiRead, mark_restored, now_nanos};
 pub use self::dai::{
-    DAI_APPLY_DEFAULT_MAX_COUNT, DAI_IMPORT_MAX_ROWS, DAI_STATE_CHANGE_MAX_DEVICES,
-    DaiActivityChange, DaiBatchError, DaiConfigError, DaiDeviceError, DaiIdentifier,
-    DaiIdentifierKind, DaiIgnoredRange, DaiImportOutcome, DaiImportRow, DaiImportRowError,
-    DaiNetworks, DaiPendingHead, DaiRangeCandidate, DaiRangeError, DaiRelaySite, DaiRelaySites,
-    DaiSettings, DaiSettingsUpdate, DaiSite, DaiStoreOutcome, DaiVerdict, dai_network_digest,
+    DAI_APPLY_DEFAULT_MAX_COUNT, DAI_EXPLANATION_EVIDENCE_ROWS, DAI_IMPORT_MAX_ROWS,
+    DAI_RESOLVE_MAX_ITEMS, DAI_SEARCH_MAX_MATCHES, DAI_STATE_CHANGE_MAX_DEVICES, DaiActivity,
+    DaiActivityChange, DaiAliasReason, DaiBatchError, DaiBindingSpan, DaiCatchupGap, DaiChangeKind,
+    DaiChangeOp, DaiChangeSource, DaiCollectionStatus, DaiComparedValue, DaiConfigError,
+    DaiCurrentIp, DaiCursorLag, DaiDailyCount, DaiDecidingBinding, DaiDeviceAlias,
+    DaiDeviceBinding, DaiDeviceChange, DaiDeviceDetail, DaiDeviceError, DaiDeviceFilter,
+    DaiDeviceIdentifier, DaiDeviceListRow, DaiDeviceName, DaiEvidenceRef, DaiEvidenceSource,
+    DaiExplanation, DaiFieldChange, DaiGapCause, DaiIdentifier, DaiIdentifierKind, DaiIgnoredRange,
+    DaiImportOutcome, DaiImportRow, DaiImportRowError, DaiIpDeviceFilter, DaiIpDeviceRow,
+    DaiKindReceipt, DaiNameSource, DaiNetworks, DaiOrigin, DaiPage, DaiPageDirection,
+    DaiPageRequest, DaiPendingHead, DaiRangeCandidate, DaiRangeError, DaiRelaySite, DaiRelaySites,
+    DaiResolveAnswer, DaiResolveError, DaiResolveItem, DaiResolveItemError, DaiResolveWhen,
+    DaiSearchMatch, DaiSearchMatchKind, DaiSearchResult, DaiSearchTarget, DaiSensorCollection,
+    DaiService, DaiSettings, DaiSettingsUpdate, DaiSite, DaiSiteCollection, DaiSoftware,
+    DaiStoreOutcome, DaiSubjectKind, DaiTimeRange, DaiVerdict, dai_network_digest,
 };
 pub(crate) use self::engine_instance::{
     DetectorIdMarks, EngineInstances, Row as EngineInstanceRow, key as engine_instance_key,

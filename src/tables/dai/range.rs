@@ -32,7 +32,8 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use super::{
-    Dai, DaiStoreOutcome, FIVE_MINUTES, KeyReader, KeyWriter, SensorSite, SensorState, Txn,
+    Dai, DaiRead, DaiStoreOutcome, FIVE_MINUTES, KeyReader, KeyWriter, SensorSite, SensorState,
+    Txn,
     cursor::{DAY, LOOKBACK, RECENT_DAYS, RestoredCursor, date_of, is_recent},
     customer_key, dai_network_digest, decode_sensor_site, sensor_key,
 };
@@ -862,181 +863,190 @@ impl Dai<'_> {
 
     /// Returns the customer's candidate ranges at the time `now`, as
     /// [`Store::dai_range_candidates`] describes.
-    #[allow(clippy::too_many_lines)] // The steps of one read, in their documented order.
     pub(super) fn range_candidates(
         &self,
         customer_id: u32,
         now: i64,
     ) -> Result<Vec<DaiRangeCandidate>> {
-        self.read(|txn| {
-            let reference = i64::from(date_of(now)?) - 1;
-            let window_start = reference - i64::from(WINDOW_DAYS) + 1;
-            let in_window = |date: i32| (window_start..=reference).contains(&i64::from(date));
-            let prefix = customer_key(customer_id);
+        self.read(|txn| self.range_candidates_in(txn, customer_id, now))
+    }
 
-            // The blocks of the window.
-            let mut blocks = Vec::new();
-            let mut sensors = BTreeSet::new();
-            for (key, value) in Self::scan(&self.range_blocks, txn, &prefix)? {
-                let (_, sensor, date, evidence, block) = decode_block_key(&key)?;
-                if !in_window(date) {
+    /// Returns the customer's candidate ranges at the time `now`, as
+    /// `txn` reads them.
+    #[allow(clippy::too_many_lines)] // The steps of one read, in their documented order.
+    pub(super) fn range_candidates_in(
+        &self,
+        txn: &(impl DaiRead + ?Sized),
+        customer_id: u32,
+        now: i64,
+    ) -> Result<Vec<DaiRangeCandidate>> {
+        let reference = i64::from(date_of(now)?) - 1;
+        let window_start = reference - i64::from(WINDOW_DAYS) + 1;
+        let in_window = |date: i32| (window_start..=reference).contains(&i64::from(date));
+        let prefix = customer_key(customer_id);
+
+        // The blocks of the window.
+        let mut blocks = Vec::new();
+        let mut sensors = BTreeSet::new();
+        for (key, value) in Self::scan(&self.range_blocks, txn, &prefix)? {
+            let (_, sensor, date, evidence, block) = decode_block_key(&key)?;
+            if !in_window(date) {
+                continue;
+            }
+            let row: BlockRow = super::super::deserialize(&value)?;
+            sensors.insert(sensor.clone());
+            blocks.push((sensor, date, evidence, block, row));
+        }
+
+        // The private subnets each sensor saw, under the customer and
+        // late, from 13 dates before the window on.
+        let subnets_from = window_start - i64::from(WINDOW_DAYS) + 1;
+        let near = |date: i32| (subnets_from..=reference).contains(&i64::from(date));
+        let mut subnets: BTreeMap<String, Vec<(i32, IpNet)>> = BTreeMap::new();
+        for (key, _) in Self::scan(&self.range_subnets, txn, &prefix)? {
+            let (_, sensor, date, subnet) = decode_subnet_key(&key)?;
+            if sensors.contains(&sensor) && near(date) && is_private(&subnet) {
+                subnets.entry(sensor).or_default().push((date, subnet));
+            }
+        }
+        for sensor in &sensors {
+            for (key, value) in Self::scan(&self.range_days, txn, &sensor_key(sensor))? {
+                let (_, date, evidence) = decode_day_key(&key)?;
+                if evidence != DaiRangeEvidence::Sensor || !near(date) {
                     continue;
                 }
-                let row: BlockRow = super::super::deserialize(&value)?;
-                sensors.insert(sensor.clone());
-                blocks.push((sensor, date, evidence, block, row));
-            }
-
-            // The private subnets each sensor saw, under the customer and
-            // late, from 13 dates before the window on.
-            let subnets_from = window_start - i64::from(WINDOW_DAYS) + 1;
-            let near = |date: i32| (subnets_from..=reference).contains(&i64::from(date));
-            let mut subnets: BTreeMap<String, Vec<(i32, IpNet)>> = BTreeMap::new();
-            for (key, _) in Self::scan(&self.range_subnets, txn, &prefix)? {
-                let (_, sensor, date, subnet) = decode_subnet_key(&key)?;
-                if sensors.contains(&sensor) && near(date) && is_private(&subnet) {
-                    subnets.entry(sensor).or_default().push((date, subnet));
+                let row: DayRow = super::super::deserialize(&value)?;
+                let entry = subnets.entry(sensor.clone()).or_default();
+                for subnet in row.late_subnets.iter().filter(|s| is_private(s)) {
+                    entry.push((date, *subnet));
                 }
             }
-            for sensor in &sensors {
-                for (key, value) in Self::scan(&self.range_days, txn, &sensor_key(sensor))? {
-                    let (_, date, evidence) = decode_day_key(&key)?;
-                    if evidence != DaiRangeEvidence::Sensor || !near(date) {
-                        continue;
-                    }
-                    let row: DayRow = super::super::deserialize(&value)?;
-                    let entry = subnets.entry(sensor.clone()).or_default();
-                    for subnet in row.late_subnets.iter().filter(|s| is_private(s)) {
-                        entry.push((date, *subnet));
-                    }
-                }
-            }
+        }
 
-            // The value of each range per (sensor, date, evidence).
-            let mut ranges: BTreeMap<IpNet, Values> = BTreeMap::new();
-            for (sensor, date, evidence, block, row) in blocks {
-                let earliest = i64::from(date) - i64::from(WINDOW_DAYS) + 1;
-                let range = subnets
-                    .get(&sensor)
-                    .into_iter()
-                    .flatten()
-                    .filter(|(subnet_date, subnet)| {
-                        (earliest..=i64::from(date)).contains(&i64::from(*subnet_date))
-                            && subnet.contains(&block)
-                    })
-                    .map(|(_, subnet)| *subnet)
-                    .min_by_key(IpNet::prefix_len)
-                    .unwrap_or(block);
-                let value = ranges
-                    .entry(range)
-                    .or_default()
-                    .entry((sensor, date, evidence))
-                    .or_default();
-                let addrs = if row.saturated {
-                    SATURATED_ADDRS
-                } else {
-                    u64::from(row.distinct_addrs)
-                };
-                value.addrs = value.addrs.saturating_add(addrs);
-                value.conns = value.conns.saturating_add(row.conns);
-                value.saturated |= row.saturated;
-            }
-
-            // The exclusions.
-            let ignored: BTreeSet<IpNet> = Self::scan(&self.range_ignores, txn, &prefix)?
+        // The value of each range per (sensor, date, evidence).
+        let mut ranges: BTreeMap<IpNet, Values> = BTreeMap::new();
+        for (sensor, date, evidence, block, row) in blocks {
+            let earliest = i64::from(date) - i64::from(WINDOW_DAYS) + 1;
+            let range = subnets
+                .get(&sensor)
                 .into_iter()
-                .map(|(key, _)| decode_ignore_key(&key).map(|(_, range)| range))
-                .collect::<Result<_>>()?;
-            let networks = OwnedNetworkTable::open(self.db)
-                .context("customer network table must be present")?
-                .get_in_transaction(txn, customer_id)?;
-            let registered = dai_network_digest(networks.as_ref())?.registered;
-            let is_registered = |range: &IpNet| {
-                registered.networks.iter().any(|net| net.contains(range))
-                    || registered
-                        .ip_ranges
-                        .iter()
-                        .any(|ip_range| range_contains(*ip_range.start(), *ip_range.end(), range))
+                .flatten()
+                .filter(|(subnet_date, subnet)| {
+                    (earliest..=i64::from(date)).contains(&i64::from(*subnet_date))
+                        && subnet.contains(&block)
+                })
+                .map(|(_, subnet)| *subnet)
+                .min_by_key(IpNet::prefix_len)
+                .unwrap_or(block);
+            let value = ranges
+                .entry(range)
+                .or_default()
+                .entry((sensor, date, evidence))
+                .or_default();
+            let addrs = if row.saturated {
+                SATURATED_ADDRS
+            } else {
+                u64::from(row.distinct_addrs)
             };
+            value.addrs = value.addrs.saturating_add(addrs);
+            value.conns = value.conns.saturating_add(row.conns);
+            value.saturated |= row.saturated;
+        }
 
-            // The sites.
-            let default_site = self
-                .sites_in(txn, customer_id)?
+        // The exclusions.
+        let ignored: BTreeSet<IpNet> = Self::scan(&self.range_ignores, txn, &prefix)?
+            .into_iter()
+            .map(|(key, _)| decode_ignore_key(&key).map(|(_, range)| range))
+            .collect::<Result<_>>()?;
+        let networks = OwnedNetworkTable::open(self.db)
+            .context("customer network table must be present")?
+            .get_with(txn, customer_id)?;
+        let registered = dai_network_digest(networks.as_ref())?.registered;
+        let is_registered = |range: &IpNet| {
+            registered.networks.iter().any(|net| net.contains(range))
+                || registered
+                    .ip_ranges
+                    .iter()
+                    .any(|ip_range| range_contains(*ip_range.start(), *ip_range.end(), range))
+        };
+
+        // The sites.
+        let default_site = self
+            .sites_in(txn, customer_id)?
+            .into_iter()
+            .find(|site| site.is_default)
+            .map(|site| site.token);
+        let mut histories: BTreeMap<String, Vec<(i64, SensorSite)>> = BTreeMap::new();
+
+        let mut candidates = Vec::new();
+        for (range, values) in ranges {
+            if ignored.contains(&range) || is_registered(&range) || !is_private(&range) {
+                continue;
+            }
+            let dates: BTreeSet<i32> = values.keys().map(|(_, date, _)| *date).collect();
+            if dates.len() < MIN_DATES {
+                continue;
+            }
+            let (Some(&first_date), Some(&last_date)) = (dates.first(), dates.last()) else {
+                continue;
+            };
+            let seen_addrs = values.values().map(|v| v.addrs).max().unwrap_or(0);
+            let seen_addrs_at_least = values
+                .values()
+                .any(|v| v.addrs == seen_addrs && v.saturated);
+            let mut counts: BTreeMap<DaiRangeEvidence, u64> = EVIDENCES
                 .into_iter()
-                .find(|site| site.is_default)
-                .map(|site| site.token);
-            let mut histories: BTreeMap<String, Vec<(i64, SensorSite)>> = BTreeMap::new();
-
-            let mut candidates = Vec::new();
-            for (range, values) in ranges {
-                if ignored.contains(&range) || is_registered(&range) || !is_private(&range) {
-                    continue;
-                }
-                let dates: BTreeSet<i32> = values.keys().map(|(_, date, _)| *date).collect();
-                if dates.len() < MIN_DATES {
-                    continue;
-                }
-                let (Some(&first_date), Some(&last_date)) = (dates.first(), dates.last()) else {
-                    continue;
-                };
-                let seen_addrs = values.values().map(|v| v.addrs).max().unwrap_or(0);
-                let seen_addrs_at_least = values
-                    .values()
-                    .any(|v| v.addrs == seen_addrs && v.saturated);
-                let mut counts: BTreeMap<DaiRangeEvidence, u64> = EVIDENCES
-                    .into_iter()
-                    .map(|evidence| (evidence, 0))
+                .map(|evidence| (evidence, 0))
+                .collect();
+            for (_, _, evidence) in values.keys() {
+                *counts.entry(*evidence).or_default() += 1;
+            }
+            let mut sites = BTreeSet::new();
+            if let Some(default) = &default_site {
+                let sensor_dates: BTreeSet<(&str, i32)> = values
+                    .keys()
+                    .map(|(sensor, date, _)| (sensor.as_str(), *date))
                     .collect();
-                for (_, _, evidence) in values.keys() {
-                    *counts.entry(*evidence).or_default() += 1;
-                }
-                let mut sites = BTreeSet::new();
-                if let Some(default) = &default_site {
-                    let sensor_dates: BTreeSet<(&str, i32)> = values
-                        .keys()
-                        .map(|(sensor, date, _)| (sensor.as_str(), *date))
-                        .collect();
-                    for (sensor, date) in sensor_dates {
-                        if !histories.contains_key(sensor) {
-                            let history = self.sensor_history(txn, customer_id, sensor)?;
-                            histories.insert(sensor.to_string(), history);
-                        }
-                        let history = histories
-                            .get(sensor)
-                            .context("the sensor site history is read")?;
-                        let start = date_start(date);
-                        let end = date_start(date.saturating_add(1));
-                        sites.insert(site_at(history, default, start));
-                        for (effective, _) in history {
-                            if (start..end).contains(effective) {
-                                sites.insert(site_at(history, default, *effective));
-                            }
+                for (sensor, date) in sensor_dates {
+                    if !histories.contains_key(sensor) {
+                        let history = self.sensor_history(txn, customer_id, sensor)?;
+                        histories.insert(sensor.to_string(), history);
+                    }
+                    let history = histories
+                        .get(sensor)
+                        .context("the sensor site history is read")?;
+                    let start = date_start(date);
+                    let end = date_start(date.saturating_add(1));
+                    sites.insert(site_at(history, default, start));
+                    for (effective, _) in history {
+                        if (start..end).contains(effective) {
+                            sites.insert(site_at(history, default, *effective));
                         }
                     }
                 }
-                candidates.push(DaiRangeCandidate {
-                    range,
-                    seen_addrs,
-                    seen_addrs_at_least,
-                    values: counts,
-                    first_date,
-                    last_date,
-                    sites: sites.into_iter().collect(),
-                    cgnat: CGNAT.contains(&range),
-                });
             }
-            candidates.sort_unstable_by_key(|candidate| {
-                (candidate.range.network(), candidate.range.prefix_len())
+            candidates.push(DaiRangeCandidate {
+                range,
+                seen_addrs,
+                seen_addrs_at_least,
+                values: counts,
+                first_date,
+                last_date,
+                sites: sites.into_iter().collect(),
+                cgnat: CGNAT.contains(&range),
             });
-            Ok(candidates)
-        })
+        }
+        candidates.sort_unstable_by_key(|candidate| {
+            (candidate.range.network(), candidate.range.prefix_len())
+        });
+        Ok(candidates)
     }
 
     /// Returns the `dai sensor sites` rows of `sensor` naming the customer,
     /// as `txn` sees them, in effective time order.
     fn sensor_history(
         &self,
-        txn: &Txn<'_>,
+        txn: &(impl DaiRead + ?Sized),
         customer_id: u32,
         sensor: &str,
     ) -> Result<Vec<(i64, SensorSite)>> {
@@ -1288,15 +1298,6 @@ impl Store {
         now: i64,
     ) -> Result<Vec<DaiRangeCandidate>> {
         self.states.dai().range_candidates(customer_id, now)
-    }
-
-    /// Returns the number of the customer's candidate ranges at the time
-    /// `now`, as [`dai_range_candidates`](Self::dai_range_candidates)
-    /// computes them.
-    // Read by the collection status, which a later change adds.
-    #[allow(dead_code)]
-    pub(crate) fn dai_range_candidate_count(&self, customer_id: u32, now: i64) -> Result<usize> {
-        Ok(self.dai_range_candidates(customer_id, now)?.len())
     }
 
     /// Ignores the candidate range `range` for the customer, recording

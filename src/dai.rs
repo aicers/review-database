@@ -73,6 +73,16 @@
 //! and only when a value actually changes. Their refusals are a
 //! [`DaiDeviceError`](crate::DaiDeviceError) inside the error.
 //!
+//! # Reads
+//!
+//! [`Store::dai_resolve`], [`Store::dai_devices`],
+//! [`Store::dai_ip_only_devices`], [`Store::dai_device`],
+//! [`Store::dai_search`] and [`Store::dai_collection_status`] read one
+//! customer's devices, bindings and collection state, each from one database
+//! snapshot taken as it starts, and write nothing. A device id given to one,
+//! or held by a row it reads, is followed through the aliases a merge or an
+//! import left to the current device.
+//!
 //! The *MAC ownership history* of a MAC is the device that held it at each
 //! time: the device a late ACK, or the replay of one by a recomputation,
 //! binds. Evidence aging, import, merge and split each leave it consistent
@@ -82,13 +92,18 @@
 //! absorbed device was; a split makes the new device the owner of each
 //! moved identifier wherever the device split was.
 
+use std::net::IpAddr;
+
 use anyhow::Result;
 use review_protocol::types::{DaiCursors, DaiObservationBatch};
 use uuid::Uuid;
 
 use crate::{
-    DaiActivityChange, DaiIdentifier, DaiImportOutcome, DaiImportRow, DaiPendingHead, DaiRelaySite,
-    DaiRelaySites, DaiSettings, DaiSettingsUpdate, DaiSite, DaiStoreOutcome, DaiVerdict, Store,
+    DaiActivityChange, DaiCollectionStatus, DaiDeviceDetail, DaiDeviceFilter, DaiDeviceListRow,
+    DaiIdentifier, DaiImportOutcome, DaiImportRow, DaiIpDeviceFilter, DaiIpDeviceRow, DaiPage,
+    DaiPageRequest, DaiPendingHead, DaiRelaySite, DaiRelaySites, DaiResolveAnswer, DaiResolveItem,
+    DaiResolveItemError, DaiSearchResult, DaiSettings, DaiSettingsUpdate, DaiSite, DaiStoreOutcome,
+    DaiVerdict, Store,
     tables::{Dai, now_nanos},
 };
 
@@ -461,8 +476,10 @@ impl Store {
     ///    outcome is [`DaiStoreOutcome::Staged`].
     /// 7. The last missing part finishes the send: its observations are
     ///    filtered and stored, the catch-up skip, the re-extract mark, the
-    ///    cursor, the catch-up gaps, the late-slot marks and the sensor's
-    ///    state are updated, and the outcome is [`DaiStoreOutcome::Stored`]
+    ///    cursor (with the record that a send of the batch kind has finished
+    ///    since the cursor row was created), the catch-up gaps, the
+    ///    late-slot marks and the sensor's state are updated, and the
+    ///    outcome is [`DaiStoreOutcome::Stored`]
     ///    with the marks assigned to the late slots. An observation of a slot
     ///    that started more than 7 days before `now` widens the summary
     ///    instead of a per-slot row, first folding into it the slot's
@@ -840,5 +857,217 @@ impl Store {
     /// Returns an error if the database operation fails.
     pub fn dai_pending_heads(&self) -> Result<Vec<DaiPendingHead>> {
         self.dai().pending_heads()
+    }
+
+    /// Resolves each of `items` for the customer at `now` to the subject
+    /// its IP address names at its site, at its time or over its window,
+    /// with an explanation if `with_explanation`.
+    ///
+    /// The whole call reads one database snapshot. Each item gets its own
+    /// answer, or its own [`DaiResolveItemError`]: `UnknownSite` for a site
+    /// token that is not one of the customer's sites, `SiteRequired` for an
+    /// item without one when the customer is multi-site (its sensors fall in
+    /// two or more sites under the current site table, a sensor in no site
+    /// counting as in the default site), `NoSite` for an item without one
+    /// when the customer has no site at all, and `InvertedWindow` for a
+    /// window whose `from` is after its `to`. An item without a site token
+    /// of a customer that is not multi-site is resolved at its one site in
+    /// use: the site holding its sensors, or the default site if none does.
+    ///
+    /// A binding is in effect over `[start, effective end)`, its effective
+    /// end the earlier of its stored end, when that is not estimated, and
+    /// its last strong evidence time plus its inactivity time, whether or
+    /// not retention has written the end. A device id a row holds is
+    /// followed through `dai device aliases` to the current device.
+    ///
+    /// - **At a time** `t`: the device of the binding in effect at `t` at
+    ///   the (site, IP); else the device `dai fixed ips` fixes there; else
+    ///   the IP itself.
+    /// - **In a window**: the devices of the bindings in effect anywhere in
+    ///   the window, and, if some part of the window has no binding in
+    ///   effect, the device fixed there. None is the IP, one a device, two
+    ///   or more [`DaiSubjectKind::Ambiguous`].
+    ///
+    /// Verdicts, activities and recorded identifier conflicts change no
+    /// answer. A device's subject id is `dev:<device id>`; any other is
+    /// `ip:<site token>/<IP>` for a multi-site customer with device
+    /// identification on and the IP in one of its Intranet or Gateway
+    /// networks, else `ip:<IP>`, the IP in canonical text form. The evidence
+    /// sources are the distinct evidence kinds of the deciding bindings,
+    /// with [`DaiEvidenceSource::OperatorFixedIp`] when a fixed IP's device
+    /// counted.
+    ///
+    /// **Evidence gap.** An item is a [`DaiSubjectKind::EvidenceGap`], with
+    /// the subject id the evidence so far gives, when either holds:
+    ///
+    /// - `t` (a window's `to`) is after its site's compared time at that
+    ///   time. A sensor's compared time is the earliest of the cursors of
+    ///   its O1, O4 and O5 pairs, its last received record time, its
+    ///   resolver point and the earliest pending slots of its O1, O4 and O5
+    ///   pairs, each pair whose first send has not finished since its cursor
+    ///   row was created left out; with none of the three pairs left in it
+    ///   has none. A resolver point stored as caught up sets no limit; a
+    ///   sensor with none stored (never applied) takes the earliest of its
+    ///   earliest pending slots of every kind. A site's compared time at a
+    ///   time `u` is the earliest compared time among the sensors whose site
+    ///   at `u` is the site and whose last received record time is within
+    ///   24 hours before `now`, or, if none is, that of the one with the
+    ///   latest last received record time.
+    /// - `t` (a part of the window) lies in a catch-up gap of an O1, O4 or
+    ///   O5 pair of one of the customer's sensors whose site at that time
+    ///   was the item's site, even if a binding was opened there later.
+    ///
+    /// **Explanation.** Each deciding binding with its start, end, whether
+    /// the end is estimated, its evidence kind and up to
+    /// [`DAI_EXPLANATION_EVIDENCE_ROWS`] evidence rows at the address last
+    /// seen within it and at or before `t` (within the window), newest
+    /// first, as kind, last seen time and sensor only; and each cause of an
+    /// evidence gap. No observation body, user name, account name or realm
+    /// is part of an answer.
+    ///
+    /// # Errors
+    ///
+    /// Returns, inside the error,
+    /// [`DaiResolveError::TooManyItems`] if there are more than
+    /// [`DAI_RESOLVE_MAX_ITEMS`] items. Returns an error if the database
+    /// operation fails.
+    ///
+    /// [`DaiResolveItemError`]: crate::DaiResolveItemError
+    /// [`DaiSubjectKind::Ambiguous`]: crate::DaiSubjectKind::Ambiguous
+    /// [`DaiSubjectKind::EvidenceGap`]: crate::DaiSubjectKind::EvidenceGap
+    /// [`DaiEvidenceSource::OperatorFixedIp`]: crate::DaiEvidenceSource::OperatorFixedIp
+    /// [`DAI_EXPLANATION_EVIDENCE_ROWS`]: crate::DAI_EXPLANATION_EVIDENCE_ROWS
+    /// [`DaiResolveError::TooManyItems`]: crate::DaiResolveError::TooManyItems
+    /// [`DAI_RESOLVE_MAX_ITEMS`]: crate::DAI_RESOLVE_MAX_ITEMS
+    pub fn dai_resolve(
+        &self,
+        customer_id: u32,
+        items: &[DaiResolveItem],
+        with_explanation: bool,
+        now: i64,
+    ) -> Result<Vec<Result<DaiResolveAnswer, DaiResolveItemError>>> {
+        self.dai()
+            .resolve(customer_id, items, with_explanation, now)
+    }
+
+    /// Returns the page `page` selects of the customer's devices that match
+    /// `filter`, ordered by device id, with the number of matching devices,
+    /// as one database snapshot holds them at `now`.
+    ///
+    /// Each row carries the device's current IPs, the bindings in effect at
+    /// `now`; a device with none carries its binding with the latest start
+    /// instead, and one with no binding neither. The site and network
+    /// filters match a device one of whose current IPs (or, with none, whose
+    /// latest binding) is at a listed site and in the network. The seen
+    /// range matches a device whose first-to-last seen range overlaps it; a
+    /// device never observed never matches it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database operation fails.
+    pub fn dai_devices(
+        &self,
+        customer_id: u32,
+        filter: &DaiDeviceFilter,
+        page: &DaiPageRequest<Uuid>,
+        now: i64,
+    ) -> Result<DaiPage<DaiDeviceListRow>> {
+        self.dai().device_list(customer_id, filter, page, now)
+    }
+
+    /// Returns the page `page` selects of the customer's IP device rows that
+    /// match `filter`, ordered by (site, IP), with their number, as one
+    /// database snapshot holds them at `now`.
+    ///
+    /// An IP device row is a `dai ip activity` row last seen within 30 days
+    /// before `now` at whose last seen time no binding of its (site, IP) is
+    /// in effect. It is not a device.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database operation fails.
+    pub fn dai_ip_only_devices(
+        &self,
+        customer_id: u32,
+        filter: &DaiIpDeviceFilter,
+        page: &DaiPageRequest<(String, IpAddr)>,
+        now: i64,
+    ) -> Result<DaiPage<DaiIpDeviceRow>> {
+        self.dai().ip_device_list(customer_id, filter, page, now)
+    }
+
+    /// Returns the device `device` names, in detail, as one database
+    /// snapshot holds it at `now`, or `None` if it names no device of the
+    /// customer, directly or through an alias.
+    ///
+    /// An old id is followed to the current device. The detail holds its
+    /// identifiers, machine accounts included, its names, states and seen
+    /// times, its fixed IPs, every binding newest first with its end as
+    /// [`dai_resolve`](Self::dai_resolve) reports it, its services (each
+    /// "not seen" when last seen more than 30 days before `now`), software
+    /// strings, change history in version order and the old ids aliased to
+    /// it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database operation fails.
+    pub fn dai_device(
+        &self,
+        customer_id: u32,
+        device: Uuid,
+        now: i64,
+    ) -> Result<Option<DaiDeviceDetail>> {
+        self.dai().device_detail(customer_id, device, now)
+    }
+
+    /// Searches the customer's devices and IP device rows for `text`, as one
+    /// database snapshot holds them at `now`.
+    ///
+    /// `text`, trimmed, matches by each rule it fits, each match once:
+    ///
+    /// - an IP address: every device with a stored binding or a fixed IP at
+    ///   it in any site, and its IP device rows (as
+    ///   [`dai_ip_only_devices`](Self::dai_ip_only_devices) lists them);
+    /// - a MAC as `aa:bb:cc:dd:ee:ff`, `aa-bb-cc-dd-ee-ff` or
+    ///   `aabb.ccdd.eeff`, in any case: the device holding it now;
+    /// - an operator asset id, exactly: the device holding it;
+    /// - a device id: the device with that current id, or the current
+    ///   device of that old id;
+    /// - a case-insensitive substring of any of a device's names.
+    ///
+    /// Machine accounts and user names are not searched. At most
+    /// [`DAI_SEARCH_MAX_MATCHES`] matches are returned, with `truncated` set
+    /// if there were more. An empty text matches nothing.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database operation fails.
+    ///
+    /// [`DAI_SEARCH_MAX_MATCHES`]: crate::DAI_SEARCH_MAX_MATCHES
+    pub fn dai_search(&self, customer_id: u32, text: &str, now: i64) -> Result<DaiSearchResult> {
+        self.dai().search(customer_id, text, now)
+    }
+
+    /// Returns the customer's collection status at `now`, as one database
+    /// snapshot holds it.
+    ///
+    /// It lists, per stored site, the latest time a send carrying DHCP,
+    /// Kerberos and NTLM observations finished for one of its current
+    /// sensors, with that sensor, the current sensors the evidence gap's
+    /// 24-hour rule leaves out of the site's compared time, and the pairs
+    /// left out because their first send has not finished; per sensor of
+    /// the customer, its current site, last received record time, and the
+    /// cursor and lag (`now` minus the cursor) of each kind; the catch-up
+    /// gaps still stored; the daily counts of slots skipped by the catch-up
+    /// limit, relay DHCP whose site could not be determined, observations
+    /// filtered at receipt and observations not applied; and the number of
+    /// candidate ranges, as
+    /// [`dai_range_candidates`](Self::dai_range_candidates) computes them.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database operation fails.
+    pub fn dai_collection_status(&self, customer_id: u32, now: i64) -> Result<DaiCollectionStatus> {
+        self.dai().collection_status(customer_id, now)
     }
 }

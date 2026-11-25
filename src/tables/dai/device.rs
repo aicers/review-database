@@ -247,8 +247,6 @@ pub(crate) struct DeviceRow {
 impl DeviceRow {
     /// Returns the representative name: the most recently seen value of the
     /// highest source, operator > DHCP > DNS, or `None` if it has no name.
-    // Read by the device reads of a later change.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn representative_name(&self) -> Option<&str> {
         self.names
             .iter()
@@ -796,6 +794,23 @@ pub(super) fn evidence_key(
         .i64(last_seen)
         .dai_kind(kind)
         .hash(hash)
+        .finish()
+}
+
+/// Returns the prefix of the `dai evidence` keys of (`customer`, `site`,
+/// `ip`) last seen at `last_seen`, which orders before every such key last
+/// seen later.
+pub(super) fn evidence_key_prefix(
+    customer: u32,
+    site: &str,
+    ip: IpAddr,
+    last_seen: i64,
+) -> Vec<u8> {
+    KeyWriter::default()
+        .u32(customer)
+        .str(site)
+        .ip(ip)
+        .i64(last_seen)
         .finish()
 }
 

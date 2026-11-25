@@ -85,7 +85,7 @@ pub(super) fn set_apply_scanned_hook(hook: super::TestHook) {
 }
 
 /// Returns the byte a `dai software strings` key holds for `side`.
-fn side_number(side: DaiSide) -> u8 {
+pub(super) fn side_number(side: DaiSide) -> u8 {
     match side {
         DaiSide::Client => 0,
         DaiSide::Server => 1,
@@ -93,7 +93,7 @@ fn side_number(side: DaiSide) -> u8 {
 }
 
 /// Returns the byte a `dai software strings` key holds for `source`.
-fn software_source_number(source: DaiSoftwareSource) -> u8 {
+pub(super) fn software_source_number(source: DaiSoftwareSource) -> u8 {
     match source {
         DaiSoftwareSource::Ssh => 0,
         DaiSoftwareSource::HttpUserAgent => 1,

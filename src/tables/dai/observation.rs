@@ -787,6 +787,7 @@ impl Dai<'_> {
 
         // Confirm the slot.
         confirm(row, slot.end, batch.counted_from, state)?;
+        row.first_send_finished = true;
 
         // Shrink gaps.
         self.shrink_gaps(txn, sensor, kind, batch.counted_from, slot.end)?;

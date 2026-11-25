@@ -1088,11 +1088,15 @@ fn restore_rows(base: i64, today: i32) -> Vec<(&'static str, Kind, CursorRow, i6
     long_delay.delays.insert(today, 30 * HOUR + MINUTE);
     let mut old_delay = row(base, base - 3 * DAY);
     old_delay.delays.insert(today - 31, 40 * HOUR);
+    // A delay dated after today is not recent, however long.
+    let mut future_delay = row(base, base - 3 * DAY);
+    future_delay.delays.insert(today + 1, 40 * HOUR);
     vec![
         // D's customer was never enabled: the lookback alone.
         (D, Kind::DnsName, plain, base - 24 * HOUR),
         (D, Kind::Kerberos, long_delay, base - 30 * HOUR - 5 * MINUTE),
         (D, Kind::Ntlm, old_delay, base - 24 * HOUR),
+        (D, Kind::DhcpLease, future_delay, base - 24 * HOUR),
         (
             D,
             Kind::Service,
