@@ -320,6 +320,10 @@ pub enum SentaEndpointError {
     /// The enrollment attempt is already approved.
     #[error("senta endpoint enrollment attempt {attempt_id} is already approved")]
     AttemptApproved { attempt_id: Uuid },
+    /// The enrollment attempt is pending or denied, so it has no approved
+    /// result to replace.
+    #[error("senta endpoint enrollment attempt {attempt_id} is not approved")]
+    AttemptNotApproved { attempt_id: Uuid },
     /// An approved result was given outside the approval of an enrollment.
     #[error("enrollment attempt {attempt_id} can be approved only with its endpoint")]
     ApprovalWithoutEndpoint { attempt_id: Uuid },
@@ -1346,9 +1350,11 @@ impl Table<'_, SentaEndpointEnrollmentAttempt> {
     /// whether it was written. A stored attempt is left as it is.
     ///
     /// Only [`Store::approve_senta_endpoint_enrollment`] writes an approved
-    /// result, so `attempt` must be pending or denied.
+    /// result, and only [`Store::replace_senta_endpoint_enrollment_result`]
+    /// changes one, so `attempt` must be pending or denied.
     ///
     /// [`Store::approve_senta_endpoint_enrollment`]: crate::Store::approve_senta_endpoint_enrollment
+    /// [`Store::replace_senta_endpoint_enrollment_result`]: crate::Store::replace_senta_endpoint_enrollment_result
     ///
     /// # Errors
     ///
@@ -1393,9 +1399,12 @@ impl Table<'_, SentaEndpointEnrollmentAttempt> {
     /// returns the stored attempt.
     ///
     /// Only [`Store::approve_senta_endpoint_enrollment`] writes an approved
-    /// result, and an approved attempt is not changed.
+    /// result, and an approved attempt is not changed here; only
+    /// [`Store::replace_senta_endpoint_enrollment_result`] replaces its
+    /// result.
     ///
     /// [`Store::approve_senta_endpoint_enrollment`]: crate::Store::approve_senta_endpoint_enrollment
+    /// [`Store::replace_senta_endpoint_enrollment_result`]: crate::Store::replace_senta_endpoint_enrollment_result
     ///
     /// # Errors
     ///
