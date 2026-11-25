@@ -77,9 +77,9 @@ pub use self::customer_data_deletion_job::{
 };
 pub(crate) use self::dai::{Clock, Dai, mark_restored, now_nanos};
 pub use self::dai::{
-    DaiBatchError, DaiConfigError, DaiIgnoredRange, DaiNetworks, DaiRangeCandidate, DaiRangeError,
-    DaiRelaySite, DaiRelaySites, DaiSettings, DaiSettingsUpdate, DaiSite, DaiStoreOutcome,
-    dai_network_digest,
+    DAI_APPLY_DEFAULT_MAX_COUNT, DaiBatchError, DaiConfigError, DaiIgnoredRange, DaiNetworks,
+    DaiPendingHead, DaiRangeCandidate, DaiRangeError, DaiRelaySite, DaiRelaySites, DaiSettings,
+    DaiSettingsUpdate, DaiSite, DaiStoreOutcome, dai_network_digest,
 };
 pub(crate) use self::engine_instance::{
     DetectorIdMarks, EngineInstances, Row as EngineInstanceRow, key as engine_instance_key,
@@ -254,6 +254,35 @@ pub(super) const DAI_RANGE_SUBNETS: &str = "dai range subnets";
 pub(super) const DAI_RANGE_DAYS: &str = "dai range days";
 /// The candidate ranges each customer ignores.
 pub(super) const DAI_RANGE_IGNORES: &str = "dai range ignores";
+// The device tables of device identification (DAI), one column family each;
+// see `dai`.
+/// The resolver point of each sensor.
+pub(super) const DAI_RESOLVER_POINTS: &str = "dai resolver points";
+/// The devices of each customer.
+pub(super) const DAI_DEVICES: &str = "dai devices";
+/// The device holding each strong identifier of each customer.
+pub(super) const DAI_DEVICE_IDENTIFIERS: &str = "dai device identifiers";
+/// The current device of each device id merged away.
+pub(super) const DAI_DEVICE_ALIASES: &str = "dai device aliases";
+/// The bindings of each site and IP address of each customer.
+pub(super) const DAI_BINDINGS: &str = "dai bindings";
+/// The bindings of each device: the reverse index of `dai bindings`.
+pub(super) const DAI_DEVICE_BINDINGS: &str = "dai device bindings";
+/// The observations applied at each site and IP address of each customer.
+pub(super) const DAI_EVIDENCE: &str = "dai evidence";
+/// The order key of the latest binding evidence applied at each site and IP
+/// address of each customer.
+pub(super) const DAI_IP_STATE: &str = "dai ip state";
+/// The device fixed at each site and IP address of each customer.
+pub(super) const DAI_FIXED_IPS: &str = "dai fixed ips";
+/// The devices that claimed each strong identifier held by another one.
+pub(super) const DAI_CONFLICTS: &str = "dai conflicts";
+/// The services of each device.
+pub(super) const DAI_SERVICES: &str = "dai services";
+/// The software strings of each device.
+pub(super) const DAI_SOFTWARE_STRINGS: &str = "dai software strings";
+/// The change history of each device.
+pub(super) const DAI_DEVICE_CHANGES: &str = "dai device changes";
 pub(super) const DETECTOR_ID_MARKS: &str = "detector id marks";
 pub(super) const ENGINE_INSTANCES: &str = "engine instances";
 /// An empty column family that exists only so that `check_backup_format` can
@@ -375,12 +404,18 @@ pub(super) const TRUSTED_USER_AGENTS: &str = "trusted user agents";
 ///   late range report or range ignore of a build that has them: no build
 ///   without them granted a range day, stored its counts or ignored a
 ///   candidate range, and a range day with no row reads as one never
-///   granted, stored or marked.
+///   granted, stored or marked;
+/// - the DAI device tables (the resolver points, devices, identifiers,
+///   aliases, bindings and their reverse index, evidence, IP states, fixed
+///   IPs, conflicts, services, software strings and device changes) start
+///   with the first `apply_dai_slot` of a build that has them, which no
+///   earlier build could run; a sensor with no resolver point reads as one
+///   never applied.
 ///
 /// The `senta` endpoint and DAI tables are listed here although no release
 /// yet carries a build without them, so that a backup of such a build is
 /// accepted whichever is released first.
-pub(super) const ADDED_WITHIN_FORMAT: [&str; 41] = [
+pub(super) const ADDED_WITHIN_FORMAT: [&str; 54] = [
     CONFIG_REVISIONS,
     CONFIG_REVISION_HISTORY,
     DAI_CATCHUP_GAPS,
@@ -405,6 +440,19 @@ pub(super) const ADDED_WITHIN_FORMAT: [&str; 41] = [
     DAI_SENSOR_STATE,
     DAI_SITE_POLICY_GUARD,
     DAI_SITES,
+    DAI_BINDINGS,
+    DAI_CONFLICTS,
+    DAI_DEVICE_ALIASES,
+    DAI_DEVICE_BINDINGS,
+    DAI_DEVICE_CHANGES,
+    DAI_DEVICE_IDENTIFIERS,
+    DAI_DEVICES,
+    DAI_EVIDENCE,
+    DAI_FIXED_IPS,
+    DAI_IP_STATE,
+    DAI_RESOLVER_POINTS,
+    DAI_SERVICES,
+    DAI_SOFTWARE_STRINGS,
     SENTA_ACTIVE_LIST,
     SENTA_DOCUMENT_RESULTS,
     SENTA_ENDPOINT_EVENTS,
@@ -424,7 +472,7 @@ pub(super) const ADDED_WITHIN_FORMAT: [&str; 41] = [
     SENTA_ENDPOINTS,
 ];
 
-pub(crate) const MAP_NAMES: [&str; 91] = [
+pub(crate) const MAP_NAMES: [&str; 104] = [
     AGENTS,
     BATCH_INFO,
     CATEGORY,
@@ -497,8 +545,9 @@ pub(crate) const MAP_NAMES: [&str; 91] = [
     SENTA_ENDPOINT_KEYSET_DOCUMENTS,
     SENTA_ENDPOINT_RECOVERY_KEY_DOCUMENTS,
     SENTA_ENDPOINTS,
-    // The DAI configuration, observation, cursor, restore and unregistered
-    // range families stay before the last entry for the same reason.
+    // The DAI configuration, observation, cursor, restore, unregistered
+    // range and device families stay before the last entry for the same
+    // reason.
     DAI_CUSTOMER_SETTINGS,
     DAI_RELAY_SITES,
     DAI_SENSOR_SITES,
@@ -521,6 +570,19 @@ pub(crate) const MAP_NAMES: [&str; 91] = [
     DAI_RANGE_SUBNETS,
     DAI_RANGE_DAYS,
     DAI_RANGE_IGNORES,
+    DAI_RESOLVER_POINTS,
+    DAI_DEVICES,
+    DAI_DEVICE_IDENTIFIERS,
+    DAI_DEVICE_ALIASES,
+    DAI_BINDINGS,
+    DAI_DEVICE_BINDINGS,
+    DAI_EVIDENCE,
+    DAI_IP_STATE,
+    DAI_FIXED_IPS,
+    DAI_CONFLICTS,
+    DAI_SERVICES,
+    DAI_SOFTWARE_STRINGS,
+    DAI_DEVICE_CHANGES,
     TRUSTED_USER_AGENTS,
 ];
 

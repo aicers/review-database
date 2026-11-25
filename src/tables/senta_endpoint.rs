@@ -22,8 +22,9 @@
 //! A key is the concatenation of its components, each encoded so that the
 //! byte order of keys is the order of their components:
 //!
-//! - a [`Uuid`] as its 16 bytes;
-//! - a `u32` or `u64` big-endian;
+//! - a [`Uuid`] as its 16 bytes, which is also how a DAI device id is
+//!   written;
+//! - a `u16`, `u32` or `u64` big-endian;
 //! - an `i64` big-endian with its sign bit flipped, so negative values sort
 //!   before positive ones;
 //! - a string as its UTF-8 bytes, each `0x00` byte written as `0x00 0xFF`,
@@ -274,8 +275,13 @@ fn decode<R: Row>(key: &[u8], value: &[u8]) -> Result<R> {
 pub(super) struct KeyWriter(Vec<u8>);
 
 impl KeyWriter {
-    fn uuid(mut self, id: Uuid) -> Self {
+    pub(super) fn uuid(mut self, id: Uuid) -> Self {
         self.0.extend_from_slice(id.as_bytes());
+        self
+    }
+
+    pub(super) fn u16(mut self, value: u16) -> Self {
+        self.0.extend_from_slice(&value.to_be_bytes());
         self
     }
 
@@ -382,8 +388,14 @@ impl<'a> KeyReader<'a> {
         Ok(*head)
     }
 
-    fn uuid(&mut self) -> Result<Uuid> {
+    pub(super) fn uuid(&mut self) -> Result<Uuid> {
         Ok(Uuid::from_bytes(self.take()?))
+    }
+
+    // Read by the DAI device reads of a later change.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(super) fn u16(&mut self) -> Result<u16> {
+        Ok(u16::from_be_bytes(self.take()?))
     }
 
     pub(super) fn u32(&mut self) -> Result<u32> {
@@ -735,6 +747,18 @@ mod tests {
             .map(|v| KeyWriter::default().u64(*v).finish())
             .collect();
         assert!(keys.windows(2).all(|pair| pair.first() < pair.last()));
+
+        let ports = [0, 1, 255, 256, u16::MAX];
+        let keys: Vec<Vec<u8>> = ports
+            .iter()
+            .map(|v| KeyWriter::default().u16(*v).finish())
+            .collect();
+        assert!(keys.windows(2).all(|pair| pair.first() < pair.last()));
+        for (value, key) in ports.iter().zip(&keys) {
+            let mut reader = KeyReader::new(key);
+            assert_eq!(reader.u16().unwrap(), *value);
+            reader.finish().unwrap();
+        }
     }
 
     #[test]
