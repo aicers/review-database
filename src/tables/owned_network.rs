@@ -1215,19 +1215,22 @@ mod tests {
                 ("2001:db9::", "ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff"),
             ])
         );
+
+        // An extranet network at the end of an intranet network leaves only
+        // the run before it.
         let group = internal(vec![
-            network("everything", NetworkType::Intranet, "::/0"),
-            network("partner", NetworkType::Extranet, "ffff::/16"),
+            network("office", NetworkType::Intranet, "fc00::/7"),
+            network("partner", NetworkType::Extranet, "fdff::/16"),
         ]);
         assert_eq!(
             group,
-            ranges(&[("::", "fffe:ffff:ffff:ffff:ffff:ffff:ffff:ffff")])
+            ranges(&[("fc00::", "fdfe:ffff:ffff:ffff:ffff:ffff:ffff:ffff")])
         );
         let group = internal(vec![
-            network("everything", NetworkType::Intranet, "0.0.0.0/0"),
-            network("partner", NetworkType::Extranet, "255.255.255.0/24"),
+            network("office", NetworkType::Intranet, "10.0.0.0/8"),
+            network("partner", NetworkType::Extranet, "10.255.255.0/24"),
         ]);
-        assert_eq!(group, ranges(&[("0.0.0.0", "255.255.254.255")]));
+        assert_eq!(group, ranges(&[("10.0.0.0", "10.255.254.255")]));
 
         // Hosts and ranges.
         let group = internal(vec![
@@ -1263,14 +1266,14 @@ mod tests {
         let v6 = network("office", NetworkType::Intranet, "2001:db8::/32");
         let group = internal(vec![
             v6.clone(),
-            network("partner", NetworkType::Extranet, "0.0.0.0/0"),
+            network("partner", NetworkType::Extranet, "10.0.0.0/8"),
         ]);
         assert_eq!(group, v6.group);
 
         let v4 = network("office", NetworkType::Intranet, "10.0.0.0/8");
         let group = internal(vec![
             v4.clone(),
-            network("partner", NetworkType::Extranet, "::/0"),
+            network("partner", NetworkType::Extranet, "fc00::/7"),
         ]);
         assert_eq!(group, v4.group);
 
@@ -1436,7 +1439,8 @@ mod tests {
     /// applied to every address of a small space.
     #[test]
     fn the_internal_group_holds_exactly_the_addresses_the_rule_decides() {
-        let base = u32::from(Ipv4Addr::new(10, 0, 0, 0));
+        // The window and the addresses past either end stay inside 10/8.
+        let base = u32::from(Ipv4Addr::new(10, 0, 1, 0));
         let mut state = 0x2545_f491_u32;
         let mut next = |bound: u32| {
             state ^= state << 13;
