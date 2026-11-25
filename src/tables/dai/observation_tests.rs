@@ -807,6 +807,78 @@ fn the_network_digest_follows_the_documented_formula() {
     assert_eq!(digest(Vec::new()), none.digest);
 }
 
+/// Returns the documented digest of `(internal, registered)`.
+fn documented_digest(internal: &ProtocolGroup, registered: &ProtocolGroup) -> u64 {
+    let encoded =
+        bincode2::serde::encode_to_vec((internal, registered), bincode2::config::standard())
+            .unwrap();
+    let sha = aws_lc_rs::digest::digest(&aws_lc_rs::digest::SHA256, &encoded);
+    u64::from_le_bytes(*sha.as_ref().first_chunk::<8>().unwrap())
+}
+
+fn protocol(group: &HostNetworkGroup) -> ProtocolGroup {
+    ProtocolGroup {
+        hosts: group.hosts().to_vec(),
+        networks: group.networks().to_vec(),
+        ip_ranges: group.ip_ranges().to_vec(),
+    }
+}
+
+#[test]
+fn the_network_digest_without_overlap_merges_intranet_and_gateway() {
+    let intranet = network("office", NetworkType::Intranet, cidr_group(&["10.0.0.0/8"]));
+    let gateway = network(
+        "edge",
+        NetworkType::Gateway,
+        cidr_group(&["192.168.0.0/24"]),
+    );
+    let extranet = network(
+        "partner",
+        NetworkType::Extranet,
+        cidr_group(&["172.16.0.0/12"]),
+    );
+    let internal = cidr_group(&["10.0.0.0/8", "192.168.0.0/24"]);
+    let registered = cidr_group(&["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/24"]);
+    let networks = dai_network_digest(Some(&set_of(vec![intranet, gateway, extranet]))).unwrap();
+    // What the Intranet and Gateway groups merged gave before the rule.
+    assert_eq!(networks.internal, protocol(&internal));
+    assert_eq!(networks.registered, protocol(&registered));
+    assert_eq!(
+        networks.digest,
+        documented_digest(&protocol(&internal), &protocol(&registered))
+    );
+}
+
+#[test]
+fn the_network_digest_leaves_a_nested_extranet_network_out_of_internal() {
+    let set = set_of(vec![
+        network("office", NetworkType::Intranet, cidr_group(&["10.0.0.0/8"])),
+        network(
+            "partner",
+            NetworkType::Extranet,
+            cidr_group(&["10.200.0.0/16"]),
+        ),
+    ]);
+    let networks = dai_network_digest(Some(&set)).unwrap();
+    assert_eq!(networks.internal.hosts, Vec::<IpAddr>::new());
+    assert_eq!(networks.internal.networks, Vec::<ipnet::IpNet>::new());
+    assert_eq!(
+        networks.internal.ip_ranges,
+        [
+            ip("10.0.0.0")..=ip("10.199.255.255"),
+            ip("10.201.0.0")..=ip("10.255.255.255")
+        ]
+    );
+    assert_eq!(
+        networks.registered,
+        protocol(&cidr_group(&["10.0.0.0/8", "10.200.0.0/16"]))
+    );
+    assert_eq!(
+        networks.digest,
+        documented_digest(&networks.internal, &networks.registered)
+    );
+}
+
 #[test]
 fn the_network_digest_depends_only_on_the_groups() {
     let intranet = |name: &str, hosts: &[&str]| {

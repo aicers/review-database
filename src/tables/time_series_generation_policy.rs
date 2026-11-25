@@ -54,7 +54,6 @@ use crate::{
     Agent, AgentKind, EXCLUSIVE, Indexable, IndexedMap, IndexedMapUpdate, IndexedTable, Iterable,
     Map, NodeTable, TimeSeriesType,
     collections::Indexed,
-    event::NetworkType,
     model::ClusteringMethod,
     time_series_type::{find as find_time_series_type, time_series_types},
     types::FromKeyValue,
@@ -387,8 +386,9 @@ pub enum TimeSeriesGenerationPolicyError {
     /// A policy made from a type filters by IP.
     #[error("a policy made from a time-series type cannot filter by IP")]
     AddressFilterWithType,
-    /// The policy groups by an endpoint, and its customer has no `Intranet`
-    /// or `Gateway` network.
+    /// The policy groups by an endpoint, and its customer has no internal
+    /// address: no address whose narrowest containing network is an
+    /// `Intranet` or `Gateway` network.
     #[error("customer {customer_id} has no Intranet or Gateway network to group by")]
     NoInternalNetwork { customer_id: u32 },
     /// The policy's sensors are in more than one site of its customer, under
@@ -976,9 +976,11 @@ fn first_type_mismatch(
 }
 
 /// Checks, within `txn`, that the customer of a `policy` that groups by an
-/// endpoint has at least one `Intranet` or `Gateway` network, whose IPs are
-/// the ones the policy splits its series by. The customer's networks are
-/// read for update, so a concurrent change of them conflicts with `txn`.
+/// endpoint has at least one internal address, the
+/// [`OwnedNetworkSet::internal_group`](crate::OwnedNetworkSet::internal_group)
+/// of its networks being the IPs the policy splits its series by. The
+/// customer's networks are read for update, so a concurrent change of them
+/// conflicts with `txn`.
 fn check_internal_network(
     networks: &OwnedNetworkTable<'_>,
     txn: &Txn<'_>,
@@ -989,14 +991,7 @@ fn check_internal_network(
     }
     let has_internal = networks
         .get_in_transaction(txn, policy.customer_id)?
-        .is_some_and(|set| {
-            set.networks.iter().any(|network| {
-                matches!(
-                    network.network_type,
-                    NetworkType::Intranet | NetworkType::Gateway
-                )
-            })
-        });
+        .is_some_and(|set| !set.internal_groups().is_empty());
     if has_internal {
         Ok(())
     } else {
@@ -1230,7 +1225,7 @@ mod test {
     use crate::{
         AgentStatus, EngineDetectorRef, EngineDocumentRefs, EngineDocumentWrite, HostNetworkGroup,
         ModelOwner, NewTrainingDefinition, Node, NodeProfile, OwnedNetwork, Store,
-        TimeSeriesGenerationPolicyUpdate, TrainedWith,
+        TimeSeriesGenerationPolicyUpdate, TrainedWith, event::NetworkType,
     };
 
     const CUSTOMER: u32 = 1;
@@ -2883,6 +2878,66 @@ mod test {
                 of_customer(&format!("grouped-{types:?}"), Some(EndpointRole::Source)),
             );
         }
+    }
+
+    /// The customer's internal addresses are decided by the narrowest owned
+    /// network, so an Intranet network an Extranet network matches leaves
+    /// nothing to group by.
+    #[test]
+    fn a_grouped_policy_needs_an_internal_address() {
+        let f = setup();
+        let replace = |networks: &[(NetworkType, &[&str])]| {
+            let table = f.store.customer_networks_map();
+            let revision = table
+                .get(NETWORK_CUSTOMER)
+                .unwrap()
+                .map_or(0, |set| set.revision + 1);
+            let networks = networks
+                .iter()
+                .zip(1_u8..)
+                .map(|((network_type, cidrs), n)| OwnedNetwork {
+                    name: format!("network-{n}"),
+                    network_type: *network_type,
+                    group: HostNetworkGroup::new(
+                        Vec::new(),
+                        cidrs.iter().map(|cidr| cidr.parse().unwrap()).collect(),
+                        Vec::new(),
+                    ),
+                })
+                .collect();
+            table.replace(NETWORK_CUSTOMER, revision, networks).unwrap();
+        };
+        let grouped = |name: &str| {
+            custom(name, |p| {
+                p.customer_id = NETWORK_CUSTOMER;
+                p.group_by = Some(EndpointRole::Source);
+            })
+        };
+        let no_internal = TimeSeriesGenerationPolicyError::NoInternalNetwork {
+            customer_id: NETWORK_CUSTOMER,
+        };
+
+        for networks in [
+            // The only Intranet entry is also an Extranet one.
+            &[
+                (NetworkType::Intranet, &["10.1.0.0/16"][..]),
+                (NetworkType::Extranet, &["10.1.0.0/16", "192.0.2.0/24"][..]),
+            ][..],
+            // An Intranet network with no entries.
+            &[
+                (NetworkType::Intranet, &[][..]),
+                (NetworkType::Extranet, &["10.1.0.0/16"][..]),
+            ][..],
+        ] {
+            replace(networks);
+            assert_eq!(refused(&f, grouped("refused")), no_internal, "{networks:?}");
+        }
+
+        replace(&[
+            (NetworkType::Intranet, &["10.0.0.0/8"]),
+            (NetworkType::Extranet, &["10.200.0.0/16"]),
+        ]);
+        accepted(&f, grouped("grouped"));
     }
 
     /// A policy that breaks several requirements is refused for the

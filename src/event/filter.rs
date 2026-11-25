@@ -30,6 +30,13 @@ pub enum LearningMethod {
 
 /// The networks whose addresses count as internal for the `directions` field
 /// of an [`EventFilter`].
+///
+/// The groups of a sensor are its customer's internal addresses by the
+/// narrowest-network rule of
+/// [`OwnedNetworkSet::internal_groups`](crate::OwnedNetworkSet::internal_groups):
+/// an address is internal when the narrowest owned network containing it is
+/// an `Intranet` or `Gateway` network, and no `Extranet` network contains it
+/// as narrowly.
 #[derive(Clone, Debug, PartialEq)]
 pub enum InternalNetworks {
     /// Groups keyed by the event's sensor. An event whose sensor is not a key,
@@ -563,10 +570,10 @@ mod tests {
 
     use super::{EventFilter, FlowKind, InternalNetworks, LearningMethod};
     use crate::{
-        EventCategory, HostNetworkGroup, Network, Response, ResponseKind, ScoreCondition,
-        TriagePolicyInput,
+        EventCategory, HostNetworkGroup, Network, OwnedNetwork, OwnedNetworkSet, Response,
+        ResponseKind, ScoreCondition, TriagePolicyInput,
         event::{
-            StoredDetectionEvent, TrafficDirection,
+            NetworkType, StoredDetectionEvent, TrafficDirection,
             fixture::{
                 SENSOR, conn_event, host, ip, network_connect_body, raw_event_event, related,
                 stored, stored_with, subject_event, time,
@@ -911,6 +918,46 @@ mod tests {
             &directions(all(), &["0.0.0.0/0"])
         ));
         assert!(!selects(&sysmon(), &directions(all(), &["0.0.0.0/0"])));
+    }
+
+    #[test]
+    fn directions_follow_the_narrowest_owned_network() {
+        let set = OwnedNetworkSet {
+            revision: 1,
+            networks: vec![
+                OwnedNetwork {
+                    name: "office".to_string(),
+                    network_type: NetworkType::Intranet,
+                    group: group(&["10.0.0.0/8"]),
+                },
+                OwnedNetwork {
+                    name: "partner".to_string(),
+                    network_type: NetworkType::Extranet,
+                    group: group(&["10.200.0.0/16"]),
+                },
+            ],
+            updated_at: jiff::Timestamp::now(),
+        };
+        let filter = |kind: FlowKind| EventFilter {
+            directions: Some((
+                vec![kind],
+                InternalNetworks::PerSensor(HashMap::from([(
+                    SENSOR.to_string(),
+                    set.internal_groups(),
+                )])),
+            )),
+            ..empty()
+        };
+        let flow = |orig: &str, resp: &str| -> Vec<FlowKind> {
+            let record = stored(conn_event(orig, resp));
+            [FlowKind::Internal, FlowKind::Outbound, FlowKind::Inbound]
+                .into_iter()
+                .filter(|kind| selects(&record, &filter(*kind)))
+                .collect()
+        };
+        assert_eq!(flow("10.1.0.1", "10.200.0.1"), [FlowKind::Outbound]);
+        assert_eq!(flow("10.200.0.1", "10.1.0.1"), [FlowKind::Inbound]);
+        assert_eq!(flow("10.1.0.1", "10.2.0.1"), [FlowKind::Internal]);
     }
 
     #[test]
