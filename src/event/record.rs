@@ -76,9 +76,11 @@ mod optional_i128_nanoseconds {
 ///
 /// The endpoint addresses are the `orig_addr` and `resp_addr` of a
 /// [`Target::RawEvent`] body that has both fields, and, for a
-/// [`Target::Subject`], the IP of a [`PrimarySubject::Host`] and every
-/// related IP. A body without both fields, such as a Sysmon or a Netflow v5
-/// body, has no endpoint address.
+/// [`Target::Subject`], the host addresses of its primary subject (the IP of
+/// a [`PrimarySubject::Host`], or every element of the `ips` of a
+/// [`PrimarySubject::Endpoint`]) and every related IP. A body without both
+/// fields, such as a Sysmon, an endpoint log or a Netflow v5 body, has no
+/// endpoint address; the addresses in a body's host header never count.
 #[derive(Clone, Debug, PartialEq)]
 pub struct StoredDetectionEvent {
     pub(super) event: DetectionEvent,
@@ -102,8 +104,9 @@ impl StoredDetectionEvent {
 
     /// Returns each endpoint address with the country code stored for it.
     ///
-    /// A host subject's IP comes first, then the related IPs in their
-    /// order; for a raw event body, `orig_addr` comes before `resp_addr`.
+    /// A host subject's IP, or an endpoint subject's `ips` in their order,
+    /// comes first, then the related IPs in their order; for a raw event
+    /// body, `orig_addr` comes before `resp_addr`.
     pub fn country_codes(&self) -> impl Iterator<Item = (IpAddr, [u8; 2])> + '_ {
         endpoint_addresses(&self.event).zip(self.country_codes.iter().copied())
     }
@@ -120,16 +123,30 @@ impl StoredDetectionEvent {
     }
 
     /// Returns the originator-side endpoint addresses: a body's `orig_addr`,
-    /// or a subject's host IP and its related IPs observed as the source.
+    /// or a subject's host addresses and its related IPs observed as the
+    /// source.
     pub(super) fn originator_addrs(&self) -> impl Iterator<Item = IpAddr> + '_ {
         side_addrs(&self.event, EndpointRole::Source)
     }
 
     /// Returns the responder-side endpoint addresses: a body's `resp_addr`,
-    /// or a subject's host IP and its related IPs observed as the
+    /// or a subject's host addresses and its related IPs observed as the
     /// destination.
     pub(super) fn responder_addrs(&self) -> impl Iterator<Item = IpAddr> + '_ {
         side_addrs(&self.event, EndpointRole::Destination)
+    }
+
+    /// Returns the `ips` and the related IPs of an endpoint subject, or
+    /// `None` when the event is not about an endpoint.
+    pub(super) fn endpoint_subject(&self) -> Option<(&[IpAddr], &[RelatedIp])> {
+        match &self.event.target {
+            Target::Subject {
+                primary: PrimarySubject::Endpoint { ips, .. },
+                related_ips,
+                ..
+            } => Some((ips, related_ips)),
+            _ => None,
+        }
     }
 
     /// Returns the stored country codes of the endpoint addresses.
@@ -188,26 +205,40 @@ pub(super) fn body_endpoints(body: &RawEventBody) -> Option<(IpAddr, IpAddr)> {
         | RawEventBody::FileDelete(_)
         | RawEventBody::ProcessTamper(_)
         | RawEventBody::FileDeleteDetected(_)
-        | RawEventBody::Netflow5(_) => None,
+        | RawEventBody::Netflow5(_)
+        | RawEventBody::DriverLoad(_)
+        | RawEventBody::CreateRemoteThread(_)
+        | RawEventBody::RawAccessRead(_)
+        | RawEventBody::ProcessAccess(_)
+        | RawEventBody::RegistryObjectAddDel(_)
+        | RawEventBody::WindowsEventLog(_)
+        | RawEventBody::Journald(_)
+        | RawEventBody::Auditd(_) => None,
     }
 }
 
-/// Returns the IP of a host subject.
-fn host_ip(primary: &PrimarySubject) -> Option<IpAddr> {
+/// Returns the host addresses of a primary subject: the IP of a host, every
+/// element of the `ips` of an endpoint in their order, and none for any
+/// other subject.
+///
+/// An endpoint's `default_route_ip` is not added: it is expected to be one
+/// of its `ips`, and one that is not is no host address.
+fn host_ip(primary: &PrimarySubject) -> &[IpAddr] {
     match primary {
-        PrimarySubject::Host { ip, .. } => Some(*ip),
+        PrimarySubject::Host { ip, .. } => std::slice::from_ref(ip),
+        PrimarySubject::Endpoint { ips, .. } => ips,
         PrimarySubject::Cluster { .. }
         | PrimarySubject::Sensor
-        | PrimarySubject::Network { .. } => None,
+        | PrimarySubject::Network { .. } => &[],
     }
 }
 
 /// Returns the endpoint addresses of `event`, in the order their country
 /// codes are stored.
 fn endpoint_addresses(event: &DetectionEvent) -> impl Iterator<Item = IpAddr> + '_ {
-    let (body, host, related): (Option<(IpAddr, IpAddr)>, Option<IpAddr>, &[RelatedIp]) =
+    let (body, host, related): (Option<(IpAddr, IpAddr)>, &[IpAddr], &[RelatedIp]) =
         match &event.target {
-            Target::RawEvent { body, .. } => (body_endpoints(body), None, &[]),
+            Target::RawEvent { body, .. } => (body_endpoints(body), &[], &[]),
             Target::Subject {
                 primary,
                 related_ips,
@@ -216,20 +247,22 @@ fn endpoint_addresses(event: &DetectionEvent) -> impl Iterator<Item = IpAddr> + 
         };
     body.into_iter()
         .flat_map(|(orig, resp)| [orig, resp])
-        .chain(host)
+        .chain(host.iter().copied())
         .chain(related.iter().map(|related| related.ip))
 }
 
 /// Returns the endpoint addresses of one side of `event`.
+///
+/// The host addresses of a subject are on both sides; a related IP is on
+/// the side of its endpoint role.
 fn side_addrs(event: &DetectionEvent, role: EndpointRole) -> impl Iterator<Item = IpAddr> + '_ {
-    let (body, host, related): (Option<IpAddr>, Option<IpAddr>, &[RelatedIp]) = match &event.target
-    {
+    let (body, host, related): (Option<IpAddr>, &[IpAddr], &[RelatedIp]) = match &event.target {
         Target::RawEvent { body, .. } => (
             body_endpoints(body).map(|(orig, resp)| match role {
                 EndpointRole::Source => orig,
                 EndpointRole::Destination => resp,
             }),
-            None,
+            &[],
             &[],
         ),
         Target::Subject {
@@ -238,7 +271,7 @@ fn side_addrs(event: &DetectionEvent, role: EndpointRole) -> impl Iterator<Item 
             ..
         } => (None, host_ip(primary), related_ips),
     };
-    body.into_iter().chain(host).chain(
+    body.into_iter().chain(host.iter().copied()).chain(
         related
             .iter()
             .filter(move |related| related.role == role)

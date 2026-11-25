@@ -1220,6 +1220,17 @@ impl Table<'_, SentaEndpoint> {
         self.rows_where(|row| row.customer_id == customer_id)
     }
 
+    /// Returns the rows of every endpoint, of every customer, in order of the
+    /// endpoint ID, read in one scan of the table.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database operation fails or a stored row is
+    /// invalid.
+    pub fn all(&self) -> Result<Vec<SentaEndpoint>> {
+        self.rows_where(|_| true)
+    }
+
     /// Sets the active-list standing of an existing endpoint, and returns the
     /// stored row.
     ///
@@ -1953,6 +1964,21 @@ mod tests {
         assert_eq!(all(&table).len(), 2);
         table.delete("install-2").unwrap();
         assert_eq!(all(&table), vec![rotated]);
+    }
+
+    #[test]
+    fn all_endpoints_are_read_in_endpoint_id_order() {
+        let (_permit, _db, _backup, store) = setup_store();
+        let table = store.senta_endpoint_map();
+        assert_eq!(table.all().unwrap(), vec![]);
+
+        let first = endpoint(2, 1);
+        let second = endpoint(1, 2);
+        let third = endpoint(3, 1);
+        for row in [&third, &first, &second] {
+            write(&store, &table, row);
+        }
+        assert_eq!(table.all().unwrap(), vec![second, first, third]);
     }
 
     #[test]

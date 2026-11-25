@@ -3,20 +3,25 @@
 
 use std::{
     borrow::Cow,
-    fmt::{self, Formatter},
+    fmt::{self, Formatter, Write as _},
     net::IpAddr,
 };
 
 use attrievent::attribute::{
-    BootpAttr, ConnAttr, DceRpcAttr, DhcpAttr, DnsAttr, DnsQueryAttr, FileCreateAttr,
-    FileCreateStreamHashAttr, FileCreateTimeAttr, FileDeleteAttr, FileDeleteDetectedAttr, FtpAttr,
-    HttpAttr, IcmpAttr, ImageLoadAttr, KerberosAttr, LdapAttr, MalformedDnsAttr, MqttAttr,
-    Netflow5Attr, Netflow9Attr, NetworkConnectAttr, NfsAttr, NtlmAttr, PipeEventAttr,
-    ProcessCreateAttr, ProcessTamperAttr, ProcessTerminateAttr, RadiusAttr, RawEventAttrKind,
-    RdpAttr, RegistryKeyRenameAttr, RegistryValueSetAttr, SmbAttr, SmtpAttr, SshAttr, TlsAttr,
+    AuditdAttr, BootpAttr, ConnAttr, CreateRemoteThreadAttr, DceRpcAttr, DhcpAttr, DnsAttr,
+    DnsQueryAttr, DriverLoadAttr, FileCreateAttr, FileCreateStreamHashAttr, FileCreateTimeAttr,
+    FileDeleteAttr, FileDeleteDetectedAttr, FtpAttr, HttpAttr, IcmpAttr, ImageLoadAttr,
+    JournaldAttr, KerberosAttr, LdapAttr, MalformedDnsAttr, MqttAttr, Netflow5Attr, Netflow9Attr,
+    NetworkConnectAttr, NfsAttr, NtlmAttr, PipeEventAttr, ProcessAccessAttr, ProcessCreateAttr,
+    ProcessTamperAttr, ProcessTerminateAttr, RadiusAttr, RawAccessReadAttr, RawEventAttrKind,
+    RdpAttr, RegistryKeyRenameAttr, RegistryObjectAddDelAttr, RegistryValueSetAttr, SmbAttr,
+    SmtpAttr, SshAttr, TlsAttr, WindowsEventLogAttr,
 };
 use bincode::Options;
-use review_protocol::types::{RawEventBody, Target};
+use review_protocol::types::{
+    RawEventBody, Target,
+    raw_event::{AuditRecord, EventData, LogField, LogValue},
+};
 use serde::{Deserialize, Serialize};
 
 use super::StoredDetectionEvent;
@@ -176,6 +181,76 @@ fn widened<T: Copy + Into<u64>>(values: &[T]) -> Cow<'static, [u64]> {
     Cow::Owned(values.iter().map(|&value| value.into()).collect())
 }
 
+/// One element of a list field of an endpoint log body, read by a triage
+/// attribute as one string.
+#[derive(Clone, Copy)]
+pub(super) enum ListElement<'a> {
+    /// An element of `WindowsEventLog.event_data`.
+    EventData(&'a EventData),
+    /// An element of `Journald.fields`, or a field of an [`AuditRecord`].
+    LogField(&'a LogField),
+    /// An element of `Auditd.records`.
+    AuditRecord(&'a AuditRecord),
+}
+
+/// Returns the string a triage attribute reads for one element of a list
+/// field.
+///
+/// The value is kept as it is, with no substitution for an empty value and
+/// with tabs and newlines kept:
+///
+/// - an [`EventData`] is `name=value`, or `=value` when it has no name;
+/// - a [`LogField`] is `name=` followed by its text, or by its bytes as
+///   lowercase hex;
+/// - an [`AuditRecord`] is `record_type:` followed by each of its fields as
+///   a [`LogField`] is written, joined by one space.
+pub(super) fn list_element_string(element: ListElement<'_>) -> String {
+    match element {
+        ListElement::EventData(data) => {
+            format!(
+                "{}={}",
+                data.name.as_deref().unwrap_or_default(),
+                data.value
+            )
+        }
+        ListElement::LogField(field) => {
+            let mut text = format!("{}=", field.name);
+            match &field.value {
+                LogValue::Text(value) => text.push_str(value),
+                LogValue::Bytes(bytes) => {
+                    for byte in bytes {
+                        write!(text, "{byte:02x}").expect("writing to a String does not fail");
+                    }
+                }
+            }
+            text
+        }
+        ListElement::AuditRecord(record) => {
+            let fields: Vec<String> = record
+                .fields
+                .iter()
+                .map(|field| list_element_string(ListElement::LogField(field)))
+                .collect();
+            format!("{}:{}", record.record_type, fields.join(" "))
+        }
+    }
+}
+
+/// Returns the strings a triage attribute reads from a list field: one per
+/// element, built by `element`, and none when the field is `None`.
+fn list_strings<'a, T>(
+    items: Option<&'a [T]>,
+    element: impl Fn(&'a T) -> ListElement<'a>,
+) -> AttrValue<'a> {
+    AttrValue::VecString(Cow::Owned(
+        items
+            .unwrap_or_default()
+            .iter()
+            .map(|item| list_element_string(element(item)))
+            .collect(),
+    ))
+}
+
 /// Expands to a `match` over a network attribute enum, with the arms for the
 /// connection fields every network body shares followed by `$rest`.
 macro_rules! network_attr {
@@ -198,8 +273,13 @@ macro_rules! network_attr {
 
 /// Reads the attribute `attr` from `body`.
 ///
-/// Returns `None` when `attr` belongs to another kind than `body`, and for
-/// the list attributes that read no value from an empty list.
+/// Returns `None` when `attr` belongs to another kind than `body`, for
+/// the list attributes that read no value from an empty list, and for an
+/// optional scalar field that is `None`. A list field of an endpoint log
+/// body (`WindowsEventLog.event_data`, `Journald.fields`, `Auditd.records`)
+/// reads as one string per element, built by [`list_element_string`], and
+/// as an empty list when it is `None`. No attribute reads a body's host
+/// header.
 ///
 /// Every kind and every attribute has its own arm, with no wildcard, so
 /// that an attribute added to attrievent fails to compile here until it is
@@ -649,6 +729,7 @@ pub(super) fn attr_value(body: &RawEventBody, attr: RawEventAttrKind) -> Option<
                 ProcessCreateAttr::ParentImage => AttrValue::String(&b.parent_image),
                 ProcessCreateAttr::ParentCommandLine => AttrValue::String(&b.parent_command_line),
                 ProcessCreateAttr::ParentUser => AttrValue::String(&b.parent_user),
+                ProcessCreateAttr::LogonIdFull => AttrValue::UInt(b.logon_id_full?),
             }
         }
         RawEventAttrKind::FileCreateTime(attr) => {
@@ -922,6 +1003,137 @@ pub(super) fn attr_value(body: &RawEventBody, attr: RawEventAttrKind) -> Option<
                 Netflow9Attr::Contents => AttrValue::String(&b.contents),
             }
         }
+        RawEventAttrKind::DriverLoad(attr) => {
+            let RawEventBody::DriverLoad(b) = body else {
+                return None;
+            };
+            match attr {
+                DriverLoadAttr::AgentName => AttrValue::String(&b.agent_name),
+                DriverLoadAttr::AgentId => AttrValue::String(&b.agent_id),
+                DriverLoadAttr::ImageLoaded => AttrValue::String(&b.image_loaded),
+                DriverLoadAttr::Hashes => AttrValue::VecString(Cow::Borrowed(&b.hashes)),
+                DriverLoadAttr::Signed => AttrValue::Bool(b.signed),
+                DriverLoadAttr::Signature => AttrValue::String(&b.signature),
+                DriverLoadAttr::SignatureStatus => AttrValue::String(&b.signature_status),
+            }
+        }
+        RawEventAttrKind::CreateRemoteThread(attr) => {
+            let RawEventBody::CreateRemoteThread(b) = body else {
+                return None;
+            };
+            match attr {
+                CreateRemoteThreadAttr::AgentName => AttrValue::String(&b.agent_name),
+                CreateRemoteThreadAttr::AgentId => AttrValue::String(&b.agent_id),
+                CreateRemoteThreadAttr::SourceProcessGuid => {
+                    AttrValue::String(&b.source_process_guid)
+                }
+                CreateRemoteThreadAttr::SourceProcessId => {
+                    AttrValue::UInt(b.source_process_id.into())
+                }
+                CreateRemoteThreadAttr::SourceImage => AttrValue::String(&b.source_image),
+                CreateRemoteThreadAttr::TargetProcessGuid => {
+                    AttrValue::String(&b.target_process_guid)
+                }
+                CreateRemoteThreadAttr::TargetProcessId => {
+                    AttrValue::UInt(b.target_process_id.into())
+                }
+                CreateRemoteThreadAttr::TargetImage => AttrValue::String(&b.target_image),
+                CreateRemoteThreadAttr::NewThreadId => AttrValue::UInt(b.new_thread_id.into()),
+                CreateRemoteThreadAttr::StartAddress => AttrValue::String(&b.start_address),
+                CreateRemoteThreadAttr::StartModule => AttrValue::String(&b.start_module),
+                CreateRemoteThreadAttr::StartFunction => AttrValue::String(&b.start_function),
+                CreateRemoteThreadAttr::SourceUser => AttrValue::String(&b.source_user),
+                CreateRemoteThreadAttr::TargetUser => AttrValue::String(&b.target_user),
+            }
+        }
+        RawEventAttrKind::RawAccessRead(attr) => {
+            let RawEventBody::RawAccessRead(b) = body else {
+                return None;
+            };
+            match attr {
+                RawAccessReadAttr::AgentName => AttrValue::String(&b.agent_name),
+                RawAccessReadAttr::AgentId => AttrValue::String(&b.agent_id),
+                RawAccessReadAttr::ProcessGuid => AttrValue::String(&b.process_guid),
+                RawAccessReadAttr::ProcessId => AttrValue::UInt(b.process_id.into()),
+                RawAccessReadAttr::Image => AttrValue::String(&b.image),
+                RawAccessReadAttr::Device => AttrValue::String(&b.device),
+                RawAccessReadAttr::User => AttrValue::String(&b.user),
+            }
+        }
+        RawEventAttrKind::ProcessAccess(attr) => {
+            let RawEventBody::ProcessAccess(b) = body else {
+                return None;
+            };
+            match attr {
+                ProcessAccessAttr::AgentName => AttrValue::String(&b.agent_name),
+                ProcessAccessAttr::AgentId => AttrValue::String(&b.agent_id),
+                ProcessAccessAttr::SourceProcessGuid => AttrValue::String(&b.source_process_guid),
+                ProcessAccessAttr::SourceProcessId => AttrValue::UInt(b.source_process_id.into()),
+                ProcessAccessAttr::SourceThreadId => AttrValue::UInt(b.source_thread_id.into()),
+                ProcessAccessAttr::SourceImage => AttrValue::String(&b.source_image),
+                ProcessAccessAttr::TargetProcessGuid => AttrValue::String(&b.target_process_guid),
+                ProcessAccessAttr::TargetProcessId => AttrValue::UInt(b.target_process_id.into()),
+                ProcessAccessAttr::TargetImage => AttrValue::String(&b.target_image),
+                ProcessAccessAttr::GrantedAccess => AttrValue::UInt(b.granted_access),
+                ProcessAccessAttr::CallTrace => AttrValue::String(&b.call_trace),
+                ProcessAccessAttr::SourceUser => AttrValue::String(&b.source_user),
+                ProcessAccessAttr::TargetUser => AttrValue::String(&b.target_user),
+            }
+        }
+        RawEventAttrKind::RegistryObjectAddDel(attr) => {
+            let RawEventBody::RegistryObjectAddDel(b) = body else {
+                return None;
+            };
+            match attr {
+                RegistryObjectAddDelAttr::AgentName => AttrValue::String(&b.agent_name),
+                RegistryObjectAddDelAttr::AgentId => AttrValue::String(&b.agent_id),
+                RegistryObjectAddDelAttr::EventType => AttrValue::String(&b.event_type),
+                RegistryObjectAddDelAttr::ProcessGuid => AttrValue::String(&b.process_guid),
+                RegistryObjectAddDelAttr::ProcessId => AttrValue::UInt(b.process_id.into()),
+                RegistryObjectAddDelAttr::Image => AttrValue::String(&b.image),
+                RegistryObjectAddDelAttr::TargetObject => AttrValue::String(&b.target_object),
+                RegistryObjectAddDelAttr::User => AttrValue::String(&b.user),
+            }
+        }
+        RawEventAttrKind::WindowsEventLog(attr) => {
+            let RawEventBody::WindowsEventLog(b) = body else {
+                return None;
+            };
+            match attr {
+                WindowsEventLogAttr::Channel => AttrValue::String(b.channel.as_deref()?),
+                WindowsEventLogAttr::Provider => AttrValue::String(b.provider.as_deref()?),
+                WindowsEventLogAttr::EventId => AttrValue::UInt(b.event_id?.into()),
+                WindowsEventLogAttr::Version => AttrValue::UInt(b.version?.into()),
+                WindowsEventLogAttr::Level => AttrValue::UInt(b.level?.into()),
+                WindowsEventLogAttr::Task => AttrValue::UInt(b.task?.into()),
+                WindowsEventLogAttr::Opcode => AttrValue::UInt(b.opcode?.into()),
+                WindowsEventLogAttr::Keywords => AttrValue::UInt(b.keywords?),
+                WindowsEventLogAttr::RecordId => AttrValue::UInt(b.record_id?),
+                WindowsEventLogAttr::Computer => AttrValue::String(b.computer.as_deref()?),
+                WindowsEventLogAttr::UserSid => AttrValue::String(b.user_sid.as_deref()?),
+                WindowsEventLogAttr::EventData => {
+                    list_strings(b.event_data.as_deref(), ListElement::EventData)
+                }
+                WindowsEventLogAttr::UserDataXml => AttrValue::String(b.user_data_xml.as_deref()?),
+            }
+        }
+        RawEventAttrKind::Journald(attr) => {
+            let RawEventBody::Journald(b) = body else {
+                return None;
+            };
+            match attr {
+                JournaldAttr::Fields => list_strings(b.fields.as_deref(), ListElement::LogField),
+            }
+        }
+        RawEventAttrKind::Auditd(attr) => {
+            let RawEventBody::Auditd(b) = body else {
+                return None;
+            };
+            match attr {
+                AuditdAttr::Serial => AttrValue::UInt(b.serial?),
+                AuditdAttr::Records => list_strings(b.records.as_deref(), ListElement::AuditRecord),
+            }
+        }
     };
     Some(value)
 }
@@ -1120,8 +1332,10 @@ mod tests {
     use std::{borrow::Cow, fmt::Display, net::IpAddr};
 
     use attrievent::attribute::{
-        ConnAttr, DhcpAttr, DnsAttr, HttpAttr, Netflow5Attr, Netflow9Attr, NetworkConnectAttr,
-        RawEventAttrKind, TlsAttr,
+        AuditdAttr, ConnAttr, CreateRemoteThreadAttr, DhcpAttr, DnsAttr, DriverLoadAttr, HttpAttr,
+        JournaldAttr, Netflow5Attr, Netflow9Attr, NetworkConnectAttr, ProcessAccessAttr,
+        ProcessCreateAttr, RawAccessReadAttr, RawEventAttrKind, RegistryObjectAddDelAttr, TlsAttr,
+        WindowsEventLogAttr,
     };
     use bincode::Options;
     use review_protocol::types::{
@@ -1130,15 +1344,19 @@ mod tests {
     use serde::Serialize;
     use strum::IntoEnumIterator;
 
-    use super::{AttrValue, attr_value, is_attr_matched};
+    use super::{AttrValue, ListElement, attr_value, is_attr_matched, list_element_string};
     use crate::{
         AttrCmpKind, EventCategory, PacketAttr, Response, ResponseKind, ScoreCondition,
         TriagePolicyInput, ValueKind,
         event::{
             StoredDetectionEvent,
             fixture::{
-                SENSOR, conn_body, dns_body, host, http_body, ip, netflow5_body, netflow9_body,
-                network_connect_body, raw_event_event, related, stored, subject_event, time,
+                SENSOR, auditd_body, bytes_field, conn_body, create_remote_thread_body, dns_body,
+                driver_load_body, endpoint_sensor, header_bodies, host, http_body, ip,
+                journald_body, kind_of, netflow5_body, netflow9_body, network_connect_body,
+                process_access_body, process_create_body, raw_access_read_body, raw_event_event,
+                registry_object_add_del_body, related, stored, subject_event, text_field, time,
+                windows_event_log_body,
             },
         },
     };
@@ -1941,5 +2159,460 @@ mod tests {
         let equal = addr_equal(RawEventKind::Conn, ConnAttr::SrcAddr, "192.0.2.1", 1.0);
         assert!(is_attr_matched(AttrValue::Addr(addr), &equal));
         assert!(!is_attr_matched(AttrValue::Addr(ip("192.0.2.2")), &equal));
+    }
+
+    /// Returns `value` as text: a scalar as it prints, a list as its
+    /// elements joined by `|`.
+    fn text(value: AttrValue<'_>) -> String {
+        fn join<T: ToString>(items: &[T]) -> String {
+            items
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join("|")
+        }
+        match value {
+            AttrValue::Addr(addr) => addr.to_string(),
+            AttrValue::Bool(value) => value.to_string(),
+            AttrValue::SInt(value) => value.to_string(),
+            AttrValue::UInt(value) => value.to_string(),
+            AttrValue::String(value) => value.to_string(),
+            AttrValue::VecAddr(items) => join(&items),
+            AttrValue::VecBool(items) => join(&items),
+            AttrValue::VecSInt(items) => join(&items),
+            AttrValue::VecUInt(items) => join(&items),
+            AttrValue::VecString(items) => join(&items),
+            AttrValue::VecRaw(bytes) => format!("{bytes:?}"),
+            AttrValue::VecRawList(items) => format!("{items:?}"),
+        }
+    }
+
+    /// Asserts that each attribute of `A` reads, from `body` of `kind`, the
+    /// text `expected` gives for it, and that `expected` names every
+    /// attribute of `A`.
+    fn check_values<A>(kind: RawEventKind, body: &RawEventBody, expected: &[(A, &str)])
+    where
+        A: IntoEnumIterator + Display + PartialEq,
+    {
+        for attr in A::iter() {
+            let name = attr.to_string();
+            let (_, want) = expected
+                .iter()
+                .find(|(listed, _)| *listed == attr)
+                .unwrap_or_else(|| panic!("{kind:?} {name} has no expected value"));
+            let parsed = RawEventAttrKind::from_kind_and_attr_name(&kind, &name)
+                .unwrap_or_else(|e| panic!("{kind:?} {name}: {e}"));
+            let value = attr_value(body, parsed).unwrap_or_else(|| panic!("{kind:?} {name}"));
+            assert_eq!(text(value), *want, "{kind:?} {name}");
+        }
+    }
+
+    #[allow(clippy::too_many_lines)]
+    #[test]
+    fn each_attribute_of_the_endpoint_kinds_reads_its_field() {
+        use CreateRemoteThreadAttr as Crt;
+        use DriverLoadAttr as Dl;
+        use ProcessAccessAttr as Pa;
+        use ProcessCreateAttr as Pc;
+        use RawAccessReadAttr as Rar;
+        use RegistryObjectAddDelAttr as Roa;
+        use WindowsEventLogAttr as Wel;
+        check_values(
+            RawEventKind::ProcessCreate,
+            &RawEventBody::ProcessCreate(process_create_body(Some(0x1_0000_0001))),
+            &[
+                (Pc::AgentName, "agent"),
+                (Pc::AgentId, "agent-id"),
+                (Pc::ProcessGuid, "{process}"),
+                (Pc::ProcessId, "100"),
+                (Pc::Image, "C:\\synthetic.exe"),
+                (Pc::FileVersion, "1.0"),
+                (Pc::Description, "synthetic"),
+                (Pc::Product, "product"),
+                (Pc::Company, "company"),
+                (Pc::OriginalFileName, "synthetic.exe"),
+                (Pc::CommandLine, "synthetic.exe /run"),
+                (Pc::CurrentDirectory, "C:\\"),
+                (Pc::User, "user"),
+                (Pc::LogonGuid, "{logon}"),
+                (Pc::LogonId, "4294967295"),
+                (Pc::TerminalSessionId, "1"),
+                (Pc::IntegrityLevel, "High"),
+                (Pc::Hashes, "SHA256=00"),
+                (Pc::ParentProcessGuid, "{parent}"),
+                (Pc::ParentProcessId, "99"),
+                (Pc::ParentImage, "C:\\parent.exe"),
+                (Pc::ParentCommandLine, "parent.exe"),
+                (Pc::ParentUser, "user"),
+                (Pc::LogonIdFull, "4294967297"),
+            ],
+        );
+        check_values(
+            RawEventKind::DriverLoad,
+            &RawEventBody::DriverLoad(driver_load_body()),
+            &[
+                (Dl::AgentName, "agent"),
+                (Dl::AgentId, "agent-id"),
+                (Dl::ImageLoaded, "C:\\driver.sys"),
+                (Dl::Hashes, "SHA256=01|MD5=02"),
+                (Dl::Signed, "true"),
+                (Dl::Signature, "Vendor"),
+                (Dl::SignatureStatus, "Valid"),
+            ],
+        );
+        check_values(
+            RawEventKind::CreateRemoteThread,
+            &RawEventBody::CreateRemoteThread(create_remote_thread_body()),
+            &[
+                (Crt::AgentName, "agent"),
+                (Crt::AgentId, "agent-id"),
+                (Crt::SourceProcessGuid, "{source}"),
+                (Crt::SourceProcessId, "11"),
+                (Crt::SourceImage, "C:\\source.exe"),
+                (Crt::TargetProcessGuid, "{target}"),
+                (Crt::TargetProcessId, "12"),
+                (Crt::TargetImage, "C:\\target.exe"),
+                (Crt::NewThreadId, "13"),
+                (Crt::StartAddress, "0x7ff0"),
+                (Crt::StartModule, "kernel32.dll"),
+                (Crt::StartFunction, "LoadLibraryW"),
+                (Crt::SourceUser, "source-user"),
+                (Crt::TargetUser, "target-user"),
+            ],
+        );
+        check_values(
+            RawEventKind::RawAccessRead,
+            &RawEventBody::RawAccessRead(raw_access_read_body()),
+            &[
+                (Rar::AgentName, "agent"),
+                (Rar::AgentId, "agent-id"),
+                (Rar::ProcessGuid, "{process}"),
+                (Rar::ProcessId, "21"),
+                (Rar::Image, "C:\\reader.exe"),
+                (Rar::Device, "\\Device\\HarddiskVolume2"),
+                (Rar::User, "user"),
+            ],
+        );
+        check_values(
+            RawEventKind::ProcessAccess,
+            &RawEventBody::ProcessAccess(process_access_body()),
+            &[
+                (Pa::AgentName, "agent"),
+                (Pa::AgentId, "agent-id"),
+                (Pa::SourceProcessGuid, "{source}"),
+                (Pa::SourceProcessId, "31"),
+                (Pa::SourceThreadId, "32"),
+                (Pa::SourceImage, "C:\\source.exe"),
+                (Pa::TargetProcessGuid, "{target}"),
+                (Pa::TargetProcessId, "33"),
+                (Pa::TargetImage, "C:\\lsass.exe"),
+                (Pa::GrantedAccess, "4294971408"),
+                (Pa::CallTrace, "ntdll.dll+9d204"),
+                (Pa::SourceUser, "source-user"),
+                (Pa::TargetUser, "target-user"),
+            ],
+        );
+        check_values(
+            RawEventKind::RegistryObjectAddDel,
+            &RawEventBody::RegistryObjectAddDel(registry_object_add_del_body()),
+            &[
+                (Roa::AgentName, "agent"),
+                (Roa::AgentId, "agent-id"),
+                (Roa::EventType, "CreateKey"),
+                (Roa::ProcessGuid, "{process}"),
+                (Roa::ProcessId, "41"),
+                (Roa::Image, "C:\\reg.exe"),
+                (Roa::TargetObject, "HKLM\\Software\\Synthetic"),
+                (Roa::User, "user"),
+            ],
+        );
+        check_values(
+            RawEventKind::WindowsEventLog,
+            &RawEventBody::WindowsEventLog(windows_event_log_body()),
+            &[
+                (Wel::Channel, "Security"),
+                (Wel::Provider, "Microsoft-Windows-Security-Auditing"),
+                (Wel::EventId, "4624"),
+                (Wel::Version, "2"),
+                (Wel::Level, "4"),
+                (Wel::Task, "12544"),
+                (Wel::Opcode, "0"),
+                (Wel::Keywords, "9232379236109516800"),
+                (Wel::RecordId, "123456789012"),
+                (Wel::Computer, "endpoint-host"),
+                (Wel::UserSid, "S-1-5-18"),
+                (
+                    Wel::EventData,
+                    "TargetUserName=alice|=line 1\n\tline 2|Empty=",
+                ),
+                (Wel::UserDataXml, "<UserData/>"),
+            ],
+        );
+        check_values(
+            RawEventKind::Journald,
+            &RawEventBody::Journald(journald_body()),
+            &[(
+                JournaldAttr::Fields,
+                "MESSAGE=session opened|_BOOT_ID=0abcff|EMPTY=",
+            )],
+        );
+        check_values(
+            RawEventKind::Auditd,
+            &RawEventBody::Auditd(auditd_body()),
+            &[
+                (AuditdAttr::Serial, "9001"),
+                (AuditdAttr::Records, "SYSCALL:arch=c000003e syscall=59|EOE:"),
+            ],
+        );
+    }
+
+    #[test]
+    fn endpoint_attributes_read_nothing_from_a_body_of_another_kind() {
+        fn check<A: IntoEnumIterator + Display>(kind: RawEventKind) {
+            for body in header_bodies() {
+                if kind_of(&body) == kind {
+                    continue;
+                }
+                for attr in A::iter() {
+                    let name = attr.to_string();
+                    let parsed = RawEventAttrKind::from_kind_and_attr_name(&kind, &name).unwrap();
+                    assert!(attr_value(&body, parsed).is_none(), "{kind:?} {name}");
+                }
+            }
+        }
+        check::<ProcessCreateAttr>(RawEventKind::ProcessCreate);
+        check::<DriverLoadAttr>(RawEventKind::DriverLoad);
+        check::<CreateRemoteThreadAttr>(RawEventKind::CreateRemoteThread);
+        check::<RawAccessReadAttr>(RawEventKind::RawAccessRead);
+        check::<ProcessAccessAttr>(RawEventKind::ProcessAccess);
+        check::<RegistryObjectAddDelAttr>(RawEventKind::RegistryObjectAddDel);
+        check::<WindowsEventLogAttr>(RawEventKind::WindowsEventLog);
+        check::<JournaldAttr>(RawEventKind::Journald);
+        check::<AuditdAttr>(RawEventKind::Auditd);
+    }
+
+    #[test]
+    fn list_elements_are_written_without_substitutions() {
+        let unnamed = raw_event::EventData {
+            name: None,
+            value: "v\tw".to_string(),
+        };
+        assert_eq!(
+            list_element_string(ListElement::EventData(&unnamed)),
+            "=v\tw"
+        );
+        let named = raw_event::EventData {
+            name: Some("n".to_string()),
+            value: String::new(),
+        };
+        assert_eq!(list_element_string(ListElement::EventData(&named)), "n=");
+
+        let text = text_field("k", "a b\n");
+        assert_eq!(list_element_string(ListElement::LogField(&text)), "k=a b\n");
+        let bytes = bytes_field("k", &[0x00, 0x7f, 0xab]);
+        assert_eq!(
+            list_element_string(ListElement::LogField(&bytes)),
+            "k=007fab"
+        );
+        let empty = bytes_field("k", &[]);
+        assert_eq!(list_element_string(ListElement::LogField(&empty)), "k=");
+
+        let record = raw_event::AuditRecord {
+            record_type: "PATH".to_string(),
+            fields: vec![text_field("name", "/bin/sh"), bytes_field("raw", &[0x0f])],
+        };
+        assert_eq!(
+            list_element_string(ListElement::AuditRecord(&record)),
+            "PATH:name=/bin/sh raw=0f"
+        );
+        let bare = raw_event::AuditRecord {
+            record_type: "EOE".to_string(),
+            fields: Vec::new(),
+        };
+        assert_eq!(list_element_string(ListElement::AuditRecord(&bare)), "EOE:");
+    }
+
+    fn string_attr(
+        kind: RawEventKind,
+        name: impl Display,
+        cmp_kind: AttrCmpKind,
+        value: &str,
+        weight: f64,
+    ) -> PacketAttr {
+        attr(
+            kind,
+            name,
+            ValueKind::String,
+            cmp_kind,
+            serialize(&value),
+            Some(weight),
+        )
+    }
+
+    fn on_endpoint(body: RawEventBody) -> StoredDetectionEvent {
+        stored(raw_event_event(time(), &endpoint_sensor(), body))
+    }
+
+    #[test]
+    fn a_list_attribute_matches_when_one_element_matches() {
+        let journald = on_endpoint(RawEventBody::Journald(journald_body()));
+        let fields = |cmp_kind, value: &str, weight| {
+            string_attr(
+                RawEventKind::Journald,
+                JournaldAttr::Fields,
+                cmp_kind,
+                value,
+                weight,
+            )
+        };
+        let attrs = vec![
+            fields(AttrCmpKind::Contain, "_BOOT_ID=0abcff", 1.0),
+            fields(AttrCmpKind::Contain, "MESSAGE=session", 2.0),
+            fields(AttrCmpKind::Contain, "MESSAGE=closed", 4.0),
+            fields(AttrCmpKind::NotContain, "MESSAGE=closed", 8.0),
+            fields(AttrCmpKind::NotContain, "EMPTY=", 16.0),
+        ];
+        assert_score(score_of(&journald, policy(1, attrs, Vec::new(), 0.0)), 11.0);
+
+        let auditd = on_endpoint(RawEventBody::Auditd(auditd_body()));
+        let attrs = vec![
+            string_attr(
+                RawEventKind::Auditd,
+                AuditdAttr::Records,
+                AttrCmpKind::Contain,
+                "SYSCALL:arch=c000003e syscall=59",
+                1.0,
+            ),
+            string_attr(
+                RawEventKind::Auditd,
+                AuditdAttr::Records,
+                AttrCmpKind::Contain,
+                "EOE:",
+                2.0,
+            ),
+            attr(
+                RawEventKind::Auditd,
+                AuditdAttr::Serial,
+                ValueKind::UInteger,
+                AttrCmpKind::Equal,
+                serialize(&9001_u64),
+                Some(4.0),
+            ),
+        ];
+        assert_score(score_of(&auditd, policy(1, attrs, Vec::new(), 0.0)), 7.0);
+
+        let windows = on_endpoint(RawEventBody::WindowsEventLog(windows_event_log_body()));
+        let attrs = vec![string_attr(
+            RawEventKind::WindowsEventLog,
+            WindowsEventLogAttr::EventData,
+            AttrCmpKind::Contain,
+            "=line 1\n\tline 2",
+            1.0,
+        )];
+        assert_score(score_of(&windows, policy(1, attrs, Vec::new(), 0.0)), 1.0);
+    }
+
+    #[test]
+    fn a_none_scalar_field_matches_no_condition() {
+        let mut body = windows_event_log_body();
+        body.channel = None;
+        body.provider = None;
+        body.event_id = None;
+        body.version = None;
+        body.level = None;
+        body.task = None;
+        body.opcode = None;
+        body.keywords = None;
+        body.record_id = None;
+        body.computer = None;
+        body.user_sid = None;
+        body.user_data_xml = None;
+        let body = RawEventBody::WindowsEventLog(body);
+        for attr in WindowsEventLogAttr::iter() {
+            let is_list = attr == WindowsEventLogAttr::EventData;
+            let name = attr.to_string();
+            let read = attr_value(&body, RawEventAttrKind::WindowsEventLog(attr));
+            // Only the list attribute still reads a value.
+            assert_eq!(read.is_some(), is_list, "{name}");
+        }
+        let windows = on_endpoint(body);
+        let attrs = vec![
+            string_attr(
+                RawEventKind::WindowsEventLog,
+                WindowsEventLogAttr::Channel,
+                AttrCmpKind::Contain,
+                "",
+                1.0,
+            ),
+            string_attr(
+                RawEventKind::WindowsEventLog,
+                WindowsEventLogAttr::Channel,
+                AttrCmpKind::NotContain,
+                "Security",
+                2.0,
+            ),
+        ];
+        assert_score(score_of(&windows, policy(1, attrs, Vec::new(), 0.0)), 0.0);
+
+        let process = on_endpoint(RawEventBody::ProcessCreate(process_create_body(None)));
+        let logon = |cmp_kind, value: u64, weight| {
+            attr(
+                RawEventKind::ProcessCreate,
+                ProcessCreateAttr::LogonIdFull,
+                ValueKind::UInteger,
+                cmp_kind,
+                serialize(&value),
+                Some(weight),
+            )
+        };
+        let attrs = vec![
+            logon(AttrCmpKind::Equal, 0, 1.0),
+            logon(AttrCmpKind::NotEqual, 0, 2.0),
+            logon(AttrCmpKind::Greater, 0, 4.0),
+        ];
+        assert_score(score_of(&process, policy(1, attrs, Vec::new(), 0.0)), 0.0);
+        let process = on_endpoint(RawEventBody::ProcessCreate(process_create_body(Some(7))));
+        let attrs = vec![logon(AttrCmpKind::Equal, 7, 1.0)];
+        assert_score(score_of(&process, policy(1, attrs, Vec::new(), 0.0)), 1.0);
+
+        let mut auditd = auditd_body();
+        auditd.serial = None;
+        assert!(
+            attr_value(
+                &RawEventBody::Auditd(auditd),
+                RawEventAttrKind::Auditd(AuditdAttr::Serial)
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn a_none_list_field_reads_as_an_empty_list() {
+        let mut windows = windows_event_log_body();
+        windows.event_data = None;
+        let mut journald = journald_body();
+        journald.fields = None;
+        let mut auditd = auditd_body();
+        auditd.records = None;
+        let cases = [
+            (
+                RawEventBody::WindowsEventLog(windows),
+                RawEventAttrKind::WindowsEventLog(WindowsEventLogAttr::EventData),
+            ),
+            (
+                RawEventBody::Journald(journald),
+                RawEventAttrKind::Journald(JournaldAttr::Fields),
+            ),
+            (
+                RawEventBody::Auditd(auditd),
+                RawEventAttrKind::Auditd(AuditdAttr::Records),
+            ),
+        ];
+        for (body, attr_kind) in cases {
+            let Some(AttrValue::VecString(items)) = attr_value(&body, attr_kind) else {
+                panic!("a list attribute reads a list of strings");
+            };
+            assert_eq!(items.len(), 0);
+        }
     }
 }
