@@ -159,6 +159,17 @@ pub(crate) enum Verdict {
     Ignored,
 }
 
+impl Verdict {
+    fn json(self) -> String {
+        let name = match self {
+            Self::Observed => "observed",
+            Self::Confirmed => "confirmed",
+            Self::Ignored => "ignored",
+        };
+        serde_json::Value::from(name).to_string()
+    }
+}
+
 /// Whether a device is seen.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub(crate) enum Activity {
@@ -190,23 +201,44 @@ pub(crate) enum Origin {
     Import,
 }
 
-/// The stored value of a `dai devices` row.
+/// The stored value of a `dai devices` row, keyed by (customer, device).
+///
+/// A device id with no row is either an alias (a `dai device aliases` row
+/// under the same key names the current device) or unknown.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub(crate) struct DeviceRow {
     /// The strong identifiers the device holds, in the order they were
-    /// added.
+    /// added. Each has a `dai device identifiers` row naming this device as
+    /// its current holder.
     pub(crate) identifiers: Vec<Identifier>,
-    /// The names, each value once per source.
+    /// The names, each value once per source. Those of source operator are
+    /// the names an import set, which leaves at most one; a merge keeps
+    /// those of every device it merges.
     pub(crate) names: Vec<DeviceName>,
     /// Whether the device was seen as a DHCP server.
     pub(crate) was_dhcp_server: bool,
-    pub(crate) first_seen: i64,
-    pub(crate) last_seen: i64,
+    /// The earliest time an observation applied to the device saw it;
+    /// `None` until one does, as for a device an import created.
+    pub(crate) first_seen: Option<i64>,
+    /// The latest time an observation applied to the device saw it; `None`
+    /// until one does.
+    pub(crate) last_seen: Option<i64>,
+    /// When the device was created: the order-key time of the observation
+    /// that created it, or the time of the import or split that did.
+    /// Retention measures a device with no last seen time from it.
+    pub(crate) created: i64,
     pub(crate) verdict: Verdict,
     pub(crate) activity: Activity,
     pub(crate) origin: Origin,
+    /// The operator asset id, also held as an identifier of kind operator
+    /// asset id.
     pub(crate) operator_asset_id: Option<String>,
+    /// The operator's memo; empty for none.
     pub(crate) memo: String,
+    /// The addresses `dai fixed ips` fixes to the device, each a (site
+    /// token, IP): the device-side index of that table, written with it.
+    /// It is not a device value: changing it changes no version.
+    pub(crate) fixed_ips: BTreeSet<(String, IpAddr)>,
     /// Incremented by each substantive change; the version of the latest
     /// `dai device changes` entry.
     pub(crate) version: u64,
@@ -256,24 +288,105 @@ pub(crate) struct EarlierOwner {
     pub(crate) left: i64,
 }
 
-/// The stored value of a `dai device identifiers` row.
+/// The stored value of a `dai device identifiers` row, keyed by (customer,
+/// kind, value): the identifier's ownership history.
+///
+/// The identifier belonged to each earlier owner until it left it, and from
+/// the time the last one left (or always, if there is none) to `device`. A
+/// row whose `device` is `None` is the history of a MAC an import removed
+/// from its device, which no device has taken since: no device holds it
+/// from the time its last earlier owner left on, and the next device to
+/// take it, by an observation creating a device or by an import, becomes
+/// `device` and holds it from that time on.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub(crate) struct IdentifierRow {
-    /// The device holding the identifier now.
-    pub(crate) device: Uuid,
-    /// The latest time an observation confirmed the identifier.
+    /// The device holding the identifier now, or `None` if none does.
+    pub(crate) device: Option<Uuid>,
+    /// The latest time an observation confirmed the identifier, or an
+    /// import gave it to its device.
     pub(crate) last_confirmed: i64,
     /// The devices that held it before, ordered by the time it left them.
     pub(crate) earlier_owners: Vec<EarlierOwner>,
 }
 
 impl IdentifierRow {
-    /// Returns the device that held the identifier at the time `time`.
-    pub(crate) fn owner_at(&self, time: i64) -> Uuid {
+    /// Returns the device that held the identifier at the time `time`, or
+    /// `None` if no device did.
+    pub(crate) fn owner_at(&self, time: i64) -> Option<Uuid> {
         self.earlier_owners
             .iter()
             .find(|owner| owner.left > time)
-            .map_or(self.device, |owner| owner.device)
+            .map_or(self.device, |owner| Some(owner.device))
+    }
+
+    /// Records that the identifier left its current holder at `time`, after
+    /// which no device holds it: the holder becomes the last earlier owner,
+    /// leaving at `time`, and the owner at every earlier time stays.
+    ///
+    /// An earlier owner recorded as leaving after `time` (an evidence aging
+    /// move stamped with an observation time later than `time`) leaves at
+    /// `time` instead, and the owners after it, which held the identifier
+    /// only after `time`, are dropped: from `time` on, no device holds it.
+    pub(crate) fn release(&mut self, time: i64) {
+        let Some(device) = self.device.take() else {
+            return;
+        };
+        if let Some(cut) = self
+            .earlier_owners
+            .iter()
+            .position(|owner| owner.left > time)
+        {
+            self.earlier_owners.truncate(cut + 1);
+            if let Some(last) = self.earlier_owners.last_mut() {
+                last.left = time;
+            }
+        }
+        if self
+            .earlier_owners
+            .last()
+            .is_none_or(|last| last.device != device || last.left < time)
+        {
+            self.earlier_owners
+                .push(EarlierOwner { device, left: time });
+        }
+    }
+
+    /// Replaces `from` by `to` as the holder and in the earlier owners, and
+    /// returns whether it changed anything.
+    ///
+    /// Consecutive earlier owners that become the same device are one, and
+    /// trailing ones that are the current holder are dropped: the owner at
+    /// every time stays what the replacement makes it.
+    pub(crate) fn rename(&mut self, from: &BTreeSet<Uuid>, to: Uuid) -> bool {
+        let mut changed = false;
+        if self.device.is_some_and(|device| from.contains(&device)) {
+            self.device = Some(to);
+            changed = true;
+        }
+        for owner in &mut self.earlier_owners {
+            if from.contains(&owner.device) {
+                owner.device = to;
+                changed = true;
+            }
+        }
+        if changed {
+            let mut compacted: Vec<EarlierOwner> = Vec::with_capacity(self.earlier_owners.len());
+            for owner in self.earlier_owners.drain(..) {
+                match compacted.last_mut() {
+                    // The earlier entry's span ends where this one's starts.
+                    Some(last) if last.device == owner.device => last.left = owner.left,
+                    _ => compacted.push(owner),
+                }
+            }
+            while compacted
+                .last()
+                .is_some_and(|last| Some(last.device) == self.device)
+            {
+                compacted.pop();
+            }
+            self.earlier_owners = compacted;
+        }
+        changed
     }
 }
 
@@ -286,7 +399,12 @@ pub(crate) enum AliasReason {
     Imported,
 }
 
-/// The stored value of a `dai device aliases` row.
+/// The stored value of a `dai device aliases` row, keyed by (customer, old
+/// device id), the key of the `dai devices` row the old id had.
+///
+/// `current` is always a device with a `dai devices` row: a merge absorbing
+/// it re-points every alias naming it to the survivor, so an alias is
+/// resolved in one step.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub(crate) struct AliasRow {
     /// The device the old id now names.
@@ -488,8 +606,23 @@ pub(crate) struct ChangeEntry {
     pub(crate) source: ChangeSource,
 }
 
+/// The stored value of a `dai fixed ips` row, keyed by (customer, site, IP)
+/// as [`address_key`] encodes it: the device an import fixed at the
+/// address. A merge re-points it to the survivor, so it always names a
+/// device with a `dai devices` row.
+pub(crate) type FixedIpRow = Uuid;
+
 /// The JSON text of no value.
 const JSON_NULL: &str = "null";
+
+/// Returns `value` as JSON text, `null` for an empty string.
+fn json_text(value: &str) -> String {
+    if value.is_empty() {
+        JSON_NULL.to_string()
+    } else {
+        serde_json::Value::from(value).to_string()
+    }
+}
 
 // ---- Values ----
 
@@ -547,6 +680,42 @@ pub(crate) fn machine_account(body: &DaiObservationBody) -> Option<String> {
 
 pub(super) fn device_key(customer: u32, device: Uuid) -> Vec<u8> {
     KeyWriter::default().u32(customer).uuid(device).finish()
+}
+
+/// Returns the key of the `dai device aliases` row of the old id `device`.
+pub(super) fn alias_key(customer: u32, device: Uuid) -> Vec<u8> {
+    device_key(customer, device)
+}
+
+/// Decodes the key of a `dai devices` or `dai device aliases` row.
+pub(super) fn decode_device_key(key: &[u8]) -> Result<(u32, Uuid)> {
+    let mut reader = KeyReader::new(key);
+    let customer = reader.u32()?;
+    let device = reader.uuid()?;
+    reader.finish()?;
+    Ok((customer, device))
+}
+
+/// Decodes the key of a `dai device identifiers` row.
+pub(super) fn decode_identifier_key(key: &[u8]) -> Result<(u32, Identifier)> {
+    let mut reader = KeyReader::new(key);
+    let customer = reader.u32()?;
+    let number = reader.byte()?;
+    let value = reader.str()?;
+    reader.finish()?;
+    let kind = IdentifierKind::from_number(number)
+        .ok_or_else(|| anyhow::anyhow!("invalid DAI identifier kind {number} in the key"))?;
+    Ok((customer, Identifier { kind, value }))
+}
+
+/// Decodes the key of a `dai ip state` or `dai fixed ips` row.
+pub(super) fn decode_address_key(key: &[u8]) -> Result<(u32, String, IpAddr)> {
+    let mut reader = KeyReader::new(key);
+    let customer = reader.u32()?;
+    let site = reader.str()?;
+    let ip = reader.ip()?;
+    reader.finish()?;
+    Ok((customer, site, ip))
 }
 
 pub(super) fn identifier_key(customer: u32, id: &Identifier) -> Vec<u8> {
@@ -667,6 +836,37 @@ pub(super) fn service_key(customer: u32, device: Uuid, port: u16, proto: u8) -> 
         .u16(port)
         .byte(proto)
         .finish()
+}
+
+/// Decodes the key of a `dai services` row into its device, port and
+/// protocol.
+pub(super) fn decode_service_key(key: &[u8]) -> Result<(Uuid, u16, u8)> {
+    let mut reader = KeyReader::new(key);
+    reader.u32()?;
+    let device = reader.uuid()?;
+    let port = reader.u16()?;
+    let proto = reader.byte()?;
+    reader.finish()?;
+    Ok((device, port, proto))
+}
+
+/// Decodes the key of a `dai software strings` row into its device, side,
+/// source and text.
+pub(super) fn decode_software_key(key: &[u8]) -> Result<(Uuid, u8, u8, String)> {
+    let mut reader = KeyReader::new(key);
+    reader.u32()?;
+    let device = reader.uuid()?;
+    let side = reader.byte()?;
+    let source = reader.byte()?;
+    let text = reader.str()?;
+    reader.finish()?;
+    Ok((device, side, source, text))
+}
+
+/// Returns the key prefix of the rows of `device` in the tables keyed by
+/// (customer, device, ...).
+pub(super) fn device_prefix(customer: u32, device: Uuid) -> Vec<u8> {
+    device_key(customer, device)
 }
 
 pub(super) fn software_key(
@@ -827,10 +1027,53 @@ impl Dai<'_> {
                     &device_binding_key(customer, row.device, site, ip, *start),
                     &(),
                 )?;
+                self.lock_device(txn, customer, row.device)?;
             }
             changed = true;
         }
         Ok(changed)
+    }
+
+    /// Writes back, within `txn`, the `dai devices` row of `device`,
+    /// unchanged, if it has one.
+    ///
+    /// A row of a table keyed by device that a transaction adds (a binding's
+    /// reverse index row, a service, a software string, a conflict naming
+    /// the device) is found by an untracked scan in a
+    /// transaction that moves the device's rows, a merge or a split, which
+    /// reads the device row for update. Writing the device row whenever such
+    /// a row is added makes the two conflict whichever commits first, so the
+    /// retried one sees the row.
+    pub(crate) fn lock_device(&self, txn: &Txn<'_>, customer: u32, device: Uuid) -> Result<()> {
+        let key = device_key(customer, device);
+        if let Some(row) = Self::get_row::<DeviceRow>(txn, &self.devices, &key)? {
+            Self::put_row(txn, &self.devices, &key, &row)?;
+        }
+        Ok(())
+    }
+
+    /// Returns the current device the id `device` names within `txn`: the
+    /// device itself if it has a `dai devices` row, else the current device
+    /// of its alias, or `None` if it names no device. Every row it reads is
+    /// read for update.
+    pub(crate) fn resolve_device(
+        &self,
+        txn: &Txn<'_>,
+        customer: u32,
+        device: Uuid,
+    ) -> Result<Option<Uuid>> {
+        if self.device_in(txn, customer, device)?.is_some() {
+            return Ok(Some(device));
+        }
+        let Some(alias) =
+            Self::get_row::<AliasRow>(txn, &self.aliases, &alias_key(customer, device))?
+        else {
+            return Ok(None);
+        };
+        Ok(self
+            .device_in(txn, customer, alias.current)?
+            .is_some()
+            .then_some(alias.current))
     }
 
     /// Returns the rows of `map` whose keys are in `[from, to)`, as `txn`
@@ -899,7 +1142,13 @@ impl Dai<'_> {
             first,
             last,
         });
-        row.devices.extend(devices);
+        for device in devices {
+            if row.devices.insert(device) {
+                // A merge re-points the devices of every conflict naming an
+                // absorbed device, found by an untracked scan.
+                self.lock_device(txn, customer, device)?;
+            }
+        }
         row.first = row.first.min(first);
         row.last = row.last.max(last);
         if stored.as_ref() != Some(&row) {
@@ -911,11 +1160,16 @@ impl Dai<'_> {
 
 // ---- Device edits ----
 
-/// The changes one observation, or one retention step, makes to one device.
+/// The changes one observation, one retention step or one operator
+/// operation makes to one device.
 pub(crate) struct DeviceEdit {
     pub(crate) row: DeviceRow,
-    /// Whether the row was created by this change.
-    created: bool,
+    /// The kind of the change entry if the change always writes one: a
+    /// creation, a merge or a split. Otherwise it writes one of kind changed
+    /// if a field changes.
+    kind: Option<ChangeKind>,
+    /// Whether the change deletes the row: the device was merged away.
+    deleted: bool,
     related_device: Option<Uuid>,
     fields: Vec<FieldChange>,
     /// Whether the row differs from the stored one.
@@ -923,6 +1177,17 @@ pub(crate) struct DeviceEdit {
 }
 
 impl DeviceEdit {
+    fn new(row: DeviceRow, created: bool) -> Self {
+        Self {
+            row,
+            kind: created.then_some(ChangeKind::Created),
+            deleted: false,
+            related_device: None,
+            fields: Vec::new(),
+            dirty: created,
+        }
+    }
+
     fn change(&mut self, path: &str, op: ChangeOp, before: String, after: String) {
         self.fields.push(FieldChange {
             path: path.to_string(),
@@ -936,16 +1201,26 @@ impl DeviceEdit {
     /// Widens the first and last seen times by `[first, last]`, and returns
     /// a device that is not seen to active.
     pub(crate) fn touch(&mut self, first: i64, last: i64) {
-        if first < self.row.first_seen {
-            self.row.first_seen = first;
-            self.dirty = true;
-        }
-        if last > self.row.last_seen {
-            self.row.last_seen = last;
-            self.dirty = true;
-        }
+        self.widen_seen(Some(first), Some(last));
         if self.row.activity == Activity::NotSeen {
             self.set_activity(Activity::Active);
+        }
+    }
+
+    /// Widens the first and last seen times by `first` and `last`; a time
+    /// the device has none of takes the given one.
+    pub(crate) fn widen_seen(&mut self, first: Option<i64>, last: Option<i64>) {
+        if let Some(first) = first
+            && self.row.first_seen.is_none_or(|seen| first < seen)
+        {
+            self.row.first_seen = Some(first);
+            self.dirty = true;
+        }
+        if let Some(last) = last
+            && self.row.last_seen.is_none_or(|seen| last > seen)
+        {
+            self.row.last_seen = Some(last);
+            self.dirty = true;
         }
     }
 
@@ -956,6 +1231,55 @@ impl DeviceEdit {
         let before = self.row.activity.json();
         self.row.activity = activity;
         self.change("activity", ChangeOp::Set, before, activity.json());
+    }
+
+    pub(crate) fn set_verdict(&mut self, verdict: Verdict) {
+        if self.row.verdict == verdict {
+            return;
+        }
+        let before = self.row.verdict.json();
+        self.row.verdict = verdict;
+        self.change("verdict", ChangeOp::Set, before, verdict.json());
+    }
+
+    /// Sets the operator asset id field, `None` removing it.
+    pub(crate) fn set_asset_id(&mut self, asset_id: Option<&str>) {
+        if self.row.operator_asset_id.as_deref() == asset_id {
+            return;
+        }
+        let before = json_text(self.row.operator_asset_id.as_deref().unwrap_or_default());
+        self.row.operator_asset_id = asset_id.map(str::to_string);
+        self.change(
+            "operator_asset_id",
+            ChangeOp::Set,
+            before,
+            json_text(asset_id.unwrap_or_default()),
+        );
+    }
+
+    /// Sets the memo, an empty one removing it.
+    pub(crate) fn set_memo(&mut self, memo: &str) {
+        if self.row.memo == memo {
+            return;
+        }
+        let before = json_text(&self.row.memo);
+        self.row.memo = memo.to_string();
+        self.change("memo", ChangeOp::Set, before, json_text(memo));
+    }
+
+    /// Makes `name` the one name of source operator, seen at `seen` if it is
+    /// new, or removes every name of that source if it is `None`.
+    pub(crate) fn set_operator_name(&mut self, name: Option<&str>, seen: i64) {
+        self.remove_names(|held| held.source == NameSource::Operator && Some(&*held.value) != name);
+        if let Some(name) = name
+            && !self
+                .row
+                .names
+                .iter()
+                .any(|held| held.source == NameSource::Operator && held.value == name)
+        {
+            self.add_name(name, NameSource::Operator, seen);
+        }
     }
 
     /// Adds `id` to the identifiers if the device does not hold it.
@@ -1044,10 +1368,32 @@ impl DeviceEdit {
     pub(crate) fn relate(&mut self, device: Uuid) {
         self.related_device = Some(device);
     }
+
+    /// Makes the change a merge or a split with `device`, which writes one
+    /// change entry of that kind naming it whatever else changes.
+    pub(crate) fn mark(&mut self, kind: ChangeKind, device: Uuid) {
+        self.kind = Some(kind);
+        self.relate(device);
+        self.dirty = true;
+    }
+
+    /// Deletes the row when the edits are written, after its change entry.
+    pub(crate) fn delete(&mut self) {
+        self.deleted = true;
+        self.dirty = true;
+    }
+
+    /// Sets the fixed IP index, which records no field change.
+    pub(crate) fn set_fixed_ips(&mut self, fixed_ips: BTreeSet<(String, IpAddr)>) {
+        if self.row.fixed_ips != fixed_ips {
+            self.row.fixed_ips = fixed_ips;
+            self.dirty = true;
+        }
+    }
 }
 
-/// The devices one observation, or one retention step, changes, written
-/// together by [`flush`](Self::flush).
+/// The devices one observation, one retention step or one operator
+/// operation changes, written together by [`flush`](Self::flush).
 #[derive(Default)]
 pub(crate) struct DeviceEdits {
     edits: BTreeMap<Uuid, DeviceEdit>,
@@ -1069,20 +1415,57 @@ impl DeviceEdits {
                 let Some(row) = dai.device_in(txn, customer, device)? else {
                     return Ok(None);
                 };
-                Ok(Some(entry.insert(DeviceEdit {
-                    row,
-                    created: false,
-                    related_device: None,
-                    fields: Vec::new(),
-                    dirty: false,
-                })))
+                Ok(Some(entry.insert(DeviceEdit::new(row, false))))
             }
         }
     }
 
+    /// Returns the edit of `device`, which the caller knows exists.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the customer has no such device, or the database
+    /// operation fails.
+    pub(crate) fn existing(
+        &mut self,
+        dai: &Dai<'_>,
+        txn: &Txn<'_>,
+        customer: u32,
+        device: Uuid,
+    ) -> Result<&mut DeviceEdit> {
+        self.get(dai, txn, customer, device)?
+            .with_context(|| format!("DAI device {device} of customer {customer} has no row"))
+    }
+
+    /// Returns a device id that is neither stored nor edited here, read for
+    /// update within `txn` with its alias key.
+    pub(crate) fn new_id(&self, dai: &Dai<'_>, txn: &Txn<'_>, customer: u32) -> Result<Uuid> {
+        loop {
+            let device = new_device_id();
+            if !self.edits.contains_key(&device)
+                && dai.resolve_device(txn, customer, device)?.is_none()
+            {
+                return Ok(device);
+            }
+        }
+    }
+
+    /// Adds `device`, a new id, as a device of the row `row`; `created`
+    /// tells whether its change entry is of kind created.
+    pub(crate) fn insert(
+        &mut self,
+        device: Uuid,
+        row: DeviceRow,
+        created: bool,
+    ) -> &mut DeviceEdit {
+        self.edits
+            .entry(device)
+            .or_insert(DeviceEdit::new(row, created))
+    }
+
     /// Creates a device of origin observation, verdict observed and activity
-    /// active holding `id`, first and last seen at `time`, and returns its
-    /// id and edit.
+    /// active holding `id`, created and first and last seen at `time`, and
+    /// returns its id and edit.
     pub(crate) fn create(&mut self, id: &Identifier, time: i64) -> (Uuid, &mut DeviceEdit) {
         let device = loop {
             let device = new_device_id();
@@ -1090,25 +1473,24 @@ impl DeviceEdits {
                 break device;
             }
         };
-        let mut edit = DeviceEdit {
-            row: DeviceRow {
+        let mut edit = DeviceEdit::new(
+            DeviceRow {
                 identifiers: Vec::new(),
                 names: Vec::new(),
                 was_dhcp_server: false,
-                first_seen: time,
-                last_seen: time,
+                first_seen: Some(time),
+                last_seen: Some(time),
+                created: time,
                 verdict: Verdict::Observed,
                 activity: Activity::Active,
                 origin: Origin::Observation,
                 operator_asset_id: None,
                 memo: String::new(),
+                fixed_ips: BTreeSet::new(),
                 version: 0,
             },
-            created: true,
-            related_device: None,
-            fields: Vec::new(),
-            dirty: true,
-        };
+            true,
+        );
         edit.add_identifier(id);
         let edit = self.edits.entry(device).or_insert(edit);
         (device, edit)
@@ -1116,7 +1498,8 @@ impl DeviceEdits {
 
     /// Writes every edited device within `txn`, each substantive change
     /// incrementing the device's version and writing one change entry of
-    /// `source` at `time`.
+    /// `source` at `time`, and deletes each device an edit deletes after
+    /// writing its entry.
     pub(crate) fn flush(
         self,
         dai: &Dai<'_>,
@@ -1129,14 +1512,10 @@ impl DeviceEdits {
             if !edit.dirty {
                 continue;
             }
-            if edit.created || !edit.fields.is_empty() {
+            if edit.kind.is_some() || !edit.fields.is_empty() {
                 edit.row.version = edit.row.version.wrapping_add(1);
                 let entry = ChangeEntry {
-                    kind: if edit.created {
-                        ChangeKind::Created
-                    } else {
-                        ChangeKind::Changed
-                    },
+                    kind: edit.kind.unwrap_or(ChangeKind::Changed),
                     related_device: edit.related_device,
                     fields: edit.fields,
                     time,
@@ -1146,7 +1525,12 @@ impl DeviceEdits {
                 Dai::get_row::<ChangeEntry>(txn, &dai.changes, &key)?;
                 Dai::put_row(txn, &dai.changes, &key, &entry)?;
             }
-            Dai::put_row(txn, &dai.devices, &device_key(customer, device), &edit.row)?;
+            let key = device_key(customer, device);
+            if edit.deleted {
+                Dai::delete_row(txn, &dai.devices, &key)?;
+            } else {
+                Dai::put_row(txn, &dai.devices, &key, &edit.row)?;
+            }
         }
         Ok(())
     }
@@ -1215,7 +1599,7 @@ mod tests {
         let b = Uuid::from_bytes([2; 16]);
         let c = Uuid::from_bytes([3; 16]);
         let row = IdentifierRow {
-            device: c,
+            device: Some(c),
             last_confirmed: 30,
             earlier_owners: vec![
                 EarlierOwner {
@@ -1228,12 +1612,84 @@ mod tests {
                 },
             ],
         };
-        assert_eq!(row.owner_at(0), a);
-        assert_eq!(row.owner_at(9), a);
-        assert_eq!(row.owner_at(10), b);
-        assert_eq!(row.owner_at(19), b);
-        assert_eq!(row.owner_at(20), c);
-        assert_eq!(row.owner_at(40), c);
+        assert_eq!(row.owner_at(0), Some(a));
+        assert_eq!(row.owner_at(9), Some(a));
+        assert_eq!(row.owner_at(10), Some(b));
+        assert_eq!(row.owner_at(19), Some(b));
+        assert_eq!(row.owner_at(20), Some(c));
+        assert_eq!(row.owner_at(40), Some(c));
+        // Released, no device holds it from then on.
+        let mut released = row.clone();
+        released.release(30);
+        assert_eq!(released.device, None);
+        assert_eq!(released.owner_at(29), Some(c));
+        assert_eq!(released.owner_at(30), None);
+        // A release earlier than the last move ends the holding at the
+        // release: the owners before it stay, and none holds it after.
+        let mut early = row.clone();
+        early.release(15);
+        assert_eq!(early.device, None);
+        assert_eq!(early.owner_at(9), Some(a));
+        assert_eq!(early.owner_at(14), Some(b));
+        assert_eq!(early.owner_at(15), None);
+        assert_eq!(early.owner_at(25), None);
+        assert!(
+            early
+                .earlier_owners
+                .windows(2)
+                .all(|w| w[0].left <= w[1].left)
+        );
+        assert_eq!(
+            early.earlier_owners.last().map(|o| (o.device, o.left)),
+            Some((c, 15))
+        );
+        // The next device to take it holds it from the release on.
+        let d = Uuid::from_bytes([4; 16]);
+        early.device = Some(d);
+        assert_eq!(early.owner_at(14), Some(b));
+        assert_eq!(early.owner_at(15), Some(d));
+        assert_eq!(early.owner_at(25), Some(d));
+    }
+
+    #[test]
+    fn renaming_owners_keeps_the_owner_at_every_time() {
+        let a = Uuid::from_bytes([1; 16]);
+        let b = Uuid::from_bytes([2; 16]);
+        let s = Uuid::from_bytes([9; 16]);
+        let row = IdentifierRow {
+            device: Some(b),
+            last_confirmed: 30,
+            earlier_owners: vec![
+                EarlierOwner {
+                    device: a,
+                    left: 10,
+                },
+                EarlierOwner {
+                    device: s,
+                    left: 20,
+                },
+            ],
+        };
+        let mut renamed = row.clone();
+        assert!(renamed.rename(&BTreeSet::from([a]), s));
+        assert_eq!(
+            renamed.earlier_owners,
+            [EarlierOwner {
+                device: s,
+                left: 20
+            }]
+        );
+        for time in [0, 15, 25] {
+            let expected = row.owner_at(time).map(|d| if d == a { s } else { d });
+            assert_eq!(renamed.owner_at(time), expected);
+        }
+        let mut merged_all = row.clone();
+        assert!(merged_all.rename(&BTreeSet::from([a, b]), s));
+        assert_eq!(merged_all.device, Some(s));
+        assert_eq!(merged_all.earlier_owners, []);
+        let mut untouched = row.clone();
+        assert!(!untouched.rename(&BTreeSet::from([Uuid::from_bytes([7; 16])]), s));
+        assert_eq!(untouched, row);
     }
 
     #[test]
@@ -1250,13 +1706,15 @@ mod tests {
                 name("dhcp-old", NameSource::Dhcp, 10),
             ],
             was_dhcp_server: false,
-            first_seen: 0,
-            last_seen: 0,
+            first_seen: Some(0),
+            last_seen: Some(0),
+            created: 0,
             verdict: Verdict::Observed,
             activity: Activity::Active,
             origin: Origin::Observation,
             operator_asset_id: None,
             memo: String::new(),
+            fixed_ips: BTreeSet::new(),
             version: 1,
         };
         assert_eq!(row.representative_name(), Some("dhcp-old"));

@@ -226,6 +226,26 @@ impl<'e> Env<'e> {
         })
     }
 
+    /// Reads, within `txn`, what replaying the binding evidence of an
+    /// address of `customer` reads: the customer's guard for update, without
+    /// incrementing it, and the settings. A replay applies no observation
+    /// at a site, so it reads no site.
+    fn for_replay(dai: &'e Dai<'e>, txn: &'e Txn<'e>, customer: u32, now: i64) -> Result<Self> {
+        txn.get_for_update_cf(dai.guard.cf, customer_key(customer), EXCLUSIVE)
+            .map_err(anyhow::Error::from)?;
+        let settings = dai.stored_settings(txn, customer)?.unwrap_or_default();
+        Ok(Self {
+            dai,
+            txn,
+            customer,
+            settings,
+            relays: HashMap::new(),
+            multi_site: false,
+            sensor_site: None,
+            now,
+        })
+    }
+
     /// Returns the site an observation of `body` is applied at.
     fn site_of(&self, body: &DaiObservationBody) -> SiteOf {
         if let DaiObservationBody::DhcpLease {
@@ -428,7 +448,7 @@ impl<'e> Env<'e> {
                         software_source_number(*source),
                         text,
                     );
-                    self.widen_times(&key, first, last)?;
+                    self.widen_times(device, &key, first, last)?;
                 }
             }
             DaiObservationBody::DnsName { name, ip } => {
@@ -569,7 +589,7 @@ impl<'e> Env<'e> {
                 .is_some_and(|latest| pending.order < latest);
             if late {
                 if !existed {
-                    self.recompute(address, site, *ip, time)?;
+                    self.recompute(&mut address.bindings, site, *ip, time)?;
                 }
             } else {
                 match (msg, &mac, device) {
@@ -632,12 +652,16 @@ impl<'e> Env<'e> {
     /// (device creation, evidence aging and the MAC's last confirmed time),
     /// and returns the device the ACK applies to: the one that holds the MAC
     /// at `time` once they ran.
+    ///
+    /// A MAC an import removed from its device, which no device holds since,
+    /// binds the device that held it at `time` if one did; from the removal
+    /// on, the ACK creates a device, which holds the MAC from the removal on.
     fn ack_identifier(&self, edits: &mut DeviceEdits, mac: &str, time: i64) -> Result<Uuid> {
         let id = Identifier::mac(mac);
         let Some(mut row) = self.dai.identifier_in(self.txn, self.customer, &id)? else {
             let (device, _) = edits.create(&id, time);
             let row = IdentifierRow {
-                device,
+                device: Some(device),
                 last_confirmed: time,
                 earlier_owners: Vec::new(),
             };
@@ -645,9 +669,24 @@ impl<'e> Env<'e> {
                 .put_identifier(self.txn, self.customer, &id, &row)?;
             return Ok(device);
         };
+        let Some(holder) = row.device else {
+            let owner = if let Some(owner) = row.owner_at(time) {
+                owner
+            } else {
+                let (device, _) = edits.create(&id, time);
+                row.device = Some(device);
+                device
+            };
+            // Written even when unchanged: the ACK binds an earlier owner,
+            // which retention keeps only while it has such a binding.
+            row.last_confirmed = row.last_confirmed.max(time);
+            self.dai
+                .put_identifier(self.txn, self.customer, &id, &row)?;
+            return Ok(owner);
+        };
         let aging = secs_to_nanos(self.settings.evidence_aging_secs);
         if time > row.last_confirmed.saturating_add(aging) {
-            let old = row.device;
+            let old = holder;
             let keeps = edits
                 .get(self.dai, self.txn, self.customer, old)?
                 .is_some_and(|edit| edit.row.keeps_identifiers());
@@ -667,17 +706,17 @@ impl<'e> Env<'e> {
                 device: old,
                 left: time,
             });
-            row.device = device;
+            row.device = Some(device);
             self.dai
                 .put_identifier(self.txn, self.customer, &id, &row)?;
             return Ok(device);
         }
-        let owner = row.owner_at(time);
+        let owner = row.owner_at(time).unwrap_or(holder);
         if time > row.last_confirmed {
             row.last_confirmed = time;
             self.dai
                 .put_identifier(self.txn, self.customer, &id, &row)?;
-        } else if owner != row.device {
+        } else if owner != holder {
             // The ACK may bind an earlier owner, which retention keeps only
             // while it has such a binding; writing the row, unchanged, makes
             // retention removing that owner conflict with this application.
@@ -719,10 +758,10 @@ impl<'e> Env<'e> {
             // remaining effects apply against the recomputed bindings. The
             // same O4 applied again changes no binding.
             if !existed {
-                self.recompute(address, site, ip, pending.order.time)?;
+                self.recompute(&mut address.bindings, site, ip, pending.order.time)?;
             }
             self.verified_o4(
-                address,
+                &mut address.bindings,
                 edits,
                 body,
                 first,
@@ -731,7 +770,7 @@ impl<'e> Env<'e> {
             )
         } else {
             self.verified_o4(
-                address,
+                &mut address.bindings,
                 edits,
                 body,
                 first,
@@ -744,20 +783,20 @@ impl<'e> Env<'e> {
     }
 
     /// Applies a verified O4 of `body` seen from `first` to `last` to the
-    /// bindings of `address` as `mode` says.
+    /// `bindings` as `mode` says.
     fn verified_o4(
         &self,
-        address: &mut Address,
+        bindings: &mut Bindings,
         edits: &mut DeviceEdits,
         body: &DaiObservationBody,
         first: i64,
         last: i64,
         mode: O4Mode,
     ) -> Result<()> {
-        let Some(start) = address.bindings.covering(first, last) else {
+        let Some(start) = bindings.covering(first, last) else {
             return Ok(());
         };
-        let Some(binding) = address.bindings.get(start) else {
+        let Some(binding) = bindings.get(start) else {
             return Ok(());
         };
         let device = binding.device;
@@ -768,12 +807,19 @@ impl<'e> Env<'e> {
                 kind: IdentifierKind::MachineAccount,
                 value: account,
             };
-            let owned = match self.dai.identifier_in(self.txn, self.customer, &id)? {
+            let stored = self.dai.identifier_in(self.txn, self.customer, &id)?;
+            // An account no device holds is attached like an unowned one,
+            // keeping its history.
+            let (stored, earlier_owners) = match stored {
+                Some(row) if row.device.is_none() => (None, row.earlier_owners),
+                other => (other, Vec::new()),
+            };
+            let owned = match stored {
                 None if live => {
                     let row = IdentifierRow {
-                        device,
+                        device: Some(device),
                         last_confirmed: last,
-                        earlier_owners: Vec::new(),
+                        earlier_owners,
                     };
                     self.dai
                         .put_identifier(self.txn, self.customer, &id, &row)?;
@@ -786,7 +832,7 @@ impl<'e> Env<'e> {
                 // and then extend; the replay writes no identifier, but the
                 // binding moves the same.
                 None => true,
-                Some(mut row) if row.device == device => {
+                Some(mut row) if row.device == Some(device) => {
                     if live && last > row.last_confirmed {
                         row.last_confirmed = last;
                         self.dai
@@ -795,12 +841,12 @@ impl<'e> Env<'e> {
                     true
                 }
                 Some(row) => {
-                    if live {
+                    if live && let Some(holder) = row.device {
                         self.dai.record_conflict(
                             self.txn,
                             self.customer,
                             &id,
-                            [row.device, device],
+                            [holder, device],
                             (first, last),
                         )?;
                     }
@@ -808,7 +854,7 @@ impl<'e> Env<'e> {
                 }
             };
             if owned && mode != (O4Mode::Live { extend: false }) {
-                address.bindings.extend(start, last);
+                bindings.extend(start, last);
             }
         }
         if live {
@@ -817,7 +863,7 @@ impl<'e> Env<'e> {
         Ok(())
     }
 
-    /// Recomputes the bindings of `address` (`site`, `ip`) for a late
+    /// Recomputes the bindings `bindings` of (`site`, `ip`) for a late
     /// observation at `time`: deletes the bindings starting at or after the
     /// replay start and derives them again by replaying the binding evidence
     /// of the address from it, in order-key order. The replay moves bindings
@@ -826,9 +872,9 @@ impl<'e> Env<'e> {
     /// the caller applies against the result. It writes back, unchanged,
     /// the identifier row of each replayed ACK that binds an earlier owner,
     /// so retention removing that owner conflicts with it.
-    fn recompute(&self, address: &mut Address, site: &str, ip: IpAddr, time: i64) -> Result<()> {
-        let from = address.bindings.replay_start(time);
-        let removed = address.bindings.split_off(from);
+    fn recompute(&self, bindings: &mut Bindings, site: &str, ip: IpAddr, time: i64) -> Result<()> {
+        let from = bindings.replay_start(time);
+        let removed = bindings.split_off(from);
         let mut events = self.binding_evidence(site, ip)?;
         events.retain(|(order, _, _)| order.time >= from);
         events.sort_unstable_by_key(|(order, _, _)| *order);
@@ -853,8 +899,12 @@ impl<'e> Env<'e> {
                             else {
                                 continue;
                             };
-                            let device = owner.owner_at(*time);
-                            if device != owner.device {
+                            // No device held the MAC then: the ACK binds
+                            // nothing, as for a MAC with no identifier row.
+                            let Some(device) = owner.owner_at(*time) else {
+                                continue;
+                            };
+                            if Some(device) != owner.device {
                                 // As in the identifier steps of a live ACK:
                                 // retention removing the earlier owner this
                                 // binds conflicts with the replay.
@@ -862,7 +912,7 @@ impl<'e> Env<'e> {
                                     .put_identifier(self.txn, self.customer, &id, &owner)?;
                             }
                             let kept = removed.get(&(*time, device)).copied();
-                            address.bindings.ack(
+                            bindings.ack(
                                 *time,
                                 &NewBinding {
                                     device,
@@ -872,16 +922,16 @@ impl<'e> Env<'e> {
                                 || kept.unwrap_or_else(|| self.inactivity(*lease_secs)),
                             );
                         }
-                        (DaiDhcpMsg::Ack, None) => address.bindings.invalid_ack(*time),
+                        (DaiDhcpMsg::Ack, None) => bindings.invalid_ack(*time),
                         (DaiDhcpMsg::Release | DaiDhcpMsg::Decline, _) => {
-                            address.bindings.release(*time, mac.as_deref(), *server_id);
+                            bindings.release(*time, mac.as_deref(), *server_id);
                         }
                         (DaiDhcpMsg::InformAck, _) => {}
                     }
                 }
                 DaiObservationBody::Kerberos { .. } => {
                     self.verified_o4(
-                        address,
+                        bindings,
                         &mut edits,
                         &row.body,
                         row.first_seen,
@@ -950,12 +1000,15 @@ impl<'e> Env<'e> {
         if stored.as_ref() != Some(&row) {
             Dai::put_row(self.txn, &self.dai.services, &key, &row)?;
         }
+        if stored.is_none() {
+            self.dai.lock_device(self.txn, self.customer, device)?;
+        }
         Ok(())
     }
 
-    /// Widens the `dai software strings` row under `key` by an observation
-    /// from `first` to `last`.
-    fn widen_times(&self, key: &[u8], first: i64, last: i64) -> Result<()> {
+    /// Widens the `dai software strings` row of `device` under `key` by an
+    /// observation from `first` to `last`.
+    fn widen_times(&self, device: Uuid, key: &[u8], first: i64, last: i64) -> Result<()> {
         let stored: Option<SeenTimes> = Dai::get_row(self.txn, &self.dai.software, key)?;
         let row = stored.map_or(
             SeenTimes {
@@ -969,6 +1022,9 @@ impl<'e> Env<'e> {
         );
         if stored != Some(row) {
             Dai::put_row(self.txn, &self.dai.software, key, &row)?;
+        }
+        if stored.is_none() {
+            self.dai.lock_device(self.txn, self.customer, device)?;
         }
         Ok(())
     }
@@ -1000,6 +1056,28 @@ impl Dai<'_> {
             bail!("the number of pending DAI observations to apply must be at least 1");
         }
         self.write(|txn| self.apply_attempt(txn, sensor, slot_start, max_count, now))
+    }
+
+    /// Derives `bindings`, the bindings of (`site`, `ip`) of `customer`,
+    /// again from the binding in effect at `time` on, as the recomputation
+    /// for a late observation at `time` does, by the ownership the
+    /// identifier rows have within `txn`.
+    ///
+    /// An operation that changes which device held an identifier at a time
+    /// replays the addresses whose bindings that identifier started or
+    /// extended, so that a later recomputation reproduces the bindings it
+    /// leaves. The caller has read the address's IP state for update.
+    pub(super) fn replay_bindings(
+        &self,
+        txn: &Txn<'_>,
+        customer: u32,
+        address: (&str, IpAddr),
+        bindings: &mut Bindings,
+        time: i64,
+        now: i64,
+    ) -> Result<()> {
+        let (site, ip) = address;
+        Env::for_replay(self, txn, customer, now)?.recompute(bindings, site, ip, time)
     }
 
     /// Runs one attempt of [`apply_slot`](Self::apply_slot) within `txn`.
