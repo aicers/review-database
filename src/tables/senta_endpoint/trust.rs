@@ -992,6 +992,16 @@ impl<'d, R: Row> Table<'d, R> {
         Ok(rows)
     }
 
+    /// Returns the row stored under `key`, read within `txn` but not for
+    /// update: a write of the row committed after this read does not make
+    /// `txn` conflict.
+    pub(crate) fn row_in_transaction(&self, txn: &Txn<'_>, key: &[u8]) -> Result<Option<R>> {
+        txn.get_cf(self.map.cf, key)
+            .with_context(|| format!("failed to read {}", R::NAME))?
+            .map(|value| R::from_key_value(key, &value))
+            .transpose()
+    }
+
     /// Returns the row stored under `key`, read for update within `txn`.
     pub(crate) fn row_for_update(&self, txn: &Txn<'_>, key: &[u8]) -> Result<Option<R>> {
         txn.get_for_update_cf(self.map.cf, key, EXCLUSIVE)

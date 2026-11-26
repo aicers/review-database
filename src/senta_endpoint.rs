@@ -1,5 +1,7 @@
 //! The multi-table writes of the Clumit Endpoint (`senta`) tables (taco RFC
-//! 0016 §4.4, §4.6, §7).
+//! 0016 §4.4, §4.6, §7), and the stores of detection events about an
+//! endpoint, which check the endpoint, the engine's customer and the
+//! customer's data deletion job in the same transaction.
 //!
 //! # Transactions
 //!
@@ -12,6 +14,22 @@
 //! one. A job created after that read makes the method's commit conflict, and
 //! its retry is refused, so no row a deletion removes is written back once the
 //! deletion has started.
+//!
+//! [`Store::put_endpoint_detection_event`] and
+//! [`Store::put_endpoint_detection_event_unless_stored`] write a detection
+//! event record of an endpoint's customer, so they check the same way: they
+//! read the endpoint row, the engine's node row for update and the deletion
+//! job row of the endpoint's customer for update, and write the record, its
+//! arrival index row and the last arrival time in the same transaction.
+//! [`Store::create_customer_data_deletion_job`] writes that job row, so a
+//! store racing it conflicts, retries and is refused, and a store committed
+//! before it is removed by the deletion's
+//! [`EventDb::remove_by_sensors`](crate::EventDb::remove_by_sensors) on the
+//! customer's endpoint IDs. A job creation that no longer wrote the job row
+//! would let an endpoint detection event of the customer survive its
+//! deletion. These two methods also hold the arrival lock from before their
+//! first attempt until their commit, as [`EventDb::put`](crate::EventDb::put)
+//! does.
 //!
 //! A scan is not tracked by the transaction it runs in. Where a method acts on
 //! the rows it found by a scan, it first reads a row for update that every
@@ -38,15 +56,18 @@
 //!   registered concurrently is either in the scan or refused for its
 //!   recovery key version.
 
-use anyhow::Context;
+use anyhow::{Context, anyhow};
+use review_protocol::types::DetectionEvent;
+use thiserror::Error;
 use uuid::Uuid;
 
 use crate::{
-    CustomerDataDeletionJob, SentaEndpoint, SentaEndpointAddressRoot, SentaEndpointCommand,
-    SentaEndpointCommandState, SentaEndpointCurrentDocument, SentaEndpointCustomer,
-    SentaEndpointDeletionState, SentaEndpointEnrollmentAttempt, SentaEndpointEnrollmentResult,
-    SentaEndpointError, SentaEndpointInstall, SentaEndpointKeysetDocument,
-    SentaEndpointRecoveryKeyDocument, Store, Table,
+    CustomerDataDeletionJob, DetectionEventStamp, PutOutcome, SentaEndpoint,
+    SentaEndpointAddressRoot, SentaEndpointCommand, SentaEndpointCommandState,
+    SentaEndpointCurrentDocument, SentaEndpointCustomer, SentaEndpointDeletionState,
+    SentaEndpointEnrollmentAttempt, SentaEndpointEnrollmentResult, SentaEndpointError,
+    SentaEndpointInstall, SentaEndpointKeysetDocument, SentaEndpointRecoveryKeyDocument, Store,
+    Table,
     tables::{
         SentaEndpointTxn as Txn, is_senta_endpoint_conflict as is_conflict,
         senta_endpoint_keys as keys,
@@ -75,6 +96,41 @@ pub(crate) enum Method {
     ApproveEnrollment,
     ReplaceEnrollmentResult,
     CreateDeletionJob,
+    /// [`Store::put_endpoint_detection_event`] and
+    /// [`Store::put_endpoint_detection_event_unless_stored`].
+    PutEndpointDetectionEvent,
+}
+
+/// Why an endpoint detection event was not stored by
+/// [`Store::put_endpoint_detection_event`] or
+/// [`Store::put_endpoint_detection_event_unless_stored`].
+///
+/// Every variant but [`Database`](Self::Database) is a refusal, after which
+/// nothing was written.
+#[derive(Debug, Error)]
+pub enum EndpointDetectionEventError {
+    /// The endpoint has no row.
+    #[error("no senta endpoint {endpoint_id}")]
+    UnknownEndpoint { endpoint_id: Uuid },
+    /// The endpoint's customer is not the current customer of the engine's
+    /// node, which is `None` when the node has no row or no applied profile.
+    #[error(
+        "senta endpoint {endpoint_id} of customer {endpoint_customer} does not belong to the \
+         engine's customer {}",
+        engine_customer.map_or_else(|| "(none)".to_string(), |id| id.to_string())
+    )]
+    EndpointOfAnotherCustomer {
+        endpoint_id: Uuid,
+        endpoint_customer: u32,
+        engine_customer: Option<u32>,
+    },
+    /// The endpoint's customer has a data deletion job, unfinished or done.
+    #[error("customer {customer_id} of senta endpoint {endpoint_id} has a data deletion job")]
+    EndpointCustomerDeleted { endpoint_id: Uuid, customer_id: u32 },
+    /// The database read or write failed, a stored row was invalid, or the
+    /// event could not be stored.
+    #[error(transparent)]
+    Database(#[from] anyhow::Error),
 }
 
 /// A hook the tests run at every [`HookPoint`] of the transaction methods,
@@ -632,6 +688,18 @@ impl Store {
     /// approved concurrently either is in the list or is refused; a customer
     /// with no endpoint-customer row gets an empty list.
     ///
+    /// The job row this method writes is the conflict boundary with
+    /// [`Store::put_endpoint_detection_event`] and
+    /// [`Store::put_endpoint_detection_event_unless_stored`], which read it
+    /// for update: a store of an endpoint detection event of the customer
+    /// racing this creation conflicts, retries and is refused, and one
+    /// committed before it is removed by the deletion's
+    /// [`EventDb::remove_by_sensors`] on the job's `endpoint_ids`. Changing
+    /// this method so that it no longer writes that row breaks this rule, and
+    /// an endpoint detection event of the customer could survive its deletion.
+    ///
+    /// [`EventDb::remove_by_sensors`]: crate::EventDb::remove_by_sensors
+    ///
     /// # Errors
     ///
     /// Returns, writing nothing:
@@ -677,6 +745,185 @@ impl Store {
             jobs.put_with_transaction(&stored, txn)?;
             Ok(stored)
         })
+    }
+
+    /// Stores a detection event about an endpoint, as [`EventDb::put`] stores
+    /// it, and returns the record's key.
+    ///
+    /// `endpoint_id` is the endpoint the event is about, whose `Display` form
+    /// is the event's `sensor`. The event is stored only if the endpoint has
+    /// a row, whatever its standing; its customer is the current customer of
+    /// the engine's node, which is the customer of the applied profile of
+    /// node `stamp.engine_instance.node_id`; and that customer has no data
+    /// deletion job. The node's customer is read within the write, never
+    /// taken from the caller.
+    ///
+    /// The write is one optimistic transaction. It reads the endpoint row,
+    /// then the node row and the customer's deletion job row, each for
+    /// update, and writes the record, its row in the arrival index and the
+    /// last arrival time as [`EventDb::put`] does. On a commit conflict it
+    /// runs again from the start, reading the endpoint, node and job rows
+    /// again, so a node whose customer changed or a job created in between
+    /// refuses the retry. The arrival lock is held from before the first
+    /// attempt until the commit, and every attempt stamps its own arrival
+    /// time.
+    ///
+    /// The deletion job row is the conflict boundary with
+    /// [`Store::create_customer_data_deletion_job`], which writes it: a store
+    /// racing the job's creation conflicts, retries and is refused, and one
+    /// committed before it is removed by the deletion's
+    /// [`EventDb::remove_by_sensors`] on the customer's endpoint IDs. So no
+    /// endpoint detection event of a customer survives its deletion. Changing
+    /// the job creation so that it no longer writes that row breaks this rule.
+    /// [`Store::put_endpoint_detection_event_unless_stored`] is the
+    /// request-path form of this method.
+    ///
+    /// [`EventDb::put`]: crate::EventDb::put
+    /// [`EventDb::remove_by_sensors`]: crate::EventDb::remove_by_sensors
+    ///
+    /// # Errors
+    ///
+    /// Returns, writing nothing:
+    ///
+    /// - [`EndpointDetectionEventError::UnknownEndpoint`] if the endpoint has
+    ///   no row;
+    /// - [`EndpointDetectionEventError::EndpointOfAnotherCustomer`] if the
+    ///   node has no row or no applied profile, or its profile's customer is
+    ///   not the endpoint's;
+    /// - [`EndpointDetectionEventError::EndpointCustomerDeleted`] if the
+    ///   endpoint's customer has a data deletion job, unfinished or done;
+    /// - [`EndpointDetectionEventError::Database`] if the event cannot be
+    ///   serialized, if no key is free at its time and detection model, or if
+    ///   a database operation fails.
+    pub fn put_endpoint_detection_event(
+        &self,
+        event: &DetectionEvent,
+        stamp: &DetectionEventStamp,
+        endpoint_id: Uuid,
+    ) -> Result<i128, EndpointDetectionEventError> {
+        match self.put_endpoint_event(event, stamp, endpoint_id, false)? {
+            PutOutcome::Stored(key) => Ok(key),
+            PutOutcome::Rejected(reason) => {
+                Err(EndpointDetectionEventError::Database(anyhow!(reason)))
+            }
+            PutOutcome::AlreadyStored => Err(EndpointDetectionEventError::Database(anyhow!(
+                "a write not checking for a stored event found one"
+            ))),
+        }
+    }
+
+    /// Stores a detection event about an endpoint unless the same event is
+    /// already stored, as [`EventDb::put_unless_stored`] stores it.
+    ///
+    /// The event is stored, or refused, as
+    /// [`Store::put_endpoint_detection_event`] tells, in one optimistic
+    /// transaction on the same conflict boundary with
+    /// [`Store::create_customer_data_deletion_job`]: that job creation writes
+    /// the deletion job row this method reads for update, so a store racing it
+    /// is refused on its retry, and one committed before it is removed by the
+    /// deletion's [`EventDb::remove_by_sensors`] on the customer's endpoint
+    /// IDs. Changing the job creation so that it no longer writes that row
+    /// breaks this rule.
+    ///
+    /// Once the endpoint, node and deletion job pass, the outcome is the one
+    /// [`EventDb::put_unless_stored`] returns: [`PutOutcome::AlreadyStored`]
+    /// if the same event is stored, [`PutOutcome::Rejected`] if it can never
+    /// be stored, and [`PutOutcome::Stored`] with its key otherwise. Only a
+    /// stored event gets a row in the arrival index.
+    ///
+    /// [`EventDb::put_unless_stored`]: crate::EventDb::put_unless_stored
+    /// [`EventDb::remove_by_sensors`]: crate::EventDb::remove_by_sensors
+    ///
+    /// # Errors
+    ///
+    /// Returns, writing nothing:
+    ///
+    /// - [`EndpointDetectionEventError::UnknownEndpoint`] if the endpoint has
+    ///   no row;
+    /// - [`EndpointDetectionEventError::EndpointOfAnotherCustomer`] if the
+    ///   node has no row or no applied profile, or its profile's customer is
+    ///   not the endpoint's;
+    /// - [`EndpointDetectionEventError::EndpointCustomerDeleted`] if the
+    ///   endpoint's customer has a data deletion job, unfinished or done;
+    /// - [`EndpointDetectionEventError::Database`] if a database operation
+    ///   fails.
+    pub fn put_endpoint_detection_event_unless_stored(
+        &self,
+        event: &DetectionEvent,
+        stamp: &DetectionEventStamp,
+        endpoint_id: Uuid,
+    ) -> Result<PutOutcome, EndpointDetectionEventError> {
+        self.put_endpoint_event(event, stamp, endpoint_id, true)
+    }
+
+    /// Writes an endpoint detection event as
+    /// [`Store::put_endpoint_detection_event`] tells, checking for the same
+    /// event stored if `unless_stored`, and returns the outcome of the write.
+    fn put_endpoint_event(
+        &self,
+        event: &DetectionEvent,
+        stamp: &DetectionEventStamp,
+        endpoint_id: Uuid,
+        unless_stored: bool,
+    ) -> Result<PutOutcome, EndpointDetectionEventError> {
+        const METHOD: Method = Method::PutEndpointDetectionEvent;
+        let events = self.events();
+        let endpoints = self.senta_endpoint_map();
+        let nodes = self.node_map();
+        let node_id = stamp.engine_instance.node_id;
+        let db = self.states.db();
+        // Held until the write commits, so that the records commit in the
+        // order of their arrival times.
+        let mut last = events.lock_arrival();
+        loop {
+            let txn = db.transaction();
+            let Some(endpoint) =
+                endpoints.row_in_transaction(&txn, &keys::endpoint(endpoint_id))?
+            else {
+                return Err(EndpointDetectionEventError::UnknownEndpoint { endpoint_id });
+            };
+            let endpoint_customer = endpoint.customer_id;
+            let engine_customer = nodes
+                .applied_profile_in_transaction(node_id, &txn)?
+                .map(|profile| profile.customer_id);
+            if engine_customer != Some(endpoint_customer) {
+                return Err(EndpointDetectionEventError::EndpointOfAnotherCustomer {
+                    endpoint_id,
+                    endpoint_customer,
+                    engine_customer,
+                });
+            }
+            if self
+                .deletion_job_state(&txn, endpoint_customer)
+                .map_err(database_error)?
+                .is_some()
+            {
+                return Err(EndpointDetectionEventError::EndpointCustomerDeleted {
+                    endpoint_id,
+                    customer_id: endpoint_customer,
+                });
+            }
+            let arrival = events.stamp_arrival(&mut last)?;
+            let outcome = events.write_event(&txn, event, stamp, arrival, unless_stored)?;
+            if !matches!(outcome, PutOutcome::Stored(_)) {
+                return Ok(outcome);
+            }
+            #[cfg(test)]
+            self.run_senta_endpoint_hook(HookPoint::BeforeCommit(METHOD))
+                .map_err(database_error)?;
+            match txn.commit() {
+                Ok(()) => {
+                    *last = Some(arrival);
+                    return Ok(outcome);
+                }
+                Err(e) if is_conflict(&e) => {}
+                Err(e) => {
+                    return Err(EndpointDetectionEventError::Database(
+                        anyhow::Error::from(e).context(format!("failed to commit {METHOD:?}")),
+                    ));
+                }
+            }
+        }
     }
 
     /// Returns, within `txn`, the state of the data deletion job of
@@ -738,6 +985,15 @@ impl Store {
     }
 }
 
+/// Returns `error`, of a read or write of the Clumit Endpoint tables, as the
+/// error of a database operation in an endpoint detection-event write.
+fn database_error(error: SentaEndpointError) -> anyhow::Error {
+    match error {
+        SentaEndpointError::Database(error) => error,
+        error => anyhow::Error::from(error),
+    }
+}
+
 /// Writes `document` within `txn` unless a document is stored under its key,
 /// and returns whether it was written.
 fn write_keyset_document(
@@ -778,6 +1034,9 @@ impl Store {
         hook.map_or(Ok(()), |hook| hook(self, point).map_err(Into::into))
     }
 }
+
+#[cfg(test)]
+mod detection_event_tests;
 
 #[cfg(test)]
 mod tests {

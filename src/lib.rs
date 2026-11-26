@@ -73,6 +73,7 @@ pub use self::model::{DetectionModelState, Digest, Model, TrainingRead, Training
 pub use self::model_guard::{Referrer, RemovalRefused, SourceReference};
 pub use self::model_lifecycle::RemovedUnsupervisedRecords;
 pub use self::scores::Scores;
+pub use self::senta_endpoint::EndpointDetectionEventError;
 use self::tables::StateDb;
 pub use self::tables::{
     AddressAllocationError, Agent, AgentConfig, AgentKind, AgentStatus, AttrCmpKind, BackupConfig,

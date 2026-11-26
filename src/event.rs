@@ -181,6 +181,41 @@ fn free_event_key(
     Ok(Some(key))
 }
 
+/// Returns whether a record with the time and detection model of `base`
+/// holds the event serialized as `event_bytes`, with the engine instance and
+/// clustering model of `stamp`, read within `txn`.
+fn is_stored(
+    txn: &rocksdb::Transaction<rocksdb::OptimisticTransactionDB>,
+    base: i128,
+    event_bytes: &[u8],
+    stamp: &DetectionEventStamp,
+) -> Result<bool> {
+    let key = base.to_be_bytes();
+    // An `i128` key is 16 bytes, longer than its time and model.
+    let prefix = &key[..EVENT_KEY_TIME_AND_MODEL_LEN];
+    // The scan below is not tracked for conflicts, and two calls for one
+    // event find different free keys when the first key of its time and
+    // model is taken. That first key is read for update before the scan, and
+    // written back unchanged when taken: a call committing after this read
+    // conflicts with this one, which then retries, and one committing before
+    // it is seen by the scan.
+    if let Some(first) = txn
+        .get_for_update(key, super::EXCLUSIVE)
+        .context("cannot read from event database")?
+    {
+        txn.put(key, first).context("cannot write event")?;
+    }
+    let mut readopts = rocksdb::ReadOptions::default();
+    readopts.set_iterate_range(rocksdb::PrefixRange(prefix));
+    for entry in txn.iterator_opt(IteratorMode::From(prefix, Direction::Forward), readopts) {
+        let (_, stored) = entry.context("cannot read from event database")?;
+        if record::is_same_event(&stored, event_bytes, stamp) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 #[allow(clippy::module_name_repetitions)]
 pub struct EventDb<'a> {
     inner: &'a rocksdb::OptimisticTransactionDB,
@@ -240,7 +275,7 @@ impl<'a> EventDb<'a> {
     /// The last arrival time is read from the `meta` column family the first
     /// time; `last` is not changed otherwise, so a write that does not commit
     /// leaves it as it was.
-    fn stamp_arrival(&self, last: &mut Option<i64>) -> Result<i64> {
+    pub(crate) fn stamp_arrival(&self, last: &mut Option<i64>) -> Result<i64> {
         if last.is_none() {
             *last = self
                 .inner
@@ -278,7 +313,7 @@ impl<'a> EventDb<'a> {
     }
 
     /// Takes the arrival lock.
-    fn lock_arrival(&self) -> std::sync::MutexGuard<'_, Option<i64>> {
+    pub(crate) fn lock_arrival(&self) -> std::sync::MutexGuard<'_, Option<i64>> {
         #[cfg(test)]
         self.arrival.run_hook(ArrivalHookPoint::BeforeLock);
         self.arrival.lock()
@@ -370,25 +405,19 @@ impl<'a> EventDb<'a> {
     /// including when the database lacks the arrival index or `meta` column
     /// family.
     pub fn put(&self, event: &DetectionEvent, stamp: &DetectionEventStamp) -> Result<i128> {
-        let event_bytes = record::encode_event(event)?;
-        let value = record::encode_record(
-            &event_bytes,
-            stamp,
-            &record::country_codes(event, self.country_lookup.as_deref()),
-        )?;
-        let base = event_key_base(event);
         // Held until the write commits, so that the records commit in the
         // order of their arrival times.
         let mut last = self.lock_arrival();
         loop {
             let txn = self.inner.transaction();
-            let Some(key) = free_event_key(&txn, base)? else {
-                bail!(TOO_MANY_EVENTS);
-            };
-            txn.put(key.to_be_bytes(), value.as_slice())
-                .context("cannot write event")?;
             let arrival = self.stamp_arrival(&mut last)?;
-            self.put_arrival(&txn, arrival, key)?;
+            let key = match self.write_event(&txn, event, stamp, arrival, false)? {
+                PutOutcome::Stored(key) => key,
+                PutOutcome::Rejected(reason) => bail!(reason),
+                PutOutcome::AlreadyStored => {
+                    bail!("a write not checking for a stored event found one")
+                }
+            };
             match txn.commit() {
                 Ok(()) => {
                     *last = Some(arrival);
@@ -428,6 +457,62 @@ impl<'a> EventDb<'a> {
         event: &DetectionEvent,
         stamp: &DetectionEventStamp,
     ) -> Result<PutOutcome> {
+        // Held until the write commits, so that the records commit in the
+        // order of their arrival times.
+        let mut last = self.lock_arrival();
+        loop {
+            let txn = self.inner.transaction();
+            let arrival = self.stamp_arrival(&mut last)?;
+            let outcome = self.write_event(&txn, event, stamp, arrival, true)?;
+            if !matches!(outcome, PutOutcome::Stored(_)) {
+                return Ok(outcome);
+            }
+            match txn.commit() {
+                Ok(()) => {
+                    *last = Some(arrival);
+                    return Ok(outcome);
+                }
+                Err(e) => {
+                    if !e.as_ref().starts_with("Resource busy:") {
+                        return Err(e).context("failed to store event");
+                    }
+                }
+            }
+        }
+    }
+
+    /// Writes, within `txn`, the record of `event` and `stamp` arriving at
+    /// `arrival`, and returns what was written.
+    ///
+    /// This is the one write of a detection event record: [`EventDb::put`],
+    /// [`EventDb::put_unless_stored`] and the endpoint detection-event
+    /// writes of [`crate::Store`] all write through it. It looks up the
+    /// country codes of the event's endpoint addresses, and, with
+    /// `unless_stored`, returns [`PutOutcome::AlreadyStored`] if the same
+    /// event is stored, as [`EventDb::put_unless_stored`] tells it. Otherwise
+    /// it writes the record under a free key of its time and detection model,
+    /// its row in the arrival index and `arrival` as the last arrival time,
+    /// and returns [`PutOutcome::Stored`] with the key. An event that cannot
+    /// be serialized, or for which no key is free, is
+    /// [`PutOutcome::Rejected`] with the reason.
+    ///
+    /// On [`PutOutcome::AlreadyStored`] or [`PutOutcome::Rejected`] no record,
+    /// index row or `meta` key is written, and the caller does not commit.
+    /// The caller holds the arrival lock, stamped `arrival` under it, and
+    /// sets it as the last arrival time once `txn` commits.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a database operation fails, including when the
+    /// database lacks the arrival index or `meta` column family.
+    pub(crate) fn write_event(
+        &self,
+        txn: &rocksdb::Transaction<rocksdb::OptimisticTransactionDB>,
+        event: &DetectionEvent,
+        stamp: &DetectionEventStamp,
+        arrival: i64,
+        unless_stored: bool,
+    ) -> Result<PutOutcome> {
         let event_bytes = match record::encode_event(event) {
             Ok(bytes) => bytes,
             Err(e) => return Ok(PutOutcome::Rejected(format!("{e:#}"))),
@@ -441,54 +526,16 @@ impl<'a> EventDb<'a> {
             Err(e) => return Ok(PutOutcome::Rejected(format!("{e:#}"))),
         };
         let base = event_key_base(event);
-        let key = base.to_be_bytes();
-        // An `i128` key is 16 bytes, longer than its time and model.
-        let prefix = &key[..EVENT_KEY_TIME_AND_MODEL_LEN];
-        // Held until the write commits, so that the records commit in the
-        // order of their arrival times.
-        let mut last = self.lock_arrival();
-        loop {
-            let txn = self.inner.transaction();
-            // The scan below is not tracked for conflicts, and two calls for
-            // one event find different free keys when the first key of its
-            // time and model is taken. That first key is read for update
-            // before the scan, and written back unchanged when taken: a call
-            // committing after this read conflicts with this one, which then
-            // retries, and one committing before it is seen by the scan.
-            if let Some(first) = txn
-                .get_for_update(key, super::EXCLUSIVE)
-                .context("cannot read from event database")?
-            {
-                txn.put(key, first).context("cannot write event")?;
-            }
-            let mut readopts = rocksdb::ReadOptions::default();
-            readopts.set_iterate_range(rocksdb::PrefixRange(prefix));
-            for entry in txn.iterator_opt(IteratorMode::From(prefix, Direction::Forward), readopts)
-            {
-                let (_, stored) = entry.context("cannot read from event database")?;
-                if record::is_same_event(&stored, &event_bytes, stamp) {
-                    return Ok(PutOutcome::AlreadyStored);
-                }
-            }
-            let Some(key) = free_event_key(&txn, base)? else {
-                return Ok(PutOutcome::Rejected(TOO_MANY_EVENTS.to_string()));
-            };
-            txn.put(key.to_be_bytes(), value.as_slice())
-                .context("cannot write event")?;
-            let arrival = self.stamp_arrival(&mut last)?;
-            self.put_arrival(&txn, arrival, key)?;
-            match txn.commit() {
-                Ok(()) => {
-                    *last = Some(arrival);
-                    return Ok(PutOutcome::Stored(key));
-                }
-                Err(e) => {
-                    if !e.as_ref().starts_with("Resource busy:") {
-                        return Err(e).context("failed to store event");
-                    }
-                }
-            }
+        if unless_stored && is_stored(txn, base, &event_bytes, stamp)? {
+            return Ok(PutOutcome::AlreadyStored);
         }
+        let Some(key) = free_event_key(txn, base)? else {
+            return Ok(PutOutcome::Rejected(TOO_MANY_EVENTS.to_string()));
+        };
+        txn.put(key.to_be_bytes(), value.as_slice())
+            .context("cannot write event")?;
+        self.put_arrival(txn, arrival, key)?;
+        Ok(PutOutcome::Stored(key))
     }
 
     /// Returns, for each raw event key and in the order given, the records
