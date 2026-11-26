@@ -532,8 +532,8 @@ fn a_row_whose_record_is_unreadable_is_skipped_with_a_warning() {
     assert!(page.has_more);
     assert_eq!(warnings.len(), 1, "{warnings:?}");
 
-    // Model 21 is the first number review-protocol has not assigned.
-    let unknown = (i128::from(T0) << 64) | (21 << 32);
+    // Model 24 is the first number review-protocol has not assigned.
+    let unknown = (i128::from(T0) << 64) | (24 << 32);
     let value = db.inner.get(last.to_be_bytes()).unwrap().unwrap();
     db.put_raw(&unknown.to_be_bytes(), &value);
     let cf = db.inner.cf_handle(DETECTION_EVENT_ARRIVAL).unwrap();

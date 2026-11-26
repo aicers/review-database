@@ -877,9 +877,29 @@ mod tests {
             };
             let names = column_names(t);
             assert_eq!(names.get(..2), Some(["time", "source"].as_slice()));
-            assert_eq!(&names[2..], fields, "{}", t.id);
+            let body = names
+                .get(2..)
+                .expect("the format starts with time and source");
+            assert_eq!(body.len(), 31, "{}", t.id);
+            assert_eq!(Some(body), fields.get(..31), "{}", t.id);
         }
-        assert_eq!(serde_field_names::<raw_event::Http>().len(), 31);
+        let fields = serde_field_names::<raw_event::Http>();
+        assert_eq!(fields.len(), 37);
+        assert_eq!(fields.get(30), Some(&"state"));
+        assert_eq!(
+            fields.get(31..),
+            Some(
+                [
+                    "request_header_names",
+                    "accept",
+                    "connection",
+                    "accept_encoding",
+                    "accept_language",
+                    "pragma",
+                ]
+                .as_slice()
+            )
+        );
     }
 
     #[test]

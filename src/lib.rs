@@ -18,6 +18,7 @@ mod model_guard;
 mod model_lifecycle;
 mod scores;
 mod senta_endpoint;
+mod signature;
 mod tables;
 mod tags;
 #[cfg(test)]
@@ -74,6 +75,12 @@ pub use self::model_guard::{Referrer, RemovalRefused, SourceReference};
 pub use self::model_lifecycle::RemovedUnsupervisedRecords;
 pub use self::scores::Scores;
 pub use self::senta_endpoint::EndpointDetectionEventError;
+pub use self::signature::{
+    NewSignatureVersion, SignatureError, SignatureOrderKey, SignatureOrigin, SignatureReconversion,
+    SignatureReconversionOutcome, SignatureReconversionSuccess, SignatureRuleOverride,
+    SignatureSourceState, SignatureStatus, SignatureTruncationDaily, SignatureVersion,
+    SignatureVersionState,
+};
 use self::tables::StateDb;
 pub use self::tables::{
     AddressAllocationError, Agent, AgentConfig, AgentKind, AgentStatus, AttrCmpKind, BackupConfig,

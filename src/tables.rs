@@ -374,6 +374,24 @@ pub(super) const SENTA_ENDPOINT_KEYSET_DOCUMENTS: &str = "senta endpoint keyset 
 pub(super) const SENTA_ENDPOINT_RECOVERY_KEY_DOCUMENTS: &str =
     "senta endpoint recovery key documents";
 pub(super) const SENTA_ENDPOINTS: &str = "senta endpoints";
+/// The state of each signature rule source: its enabled flag, applied,
+/// kept and staged versions and last reconversion; see `crate::signature`.
+pub(crate) const SIGNATURE_SOURCES: &str = "signature sources";
+/// The record of each signature source version, by version id.
+pub(crate) const SIGNATURE_SOURCE_VERSIONS: &str = "signature source versions";
+/// The original archive of each signature source version, by version id.
+pub(crate) const SIGNATURE_SOURCE_ARCHIVES: &str = "signature source archives";
+/// The serialized rule set of each signature source version, by version id.
+pub(crate) const SIGNATURE_RULE_SETS: &str = "signature rule sets";
+/// The signature rules an operator turned off, by source and rule id.
+pub(crate) const SIGNATURE_RULE_OVERRIDES: &str = "signature rule overrides";
+/// The revision of the signature rule sets pushed to engines.
+pub(crate) const SIGNATURE_PUSH_REVISION: &str = "signature push revision";
+/// The last signature status report of each Semi-supervised Engine
+/// instance, keyed as the instance's agent row.
+pub(crate) const SIGNATURE_STATUS: &str = "signature status";
+/// The daily sums of the truncated signature detection counts.
+pub(crate) const SIGNATURE_TRUNCATION_DAILY: &str = "signature truncation daily";
 pub(super) const STATUSES: &str = "statuses";
 pub(super) const TEMPLATES: &str = "templates";
 pub(super) const LABEL_DB: &str = "label database";
@@ -386,7 +404,7 @@ pub(super) const TRIAGE_RESPONSE: &str = "triage response";
 pub(super) const TRUSTED_DNS_SERVERS: &str = "trusted DNS servers";
 pub(super) const TRUSTED_USER_AGENTS: &str = "trusted user agents";
 
-pub(crate) const MAP_NAMES: [&str; 105] = [
+pub(crate) const MAP_NAMES: [&str; 113] = [
     AGENTS,
     BATCH_INFO,
     CATEGORY,
@@ -492,6 +510,14 @@ pub(crate) const MAP_NAMES: [&str; 105] = [
     ENGINE_EXCLUSION_COUNTS,
     DETECTION_EVENT_ARRIVAL,
     TRUSTED_USER_AGENTS,
+    SIGNATURE_SOURCES,
+    SIGNATURE_SOURCE_VERSIONS,
+    SIGNATURE_SOURCE_ARCHIVES,
+    SIGNATURE_RULE_SETS,
+    SIGNATURE_RULE_OVERRIDES,
+    SIGNATURE_PUSH_REVISION,
+    SIGNATURE_STATUS,
+    SIGNATURE_TRUNCATION_DAILY,
 ];
 
 // Keys for the meta map.
@@ -505,6 +531,10 @@ pub(super) const MODEL_RUN_ID_COUNTER: &[u8] = b"model run id counter";
 /// arrival index stored. It is written with every index row, so arrival
 /// times continue from it, never decreasing, after the store is reopened.
 pub(crate) const LAST_DETECTION_EVENT_ARRIVAL: &[u8] = b"last detection event arrival";
+/// The last allocated signature source version id, as a big-endian `u64`;
+/// absent before the first version. Ids are never reused, so the counter is
+/// kept apart from the versions it numbers.
+pub(crate) const SIGNATURE_VERSION_ID_COUNTER: &[u8] = b"signature version id counter";
 
 /// The directories of the states databases a [`StateDb`] in this process has
 /// open.

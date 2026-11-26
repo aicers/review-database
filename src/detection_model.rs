@@ -29,7 +29,7 @@ const DETECTION_MODELS: &str = "detection_models";
 const ENABLED: &str = "enabled";
 
 /// Every detection model, in number order.
-const ALL_MODELS: [DetectionModel; 21] = [
+const ALL_MODELS: [DetectionModel; 24] = [
     DetectionModel::WatchlistMatch,
     DetectionModel::CryptocurrencyMiningPool,
     DetectionModel::LockyRansomware,
@@ -51,6 +51,9 @@ const ALL_MODELS: [DetectionModel; 21] = [
     DetectionModel::LabelDbMatch,
     DetectionModel::FarOutlier,
     DetectionModel::WindowOutlier,
+    DetectionModel::EtSignature,
+    DetectionModel::EtPolicySignature,
+    DetectionModel::SigmaSignature,
 ];
 
 /// Every event category, in number order.
@@ -76,6 +79,25 @@ const ENABLED_ONLY: &[OperatorValueSpec] = &[OperatorValueSpec {
     name: ENABLED,
     kind: OperatorValueKind::Bool { default: true },
 }];
+
+/// The operator values of `EtPolicySignature`: like [`ENABLED_ONLY`], but
+/// off unless an operator turns it on.
+const DISABLED_BY_DEFAULT: &[OperatorValueSpec] = &[OperatorValueSpec {
+    name: ENABLED,
+    kind: OperatorValueKind::Bool { default: false },
+}];
+
+/// What the score of a signature model measures.
+const SIGNATURE_SCORE_MEANING: &str = "Severity of the matched rule";
+
+/// The raw event kinds an ET signature model can report.
+const ET_SIGNATURE_KINDS: &[RawEventKind] = &[
+    RawEventKind::Http,
+    RawEventKind::Dns,
+    RawEventKind::Tls,
+    RawEventKind::Ssh,
+    RawEventKind::Conn,
+];
 
 /// The detection technique a model belongs to.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -703,6 +725,47 @@ pub fn properties(model: DetectionModel) -> &'static DetectionModelProperties {
         DetectionModel::LabelDbMatch => &LABEL_DB_MATCH,
         DetectionModel::FarOutlier => &FAR_OUTLIER,
         DetectionModel::WindowOutlier => &WINDOW_OUTLIER,
+        DetectionModel::EtSignature => {
+            const {
+                &semi_supervised(
+                    KnownThreat,
+                    &ALL_CATEGORIES,
+                    ET_SIGNATURE_KINDS,
+                    RawEvent,
+                    SIGNATURE_SCORE_MEANING,
+                )
+            }
+        }
+        DetectionModel::EtPolicySignature => {
+            const {
+                &DetectionModelProperties {
+                    operator_values: DISABLED_BY_DEFAULT,
+                    ..semi_supervised(
+                        PolicyViolation,
+                        &ALL_CATEGORIES,
+                        ET_SIGNATURE_KINDS,
+                        RawEvent,
+                        SIGNATURE_SCORE_MEANING,
+                    )
+                }
+            }
+        }
+        DetectionModel::SigmaSignature => {
+            const {
+                &semi_supervised(
+                    KnownThreat,
+                    &ALL_CATEGORIES,
+                    &[
+                        RawEventKind::Http,
+                        RawEventKind::Dns,
+                        RawEventKind::Tls,
+                        RawEventKind::Conn,
+                    ],
+                    RawEvent,
+                    SIGNATURE_SCORE_MEANING,
+                )
+            }
+        }
     }
 }
 
@@ -731,6 +794,9 @@ pub(crate) fn section_name(model: DetectionModel) -> &'static str {
         DetectionModel::LabelDbMatch => "label_db_match",
         DetectionModel::FarOutlier => "far_outlier",
         DetectionModel::WindowOutlier => "window_outlier",
+        DetectionModel::EtSignature => "et_signature",
+        DetectionModel::EtPolicySignature => "et_policy_signature",
+        DetectionModel::SigmaSignature => "sigma_signature",
     }
 }
 
@@ -1712,6 +1778,11 @@ mod tests {
         kind: OperatorValueKind::Bool { default: true },
     }];
 
+    const ENABLED_FALSE: &[OperatorValueSpec] = &[OperatorValueSpec {
+        name: "enabled",
+        kind: OperatorValueKind::Bool { default: false },
+    }];
+
     /// Completes `document` as a Semi-supervised Engine document in both
     /// modes, asserting that the two agree and that neither lookup is ever
     /// called.
@@ -1749,20 +1820,35 @@ mod tests {
             .filter(|m| properties(*m).learning_method == LearningMethod::SemiSupervised)
     }
 
+    /// Returns the default of a Semi-supervised Engine model's `enabled`.
+    fn default_enabled(model: DetectionModel) -> bool {
+        match properties(model).operator_values {
+            [
+                OperatorValueSpec {
+                    name: "enabled",
+                    kind: OperatorValueKind::Bool { default },
+                },
+            ] => *default,
+            other => panic!("{model:?} has operator values {other:?}"),
+        }
+    }
+
     /// Returns every section completion appends to an empty document.
     fn all_sections() -> String {
-        semi_models()
-            .map(|m| format!("[detection_models.{}]\nenabled = true\n", section_name(m)))
-            .collect::<Vec<_>>()
-            .join("\n")
+        sections_without(&[])
     }
 
     /// Returns the sections completion appends, without `skip`.
     fn sections_without(skip: &[&str]) -> String {
         semi_models()
-            .map(section_name)
-            .filter(|name| !skip.contains(name))
-            .map(|name| format!("[detection_models.{name}]\nenabled = true\n"))
+            .filter(|m| !skip.contains(&section_name(*m)))
+            .map(|m| {
+                format!(
+                    "[detection_models.{}]\nenabled = {}\n",
+                    section_name(m),
+                    default_enabled(m)
+                )
+            })
             .collect::<Vec<_>>()
             .join("\n")
     }
@@ -2042,10 +2128,12 @@ mod tests {
         let output = semi("").unwrap();
         assert_eq!(output, all_sections());
         assert!(output.starts_with("[detection_models.watchlist_match]\nenabled = true\n\n"));
-        assert!(
-            output
-                .ends_with("\n\n[detection_models.unusual_destination_pattern]\nenabled = true\n")
-        );
+        assert!(output.ends_with(
+            "\n\n[detection_models.unusual_destination_pattern]\nenabled = true\n\n\
+             [detection_models.et_signature]\nenabled = true\n\n\
+             [detection_models.et_policy_signature]\nenabled = false\n\n\
+             [detection_models.sigma_signature]\nenabled = true\n"
+        ));
         assert_complete(&output);
     }
 
@@ -2208,10 +2296,11 @@ rdp_brute_force.enabled = false
         let document = "detection_models = { port_scan = { enabled = false } }\nafter = 1\n";
         let output = semi(document).unwrap();
         let added = semi_models()
-            .map(section_name)
-            .filter(|name| *name != "port_scan")
-            .fold(String::new(), |mut added, name| {
-                write!(added, ", {name} = {{ enabled = true }}").unwrap();
+            .filter(|m| *m != DetectionModel::PortScan)
+            .fold(String::new(), |mut added, m| {
+                let name = section_name(m);
+                let enabled = default_enabled(m);
+                write!(added, ", {name} = {{ enabled = {enabled} }}").unwrap();
                 added
             });
         assert_eq!(
@@ -2224,7 +2313,12 @@ rdp_brute_force.enabled = false
 
         let output = semi("detection_models = {}").unwrap();
         assert!(output.starts_with("detection_models = { watchlist_match = { enabled = true }, "));
-        assert!(output.ends_with(", unusual_destination_pattern = { enabled = true } }"));
+        assert!(output.ends_with(
+            ", unusual_destination_pattern = { enabled = true }, \
+             et_signature = { enabled = true }, \
+             et_policy_signature = { enabled = false }, \
+             sigma_signature = { enabled = true } }"
+        ));
         assert_complete(&output);
     }
 
@@ -2747,9 +2841,7 @@ rdp_brute_force.enabled = false
 
     #[test]
     fn window_outlier_row() {
-        assert_eq!(ALL_MODELS.len(), 21);
         assert_eq!(ALL_MODELS.get(20), Some(&DetectionModel::WindowOutlier));
-        assert_eq!(ALL_MODELS.last(), Some(&DetectionModel::WindowOutlier));
         assert_eq!(
             section_name(DetectionModel::WindowOutlier),
             "window_outlier"
@@ -2766,6 +2858,118 @@ rdp_brute_force.enabled = false
             operator_values: ENABLED_TRUE,
         };
         assert_eq!(properties(DetectionModel::WindowOutlier), &expected);
+    }
+
+    /// The fourteen categories, in number order, as the signature rows list
+    /// them.
+    const FOURTEEN: &[EventCategory] = &[
+        C::Reconnaissance,
+        C::InitialAccess,
+        C::Execution,
+        C::CredentialAccess,
+        C::Discovery,
+        C::LateralMovement,
+        C::CommandAndControl,
+        C::Exfiltration,
+        C::Impact,
+        C::Collection,
+        C::DefenseEvasion,
+        C::Persistence,
+        C::PrivilegeEscalation,
+        C::ResourceDevelopment,
+    ];
+
+    /// Number, model, section name, family, raw event kinds and the
+    /// default of `enabled`.
+    type SignatureRow = (
+        usize,
+        DetectionModel,
+        &'static str,
+        DetectionFamily,
+        &'static [R],
+        bool,
+    );
+
+    #[test]
+    fn signature_rows() {
+        assert_eq!(ALL_MODELS.len(), 24);
+        assert_eq!(ALL_MODELS.last(), Some(&DetectionModel::SigmaSignature));
+        let rows: [SignatureRow; 3] = [
+            (
+                21,
+                DetectionModel::EtSignature,
+                "et_signature",
+                DetectionFamily::KnownThreat,
+                &[R::Http, R::Dns, R::Tls, R::Ssh, R::Conn],
+                true,
+            ),
+            (
+                22,
+                DetectionModel::EtPolicySignature,
+                "et_policy_signature",
+                DetectionFamily::PolicyViolation,
+                &[R::Http, R::Dns, R::Tls, R::Ssh, R::Conn],
+                false,
+            ),
+            (
+                23,
+                DetectionModel::SigmaSignature,
+                "sigma_signature",
+                DetectionFamily::KnownThreat,
+                &[R::Http, R::Dns, R::Tls, R::Conn],
+                true,
+            ),
+        ];
+        for (index, model, section, family, kinds, enabled) in rows {
+            assert_eq!(u32::from(model), u32::try_from(index).unwrap());
+            assert_eq!(ALL_MODELS.get(index), Some(&model));
+            assert_eq!(section_name(model), section);
+            let expected = DetectionModelProperties {
+                family,
+                categories: FOURTEEN,
+                learning_method: LearningMethod::SemiSupervised,
+                raw_event_kinds: kinds,
+                primary_subject: PrimarySubjectKind::RawEvent,
+                score_meaning: "Severity of the matched rule",
+                requires_device_account_identification: false,
+                operator_values: if enabled { ENABLED_TRUE } else { ENABLED_FALSE },
+            };
+            assert_eq!(properties(model), &expected, "{model:?}");
+        }
+    }
+
+    #[test]
+    fn signature_sections_are_completed_with_their_defaults() {
+        let output = semi("").unwrap();
+        for (section, enabled) in [
+            ("et_signature", true),
+            ("et_policy_signature", false),
+            ("sigma_signature", true),
+        ] {
+            let parsed: toml::Table = toml::from_str(&output).unwrap();
+            let value = parsed
+                .get("detection_models")
+                .and_then(|t| t.get(section))
+                .and_then(|t| t.get("enabled"))
+                .and_then(toml::Value::as_bool);
+            assert_eq!(value, Some(enabled), "{section}");
+            assert!(output.contains(&format!(
+                "[detection_models.{section}]\nenabled = {enabled}\n"
+            )));
+        }
+
+        // A given value is kept, whatever the default.
+        let document = "[detection_models.et_policy_signature]\nenabled = true\n\n\
+                        [detection_models.et_signature]\nenabled = false\n";
+        let output = semi(document).unwrap();
+        assert!(output.starts_with(document));
+        assert!(output.ends_with("[detection_models.sigma_signature]\nenabled = true\n"));
+        assert_complete(&output);
+
+        // A section without `enabled` gets the default of its model.
+        let output = semi("[detection_models.et_policy_signature]\n").unwrap();
+        assert!(output.starts_with("[detection_models.et_policy_signature]\nenabled = false\n"));
+        assert_complete(&output);
     }
 
     #[test]
@@ -2876,7 +3080,7 @@ rdp_brute_force.enabled = false
                 DetectionModel::WindowOutlier,
             ]
         );
-        assert_eq!(semi_models().count(), 18);
+        assert_eq!(semi_models().count(), 21);
     }
 
     #[test]
@@ -2886,7 +3090,7 @@ rdp_brute_force.enabled = false
             .lines()
             .filter(|line| line.starts_with('['))
             .collect();
-        assert_eq!(headers.len(), 18);
+        assert_eq!(headers.len(), 21);
         assert!(!output.contains("label_db_match"));
         assert!(!output.contains("far_outlier"));
         let output = semi("detection_models = {}").unwrap();

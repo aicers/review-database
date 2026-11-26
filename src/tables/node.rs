@@ -219,6 +219,7 @@ pub struct Table<'d> {
     external_service: CrateTable<'d, ExternalService>,
     engine_instances: EngineInstances<'d>,
     engine_exclusion_counts: EngineExclusionCounts<'d>,
+    signature_statuses: Map<'d>,
     detector_id_marks: DetectorIdMarks<'d>,
     model: IndexedTable<'d, Model>,
     model_indicator: Map<'d>,
@@ -253,6 +254,7 @@ impl<'d> Table<'d> {
         let external_service = Map::open(db, super::EXTERNAL_SERVICES).map(CrateTable::new)?;
         let engine_instances = EngineInstances::open(db)?;
         let engine_exclusion_counts = EngineExclusionCounts::open(db)?;
+        let signature_statuses = Map::open(db, super::SIGNATURE_STATUS)?;
         let detector_id_marks = DetectorIdMarks::open(db)?;
         let model = IndexedTable::<Model>::open(db)?;
         let model_indicator = Map::open(db, super::MODEL_INDICATORS)?;
@@ -265,6 +267,7 @@ impl<'d> Table<'d> {
             external_service,
             engine_instances,
             engine_exclusion_counts,
+            signature_statuses,
             detector_id_marks,
             model,
             model_indicator,
@@ -296,11 +299,11 @@ impl<'d> Table<'d> {
     /// definition it reserved, as does a clone creating a definition on the
     /// instance; its models and training definitions are left with no
     /// instance; its `engine instances` row, with its references, detector
-    /// statuses and stopped state, is deleted, as is its `engine exclusion
-    /// counts` row; and every time series generation policy assigned to it
-    /// is left unassigned, its `data_store` unchanged, since a later agent of
-    /// a reused node id and the same key would otherwise inherit the
-    /// assignment.
+    /// statuses and stopped state, is deleted, as are its `engine exclusion
+    /// counts` and `signature status` rows; and every time series generation
+    /// policy assigned to it is left unassigned, its `data_store` unchanged,
+    /// since a later agent of a reused node id and the same key would
+    /// otherwise inherit the assignment.
     ///
     /// Every writer that removes an agent calls this for each agent key it
     /// removes, whatever the agent's kind: the agent row may already be
@@ -327,8 +330,9 @@ impl<'d> Table<'d> {
             engine_instances: &self.engine_instances,
         }
         .detach(txn, &instance, INSTANCE_REMOVED)?;
-        self.engine_exclusion_counts
-            .delete(txn, &engine_instance::key(node_id, agent_key))?;
+        let key = engine_instance::key(node_id, agent_key);
+        self.engine_exclusion_counts.delete(txn, &key)?;
+        self.signature_statuses.delete_with_transaction(&key, txn)?;
         self.time_series_generation_policies
             .unassign_in_transaction(txn, &instance)
     }
