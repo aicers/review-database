@@ -869,8 +869,8 @@ fn iterator_skips_unknown_detection_models() {
     let valid = db.put(&event_at_nanos(2_000_000_000), &stamp()).unwrap();
     let value = db.inner.get(valid.to_be_bytes()).unwrap().unwrap();
 
-    // Model 21 is the first number review-protocol has not assigned.
-    for model in [21_i128, 9999, i128::from(u32::MAX)] {
+    // Model 24 is the first number review-protocol has not assigned.
+    for model in [24_i128, 9999, i128::from(u32::MAX)] {
         let key = (1_000_000_000_i128 << 64) | (model << 32);
         db.put_raw(&key.to_be_bytes(), &value);
     }

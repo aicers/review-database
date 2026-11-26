@@ -148,6 +148,12 @@ pub(crate) fn http_body(orig: IpAddr, resp: IpAddr) -> RawEventBody {
         mime_types: vec!["text/html".to_string()],
         body: b"synthetic body".to_vec(),
         state: String::new(),
+        request_header_names: vec!["Host".to_string(), "User-Agent".to_string()],
+        accept: "*/*".to_string(),
+        connection: "keep-alive".to_string(),
+        accept_encoding: String::new(),
+        accept_language: String::new(),
+        pragma: String::new(),
     })
 }
 

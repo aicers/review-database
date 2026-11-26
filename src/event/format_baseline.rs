@@ -22,6 +22,13 @@
 //!
 //! The tests compare against the committed files and never regenerate them;
 //! the generator stays only to document how they were made.
+//!
+//! review-protocol 0.35.0 appended six fields to `raw_event::Http`, so the
+//! `body_http` fixture holds an `Http` body in a layout this crate no longer
+//! reads. No reader of it was added: the format is deployed by a fresh
+//! install, so no stored event has that layout. The tests check that the
+//! fixture's record is the only one that cannot be read, and compare every
+//! other one as before.
 
 use std::path::{Path, PathBuf};
 
@@ -43,6 +50,10 @@ const FIXTURE_DIR: &str = "tests/fixtures/detection_event_v0_63";
 
 /// The format marker the data directory was written with.
 const FORMAT_MARKER: &str = "0.63.0";
+
+/// The fixture whose `Http` body has the review-protocol 0.34.0 layout,
+/// which is no longer read.
+const OLD_HTTP_LAYOUT: &str = "body_http";
 
 fn fixture_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join(FIXTURE_DIR)
@@ -116,11 +127,11 @@ fn baseline_events() -> Vec<(&'static str, DetectionEvent)> {
 /// Returns the baseline events as stored in the data directory: the
 /// `index`-th one at [`time`] plus `index` seconds, in its time and in the
 /// time of its raw event or window.
-fn stored_baseline_events() -> Vec<DetectionEvent> {
+fn stored_baseline_events() -> Vec<(&'static str, DetectionEvent)> {
     baseline_events()
         .into_iter()
         .zip(0_i64..)
-        .map(|((_, mut event), index)| {
+        .map(|((name, mut event), index)| {
             let shift = SignedDuration::from_secs(index);
             event.time = event.time.checked_add(shift).expect("in range");
             match &mut event.target {
@@ -132,8 +143,18 @@ fn stored_baseline_events() -> Vec<DetectionEvent> {
                     window.end = window.end.checked_add(shift).expect("in range");
                 }
             }
-            event
+            (name, event)
         })
+        .collect()
+}
+
+/// Returns the stored baseline events this crate still reads: every one but
+/// [`OLD_HTTP_LAYOUT`].
+fn readable_stored_baseline_events() -> Vec<DetectionEvent> {
+    stored_baseline_events()
+        .into_iter()
+        .filter(|(name, _)| *name != OLD_HTTP_LAYOUT)
+        .map(|(_, event)| event)
         .collect()
 }
 
@@ -155,7 +176,7 @@ fn generate_detection_event_fixtures() {
     {
         let store = Store::new(&data, &backup, None).unwrap();
         let events = store.events();
-        for event in stored_baseline_events() {
+        for (_, event) in stored_baseline_events() {
             events.put(&event, &stamp()).unwrap();
         }
     }
@@ -167,6 +188,10 @@ fn encode_event_matches_pre_endpoint_bytes() {
     for (name, event) in baseline_events() {
         let expected = std::fs::read(dir.join(format!("{name}.bin")))
             .unwrap_or_else(|e| panic!("reading fixture {name}: {e}"));
+        if name == OLD_HTTP_LAYOUT {
+            assert_ne!(record::encode_event(&event).unwrap(), expected);
+            continue;
+        }
         assert_eq!(
             record::encode_event(&event).unwrap(),
             expected,
@@ -191,18 +216,24 @@ fn copy_dir(from: &Path, to: &Path) {
     }
 }
 
-fn read_all(
-    events: &EventDb<'_>,
-) -> Vec<(DetectionEvent, super::DetectionEventStamp, Vec<[u8; 2]>)> {
-    events
-        .iter_forward()
-        .map(|item| {
-            let (_, record) = item.unwrap();
-            let codes = record.stored_country_codes().to_vec();
-            let (event, stamp) = record.into_parts();
-            (event, stamp, codes)
-        })
-        .collect()
+/// A stored record as read: its event, stamp and country codes.
+type ReadRecord = (DetectionEvent, super::DetectionEventStamp, Vec<[u8; 2]>);
+
+/// Reads every record of `events` in key order, and returns the ones that
+/// could be read with the number of those that could not.
+fn read_all(events: &EventDb<'_>) -> (Vec<ReadRecord>, usize) {
+    let mut unreadable = 0;
+    let mut read = Vec::new();
+    for item in events.iter_forward() {
+        let Ok((_, record)) = item else {
+            unreadable += 1;
+            continue;
+        };
+        let codes = record.stored_country_codes().to_vec();
+        let (event, stamp) = record.into_parts();
+        read.push((event, stamp, codes));
+    }
+    (read, unreadable)
 }
 
 /// Drops the `hosts` family from the states database in `data`.
@@ -245,14 +276,14 @@ fn pre_endpoint_data_directory_reads_unchanged() {
 
     let store = Store::new(&data, &backup, None).unwrap();
     let events = store.events();
-    let expected: Vec<_> = stored_baseline_events()
+    let expected: Vec<_> = readable_stored_baseline_events()
         .into_iter()
         .map(|event| {
             let codes = record::country_codes(&event, None);
             (event, stamp(), codes)
         })
         .collect();
-    assert_eq!(read_all(&events), expected);
+    assert_eq!(read_all(&events), (expected, 1));
 
     let arrival: Vec<DetectionEvent> = events
         .read_by_arrival(
@@ -268,5 +299,5 @@ fn pre_endpoint_data_directory_reads_unchanged() {
         .into_iter()
         .map(|(_, record)| record.into_parts().0)
         .collect();
-    assert_eq!(arrival, stored_baseline_events());
+    assert_eq!(arrival, readable_stored_baseline_events());
 }

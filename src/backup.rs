@@ -649,7 +649,10 @@ mod tests {
         migration::DATABASE_FORMAT_VERSION,
         tables::{
             CONFIG_REVISIONS, ENGINE_EXCLUSION_COUNTS, MAP_NAMES, SENTA_ENDPOINTS,
-            TIME_SERIES_GENERATION_POLICY, open_rocksdb_backup_engine,
+            SIGNATURE_PUSH_REVISION, SIGNATURE_RULE_OVERRIDES, SIGNATURE_RULE_SETS,
+            SIGNATURE_SOURCE_ARCHIVES, SIGNATURE_SOURCE_VERSIONS, SIGNATURE_SOURCES,
+            SIGNATURE_STATUS, SIGNATURE_TRUNCATION_DAILY, TIME_SERIES_GENERATION_POLICY,
+            open_rocksdb_backup_engine,
         },
     };
 
@@ -1353,7 +1356,25 @@ mod tests {
                                       \"senta endpoints\", \"senta giganto entries\", \
                                       \"senta giganto last received\", \"senta giganto losses\", \
                                       \"senta status reports\", \"senta unenroll requests\", \
+                                      \"signature push revision\", \
+                                      \"signature rule overrides\", \"signature rule sets\", \
+                                      \"signature source archives\", \
+                                      \"signature source versions\", \"signature sources\", \
+                                      \"signature status\", \"signature truncation daily\", \
                                       \"time series generation policy\"";
+
+    /// The column families the signature rule source storage added, which
+    /// every backup of the `0.72.0` release lacks.
+    const SIGNATURE_FAMILIES: [&str; 8] = [
+        SIGNATURE_SOURCES,
+        SIGNATURE_SOURCE_VERSIONS,
+        SIGNATURE_SOURCE_ARCHIVES,
+        SIGNATURE_RULE_SETS,
+        SIGNATURE_RULE_OVERRIDES,
+        SIGNATURE_PUSH_REVISION,
+        SIGNATURE_STATUS,
+        SIGNATURE_TRUNCATION_DAILY,
+    ];
 
     /// The current column families with the time series generation policy
     /// area replaced by [`RETIRED_POLICY_AREA`].
@@ -1695,7 +1716,8 @@ mod tests {
     /// A backup that lacks any one family of the current format is refused,
     /// naming that family, and nothing is restored. Among the families tried
     /// are ones that were once accepted as missing: the configuration
-    /// revisions, the engine exclusion counts and the `senta` endpoints.
+    /// revisions, the engine exclusion counts and the `senta` endpoints, and
+    /// one of the signature rule source families.
     #[test]
     fn online_restore_refuses_a_backup_lacking_a_family() {
         let _permit = acquire_db_permit();
@@ -1704,6 +1726,7 @@ mod tests {
             CONFIG_REVISIONS,
             ENGINE_EXCLUSION_COUNTS,
             SENTA_ENDPOINTS,
+            SIGNATURE_SOURCES,
             last,
         ] {
             let data_dir = tempfile::tempdir().unwrap();
@@ -1743,6 +1766,69 @@ mod tests {
             drop(store);
             assert_eq!(event_count(data_dir.path(), backup_dir.path()), 2);
         }
+    }
+
+    /// A backup holding exactly the column families of the `0.72.0` release,
+    /// the current ones without the signature rule source families, is
+    /// refused by id and as the latest, naming exactly those eight as
+    /// missing, and nothing is restored.
+    #[test]
+    fn online_restore_refuses_a_backup_of_the_0_72_0_families() {
+        let _permit = acquire_db_permit();
+        assert_eq!(MAP_NAMES.len(), 113);
+        assert!(
+            SIGNATURE_FAMILIES
+                .iter()
+                .all(|name| MAP_NAMES.contains(name))
+        );
+        let families: Vec<&str> = MAP_NAMES
+            .into_iter()
+            .filter(|name| !SIGNATURE_FAMILIES.contains(name))
+            .collect();
+        assert_eq!(families.len(), 105);
+        let mut missing: Vec<&str> = SIGNATURE_FAMILIES.to_vec();
+        missing.sort_unstable();
+        let missing = missing
+            .iter()
+            .map(|name| format!("\"{name}\""))
+            .collect::<Vec<_>>()
+            .join(", ");
+
+        let data_dir = tempfile::tempdir().unwrap();
+        let backup_dir = tempfile::tempdir().unwrap();
+        let store = open_current_store(data_dir.path(), backup_dir.path());
+        put_event(&store);
+        create(&store, true, 3).unwrap();
+        put_event(&store);
+        add_backup_with_families(backup_dir.path(), &families);
+        let before = RestoreState::read(&store, data_dir.path(), backup_dir.path());
+        assert_eq!(before.backup_ids, [1, 2]);
+        let private_before = dir_entries(&private_dir(backup_dir.path(), 2));
+
+        let expected = format!(
+            "backup 2 is not in database format {DATABASE_FORMAT_VERSION}: unexpected column \
+             families [], missing column families [{missing}]; nothing was restored"
+        );
+        let err = store
+            .write()
+            .expect("test holds no other locks")
+            .restore_from_backup(2)
+            .unwrap_err();
+        assert_eq!(err.to_string(), expected);
+        assert_eq!(live_event_count(&store), 2);
+        assert_still_open(&store, data_dir.path(), backup_dir.path(), &before);
+        let err = store
+            .write()
+            .expect("test holds no other locks")
+            .restore_from_latest_backup()
+            .unwrap_err();
+        assert_eq!(err.to_string(), expected);
+        assert_eq!(live_event_count(&store), 3);
+        assert_still_open(&store, data_dir.path(), backup_dir.path(), &before);
+        assert_eq!(
+            dir_entries(&private_dir(backup_dir.path(), 2)),
+            private_before
+        );
     }
 
     /// A backup that has every family of the current format and the
