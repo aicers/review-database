@@ -12,6 +12,13 @@ use crate::{
     test::{DbGuard, acquire_db_permit},
 };
 
+thread_local! {
+    /// A hook run on this thread right after an operation reads a source
+    /// row, so that a test can pause the operation between its reads.
+    pub(super) static AFTER_SOURCE_READ: std::cell::RefCell<Option<Box<dyn FnMut()>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
 const ET: SignatureSource = SignatureSource::EtOpen;
 const SIGMA: SignatureSource = SignatureSource::SigmaHq;
 const EMERGING: SignatureSource = SignatureSource::SigmaHqEmerging;
@@ -1321,6 +1328,53 @@ fn concurrent_version_operations_keep_the_slots_consistent() {
         }
         assert_consistent(store, ET);
     }
+}
+
+/// A conversion that has read its source's row, naming staged version `S`,
+/// while two other conversions commit — the first discarding `S`, the
+/// second deleting it as the older discarded version — still succeeds, as
+/// it does when it runs after both.
+#[test]
+fn a_conversion_survives_its_staged_version_retiring_after_it_read_the_source() {
+    let t = setup_store();
+    let store = &t.store;
+    let staged = stage(store, ET, "s", 1);
+    let [paused, first, second] =
+        ["a", "b", "c"].map(|d| ingest(store, ET, d, key(2026, 3, 2, None)).unwrap());
+
+    let (read_tx, read_rx) = std::sync::mpsc::channel();
+    let (resume_tx, resume_rx) = std::sync::mpsc::channel::<()>();
+    let result = std::thread::scope(|scope| {
+        let paused_thread = scope.spawn(move || {
+            let mut pause = Some((read_tx, resume_rx));
+            AFTER_SOURCE_READ.with_borrow_mut(|hook| {
+                *hook = Some(Box::new(move || {
+                    if let Some((read, resume)) = pause.take() {
+                        read.send(()).unwrap();
+                        resume.recv().unwrap();
+                    }
+                }));
+            });
+            convert(store, paused)
+        });
+        read_rx.recv().unwrap();
+        convert(store, first).unwrap();
+        convert(store, second).unwrap();
+        assert_eq!(state_of(store, staged), None);
+        resume_tx.send(()).unwrap();
+        paused_thread.join().unwrap()
+    });
+
+    result.unwrap();
+    let source = store.signature_source(ET).unwrap();
+    assert_eq!(source.staged, Some(paused));
+    assert_eq!(state_of(store, paused), Some(SignatureVersionState::Staged));
+    assert_eq!(
+        state_of(store, second),
+        Some(SignatureVersionState::Discarded)
+    );
+    assert_eq!(state_of(store, first), None);
+    assert_consistent(store, ET);
 }
 
 #[test]

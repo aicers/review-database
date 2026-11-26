@@ -17,7 +17,9 @@
 //! Every operation on a version or a source runs in one transaction that
 //! reads the source's row for update and, when it changes anything, writes
 //! it, so concurrent operations on one source conflict and are retried one
-//! after another. An operation that returns an error changes nothing.
+//! after another. Every read of a transaction sees the snapshot taken when
+//! it began, so an operation refuses only on a state that existed. An
+//! operation that returns an error changes nothing.
 
 #[cfg(test)]
 mod tests;
@@ -27,13 +29,16 @@ use std::collections::BTreeMap;
 use anyhow::{Context, Result, anyhow};
 use jiff::{Timestamp, civil::Date, tz::TimeZone};
 use review_protocol::types::{DetectionModel, SignatureSource, SignatureStatusReport};
-use rocksdb::{ColumnFamily, Direction, IteratorMode, OptimisticTransactionDB, Transaction};
+use rocksdb::{
+    ColumnFamily, DBIteratorWithThreadMode, Direction, IteratorMode, OptimisticTransactionDB,
+    OptimisticTransactionOptions, ReadOptions, Transaction, WriteOptions,
+};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::{
-    AgentKind, EXCLUSIVE, EngineDocumentError, ModelInstance, Store,
-    engine_instance::agent_for_update, tables,
+    Agent, AgentKind, EXCLUSIVE, EngineDocumentError, ModelInstance, Store, tables,
+    types::FromKeyValue,
 };
 
 /// The most kept versions a source has.
@@ -49,7 +54,73 @@ const RECONVERTIBLE: &[SignatureVersionState] = &[
     SignatureVersionState::Staged,
 ];
 
-type Txn<'d> = Transaction<'d, OptimisticTransactionDB>;
+/// An optimistic transaction whose reads all see the snapshot taken when it
+/// began.
+///
+/// Without a snapshot each read sees whatever was committed by then, so
+/// reads made after a concurrent commit mix two states, and an operation
+/// may refuse on a state that never existed — a row it read naming a
+/// version the concurrent commit has since deleted. Only a commit checks
+/// for conflicts, and an operation that refuses never commits. Reading the
+/// snapshot makes a refusal reflect the state at the transaction's start,
+/// and the commit, which checks every key read or written against the
+/// same snapshot, fails when anything read has changed since.
+struct Txn<'d>(Transaction<'d, OptimisticTransactionDB>);
+
+impl<'d> Txn<'d> {
+    fn begin(db: &'d OptimisticTransactionDB) -> Self {
+        let mut options = OptimisticTransactionOptions::new();
+        options.set_snapshot(true);
+        Self(db.transaction_opt(&WriteOptions::default(), &options))
+    }
+
+    /// Returns read options reading the transaction's snapshot.
+    ///
+    /// The snapshot belongs to the transaction, which `set_snapshot` made
+    /// take it at its start; the handle `snapshot()` returns only wraps it,
+    /// and the read options keep the snapshot itself, so dropping the
+    /// handle here leaves them valid for as long as the transaction lives.
+    fn snapshot_read(&self) -> ReadOptions {
+        let mut read = ReadOptions::default();
+        read.set_snapshot(&self.0.snapshot());
+        read
+    }
+
+    fn get_for_update_cf(
+        &self,
+        cf: &ColumnFamily,
+        key: impl AsRef<[u8]>,
+        exclusive: bool,
+    ) -> Result<Option<Vec<u8>>, rocksdb::Error> {
+        self.0
+            .get_for_update_cf_opt(cf, key, exclusive, &self.snapshot_read())
+    }
+
+    fn iterator_cf(
+        &self,
+        cf: &ColumnFamily,
+        mode: IteratorMode,
+    ) -> DBIteratorWithThreadMode<'_, Transaction<'d, OptimisticTransactionDB>> {
+        self.0.iterator_cf_opt(cf, self.snapshot_read(), mode)
+    }
+
+    fn put_cf(
+        &self,
+        cf: &ColumnFamily,
+        key: impl AsRef<[u8]>,
+        value: impl AsRef<[u8]>,
+    ) -> Result<(), rocksdb::Error> {
+        self.0.put_cf(cf, key, value)
+    }
+
+    fn delete_cf(&self, cf: &ColumnFamily, key: impl AsRef<[u8]>) -> Result<(), rocksdb::Error> {
+        self.0.delete_cf(cf, key)
+    }
+
+    fn commit(self) -> Result<(), rocksdb::Error> {
+        self.0.commit()
+    }
+}
 
 /// Where a signature rule source's version sorts among the versions of its
 /// source: a UTC date and, for sources that number their releases, a
@@ -462,7 +533,7 @@ impl<'d> Families<'d> {
     /// returns ends the operation with nothing written.
     fn run<T>(&self, what: &str, mut body: impl FnMut(&Txn<'d>) -> Result<T>) -> Result<T> {
         loop {
-            let txn = self.db.transaction();
+            let txn = Txn::begin(self.db);
             let value = body(&txn)?;
             match txn.commit() {
                 Ok(()) => return Ok(value),
@@ -473,9 +544,16 @@ impl<'d> Families<'d> {
     }
 
     fn source_for_update(&self, txn: &Txn<'d>, source: SignatureSource) -> Result<SourceRow> {
-        txn.get_for_update_cf(self.sources, source_key(source), EXCLUSIVE)
-            .context("cannot read signature source")?
-            .map_or_else(|| Ok(SourceRow::default()), |value| deserialize(&value))
+        let row = txn
+            .get_for_update_cf(self.sources, source_key(source), EXCLUSIVE)
+            .context("cannot read signature source")?;
+        #[cfg(test)]
+        tests::AFTER_SOURCE_READ.with_borrow_mut(|hook| {
+            if let Some(hook) = hook {
+                hook();
+            }
+        });
+        row.map_or_else(|| Ok(SourceRow::default()), |value| deserialize(&value))
     }
 
     fn put_source(&self, txn: &Txn<'d>, source: SignatureSource, row: &SourceRow) -> Result<()> {
@@ -1193,7 +1271,11 @@ impl Store {
         let f = self.signature_families();
         let key = tables::engine_instance_key(instance.node_id, &instance.agent_key);
         f.run("store a signature status report", |txn| {
-            if agent_for_update(txn, agents.raw().cf, &key)?
+            if txn
+                .get_for_update_cf(agents.raw().cf, &key, EXCLUSIVE)
+                .context("cannot read agent")?
+                .map(|value| Agent::from_key_value(&key, &value))
+                .transpose()?
                 .is_none_or(|agent| agent.kind != AgentKind::SemiSupervised)
             {
                 return Err(EngineDocumentError::NotSemiSupervisedAgent {
