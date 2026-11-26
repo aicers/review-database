@@ -68,7 +68,7 @@ use crate::{
     SentaEndpointEnrollmentAttempt, SentaEndpointEnrollmentResult, SentaEndpointError,
     SentaEndpointInstall, SentaEndpointKeysetDocument, SentaEndpointRecoveryKeyDocument, Store,
     Table,
-    event::UNEXPECTED_ALREADY_STORED,
+    event::{EventWrite, UNEXPECTED_ALREADY_STORED},
     tables::{
         SentaEndpointTxn as Txn, is_senta_endpoint_conflict as is_conflict,
         senta_endpoint_keys as keys,
@@ -904,18 +904,18 @@ impl Store {
                     customer_id: endpoint_customer,
                 });
             }
-            let arrival = events.stamp_arrival(&mut last)?;
-            let outcome = events.write_event(&txn, event, stamp, arrival, unless_stored)?;
-            if !matches!(outcome, PutOutcome::Stored(_)) {
-                return Ok(outcome);
-            }
+            let (key, arrival) =
+                match events.write_event(&txn, event, stamp, &mut last, unless_stored)? {
+                    EventWrite::Written { key, arrival } => (key, arrival),
+                    EventWrite::Unwritten(outcome) => return Ok(outcome),
+                };
             #[cfg(test)]
             self.run_senta_endpoint_hook(HookPoint::BeforeCommit(METHOD))
                 .map_err(database_error)?;
             match txn.commit() {
                 Ok(()) => {
                     *last = Some(arrival);
-                    return Ok(outcome);
+                    return Ok(PutOutcome::Stored(key));
                 }
                 Err(e) if is_conflict(&e) => {}
                 Err(e) => {
