@@ -68,6 +68,7 @@ use crate::{
     SentaEndpointEnrollmentAttempt, SentaEndpointEnrollmentResult, SentaEndpointError,
     SentaEndpointInstall, SentaEndpointKeysetDocument, SentaEndpointRecoveryKeyDocument, Store,
     Table,
+    event::UNEXPECTED_ALREADY_STORED,
     tables::{
         SentaEndpointTxn as Txn, is_senta_endpoint_conflict as is_conflict,
         senta_endpoint_keys as keys,
@@ -807,7 +808,7 @@ impl Store {
                 Err(EndpointDetectionEventError::Database(anyhow!(reason)))
             }
             PutOutcome::AlreadyStored => Err(EndpointDetectionEventError::Database(anyhow!(
-                "a write not checking for a stored event found one"
+                UNEXPECTED_ALREADY_STORED
             ))),
         }
     }

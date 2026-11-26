@@ -57,6 +57,11 @@ const EVENT_KEY_TIME_LEN: usize = 8;
 /// detection model; the remaining four tell apart records sharing both.
 const EVENT_KEY_TIME_AND_MODEL_LEN: usize = 12;
 const TOO_MANY_EVENTS: &str = "too many events with the same timestamp";
+/// The error of a write not checking for a stored event that found one:
+/// [`EventDb::write_event`] returns [`PutOutcome::AlreadyStored`] only when
+/// it checks.
+pub(crate) const UNEXPECTED_ALREADY_STORED: &str =
+    "a write not checking for a stored event found one";
 
 /// The most raw event keys one [`EventDb::find_by_raw_event_keys`] call
 /// accepts.
@@ -414,9 +419,7 @@ impl<'a> EventDb<'a> {
             let key = match self.write_event(&txn, event, stamp, arrival, false)? {
                 PutOutcome::Stored(key) => key,
                 PutOutcome::Rejected(reason) => bail!(reason),
-                PutOutcome::AlreadyStored => {
-                    bail!("a write not checking for a stored event found one")
-                }
+                PutOutcome::AlreadyStored => bail!(UNEXPECTED_ALREADY_STORED),
             };
             match txn.commit() {
                 Ok(()) => {
