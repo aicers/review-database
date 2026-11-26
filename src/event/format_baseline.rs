@@ -205,6 +205,24 @@ fn read_all(
         .collect()
 }
 
+/// Drops the `hosts` family from the states database in `data`.
+///
+/// The fixture was written while the format still had that family, and the
+/// store opens only a database whose families are the current ones. Nothing
+/// was stored in it, so the events this test reads are as the fixture left
+/// them.
+fn drop_hosts_family(data: &Path) {
+    let states = data.join(crate::DEFAULT_STATES);
+    let families = rocksdb::DB::list_cf(&rocksdb::Options::default(), &states).unwrap();
+    let mut db = rocksdb::DB::open_cf(&rocksdb::Options::default(), &states, &families).unwrap();
+    let hosts = db.cf_handle("hosts").unwrap();
+    assert_eq!(
+        db.iterator_cf(hosts, rocksdb::IteratorMode::Start).count(),
+        0
+    );
+    db.drop_cf("hosts").unwrap();
+}
+
 #[test]
 fn pre_endpoint_data_directory_reads_unchanged() {
     let _permit = crate::test::acquire_db_permit();
@@ -213,6 +231,7 @@ fn pre_endpoint_data_directory_reads_unchanged() {
     let backup = dir.path().join("backup");
     copy_dir(&fixture_dir().join("data"), &data);
     copy_dir(&fixture_dir().join("backup"), &backup);
+    drop_hosts_family(&data);
 
     crate::migrate_data_dir(&data, &backup, None).unwrap();
     for marker_dir in [&data, &backup] {

@@ -641,16 +641,15 @@ mod tests {
         Detail, DetectionEvent, DetectionModel, EventCategory, RawEventBody, RawEventKind, Target,
         raw_event,
     };
-    use rocksdb::Direction;
 
     use super::{OfflineRestoreError, create, list, restore, restore_states_offline};
     use crate::test::acquire_db_permit;
     use crate::{
-        DEFAULT_STATES, DetectionEventStamp, Iterable, ModelInstance, Store,
+        DEFAULT_STATES, DetectionEventStamp, ModelInstance, Store,
         migration::DATABASE_FORMAT_VERSION,
         tables::{
-            ADDED_WITHIN_FORMAT, DETECTION_EVENT_ARRIVAL, ENGINE_EXCLUSION_COUNTS, FORMAT_0_63,
-            MAP_NAMES, TIME_SERIES_GENERATION_POLICY, open_rocksdb_backup_engine,
+            CONFIG_REVISIONS, ENGINE_EXCLUSION_COUNTS, MAP_NAMES, SENTA_ENDPOINTS,
+            TIME_SERIES_GENERATION_POLICY, open_rocksdb_backup_engine,
         },
     };
 
@@ -1315,403 +1314,6 @@ mod tests {
         engine.create_new_backup_flush(&db, true).unwrap();
     }
 
-    /// Adds to the backup engine in `backup_dir` a backup of a store in the
-    /// current format holding `events` events, as an earlier build of the
-    /// format left it: without the [`ADDED_WITHIN_FORMAT`] families, which
-    /// are the configuration revision families, the Clumit Endpoint
-    /// (`senta`) families, the device identification (DAI) configuration
-    /// families, the DAI observation, cursor and restore families, the DAI
-    /// unregistered range families, the DAI device families, the engine
-    /// exclusion counts family and the detection event arrival index.
-    fn add_earlier_build_backup(backup_dir: &Path, events: usize) {
-        add_backup_without_families(backup_dir, events, &ADDED_WITHIN_FORMAT);
-    }
-
-    /// Adds to the backup engine in `backup_dir` a backup of a store in the
-    /// current format holding `events` events, without the `dropped` column
-    /// families.
-    fn add_backup_without_families(backup_dir: &Path, events: usize, dropped: &[&str]) {
-        let source = tempfile::tempdir().unwrap();
-        let source_backup = tempfile::tempdir().unwrap();
-        {
-            let store = Store::new(source.path(), source_backup.path(), None).unwrap();
-            for _ in 0..events {
-                store
-                    .events()
-                    .put(&example_event(), &example_stamp())
-                    .unwrap();
-            }
-        }
-        let states = source.path().join(DEFAULT_STATES);
-        let mut db =
-            rocksdb::DB::open_cf(&rocksdb::Options::default(), &states, MAP_NAMES).unwrap();
-        for name in dropped {
-            db.drop_cf(name).unwrap();
-        }
-        let mut engine = open_rocksdb_backup_engine(&backup_dir.join(DEFAULT_STATES)).unwrap();
-        engine.create_new_backup_flush(&db, true).unwrap();
-    }
-
-    /// A backup taken by an earlier build of the current format lacks the
-    /// [`ADDED_WITHIN_FORMAT`] families — the configuration revision
-    /// families, the Clumit Endpoint (`senta`) families, the DAI
-    /// configuration families, the DAI observation, cursor and restore
-    /// families, the DAI unregistered range families, the DAI device
-    /// families, the engine exclusion counts family and the detection event
-    /// arrival index — which that build did not have. It is in the current
-    /// format, so it restores online by id and as the latest, the restored
-    /// store has every family of the format, it records configuration
-    /// revisions, it stores an observation, it registers a senta endpoint
-    /// install, its DAI configuration families are empty and written to, its
-    /// DAI observation, cursor and restore families hold only the restore
-    /// generation the restore drew and are written to, its DAI unregistered
-    /// range families are empty and written to, its DAI device families
-    /// are empty and written to by a slot application, its engine
-    /// exclusion counts family is empty and written to, and its detection
-    /// event arrival index is empty and written to.
-    #[test]
-    fn online_restore_accepts_an_earlier_build_backup_of_the_current_format() {
-        let _permit = acquire_db_permit();
-        let data_dir = tempfile::tempdir().unwrap();
-        let backup_dir = tempfile::tempdir().unwrap();
-        let store = open_current_store(data_dir.path(), backup_dir.path());
-        put_event(&store);
-        add_earlier_build_backup(backup_dir.path(), 2);
-        let families = rocksdb::DB::list_cf(
-            &rocksdb::Options::default(),
-            private_dir(backup_dir.path(), 1),
-        )
-        .unwrap();
-        assert!(
-            ADDED_WITHIN_FORMAT
-                .iter()
-                .all(|name| !families.iter().any(|family| family == name))
-        );
-
-        store
-            .write()
-            .expect("test holds no other locks")
-            .restore_from_latest_backup()
-            .unwrap();
-        assert_eq!(live_event_count(&store), 2);
-        put_event(&store);
-        store
-            .write()
-            .expect("test holds no other locks")
-            .restore_from_backup(1)
-            .unwrap();
-        assert_eq!(live_event_count(&store), 2);
-
-        {
-            let store = store.read().expect("test holds no other locks");
-            let agent = crate::Agent::new(
-                1,
-                "001.hog".to_string(),
-                crate::AgentKind::SemiSupervised,
-                crate::AgentStatus::Enabled,
-                Some("data_store_port = 1\n".to_string()),
-                None,
-            )
-            .unwrap();
-            store.agents_map().put(&agent).unwrap();
-            let instance = crate::ModelInstance {
-                node_id: 1,
-                agent_key: "001.hog".to_string(),
-            };
-            assert_eq!(store.config_revision(&instance).unwrap(), Some(1));
-
-            let db = store.states.db();
-            assert!(MAP_NAMES.iter().all(|name| db.cf_handle(name).is_some()));
-            let request = crate::SentaEndpointUnenrollRequest {
-                endpoint_id: uuid::Uuid::from_bytes([1; 16]),
-                received_at: 1,
-            };
-            let requests = store.senta_endpoint_unenroll_request_map();
-            assert_eq!(requests.iter().count(), 0);
-            requests.put(&request).unwrap();
-            assert_eq!(requests.get(request.endpoint_id).unwrap(), Some(request));
-            let installs = store.senta_endpoint_install_map();
-            assert_eq!(installs.iter(Direction::Forward, None).count(), 0);
-            assert_eq!(store.senta_endpoint_customer_map().get(1).unwrap(), None);
-            assert!(installs.register("install", "{}", 1).unwrap());
-            assert!(installs.get("install").unwrap().is_some());
-
-            assert_dai_tables_start_empty(&store);
-            assert_engine_exclusion_counts_start_empty(&store);
-            assert_detection_event_arrival_starts_empty(&store);
-        }
-        drop(store);
-        // The two events of the backup and the one the arrival index check
-        // stored.
-        assert_eq!(event_count(data_dir.path(), backup_dir.path()), 3);
-    }
-
-    /// A backup in the current format taken by a build without the `engine
-    /// exclusion counts` family, which no earlier build of the format wrote,
-    /// passes the format check and restores, online by id and as the
-    /// latest; the restored store has the family, empty, and stores an
-    /// exclusion report in it.
-    #[test]
-    fn online_restore_accepts_a_backup_without_engine_exclusion_counts() {
-        let _permit = acquire_db_permit();
-        let data_dir = tempfile::tempdir().unwrap();
-        let backup_dir = tempfile::tempdir().unwrap();
-        let store = open_current_store(data_dir.path(), backup_dir.path());
-        put_event(&store);
-        add_backup_without_families(backup_dir.path(), 2, &[ENGINE_EXCLUSION_COUNTS]);
-        let families = rocksdb::DB::list_cf(
-            &rocksdb::Options::default(),
-            private_dir(backup_dir.path(), 1),
-        )
-        .unwrap();
-        assert!(
-            !families
-                .iter()
-                .any(|family| family == ENGINE_EXCLUSION_COUNTS)
-        );
-        assert_eq!(families.len(), MAP_NAMES.len());
-
-        store
-            .write()
-            .expect("test holds no other locks")
-            .restore_from_latest_backup()
-            .unwrap();
-        assert_eq!(live_event_count(&store), 2);
-        put_event(&store);
-        store
-            .write()
-            .expect("test holds no other locks")
-            .restore_from_backup(1)
-            .unwrap();
-        assert_eq!(live_event_count(&store), 2);
-
-        {
-            let store = store.read().expect("test holds no other locks");
-            let db = store.states.db();
-            assert!(MAP_NAMES.iter().all(|name| db.cf_handle(name).is_some()));
-            assert_engine_exclusion_counts_start_empty(&store);
-        }
-        drop(store);
-        assert_eq!(event_count(data_dir.path(), backup_dir.path()), 2);
-    }
-
-    /// A backup in the current format taken by a build without the
-    /// `detection event arrival` index, which no earlier build of the format
-    /// wrote, passes the format check and restores, online by id and as the
-    /// latest; the restored store has the index, empty, with no rows for the
-    /// events of the backup, and writes a row for the next event it stores.
-    #[test]
-    fn online_restore_accepts_a_backup_without_the_detection_event_arrival_index() {
-        let _permit = acquire_db_permit();
-        let data_dir = tempfile::tempdir().unwrap();
-        let backup_dir = tempfile::tempdir().unwrap();
-        let store = open_current_store(data_dir.path(), backup_dir.path());
-        put_event(&store);
-        add_backup_without_families(backup_dir.path(), 2, &[DETECTION_EVENT_ARRIVAL]);
-        let families = rocksdb::DB::list_cf(
-            &rocksdb::Options::default(),
-            private_dir(backup_dir.path(), 1),
-        )
-        .unwrap();
-        assert!(
-            !families
-                .iter()
-                .any(|family| family == DETECTION_EVENT_ARRIVAL)
-        );
-        assert_eq!(families.len(), MAP_NAMES.len());
-
-        store
-            .write()
-            .expect("test holds no other locks")
-            .restore_from_latest_backup()
-            .unwrap();
-        assert_eq!(live_event_count(&store), 2);
-        put_event(&store);
-        store
-            .write()
-            .expect("test holds no other locks")
-            .restore_from_backup(1)
-            .unwrap();
-        assert_eq!(live_event_count(&store), 2);
-
-        {
-            let store = store.read().expect("test holds no other locks");
-            let db = store.states.db();
-            assert!(MAP_NAMES.iter().all(|name| db.cf_handle(name).is_some()));
-            assert_detection_event_arrival_starts_empty(&store);
-        }
-        drop(store);
-        assert_eq!(event_count(data_dir.path(), backup_dir.path()), 3);
-    }
-
-    /// Asserts that the `detection event arrival` index of `store`, restored
-    /// from a backup without it, is empty although the store holds events,
-    /// and that the next event stored gets a row the arrival-order read
-    /// follows.
-    fn assert_detection_event_arrival_starts_empty(store: &Store) {
-        let db = store.states.db();
-        let cf = db.cf_handle(DETECTION_EVENT_ARRIVAL).unwrap();
-        assert_eq!(db.iterator_cf(cf, rocksdb::IteratorMode::Start).count(), 0);
-        assert!(store.events().iter_forward().count() > 0);
-
-        let key = store
-            .events()
-            .put(&example_event(), &example_stamp())
-            .unwrap();
-        assert_eq!(db.iterator_cf(cf, rocksdb::IteratorMode::Start).count(), 1);
-        let filter = crate::event::EventFilter::new(
-            None, None, None, None, None, None, None, None, None, None, None, None, None,
-        );
-        let page = store
-            .events()
-            .read_by_arrival(&filter, None, 10, 10)
-            .unwrap();
-        assert_eq!(
-            page.events.iter().map(|(key, _)| *key).collect::<Vec<_>>(),
-            [key]
-        );
-        assert!(!page.has_more);
-    }
-
-    /// Asserts that the `engine exclusion counts` family of `store`, restored
-    /// from a backup without it, is empty and is written to.
-    fn assert_engine_exclusion_counts_start_empty(store: &Store) {
-        let db = store.states.db();
-        let cf = db.cf_handle(ENGINE_EXCLUSION_COUNTS).unwrap();
-        assert_eq!(db.iterator_cf(cf, rocksdb::IteratorMode::Start).count(), 0);
-
-        let agent = crate::Agent::new(
-            7,
-            "hog".to_string(),
-            crate::AgentKind::SemiSupervised,
-            crate::AgentStatus::Enabled,
-            None,
-            None,
-        )
-        .unwrap();
-        store.agents_map().put(&agent).unwrap();
-        let instance = ModelInstance {
-            node_id: 7,
-            agent_key: "hog".to_string(),
-        };
-        assert_eq!(store.engine_exclusion_report(&instance).unwrap(), None);
-        let report = review_protocol::types::EngineExclusionReport {
-            counts: vec![review_protocol::types::ExcludedCount {
-                entry: 1,
-                day: jiff::civil::date(2026, 3, 14),
-                count: 5,
-            }],
-        };
-        store
-            .set_engine_exclusion_report(&instance, &report)
-            .unwrap();
-        assert_eq!(
-            store.engine_exclusion_report(&instance).unwrap(),
-            Some(report)
-        );
-        assert_eq!(db.iterator_cf(cf, rocksdb::IteratorMode::Start).count(), 1);
-    }
-
-    /// Asserts that the DAI families of `store`, restored from an earlier
-    /// build's backup, are empty but for the restore generation the restore
-    /// drew, and that they are written to, the device families by a slot
-    /// application.
-    fn assert_dai_tables_start_empty(store: &Store) {
-        let db = store.states.db();
-        for name in [
-            "dai customer settings",
-            "dai relay sites",
-            "dai sensor sites",
-            "dai sensor state",
-            "dai site policy guard",
-            "dai sites",
-            "dai cursors",
-            "dai slot sends",
-            "dai send parts",
-            "dai catchup gaps",
-            "dai sensor kind state",
-            "dai counters",
-            "dai earliest pending",
-            "dai observations",
-            "dai observation summaries",
-            "dai pending",
-            "dai ip activity",
-            "dai range blocks",
-            "dai range subnets",
-            "dai range days",
-            "dai range ignores",
-            "dai resolver points",
-            "dai devices",
-            "dai device identifiers",
-            "dai device aliases",
-            "dai bindings",
-            "dai device bindings",
-            "dai evidence",
-            "dai ip state",
-            "dai fixed ips",
-            "dai conflicts",
-            "dai services",
-            "dai software strings",
-            "dai device changes",
-        ] {
-            let cf = db.cf_handle(name).unwrap();
-            assert_eq!(
-                db.iterator_cf(cf, rocksdb::IteratorMode::Start).count(),
-                0,
-                "{name}"
-            );
-        }
-        // The restore drew a restore generation, its only row.
-        let meta = db.cf_handle("dai meta").unwrap();
-        assert_eq!(
-            db.iterator_cf(meta, rocksdb::IteratorMode::Start).count(),
-            1
-        );
-        let generation = store.dai_restore_generation().unwrap();
-        let cursors = store.dai_cursors(&["all".to_string()], 0).unwrap();
-        assert_eq!(cursors.restore_generation, generation);
-        assert_eq!(cursors.entries, Vec::new());
-        assert_eq!(
-            store.dai_settings(1).unwrap(),
-            crate::DaiSettings::default()
-        );
-        assert_eq!(store.dai_sites(1).unwrap(), Vec::new());
-        let token = store.ensure_default_site(1).unwrap();
-        assert_eq!(store.dai_sites(1).unwrap().len(), 1);
-        assert_eq!(
-            store.dai_sensor_site(1, "piglet.host", 0).unwrap(),
-            Some(token)
-        );
-        assert_eq!(
-            store
-                .record_dai_sensor_config_hash("piglet.host", b"h")
-                .unwrap(),
-            1
-        );
-        assert_eq!(cursors.range_days, Vec::new());
-        assert_eq!(store.dai_range_candidates(1, 0).unwrap(), Vec::new());
-        assert_eq!(store.dai_ignored_ranges(1).unwrap(), Vec::new());
-        let range: ipnet::IpNet = "10.1.2.3/24".parse().unwrap();
-        assert_eq!(
-            store.ignore_dai_range(1, range, "admin", 5).unwrap(),
-            range.trunc()
-        );
-        assert_eq!(store.dai_ignored_ranges(1).unwrap().len(), 1);
-        // A slot application with nothing pending writes the resolver point.
-        assert_eq!(
-            store
-                .apply_dai_slot("piglet.host", 0, crate::DAI_APPLY_DEFAULT_MAX_COUNT, 0)
-                .unwrap(),
-            None
-        );
-        let points = db.cf_handle("dai resolver points").unwrap();
-        assert_eq!(
-            db.iterator_cf(points, rocksdb::IteratorMode::Start).count(),
-            1
-        );
-        assert_eq!(store.dai_pending_heads().unwrap(), Vec::new());
-    }
-
     /// The area that held the policies of the Time Series Generator before
     /// they became time series generation policies. No build of this one
     /// opens a store or restores a backup that has it.
@@ -1768,22 +1370,67 @@ mod tests {
             .collect()
     }
 
-    /// The column families of a `0.62` database: the current ones without
-    /// `format 0.63` and the [`ADDED_WITHIN_FORMAT`] families, with
-    /// [`RETIRED_POLICY_AREA`] in place of the time series generation policy
-    /// area, and the `format 0.61` and `format 0.62` marker families.
-    ///
-    /// These are the 51 families `MAP_NAMES` held in format 0.62, spelled out
-    /// here because no constant names the two older marker families or the
-    /// retired area any more.
+    /// The 51 column families `MAP_NAMES` held in format 0.62, among them the
+    /// `format 0.61` and `format 0.62` marker families, the `hosts` family
+    /// and [`RETIRED_POLICY_AREA`]. They are spelled out because no constant
+    /// names those any more.
+    const FAMILIES_V0_62: [&str; 51] = [
+        "Tor exit nodes",
+        "agents",
+        "batch_info",
+        "category",
+        "cluster",
+        "column stats",
+        "configs",
+        "core components",
+        "csv column extras",
+        "customer deletion jobs",
+        "customer networks",
+        "detector id marks",
+        "engine instances",
+        "external services",
+        "format 0.61",
+        "format 0.62",
+        "hosts",
+        "instance allocations",
+        "label database",
+        "meta",
+        "model indicators",
+        "model runs",
+        "models",
+        "network lists",
+        "networks",
+        "nodes",
+        "operation attempt latest",
+        "operation attempts",
+        "outliers",
+        "port allocations",
+        "port allocations by attempt",
+        "port allocations by instance",
+        "previous batch_info",
+        "previous cluster",
+        "previous column stats",
+        "previous csv column extras",
+        "previous outliers",
+        "previous scores",
+        "previous time series",
+        "qualifiers",
+        "sampling policy",
+        "scores",
+        "statuses",
+        "system log collectors",
+        "templates",
+        "time series",
+        "traffic filter rules",
+        "training definitions",
+        "triage response",
+        "trusted DNS servers",
+        "trusted user agents",
+    ];
+
+    /// The column families of a `0.62` database.
     fn families_v0_62() -> Vec<&'static str> {
-        let families: Vec<&str> = families_with_the_retired_policy_area()
-            .into_iter()
-            .filter(|name| *name != FORMAT_0_63 && !ADDED_WITHIN_FORMAT.contains(name))
-            .chain(["format 0.61", "format 0.62"])
-            .collect();
-        assert_eq!(families.len(), 51);
-        families
+        FAMILIES_V0_62.to_vec()
     }
 
     /// The column families of a `0.61` database: those of `0.62` without
@@ -1796,8 +1443,7 @@ mod tests {
     }
 
     /// The column families of a `0.60` database: those of `0.62` without
-    /// `format 0.61` and `format 0.62`, which are those of the current format
-    /// without `format 0.63` and the [`ADDED_WITHIN_FORMAT`] families.
+    /// `format 0.61` and `format 0.62`.
     fn families_v0_60() -> Vec<&'static str> {
         families_v0_61()
             .into_iter()
@@ -1837,7 +1483,8 @@ mod tests {
             err.to_string(),
             format!(
                 "backup 1 is not in database format {DATABASE_FORMAT_VERSION}: unexpected \
-                 column families [\"format 0.61\", \"format 0.62\", \"{RETIRED_POLICY_AREA}\"], \
+                 column families [\"format 0.61\", \"format 0.62\", \"hosts\", \
+                 \"{RETIRED_POLICY_AREA}\"], \
                  missing column families [{MISSING_FROM_OLDER}]; nothing was restored"
             )
         );
@@ -1871,7 +1518,8 @@ mod tests {
             err.to_string(),
             format!(
                 "backup 2 is not in database format {DATABASE_FORMAT_VERSION}: unexpected \
-                 column families [\"format 0.61\", \"format 0.62\", \"{RETIRED_POLICY_AREA}\"], \
+                 column families [\"format 0.61\", \"format 0.62\", \"hosts\", \
+                 \"{RETIRED_POLICY_AREA}\"], \
                  missing column families [{MISSING_FROM_OLDER}]; nothing was restored"
             )
         );
@@ -1906,7 +1554,7 @@ mod tests {
     #[test]
     fn online_restore_refuses_a_backup_of_each_earlier_family_set() {
         let _permit = acquire_db_permit();
-        let retired = format!("\"{RETIRED_POLICY_AREA}\"");
+        let retired = format!("\"hosts\", \"{RETIRED_POLICY_AREA}\"");
         for (families, unexpected) in [
             (families_v0_60(), retired.clone()),
             (families_v0_61(), format!("\"format 0.61\", {retired}")),
@@ -2044,16 +1692,73 @@ mod tests {
         assert_still_open(&store, data_dir.path(), backup_dir.path(), &before);
     }
 
+    /// A backup that lacks any one family of the current format is refused,
+    /// naming that family, and nothing is restored. Among the families tried
+    /// are ones that were once accepted as missing: the configuration
+    /// revisions, the engine exclusion counts and the `senta` endpoints.
     #[test]
     fn online_restore_refuses_a_backup_lacking_a_family() {
+        let _permit = acquire_db_permit();
+        let last = *MAP_NAMES.last().unwrap();
+        for missing in [
+            CONFIG_REVISIONS,
+            ENGINE_EXCLUSION_COUNTS,
+            SENTA_ENDPOINTS,
+            last,
+        ] {
+            let data_dir = tempfile::tempdir().unwrap();
+            let backup_dir = tempfile::tempdir().unwrap();
+            let store = open_current_store(data_dir.path(), backup_dir.path());
+            put_event(&store);
+            let families: Vec<&str> = MAP_NAMES
+                .into_iter()
+                .filter(|name| *name != missing)
+                .collect();
+            assert_eq!(families.len(), MAP_NAMES.len() - 1);
+            add_backup_with_families(backup_dir.path(), &families);
+            let before = RestoreState::read(&store, data_dir.path(), backup_dir.path());
+            let private_before = dir_entries(&private_dir(backup_dir.path(), 1));
+
+            let err = store
+                .write()
+                .expect("test holds no other locks")
+                .restore_from_backup(1)
+                .unwrap_err();
+
+            assert_eq!(
+                err.to_string(),
+                format!(
+                    "backup 1 is not in database format {DATABASE_FORMAT_VERSION}: unexpected \
+                     column families [], missing column families [\"{missing}\"]; nothing was \
+                     restored"
+                ),
+                "{missing}"
+            );
+            assert_eq!(
+                dir_entries(&private_dir(backup_dir.path(), 1)),
+                private_before
+            );
+            assert_eq!(live_event_count(&store), 1);
+            assert_still_open(&store, data_dir.path(), backup_dir.path(), &before);
+            drop(store);
+            assert_eq!(event_count(data_dir.path(), backup_dir.path()), 2);
+        }
+    }
+
+    /// A backup that has every family of the current format and the
+    /// `hosts` family of the removed hosts table is refused, naming `hosts`,
+    /// and nothing is restored.
+    #[test]
+    fn online_restore_refuses_a_backup_with_a_hosts_family() {
         let _permit = acquire_db_permit();
         let data_dir = tempfile::tempdir().unwrap();
         let backup_dir = tempfile::tempdir().unwrap();
         let store = open_current_store(data_dir.path(), backup_dir.path());
         put_event(&store);
-        let (missing, families) = MAP_NAMES.split_last().unwrap();
-        add_backup_with_families(backup_dir.path(), families);
+        let families: Vec<&str> = MAP_NAMES.into_iter().chain(["hosts"]).collect();
+        add_backup_with_families(backup_dir.path(), &families);
         let before = RestoreState::read(&store, data_dir.path(), backup_dir.path());
+        let private_before = dir_entries(&private_dir(backup_dir.path(), 1));
 
         let err = store
             .write()
@@ -2065,49 +1770,18 @@ mod tests {
             err.to_string(),
             format!(
                 "backup 1 is not in database format {DATABASE_FORMAT_VERSION}: unexpected \
-                 column families [], missing column families [\"{missing}\"]; nothing was \
+                 column families [\"hosts\"], missing column families []; nothing was \
                  restored"
             )
+        );
+        assert_eq!(
+            dir_entries(&private_dir(backup_dir.path(), 1)),
+            private_before
         );
         assert_eq!(live_event_count(&store), 1);
         assert_still_open(&store, data_dir.path(), backup_dir.path(), &before);
         drop(store);
         assert_eq!(event_count(data_dir.path(), backup_dir.path()), 2);
-    }
-
-    /// A backup holding rows of the removed `hosts` table is still in the
-    /// current format: the family stays in the format until the next
-    /// version, and the restored rows are left as they are.
-    #[test]
-    fn online_restore_accepts_a_backup_with_hosts_rows() {
-        let _permit = acquire_db_permit();
-        let data_dir = tempfile::tempdir().unwrap();
-        let backup_dir = tempfile::tempdir().unwrap();
-        let store = open_current_store(data_dir.path(), backup_dir.path());
-        {
-            let store = store.read().expect("test holds no other locks");
-            let db = store.states.db();
-            let hosts = db.cf_handle("hosts").unwrap();
-            db.put_cf(hosts, b"host key", b"host value").unwrap();
-        }
-        put_event(&store);
-        create(&store, true, 3).unwrap();
-        put_event(&store);
-
-        store
-            .write()
-            .expect("test holds no other locks")
-            .restore_from_backup(1)
-            .unwrap();
-
-        assert_eq!(live_event_count(&store), 1);
-        let store = store.read().expect("test holds no other locks");
-        let db = store.states.db();
-        let hosts = db.cf_handle("hosts").unwrap();
-        assert_eq!(
-            db.get_cf(hosts, b"host key").unwrap().as_deref(),
-            Some(&b"host value"[..])
-        );
     }
 
     #[test]

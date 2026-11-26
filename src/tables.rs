@@ -312,11 +312,6 @@ pub(super) const ENGINE_INSTANCES: &str = "engine instances";
 /// taken before 0.63 lacks it and is refused. Nothing reads or writes rows in
 /// it.
 pub(super) const FORMAT_0_63: &str = "format 0.63";
-/// The column family of the removed `hosts` table. Nothing reads or writes
-/// it; it is kept only so that backups taken by older builds of the current
-/// format, which have it, are still accepted, and goes with the next format
-/// version.
-pub(super) const HOSTS: &str = "hosts";
 pub(super) const INSTANCE_ALLOCATIONS: &str = "instance allocations";
 pub(super) const MODELS: &str = "models";
 pub(super) const MODEL_INDICATORS: &str = "model indicators";
@@ -391,116 +386,7 @@ pub(super) const TRIAGE_RESPONSE: &str = "triage response";
 pub(super) const TRUSTED_DNS_SERVERS: &str = "trusted DNS servers";
 pub(super) const TRUSTED_USER_AGENTS: &str = "trusted user agents";
 
-/// The column families added to [`MAP_NAMES`] after a build of the current
-/// database format was released, with no change of
-/// [`DATABASE_FORMAT_VERSION`].
-///
-/// A store of that format opened by this build gets them, empty, as it opens,
-/// so a backup of the format may lack them; [`check_backup_format`] accepts
-/// one that does. They hold nothing such a build could have written:
-///
-/// - the configuration revisions start with the first write that records
-///   one;
-/// - the observation tables of `senta` endpoints start with the first
-///   observation `REview` stores, and no build without them observed any;
-/// - the trust-state, document, enrollment and command tables of `senta`
-///   endpoints start with the first registration of an install, a customer
-///   or an enrollment attempt;
-/// - the device identification (DAI) configuration tables start with the
-///   first write of a customer's DAI settings, sites or relay site table, the
-///   first time series generation policy save, or the first recording of a
-///   sensor's configuration hash, none of which a build without them could
-///   make; a customer with no row in them reads as one whose DAI settings
-///   were never written and that has no site, so its policies pass the site
-///   condition;
-/// - the DAI observation, cursor and restore tables start with the first
-///   open, cursor read, observation send or restore of a build that has
-///   them: no build without them answered a cursor read or stored a send, a
-///   missing restore generation is drawn afresh when the store is opened,
-///   and a sensor with no cursor row gets one at the next cursor read;
-/// - the DAI unregistered range tables start with the first range request,
-///   late range report or range ignore of a build that has them: no build
-///   without them granted a range day, stored its counts or ignored a
-///   candidate range, and a range day with no row reads as one never
-///   granted, stored or marked;
-/// - the DAI device tables (the resolver points, devices, identifiers,
-///   aliases, bindings and their reverse index, evidence, IP states, fixed
-///   IPs, conflicts, services, software strings and device changes) start
-///   with the first `apply_dai_slot` of a build that has them, which no
-///   earlier build could run; a sensor with no resolver point reads as one
-///   never applied;
-/// - the `engine exclusion counts` table starts with the first exclusion
-///   report a build that has it stores: earlier builds of the format never
-///   wrote the family, so their backups lack it, and an instance with no row
-///   reads as one that has sent no report;
-/// - the `detection event arrival` index starts with the first detection
-///   event a build that has it stores: earlier builds of the format never
-///   wrote the family, so their backups lack it, and the detection events
-///   those builds stored have no index rows and are not added to it.
-///
-/// The `senta` endpoint and DAI tables are listed here although no release
-/// yet carries a build without them, so that a backup of such a build is
-/// accepted whichever is released first.
-pub(super) const ADDED_WITHIN_FORMAT: [&str; 56] = [
-    CONFIG_REVISIONS,
-    CONFIG_REVISION_HISTORY,
-    DAI_CATCHUP_GAPS,
-    DAI_COUNTERS,
-    DAI_CURSORS,
-    DAI_EARLIEST_PENDING,
-    DAI_IP_ACTIVITY,
-    DAI_META,
-    DAI_OBSERVATIONS,
-    DAI_OBSERVATION_SUMMARIES,
-    DAI_PENDING,
-    DAI_RANGE_BLOCKS,
-    DAI_RANGE_DAYS,
-    DAI_RANGE_IGNORES,
-    DAI_RANGE_SUBNETS,
-    DAI_SEND_PARTS,
-    DAI_SENSOR_KIND_STATE,
-    DAI_SLOT_SENDS,
-    DAI_CUSTOMER_SETTINGS,
-    DAI_RELAY_SITES,
-    DAI_SENSOR_SITES,
-    DAI_SENSOR_STATE,
-    DAI_SITE_POLICY_GUARD,
-    DAI_SITES,
-    DAI_BINDINGS,
-    DAI_CONFLICTS,
-    DAI_DEVICE_ALIASES,
-    DAI_DEVICE_BINDINGS,
-    DAI_DEVICE_CHANGES,
-    DAI_DEVICE_IDENTIFIERS,
-    DAI_DEVICES,
-    DAI_EVIDENCE,
-    DAI_FIXED_IPS,
-    DAI_IP_STATE,
-    DAI_RESOLVER_POINTS,
-    DAI_SERVICES,
-    DAI_SOFTWARE_STRINGS,
-    DETECTION_EVENT_ARRIVAL,
-    ENGINE_EXCLUSION_COUNTS,
-    SENTA_ACTIVE_LIST,
-    SENTA_DOCUMENT_RESULTS,
-    SENTA_ENDPOINT_EVENTS,
-    SENTA_GIGANTO_ENTRIES,
-    SENTA_GIGANTO_LAST_RECEIVED,
-    SENTA_GIGANTO_LOSSES,
-    SENTA_STATUS_REPORTS,
-    SENTA_UNENROLL_REQUESTS,
-    SENTA_ENDPOINT_ADDRESS_ROOTS,
-    SENTA_ENDPOINT_COMMANDS,
-    SENTA_ENDPOINT_CURRENT_DOCUMENTS,
-    SENTA_ENDPOINT_CUSTOMERS,
-    SENTA_ENDPOINT_ENROLLMENT_ATTEMPTS,
-    SENTA_ENDPOINT_INSTALLS,
-    SENTA_ENDPOINT_KEYSET_DOCUMENTS,
-    SENTA_ENDPOINT_RECOVERY_KEY_DOCUMENTS,
-    SENTA_ENDPOINTS,
-];
-
-pub(crate) const MAP_NAMES: [&str; 106] = [
+pub(crate) const MAP_NAMES: [&str; 105] = [
     AGENTS,
     BATCH_INFO,
     CATEGORY,
@@ -515,7 +401,6 @@ pub(crate) const MAP_NAMES: [&str; 106] = [
     CUSTOMER_NETWORKS,
     DETECTOR_ID_MARKS,
     ENGINE_INSTANCES,
-    HOSTS,
     INSTANCE_ALLOCATIONS,
     MODELS,
     MODEL_INDICATORS,
@@ -560,10 +445,6 @@ pub(crate) const MAP_NAMES: [&str; 106] = [
     TRAINING_DEFINITIONS,
     TRIAGE_RESPONSE,
     TRUSTED_DNS_SERVERS,
-    // The Clumit Endpoint trust-state, document, enrollment and command
-    // families stay before the last entry, which a backup test drops to see a
-    // missing family refused; a missing member of `ADDED_WITHIN_FORMAT` would
-    // be accepted.
     SENTA_ENDPOINT_ADDRESS_ROOTS,
     SENTA_ENDPOINT_COMMANDS,
     SENTA_ENDPOINT_CURRENT_DOCUMENTS,
@@ -573,9 +454,6 @@ pub(crate) const MAP_NAMES: [&str; 106] = [
     SENTA_ENDPOINT_KEYSET_DOCUMENTS,
     SENTA_ENDPOINT_RECOVERY_KEY_DOCUMENTS,
     SENTA_ENDPOINTS,
-    // The DAI configuration, observation, cursor, restore, unregistered
-    // range and device families stay before the last entry for the same
-    // reason.
     DAI_CUSTOMER_SETTINGS,
     DAI_RELAY_SITES,
     DAI_SENSOR_SITES,
@@ -611,8 +489,6 @@ pub(crate) const MAP_NAMES: [&str; 106] = [
     DAI_SERVICES,
     DAI_SOFTWARE_STRINGS,
     DAI_DEVICE_CHANGES,
-    // The engine exclusion counts and detection event arrival families stay
-    // before the last entry for the same reason.
     ENGINE_EXCLUSION_COUNTS,
     DETECTION_EVENT_ARRIVAL,
     TRUSTED_USER_AGENTS,
@@ -1957,10 +1833,10 @@ pub(crate) fn open_rocksdb_backup_engine(
 /// is in the current database format, without restoring it.
 ///
 /// A backup is taken to be in [`DATABASE_FORMAT_VERSION`] exactly when its
-/// column families other than `default` are [`MAP_NAMES`], less any of
-/// [`ADDED_WITHIN_FORMAT`]: a backup taken by an earlier build of the same
-/// format lacks those, and reopening the restored database creates them
-/// empty, which is the state that build left them in. The backup engine
+/// column families other than `default` are [`MAP_NAMES`]. The format is
+/// deployed by a fresh install only, so a backup that lacks a family, or has
+/// one the format does not, was not taken by this build and is refused;
+/// nothing converts it. The backup engine
 /// keeps each backup's `CURRENT` and `MANIFEST` in `private/<id>`, which is
 /// where RocksDB opens a backup from, so the families are listed from there.
 /// Listing them reads those two files only and writes nothing.
@@ -2001,11 +1877,7 @@ fn check_backup_format(
         .filter(|name| *name != "default")
         .collect();
     let expected: BTreeSet<&str> = MAP_NAMES.into_iter().collect();
-    if found.is_subset(&expected)
-        && expected
-            .difference(&found)
-            .all(|name| ADDED_WITHIN_FORMAT.contains(name))
-    {
+    if found == expected {
         return Ok(());
     }
 
