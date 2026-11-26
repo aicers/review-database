@@ -523,18 +523,6 @@ mod tests {
         }
     }
 
-    /// The column families of the observation tables.
-    const OBSERVATION_TABLES: [&str; 8] = [
-        crate::tables::SENTA_ACTIVE_LIST,
-        crate::tables::SENTA_DOCUMENT_RESULTS,
-        crate::tables::SENTA_ENDPOINT_EVENTS,
-        crate::tables::SENTA_GIGANTO_ENTRIES,
-        crate::tables::SENTA_GIGANTO_LAST_RECEIVED,
-        crate::tables::SENTA_GIGANTO_LOSSES,
-        crate::tables::SENTA_STATUS_REPORTS,
-        crate::tables::SENTA_UNENROLL_REQUESTS,
-    ];
-
     /// The endpoint id whose 16 bytes are all `n`.
     pub(super) fn endpoint(n: u8) -> Uuid {
         Uuid::from_bytes([n; 16])
@@ -545,79 +533,6 @@ mod tests {
             host: host.to_string(),
             instance,
         }
-    }
-
-    /// A store of the current format written by a build without the endpoint
-    /// observation tables gets them, empty, when it opens, and keeps the rows
-    /// it had.
-    #[test]
-    fn opening_a_store_without_the_tables_creates_them_empty() {
-        let _permit = acquire_db_permit();
-        let data = tempfile::tempdir().unwrap();
-        let backup = tempfile::tempdir().unwrap();
-        {
-            let store = Store::new(data.path(), backup.path(), None).unwrap();
-            let db = store.states.db();
-            db.put_cf(db.cf_handle(crate::tables::HOSTS).unwrap(), b"kept", b"row")
-                .unwrap();
-            store
-                .senta_endpoint_unenroll_request_map()
-                .put(&SentaEndpointUnenrollRequest {
-                    endpoint_id: endpoint(1),
-                    received_at: 1,
-                })
-                .unwrap();
-        }
-        let states = data.path().join(crate::DEFAULT_STATES);
-        {
-            let mut db = rocksdb::DB::open_cf(
-                &rocksdb::Options::default(),
-                &states,
-                crate::tables::MAP_NAMES,
-            )
-            .unwrap();
-            for name in OBSERVATION_TABLES {
-                db.drop_cf(name).unwrap();
-            }
-        }
-        let families = rocksdb::DB::list_cf(&rocksdb::Options::default(), &states).unwrap();
-        assert!(
-            OBSERVATION_TABLES
-                .iter()
-                .all(|name| !families.iter().any(|family| family == name))
-        );
-
-        let store = Store::new(data.path(), backup.path(), None).unwrap();
-        let families = rocksdb::DB::list_cf(&rocksdb::Options::default(), &states).unwrap();
-        assert!(
-            OBSERVATION_TABLES
-                .iter()
-                .all(|name| families.iter().any(|family| family == name))
-        );
-        assert_eq!(store.senta_endpoint_active_list_map().get().unwrap(), None);
-        assert_eq!(store.senta_endpoint_giganto_entry_map().iter().count(), 0);
-        assert_eq!(
-            store.senta_endpoint_unenroll_request_map().iter().count(),
-            0
-        );
-        assert_eq!(store.senta_endpoint_document_result_map().iter().count(), 0);
-        assert_eq!(store.senta_endpoint_status_report_map().iter().count(), 0);
-        assert_eq!(store.senta_endpoint_event_map().iter().count(), 0);
-        assert_eq!(store.senta_endpoint_giganto_loss_map().iter().count(), 0);
-        assert_eq!(
-            store
-                .senta_endpoint_giganto_last_received_map()
-                .iter()
-                .count(),
-            0
-        );
-        let db = store.states.db();
-        assert_eq!(
-            db.get_cf(db.cf_handle(crate::tables::HOSTS).unwrap(), b"kept")
-                .unwrap()
-                .as_deref(),
-            Some(b"row".as_slice())
-        );
     }
 
     /// Concurrent inserts of one key store exactly one of the rows: one

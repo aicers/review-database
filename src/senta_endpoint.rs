@@ -1053,7 +1053,7 @@ mod tests {
     use crate::{
         CustomerDataDeletionService, CustomerDataDeletionServiceResult, CustomerDataDeletionStatus,
         SentaEndpointKeysetVersion,
-        tables::{ADDED_WITHIN_FORMAT, CUSTOMER_DELETION_JOBS},
+        tables::MAP_NAMES,
         test::{DbGuard, acquire_db_permit},
     };
 
@@ -1077,13 +1077,11 @@ mod tests {
     /// A stored key and value.
     type RawRow = (Box<[u8]>, Box<[u8]>);
 
-    /// Every key and value of the Clumit Endpoint families and the deletion
-    /// jobs, by family.
+    /// Every key and value of the store, by family.
     fn dump(store: &Store) -> Vec<(&'static str, Vec<RawRow>)> {
         let db = store.states.db();
-        ADDED_WITHIN_FORMAT
+        MAP_NAMES
             .into_iter()
-            .chain([CUSTOMER_DELETION_JOBS])
             .map(|name| {
                 let cf = db.cf_handle(name).unwrap();
                 let rows = db
