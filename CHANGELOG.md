@@ -5,6 +5,16 @@ file is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), and
 this project adheres to [Semantic
 Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.71.1](https://github.com/aicers/review-database/compare/0.71.0...0.71.1) - 2026-11-26
+
+### Added
+
+- refuse endpoint detection events of a deleted or mismatched customer ([#1164](https://github.com/aicers/review-database/pull/1164))
+
+### Other
+
+- stamp arrival only when a record is written ([#1167](https://github.com/aicers/review-database/pull/1167))
+
 ## [0.71.0](https://github.com/aicers/review-database/compare/0.70.0...0.71.0) - 2026-11-26
 
 ### Added
