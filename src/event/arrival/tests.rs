@@ -15,14 +15,14 @@ use super::{ArrivalHookPoint, ArrivalKey, ArrivalKeyLengthError, ArrivalPage, ne
 use crate::{
     Store,
     event::{
-        EventDb, EventFilter, NO_FREE_KEY, PutOutcome, StoredDetectionEvent,
+        EventDb, EventFilter, NO_FREE_KEY, PutOutcome, StoredDetectionEvent, TOO_MANY_EVENTS,
         TimeSeriesPolicySensors,
         fixture::{
             SENSOR, conn_body, host, ip, raw_event_event, setup_store, stamp, subject_event, time,
         },
     },
-    tables::DETECTION_EVENT_ARRIVAL,
-    test::{acquire_db_permit, capture_warnings},
+    tables::{DETECTION_EVENT_ARRIVAL, LAST_DETECTION_EVENT_ARRIVAL, META},
+    test::{DbGuard, acquire_db_permit, capture_warnings},
 };
 
 /// 2027-01-15T08:00:00Z, in epoch nanoseconds: the time the tests' clock
@@ -200,6 +200,124 @@ fn put_unless_stored_writes_a_row_only_when_it_stores() {
     assert!(failed.is_err());
     assert_eq!(record_keys(&db).len(), 2);
     assert_eq!(index_event_keys(&db), [first, second]);
+}
+
+/// A last arrival time of an invalid length, which cannot be decoded.
+const INVALID_LAST_ARRIVAL: &[u8] = &[1, 2, 3];
+
+/// The records with their stored values, the arrival-index rows and the
+/// stored last arrival time.
+type Contents = (Vec<(i128, Vec<u8>)>, Vec<ArrivalKey>, Option<Vec<u8>>);
+
+/// A store reopened, so that its arrival cache is empty, over a `meta` whose
+/// last arrival time has an invalid length, holding one stored event.
+///
+/// The fields drop in order: the store before its directories, and those
+/// before the permit.
+struct UnreadableLastArrival {
+    store: Store,
+    /// The event stored before the last arrival time was overwritten.
+    stored: DetectionEvent,
+    _data_dir: tempfile::TempDir,
+    _backup_dir: tempfile::TempDir,
+    _permit: DbGuard<'static>,
+}
+
+impl UnreadableLastArrival {
+    fn new() -> Self {
+        let permit = acquire_db_permit();
+        let data_dir = tempfile::tempdir().unwrap();
+        let backup_dir = tempfile::tempdir().unwrap();
+        let open = || Store::new(data_dir.path(), backup_dir.path(), None).unwrap();
+        let stored = sensor_event(SENSOR, 0);
+        {
+            let store = open();
+            let db = store.events();
+            assert!(matches!(
+                db.put_unless_stored(&stored, &stamp()).unwrap(),
+                PutOutcome::Stored(_)
+            ));
+            let meta = db.inner.cf_handle(META).unwrap();
+            db.inner
+                .put_cf(meta, LAST_DETECTION_EVENT_ARRIVAL, INVALID_LAST_ARRIVAL)
+                .unwrap();
+        }
+        let store = open();
+        Self {
+            store,
+            stored,
+            _data_dir: data_dir,
+            _backup_dir: backup_dir,
+            _permit: permit,
+        }
+    }
+
+    /// Returns what the store holds of the events.
+    fn contents(&self) -> Contents {
+        let db = self.store.events();
+        let records = record_keys(&db)
+            .into_iter()
+            .map(|key| (key, db.inner.get(key.to_be_bytes()).unwrap().unwrap()))
+            .collect();
+        let meta = db.inner.cf_handle(META).unwrap();
+        let last = db.inner.get_cf(meta, LAST_DETECTION_EVENT_ARRIVAL).unwrap();
+        (records, index_rows(&db), last)
+    }
+}
+
+/// An event already stored is told apart without reading the last arrival
+/// time, which a reopened store whose `meta` holds an unreadable one could
+/// not read.
+#[test]
+fn put_unless_stored_finds_a_stored_event_when_the_last_arrival_time_is_unreadable() {
+    let fixture = UnreadableLastArrival::new();
+    let before = fixture.contents();
+    assert_eq!(before.0.len(), 1);
+    assert_eq!(before.1.len(), 1);
+    assert_eq!(before.2.as_deref(), Some(INVALID_LAST_ARRIVAL));
+
+    let db = fixture.store.events();
+    assert_eq!(
+        db.put_unless_stored(&fixture.stored, &stamp()).unwrap(),
+        PutOutcome::AlreadyStored
+    );
+    assert_eq!(fixture.contents(), before);
+}
+
+/// An event with no free key is rejected without reading the last arrival
+/// time, which a reopened store whose `meta` holds an unreadable one could
+/// not read.
+#[test]
+fn put_unless_stored_rejects_an_event_with_no_free_key_when_the_last_arrival_time_is_unreadable() {
+    let fixture = UnreadableLastArrival::new();
+    let before = fixture.contents();
+
+    let db = fixture.store.events();
+    NO_FREE_KEY.set(true);
+    let outcome = db.put_unless_stored(&sensor_event(SENSOR, 1), &stamp());
+    NO_FREE_KEY.set(false);
+    assert_eq!(
+        outcome.unwrap(),
+        PutOutcome::Rejected(TOO_MANY_EVENTS.to_string())
+    );
+    assert_eq!(fixture.contents(), before);
+}
+
+/// An event that needs a record still fails when the last arrival time is
+/// unreadable, and writes nothing.
+#[test]
+fn a_new_record_fails_without_a_partial_write_when_the_last_arrival_time_is_unreadable() {
+    let fixture = UnreadableLastArrival::new();
+    let before = fixture.contents();
+
+    let db = fixture.store.events();
+    let unless_stored = db
+        .put_unless_stored(&sensor_event(SENSOR, 1), &stamp())
+        .unwrap_err();
+    assert!(format!("{unless_stored:#}").contains("must be 8 bytes, got 3"));
+    let put = db.put(&sensor_event(SENSOR, 2), &stamp()).unwrap_err();
+    assert!(format!("{put:#}").contains("must be 8 bytes, got 3"));
+    assert_eq!(fixture.contents(), before);
 }
 
 /// An event stored late, with a time two days before the others, is read

@@ -128,6 +128,16 @@ pub enum PutOutcome {
     Rejected(String),
 }
 
+/// What [`EventDb::write_event`] did within its transaction.
+pub(crate) enum EventWrite {
+    /// The record was written under `key`, with its arrival-index row and
+    /// `arrival` as the last arrival time; the caller commits.
+    Written { key: i128, arrival: i64 },
+    /// Nothing was written, for this outcome, which is never
+    /// [`PutOutcome::Stored`]; the caller does not commit.
+    Unwritten(PutOutcome),
+}
+
 /// A raw event, named by what identifies it: its kind, its sensor and its
 /// time, the Giganto key timestamp.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -280,7 +290,7 @@ impl<'a> EventDb<'a> {
     /// The last arrival time is read from the `meta` column family the first
     /// time; `last` is not changed otherwise, so a write that does not commit
     /// leaves it as it was.
-    pub(crate) fn stamp_arrival(&self, last: &mut Option<i64>) -> Result<i64> {
+    fn stamp_arrival(&self, last: &mut Option<i64>) -> Result<i64> {
         if last.is_none() {
             *last = self
                 .inner
@@ -415,11 +425,10 @@ impl<'a> EventDb<'a> {
         let mut last = self.lock_arrival();
         loop {
             let txn = self.inner.transaction();
-            let arrival = self.stamp_arrival(&mut last)?;
-            let key = match self.write_event(&txn, event, stamp, arrival, false)? {
-                PutOutcome::Stored(key) => key,
-                PutOutcome::Rejected(reason) => bail!(reason),
-                PutOutcome::AlreadyStored => bail!(UNEXPECTED_ALREADY_STORED),
+            let (key, arrival) = match self.write_event(&txn, event, stamp, &mut last, false)? {
+                EventWrite::Written { key, arrival } => (key, arrival),
+                EventWrite::Unwritten(PutOutcome::Rejected(reason)) => bail!(reason),
+                EventWrite::Unwritten(_) => bail!(UNEXPECTED_ALREADY_STORED),
             };
             match txn.commit() {
                 Ok(()) => {
@@ -465,15 +474,14 @@ impl<'a> EventDb<'a> {
         let mut last = self.lock_arrival();
         loop {
             let txn = self.inner.transaction();
-            let arrival = self.stamp_arrival(&mut last)?;
-            let outcome = self.write_event(&txn, event, stamp, arrival, true)?;
-            if !matches!(outcome, PutOutcome::Stored(_)) {
-                return Ok(outcome);
-            }
+            let (key, arrival) = match self.write_event(&txn, event, stamp, &mut last, true)? {
+                EventWrite::Written { key, arrival } => (key, arrival),
+                EventWrite::Unwritten(outcome) => return Ok(outcome),
+            };
             match txn.commit() {
                 Ok(()) => {
                     *last = Some(arrival);
-                    return Ok(outcome);
+                    return Ok(PutOutcome::Stored(key));
                 }
                 Err(e) => {
                     if !e.as_ref().starts_with("Resource busy:") {
@@ -484,8 +492,8 @@ impl<'a> EventDb<'a> {
         }
     }
 
-    /// Writes, within `txn`, the record of `event` and `stamp` arriving at
-    /// `arrival`, and returns what was written.
+    /// Writes, within `txn`, the record of `event` and `stamp`, and returns
+    /// what was written.
     ///
     /// This is the one write of a detection event record: [`EventDb::put`],
     /// [`EventDb::put_unless_stored`] and the endpoint detection-event
@@ -493,32 +501,41 @@ impl<'a> EventDb<'a> {
     /// country codes of the event's endpoint addresses, and, with
     /// `unless_stored`, returns [`PutOutcome::AlreadyStored`] if the same
     /// event is stored, as [`EventDb::put_unless_stored`] tells it. Otherwise
-    /// it writes the record under a free key of its time and detection model,
-    /// its row in the arrival index and `arrival` as the last arrival time,
-    /// and returns [`PutOutcome::Stored`] with the key. An event that cannot
-    /// be serialized, or for which no key is free, is
-    /// [`PutOutcome::Rejected`] with the reason.
+    /// it stamps the record's arrival time with [`EventDb::stamp_arrival`] on
+    /// `last`, writes the record under a free key of its time and detection
+    /// model, its row in the arrival index and the arrival time as the last
+    /// one, and returns [`EventWrite::Written`] with the key and the arrival
+    /// time. An event that cannot be serialized, or for which no key is free,
+    /// is [`PutOutcome::Rejected`] with the reason.
     ///
-    /// On [`PutOutcome::AlreadyStored`] or [`PutOutcome::Rejected`] no record,
-    /// index row or `meta` key is written, and the caller does not commit.
-    /// The caller holds the arrival lock, stamped `arrival` under it, and
-    /// sets it as the last arrival time once `txn` commits.
+    /// The arrival time is stamped only once a record is to be written, so
+    /// that an event already stored or rejected gets its outcome even when
+    /// the last arrival time cannot be read from `meta`. On
+    /// [`EventWrite::Unwritten`] no record, index row or `meta` key is
+    /// written, and the caller does not commit. The caller holds the arrival
+    /// lock as `last`, and sets the arrival time returned as the last one
+    /// once `txn` commits.
     ///
     /// # Errors
     ///
     /// Returns an error if a database operation fails, including when the
-    /// database lacks the arrival index or `meta` column family.
+    /// database lacks the arrival index or `meta` column family, or if a
+    /// record is to be written and no arrival time can be stamped.
     pub(crate) fn write_event(
         &self,
         txn: &rocksdb::Transaction<rocksdb::OptimisticTransactionDB>,
         event: &DetectionEvent,
         stamp: &DetectionEventStamp,
-        arrival: i64,
+        last: &mut Option<i64>,
         unless_stored: bool,
-    ) -> Result<PutOutcome> {
+    ) -> Result<EventWrite> {
         let event_bytes = match record::encode_event(event) {
             Ok(bytes) => bytes,
-            Err(e) => return Ok(PutOutcome::Rejected(format!("{e:#}"))),
+            Err(e) => {
+                return Ok(EventWrite::Unwritten(PutOutcome::Rejected(format!(
+                    "{e:#}"
+                ))));
+            }
         };
         let value = match record::encode_record(
             &event_bytes,
@@ -526,19 +543,26 @@ impl<'a> EventDb<'a> {
             &record::country_codes(event, self.country_lookup.as_deref()),
         ) {
             Ok(value) => value,
-            Err(e) => return Ok(PutOutcome::Rejected(format!("{e:#}"))),
+            Err(e) => {
+                return Ok(EventWrite::Unwritten(PutOutcome::Rejected(format!(
+                    "{e:#}"
+                ))));
+            }
         };
         let base = event_key_base(event);
         if unless_stored && is_stored(txn, base, &event_bytes, stamp)? {
-            return Ok(PutOutcome::AlreadyStored);
+            return Ok(EventWrite::Unwritten(PutOutcome::AlreadyStored));
         }
         let Some(key) = free_event_key(txn, base)? else {
-            return Ok(PutOutcome::Rejected(TOO_MANY_EVENTS.to_string()));
+            return Ok(EventWrite::Unwritten(PutOutcome::Rejected(
+                TOO_MANY_EVENTS.to_string(),
+            )));
         };
+        let arrival = self.stamp_arrival(last)?;
         txn.put(key.to_be_bytes(), value.as_slice())
             .context("cannot write event")?;
         self.put_arrival(txn, arrival, key)?;
-        Ok(PutOutcome::Stored(key))
+        Ok(EventWrite::Written { key, arrival })
     }
 
     /// Returns, for each raw event key and in the order given, the records
