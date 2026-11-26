@@ -120,6 +120,9 @@ pub enum PrimarySubjectKind {
     Sensor,
     /// A network, with the source of its threat role.
     Network(RoleSource),
+    /// An endpoint, a host running Clumit Endpoint, with the source of its
+    /// threat role.
+    Endpoint(RoleSource),
 }
 
 /// The type of an operator value or of a cell of a table-list entry, without
@@ -1780,6 +1783,21 @@ mod tests {
         PrimarySubjectKind,
         &'static str,
     );
+
+    /// The endpoint subject kind exists for models to come; no model has it
+    /// yet.
+    #[test]
+    fn no_model_is_about_an_endpoint() {
+        for model in ALL_MODELS {
+            assert!(
+                !matches!(
+                    properties(model).primary_subject,
+                    PrimarySubjectKind::Endpoint(_)
+                ),
+                "{model:?}"
+            );
+        }
+    }
 
     #[test]
     #[allow(clippy::too_many_lines)]

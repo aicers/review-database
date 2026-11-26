@@ -313,4 +313,40 @@ mod test {
         let back: PacketAttr = bincode::deserialize(&bytes).unwrap();
         assert!(back == attr);
     }
+
+    #[test]
+    fn packet_attr_stores_the_endpoint_kinds_by_number() {
+        for (kind, number) in [
+            (RawEventKind::DriverLoad, 36_u32),
+            (RawEventKind::CreateRemoteThread, 38),
+            (RawEventKind::RawAccessRead, 39),
+            (RawEventKind::ProcessAccess, 40),
+            (RawEventKind::RegistryObjectAddDel, 42),
+            (RawEventKind::WindowsEventLog, 80),
+            (RawEventKind::Journald, 81),
+            (RawEventKind::Auditd, 82),
+        ] {
+            let attr = PacketAttr {
+                raw_event_kind: kind,
+                attr_name: "Agent Name".to_string(),
+                value_kind: ValueKind::String,
+                cmp_kind: AttrCmpKind::Contain,
+                first_value: vec![1, 2],
+                second_value: None,
+                weight: None,
+            };
+            let json = serde_json::to_value(&attr).unwrap();
+            assert_eq!(
+                json["raw_event_kind"],
+                serde_json::json!(number),
+                "{kind:?}"
+            );
+            let bytes = bincode::serialize(&attr).unwrap();
+            assert_eq!(bytes[..4], number.to_le_bytes(), "{kind:?}");
+            let back: PacketAttr = bincode::deserialize(&bytes).unwrap();
+            assert!(back == attr, "{kind:?}");
+            let back: PacketAttr = serde_json::from_value(json).unwrap();
+            assert!(back == attr, "{kind:?}");
+        }
+    }
 }

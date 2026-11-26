@@ -10,14 +10,27 @@ use jiff::Timestamp;
 use review_protocol::types::{
     Detail, DetectionEvent, DetectionModel, EndpointRole, EventCategory, PortScanDetail,
     PrimarySubject, RawEventBody, RawEventKind, RelatedIp, Target, ThreatRole, TimeWindow,
-    raw_event,
+    raw_event::{
+        self, AuditRecord, CollectionMode, EndpointHeader, EventData, LogField, LogValue,
+        NetStateSource, OsFamily,
+    },
 };
+use uuid::Uuid;
 
 use super::{DetectionEventStamp, StoredDetectionEvent, record};
 use crate::{ModelInstance, Store, test::DbGuard};
 
 /// The sensor most fixtures name.
 pub(crate) const SENSOR: &str = "sensor-1";
+
+/// The endpoint id of the endpoint fixtures.
+pub(crate) const ENDPOINT_ID: Uuid = Uuid::from_u128(0x0f1e_2d3c_4b5a_6978_8796_a5b4_c3d2_e1f0);
+
+/// The sensor of an event about [`ENDPOINT_ID`]: its lowercase hyphenated
+/// form.
+pub(crate) fn endpoint_sensor() -> String {
+    ENDPOINT_ID.to_string()
+}
 
 /// A country lookup with fixed answers; an address it does not know is
 /// [`crate::COUNTRY_CODE_UNKNOWN`].
@@ -230,7 +243,253 @@ pub(crate) fn network_connect_body(source: IpAddr, destination: IpAddr) -> RawEv
         destination_hostname: "dst-host".to_string(),
         destination_port: 443,
         destination_port_name: "https".to_string(),
+        endpoint: None,
     })
+}
+
+/// The host header of an endpoint record from [`ENDPOINT_ID`], with the
+/// addresses `ips` and the default route address `default_route_ip`.
+pub(crate) fn endpoint_header(ips: &[&str], default_route_ip: Option<&str>) -> EndpointHeader {
+    EndpointHeader {
+        endpoint_id: ENDPOINT_ID,
+        stream: Uuid::from_u128(0x1111),
+        seq: 42,
+        event_time: 1_700_000_000_000_000_000,
+        collected_at: 1_700_000_000_500_000_000,
+        clock_offset: None,
+        hostname: "endpoint-host".to_string(),
+        ips: ips.iter().map(|addr| ip(addr)).collect(),
+        default_route_ip: default_route_ip.map(ip),
+        net_state_source: NetStateSource::Observed,
+        os_family: OsFamily::Windows,
+        os_version: "10.0.19045".to_string(),
+        collection_mode: CollectionMode::Extended,
+        process_key: None,
+        schema: 1,
+    }
+}
+
+/// The addresses of the host header of [`header_bodies`].
+pub(crate) const HEADER_IPS: [&str; 2] = ["10.20.0.5", "2001:db8:20::5"];
+
+/// The default route address of the host header of [`header_bodies`].
+pub(crate) const HEADER_DEFAULT_ROUTE: &str = "10.20.0.1";
+
+fn header() -> EndpointHeader {
+    endpoint_header(&HEADER_IPS, Some(HEADER_DEFAULT_ROUTE))
+}
+
+/// A Sysmon network-connect body with a host header, whose `source_ip` and
+/// `destination_ip` are header addresses.
+pub(crate) fn network_connect_body_with_header() -> RawEventBody {
+    let RawEventBody::NetworkConnect(mut body) =
+        network_connect_body(ip(HEADER_IPS[0]), ip(HEADER_DEFAULT_ROUTE))
+    else {
+        unreachable!("network_connect_body returns a NetworkConnect body")
+    };
+    body.endpoint = Some(header());
+    RawEventBody::NetworkConnect(body)
+}
+
+pub(crate) fn process_create_body(logon_id_full: Option<u64>) -> raw_event::ProcessCreate {
+    raw_event::ProcessCreate {
+        agent_name: "agent".to_string(),
+        agent_id: "agent-id".to_string(),
+        process_guid: "{process}".to_string(),
+        process_id: 100,
+        image: "C:\\synthetic.exe".to_string(),
+        file_version: "1.0".to_string(),
+        description: "synthetic".to_string(),
+        product: "product".to_string(),
+        company: "company".to_string(),
+        original_file_name: "synthetic.exe".to_string(),
+        command_line: "synthetic.exe /run".to_string(),
+        current_directory: "C:\\".to_string(),
+        user: "user".to_string(),
+        logon_guid: "{logon}".to_string(),
+        logon_id: u32::MAX,
+        terminal_session_id: 1,
+        integrity_level: "High".to_string(),
+        hashes: vec!["SHA256=00".to_string()],
+        parent_process_guid: "{parent}".to_string(),
+        parent_process_id: 99,
+        parent_image: "C:\\parent.exe".to_string(),
+        parent_command_line: "parent.exe".to_string(),
+        parent_user: "user".to_string(),
+        endpoint: logon_id_full.map(|_| header()),
+        logon_id_full,
+    }
+}
+
+pub(crate) fn driver_load_body() -> raw_event::DriverLoad {
+    raw_event::DriverLoad {
+        agent_name: "agent".to_string(),
+        agent_id: "agent-id".to_string(),
+        image_loaded: "C:\\driver.sys".to_string(),
+        hashes: vec!["SHA256=01".to_string(), "MD5=02".to_string()],
+        signed: true,
+        signature: "Vendor".to_string(),
+        signature_status: "Valid".to_string(),
+        endpoint: Some(header()),
+    }
+}
+
+pub(crate) fn create_remote_thread_body() -> raw_event::CreateRemoteThread {
+    raw_event::CreateRemoteThread {
+        agent_name: "agent".to_string(),
+        agent_id: "agent-id".to_string(),
+        source_process_guid: "{source}".to_string(),
+        source_process_id: 11,
+        source_image: "C:\\source.exe".to_string(),
+        target_process_guid: "{target}".to_string(),
+        target_process_id: 12,
+        target_image: "C:\\target.exe".to_string(),
+        new_thread_id: 13,
+        start_address: "0x7ff0".to_string(),
+        start_module: "kernel32.dll".to_string(),
+        start_function: "LoadLibraryW".to_string(),
+        source_user: "source-user".to_string(),
+        target_user: "target-user".to_string(),
+        endpoint: Some(header()),
+    }
+}
+
+pub(crate) fn raw_access_read_body() -> raw_event::RawAccessRead {
+    raw_event::RawAccessRead {
+        agent_name: "agent".to_string(),
+        agent_id: "agent-id".to_string(),
+        process_guid: "{process}".to_string(),
+        process_id: 21,
+        image: "C:\\reader.exe".to_string(),
+        device: "\\Device\\HarddiskVolume2".to_string(),
+        user: "user".to_string(),
+        endpoint: Some(header()),
+    }
+}
+
+pub(crate) fn process_access_body() -> raw_event::ProcessAccess {
+    raw_event::ProcessAccess {
+        agent_name: "agent".to_string(),
+        agent_id: "agent-id".to_string(),
+        source_process_guid: "{source}".to_string(),
+        source_process_id: 31,
+        source_thread_id: 32,
+        source_image: "C:\\source.exe".to_string(),
+        target_process_guid: "{target}".to_string(),
+        target_process_id: 33,
+        target_image: "C:\\lsass.exe".to_string(),
+        granted_access: 0x1_0000_1010,
+        call_trace: "ntdll.dll+9d204".to_string(),
+        source_user: "source-user".to_string(),
+        target_user: "target-user".to_string(),
+        endpoint: Some(header()),
+    }
+}
+
+pub(crate) fn registry_object_add_del_body() -> raw_event::RegistryObjectAddDel {
+    raw_event::RegistryObjectAddDel {
+        agent_name: "agent".to_string(),
+        agent_id: "agent-id".to_string(),
+        event_type: "CreateKey".to_string(),
+        process_guid: "{process}".to_string(),
+        process_id: 41,
+        image: "C:\\reg.exe".to_string(),
+        target_object: "HKLM\\Software\\Synthetic".to_string(),
+        user: "user".to_string(),
+        endpoint: Some(header()),
+    }
+}
+
+/// A Windows event log body with every optional field set.
+pub(crate) fn windows_event_log_body() -> raw_event::WindowsEventLog {
+    raw_event::WindowsEventLog {
+        channel: Some("Security".to_string()),
+        provider: Some("Microsoft-Windows-Security-Auditing".to_string()),
+        event_id: Some(4624),
+        version: Some(2),
+        level: Some(4),
+        task: Some(12544),
+        opcode: Some(0),
+        keywords: Some(0x8020_0000_0000_0000),
+        record_id: Some(123_456_789_012),
+        computer: Some("endpoint-host".to_string()),
+        user_sid: Some("S-1-5-18".to_string()),
+        event_data: Some(vec![
+            EventData {
+                name: Some("TargetUserName".to_string()),
+                value: "alice".to_string(),
+            },
+            EventData {
+                name: None,
+                value: "line 1\n\tline 2".to_string(),
+            },
+            EventData {
+                name: Some("Empty".to_string()),
+                value: String::new(),
+            },
+        ]),
+        user_data_xml: Some("<UserData/>".to_string()),
+        endpoint: header(),
+    }
+}
+
+pub(crate) fn text_field(name: &str, value: &str) -> LogField {
+    LogField {
+        name: name.to_string(),
+        value: LogValue::Text(value.to_string()),
+    }
+}
+
+pub(crate) fn bytes_field(name: &str, value: &[u8]) -> LogField {
+    LogField {
+        name: name.to_string(),
+        value: LogValue::Bytes(value.to_vec()),
+    }
+}
+
+pub(crate) fn journald_body() -> raw_event::Journald {
+    raw_event::Journald {
+        fields: Some(vec![
+            text_field("MESSAGE", "session opened"),
+            bytes_field("_BOOT_ID", &[0x0a, 0xbc, 0xff]),
+            bytes_field("EMPTY", &[]),
+        ]),
+        endpoint: header(),
+    }
+}
+
+pub(crate) fn auditd_body() -> raw_event::Auditd {
+    raw_event::Auditd {
+        serial: Some(9001),
+        records: Some(vec![
+            AuditRecord {
+                record_type: "SYSCALL".to_string(),
+                fields: vec![text_field("arch", "c000003e"), text_field("syscall", "59")],
+            },
+            AuditRecord {
+                record_type: "EOE".to_string(),
+                fields: Vec::new(),
+            },
+        ]),
+        endpoint: header(),
+    }
+}
+
+/// A body of each kind that carries a host header: a Sysmon body whose
+/// header is `Some`, and one of each kind added with the endpoint header.
+pub(crate) fn header_bodies() -> Vec<RawEventBody> {
+    vec![
+        network_connect_body_with_header(),
+        RawEventBody::ProcessCreate(process_create_body(Some(0x1_0000_0001))),
+        RawEventBody::DriverLoad(driver_load_body()),
+        RawEventBody::CreateRemoteThread(create_remote_thread_body()),
+        RawEventBody::RawAccessRead(raw_access_read_body()),
+        RawEventBody::ProcessAccess(process_access_body()),
+        RawEventBody::RegistryObjectAddDel(registry_object_add_del_body()),
+        RawEventBody::WindowsEventLog(windows_event_log_body()),
+        RawEventBody::Journald(journald_body()),
+        RawEventBody::Auditd(auditd_body()),
+    ]
 }
 
 /// Returns the kind of a body.
@@ -242,6 +501,15 @@ pub(crate) fn kind_of(body: &RawEventBody) -> RawEventKind {
         RawEventBody::Netflow5(_) => RawEventKind::Netflow5,
         RawEventBody::Netflow9(_) => RawEventKind::Netflow9,
         RawEventBody::NetworkConnect(_) => RawEventKind::NetworkConnect,
+        RawEventBody::ProcessCreate(_) => RawEventKind::ProcessCreate,
+        RawEventBody::DriverLoad(_) => RawEventKind::DriverLoad,
+        RawEventBody::CreateRemoteThread(_) => RawEventKind::CreateRemoteThread,
+        RawEventBody::RawAccessRead(_) => RawEventKind::RawAccessRead,
+        RawEventBody::ProcessAccess(_) => RawEventKind::ProcessAccess,
+        RawEventBody::RegistryObjectAddDel(_) => RawEventKind::RegistryObjectAddDel,
+        RawEventBody::WindowsEventLog(_) => RawEventKind::WindowsEventLog,
+        RawEventBody::Journald(_) => RawEventKind::Journald,
+        RawEventBody::Auditd(_) => RawEventKind::Auditd,
         other => panic!("no fixture kind for {other:?}"),
     }
 }
@@ -274,6 +542,30 @@ pub(crate) fn host(addr: &str) -> PrimarySubject {
         ip: ip(addr),
         role: ThreatRole::Actor,
     }
+}
+
+/// An endpoint subject of [`ENDPOINT_ID`] with the addresses `ips` and the
+/// default route address `default_route_ip`.
+pub(crate) fn endpoint(ips: &[&str], default_route_ip: Option<&str>) -> PrimarySubject {
+    PrimarySubject::Endpoint {
+        endpoint_id: ENDPOINT_ID,
+        ips: ips.iter().map(|addr| ip(addr)).collect(),
+        default_route_ip: default_route_ip.map(ip),
+        net_state_source: NetStateSource::Observed,
+        role: ThreatRole::Actor,
+    }
+}
+
+/// A detection about an endpoint subject with `ips`, `default_route_ip` and
+/// `related_ips`, from [`endpoint_sensor`] at [`time`].
+pub(crate) fn endpoint_event(
+    ips: &[&str],
+    default_route_ip: Option<&str>,
+    related_ips: Vec<RelatedIp>,
+) -> DetectionEvent {
+    let mut event = subject_event(endpoint(ips, default_route_ip), related_ips);
+    event.sensor = Some(endpoint_sensor());
+    event
 }
 
 /// A `PortScan` detection about `primary`, from [`SENSOR`] at [`time`].

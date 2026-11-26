@@ -8,7 +8,7 @@ use std::{
 };
 
 use anyhow::Result;
-use review_protocol::types::{DetectionModel, RawEventKind};
+use review_protocol::types::{DetectionModel, EndpointRole, RawEventKind};
 use serde::{Deserialize, Serialize};
 
 use super::{FlowKind, StoredDetectionEvent, TrafficDirection, TriageScore};
@@ -101,11 +101,14 @@ impl TimeSeriesPolicySensors {
 ///
 /// The address conditions apply to the event's endpoint addresses, in two
 /// sets: the originator side is a raw event body's `orig_addr`, or a
-/// subject's related IPs observed as the source together with its host IP;
-/// the responder side is the body's `resp_addr`, or the related IPs observed
-/// as the destination together with the host IP. A host subject's IP is
-/// therefore on both sides, and a sensor, cluster or network subject is
-/// matched through its related IPs only.
+/// subject's related IPs observed as the source together with its host
+/// addresses; the responder side is the body's `resp_addr`, or the related
+/// IPs observed as the destination together with the host addresses. The
+/// host addresses are a host subject's IP and every element of an endpoint
+/// subject's `ips` (its `default_route_ip` adds none), so each is on both
+/// sides, and a sensor, cluster or network subject is matched through its
+/// related IPs only. The addresses in the host header of a raw event body
+/// are never endpoint addresses.
 ///
 /// - `endpoints` matches when some listed endpoint's network contains an
 ///   originator-side address (`From`), a responder-side address (`To`), or
@@ -262,9 +265,48 @@ impl StoredDetectionEvent {
 
     /// Returns the ordered (originator-side, responder-side) pairs,
     /// possibly repeated.
+    ///
+    /// For an event about an endpoint, the pairs come from where each address
+    /// came from, not from the product of the two sides, which would pair two
+    /// different subject IPs: each subject IP `s` gives `(s, s)`, each
+    /// related IP `r` observed as the source gives `(r, s)` and each one
+    /// observed as the destination `(s, r)` with every `s`, even when `r`
+    /// equals some `s`, and each source-side related IP is paired with each
+    /// destination-side one. For every other event, the pairs are the
+    /// product of the originator side and the responder side.
     fn addr_pairs(&self) -> impl Iterator<Item = (IpAddr, IpAddr)> + '_ {
-        self.originator_addrs()
-            .flat_map(|orig| self.responder_addrs().map(move |resp| (orig, resp)))
+        let endpoint = self.endpoint_subject();
+        let product = endpoint.is_none().then(|| {
+            self.originator_addrs()
+                .flat_map(|orig| self.responder_addrs().map(move |resp| (orig, resp)))
+        });
+        let endpoint_pairs = endpoint.map(|(ips, related)| {
+            let side = move |role: EndpointRole| {
+                related
+                    .iter()
+                    .filter(move |related| related.role == role)
+                    .map(|related| related.ip)
+            };
+            let subject = ips.iter().copied();
+            subject
+                .clone()
+                .map(|s| (s, s))
+                .chain(
+                    side(EndpointRole::Source)
+                        .flat_map(move |r| subject.clone().map(move |s| (r, s))),
+                )
+                .chain(
+                    ips.iter()
+                        .flat_map(move |&s| side(EndpointRole::Destination).map(move |r| (s, r))),
+                )
+                .chain(side(EndpointRole::Source).flat_map(move |orig| {
+                    side(EndpointRole::Destination).map(move |resp| (orig, resp))
+                }))
+        });
+        product
+            .into_iter()
+            .flatten()
+            .chain(endpoint_pairs.into_iter().flatten())
     }
 
     /// Returns whether the event meets every condition of `filter` other than
@@ -504,6 +546,13 @@ impl StoredDetectionEvent {
     /// Each pair selects the event through `EventFilter::originator` and
     /// `EventFilter::responder` together. An event with an empty side yields
     /// no pair.
+    ///
+    /// An event about an endpoint is counted by where each address came
+    /// from: `(s, s)` for each of its `ips` `s`, `(r, s)` for each related
+    /// IP `r` observed as the source and `(s, r)` for each one observed as
+    /// the destination, with every `s`, and each source-side related IP with
+    /// each destination-side one. Two different IPs of the endpoint are
+    /// never a pair, though they select the event together.
     ///
     /// # Errors
     ///

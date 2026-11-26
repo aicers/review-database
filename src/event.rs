@@ -17,7 +17,11 @@ mod record;
 mod triage;
 
 #[cfg(test)]
+mod endpoint_tests;
+#[cfg(test)]
 pub(crate) mod fixture;
+#[cfg(test)]
+mod format_baseline;
 #[cfg(test)]
 mod key_baseline;
 
