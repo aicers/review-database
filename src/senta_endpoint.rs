@@ -45,10 +45,12 @@
 //!   the job conflicts on the job row it read and is refused on its retry. So
 //!   the approved endpoint is either in the job's `endpoint_ids` or the
 //!   approval is refused.
-//!   [`Store::replace_senta_endpoint_enrollment_result`] writes the customer
-//!   row back unchanged too, so a replacement that commits after that read
-//!   makes the job creation conflict and run again, and one that commits
-//!   after the job is refused.
+//!   [`Store::replace_senta_endpoint_enrollment_result`] and
+//!   [`Store::reapprove_senta_endpoint_enrollment`] write the customer row
+//!   back unchanged too, so a replacement or a re-approval that commits after
+//!   that read makes the job creation conflict and run again, and one that
+//!   commits after the job is refused. A re-approval writes only an endpoint
+//!   row that already exists, so the job lists that endpoint either way.
 //! - [`Store::rotate_senta_endpoint_recovery_key`] reads the install row for
 //!   update before it scans the customer table, and
 //!   [`Store::register_senta_endpoint_customer`], the only writer of a new
@@ -95,6 +97,7 @@ pub(crate) enum Method {
     InsertCommand,
     RotateRecoveryKey,
     ApproveEnrollment,
+    ReapproveEnrollment,
     ReplaceEnrollmentResult,
     CreateDeletionJob,
     /// [`Store::put_endpoint_detection_event`] and
@@ -553,7 +556,9 @@ impl Store {
     /// - [`SentaEndpointError::AttemptNotFound`] if the attempt has no row;
     /// - [`SentaEndpointError::AttemptApproved`] if the attempt is already
     ///   approved;
-    /// - [`SentaEndpointError::EndpointExists`] if the endpoint ID has a row;
+    /// - [`SentaEndpointError::EndpointExists`] if the endpoint ID has a row,
+    ///   which [`Self::reapprove_senta_endpoint_enrollment`] approves an
+    ///   attempt for instead;
     /// - [`SentaEndpointError::Database`] if a database operation fails or a
     ///   stored row is invalid.
     pub fn approve_senta_endpoint_enrollment(
@@ -601,6 +606,111 @@ impl Store {
             attempts.write_row(txn, &attempt)?;
             endpoints.write_row(txn, endpoint)?;
             Ok(())
+        })
+    }
+
+    /// Approves an enrollment attempt of an endpoint that already has a row:
+    /// sets the attempt's result to approved with the enrollment-result JWS
+    /// `enrollment_result` and rewrites the endpoint row with the host of
+    /// `endpoint`. Returns the endpoint row as written.
+    ///
+    /// The attempt's result becomes `Approved { result: enrollment_result }`,
+    /// and nothing else of the attempt row changes. The JWS is stored as
+    /// given: it is not parsed, decoded or verified here.
+    ///
+    /// The endpoint row of `endpoint.endpoint_id` keeps every stored column
+    /// but `host_name`, `os` and `senta_version`, which are taken from
+    /// `endpoint`; the other columns of `endpoint` are ignored. So the
+    /// endpoint keeps its identity, standing, bundle, first enrollment time
+    /// and connection state. The endpoint's other enrollment attempts and
+    /// every other row bound to the endpoint ID are left as they are.
+    ///
+    /// The row of the endpoint's customer is read for update and written back
+    /// unchanged, as [`Self::approve_senta_endpoint_enrollment`] does, so that
+    /// a data deletion job created concurrently either makes this re-approval
+    /// conflict and be refused on its retry, or itself conflicts and runs
+    /// again. The endpoint already has a row, so the job lists it either way.
+    ///
+    /// # Errors
+    ///
+    /// Returns, writing nothing, the first of these that applies:
+    ///
+    /// - [`SentaEndpointError::AttemptMismatch`] if the SPKI hash of
+    ///   `endpoint` is not `spki_hash`;
+    /// - [`SentaEndpointError::CustomerDeletion`] if the endpoint's customer
+    ///   has a data deletion job;
+    /// - [`SentaEndpointError::CustomerNotFound`] if the customer has no row;
+    /// - [`SentaEndpointError::AttemptNotFound`] if the attempt has no row;
+    /// - [`SentaEndpointError::AttemptMismatch`] if the attempt is of another
+    ///   customer than the endpoint;
+    /// - [`SentaEndpointError::AttemptApproved`] if the attempt is already
+    ///   approved, even with the same JWS;
+    /// - [`SentaEndpointError::EndpointNotFound`] if the endpoint ID has no
+    ///   row;
+    /// - [`SentaEndpointError::EndpointOfAnotherCustomer`] if the stored
+    ///   endpoint row is of another customer than `endpoint`;
+    /// - [`SentaEndpointError::AttemptMismatch`] if the stored endpoint row
+    ///   carries another SPKI hash than `spki_hash`;
+    /// - [`SentaEndpointError::Database`] if a database operation fails or a
+    ///   stored row is invalid.
+    pub fn reapprove_senta_endpoint_enrollment(
+        &self,
+        spki_hash: &[u8; 32],
+        attempt_id: Uuid,
+        enrollment_result: &str,
+        endpoint: &SentaEndpoint,
+    ) -> Result<SentaEndpoint, SentaEndpointError> {
+        if endpoint.spki_hash != *spki_hash {
+            return Err(SentaEndpointError::AttemptMismatch { attempt_id });
+        }
+        let customer_id = endpoint.customer_id;
+        let endpoint_id = endpoint.endpoint_id;
+        let customers = self.senta_endpoint_customer_map();
+        let attempts = self.senta_endpoint_enrollment_attempt_map();
+        let endpoints = self.senta_endpoint_map();
+        self.write_senta_endpoint(Method::ReapproveEnrollment, |txn| {
+            self.check_deletion_job(txn, customer_id)?;
+            let Some(customer) = customers.row_for_update(txn, &keys::customer(customer_id))?
+            else {
+                return Err(SentaEndpointError::CustomerNotFound { customer_id });
+            };
+            let Some(mut attempt) =
+                attempts.row_for_update(txn, &keys::attempt(spki_hash, attempt_id))?
+            else {
+                return Err(SentaEndpointError::AttemptNotFound { attempt_id });
+            };
+            if attempt.customer_id != customer_id {
+                return Err(SentaEndpointError::AttemptMismatch { attempt_id });
+            }
+            if matches!(
+                attempt.result,
+                SentaEndpointEnrollmentResult::Approved { .. }
+            ) {
+                return Err(SentaEndpointError::AttemptApproved { attempt_id });
+            }
+            let Some(mut stored) = endpoints.row_for_update(txn, &keys::endpoint(endpoint_id))?
+            else {
+                return Err(SentaEndpointError::EndpointNotFound { endpoint_id });
+            };
+            if stored.customer_id != customer_id {
+                return Err(SentaEndpointError::EndpointOfAnotherCustomer {
+                    endpoint_id,
+                    customer_id,
+                });
+            }
+            if stored.spki_hash != *spki_hash {
+                return Err(SentaEndpointError::AttemptMismatch { attempt_id });
+            }
+            customers.write_row(txn, &customer)?;
+            attempt.result = SentaEndpointEnrollmentResult::Approved {
+                result: enrollment_result.to_string(),
+            };
+            attempts.write_row(txn, &attempt)?;
+            endpoint.host_name.clone_into(&mut stored.host_name);
+            endpoint.os.clone_into(&mut stored.os);
+            endpoint.senta_version.clone_into(&mut stored.senta_version);
+            endpoints.write_row(txn, &stored)?;
+            Ok(stored)
         })
     }
 
@@ -1824,6 +1934,16 @@ mod tests {
                 CUSTOMER,
                 state,
             );
+            assert_deletion(
+                store.reapprove_senta_endpoint_enrollment(
+                    &SPKI,
+                    Uuid::from_u128(2),
+                    "ok",
+                    &endpoint(10, CUSTOMER),
+                ),
+                CUSTOMER,
+                state,
+            );
             assert!(matches!(
                 store.create_customer_data_deletion_job(&job(CUSTOMER, status)),
                 Err(SentaEndpointError::DeletionJobExists {
@@ -2580,6 +2700,455 @@ mod tests {
         // The first try and the retry.
         assert_eq!(commits.load(Ordering::SeqCst), 2);
         assert_eq!(stored_result(&store), approved("resigned"));
+        assert_eq!(
+            store.senta_endpoint_customer_map().get(CUSTOMER).unwrap(),
+            customer_row
+        );
+    }
+
+    /// Prepares `CUSTOMER` with endpoint 10 enrolled by the approval of
+    /// attempt 1, and a pending enrollment attempt 2.
+    fn setup_reapproval(store: &Store) {
+        setup_approval(store);
+        approve(store).unwrap();
+        store
+            .senta_endpoint_enrollment_attempt_map()
+            .insert(&attempt(2, CUSTOMER))
+            .unwrap();
+    }
+
+    /// The row a re-approval of endpoint 10 is given: the endpoint's
+    /// identity, a new host, and other values than the stored ones in every
+    /// column a re-approval keeps.
+    fn reenrolled() -> SentaEndpoint {
+        SentaEndpoint {
+            endpoint_id: Uuid::from_u128(10),
+            customer_id: CUSTOMER,
+            customer_endpoint_id: Uuid::from_u128(999),
+            spki_hash: SPKI,
+            standing: "suspended".to_string(),
+            host_name: "new-host".to_string(),
+            os: "windows".to_string(),
+            senta_version: "2.0.0".to_string(),
+            bundle: "other-bundle".to_string(),
+            enrolled_at: 5,
+            last_connected_at: 6,
+            connected: false,
+        }
+    }
+
+    /// The row of endpoint 10 after a re-approval given [`reenrolled`]: the
+    /// row the first approval wrote, with the new host.
+    fn reapproved_endpoint() -> SentaEndpoint {
+        let given = reenrolled();
+        SentaEndpoint {
+            host_name: given.host_name,
+            os: given.os,
+            senta_version: given.senta_version,
+            ..endpoint(10, CUSTOMER)
+        }
+    }
+
+    fn reapprove(
+        store: &Store,
+        attempt_id: u128,
+        jws: &str,
+        endpoint: &SentaEndpoint,
+    ) -> Result<SentaEndpoint, SentaEndpointError> {
+        store.reapprove_senta_endpoint_enrollment(&SPKI, Uuid::from_u128(attempt_id), jws, endpoint)
+    }
+
+    fn attempt_result(store: &Store, attempt_id: u128) -> SentaEndpointEnrollmentResult {
+        store
+            .senta_endpoint_enrollment_attempt_map()
+            .get(&SPKI, Uuid::from_u128(attempt_id))
+            .unwrap()
+            .unwrap()
+            .result
+    }
+
+    fn stored_endpoint(store: &Store) -> Option<SentaEndpoint> {
+        store.senta_endpoint_map().get(Uuid::from_u128(10)).unwrap()
+    }
+
+    #[allow(clippy::too_many_lines)]
+    #[test]
+    fn reapproves_an_enrollment_of_an_existing_endpoint() {
+        let (_permit, _db, _backup, store) = setup_store();
+        setup_reapproval(&store);
+        let attempts = store.senta_endpoint_enrollment_attempt_map();
+        // The rows bound to the endpoint that a re-approval leaves alone.
+        store
+            .insert_senta_endpoint_command(CUSTOMER, &command(20, 10))
+            .unwrap();
+        let report = crate::SentaEndpointStatusReport {
+            endpoint_id: Uuid::from_u128(10),
+            report: "report".to_string(),
+            received_at: 3,
+            address_document_slot: Some((1, 1)),
+        };
+        store
+            .senta_endpoint_status_report_map()
+            .put(&report)
+            .unwrap();
+        let document_result = crate::SentaEndpointDocumentResult {
+            key: crate::SentaEndpointDocumentResultKey {
+                endpoint_id: Uuid::from_u128(10),
+                typ: "address".to_string(),
+                target: "endpoints".to_string(),
+            },
+            version: Some(1),
+            result: "applied".to_string(),
+            at: 4,
+        };
+        store
+            .senta_endpoint_document_result_map()
+            .put(&document_result)
+            .unwrap();
+        let first = attempts.get(&SPKI, Uuid::from_u128(1)).unwrap().unwrap();
+        let customer_row = store.senta_endpoint_customer_map().get(CUSTOMER).unwrap();
+        let before = dump(&store);
+
+        let written = reapprove(&store, 2, "second", &reenrolled()).unwrap();
+        assert_eq!(written, reapproved_endpoint());
+        assert_eq!(stored_endpoint(&store), Some(reapproved_endpoint()));
+        assert_eq!(
+            attempts.get(&SPKI, Uuid::from_u128(2)).unwrap(),
+            Some(SentaEndpointEnrollmentAttempt {
+                result: approved("second"),
+                ..attempt(2, CUSTOMER)
+            })
+        );
+        let after = dump(&store);
+        let mut changed: Vec<_> = changed_keys(&before, &after)
+            .into_iter()
+            .map(|(family, key)| (family, key.into_vec()))
+            .collect();
+        changed.sort_unstable();
+        let mut expected = vec![
+            (
+                crate::tables::SENTA_ENDPOINT_ENROLLMENT_ATTEMPTS,
+                keys::attempt(&SPKI, Uuid::from_u128(2)),
+            ),
+            (
+                crate::tables::SENTA_ENDPOINTS,
+                keys::endpoint(Uuid::from_u128(10)),
+            ),
+        ];
+        expected.sort_unstable();
+        assert_eq!(changed, expected);
+        assert_eq!(
+            attempts.get(&SPKI, Uuid::from_u128(1)).unwrap(),
+            Some(first)
+        );
+        assert_eq!(attempt_result(&store, 1), approved("ok"));
+        assert_eq!(
+            store.senta_endpoint_customer_map().get(CUSTOMER).unwrap(),
+            customer_row
+        );
+        assert_eq!(
+            store
+                .senta_endpoint_command_map()
+                .get(Uuid::from_u128(20))
+                .unwrap(),
+            Some(command(20, 10))
+        );
+        assert_eq!(
+            store
+                .senta_endpoint_status_report_map()
+                .get(Uuid::from_u128(10))
+                .unwrap(),
+            Some(report)
+        );
+        assert_eq!(
+            store
+                .senta_endpoint_document_result_map()
+                .get(&document_result.key)
+                .unwrap(),
+            Some(document_result)
+        );
+
+        // A denied attempt is re-approved too.
+        attempts.insert(&attempt(3, CUSTOMER)).unwrap();
+        attempts
+            .set_result(
+                &SPKI,
+                Uuid::from_u128(3),
+                &SentaEndpointEnrollmentResult::Denied {
+                    reason: "no".to_string(),
+                },
+            )
+            .unwrap();
+        let third = SentaEndpoint {
+            host_name: "third-host".to_string(),
+            ..reenrolled()
+        };
+        let written = reapprove(&store, 3, "third", &third).unwrap();
+        assert_eq!(
+            written,
+            SentaEndpoint {
+                host_name: "third-host".to_string(),
+                ..reapproved_endpoint()
+            }
+        );
+        assert_eq!(stored_endpoint(&store), Some(written));
+        assert_eq!(attempt_result(&store, 3), approved("third"));
+        assert_eq!(attempt_result(&store, 2), approved("second"));
+
+        // The approval still refuses an endpoint ID that has a row.
+        attempts.insert(&attempt(4, CUSTOMER)).unwrap();
+        let before = dump(&store);
+        assert!(matches!(
+            store.approve_senta_endpoint_enrollment(
+                &SPKI,
+                Uuid::from_u128(4),
+                "ok",
+                &endpoint(10, CUSTOMER)
+            ),
+            Err(SentaEndpointError::EndpointExists { endpoint_id }) if endpoint_id == Uuid::from_u128(10)
+        ));
+        assert_eq!(dump(&store), before);
+    }
+
+    #[allow(clippy::too_many_lines)]
+    #[test]
+    fn reapprovals_are_refused_writing_nothing() {
+        let (_permit, _db, _backup, store) = setup_store();
+        setup_reapproval(&store);
+        let attempts = store.senta_endpoint_enrollment_attempt_map();
+        // Endpoint 20 of `CUSTOMER` has another SPKI hash.
+        let other_spki = [8; 32];
+        attempts
+            .insert(&SentaEndpointEnrollmentAttempt {
+                spki_hash: other_spki,
+                ..attempt(4, CUSTOMER)
+            })
+            .unwrap();
+        store
+            .approve_senta_endpoint_enrollment(
+                &other_spki,
+                Uuid::from_u128(4),
+                "ok",
+                &SentaEndpoint {
+                    spki_hash: other_spki,
+                    ..endpoint(20, CUSTOMER)
+                },
+            )
+            .unwrap();
+        // Customer 2 has endpoint 30 and a pending attempt 6 under `SPKI`.
+        store
+            .register_senta_endpoint_customer(&customer(2, INSTALL, 1), &keyset(2, 1, "kid", "x"))
+            .unwrap();
+        attempts.insert(&attempt(5, 2)).unwrap();
+        store
+            .approve_senta_endpoint_enrollment(&SPKI, Uuid::from_u128(5), "ok", &endpoint(30, 2))
+            .unwrap();
+        attempts.insert(&attempt(6, 2)).unwrap();
+
+        let before = dump(&store);
+        let id = Uuid::from_u128;
+        // The given row's SPKI hash is not the attempt key's.
+        assert!(matches!(
+            store.reapprove_senta_endpoint_enrollment(&other_spki, id(2), "new", &reenrolled()),
+            Err(SentaEndpointError::AttemptMismatch { attempt_id }) if attempt_id == id(2)
+        ));
+        // No attempt row.
+        assert!(matches!(
+            reapprove(&store, 9, "new", &reenrolled()),
+            Err(SentaEndpointError::AttemptNotFound { attempt_id }) if attempt_id == id(9)
+        ));
+        // The attempt is of another customer.
+        assert!(matches!(
+            reapprove(&store, 6, "new", &reenrolled()),
+            Err(SentaEndpointError::AttemptMismatch { attempt_id }) if attempt_id == id(6)
+        ));
+        // The attempt is already approved, with the same JWS or another.
+        for jws in ["ok", "new"] {
+            assert!(matches!(
+                reapprove(&store, 1, jws, &reenrolled()),
+                Err(SentaEndpointError::AttemptApproved { attempt_id }) if attempt_id == id(1)
+            ));
+        }
+        // No endpoint row.
+        assert!(matches!(
+            reapprove(&store, 2, "new", &SentaEndpoint {
+                endpoint_id: id(99),
+                ..reenrolled()
+            }),
+            Err(SentaEndpointError::EndpointNotFound { endpoint_id }) if endpoint_id == id(99)
+        ));
+        // The endpoint row is of another customer.
+        assert!(matches!(
+            reapprove(&store, 2, "new", &SentaEndpoint {
+                endpoint_id: id(30),
+                ..reenrolled()
+            }),
+            Err(SentaEndpointError::EndpointOfAnotherCustomer {
+                endpoint_id,
+                customer_id: CUSTOMER,
+            }) if endpoint_id == id(30)
+        ));
+        // The endpoint row carries another SPKI hash.
+        assert!(matches!(
+            reapprove(&store, 2, "new", &SentaEndpoint {
+                endpoint_id: id(20),
+                ..reenrolled()
+            }),
+            Err(SentaEndpointError::AttemptMismatch { attempt_id }) if attempt_id == id(2)
+        ));
+        assert_eq!(dump(&store), before);
+
+        // A customer with no row.
+        assert!(matches!(
+            reapprove(
+                &store,
+                2,
+                "new",
+                &SentaEndpoint {
+                    customer_id: 3,
+                    ..reenrolled()
+                }
+            ),
+            Err(SentaEndpointError::CustomerNotFound { customer_id: 3 })
+        ));
+        assert_eq!(dump(&store), before);
+        store
+            .senta_endpoint_customer_map()
+            .delete(CUSTOMER)
+            .unwrap();
+        let before = dump(&store);
+        assert!(matches!(
+            reapprove(&store, 2, "new", &reenrolled()),
+            Err(SentaEndpointError::CustomerNotFound {
+                customer_id: CUSTOMER
+            })
+        ));
+        assert_eq!(dump(&store), before);
+        assert_eq!(attempt_result(&store, 2), attempt(2, CUSTOMER).result);
+        assert_eq!(stored_endpoint(&store), Some(endpoint(10, CUSTOMER)));
+    }
+
+    #[test]
+    fn reapprovals_of_a_customer_with_a_deletion_job_are_refused() {
+        for (status, state) in DELETION_STATES {
+            let (_permit, _db, _backup, store) = setup_store();
+            setup_reapproval(&store);
+            store
+                .create_customer_data_deletion_job(&job(CUSTOMER, status))
+                .unwrap();
+            let before = dump(&store);
+            assert_deletion(reapprove(&store, 2, "new", &reenrolled()), CUSTOMER, state);
+            assert_eq!(dump(&store), before);
+        }
+    }
+
+    #[test]
+    fn a_deletion_job_committed_during_a_reapproval_refuses_it() {
+        let (_permit, _db, _backup, store) = setup_store();
+        setup_reapproval(&store);
+        hook_once(
+            &store,
+            HookPoint::BeforeCommit(Method::ReapproveEnrollment),
+            |store| {
+                assert_eq!(create_job(store).endpoint_ids, vec![Uuid::from_u128(10)]);
+            },
+        );
+        assert_deletion(
+            reapprove(&store, 2, "new", &reenrolled()),
+            CUSTOMER,
+            SentaEndpointDeletionState::InProgress,
+        );
+        assert_eq!(attempt_result(&store, 2), attempt(2, CUSTOMER).result);
+        assert_eq!(stored_endpoint(&store), Some(endpoint(10, CUSTOMER)));
+    }
+
+    #[test]
+    fn a_reapproval_committed_during_a_deletion_job_creation_makes_it_run_again() {
+        for point in [
+            HookPoint::DeletionJobBeforeScan,
+            HookPoint::BeforeCommit(Method::CreateDeletionJob),
+        ] {
+            let (_permit, _db, _backup, store) = setup_store();
+            setup_reapproval(&store);
+            store
+                .senta_endpoint_enrollment_attempt_map()
+                .insert(&attempt(3, CUSTOMER))
+                .unwrap();
+            let scans = hook_counting(&store, point, HookPoint::DeletionJobBeforeScan, |store| {
+                reapprove(store, 2, "new", &reenrolled()).unwrap();
+            });
+            assert_eq!(
+                create_job(&store).endpoint_ids,
+                vec![Uuid::from_u128(10)],
+                "{point:?}"
+            );
+            assert_eq!(scans.load(Ordering::SeqCst), 2, "{point:?}");
+            assert_eq!(attempt_result(&store, 2), approved("new"), "{point:?}");
+            assert_eq!(
+                stored_endpoint(&store),
+                Some(reapproved_endpoint()),
+                "{point:?}"
+            );
+            store.set_senta_endpoint_hook(None);
+            assert_deletion(
+                reapprove(&store, 3, "later", &reenrolled()),
+                CUSTOMER,
+                SentaEndpointDeletionState::InProgress,
+            );
+        }
+    }
+
+    #[test]
+    fn a_reapproval_conflicting_on_the_endpoint_row_runs_again() {
+        let (_permit, _db, _backup, store) = setup_store();
+        setup_reapproval(&store);
+        store
+            .senta_endpoint_map()
+            .set_connection(Uuid::from_u128(10), false, 2)
+            .unwrap();
+        let point = HookPoint::BeforeCommit(Method::ReapproveEnrollment);
+        let commits = hook_counting(&store, point, point, |store| {
+            store
+                .senta_endpoint_map()
+                .set_connection(Uuid::from_u128(10), true, 42)
+                .unwrap();
+        });
+        let written = reapprove(&store, 2, "new", &reenrolled()).unwrap();
+        // The first try and the retry.
+        assert_eq!(commits.load(Ordering::SeqCst), 2);
+        let expected = SentaEndpoint {
+            connected: true,
+            last_connected_at: 42,
+            ..reapproved_endpoint()
+        };
+        assert_eq!(written, expected);
+        assert_eq!(stored_endpoint(&store), Some(expected));
+        assert_eq!(attempt_result(&store, 2), approved("new"));
+    }
+
+    #[test]
+    fn a_reapproval_conflicting_on_the_attempt_row_runs_again() {
+        let (_permit, _db, _backup, store) = setup_store();
+        setup_reapproval(&store);
+        let point = HookPoint::BeforeCommit(Method::ReapproveEnrollment);
+        let commits = hook_counting(&store, point, point, |store| {
+            store
+                .senta_endpoint_enrollment_attempt_map()
+                .set_result(
+                    &SPKI,
+                    Uuid::from_u128(2),
+                    &SentaEndpointEnrollmentResult::Pending {
+                        reason: "intervening".to_string(),
+                    },
+                )
+                .unwrap();
+        });
+        let customer_row = store.senta_endpoint_customer_map().get(CUSTOMER).unwrap();
+        reapprove(&store, 2, "new", &reenrolled()).unwrap();
+        // The first try and the retry.
+        assert_eq!(commits.load(Ordering::SeqCst), 2);
+        assert_eq!(attempt_result(&store, 2), approved("new"));
+        assert_eq!(stored_endpoint(&store), Some(reapproved_endpoint()));
         assert_eq!(
             store.senta_endpoint_customer_map().get(CUSTOMER).unwrap(),
             customer_row

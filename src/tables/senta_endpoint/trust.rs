@@ -1370,11 +1370,13 @@ impl Table<'_, SentaEndpointEnrollmentAttempt> {
     /// Inserts `attempt` unless an attempt is stored under its key, and returns
     /// whether it was written. A stored attempt is left as it is.
     ///
-    /// Only [`Store::approve_senta_endpoint_enrollment`] writes an approved
+    /// Only [`Store::approve_senta_endpoint_enrollment`] and
+    /// [`Store::reapprove_senta_endpoint_enrollment`] write an approved
     /// result, and only [`Store::replace_senta_endpoint_enrollment_result`]
     /// changes one, so `attempt` must be pending or denied.
     ///
     /// [`Store::approve_senta_endpoint_enrollment`]: crate::Store::approve_senta_endpoint_enrollment
+    /// [`Store::reapprove_senta_endpoint_enrollment`]: crate::Store::reapprove_senta_endpoint_enrollment
     /// [`Store::replace_senta_endpoint_enrollment_result`]: crate::Store::replace_senta_endpoint_enrollment_result
     ///
     /// # Errors
@@ -1419,12 +1421,14 @@ impl Table<'_, SentaEndpointEnrollmentAttempt> {
     /// Sets the result of an existing attempt to pending or denied, and
     /// returns the stored attempt.
     ///
-    /// Only [`Store::approve_senta_endpoint_enrollment`] writes an approved
+    /// Only [`Store::approve_senta_endpoint_enrollment`] and
+    /// [`Store::reapprove_senta_endpoint_enrollment`] write an approved
     /// result, and an approved attempt is not changed here; only
     /// [`Store::replace_senta_endpoint_enrollment_result`] replaces its
     /// result.
     ///
     /// [`Store::approve_senta_endpoint_enrollment`]: crate::Store::approve_senta_endpoint_enrollment
+    /// [`Store::reapprove_senta_endpoint_enrollment`]: crate::Store::reapprove_senta_endpoint_enrollment
     /// [`Store::replace_senta_endpoint_enrollment_result`]: crate::Store::replace_senta_endpoint_enrollment_result
     ///
     /// # Errors
