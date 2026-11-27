@@ -6,7 +6,7 @@
 //!
 //! Every write here is one optimistic transaction, retried from the start on
 //! a commit conflict, and a refusal commits nothing. Every write of a
-//! customer's DAI configuration first reads and increments the customer's
+//! customer's core DAI configuration first reads and increments the customer's
 //! `dai site policy guard` row, as does every time series generation policy
 //! save, so two of them for one customer conflict and the retried one checks
 //! again against the new state.
@@ -72,6 +72,14 @@
 //! a merge or a split, increments the version and writes one change entry,
 //! and only when a value actually changes. Their refusals are a
 //! [`DaiDeviceError`](crate::DaiDeviceError) inside the error.
+//!
+//! # Active queries
+//!
+//! Active query settings, target selection, send checks and round storage use
+//! optimistic transactions with a snapshot and retry conflicts. Site range
+//! writes also take the customer policy guard and the global active query range
+//! guard, so query ranges cannot overlap across sites or customers. Answers
+//! are display-only: storing them changes no device or resolution result.
 //!
 //! # Reads
 //!
@@ -372,12 +380,15 @@ impl Store {
     /// for update before its bindings and evidence and write it, so a writer
     /// of the address racing the deletion conflicts; its fixed IPs,
     /// conflicts, services, software strings and device changes; then the
-    /// customer's settings, sites, relay site table and site policy guard.
+    /// customer's active query settings, site settings, IP state, answers and
+    /// daily counts; then its settings, sites, relay site table and site
+    /// policy guard.
     /// Every customer-keyed row is deleted after every sensor-keyed one, so
     /// an application racing the deletion conflicts on the pending
-    /// observations it reads. The restore generation stays. An interrupted
-    /// call repeated with the same names removes the rest, and a
-    /// repeated call after success changes nothing. The customer's time
+    /// observations it reads. The restore generation and global active query
+    /// range guard stay. An interrupted call repeated with the same names
+    /// removes the rest, and a repeated call after success changes nothing.
+    /// The customer's time
     /// series generation policies are left to
     /// [`IndexedTable::remove_customer_policies`](crate::IndexedTable::remove_customer_policies).
     ///
@@ -524,6 +535,11 @@ impl Store {
     /// 180 days ago, and the counters, range blocks, range subnets and range
     /// days dated more than 30 days before the date of `now`. Ignored ranges
     /// stay.
+    ///
+    /// Active query answers last seen and IP states last queried more than 180
+    /// days ago, and active query daily counts dated more than 30 days before
+    /// `now`'s UTC date, are deleted, including those of removed sites and
+    /// disabled customers.
     ///
     /// Then, for the device tables, it:
     ///
@@ -1076,5 +1092,140 @@ impl Store {
     /// Returns an error if the database operation fails.
     pub fn dai_collection_status(&self, customer_id: u32, now: i64) -> Result<DaiCollectionStatus> {
         self.dai().collection_status(customer_id, now)
+    }
+}
+
+impl Store {
+    /// Returns the customer's active query settings, disabled at revision zero if absent.
+    ///
+    /// # Errors
+    /// Returns an error if the database operation fails.
+    pub fn dai_active_query_settings(
+        &self,
+        customer: u32,
+    ) -> Result<crate::DaiActiveQuerySettings> {
+        self.dai().active_query_settings(customer)
+    }
+
+    /// Sets the customer's active query settings and increments their revision.
+    ///
+    /// # Errors
+    /// Returns a [`crate::DaiActiveQueryError`] for a stale revision or invalid excluded ranges,
+    /// or an error if the database operation fails. A refusal changes nothing.
+    pub fn set_dai_active_query_settings(
+        &self,
+        customer: u32,
+        expected_revision: u64,
+        enabled: bool,
+        excluded_ranges: &[ipnet::IpNet],
+    ) -> Result<crate::DaiActiveQuerySettings> {
+        self.dai()
+            .set_active_query_settings(customer, expected_revision, enabled, excluded_ranges)
+    }
+
+    /// Returns active query settings for each stored site, in token order.
+    ///
+    /// A site without settings has empty ranges and DNS servers, rate 20 and revision zero.
+    ///
+    /// # Errors
+    /// Returns an error if the database operation fails.
+    pub fn dai_active_query_sites(&self, customer: u32) -> Result<Vec<crate::DaiActiveQuerySite>> {
+        self.dai().active_query_sites(customer)
+    }
+
+    /// Sets a site's active query settings, checking globally for overlapping ranges.
+    ///
+    /// Normalizes and deduplicates networks, and preserves DNS server order while removing
+    /// duplicates. Overlap errors reveal only the overlapping networks.
+    ///
+    /// # Errors
+    /// Returns a [`crate::DaiActiveQueryError`] for an unknown site, stale revision, invalid
+    /// field or overlapping ranges, or an error if the database operation fails.
+    pub fn set_dai_active_query_site(
+        &self,
+        customer: u32,
+        token: &str,
+        expected_revision: u64,
+        query_ranges: &[ipnet::IpNet],
+        dns_servers: &[IpAddr],
+        rate: u32,
+    ) -> Result<crate::DaiActiveQuerySite> {
+        self.dai().set_active_query_site(
+            customer,
+            token,
+            expected_revision,
+            query_ranges,
+            dns_servers,
+            rate,
+        )
+    }
+
+    /// Returns enabled active query sites in customer and site token order.
+    ///
+    /// Requires DAI and active queries enabled, nonempty query ranges and no unfinished
+    /// customer deletion job, including failed jobs.
+    ///
+    /// # Errors
+    /// Returns an error if the database operation fails.
+    pub fn dai_active_query_sites_enabled(&self) -> Result<Vec<crate::DaiActiveQueryEnabledSite>> {
+        self.dai().active_query_sites_enabled()
+    }
+
+    /// Selects at most `max` IP device addresses eligible for querying at `now`.
+    ///
+    /// Uses one snapshot, applying internal and query ranges, exclusions, current bindings,
+    /// fixed IPs, resolution progress and the one-day or seven-day re-query windows.
+    /// Orders never-queried addresses first, then oldest query, latest activity and IP.
+    /// Writes no selection state. Times are UTC nanoseconds since the UNIX epoch.
+    ///
+    /// # Errors
+    /// Returns an error if the database operation fails.
+    pub fn dai_active_query_targets(
+        &self,
+        customer: u32,
+        token: &str,
+        now: i64,
+        max: usize,
+    ) -> Result<Vec<IpAddr>> {
+        self.dai().active_query_targets(customer, token, now, max)
+    }
+
+    /// Checks current configuration in one snapshot just before sending a packet.
+    ///
+    /// Passes a DNS server only for PTR packets. Requires both enable flags, no unfinished
+    /// deletion job, an internal target in the site's query ranges and outside excluded ranges,
+    /// and a supplied DNS server listed at the site and inside its query ranges.
+    ///
+    /// # Errors
+    /// Returns an error if the database operation fails.
+    pub fn dai_active_query_send_allowed(
+        &self,
+        customer: u32,
+        token: &str,
+        target: IpAddr,
+        dns_server: Option<IpAddr>,
+    ) -> Result<bool> {
+        self.dai()
+            .active_query_send_allowed(customer, token, target, dns_server)
+    }
+
+    /// Stores a query round's display-only answers, IP state and daily counts atomically.
+    ///
+    /// Drops results outside the site's current ranges and older than stored IP state.
+    /// All-not-sent IPs change nothing. Consecutive equal answers within 48 hours extend
+    /// an interval; other sent results open an interval. Query times are UTC nanoseconds.
+    ///
+    /// # Errors
+    /// Returns a [`crate::DaiActiveQueryError`] if any answer exceeds its list cap, or an
+    /// error if the database operation fails. An invalid round changes nothing.
+    pub fn store_dai_active_round(
+        &self,
+        customer: u32,
+        token: &str,
+        query_time: i64,
+        results: &[crate::DaiActiveQueryRound],
+    ) -> Result<()> {
+        self.dai()
+            .store_active_query_round(customer, token, query_time, results)
     }
 }

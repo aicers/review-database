@@ -58,6 +58,7 @@ impl Dai<'_> {
             Ok(i64::from(date) < oldest_counter)
         })?;
         self.expire_range_rows(now)?;
+        self.apply_active_query_retention(now)?;
         self.apply_device_retention(now)
     }
 
