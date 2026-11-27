@@ -1211,7 +1211,8 @@ impl Store {
 
     /// Stores a query round's display-only answers, IP state and daily counts atomically.
     ///
-    /// Drops results outside the site's current ranges and older than stored IP state.
+    /// Drops results outside the site's current ranges, and an IP's results when the query
+    /// time is at or before the last query time stored for that IP.
     /// All-not-sent IPs change nothing. Consecutive equal answers within 48 hours extend
     /// an interval; other sent results open an interval. Query times are UTC nanoseconds.
     ///

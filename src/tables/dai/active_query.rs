@@ -728,7 +728,9 @@ impl Dai<'_> {
                 let key = address_key(customer, token, round.ip);
                 let previous: Option<ActiveQueryIp> =
                     Self::active_query_get(txn, &self.active_query_ips, &key)?;
-                if previous.is_some_and(|p| time < p.last_query) {
+                // A round at the stored time is stale too: its answer key would replace the
+                // row that round wrote, and its daily counts would be added a second time.
+                if previous.is_some_and(|p| time <= p.last_query) {
                     continue;
                 }
                 let results = round.results();

@@ -1430,3 +1430,206 @@ fn active_answers_leave_devices_names_and_resolution_unchanged() {
     assert_eq!(read(), before);
     assert_eq!(passive_rows(), rows_before);
 }
+
+fn ip_state(f: &Fixture, address: &str) -> ActiveQueryIp {
+    let dai = f.dai();
+    Dai::value_in(
+        &dai.db.snapshot(),
+        &dai.active_query_ips,
+        &address_key(CUSTOMER, &f.site, ip(address)),
+    )
+    .unwrap()
+    .unwrap()
+}
+
+fn ptr(name: &str) -> DaiActiveQueryResult<ActiveQueryValue> {
+    DaiActiveQueryResult::Value(ActiveQueryValue::Ptr(vec![name.to_owned()]))
+}
+
+fn daily_counts(f: &Fixture) -> Vec<ActiveQueryDaily> {
+    f.rows(&f.dai().active_query_daily)
+        .iter()
+        .map(|(_, v)| super::super::super::deserialize(v).unwrap())
+        .collect()
+}
+
+fn answers(rows: &[super::super::RawRow]) -> Vec<ActiveQueryAnswer> {
+    rows.iter()
+        .map(|(_, v)| super::super::super::deserialize(v).unwrap())
+        .collect()
+}
+
+#[test]
+fn a_round_at_the_stored_query_time_is_dropped() {
+    let f = Fixture::new();
+    f.ready();
+    let dai = f.dai();
+    let stored = || {
+        [
+            f.rows(&dai.active_answers),
+            f.rows(&dai.active_query_ips),
+            f.rows(&dai.active_query_daily),
+        ]
+    };
+    f.round(NOW, &[named("10.0.0.1", "A")]);
+    let first = stored();
+    f.round(NOW, &[named("10.0.0.1", "B")]);
+    f.round(NOW, &[named("10.0.0.1", "A")]);
+    assert_eq!(stored(), first);
+    let answers = answers(&f.rows(&dai.active_answers));
+    assert_eq!(answers.len(), 1);
+    assert_eq!(answers[0].value, ptr("A"));
+    assert_eq!(answers[0].last_seen, NOW);
+    let state = ip_state(&f, "10.0.0.1");
+    assert_eq!(state.last_query, NOW);
+    assert!(state.had_answer);
+    assert_eq!(state.results[0], ptr("A"));
+    let daily = daily_counts(&f);
+    assert_eq!(daily.len(), 1);
+    assert_eq!(daily[0].sent, 1);
+    assert_eq!(daily[0].with_value, 1);
+}
+
+#[test]
+fn rounds_one_nanosecond_apart_open_intervals_and_earlier_rounds_stay_dropped() {
+    let f = Fixture::new();
+    f.ready();
+    f.round(NOW, &[named("10.0.0.1", "A")]);
+    f.round(NOW + 1, &[named("10.0.0.1", "B")]);
+    f.round(NOW + 2, &[named("10.0.0.1", "A")]);
+    let dai = f.dai();
+    let rows = f.rows(&dai.active_answers);
+    let values: Vec<_> = answers(&rows)
+        .into_iter()
+        .map(|a| (a.value, a.last_seen))
+        .collect();
+    assert_eq!(
+        values,
+        [(ptr("A"), NOW), (ptr("B"), NOW + 1), (ptr("A"), NOW + 2)]
+    );
+    let states = f.rows(&dai.active_query_ips);
+    let daily = f.rows(&dai.active_query_daily);
+    f.round(NOW + 1, &[named("10.0.0.1", "C")]);
+    assert_eq!(f.rows(&dai.active_answers), rows);
+    assert_eq!(f.rows(&dai.active_query_ips), states);
+    assert_eq!(f.rows(&dai.active_query_daily), daily);
+    assert_eq!(ip_state(&f, "10.0.0.1").last_query, NOW + 2);
+    assert_eq!(daily_counts(&f)[0].sent, 3);
+}
+
+#[test]
+fn a_mixed_round_writes_later_ips_and_drops_an_ip_at_its_stored_time() {
+    let f = Fixture::new();
+    f.ready();
+    f.round(NOW - 1, &[named("10.0.0.2", "A")]);
+    f.round(NOW, &[named("10.0.0.1", "A")]);
+    f.round(
+        NOW,
+        &[
+            named("10.0.0.1", "B"),
+            named("10.0.0.2", "B"),
+            named("10.0.0.3", "B"),
+        ],
+    );
+    let equal = ip_state(&f, "10.0.0.1");
+    assert_eq!(equal.last_query, NOW);
+    assert_eq!(equal.results[0], ptr("A"));
+    for address in ["10.0.0.2", "10.0.0.3"] {
+        let later = ip_state(&f, address);
+        assert_eq!(later.last_query, NOW);
+        assert_eq!(later.results[0], ptr("B"));
+    }
+    let dai = f.dai();
+    let per_ip = |address: &str| {
+        answers(
+            &Dai::scan(
+                &dai.active_answers,
+                &dai.db.snapshot(),
+                &address_key(CUSTOMER, &f.site, ip(address)),
+            )
+            .unwrap(),
+        )
+        .into_iter()
+        .map(|a| a.value)
+        .collect::<Vec<_>>()
+    };
+    assert_eq!(per_ip("10.0.0.1"), [ptr("A")]);
+    assert_eq!(per_ip("10.0.0.2"), [ptr("A"), ptr("B")]);
+    assert_eq!(per_ip("10.0.0.3"), [ptr("B")]);
+    let daily = daily_counts(&f);
+    assert_eq!(daily.len(), 1);
+    assert_eq!(daily[0].sent, 4);
+    assert_eq!(daily[0].with_value, 4);
+}
+
+#[test]
+fn two_customers_never_hold_the_same_private_range_at_once() {
+    let f = Fixture::new();
+    f.ready();
+    f.activity("10.0.0.1", NOW - 10 * DAY, NOW - HOUR);
+    f.round(NOW - 2 * DAY, &[named("10.0.0.1", "first")]);
+    let dai = f.dai();
+    let maps = [
+        &dai.active_answers,
+        &dai.active_query_ips,
+        &dai.active_query_daily,
+    ];
+    let rows_of = |customer: u32| -> Vec<_> {
+        maps.iter()
+            .map(|m| Dai::scan(m, &dai.db.snapshot(), &customer_key(customer)).unwrap())
+            .collect()
+    };
+    let first = rows_of(CUSTOMER);
+    assert_eq!(f.targets(NOW), [ip("10.0.0.1")]);
+    let other = f.store.ensure_default_site(2).unwrap();
+    f.store
+        .set_dai_active_query_settings(2, 0, true, &[])
+        .unwrap();
+    let same_range = DaiActiveQueryError::RangesOverlap {
+        ranges: vec![net("10.0.0.0/16")],
+    };
+    assert_error(
+        f.store
+            .set_dai_active_query_site(2, &other, 0, &[net("10.0.0.0/16")], &[], 20),
+        &same_range,
+    );
+    assert_eq!(
+        f.store.dai_active_query_sites(2).unwrap(),
+        vec![DaiActiveQuerySite::absent(&other)]
+    );
+    f.store
+        .store_dai_active_round(2, &other, NOW, &[named("10.0.0.1", "other")])
+        .unwrap();
+    for rows in rows_of(2) {
+        assert_empty(&rows);
+    }
+    assert_eq!(rows_of(CUSTOMER), first);
+    assert_eq!(f.targets(NOW), [ip("10.0.0.1")]);
+
+    // Once the first customer releases the range, the second takes it with its own rows.
+    f.store
+        .set_dai_active_query_site(CUSTOMER, &f.site, 1, &[], &[], 20)
+        .unwrap();
+    f.store
+        .set_dai_active_query_site(2, &other, 0, &[net("10.0.0.0/16")], &[], 20)
+        .unwrap();
+    f.store
+        .store_dai_active_round(2, &other, NOW, &[named("10.0.0.1", "other")])
+        .unwrap();
+    let second = rows_of(2);
+    assert_eq!(
+        answers(&second[0])
+            .into_iter()
+            .map(|a| a.value)
+            .collect::<Vec<_>>(),
+        [ptr("other")]
+    );
+    assert_eq!(second[1].len(), 1);
+    assert_eq!(rows_of(CUSTOMER), first);
+    assert_empty(&f.targets(NOW));
+    assert_error(
+        f.store
+            .set_dai_active_query_site(CUSTOMER, &f.site, 2, &[net("10.0.0.0/16")], &[], 20),
+        &same_range,
+    );
+}
