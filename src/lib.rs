@@ -52,7 +52,7 @@ pub use self::category::Category;
 pub use self::cluster::*;
 pub use self::clustering_model_type::{
     ClusteringApproach, ClusteringModelType, ClusteringModelTypeRef, DefinitionValue,
-    DefinitionValueRange, DefinitionValueType, FixedValue, TypeOperatorValue,
+    DefinitionValueRange, DefinitionValueType, FixedValue, SourceColumn, TypeOperatorValue,
     clustering_model_type, clustering_model_types,
 };
 pub use self::collections::Indexable;

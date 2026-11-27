@@ -7,6 +7,7 @@ use std::{
     net::IpAddr,
 };
 
+use anyhow::Context;
 use attrievent::attribute::{
     AuditdAttr, BootpAttr, ConnAttr, CreateRemoteThreadAttr, DceRpcAttr, DhcpAttr, DnsAttr,
     DnsQueryAttr, DriverLoadAttr, FileCreateAttr, FileCreateStreamHashAttr, FileCreateTimeAttr,
@@ -19,7 +20,7 @@ use attrievent::attribute::{
 };
 use bincode::Options;
 use review_protocol::types::{
-    RawEventBody, Target,
+    RawEventBody, RawEventKind, Target,
     raw_event::{AuditRecord, EventData, LogField, LogValue},
 };
 use serde::{Deserialize, Serialize};
@@ -91,11 +92,7 @@ impl StoredDetectionEvent {
             .iter()
             .filter(|attr| attr.raw_event_kind == self.event.raw_event_kind)
             .filter_map(|attr| {
-                let kind = RawEventAttrKind::from_kind_and_attr_name(
-                    &attr.raw_event_kind,
-                    &attr.attr_name,
-                )
-                .ok()?;
+                let kind = raw_event_attribute(attr.raw_event_kind, &attr.attr_name).ok()?;
                 let value = attr_value(body, kind)?;
                 is_attr_matched(value, attr).then(|| attr.weight.unwrap_or_default())
             })
@@ -117,6 +114,16 @@ impl StoredDetectionEvent {
             .map(|condition| condition.weight.unwrap_or(1.0))
             .sum()
     }
+}
+
+/// Resolves an attribute across attrievent's independently pinned protocol version.
+fn raw_event_attribute(kind: RawEventKind, name: &str) -> anyhow::Result<RawEventAttrKind> {
+    // Both protocol releases use the explicit Giganto kind numbers. A checked
+    // conversion keeps this boundary independent of their Rust enum types.
+    let kind = u32::from(kind)
+        .try_into()
+        .with_context(|| format!("resolving attribute {name:?} of raw event kind {kind:?}"))?;
+    RawEventAttrKind::from_kind_and_attr_name(&kind, name)
 }
 
 /// A value read from a raw event body, in the form its comparison takes.
@@ -1344,7 +1351,10 @@ mod tests {
     use serde::Serialize;
     use strum::IntoEnumIterator;
 
-    use super::{AttrValue, ListElement, attr_value, is_attr_matched, list_element_string};
+    use super::{
+        AttrValue, ListElement, attr_value, is_attr_matched, list_element_string,
+        raw_event_attribute,
+    };
     use crate::{
         AttrCmpKind, EventCategory, PacketAttr, Response, ResponseKind, ScoreCondition,
         TriagePolicyInput, ValueKind,
@@ -1907,10 +1917,10 @@ mod tests {
         fn check<A: IntoEnumIterator + Display>(kind: RawEventKind, body: &RawEventBody) {
             for attr in A::iter() {
                 let name = attr.to_string();
-                let parsed = RawEventAttrKind::from_kind_and_attr_name(&kind, &name)
+                let parsed = raw_event_attribute(kind, &name)
                     .unwrap_or_else(|e| panic!("{kind:?} {name}: {e}"));
                 assert!(attr_value(body, parsed).is_some(), "{kind:?} {name}");
-                let other = RawEventAttrKind::from_kind_and_attr_name(&kind, &name).unwrap();
+                let other = raw_event_attribute(kind, &name).unwrap();
                 let other_body = if kind == RawEventKind::Conn {
                     dns_body(ip("192.0.2.1"), ip("198.51.100.1"))
                 } else {
@@ -2200,8 +2210,8 @@ mod tests {
                 .iter()
                 .find(|(listed, _)| *listed == attr)
                 .unwrap_or_else(|| panic!("{kind:?} {name} has no expected value"));
-            let parsed = RawEventAttrKind::from_kind_and_attr_name(&kind, &name)
-                .unwrap_or_else(|e| panic!("{kind:?} {name}: {e}"));
+            let parsed =
+                raw_event_attribute(kind, &name).unwrap_or_else(|e| panic!("{kind:?} {name}: {e}"));
             let value = attr_value(body, parsed).unwrap_or_else(|| panic!("{kind:?} {name}"));
             assert_eq!(text(value), *want, "{kind:?} {name}");
         }
@@ -2375,7 +2385,7 @@ mod tests {
                 }
                 for attr in A::iter() {
                     let name = attr.to_string();
-                    let parsed = RawEventAttrKind::from_kind_and_attr_name(&kind, &name).unwrap();
+                    let parsed = raw_event_attribute(kind, &name).unwrap();
                     assert!(attr_value(&body, parsed).is_none(), "{kind:?} {name}");
                 }
             }

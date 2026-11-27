@@ -1,14 +1,16 @@
 //! The records the Central Manager keeps for each Unsupervised Engine
 //! instance: the references of its applied and pending documents, its
-//! detectors' last statuses and whether it is stopped.
+//! detectors' last statuses and round filter reports, and whether it is stopped.
 //!
 //! The references are written only together with the documents they
 //! describe, by
 //! [`NodeTable::update_with_engine_documents`](crate::NodeTable::update_with_engine_documents),
 //! and every record of an agent is removed by the `NodeTable` writer that
-//! removes the agent. What is here reads them, and writes the statuses and
-//! the stopped state, each in a transaction that reads the instance's agent
-//! row, so a write racing an uninstall conflicts with it.
+//! removes the agent. What is here reads them, and writes the statuses,
+//! round filter reports and the stopped state, each in a transaction that
+//! reads the instance's agent row, so a write racing an uninstall conflicts
+//! with it. A round report is exposed only while its applied endpoint
+//! detector and current status timestamp match.
 //!
 //! The highest detector id an instance's documents have named is kept apart,
 //! under the instance's agent lookup key, and is never removed: a detector id
@@ -23,7 +25,7 @@
 use std::collections::{BTreeMap, HashSet};
 
 use anyhow::{Context, Result};
-use review_protocol::types::{EngineExclusionReport, ExcludedCount};
+use review_protocol::types::{EngineExclusionReport, ExcludedCount, RoundFilterReport};
 use rocksdb::{Direction, OptimisticTransactionDB, Transaction};
 
 use crate::{
@@ -131,6 +133,58 @@ impl Store {
             row.statuses.insert(detector_id, status.clone());
             Ok(())
         })
+    }
+
+    /// Stores the report matching an applied endpoint detector's current round.
+    ///
+    /// # Errors
+    ///
+    /// Returns `NotUnsupervisedAgent`, then `RoundFilterReportRefused` if the
+    /// applied reference or status does not match, or a database error.
+    /// A refusal changes nothing.
+    pub fn set_round_filter_report(
+        &self,
+        instance: &ModelInstance,
+        detector_id: i32,
+        model: &str,
+        report: &RoundFilterReport,
+    ) -> Result<()> {
+        self.write_engine_instance(instance, |_, row| {
+            if !row.accepts_round_filter_report(detector_id, model, report) {
+                return Err(EngineDocumentError::RoundFilterReportRefused {
+                    node_id: instance.node_id,
+                    agent_key: instance.agent_key.clone(),
+                    detector_id,
+                    model: model.to_owned(),
+                    finished_at: report.finished_at,
+                }
+                .into());
+            }
+            row.round_filter_reports
+                .insert((detector_id, model.to_owned()), report.clone());
+            Ok(())
+        })
+    }
+
+    /// Returns a filter report only beside its matching current applied round.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if reading the database fails.
+    pub fn round_filter_report(
+        &self,
+        instance: &ModelInstance,
+        detector_id: i32,
+        model: &str,
+    ) -> Result<Option<RoundFilterReport>> {
+        let Some(row) = self.states.engine_instances().get(instance)? else {
+            return Ok(None);
+        };
+        Ok(row
+            .round_filter_reports
+            .get(&(detector_id, model.to_owned()))
+            .filter(|r| row.accepts_round_filter_report(detector_id, model, r))
+            .cloned())
     }
 
     /// Returns the last status of each detector of an engine instance,
@@ -547,6 +601,7 @@ mod tests {
         EngineDetectorRef {
             id,
             model: model.to_string(),
+            endpoint_scope: None,
             sources: vec!["sensor-a".to_string()],
             indicator: indicator.map(ToString::to_string),
         }
@@ -657,6 +712,418 @@ mod tests {
         add_model(&t.store, "m2", instance(node.id, ENGINE));
         add_model(&t.store, "other", instance(node.id, OTHER_ENGINE));
         (t, node)
+    }
+
+    fn endpoint_detector(
+        id: i32,
+        model: &str,
+        scope: review_protocol::types::EndpointScope,
+    ) -> EngineDetectorRef {
+        EngineDetectorRef {
+            endpoint_scope: Some(scope),
+            sources: Vec::new(),
+            ..detector(id, model, None)
+        }
+    }
+
+    fn round_report(finished_at: i64, n: u32) -> RoundFilterReport {
+        RoundFilterReport {
+            finished_at,
+            served_sources: n,
+            counts: review_protocol::types::RecordFilterCounts {
+                not_extended: u64::from(n),
+                other_os: u64::MAX,
+            },
+        }
+    }
+
+    fn refused_round(
+        store: &Store,
+        engine: &ModelInstance,
+        id: i32,
+        model: &str,
+        report: &RoundFilterReport,
+    ) {
+        let before =
+            bincode::serialize(&store.states.engine_instances().get(engine).unwrap()).unwrap();
+        let error = store
+            .set_round_filter_report(engine, id, model, report)
+            .unwrap_err();
+        assert_eq!(
+            engine_error(&error),
+            &EngineDocumentError::RoundFilterReportRefused {
+                node_id: engine.node_id,
+                agent_key: engine.agent_key.clone(),
+                detector_id: id,
+                model: model.into(),
+                finished_at: report.finished_at,
+            }
+        );
+        assert_eq!(
+            bincode::serialize(&store.states.engine_instances().get(engine).unwrap()).unwrap(),
+            before
+        );
+    }
+
+    #[test]
+    // Keep the complete contract scenario together.
+    #[allow(clippy::too_many_lines)]
+    fn round_filter_reports_follow_applied_scopes_and_current_status() {
+        use review_protocol::types::EndpointScope;
+        let (t, node) = setup_node();
+        let store = &t.store;
+        let engine = instance(node.id, ENGINE);
+        let other = instance(node.id, OTHER_ENGINE);
+        add_model(store, "m3", engine.clone());
+        let applied = refs(vec![
+            endpoint_detector(1, "m1", EndpointScope::All),
+            detector(2, "m2", None),
+        ]);
+        let pending = refs(vec![
+            endpoint_detector(1, "m1", EndpointScope::Groups(vec!["pending-group".into()])),
+            endpoint_detector(3, "m3", EndpointScope::All),
+        ]);
+        let changed = with_config(
+            &with_draft(&with_config(&node, ENGINE, "x = 1"), ENGINE, "x = 2"),
+            OTHER_ENGINE,
+            "x = 1",
+        );
+        let node = update_with_documents(
+            store,
+            &node,
+            &changed,
+            &[
+                write(ENGINE, Some(applied.clone()), Some(pending.clone())),
+                write(
+                    OTHER_ENGINE,
+                    Some(refs(vec![endpoint_detector(
+                        1,
+                        "other",
+                        EndpointScope::All,
+                    )])),
+                    None,
+                ),
+            ],
+        )
+        .unwrap();
+        let state = store.engine_instance_state(&engine).unwrap();
+        assert_eq!(state.applied, applied);
+        assert_eq!(state.pending, pending);
+        assert_eq!(
+            state.applied.detectors.get(1).unwrap().sources,
+            ["sensor-a"]
+        );
+        assert_eq!(state.applied.detectors.get(1).unwrap().endpoint_scope, None);
+        let a = round_report(10_000_000_000, 7);
+        assert_eq!(store.round_filter_report(&engine, 1, "m1").unwrap(), None);
+        refused_round(store, &engine, 1, "m1", &a); // no status
+        let mut null = status(1);
+        null.finished_at = None;
+        store.set_detector_status(&engine, 1, &null).unwrap();
+        refused_round(store, &engine, 1, "m1", &a);
+        store.set_detector_status(&engine, 1, &status(1)).unwrap();
+        refused_round(store, &engine, 1, "m1", &round_report(9_000_000_000, 1));
+        for id in [2, 3] {
+            store.set_detector_status(&engine, id, &status(1)).unwrap();
+        }
+        for (id, model) in [(1, "m2"), (2, "m2"), (3, "m3"), (99, "absent")] {
+            refused_round(store, &engine, id, model, &a);
+        }
+        store.set_round_filter_report(&engine, 1, "m1", &a).unwrap();
+        let mut zero = round_report(a.finished_at, 0);
+        zero.counts.other_os = 0;
+        store
+            .set_round_filter_report(&engine, 1, "m1", &zero)
+            .unwrap();
+        assert_eq!(
+            store.round_filter_report(&engine, 1, "m1").unwrap(),
+            Some(zero.clone())
+        );
+        // Replacement refusals leave the existing report intact.
+        store.set_detector_status(&engine, 1, &null).unwrap();
+        refused_round(store, &engine, 1, "m1", &a);
+        assert_eq!(store.round_filter_report(&engine, 1, "m1").unwrap(), None);
+        store.set_detector_status(&engine, 1, &status(1)).unwrap();
+        assert_eq!(
+            store.round_filter_report(&engine, 1, "m1").unwrap(),
+            Some(zero)
+        );
+        refused_round(store, &engine, 1, "other", &a);
+        refused_round(store, &engine, 1, "m1", &round_report(11_000_000_000, 2));
+        assert_eq!(store.round_filter_report(&other, 1, "other").unwrap(), None);
+        refused_round(store, &other, 1, "other", &a);
+        store.set_detector_status(&other, 1, &status(1)).unwrap();
+        store
+            .set_round_filter_report(&other, 1, "other", &a)
+            .unwrap();
+        // Status B hides A, and late A cannot overwrite B.
+        let mut next = status(2);
+        next.finished_at = Some(at(11));
+        store.set_detector_status(&engine, 1, &next).unwrap();
+        assert_eq!(store.round_filter_report(&engine, 1, "m1").unwrap(), None);
+        refused_round(store, &engine, 1, "m1", &a);
+        let b = round_report(11_000_000_000, u32::MAX);
+        store.set_round_filter_report(&engine, 1, "m1", &b).unwrap();
+        refused_round(store, &engine, 1, "m1", &a);
+        assert_eq!(
+            store.round_filter_report(&engine, 1, "m1").unwrap(),
+            Some(b.clone())
+        );
+        for key in [SENSOR, "absent"] {
+            let target = instance(node.id, key);
+            let error = store
+                .set_round_filter_report(&target, 1, "m1", &a)
+                .unwrap_err();
+            assert_eq!(
+                engine_error(&error),
+                &EngineDocumentError::NotUnsupervisedAgent {
+                    node_id: node.id,
+                    agent_key: key.into()
+                }
+            );
+        }
+        let TestStore {
+            _permit,
+            store,
+            db_dir,
+            backup_dir,
+        } = t;
+        drop(store);
+        let store = Store::new(db_dir.path(), backup_dir.path(), None).unwrap();
+        assert_eq!(
+            store.round_filter_report(&engine, 1, "m1").unwrap(),
+            Some(b)
+        );
+        assert_eq!(
+            store.round_filter_report(&other, 1, "other").unwrap(),
+            Some(a)
+        );
+        let state = store.engine_instance_state(&engine).unwrap();
+        assert_eq!(state.applied, applied);
+        assert_eq!(state.pending, pending);
+        assert_eq!(store.round_filter_report(&engine, 1, "m2").unwrap(), None);
+    }
+
+    #[test]
+    fn round_filter_reports_restore_with_scopes_and_statuses() {
+        use review_protocol::types::EndpointScope;
+
+        let (mut t, node) = setup_node();
+        let engine = instance(node.id, ENGINE);
+        let changed = with_config(&node, ENGINE, "x = 1");
+        let applied = refs(vec![endpoint_detector(1, "m1", EndpointScope::All)]);
+        let node = update_with_documents(
+            &t.store,
+            &node,
+            &changed,
+            &[write(ENGINE, Some(applied.clone()), None)],
+        )
+        .unwrap();
+        t.store.set_detector_status(&engine, 1, &status(1)).unwrap();
+        let report = round_report(10_000_000_000, 7);
+        t.store
+            .set_round_filter_report(&engine, 1, "m1", &report)
+            .unwrap();
+        t.store.backup(true, 1).unwrap();
+        let changed = without_agent(&node, ENGINE);
+        update(&t.store, &node, &changed).unwrap();
+        assert_eq!(t.store.round_filter_report(&engine, 1, "m1").unwrap(), None);
+        t.store.restore_from_latest_backup().unwrap();
+        assert_eq!(
+            t.store.engine_instance_state(&engine).unwrap().applied,
+            applied
+        );
+        assert_eq!(
+            t.store.round_filter_report(&engine, 1, "m1").unwrap(),
+            Some(report)
+        );
+        let mut next = status(2);
+        next.finished_at = Some(at(11));
+        t.store.set_detector_status(&engine, 1, &next).unwrap();
+        assert_eq!(t.store.round_filter_report(&engine, 1, "m1").unwrap(), None);
+        let report = round_report(11_000_000_000, 8);
+        t.store
+            .set_round_filter_report(&engine, 1, "m1", &report)
+            .unwrap();
+        assert_eq!(
+            t.store.round_filter_report(&engine, 1, "m1").unwrap(),
+            Some(report)
+        );
+    }
+
+    #[test]
+    fn round_filter_reports_isolate_detectors_and_refuse_replacement_without_status() {
+        use review_protocol::types::EndpointScope;
+        let (t, node) = setup_node();
+        let store = &t.store;
+        let engine = instance(node.id, ENGINE);
+        let changed = with_config(&node, ENGINE, "x = 1");
+        update_with_documents(
+            store,
+            &node,
+            &changed,
+            &[write(
+                ENGINE,
+                Some(refs(vec![
+                    endpoint_detector(1, "m1", EndpointScope::All),
+                    endpoint_detector(2, "m2", EndpointScope::Groups(vec!["group".into()])),
+                ])),
+                None,
+            )],
+        )
+        .unwrap();
+        let mut status = status(1);
+        status.finished_at = Some(jiff::Timestamp::from_nanosecond(-123).unwrap());
+        for (id, model) in [(1, "m1"), (2, "m2")] {
+            store.set_detector_status(&engine, id, &status).unwrap();
+            store
+                .set_round_filter_report(
+                    &engine,
+                    id,
+                    model,
+                    &round_report(-123, u32::try_from(id).unwrap()),
+                )
+                .unwrap();
+        }
+        assert_eq!(
+            store.round_filter_report(&engine, 1, "m1").unwrap(),
+            Some(round_report(-123, 1))
+        );
+        assert_eq!(
+            store.round_filter_report(&engine, 2, "m2").unwrap(),
+            Some(round_report(-123, 2))
+        );
+        refused_round(store, &engine, 1, "m2", &round_report(-123, 3));
+        refused_round(store, &engine, 2, "m1", &round_report(-123, 3));
+        refused_round(store, &engine, 1, "m1", &round_report(-122, 3));
+        // Exercise the missing-status replacement check with a retained report.
+        let instances = store.states.engine_instances();
+        let txn = store.states.db().transaction();
+        let key = tables::engine_instance_key(engine.node_id, &engine.agent_key);
+        let mut row = instances.get_for_update(&txn, &key).unwrap().unwrap();
+        row.statuses.remove(&1);
+        instances.put(&txn, &key, &row).unwrap();
+        txn.commit().unwrap();
+        refused_round(store, &engine, 1, "m1", &round_report(-123, 3));
+        assert_eq!(store.round_filter_report(&engine, 1, "m1").unwrap(), None);
+        assert_eq!(
+            store.round_filter_report(&engine, 2, "m2").unwrap(),
+            Some(round_report(-123, 2))
+        );
+        store.set_detector_status(&engine, 1, &status).unwrap();
+        assert_eq!(
+            store.round_filter_report(&engine, 1, "m1").unwrap(),
+            Some(round_report(-123, 1))
+        );
+    }
+
+    #[test]
+    // Keep the complete contract scenario together.
+    #[allow(clippy::too_many_lines)]
+    fn round_filter_report_lifecycle_keeps_only_named_detector_models() {
+        use review_protocol::types::EndpointScope;
+        let (t, node) = setup_node();
+        let store = &t.store;
+        let engine = instance(node.id, ENGINE);
+        let host = endpoint_detector(1, "m1", EndpointScope::Groups(vec!["applied".into()]));
+        let changed = with_config(&with_draft(&node, ENGINE, "x = 1"), ENGINE, "x = 1");
+        let node = update_with_documents(
+            store,
+            &node,
+            &changed,
+            &[write(
+                ENGINE,
+                Some(refs(vec![host.clone()])),
+                Some(refs(vec![host.clone()])),
+            )],
+        )
+        .unwrap();
+        store.set_detector_status(&engine, 1, &status(1)).unwrap();
+        let report = round_report(10_000_000_000, 1);
+        store
+            .set_round_filter_report(&engine, 1, "m1", &report)
+            .unwrap();
+        let changed = with_config(&node, ENGINE, "x = 2");
+        let node = update_with_documents(
+            store,
+            &node,
+            &changed,
+            &[write(ENGINE, Some(refs(vec![])), None)],
+        )
+        .unwrap();
+        // Pending alone retains the bytes, but permits neither reading nor replacement.
+        assert_eq!(store.round_filter_report(&engine, 1, "m1").unwrap(), None);
+        refused_round(store, &engine, 1, "m1", &report);
+        assert_eq!(
+            store
+                .states
+                .engine_instances()
+                .get(&engine)
+                .unwrap()
+                .unwrap()
+                .round_filter_reports
+                .len(),
+            1
+        );
+        let changed = with_config(&node, ENGINE, "x = 3");
+        let node = update_with_documents(
+            store,
+            &node,
+            &changed,
+            &[write(ENGINE, Some(refs(vec![host])), None)],
+        )
+        .unwrap();
+        assert_eq!(
+            store.round_filter_report(&engine, 1, "m1").unwrap(),
+            Some(report.clone())
+        );
+        // Reusing an id for another model drops the old model's report while retaining status.
+        let replacement = endpoint_detector(1, "m2", EndpointScope::All);
+        let changed = with_draft(&with_config(&node, ENGINE, "x = 4"), ENGINE, "x = 4");
+        let node = update_with_documents(
+            store,
+            &node,
+            &changed,
+            &[write(
+                ENGINE,
+                Some(refs(vec![replacement.clone()])),
+                Some(refs(vec![replacement])),
+            )],
+        )
+        .unwrap();
+        let row = store
+            .states
+            .engine_instances()
+            .get(&engine)
+            .unwrap()
+            .unwrap();
+        assert!(row.round_filter_reports.is_empty());
+        assert!(row.statuses.contains_key(&1));
+        store
+            .set_round_filter_report(&engine, 1, "m2", &report)
+            .unwrap();
+        let network = detector(1, "m2", None);
+        let changed = with_config(&node, ENGINE, "x = 5");
+        let node = update_with_documents(
+            store,
+            &node,
+            &changed,
+            &[write(ENGINE, Some(refs(vec![network])), None)],
+        )
+        .unwrap();
+        refused_round(store, &engine, 1, "m2", &report);
+        assert_eq!(store.round_filter_report(&engine, 1, "m2").unwrap(), None);
+        let changed = without_agent(&node, ENGINE);
+        update(store, &node, &changed).unwrap();
+        assert!(
+            store
+                .states
+                .engine_instances()
+                .get(&engine)
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(store.round_filter_report(&engine, 1, "m2").unwrap(), None);
     }
 
     #[test]
@@ -770,6 +1237,7 @@ mod tests {
             | EngineDocumentError::RequiresEngineDocuments { agent_key }
             | EngineDocumentError::DuplicateDetectorId { agent_key, .. }
             | EngineDocumentError::UnknownDetector { agent_key, .. }
+            | EngineDocumentError::RoundFilterReportRefused { agent_key, .. }
             | EngineDocumentError::DetectorIdRetired { agent_key, .. } => agent_key.as_str(),
         }));
         assert_eq!(stored_node(store, node.id), *node);

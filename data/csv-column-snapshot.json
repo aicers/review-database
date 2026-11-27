@@ -1,6 +1,6 @@
 {
-  "giganto": "0.36.0",
-  "gigantoClient": "0.29.1",
+  "giganto": "0.38.0",
+  "gigantoClient": "0.31.0",
   "kinds": {
     "http": [
       "time",
@@ -36,6 +36,49 @@
       "mime_types",
       "body",
       "state"
+    ],
+    "process_create": [
+      "time",
+      "source",
+      "agent_name",
+      "agent_id",
+      "process_guid",
+      "process_id",
+      "image",
+      "file_version",
+      "description",
+      "product",
+      "company",
+      "original_file_name",
+      "command_line",
+      "current_directory",
+      "user",
+      "logon_guid",
+      "logon_id",
+      "terminal_session_id",
+      "integrity_level",
+      "hashes",
+      "parent_process_guid",
+      "parent_process_id",
+      "parent_image",
+      "parent_command_line",
+      "parent_user",
+      "endpoint_id",
+      "stream",
+      "seq",
+      "event_time",
+      "collected_at",
+      "clock_offset",
+      "hostname",
+      "ips",
+      "default_route_ip",
+      "net_state_source",
+      "os_family",
+      "os_version",
+      "collection_mode",
+      "process_key",
+      "schema",
+      "logon_id_full"
     ]
   }
 }

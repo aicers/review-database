@@ -9,7 +9,7 @@
 //! every value, within the key table of its method. The key table and the
 //! defaults are code, like the catalogs; nothing about them is stored.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use jiff::{SignedDuration, Timestamp};
 use num_traits::ToPrimitive;
@@ -50,6 +50,10 @@ pub enum DefinitionKeyStatus {
     /// The key must be present in a definition of a catalog type, and must
     /// be absent from a custom definition.
     RequiredForCatalogType,
+    /// Required for a host kind and rejected for every other kind.
+    RequiredForHostKind,
+    /// Required for a non-host kind and rejected for host kinds.
+    RequiredForNonHostKind,
     /// The key may be absent, with the meaning the row states.
     AbsentMeans,
     /// The method does not use the key; a present key is refused.
@@ -150,7 +154,13 @@ const MULTIDIMENSION_KEYS: &[DefinitionKey] = &[
     required("raw_event_kind"),
     rejected("log_kind"),
     required("method"),
-    required("sources"),
+    row("sources", DefinitionKeyStatus::RequiredForNonHostKind, None),
+    row(
+        "endpoint_scope",
+        DefinitionKeyStatus::RequiredForHostKind,
+        None,
+    ),
+    row("os_family", DefinitionKeyStatus::RequiredForHostKind, None),
     required("window_start"),
     required("window_end"),
     required("data_store"),
@@ -204,6 +214,8 @@ const PREFIX_KEYS: &[DefinitionKey] = &[
     required("log_kind"),
     required("method"),
     required("sources"),
+    rejected("endpoint_scope"),
+    rejected("os_family"),
     required("window_start"),
     required("window_end"),
     required("data_store"),
@@ -233,6 +245,8 @@ const TIMESERIES_KEYS: &[DefinitionKey] = &[
     rejected("log_kind"),
     required("method"),
     required("sources"),
+    rejected("endpoint_scope"),
+    rejected("os_family"),
     required("window_start"),
     required("window_end"),
     required("data_store"),
@@ -430,6 +444,15 @@ fn multidimension_type_of(raw_event_kind: &str) -> Option<&'static ClusteringMod
 ///
 /// A value of the wrong TOML type is `InvalidDocument` within the rule that
 /// reads it.
+///
+/// Host multidimension definitions require `endpoint_scope` and `os_family`
+/// and reject `sources`; other definitions require `sources` and reject both
+/// host keys. A catalog definition takes its kind and OS from the recipe;
+/// a custom multidimension definition takes its kind from the catalog entry
+/// matching its `raw_event_kind` string and selects `windows` or `linux`.
+/// An unrecognized custom kind is non-host for these key rules, then refused
+/// by the existing event-kind rule. Malformed scopes and invalid custom OS
+/// values are `InvalidDocument`; a catalog OS mismatch is `FieldFixed`.
 pub fn check_training_definition(
     definition: &str,
 ) -> Result<ClusteringModelTypeRef, TrainingDefinitionRefusal> {
@@ -498,6 +521,7 @@ struct CatalogType {
     id: &'static str,
     version: u32,
     method: ModelMethod,
+    raw_event_kind: review_protocol::types::RawEventKind,
     fixed: &'static [FixedValue],
     operator_values: &'static [TypeOperatorValue],
 }
@@ -522,6 +546,7 @@ impl From<&'static ClusteringModelType> for CatalogType {
             id: t.id,
             version: t.version,
             method: t.method,
+            raw_event_kind: t.raw_event_kind,
             fixed: t.fixed,
             operator_values: t.operator_values,
         }
@@ -534,6 +559,7 @@ impl From<&'static TimeSeriesType> for CatalogType {
             id: t.id,
             version: t.version,
             method: t.method,
+            raw_event_kind: t.raw_event_kind,
             fixed: t.fixed,
             operator_values: t.operator_values,
         }
@@ -942,6 +968,7 @@ fn check_catalog_type(
         }
     }
 
+    let host = t.raw_event_kind.is_host_kind();
     for (key, value) in document {
         let allowed = key == TYPE.key
             || key == TYPE_VERSION.key
@@ -949,6 +976,12 @@ fn check_catalog_type(
             || key == RAW_EVENT_KIND
             || t.fixed_value(key).is_some()
             || t.operator_value(key).is_some();
+        let allowed = allowed
+            && if host {
+                key != "sources"
+            } else {
+                !matches!(key.as_str(), "endpoint_scope" | "os_family")
+            };
         if !allowed {
             return Err(refusal(
                 FieldNotAllowed,
@@ -1029,6 +1062,22 @@ fn check_fixed_table(
 /// Returns whether `value` is of `value_type`.
 fn is_of_type(value_type: DefinitionValueType, value: &Value) -> bool {
     match value_type {
+        DefinitionValueType::EndpointScope => match value {
+            Value::String(scope) => scope == "all",
+            Value::Table(table) if table.len() == 1 => table
+                .get("groups")
+                .and_then(Value::as_array)
+                .is_some_and(|groups| {
+                    let mut ids = HashSet::new();
+                    !groups.is_empty()
+                        && groups.iter().all(|group| {
+                            group
+                                .as_str()
+                                .is_some_and(|id| !id.is_empty() && ids.insert(id))
+                        })
+                }),
+            _ => false,
+        },
         DefinitionValueType::String => value.is_str(),
         DefinitionValueType::Timestamp => timestamp(value).is_some(),
         DefinitionValueType::Integer => value.is_integer(),
@@ -1240,13 +1289,20 @@ fn check_custom_keys(
 ) -> Result<(), TrainingDefinitionRefusal> {
     use TrainingDefinitionRefusalCode::{FieldNotAllowed, InvalidDocument};
 
+    let host = method == ModelMethod::Multidimension
+        && document
+            .get("raw_event_kind")
+            .and_then(Value::as_str)
+            .and_then(multidimension_type_of)
+            .is_some_and(|t| t.raw_event_kind.is_host_kind());
     let rows = definition_keys(method);
     for (key, value) in document {
         if top_level_row(rows, key).is_some_and(|r| {
             matches!(
                 r.status,
                 DefinitionKeyStatus::Rejected | DefinitionKeyStatus::RequiredForCatalogType
-            )
+            ) || (r.status == DefinitionKeyStatus::RequiredForHostKind && !host)
+                || (r.status == DefinitionKeyStatus::RequiredForNonHostKind && host)
         }) {
             return Err(refusal(
                 FieldNotAllowed,
@@ -1260,7 +1316,9 @@ fn check_custom_keys(
         }
     }
     for r in rows {
-        if r.status == DefinitionKeyStatus::Required
+        if (r.status == DefinitionKeyStatus::Required
+            || (r.status == DefinitionKeyStatus::RequiredForHostKind && host)
+            || (r.status == DefinitionKeyStatus::RequiredForNonHostKind && !host))
             && !r.key.contains('.')
             && !document.contains_key(r.key)
         {
@@ -1280,6 +1338,8 @@ fn check_custom_keys(
     for (key, value_type) in [
         ("raw_event_kind", DefinitionValueType::String),
         ("log_kind", DefinitionValueType::String),
+        ("endpoint_scope", DefinitionValueType::EndpointScope),
+        ("os_family", DefinitionValueType::String),
         ("batch_size", DefinitionValueType::Integer),
         (CSV, DefinitionValueType::Table),
     ] {
@@ -1293,6 +1353,16 @@ fn check_custom_keys(
                 format!("{key} is not a {value_type:?}"),
             ));
         }
+    }
+    if let Some(Value::String(os)) = document.get("os_family")
+        && !matches!(os.as_str(), "windows" | "linux")
+    {
+        return Err(refusal(
+            InvalidDocument,
+            "os_family",
+            os.as_str(),
+            "os_family must be windows or linux",
+        ));
     }
     if let Some(Value::Table(csv)) = document.get(CSV) {
         for r in rows {
@@ -1547,7 +1617,10 @@ mod tests {
     #[test]
     #[allow(clippy::too_many_lines)]
     fn key_table_matches_the_contract() {
-        use DefinitionKeyStatus::{AbsentMeans, Rejected, Required, RequiredForCatalogType};
+        use DefinitionKeyStatus::{
+            AbsentMeans, Rejected, Required, RequiredForCatalogType, RequiredForHostKind,
+            RequiredForNonHostKind,
+        };
 
         let rows = |method| -> Vec<(&str, DefinitionKeyStatus)> {
             definition_keys(method)
@@ -1563,6 +1636,8 @@ mod tests {
         let common_middle = [
             ("method", Required),
             ("sources", Required),
+            ("endpoint_scope", Rejected),
+            ("os_family", Rejected),
             ("window_start", Required),
             ("window_end", Required),
             ("data_store", Required),
@@ -1587,7 +1662,16 @@ mod tests {
 
         let mut multidimension = common_head.to_vec();
         multidimension.push(("log_kind", Rejected));
-        multidimension.extend(common_middle);
+        multidimension.extend(common_middle.map(|(key, status)| {
+            (
+                key,
+                match key {
+                    "sources" => RequiredForNonHostKind,
+                    "endpoint_scope" | "os_family" => RequiredForHostKind,
+                    _ => status,
+                },
+            )
+        }));
         multidimension.extend([
             ("algorithm", Required),
             ("eps", Required),
@@ -1791,9 +1875,134 @@ mod tests {
         let http = custom_csv_default("http").unwrap();
         assert_eq!(http.len(), 6);
         assert!(http.iter().any(|f| f.key == "slot_sizes"));
-        for kind in ["log", "conn", "dns", "process_create", "", "HTTP"] {
+        for kind in ["log", "conn", "dns", "", "HTTP"] {
             assert_eq!(custom_csv_default(kind), None, "{kind}");
         }
+    }
+
+    fn host_definition(os: &str, custom: bool) -> Table {
+        let id = format!("process_command_line_{os}");
+        let t = clustering_model_type(&id).unwrap();
+        let mut table = operator_values();
+        table.remove("sources");
+        table.insert("endpoint_scope".into(), v(r#""all""#));
+        table.extend(toml_table(t.fixed));
+        table.insert(
+            "type".into(),
+            Value::String(if custom { "custom" } else { t.id }.into()),
+        );
+        if !custom {
+            table.insert("type_version".into(), v("1"));
+        }
+        table
+    }
+
+    #[test]
+    // Keep the complete contract scenario together.
+    #[allow(clippy::too_many_lines)]
+    fn host_definition_contract() {
+        for os in ["windows", "linux"] {
+            let t = clustering_model_type(&format!("process_command_line_{os}")).unwrap();
+            assert_eq!(
+                custom_csv_default("process_create").map(DefinitionValue::Table),
+                t.fixed_value("csv").copied()
+            );
+            for custom in [false, true] {
+                let table = host_definition(os, custom);
+                for scope in [
+                    r#""all""#,
+                    r#"{ groups = ["a"] }"#,
+                    r#"{ groups = ["b", "a"] }"#,
+                ] {
+                    assert!(check(&with(table.clone(), "endpoint_scope", v(scope))).is_ok());
+                }
+                for key in ["endpoint_scope", "os_family"] {
+                    assert_eq!(
+                        refused(&without(table.clone(), key)),
+                        r(FieldNotAllowed, key, "")
+                    );
+                    let wrong = v("1");
+                    assert_eq!(
+                        refused(&with(table.clone(), key, wrong.clone())),
+                        r(InvalidDocument, key, &value_text(&wrong))
+                    );
+                }
+                assert_eq!(
+                    refused(&with(table.clone(), "sources", v(r#"["sensor"]"#))),
+                    r(FieldNotAllowed, "sources", r#"["sensor"]"#)
+                );
+                for scope in [
+                    r#""none""#,
+                    "[]",
+                    "{}",
+                    "1",
+                    "true",
+                    "{ groups = [] }",
+                    r#"{ groups = ["a", "a"] }"#,
+                    r#"{ groups = [""] }"#,
+                    "{ groups = [1] }",
+                    r#"{ groups = "a" }"#,
+                    r#"{ groups = ["a"], extra = 1 }"#,
+                    r#"{ other = ["a"] }"#,
+                ] {
+                    let value = v(scope);
+                    assert_eq!(
+                        refused(&with(table.clone(), "endpoint_scope", value.clone())),
+                        r(InvalidDocument, "endpoint_scope", &value_text(&value))
+                    );
+                }
+                for other in ["windows", "linux", "macos", ""] {
+                    let changed = with(table.clone(), "os_family", Value::String(other.into()));
+                    if other == os || (custom && matches!(other, "windows" | "linux")) {
+                        assert!(check(&changed).is_ok());
+                    } else {
+                        assert_eq!(
+                            refused(&changed),
+                            r(
+                                if custom { InvalidDocument } else { FieldFixed },
+                                "os_family",
+                                other
+                            )
+                        );
+                    }
+                }
+            }
+        }
+        for method in METHODS {
+            for key in ["endpoint_scope", "os_family"] {
+                assert_eq!(
+                    refused(&with(custom(method), key, v(r#""all""#))),
+                    r(FieldNotAllowed, key, "all")
+                );
+                let row = definition_keys(method)
+                    .iter()
+                    .find(|r| r.key == key)
+                    .unwrap();
+                assert_eq!(row.note, None);
+                assert!(!custom_defaults(method).iter().any(|v| v.key == key));
+            }
+        }
+        for key in ["endpoint_scope", "os_family"] {
+            assert_eq!(
+                refused(&with(http_url(), key, v(r#""all""#))),
+                r(FieldNotAllowed, key, "all")
+            );
+        }
+        for kind in [None, Some(v("1")), Some(v(r#""unknown""#))] {
+            let mut table = custom(ModelMethod::Multidimension);
+            table.remove("raw_event_kind");
+            if let Some(kind) = kind {
+                table.insert("raw_event_kind".into(), kind);
+            }
+            table.insert("endpoint_scope".into(), v(r#""all""#));
+            assert_eq!(refused(&table), r(FieldNotAllowed, "endpoint_scope", "all"));
+        }
+        let mut prefix = custom(ModelMethod::Prefix);
+        prefix.insert("raw_event_kind".into(), v(r#""process_create""#));
+        assert_eq!(
+            refused(&prefix),
+            r(EventKindNotAllowed, "raw_event_kind", "process_create")
+        );
     }
 
     #[test]
@@ -2382,7 +2591,9 @@ mod tests {
         for method in METHODS {
             for k in definition_keys(method) {
                 match k.status {
-                    DefinitionKeyStatus::Required if !["type", "method"].contains(&k.key) => {
+                    DefinitionKeyStatus::Required | DefinitionKeyStatus::RequiredForNonHostKind
+                        if !["type", "method"].contains(&k.key) =>
+                    {
                         let mut table = custom(method);
                         if let Some(part) = k.key.strip_prefix("csv.") {
                             csv_mut(&mut table).remove(part);
@@ -2396,7 +2607,9 @@ mod tests {
                             k.key
                         );
                     }
-                    DefinitionKeyStatus::Rejected | DefinitionKeyStatus::RequiredForCatalogType => {
+                    DefinitionKeyStatus::Rejected
+                    | DefinitionKeyStatus::RequiredForCatalogType
+                    | DefinitionKeyStatus::RequiredForHostKind => {
                         let table = with(custom(method), k.key, v("1"));
                         assert_eq!(
                             refused(&table),

@@ -2085,6 +2085,7 @@ mod test {
         EngineDetectorRef {
             id,
             model: model.to_string(),
+            endpoint_scope: None,
             sources: vec![source.to_string()],
             indicator: None,
         }

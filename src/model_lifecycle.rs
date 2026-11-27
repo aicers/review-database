@@ -2514,6 +2514,7 @@ mod tests {
                 detectors: vec![EngineDetectorRef {
                     id: 7,
                     model: "beta".to_string(),
+                    endpoint_scope: None,
                     sources: Vec::new(),
                     indicator: None,
                 }],

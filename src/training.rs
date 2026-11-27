@@ -31,6 +31,7 @@ use std::{collections::BTreeSet, fmt};
 
 use anyhow::{Context, Result, anyhow, bail};
 use jiff::Timestamp;
+use review_protocol::types::TrainingFilterReport;
 use rocksdb::{OptimisticTransactionDB, Transaction};
 use serde::{Deserialize, Serialize};
 
@@ -154,6 +155,8 @@ pub enum TrainingError {
     ModelNotFound { name: String },
     /// No run has the id.
     RunNotFound { run_id: RunId },
+    /// The run clones a model rather than training one.
+    NotTrainingRun { run_id: RunId },
     /// No model indicator has the name.
     IndicatorNotFound { indicator: String },
     /// The training definition or the clone source model has no instance.
@@ -232,6 +235,7 @@ impl fmt::Display for TrainingError {
     #[allow(clippy::too_many_lines)]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::NotTrainingRun { run_id } => write!(f, "run {run_id} is not a training run"),
             Self::NameTaken { name } => {
                 write!(
                     f,
@@ -765,6 +769,38 @@ impl Store {
                 }
             }
         })
+    }
+
+    /// Stores the filter report of the caller's active training run verbatim.
+    ///
+    /// # Errors
+    ///
+    /// Returns `RunNotFound`, `RunOfAnotherInstance`, `RunNotActive`, then
+    /// `NotTrainingRun` in that order, or a database error, changing nothing.
+    pub fn set_training_filter_report(
+        &self,
+        run_id: RunId,
+        caller: &ModelInstance,
+        report: &TrainingFilterReport,
+    ) -> Result<()> {
+        self.write_training(|txn| {
+            let run = self.active_run_of_caller(txn, run_id, caller)?;
+            if !matches!(run.kind, RunKind::Train) {
+                return Err(TrainingError::NotTrainingRun { run_id }.into());
+            }
+            self.states
+                .model_runs()
+                .set_filter_report(txn, run_id, report)
+        })
+    }
+
+    /// Returns the run's filter report, independently of its state or model.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if reading the database fails.
+    pub fn training_filter_report(&self, run_id: RunId) -> Result<Option<TrainingFilterReport>> {
+        self.states.model_runs().filter_report(run_id)
     }
 
     /// Ends an active run as failed with `reason`, for a failure of the
@@ -1717,6 +1753,7 @@ mod tests {
         [
             tables::TRAINING_DEFINITIONS,
             tables::MODEL_RUNS,
+            tables::TRAINING_FILTER_REPORTS,
             tables::META,
             tables::MODELS,
             tables::SCORES,
@@ -1763,6 +1800,354 @@ mod tests {
             }
             Ok(())
         })
+    }
+
+    fn filter_report(n: u32) -> TrainingFilterReport {
+        use review_protocol::types::{DayFilterCounts, RecordFilterCounts};
+        TrainingFilterReport {
+            endpoint_sources: n,
+            days: vec![
+                DayFilterCounts {
+                    start: i64::MAX,
+                    counts: RecordFilterCounts {
+                        not_extended: u64::MAX,
+                        other_os: u64::from(n),
+                    },
+                },
+                DayFilterCounts {
+                    start: i64::MIN,
+                    counts: RecordFilterCounts {
+                        not_extended: 0,
+                        other_os: 0,
+                    },
+                },
+            ],
+        }
+    }
+
+    #[test]
+    // Keep the complete contract scenario together.
+    #[allow(clippy::too_many_lines)]
+    fn training_filter_reports_persist_replace_and_refuse_without_changes() {
+        let f = setup();
+        let store = f.store();
+        let engine = instance(f.node, ENGINE);
+        let other = instance(f.node, OTHER_ENGINE);
+        store
+            .insert_training_definition(new_definition("d", engine.clone()))
+            .unwrap();
+        let id = store.start_training_run("d").unwrap().run.id;
+        assert_eq!(store.training_filter_report(id).unwrap(), None);
+        assert_eq!(store.training_filter_report(999).unwrap(), None);
+        store
+            .set_training_filter_report(id, &engine, &filter_report(1))
+            .unwrap();
+        assert_eq!(
+            store.training_filter_report(id).unwrap(),
+            Some(filter_report(1))
+        );
+        for (run_id, caller, expected) in [
+            (999, &other, TrainingError::RunNotFound { run_id: 999 }),
+            (
+                id,
+                &other,
+                TrainingError::RunOfAnotherInstance { run_id: id },
+            ),
+        ] {
+            assert_eq!(
+                refusal(store, |s| s.set_training_filter_report(
+                    run_id,
+                    caller,
+                    &filter_report(9)
+                )),
+                expected
+            );
+        }
+        store
+            .report_run(id, &engine, ReportedRunState::Started, None)
+            .unwrap();
+        store
+            .set_training_filter_report(id, &engine, &filter_report(2))
+            .unwrap();
+        assert!(store.model_map().load_model_by_name("d").is_err());
+        store.fail_run(id, "failed").unwrap();
+        assert_eq!(
+            refusal(store, |s| s.set_training_filter_report(
+                id,
+                &other,
+                &filter_report(9)
+            )),
+            TrainingError::RunOfAnotherInstance { run_id: id }
+        );
+        assert_eq!(
+            refusal(store, |s| s.set_training_filter_report(
+                id,
+                &engine,
+                &filter_report(9)
+            )),
+            TrainingError::RunNotActive {
+                run_id: id,
+                state: RunState::Failed
+            }
+        );
+        let second = store.start_training_run("d").unwrap().run.id;
+        let empty = TrainingFilterReport {
+            endpoint_sources: 0,
+            days: Vec::new(),
+        };
+        store
+            .set_training_filter_report(second, &engine, &empty)
+            .unwrap();
+        store
+            .report_run(second, &engine, ReportedRunState::Cancelled, None)
+            .unwrap();
+        assert_eq!(
+            store.training_filter_report(id).unwrap(),
+            Some(filter_report(2))
+        );
+
+        // Reports cover the entire u32 key space and are independent of models.
+        let mut high = run(store, second);
+        high.id = RunId::MAX;
+        high.state = RunState::Requested;
+        put_run(store, &high);
+        store
+            .set_training_filter_report(high.id, &engine, &filter_report(u32::MAX))
+            .unwrap();
+        let Fixture {
+            t:
+                TestStore {
+                    _permit,
+                    store,
+                    db_dir,
+                    backup_dir,
+                },
+            ..
+        } = f;
+        drop(store);
+        let store = Store::new(db_dir.path(), backup_dir.path(), None).unwrap();
+        assert_eq!(
+            store.training_filter_report(id).unwrap(),
+            Some(filter_report(2))
+        );
+        assert_eq!(store.training_filter_report(second).unwrap(), Some(empty));
+        assert_eq!(
+            store.training_filter_report(RunId::MAX).unwrap(),
+            Some(filter_report(u32::MAX))
+        );
+        assert_eq!(store.model_run(RunId::MAX).unwrap(), Some(high));
+    }
+
+    #[test]
+    fn a_training_filter_report_racing_run_removal_or_completion_is_refused() {
+        for remove in [false, true] {
+            let f = setup();
+            let store = f.store();
+            let engine = instance(f.node, ENGINE);
+            store
+                .insert_training_definition(new_definition("d", engine.clone()))
+                .unwrap();
+            let id = store.start_training_run("d").unwrap().run.id;
+            store
+                .set_training_filter_report(id, &engine, &filter_report(1))
+                .unwrap();
+            store.set_training_hook(Some(once(move |store| {
+                store
+                    .fail_run(id, "finished before the report committed")
+                    .unwrap();
+                if remove {
+                    store.remove_training_definition("d").unwrap();
+                }
+            })));
+            let error = store
+                .set_training_filter_report(id, &engine, &filter_report(2))
+                .unwrap_err();
+            store.set_training_hook(None);
+            let expected = if remove {
+                TrainingError::RunNotFound { run_id: id }
+            } else {
+                TrainingError::RunNotActive {
+                    run_id: id,
+                    state: RunState::Failed,
+                }
+            };
+            assert_eq!(error.downcast_ref::<TrainingError>(), Some(&expected));
+            assert_eq!(
+                store.training_filter_report(id).unwrap(),
+                if remove { None } else { Some(filter_report(1)) }
+            );
+        }
+    }
+
+    #[test]
+    fn training_filter_reports_restore_with_their_runs() {
+        let f = setup();
+        let mut store = f.t.store;
+        let engine = instance(f.node, ENGINE);
+        store
+            .insert_training_definition(new_definition("d", engine.clone()))
+            .unwrap();
+        let id = store.start_training_run("d").unwrap().run.id;
+        store
+            .set_training_filter_report(id, &engine, &filter_report(1))
+            .unwrap();
+        store.backup(true, 1).unwrap();
+        store
+            .set_training_filter_report(id, &engine, &filter_report(2))
+            .unwrap();
+        store.fail_run(id, "remove after backup").unwrap();
+        store.remove_training_definition("d").unwrap();
+        assert_eq!(store.training_filter_report(id).unwrap(), None);
+        store.restore_from_latest_backup().unwrap();
+        assert_eq!(run(&store, id).state, RunState::Requested);
+        assert_eq!(
+            store.training_filter_report(id).unwrap(),
+            Some(filter_report(1))
+        );
+        store
+            .set_training_filter_report(id, &engine, &filter_report(3))
+            .unwrap();
+        assert_eq!(
+            store.training_filter_report(id).unwrap(),
+            Some(filter_report(3))
+        );
+    }
+
+    #[test]
+    fn training_filter_reports_are_removed_only_with_their_runs() {
+        let f = setup();
+        let store = f.store();
+        let engine = instance(f.node, ENGINE);
+        let other = instance(f.other_node, ENGINE);
+        let mut keep = new_definition("keep", other.clone());
+        keep.customer_id = OTHER_CUSTOMER;
+        store.insert_training_definition(keep).unwrap();
+        let keep_id = store.start_training_run("keep").unwrap().run.id;
+        store
+            .set_training_filter_report(keep_id, &other, &filter_report(9))
+            .unwrap();
+        store.fail_run(keep_id, "done").unwrap();
+        for (name, remove) in [("definition", 0), ("model", 1), ("customer-model", 2)] {
+            store
+                .insert_training_definition(new_definition(name, engine.clone()))
+                .unwrap();
+            let first = store.start_training_run(name).unwrap().run.id;
+            store
+                .set_training_filter_report(first, &engine, &filter_report(1))
+                .unwrap();
+            store.fail_run(first, "retry").unwrap();
+            let second = store.start_training_run(name).unwrap().run.id;
+            store
+                .set_training_filter_report(second, &engine, &filter_report(2))
+                .unwrap();
+            if remove == 0 {
+                store.fail_run(second, "done").unwrap();
+                store.remove_training_definition(name).unwrap();
+            } else {
+                store.complete_run(second, &engine, body(name)).unwrap();
+                assert_eq!(
+                    store.training_filter_report(second).unwrap(),
+                    Some(filter_report(2))
+                );
+                if remove == 1 {
+                    store.delete_model(name).unwrap();
+                } else {
+                    store
+                        .remove_customer_unsupervised_records(CUSTOMER)
+                        .unwrap();
+                }
+            }
+            for id in [first, second] {
+                assert_eq!(store.model_run(id).unwrap(), None);
+                assert_eq!(store.training_filter_report(id).unwrap(), None);
+            }
+            assert_eq!(
+                store.training_filter_report(keep_id).unwrap(),
+                Some(filter_report(9))
+            );
+        }
+    }
+
+    #[test]
+    fn host_definitions_keep_scope_and_os_in_text_with_empty_sources() {
+        let f = setup();
+        let store = f.store();
+        let engine = instance(f.node, ENGINE);
+        let recipe = crate::ClusteringModelTypeRef::Catalog {
+            id: "process_command_line_windows".into(),
+            version: 1,
+        };
+        let text = "endpoint_scope = \"all\"\nos_family = \"windows\"";
+        let mut new = new_definition("host", engine.clone());
+        new.raw_event_kind = "process_create".into();
+        new.clustering_model_type = recipe.clone();
+        new.sources.clear();
+        new.definition = text.into();
+        store.insert_training_definition(new).unwrap();
+        assert_eq!(definition(store, "host").sources, Vec::<String>::new());
+        assert_eq!(definition(store, "host").definition, text);
+        let updated = "endpoint_scope = { groups = [\"group\"] }\nos_family = \"windows\"";
+        let mut update = update_with(updated);
+        update.raw_event_kind = "process_create".into();
+        update.clustering_model_type = recipe.clone();
+        update.sources.clear();
+        store.update_training_definition("host", update).unwrap();
+        let started = store.start_training_run("host").unwrap();
+        assert_eq!(started.definition, updated);
+        let mut upload = body("host");
+        upload.raw_event_kind = "process_create".into();
+        upload.clustering_model_type = recipe;
+        store.complete_run(started.run.id, &engine, upload).unwrap();
+        let record = model(store, "host");
+        assert_eq!(record.trained_definition, updated);
+        assert_eq!(record.trained_sources, Vec::<String>::new());
+    }
+
+    #[test]
+    fn clone_filter_reports_are_refused_and_deleted_with_the_clone() {
+        for state in [ReportedRunState::Failed, ReportedRunState::Cancelled] {
+            let f = setup();
+            let store = f.store();
+            let engine = instance(f.node, ENGINE);
+            store
+                .insert_training_definition(new_definition("source", engine.clone()))
+                .unwrap();
+            let trained = train(store, "source", &engine);
+            let clone = store
+                .start_clone_run(
+                    "source",
+                    trained,
+                    new_definition("target", instance(f.node, OTHER_ENGINE)),
+                )
+                .unwrap();
+            assert_eq!(
+                refusal(store, |s| s.set_training_filter_report(
+                    clone.id,
+                    &engine,
+                    &filter_report(1)
+                )),
+                TrainingError::NotTrainingRun { run_id: clone.id }
+            );
+            // Seed an otherwise impossible report to exercise deletion defensively.
+            let txn = store.states.db().transaction();
+            store
+                .states
+                .model_runs()
+                .set_filter_report(&txn, clone.id, &filter_report(1))
+                .unwrap();
+            txn.commit().unwrap();
+            assert_eq!(
+                refusal(store, |s| s.set_training_filter_report(
+                    clone.id,
+                    &engine,
+                    &filter_report(2)
+                )),
+                TrainingError::NotTrainingRun { run_id: clone.id }
+            );
+            store.report_run(clone.id, &engine, state, None).unwrap();
+            assert_eq!(store.training_filter_report(clone.id).unwrap(), None);
+            assert_eq!(store.model_run(clone.id).unwrap(), None);
+        }
     }
 
     #[test]
