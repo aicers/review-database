@@ -6,7 +6,7 @@ use anyhow::Result;
 use review_protocol::types::DaiObservationKind;
 
 use super::{
-    Dai,
+    Dai, DaiSiteActiveQuery,
     cursor::pair_key,
     customer_key,
     observation::{DaiCounterKind, decode_counter_key},
@@ -27,6 +27,8 @@ pub struct DaiKindReceipt {
 /// The collection state of a site.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DaiSiteCollection {
+    /// The site's active query state and counters.
+    pub active_query: DaiSiteActiveQuery,
     /// The site token.
     pub site: String,
     /// The latest receipt of each of DHCP (O1), Kerberos (O4) and NTLM
@@ -145,6 +147,7 @@ impl Dai<'_> {
                 .flat_map(|(sensor, kinds)| kinds.iter().map(|kind| (sensor.to_string(), *kind)))
                 .collect();
             sites.push(DaiSiteCollection {
+                active_query: self.site_active_query_in(&snapshot, customer, &site.token, now)?,
                 site: site.token.clone(),
                 receipts,
                 quiet_sensors: view.select(&collections, &site.token, now, now).quiet,

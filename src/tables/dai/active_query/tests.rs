@@ -790,9 +790,9 @@ fn intervals_extend_at_48_hours_split_afterwards_and_preserve_transitions() {
         })
         .collect();
     assert!(
-        values.contains(&DaiActiveQueryResult::Value(ActiveQueryValue::Ptr(vec![
-            "A".into()
-        ])))
+        values.contains(&DaiActiveQueryResult::Value(DaiActiveQueryValue::Ptr(
+            vec!["A".into()]
+        )))
     );
 }
 
@@ -822,7 +822,7 @@ fn rounds_store_each_kind_and_count_only_sent_and_value_results() {
     assert_eq!(state.last_query, NOW + 1);
     assert_eq!(
         state.results[0],
-        DaiActiveQueryResult::Value(ActiveQueryValue::Ptr(vec!["MiXeD".into(), "a".into()]))
+        DaiActiveQueryResult::Value(DaiActiveQueryValue::Ptr(vec!["MiXeD".into(), "a".into()]))
     );
     let daily = f.rows(&dai.active_query_daily);
     assert_eq!(daily.len(), 3);
@@ -1343,6 +1343,8 @@ fn concurrent_rounds_for_one_ip_keep_the_newest_state_and_interval() {
 }
 
 #[test]
+// Compare every passive table and read alongside the new display fields.
+#[allow(clippy::too_many_lines)]
 fn active_answers_leave_devices_names_and_resolution_unchanged() {
     let f = Fixture::new();
     f.ready();
@@ -1427,7 +1429,23 @@ fn active_answers_leave_devices_names_and_resolution_unchanged() {
     );
     f.round(NOW + 1, &[round("10.0.0.1", DaiActiveQueryResult::NoName)]);
     assert_eq!(f.rows(&dai.active_answers).len(), 3);
-    assert_eq!(read(), before);
+    let mut after = read();
+    for (answer, original) in after.0.iter_mut().zip(&before.0) {
+        let answer = answer.as_mut().unwrap();
+        let original = original.as_ref().unwrap();
+        if answer.kind == DaiSubjectKind::Ip {
+            assert_eq!(answer.explanation.as_ref().unwrap().active_answers.len(), 1);
+        } else {
+            assert_empty(&answer.explanation.as_ref().unwrap().active_answers);
+        }
+        answer.explanation.as_mut().unwrap().active_answers.clear();
+        assert_eq!(answer, original);
+    }
+    for (row, original) in after.1.rows.iter_mut().zip(&before.1.rows) {
+        assert_eq!(row.active_query.last_query, Some(NOW + 1));
+        row.active_query = original.active_query.clone();
+    }
+    assert_eq!(after, before);
     assert_eq!(passive_rows(), rows_before);
 }
 
@@ -1442,8 +1460,8 @@ fn ip_state(f: &Fixture, address: &str) -> ActiveQueryIp {
     .unwrap()
 }
 
-fn ptr(name: &str) -> DaiActiveQueryResult<ActiveQueryValue> {
-    DaiActiveQueryResult::Value(ActiveQueryValue::Ptr(vec![name.to_owned()]))
+fn ptr(name: &str) -> DaiActiveQueryResult<DaiActiveQueryValue> {
+    DaiActiveQueryResult::Value(DaiActiveQueryValue::Ptr(vec![name.to_owned()]))
 }
 
 fn daily_counts(f: &Fixture) -> Vec<ActiveQueryDaily> {
@@ -1633,3 +1651,5 @@ fn two_customers_never_hold_the_same_private_range_at_once() {
         &same_range,
     );
 }
+
+mod reads;
