@@ -5,6 +5,12 @@ file is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), and
 this project adheres to [Semantic
 Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.75.0](https://github.com/aicers/review-database/compare/0.74.0...0.75.0) - 2026-11-27
+
+### Added
+
+- [**breaking**] add the process command line clustering types, endpoint scopes and record-filter report storage ([#1187](https://github.com/aicers/review-database/pull/1187))
+
 ## [0.74.0](https://github.com/aicers/review-database/compare/0.73.0...0.74.0) - 2026-11-27
 
 ### Added
