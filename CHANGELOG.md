@@ -5,6 +5,17 @@ file is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), and
 this project adheres to [Semantic
 Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.74.0](https://github.com/aicers/review-database/compare/0.73.0...0.74.0) - 2026-11-27
+
+### Added
+
+- [**breaking**] add active query answers to DAI reads ([#1184](https://github.com/aicers/review-database/pull/1184))
+- [**breaking**] add DAI active query settings, target selection and round storage ([#1180](https://github.com/aicers/review-database/pull/1180))
+
+### Fixed
+
+- treat an active query round at the stored query time as stale ([#1183](https://github.com/aicers/review-database/pull/1183))
+
 ## [0.73.0](https://github.com/aicers/review-database/compare/0.72.0...0.73.0) - 2026-11-26
 
 ### Added
