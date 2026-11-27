@@ -38,6 +38,8 @@ pub enum DefinitionValueType {
     Float,
     /// A list of strings.
     StringList,
+    /// Either `"all"` or a table containing a nonempty, duplicate-free string list `groups`.
+    EndpointScope,
     /// A list of integers.
     IntegerList,
     /// A table.
@@ -118,6 +120,15 @@ pub struct TypeOperatorValue {
     pub optional: bool,
 }
 
+/// The raw-event column identifying a source retained without being a feature.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum SourceColumn {
+    /// A source IP address.
+    Ip(&'static str),
+    /// An endpoint identifier.
+    Endpoint(&'static str),
+}
+
 /// A clustering model type: a fixed recipe for training a clustering model on
 /// one raw event kind.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -145,6 +156,8 @@ pub struct ClusteringModelType {
     /// The names of the IP columns, kept in the raw event table but not used
     /// as features.
     pub ip_columns: &'static [&'static str],
+    /// The source identifier retained without being a feature.
+    pub source_column: SourceColumn,
     /// What the type groups and what its limits are, in English.
     pub description_en: &'static str,
     /// What the type groups and what its limits are, in Korean.
@@ -210,7 +223,11 @@ pub(crate) fn raw_event_kinds_of(model: DetectionModel) -> Vec<RawEventKind> {
     kinds
 }
 
-const CATALOG: &[ClusteringModelType] = &[HTTP_URL];
+const CATALOG: &[ClusteringModelType] = &[
+    HTTP_URL,
+    PROCESS_COMMAND_LINE_WINDOWS,
+    PROCESS_COMMAND_LINE_LINUX,
+];
 
 /// The shortest training window of a type.
 pub(crate) const MIN_WINDOW: SignedDuration = SignedDuration::from_hours(7 * 24);
@@ -418,6 +435,7 @@ const HTTP_URL: ClusteringModelType = ClusteringModelType {
     operator_values: HTTP_URL_OPERATOR_VALUES,
     detection_models: &[DetectionModel::LabelDbMatch, DetectionModel::FarOutlier],
     ip_columns: &["orig_addr", "resp_addr"],
+    source_column: SourceColumn::Ip("orig_addr"),
     description_en: "Groups HTTP requests by the shape of their host and URI: requests whose \
         host+uri tokens share the same leading tokens form one cluster. It looks only at the \
         prefix of host and uri; every other column, the request body and the response are \
@@ -430,6 +448,225 @@ const HTTP_URL: ClusteringModelType = ClusteringModelType {
         문자열만 다른 요청은 같은 클러스터에 들어간다. 클라이언트와 서버 IP 주소는 남기지만 \
         특징으로 쓰지 않는다. 학습 기간은 7일 이상이어야 한다.",
 };
+
+const PROCESS_COMMAND_LINE_FORMAT: &[&[FixedValue]] = &[
+    &column("time", "utf8", 0.0),
+    &column("source", "utf8", 0.0),
+    &column("agent_name", "utf8", 0.0),
+    &column("agent_id", "utf8", 0.0),
+    &column("process_guid", "utf8", 0.0),
+    &column("process_id", "int64", 0.0),
+    &column("image", "utf8", 0.0),
+    &column("file_version", "utf8", 0.0),
+    &column("description", "utf8", 0.0),
+    &column("product", "utf8", 0.0),
+    &column("company", "utf8", 0.0),
+    &column("original_file_name", "utf8", 0.0),
+    &column("command_line", "utf8", 1.0),
+    &column("current_directory", "utf8", 0.0),
+    &column("user", "utf8", 0.0),
+    &column("logon_guid", "utf8", 0.0),
+    &column("logon_id", "int64", 0.0),
+    &column("terminal_session_id", "int64", 0.0),
+    &column("integrity_level", "utf8", 0.0),
+    &column("hashes", "utf8", 0.0),
+    &column("parent_process_guid", "utf8", 0.0),
+    &column("parent_process_id", "int64", 0.0),
+    &column("parent_image", "utf8", 0.0),
+    &column("parent_command_line", "utf8", 0.0),
+    &column("parent_user", "utf8", 0.0),
+    &column("endpoint_id", "utf8", 0.0),
+    &column("stream", "utf8", 0.0),
+    &column("seq", "utf8", 0.0),
+    &column("event_time", "utf8", 0.0),
+    &column("collected_at", "utf8", 0.0),
+    &column("clock_offset", "utf8", 0.0),
+    &column("hostname", "utf8", 0.0),
+    &column("ips", "utf8", 0.0),
+    &column("default_route_ip", "utf8", 0.0),
+    &column("net_state_source", "utf8", 0.0),
+    &column("os_family", "utf8", 0.0),
+    &column("os_version", "utf8", 0.0),
+    &column("collection_mode", "utf8", 0.0),
+    &column("process_key", "utf8", 0.0),
+    &column("schema", "utf8", 0.0),
+    &column("logon_id_full", "utf8", 0.0),
+];
+
+const PROCESS_COMMAND_LINE_CSV: &[FixedValue] = &[
+    FixedValue {
+        key: "reader",
+        value: DefinitionValue::Table(&[
+            FixedValue {
+                key: "delimiter",
+                value: DefinitionValue::Integer(9),
+            },
+            FixedValue {
+                key: "quote",
+                value: DefinitionValue::Integer(0),
+            },
+        ]),
+    },
+    FixedValue {
+        key: "format",
+        value: DefinitionValue::TableList(PROCESS_COMMAND_LINE_FORMAT),
+    },
+    FixedValue {
+        key: "prefix_columns",
+        value: DefinitionValue::IntegerList(&[12]),
+    },
+    FixedValue {
+        key: "slot_sizes",
+        value: DefinitionValue::IntegerList(&[60]),
+    },
+    FixedValue {
+        key: "time_column",
+        value: DefinitionValue::Integer(0),
+    },
+    FixedValue {
+        key: "count_columns",
+        value: DefinitionValue::IntegerList(&[0]),
+    },
+];
+
+const fn process_command_line_fixed(os: &'static str) -> [FixedValue; 11] {
+    [
+        FixedValue {
+            key: "raw_event_kind",
+            value: DefinitionValue::String("process_create"),
+        },
+        FixedValue {
+            key: "method",
+            value: DefinitionValue::String("multidimension"),
+        },
+        FixedValue {
+            key: "os_family",
+            value: DefinitionValue::String(os),
+        },
+        FixedValue {
+            key: "csv",
+            value: DefinitionValue::Table(PROCESS_COMMAND_LINE_CSV),
+        },
+        FixedValue {
+            key: "numbers_of_top_n",
+            value: DefinitionValue::IntegerList(&[30; 41]),
+        },
+        FixedValue {
+            key: "precision",
+            value: DefinitionValue::Integer(2),
+        },
+        FixedValue {
+            key: "min_token_length",
+            value: DefinitionValue::Integer(2),
+        },
+        FixedValue {
+            key: "max_data_len",
+            value: DefinitionValue::Integer(256),
+        },
+        FixedValue {
+            key: "long_pattern_len",
+            value: DefinitionValue::Integer(16000),
+        },
+        FixedValue {
+            key: "algorithm",
+            value: DefinitionValue::String("dbscan"),
+        },
+        FixedValue {
+            key: "eps",
+            value: DefinitionValue::Float(5.0),
+        },
+    ]
+}
+
+const PROCESS_COMMAND_LINE_OPERATOR_VALUES: &[TypeOperatorValue] = &[
+    TypeOperatorValue {
+        name: "endpoint_scope",
+        value_type: DefinitionValueType::EndpointScope,
+        range: None,
+        default: Some(DefinitionValue::String("all")),
+        optional: false,
+    },
+    TypeOperatorValue {
+        name: "window_start",
+        value_type: DefinitionValueType::Timestamp,
+        range: Some(DefinitionValueRange::Window { min: MIN_WINDOW }),
+        default: None,
+        optional: false,
+    },
+    TypeOperatorValue {
+        name: "window_end",
+        value_type: DefinitionValueType::Timestamp,
+        range: Some(DefinitionValueRange::Window { min: MIN_WINDOW }),
+        default: None,
+        optional: false,
+    },
+    TypeOperatorValue {
+        name: "batch_size",
+        value_type: DefinitionValueType::Integer,
+        range: Some(DefinitionValueRange::Integer {
+            min: 10_000,
+            max: 1_000_000,
+        }),
+        default: Some(DefinitionValue::Integer(1_000_000)),
+        optional: false,
+    },
+    TypeOperatorValue {
+        name: "max_event_id_num",
+        value_type: DefinitionValueType::Integer,
+        range: Some(DefinitionValueRange::Integer { min: 1, max: 100 }),
+        default: Some(DefinitionValue::Integer(50)),
+        optional: false,
+    },
+    TypeOperatorValue {
+        name: "suspicious_tokens",
+        value_type: DefinitionValueType::String,
+        range: None,
+        default: None,
+        optional: true,
+    },
+    TypeOperatorValue {
+        name: "data_store",
+        value_type: DefinitionValueType::Table,
+        range: None,
+        default: None,
+        optional: false,
+    },
+];
+
+const PROCESS_COMMAND_LINE_WINDOWS: ClusteringModelType = ClusteringModelType {
+    id: "process_command_line_windows",
+    version: 1,
+    order: 6,
+    raw_event_kind: RawEventKind::ProcessCreate,
+    method: ModelMethod::Multidimension,
+    approach: ClusteringApproach::Prefix,
+    fixed: &process_command_line_fixed("windows"),
+    operator_values: PROCESS_COMMAND_LINE_OPERATOR_VALUES,
+    detection_models: &[DetectionModel::FarOutlier],
+    ip_columns: &["ips", "default_route_ip"],
+    source_column: SourceColumn::Endpoint("endpoint_id"),
+    description_en: PROCESS_COMMAND_LINE_DESCRIPTION_EN,
+    description_ko: PROCESS_COMMAND_LINE_DESCRIPTION_KO,
+};
+
+const PROCESS_COMMAND_LINE_LINUX: ClusteringModelType = ClusteringModelType {
+    id: "process_command_line_linux",
+    version: 1,
+    order: 7,
+    raw_event_kind: RawEventKind::ProcessCreate,
+    method: ModelMethod::Multidimension,
+    approach: ClusteringApproach::Prefix,
+    fixed: &process_command_line_fixed("linux"),
+    operator_values: PROCESS_COMMAND_LINE_OPERATOR_VALUES,
+    detection_models: &[DetectionModel::FarOutlier],
+    ip_columns: &["ips", "default_route_ip"],
+    source_column: SourceColumn::Endpoint("endpoint_id"),
+    description_en: PROCESS_COMMAND_LINE_DESCRIPTION_EN,
+    description_ko: PROCESS_COMMAND_LINE_DESCRIPTION_KO,
+};
+
+const PROCESS_COMMAND_LINE_DESCRIPTION_EN: &str = "Groups Sysmon process-creation CommandLine shapes by token prefix, using only the first 256 bytes. Executable paths, parents, users and hashes are not compared as separate features. Variable names near the beginning fragment clusters. Endpoint ids and IPs are retained without being features. Only extended-collection input is supported. It needs a training window of at least 7 days.";
+const PROCESS_COMMAND_LINE_DESCRIPTION_KO: &str = "Sysmon 프로세스 생성 CommandLine 모양을 토큰 앞부분으로 묶으며 처음 256바이트만 사용한다. 실행 파일 경로, 부모 프로세스, 사용자, 해시는 별도 특징으로 비교하지 않는다. 앞부분에 변수 이름이 있으면 클러스터가 나뉜다. 엔드포인트 식별자와 IP는 남기지만 특징으로 쓰지 않는다. 확장 수집 입력만 지원하며 학습 기간은 7일 이상이어야 한다.";
 
 #[cfg(test)]
 mod tests {
@@ -536,9 +773,9 @@ mod tests {
     }
 
     #[test]
-    fn catalog_holds_http_url_v1_only() {
+    fn catalog_holds_three_v1_recipes() {
         let types = clustering_model_types();
-        assert_eq!(types.len(), 1);
+        assert_eq!(types.len(), 3);
         let t = &types[0];
         assert_eq!(t.id, "http_url");
         assert_eq!(t.version, 1);
@@ -739,6 +976,157 @@ mod tests {
     }
 
     #[test]
+    // Keep the complete contract scenario together.
+    #[allow(clippy::too_many_lines)]
+    fn process_command_line_recipes() {
+        let snapshot = snapshot();
+        let columns: Vec<String> =
+            serde_json::from_value(snapshot["kinds"]["process_create"].clone()).unwrap();
+        for (id, os, order) in [
+            ("process_command_line_windows", "windows", 6),
+            ("process_command_line_linux", "linux", 7),
+        ] {
+            let t = clustering_model_type(id).unwrap();
+            assert_eq!((t.version, t.order), (1, order));
+            assert_eq!(t.raw_event_kind, RawEventKind::ProcessCreate);
+            assert_eq!(t.method, ModelMethod::Multidimension);
+            assert_eq!(t.approach, ClusteringApproach::Prefix);
+            assert_eq!(t.detection_models, [DetectionModel::FarOutlier]);
+            assert_eq!(t.ip_columns, ["ips", "default_route_ip"]);
+            assert_eq!(t.source_column, SourceColumn::Endpoint("endpoint_id"));
+            assert_eq!(
+                t.fixed.iter().map(|f| f.key).collect::<Vec<_>>(),
+                [
+                    "raw_event_kind",
+                    "method",
+                    "os_family",
+                    "csv",
+                    "numbers_of_top_n",
+                    "precision",
+                    "min_token_length",
+                    "max_data_len",
+                    "long_pattern_len",
+                    "algorithm",
+                    "eps",
+                ]
+            );
+            assert_eq!(
+                t.fixed_value("raw_event_kind"),
+                Some(&DefinitionValue::String("process_create"))
+            );
+            assert_eq!(
+                t.fixed_value("method"),
+                Some(&DefinitionValue::String("multidimension"))
+            );
+            assert_eq!(
+                t.fixed_value("os_family"),
+                Some(&DefinitionValue::String(os))
+            );
+            assert_eq!(
+                t.fixed_value("numbers_of_top_n"),
+                Some(&DefinitionValue::IntegerList(&[30; 41]))
+            );
+            for (key, value) in [
+                ("precision", 2),
+                ("min_token_length", 2),
+                ("max_data_len", 256),
+                ("long_pattern_len", 16000),
+            ] {
+                assert_eq!(t.fixed_value(key), Some(&DefinitionValue::Integer(value)));
+            }
+            assert_eq!(
+                t.fixed_value("algorithm"),
+                Some(&DefinitionValue::String("dbscan"))
+            );
+            assert_eq!(t.fixed_value("eps"), Some(&DefinitionValue::Float(5.0)));
+            let csv = csv(t);
+            assert_eq!(
+                csv.iter().map(|v| v.key).collect::<Vec<_>>(),
+                [
+                    "reader",
+                    "format",
+                    "prefix_columns",
+                    "slot_sizes",
+                    "time_column",
+                    "count_columns"
+                ]
+            );
+            assert_eq!(
+                table_value(csv, "reader"),
+                table_value(HTTP_URL_CSV, "reader")
+            );
+            assert_eq!(integer_list(csv, "prefix_columns"), [12]);
+            assert_eq!(integer_list(csv, "slot_sizes"), [60]);
+            assert_eq!(integer_list(csv, "count_columns"), [0]);
+            assert_eq!(
+                table_value(csv, "time_column"),
+                &DefinitionValue::Integer(0)
+            );
+            assert_eq!(column_names(t), columns);
+            for c in format(t) {
+                let name = string(c, "name");
+                let int = [
+                    "process_id",
+                    "logon_id",
+                    "terminal_session_id",
+                    "parent_process_id",
+                ]
+                .contains(&name);
+                assert_eq!(string(c, "data_type"), if int { "int64" } else { "utf8" });
+                assert_eq!(
+                    float(c, "weight").to_bits(),
+                    if name == "command_line" { 1.0_f64 } else { 0.0 }.to_bits()
+                );
+            }
+            assert_eq!(
+                t.operator_values.first(),
+                Some(&TypeOperatorValue {
+                    name: "endpoint_scope",
+                    value_type: DefinitionValueType::EndpointScope,
+                    range: None,
+                    default: Some(DefinitionValue::String("all")),
+                    optional: false,
+                })
+            );
+            assert_eq!(
+                t.operator_values.get(1..),
+                HTTP_URL_OPERATOR_VALUES.get(1..)
+            );
+            for phrase in [
+                "Sysmon",
+                "CommandLine",
+                "256",
+                "7 days",
+                "extended",
+                "Executable",
+                "parents",
+                "users",
+                "hashes",
+                "fragment",
+                "Endpoint ids and IPs",
+            ] {
+                assert!(t.description_en.contains(phrase), "{phrase}");
+            }
+            for phrase in [
+                "Sysmon",
+                "CommandLine",
+                "256바이트",
+                "7일",
+                "확장 수집",
+                "실행 파일 경로",
+                "부모",
+                "사용자",
+                "해시",
+                "변수 이름",
+                "엔드포인트",
+                "IP",
+            ] {
+                assert!(t.description_ko.contains(phrase), "{phrase}");
+            }
+        }
+    }
+
+    #[test]
     fn lookup_hits_and_misses() {
         assert_eq!(
             clustering_model_type("http_url"),
@@ -787,11 +1175,21 @@ mod tests {
         for t in clustering_model_types() {
             let format = format(t);
             let prefix_columns = integer_list(csv(t), "prefix_columns");
-            for ip_column in t.ip_columns {
+            let source = match t.source_column {
+                SourceColumn::Ip(name) | SourceColumn::Endpoint(name) => name,
+            };
+            let expected = if t.raw_event_kind.is_host_kind() {
+                SourceColumn::Endpoint("endpoint_id")
+            } else {
+                assert!(column_names(t).contains(&"orig_addr"));
+                SourceColumn::Ip("orig_addr")
+            };
+            assert_eq!(t.source_column, expected);
+            for ip_column in t.ip_columns.iter().copied().chain([source]) {
                 let positions: Vec<_> = format
                     .iter()
                     .enumerate()
-                    .filter(|(_, c)| string(c, "name") == *ip_column)
+                    .filter(|(_, c)| string(c, "name") == ip_column)
                     .map(|(i, _)| i)
                     .collect();
                 assert_eq!(positions.len(), 1, "{}: {ip_column}", t.id);
@@ -816,11 +1214,11 @@ mod tests {
         let mut keys_sorted = keys.clone();
         keys_sorted.sort_unstable();
         assert_eq!(keys_sorted, expected_keys);
-        assert_eq!(snapshot["giganto"], "0.36.0");
-        assert_eq!(snapshot["gigantoClient"], "0.29.1");
+        assert_eq!(snapshot["giganto"], "0.38.0");
+        assert_eq!(snapshot["gigantoClient"], "0.31.0");
         let kinds: BTreeMap<String, Vec<String>> =
             serde_json::from_value(snapshot["kinds"].clone()).unwrap();
-        assert_eq!(kinds.keys().collect::<Vec<_>>(), ["http"]);
+        assert_eq!(kinds.keys().collect::<Vec<_>>(), ["http", "process_create"]);
         assert_eq!(kinds["http"], HTTP_URL_COLUMNS);
 
         for t in clustering_model_types() {
@@ -871,6 +1269,24 @@ mod tests {
     #[test]
     fn format_matches_the_body_struct() {
         for t in clustering_model_types() {
+            if t.raw_event_kind == RawEventKind::ProcessCreate {
+                let fields = serde_field_names::<raw_event::ProcessCreate>();
+                let header = serde_field_names::<raw_event::EndpointHeader>();
+                let names = column_names(t);
+                let endpoint = fields.iter().position(|f| *f == "endpoint").unwrap();
+                assert_eq!(header.len(), 15);
+                assert_eq!(names.get(..2), Some(["time", "source"].as_slice()));
+                assert_eq!(names.get(2..2 + endpoint), fields.get(..endpoint));
+                assert_eq!(
+                    names.get(2 + endpoint..2 + endpoint + header.len()),
+                    Some(header)
+                );
+                assert_eq!(
+                    names.get(2 + endpoint + header.len()..),
+                    fields.get(endpoint + 1..)
+                );
+                continue;
+            }
             let fields = match t.raw_event_kind {
                 RawEventKind::Http => serde_field_names::<raw_event::Http>(),
                 other => panic!("{}: no body struct for {other:?}", t.id),
@@ -939,6 +1355,7 @@ mod tests {
             Some(crate::ClusteringApproach::Prefix)
         );
         let _ = (
+            crate::SourceColumn::Endpoint("endpoint_id"),
             crate::ClusteringApproach::Centroid,
             crate::ClusteringModelTypeRef::Custom,
         );
@@ -952,7 +1369,7 @@ mod tests {
         );
         assert_eq!(
             raw_event_kinds_of(DetectionModel::FarOutlier),
-            [RawEventKind::Http]
+            [RawEventKind::Http, RawEventKind::ProcessCreate]
         );
         assert_eq!(raw_event_kinds_of(DetectionModel::PortScan), []);
     }

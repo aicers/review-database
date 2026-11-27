@@ -2829,7 +2829,7 @@ rdp_brute_force.enabled = false
             family: DetectionFamily::ClusteringAnomaly,
             categories: &[],
             learning_method: LearningMethod::Unsupervised,
-            raw_event_kinds: &[R::Http],
+            raw_event_kinds: &[R::Http, R::ProcessCreate],
             primary_subject: PrimarySubjectKind::RawEvent,
             score_meaning: "Token distance from the nearest known cluster prefix \
                             (1 \u{2212} matched share).",
@@ -3062,7 +3062,15 @@ rdp_brute_force.enabled = false
                 }
             }
             assert_eq!(properties(model).raw_event_kinds, from_catalog, "{model:?}");
-            assert_eq!(properties(model).raw_event_kinds, [R::Http], "{model:?}");
+            assert_eq!(
+                properties(model).raw_event_kinds,
+                if model == DetectionModel::FarOutlier {
+                    &[R::Http, R::ProcessCreate][..]
+                } else {
+                    &[R::Http][..]
+                },
+                "{model:?}"
+            );
         }
     }
 

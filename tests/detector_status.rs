@@ -92,6 +92,7 @@ fn engine_with_detector(store: &Store) -> ModelInstance {
                     detectors: vec![EngineDetectorRef {
                         id: 1,
                         model: MODEL.to_string(),
+                        endpoint_scope: None,
                         sources: vec!["sensor-a".to_string()],
                         indicator: None,
                     }],

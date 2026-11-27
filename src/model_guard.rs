@@ -1051,6 +1051,7 @@ mod tests {
         EngineDetectorRef {
             id,
             model: model.to_string(),
+            endpoint_scope: None,
             sources: vec!["sensor-a".to_string()],
             indicator: indicator.map(ToString::to_string),
         }
@@ -1164,9 +1165,10 @@ mod tests {
 
     /// The families a guarded write or a detach reads or writes, but for
     /// the agents and nodes.
-    const RECORD_FAMILIES: [&str; 10] = [
+    const RECORD_FAMILIES: [&str; 11] = [
         tables::TRAINING_DEFINITIONS,
         tables::MODEL_RUNS,
+        tables::TRAINING_FILTER_REPORTS,
         tables::META,
         tables::MODELS,
         tables::SCORES,
@@ -1931,6 +1933,7 @@ mod tests {
         trained_model(store, "n", &engine);
         trained_model(store, "o", &other);
         let with_sources = |id, model: &str, sources: &[&str]| EngineDetectorRef {
+            endpoint_scope: None,
             sources: sources.iter().map(ToString::to_string).collect(),
             ..detector(id, model, None)
         };

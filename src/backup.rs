@@ -1364,7 +1364,7 @@ mod tests {
                                       \"signature source archives\", \
                                       \"signature source versions\", \"signature sources\", \
                                       \"signature status\", \"signature truncation daily\", \
-                                      \"time series generation policy\"";
+                                      \"time series generation policy\", \"training filter reports\"";
 
     /// The column families the signature rule source storage added, which
     /// every backup of the `0.72.0` release lacks.
@@ -1783,12 +1783,12 @@ mod tests {
 
     /// A backup holding exactly the column families of the `0.72.0` release,
     /// the current ones without the signature and active query families, is
-    /// refused by id and as the latest, naming exactly those fourteen as
+    /// refused by id and as the latest, naming exactly those fifteen as
     /// missing, and nothing is restored.
     #[test]
     fn online_restore_refuses_a_backup_of_the_0_72_0_families() {
         let _permit = acquire_db_permit();
-        assert_eq!(MAP_NAMES.len(), 119);
+        assert_eq!(MAP_NAMES.len(), 120);
         assert!(
             SIGNATURE_FAMILIES
                 .iter()
@@ -1797,13 +1797,16 @@ mod tests {
         let families: Vec<&str> = MAP_NAMES
             .into_iter()
             .filter(|name| {
-                !SIGNATURE_FAMILIES.contains(name) && !ACTIVE_QUERY_FAMILIES.contains(name)
+                !SIGNATURE_FAMILIES.contains(name)
+                    && !ACTIVE_QUERY_FAMILIES.contains(name)
+                    && *name != "training filter reports"
             })
             .collect();
         assert_eq!(families.len(), 105);
         let mut missing: Vec<&str> = SIGNATURE_FAMILIES
             .into_iter()
             .chain(ACTIVE_QUERY_FAMILIES)
+            .chain(["training filter reports"])
             .collect();
         missing.sort_unstable();
         let missing = missing
@@ -1849,12 +1852,12 @@ mod tests {
         );
     }
 
-    /// A 0.73.0 backup lacks exactly the six active query families and is refused
+    /// A 0.73.0 backup lacks the six active query families and training reports and is refused
     /// by id and as the latest, without restoring anything.
     #[test]
     fn online_restore_refuses_a_backup_of_the_0_73_0_families() {
         let _permit = acquire_db_permit();
-        assert_eq!(MAP_NAMES.len(), 119);
+        assert_eq!(MAP_NAMES.len(), 120);
         assert!(
             ACTIVE_QUERY_FAMILIES
                 .iter()
@@ -1862,16 +1865,71 @@ mod tests {
         );
         let families: Vec<&str> = MAP_NAMES
             .into_iter()
-            .filter(|name| !ACTIVE_QUERY_FAMILIES.contains(name))
+            .filter(|name| {
+                !ACTIVE_QUERY_FAMILIES.contains(name) && *name != "training filter reports"
+            })
             .collect();
         assert_eq!(families.len(), 113);
-        let mut missing: Vec<&str> = ACTIVE_QUERY_FAMILIES.to_vec();
+        let mut missing: Vec<&str> = ACTIVE_QUERY_FAMILIES
+            .into_iter()
+            .chain(["training filter reports"])
+            .collect();
         missing.sort_unstable();
         let missing = missing
             .iter()
             .map(|name| format!("\"{name}\""))
             .collect::<Vec<_>>()
             .join(", ");
+
+        let data_dir = tempfile::tempdir().unwrap();
+        let backup_dir = tempfile::tempdir().unwrap();
+        let store = open_current_store(data_dir.path(), backup_dir.path());
+        put_event(&store);
+        create(&store, true, 3).unwrap();
+        put_event(&store);
+        add_backup_with_families(backup_dir.path(), &families);
+        let before = RestoreState::read(&store, data_dir.path(), backup_dir.path());
+        assert_eq!(before.backup_ids, [1, 2]);
+        let private_before = dir_entries(&private_dir(backup_dir.path(), 2));
+
+        let expected = format!(
+            "backup 2 is not in database format {DATABASE_FORMAT_VERSION}: unexpected column \
+             families [], missing column families [{missing}]; nothing was restored"
+        );
+        let err = store
+            .write()
+            .expect("test holds no other locks")
+            .restore_from_backup(2)
+            .unwrap_err();
+        assert_eq!(err.to_string(), expected);
+        assert_eq!(live_event_count(&store), 2);
+        assert_still_open(&store, data_dir.path(), backup_dir.path(), &before);
+        let err = store
+            .write()
+            .expect("test holds no other locks")
+            .restore_from_latest_backup()
+            .unwrap_err();
+        assert_eq!(err.to_string(), expected);
+        assert_eq!(live_event_count(&store), 3);
+        assert_still_open(&store, data_dir.path(), backup_dir.path(), &before);
+        assert_eq!(
+            dir_entries(&private_dir(backup_dir.path(), 2)),
+            private_before
+        );
+    }
+
+    /// A 0.74.0 backup lacks exactly the training filter report family and is refused
+    /// by id and as the latest, without restoring anything.
+    #[test]
+    fn online_restore_refuses_a_backup_of_the_0_74_0_families() {
+        let _permit = acquire_db_permit();
+        assert_eq!(MAP_NAMES.len(), 120);
+        let families: Vec<&str> = MAP_NAMES
+            .into_iter()
+            .filter(|name| *name != "training filter reports")
+            .collect();
+        assert_eq!(families.len(), 119);
+        let missing = "\"training filter reports\"";
 
         let data_dir = tempfile::tempdir().unwrap();
         let backup_dir = tempfile::tempdir().unwrap();

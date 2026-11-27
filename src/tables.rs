@@ -333,6 +333,7 @@ pub(super) const INSTANCE_ALLOCATIONS: &str = "instance allocations";
 pub(super) const MODELS: &str = "models";
 pub(super) const MODEL_INDICATORS: &str = "model indicators";
 pub(crate) const META: &str = "meta";
+pub(super) const TRAINING_FILTER_REPORTS: &str = "training filter reports";
 pub(super) const MODEL_RUNS: &str = "model runs";
 pub(super) const NETWORK_LISTS: &str = "network lists";
 pub(super) const SYSTEM_LOG_COLLECTORS: &str = "system log collectors";
@@ -421,7 +422,7 @@ pub(super) const TRIAGE_RESPONSE: &str = "triage response";
 pub(super) const TRUSTED_DNS_SERVERS: &str = "trusted DNS servers";
 pub(super) const TRUSTED_USER_AGENTS: &str = "trusted user agents";
 
-pub(crate) const MAP_NAMES: [&str; 119] = [
+pub(crate) const MAP_NAMES: [&str; 120] = [
     AGENTS,
     BATCH_INFO,
     CATEGORY,
@@ -441,6 +442,7 @@ pub(crate) const MAP_NAMES: [&str; 119] = [
     MODEL_INDICATORS,
     META,
     MODEL_RUNS,
+    TRAINING_FILTER_REPORTS,
     NETWORK_LISTS,
     NETWORKS,
     NODES,

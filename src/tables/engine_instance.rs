@@ -1,5 +1,6 @@
 //! The `engine instances` table: what each Unsupervised Engine instance's
-//! documents reference, its detectors' statuses and whether it is stopped.
+//! documents reference, its detectors' statuses and round filter reports,
+//! and whether it is stopped.
 //!
 //! One row per instance, keyed as the agents table keys the instance's agent
 //! row: the node id in big-endian, then the agent key. Every writer of an
@@ -23,7 +24,9 @@ use std::{collections::BTreeMap, mem::size_of};
 
 use anyhow::{Context, Result, anyhow};
 use jiff::Timestamp;
-use review_protocol::types::{DetectionModelStatus, EngineExclusionReport, ExcludedCount};
+use review_protocol::types::{
+    DetectionModelStatus, EndpointScope, EngineExclusionReport, ExcludedCount, RoundFilterReport,
+};
 use rocksdb::{IteratorMode, OptimisticTransactionDB, Transaction};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -40,6 +43,8 @@ pub struct EngineDetectorRef {
     pub model: String,
     /// The sensor names the detector reads.
     pub sources: Vec<String>,
+    /// The endpoint scope, independently retained for each document slot.
+    pub endpoint_scope: Option<EndpointScope>,
     /// The name of the model indicator in `suspicious_tokens`, if any.
     pub indicator: Option<String>,
 }
@@ -176,8 +181,8 @@ pub enum SourceState {
 }
 
 /// A refusal to write an engine document's references, a detector status, an
-/// engine instance's stopped state or a Semi-supervised Engine instance's
-/// exclusion report.
+/// engine instance's stopped state, a round filter report or a
+/// Semi-supervised Engine instance's exclusion report.
 ///
 /// It is returned inside the `anyhow::Error` of the refusing method, so a
 /// caller can `downcast_ref` it.
@@ -241,6 +246,17 @@ pub enum EngineDocumentError {
         agent_key: String,
         detector_id: i32,
     },
+    /// The applied endpoint detector and its status do not match the report.
+    #[error(
+        "round filter report for detector {detector_id}, model {model:?}, at {finished_at} of agent {agent_key:?} of node {node_id} does not match its applied scope and status"
+    )]
+    RoundFilterReportRefused {
+        node_id: u32,
+        agent_key: String,
+        detector_id: i32,
+        model: String,
+        finished_at: i64,
+    },
     /// A written document names a detector id that is at most the
     /// instance's `last_detector_id` and that neither stored document names.
     #[error(
@@ -258,6 +274,8 @@ pub(crate) struct Row {
     pub(crate) pending: EngineDocumentRefs,
     /// The last status of each detector, by detector id.
     pub(crate) statuses: BTreeMap<i32, DetectorStatus>,
+    /// Filter reports by detector id and model name.
+    pub(crate) round_filter_reports: BTreeMap<(i32, String), RoundFilterReport>,
 }
 
 impl Row {
@@ -266,15 +284,41 @@ impl Row {
         self.applied.names_detector(id) || self.pending.names_detector(id)
     }
 
-    /// Drops the statuses of detector ids that appear in neither slot.
+    /// Drops statuses and round reports no longer named by either slot.
     pub(crate) fn retain_named_statuses(&mut self) {
         let Self {
             applied,
             pending,
             statuses,
+            round_filter_reports,
             ..
         } = self;
         statuses.retain(|id, _| applied.names_detector(*id) || pending.names_detector(*id));
+        round_filter_reports.retain(|(id, model), _| {
+            applied
+                .detectors
+                .iter()
+                .chain(&pending.detectors)
+                .any(|d| d.id == *id && d.model == *model)
+        });
+    }
+
+    /// Returns whether a report matches an applied host detector's current round.
+    pub(crate) fn accepts_round_filter_report(
+        &self,
+        id: i32,
+        model: &str,
+        report: &RoundFilterReport,
+    ) -> bool {
+        self.applied
+            .detectors
+            .iter()
+            .any(|d| d.id == id && d.model == model && d.endpoint_scope.is_some())
+            && self
+                .statuses
+                .get(&id)
+                .and_then(|s| s.finished_at)
+                .is_some_and(|at| at.as_nanosecond() == i128::from(report.finished_at))
     }
 
     pub(crate) fn into_state(

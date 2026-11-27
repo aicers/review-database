@@ -7,9 +7,14 @@
 //! which also makes it the anchor of "the instance has an active run": a
 //! check that reads it for update before scanning the runs conflicts with
 //! any run created after that read.
+//!
+//! The `training filter reports` family holds each run's protocol report
+//! independently of model bytes, under the same big-endian run id. Deleting
+//! a run deletes its report in the same transaction.
 
 use anyhow::{Context, Result, anyhow};
 use jiff::Timestamp;
+use review_protocol::types::TrainingFilterReport;
 use rocksdb::{IteratorMode, OptimisticTransactionDB, Transaction};
 use serde::{Deserialize, Serialize};
 
@@ -96,6 +101,7 @@ fn key(id: RunId) -> [u8; 4] {
 pub(crate) struct ModelRuns<'d> {
     map: Map<'d>,
     meta: Map<'d>,
+    reports: Map<'d>,
 }
 
 impl<'d> ModelRuns<'d> {
@@ -103,6 +109,7 @@ impl<'d> ModelRuns<'d> {
         Some(Self {
             map: Map::open(db, super::MODEL_RUNS)?,
             meta: Map::open(db, super::META)?,
+            reports: Map::open(db, super::TRAINING_FILTER_REPORTS)?,
         })
     }
 
@@ -194,7 +201,27 @@ impl<'d> ModelRuns<'d> {
         txn: &Transaction<OptimisticTransactionDB>,
         id: RunId,
     ) -> Result<()> {
+        self.reports.delete_with_transaction(&key(id), txn)?;
         self.map.delete_with_transaction(&key(id), txn)
+    }
+
+    /// Returns the independently stored filter report of the run.
+    pub(crate) fn filter_report(&self, id: RunId) -> Result<Option<TrainingFilterReport>> {
+        self.reports
+            .get(&key(id))?
+            .map(|value| super::deserialize(value.as_ref()))
+            .transpose()
+    }
+
+    /// Replaces the run's filter report within the run's transaction.
+    pub(crate) fn set_filter_report(
+        &self,
+        txn: &Transaction<OptimisticTransactionDB>,
+        id: RunId,
+        report: &TrainingFilterReport,
+    ) -> Result<()> {
+        self.reports
+            .put_with_transaction(&key(id), &super::serialize(report)?, txn)
     }
 
     /// Returns every run as `txn` sees it, in id order.
