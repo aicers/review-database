@@ -411,7 +411,7 @@ impl<'d> Table<'d> {
     /// lists them.
     pub(crate) fn sensor_names_in_snapshot(
         &self,
-        snapshot: &rocksdb::SnapshotWithThreadMode<OptimisticTransactionDB>,
+        snapshot: &rocksdb::SnapshotWithThreadMode<impl rocksdb::DBAccess>,
     ) -> Result<BTreeSet<(u32, String)>> {
         sensor_names_from(
             snapshot.iterator_cf(self.node.raw().cf(), rocksdb::IteratorMode::Start),

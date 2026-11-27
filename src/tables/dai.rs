@@ -78,6 +78,14 @@
 //! - `dai services`, `dai software strings` and `dai device changes`: the
 //!   services, software strings and change history of each device.
 //!
+//! Six more hold active query settings and display-only results; see `active_query`:
+//!
+//! - `dai active query settings` and `dai active query sites`: customer and site settings;
+//! - `dai active query range guard`: the global revision serializing range writes;
+//! - `dai active query ips`: the latest query round of each address;
+//! - `dai active answers`: consecutive equal answers as intervals;
+//! - `dai active query daily`: sent and answered counts per site, date and kind.
+//!
 //! Keys use the component encoding of the `senta` endpoint observation tables
 //! (see `senta_endpoint`), so a prefix read by customer id, by sensor name,
 //! by (sensor, kind), by (customer, sensor[, date]) or by (sensor, date)
@@ -89,9 +97,9 @@
 //! # Transactions
 //!
 //! Every writer is one optimistic transaction, retried from the start on a
-//! commit conflict, and a refusal commits nothing. The store's transactions
-//! take no snapshot, and a scan is not tracked, so every writer of a
-//! customer's DAI configuration, and every policy save that checks the site
+//! commit conflict, and a refusal commits nothing. Core DAI transactions take
+//! no snapshot, and a scan is not tracked, so every writer of a customer's
+//! core DAI configuration, and every policy save that checks the site
 //! condition, first reads the customer's `dai site policy guard` row for
 //! update and increments it, before it reads any site, sensor site, relay
 //! entry or policy its checks use. Two such writes for one customer
@@ -102,8 +110,11 @@
 //! The reads that answer operators and lookups (`resolve`, `device_read`
 //! and `status`, on the state `view` loads) read through one database
 //! [`Snapshot`] each instead of a transaction, so each answers from one
-//! consistent state.
+//! consistent state. Active query operations instead use optimistic transaction
+//! snapshots. Their site writes also take the customer policy guard and a global
+//! range guard, so concurrent range writes recheck all sites after a conflict.
 
+mod active_query;
 mod apply;
 mod binding;
 mod cursor;
@@ -130,6 +141,11 @@ use rocksdb::{IteratorMode, OptimisticTransactionDB, Transaction};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use thiserror::Error;
 
+pub use self::active_query::{
+    DaiActiveQueryEnabledSite, DaiActiveQueryError, DaiActiveQueryKind, DaiActiveQueryMdns,
+    DaiActiveQueryNbns, DaiActiveQueryResult, DaiActiveQueryRound, DaiActiveQuerySettings,
+    DaiActiveQuerySite, DaiActiveQuerySsdp,
+};
 pub use self::apply::{DAI_APPLY_DEFAULT_MAX_COUNT, DaiPendingHead};
 pub(crate) use self::cursor::{is_marked_restored, mark_restored};
 pub use self::device_read::{
@@ -767,7 +783,7 @@ fn decode_sensor_site(key: &[u8], value: &[u8]) -> Result<(String, i64, SensorSi
 
 /// A database snapshot, which the reads that answer from one consistent
 /// state read through.
-pub(crate) type Snapshot<'d> = rocksdb::SnapshotWithThreadMode<'d, OptimisticTransactionDB>;
+pub(crate) type Snapshot<'d, D = OptimisticTransactionDB> = rocksdb::SnapshotWithThreadMode<'d, D>;
 
 /// A reader of the DAI tables: a transaction, whose plain reads are not
 /// tracked, or a [`Snapshot`].
@@ -801,7 +817,7 @@ impl DaiRead for Txn<'_> {
     }
 }
 
-impl DaiRead for Snapshot<'_> {
+impl<D: rocksdb::DBAccess> DaiRead for Snapshot<'_, D> {
     fn iter_rows<'s>(
         &'s self,
         map: &Map<'_>,
@@ -855,6 +871,12 @@ pub(crate) struct Dai<'d> {
     services: Map<'d>,
     software: Map<'d>,
     changes: Map<'d>,
+    active_query_settings: Map<'d>,
+    active_query_sites: Map<'d>,
+    active_query_range_guard: Map<'d>,
+    active_query_ips: Map<'d>,
+    active_answers: Map<'d>,
+    active_query_daily: Map<'d>,
 }
 
 impl<'d> Dai<'d> {
@@ -898,6 +920,12 @@ impl<'d> Dai<'d> {
             services: Map::open(db, super::DAI_SERVICES)?,
             software: Map::open(db, super::DAI_SOFTWARE_STRINGS)?,
             changes: Map::open(db, super::DAI_DEVICE_CHANGES)?,
+            active_query_settings: Map::open(db, super::DAI_ACTIVE_QUERY_SETTINGS)?,
+            active_query_sites: Map::open(db, super::DAI_ACTIVE_QUERY_SITES)?,
+            active_query_range_guard: Map::open(db, super::DAI_ACTIVE_QUERY_RANGE_GUARD)?,
+            active_query_ips: Map::open(db, super::DAI_ACTIVE_QUERY_IPS)?,
+            active_answers: Map::open(db, super::DAI_ACTIVE_ANSWERS)?,
+            active_query_daily: Map::open(db, super::DAI_ACTIVE_QUERY_DAILY)?,
         })
     }
 
@@ -1382,6 +1410,7 @@ impl<'d> Dai<'d> {
                 .collect();
             let sensors = self.customer_sensors(txn, customer_id, &before, &after)?;
             self.bump_epochs(txn, &sensors)?;
+            Self::delete_row(txn, &self.active_query_sites, &site_key(customer_id, token))?;
             txn.delete_cf(self.sites.cf, site_key(customer_id, token))
                 .context("cannot delete DAI site")
         })
@@ -1786,6 +1815,7 @@ impl<'d> Dai<'d> {
         self.delete_sensor_rows(customer_id, &names)?;
         self.delete_customer_observation_rows(customer_id)?;
         self.delete_customer_device_rows(customer_id)?;
+        self.delete_active_query_customer(customer_id)?;
         self.delete_customer_rows(customer_id)
     }
 

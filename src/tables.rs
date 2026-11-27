@@ -78,20 +78,23 @@ pub use self::customer_data_deletion_job::{
 pub(crate) use self::dai::{Clock, Dai, DaiRead, mark_restored, now_nanos};
 pub use self::dai::{
     DAI_APPLY_DEFAULT_MAX_COUNT, DAI_EXPLANATION_EVIDENCE_ROWS, DAI_IMPORT_MAX_ROWS,
-    DAI_RESOLVE_MAX_ITEMS, DAI_SEARCH_MAX_MATCHES, DAI_STATE_CHANGE_MAX_DEVICES, DaiActivity,
-    DaiActivityChange, DaiAliasReason, DaiBatchError, DaiBindingSpan, DaiCatchupGap, DaiChangeKind,
-    DaiChangeOp, DaiChangeSource, DaiCollectionStatus, DaiComparedValue, DaiConfigError,
-    DaiCurrentIp, DaiCursorLag, DaiDailyCount, DaiDecidingBinding, DaiDeviceAlias,
-    DaiDeviceBinding, DaiDeviceChange, DaiDeviceDetail, DaiDeviceError, DaiDeviceFilter,
-    DaiDeviceIdentifier, DaiDeviceListRow, DaiDeviceName, DaiEvidenceRef, DaiEvidenceSource,
-    DaiExplanation, DaiFieldChange, DaiGapCause, DaiIdentifier, DaiIdentifierKind, DaiIgnoredRange,
-    DaiImportOutcome, DaiImportRow, DaiImportRowError, DaiIpDeviceFilter, DaiIpDeviceRow,
-    DaiKindReceipt, DaiNameSource, DaiNetworks, DaiOrigin, DaiPage, DaiPageDirection,
-    DaiPageRequest, DaiPendingHead, DaiRangeCandidate, DaiRangeError, DaiRelaySite, DaiRelaySites,
-    DaiResolveAnswer, DaiResolveError, DaiResolveItem, DaiResolveItemError, DaiResolveWhen,
-    DaiSearchMatch, DaiSearchMatchKind, DaiSearchResult, DaiSearchTarget, DaiSensorCollection,
-    DaiService, DaiSettings, DaiSettingsUpdate, DaiSite, DaiSiteCollection, DaiSoftware,
-    DaiStoreOutcome, DaiSubjectKind, DaiTimeRange, DaiVerdict, dai_network_digest,
+    DAI_RESOLVE_MAX_ITEMS, DAI_SEARCH_MAX_MATCHES, DAI_STATE_CHANGE_MAX_DEVICES,
+    DaiActiveQueryEnabledSite, DaiActiveQueryError, DaiActiveQueryKind, DaiActiveQueryMdns,
+    DaiActiveQueryNbns, DaiActiveQueryResult, DaiActiveQueryRound, DaiActiveQuerySettings,
+    DaiActiveQuerySite, DaiActiveQuerySsdp, DaiActivity, DaiActivityChange, DaiAliasReason,
+    DaiBatchError, DaiBindingSpan, DaiCatchupGap, DaiChangeKind, DaiChangeOp, DaiChangeSource,
+    DaiCollectionStatus, DaiComparedValue, DaiConfigError, DaiCurrentIp, DaiCursorLag,
+    DaiDailyCount, DaiDecidingBinding, DaiDeviceAlias, DaiDeviceBinding, DaiDeviceChange,
+    DaiDeviceDetail, DaiDeviceError, DaiDeviceFilter, DaiDeviceIdentifier, DaiDeviceListRow,
+    DaiDeviceName, DaiEvidenceRef, DaiEvidenceSource, DaiExplanation, DaiFieldChange, DaiGapCause,
+    DaiIdentifier, DaiIdentifierKind, DaiIgnoredRange, DaiImportOutcome, DaiImportRow,
+    DaiImportRowError, DaiIpDeviceFilter, DaiIpDeviceRow, DaiKindReceipt, DaiNameSource,
+    DaiNetworks, DaiOrigin, DaiPage, DaiPageDirection, DaiPageRequest, DaiPendingHead,
+    DaiRangeCandidate, DaiRangeError, DaiRelaySite, DaiRelaySites, DaiResolveAnswer,
+    DaiResolveError, DaiResolveItem, DaiResolveItemError, DaiResolveWhen, DaiSearchMatch,
+    DaiSearchMatchKind, DaiSearchResult, DaiSearchTarget, DaiSensorCollection, DaiService,
+    DaiSettings, DaiSettingsUpdate, DaiSite, DaiSiteCollection, DaiSoftware, DaiStoreOutcome,
+    DaiSubjectKind, DaiTimeRange, DaiVerdict, dai_network_digest,
 };
 pub(crate) use self::engine_instance::{
     DetectorIdMarks, EngineExclusionCounts, EngineInstances, Row as EngineInstanceRow,
@@ -295,6 +298,19 @@ pub(super) const DAI_SERVICES: &str = "dai services";
 pub(super) const DAI_SOFTWARE_STRINGS: &str = "dai software strings";
 /// The change history of each device.
 pub(super) const DAI_DEVICE_CHANGES: &str = "dai device changes";
+/// Active query enablement and excluded ranges, keyed by customer.
+pub(super) const DAI_ACTIVE_QUERY_SETTINGS: &str = "dai active query settings";
+/// Active query ranges, DNS servers and rates, keyed by customer and site.
+pub(super) const DAI_ACTIVE_QUERY_SITES: &str = "dai active query sites";
+/// The global revision serializing active query range writes.
+pub(super) const DAI_ACTIVE_QUERY_RANGE_GUARD: &str = "dai active query range guard";
+/// The latest active query round of each customer, site and IP.
+pub(super) const DAI_ACTIVE_QUERY_IPS: &str = "dai active query ips";
+/// Active answer intervals, keyed by customer, site, IP, kind and first seen.
+pub(super) const DAI_ACTIVE_ANSWERS: &str = "dai active answers";
+/// Active query counts, keyed by customer, site, UTC date and kind.
+pub(super) const DAI_ACTIVE_QUERY_DAILY: &str = "dai active query daily";
+
 /// The arrival-order index of the detection events: one empty row per
 /// stored record, keyed by its arrival time and its key; see
 /// `event::arrival`.
@@ -404,7 +420,7 @@ pub(super) const TRIAGE_RESPONSE: &str = "triage response";
 pub(super) const TRUSTED_DNS_SERVERS: &str = "trusted DNS servers";
 pub(super) const TRUSTED_USER_AGENTS: &str = "trusted user agents";
 
-pub(crate) const MAP_NAMES: [&str; 113] = [
+pub(crate) const MAP_NAMES: [&str; 119] = [
     AGENTS,
     BATCH_INFO,
     CATEGORY,
@@ -518,6 +534,12 @@ pub(crate) const MAP_NAMES: [&str; 113] = [
     SIGNATURE_PUSH_REVISION,
     SIGNATURE_STATUS,
     SIGNATURE_TRUNCATION_DAILY,
+    DAI_ACTIVE_QUERY_SETTINGS,
+    DAI_ACTIVE_QUERY_SITES,
+    DAI_ACTIVE_QUERY_RANGE_GUARD,
+    DAI_ACTIVE_QUERY_IPS,
+    DAI_ACTIVE_ANSWERS,
+    DAI_ACTIVE_QUERY_DAILY,
 ];
 
 // Keys for the meta map.

@@ -2,10 +2,10 @@
 //! sensors' collection state and the evidence gap rules, read from one
 //! database snapshot.
 //!
-//! The store's transactions take no snapshot, so reads through one
-//! transaction can see writes committed between them. Every read here goes
-//! through one [`Snapshot`] taken at its start instead, and so answers from
-//! one consistent state.
+//! Core DAI transactions take no snapshot, so their reads can see writes
+//! committed between them. Every read here instead uses one [`Snapshot`],
+//! taken directly from the database or from an active query transaction,
+//! and so answers from one consistent state.
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -289,7 +289,7 @@ impl Dai<'_> {
     /// them.
     pub(super) fn customer_view(
         &self,
-        snapshot: &Snapshot<'_>,
+        snapshot: &Snapshot<'_, impl rocksdb::DBAccess>,
         customer: u32,
     ) -> Result<CustomerView> {
         let settings: DaiSettings =
@@ -363,7 +363,7 @@ impl Dai<'_> {
     /// `snapshot` holds it.
     pub(super) fn collections(
         &self,
-        snapshot: &Snapshot<'_>,
+        snapshot: &Snapshot<'_, impl rocksdb::DBAccess>,
         view: &CustomerView,
     ) -> Result<BTreeMap<String, SensorCollection>> {
         view.sensors
@@ -381,7 +381,11 @@ impl Dai<'_> {
     /// created; it has none if no pair is left in. A stored resolver point
     /// of `None` sets no limit; a sensor with none stored takes the earliest
     /// of its earliest pending slots of every kind.
-    fn collection(&self, snapshot: &Snapshot<'_>, sensor: &str) -> Result<SensorCollection> {
+    fn collection(
+        &self,
+        snapshot: &Snapshot<'_, impl rocksdb::DBAccess>,
+        sensor: &str,
+    ) -> Result<SensorCollection> {
         let state: SensorState =
             Self::value_in(snapshot, &self.sensor_state, &sensor_key(sensor))?.unwrap_or_default();
         let mut collection = SensorCollection {
@@ -544,7 +548,7 @@ impl Dai<'_> {
     /// holds them, as (start, row) in start order.
     pub(super) fn address_bindings(
         &self,
-        snapshot: &Snapshot<'_>,
+        snapshot: &Snapshot<'_, impl rocksdb::DBAccess>,
         customer: u32,
         site: &str,
         ip: IpAddr,
