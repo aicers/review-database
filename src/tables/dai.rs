@@ -142,9 +142,11 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use thiserror::Error;
 
 pub use self::active_query::{
-    DaiActiveQueryEnabledSite, DaiActiveQueryError, DaiActiveQueryKind, DaiActiveQueryMdns,
-    DaiActiveQueryNbns, DaiActiveQueryResult, DaiActiveQueryRound, DaiActiveQuerySettings,
-    DaiActiveQuerySite, DaiActiveQuerySsdp,
+    DaiActiveAnswer, DaiActiveQueryEnabledSite, DaiActiveQueryError, DaiActiveQueryKind,
+    DaiActiveQueryKindCounts, DaiActiveQueryMdns, DaiActiveQueryNbns, DaiActiveQueryResult,
+    DaiActiveQueryRound, DaiActiveQuerySettings, DaiActiveQuerySite, DaiActiveQuerySiteState,
+    DaiActiveQuerySsdp, DaiActiveQueryStatus, DaiActiveQueryValue, DaiIpActiveKind,
+    DaiIpActiveQuery, DaiSiteActiveQuery,
 };
 pub use self::apply::{DAI_APPLY_DEFAULT_MAX_COUNT, DaiPendingHead};
 pub(crate) use self::cursor::{is_marked_restored, mark_restored};

@@ -211,15 +211,20 @@ pub struct DaiActiveQueryRound {
     pub ssdp: DaiActiveQueryResult<Vec<DaiActiveQuerySsdp>>,
 }
 
+/// A display-only active query answer, in stored variant order.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-enum ActiveQueryValue {
+pub enum DaiActiveQueryValue {
+    /// Reverse DNS names.
     Ptr(Vec<String>),
+    /// A `NetBIOS` node status answer.
     Nbns(DaiActiveQueryNbns),
+    /// A unicast mDNS answer.
     Mdns(DaiActiveQueryMdns),
+    /// Unicast SSDP responses.
     Ssdp(Vec<DaiActiveQuerySsdp>),
 }
 
-type ActiveQueryResult = DaiActiveQueryResult<ActiveQueryValue>;
+type ActiveQueryResult = DaiActiveQueryResult<DaiActiveQueryValue>;
 
 #[derive(Debug, Deserialize, Serialize)]
 struct ActiveQueryIp {
@@ -277,10 +282,10 @@ impl DaiActiveQueryRound {
 
     fn results(&self) -> [ActiveQueryResult; 4] {
         [
-            self.ptr.map(|v| ActiveQueryValue::Ptr(v.clone())),
-            self.nbns.map(|v| ActiveQueryValue::Nbns(v.clone())),
-            self.mdns.map(|v| ActiveQueryValue::Mdns(v.clone())),
-            self.ssdp.map(|v| ActiveQueryValue::Ssdp(v.clone())),
+            self.ptr.map(|v| DaiActiveQueryValue::Ptr(v.clone())),
+            self.nbns.map(|v| DaiActiveQueryValue::Nbns(v.clone())),
+            self.mdns.map(|v| DaiActiveQueryValue::Mdns(v.clone())),
+            self.ssdp.map(|v| DaiActiveQueryValue::Ssdp(v.clone())),
         ]
     }
 }
@@ -312,6 +317,12 @@ fn queryable(ip: IpAddr) -> bool {
         IpAddr::V6(ip) => !ip.is_unspecified() && !ip.is_loopback() && !ip.is_multicast(),
     }
 }
+
+mod read;
+pub use read::{
+    DaiActiveAnswer, DaiActiveQueryKindCounts, DaiActiveQuerySiteState, DaiActiveQueryStatus,
+    DaiIpActiveKind, DaiIpActiveQuery, DaiSiteActiveQuery,
+};
 
 impl Dai<'_> {
     /// Runs an active query operation against one transaction snapshot, retrying conflicts.
@@ -620,82 +631,84 @@ impl Dai<'_> {
         max: usize,
     ) -> Result<Vec<IpAddr>> {
         self.active_query_transaction(|txn| {
-            let snapshot = txn.snapshot();
-            if max == 0 || !self.active_query_enabled(&snapshot, customer)? {
-                return Ok(Vec::new());
-            }
-            let Some(site) = Self::value_in::<DaiActiveQuerySite>(
-                &snapshot,
-                &self.active_query_sites,
-                &site_key(customer, token),
-            )?
-            else {
-                return Ok(Vec::new());
-            };
-            if site.query_ranges.is_empty() {
-                return Ok(Vec::new());
-            }
-            let active: DaiActiveQuerySettings = Self::value_in(
-                &snapshot,
-                &self.active_query_settings,
-                &customer_key(customer),
-            )?
-            .unwrap_or_default();
-            let view = self.customer_view(&snapshot, customer)?;
-            let collections = self.collections(&snapshot, &view)?;
-            let mut targets = Vec::new();
-            for (key, value) in
-                Self::scan(&self.ip_activity, &snapshot, &site_key(customer, token))?
-            {
-                let (_, _, ip) = decode_address_key(&key)?;
-                let activity: ActivityRow = super::super::deserialize(&value)?;
-                if !(now.saturating_sub(ACTIVE_QUERY_IP_DEVICE_AGE)..=now)
-                    .contains(&activity.last_seen)
-                    || !contains(&site.query_ranges, ip)
-                    || !view.is_internal(ip)
-                    || contains(&active.excluded_ranges, ip)
-                    || !queryable(ip)
-                    || snapshot.value(&self.fixed_ips, &key)?.is_some()
-                {
-                    continue;
-                }
-                if self
-                    .address_bindings(&snapshot, customer, token, ip)?
-                    .iter()
-                    .any(|(start, row)| {
-                        in_effect_at(*start, row, activity.last_seen)
-                            || in_effect_at(*start, row, now)
-                    })
-                {
-                    continue;
-                }
-                let time = activity
-                    .first_seen
-                    .saturating_add(ACTIVE_QUERY_RESOLUTION_DELAY);
-                if view
-                    .select(&collections, token, time, now)
-                    .compared
-                    .is_some_and(|c| c.time < time)
-                {
-                    continue;
-                }
-                let state: Option<ActiveQueryIp> =
-                    Self::value_in(&snapshot, &self.active_query_ips, &key)?;
-                if state.as_ref().is_some_and(|s| {
-                    s.last_query
-                        > now.saturating_sub(if s.had_answer {
-                            DAY
-                        } else {
-                            ACTIVE_QUERY_NO_ANSWER_WAIT
-                        })
-                }) {
-                    continue;
-                }
-                targets.push((state.map(|s| s.last_query), Reverse(activity.last_seen), ip));
-            }
-            targets.sort_unstable();
-            Ok(targets.into_iter().take(max).map(|(_, _, ip)| ip).collect())
+            self.active_query_targets_in(&txn.snapshot(), customer, token, now, max)
         })
+    }
+
+    pub(super) fn active_query_targets_in(
+        &self,
+        snapshot: &super::Snapshot<'_, impl rocksdb::DBAccess>,
+        customer: u32,
+        token: &str,
+        now: i64,
+        max: usize,
+    ) -> Result<Vec<IpAddr>> {
+        if max == 0 || !self.active_query_enabled(snapshot, customer)? {
+            return Ok(Vec::new());
+        }
+        let Some(site) = Self::value_in::<DaiActiveQuerySite>(
+            snapshot,
+            &self.active_query_sites,
+            &site_key(customer, token),
+        )?
+        else {
+            return Ok(Vec::new());
+        };
+        if site.query_ranges.is_empty() {
+            return Ok(Vec::new());
+        }
+        let active: DaiActiveQuerySettings = Self::value_in(
+            snapshot,
+            &self.active_query_settings,
+            &customer_key(customer),
+        )?
+        .unwrap_or_default();
+        let view = self.customer_view(snapshot, customer)?;
+        let collections = self.collections(snapshot, &view)?;
+        let mut targets = Vec::new();
+        for (key, value) in Self::scan(&self.ip_activity, snapshot, &site_key(customer, token))? {
+            let (_, _, ip) = decode_address_key(&key)?;
+            let activity: ActivityRow = super::super::deserialize(&value)?;
+            if !(now.saturating_sub(ACTIVE_QUERY_IP_DEVICE_AGE)..=now).contains(&activity.last_seen)
+                || !self.active_query_target_in(snapshot, &view, &site, &active, ip)?
+            {
+                continue;
+            }
+            if self
+                .address_bindings(snapshot, customer, token, ip)?
+                .iter()
+                .any(|(start, row)| {
+                    in_effect_at(*start, row, activity.last_seen) || in_effect_at(*start, row, now)
+                })
+            {
+                continue;
+            }
+            let time = activity
+                .first_seen
+                .saturating_add(ACTIVE_QUERY_RESOLUTION_DELAY);
+            if view
+                .select(&collections, token, time, now)
+                .compared
+                .is_some_and(|c| c.time < time)
+            {
+                continue;
+            }
+            let state: Option<ActiveQueryIp> =
+                Self::value_in(snapshot, &self.active_query_ips, &key)?;
+            if state.as_ref().is_some_and(|s| {
+                s.last_query
+                    > now.saturating_sub(if s.had_answer {
+                        DAY
+                    } else {
+                        ACTIVE_QUERY_NO_ANSWER_WAIT
+                    })
+            }) {
+                continue;
+            }
+            targets.push((state.map(|s| s.last_query), Reverse(activity.last_seen), ip));
+        }
+        targets.sort_unstable();
+        Ok(targets.into_iter().take(max).map(|(_, _, ip)| ip).collect())
     }
 
     pub(crate) fn store_active_query_round(

@@ -939,8 +939,10 @@ impl Store {
     /// [`DAI_EXPLANATION_EVIDENCE_ROWS`] evidence rows at the address last
     /// seen within it and at or before `t` (within the window), newest
     /// first, as kind, last seen time and sensor only; and each cause of an
-    /// evidence gap. No observation body, user name, account name or realm
-    /// is part of an answer.
+    /// evidence gap. IP and evidence gap explanations also carry active query
+    /// values valid at `t` (a window's `to`), in kind order. These values are
+    /// display-only and do not affect the subject or evidence sources. No
+    /// observation body, user name, account name or realm is part of an answer.
     ///
     /// # Errors
     ///
@@ -1001,7 +1003,9 @@ impl Store {
     ///
     /// An IP device row is a `dai ip activity` row last seen within the 30
     /// days up to `now`, not after it, at whose last seen time no binding of
-    /// its (site, IP) is in effect. It is not a device.
+    /// its (site, IP) is in effect. It is not a device. Each row also carries
+    /// active query answers valid at `now`, last-round results and query status;
+    /// stored results remain visible when queries are off or the IP is excluded.
     ///
     /// # Errors
     ///
@@ -1055,7 +1059,9 @@ impl Store {
     ///   imported, spaces included): the device holding it;
     /// - a device id: the device with that current id, or the current
     ///   device of that old id;
-    /// - a case-insensitive substring of any of a device's names.
+    /// - a case-insensitive substring of any of a device's names;
+    /// - a case-insensitive substring of a PTR name, NBNS computer name or mDNS
+    ///   host name valid at `now` for an IP device row, once per row.
     ///
     /// Machine accounts and user names are not searched. At most
     /// [`DAI_SEARCH_MAX_MATCHES`] matches are returned, with `truncated` set
@@ -1076,7 +1082,9 @@ impl Store {
     ///
     /// It lists, per stored site, the latest time a send carrying DHCP,
     /// Kerberos and NTLM observations finished for one of its current
-    /// sensors, with that sensor, the current sensors the evidence gap's
+    /// sensors, with that sensor, active query enable state, DNS availability,
+    /// last query, daily and thirty-day counts and up to 10,000 waiting targets,
+    /// the current sensors the evidence gap's
     /// 24-hour rule leaves out of the site's compared time, and the pairs
     /// left out because their first send has not finished; per sensor of
     /// the customer, its current site, last received record time, and the
@@ -1096,6 +1104,22 @@ impl Store {
 }
 
 impl Store {
+    /// Returns every stored active answer row for the address from one snapshot.
+    ///
+    /// Includes no-name and no-response rows, even for a removed site, ordered
+    /// newest first by first seen, then PTR, NBNS, mDNS and SSDP.
+    ///
+    /// # Errors
+    /// Returns an error if the database operation fails.
+    pub fn dai_active_answers(
+        &self,
+        customer_id: u32,
+        site: &str,
+        ip: IpAddr,
+    ) -> Result<Vec<crate::DaiActiveAnswer>> {
+        self.dai().active_answers(customer_id, site, ip)
+    }
+
     /// Returns the customer's active query settings, disabled at revision zero if absent.
     ///
     /// # Errors

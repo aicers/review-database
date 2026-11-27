@@ -12,7 +12,7 @@ use thiserror::Error;
 use uuid::Uuid;
 
 use super::{
-    Dai, Snapshot,
+    Dai, DaiActiveAnswer, Snapshot,
     device::{BindingRow, address_key, decode_evidence_key, evidence_key_prefix},
     kind_from_number,
     view::{
@@ -151,6 +151,8 @@ pub enum DaiGapCause {
 /// The explanation of a resolve answer.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct DaiExplanation {
+    /// The values valid at the item time (window end), for IP and evidence gap answers.
+    pub active_answers: Vec<DaiActiveAnswer>,
     /// The bindings that decided the answer, in start order.
     pub bindings: Vec<DaiDecidingBinding>,
     /// The causes of an evidence gap; empty if there is none.
@@ -226,6 +228,8 @@ impl Dai<'_> {
 
     /// Resolves one item; the outer error is a database failure, the inner
     /// one the item's own.
+    // Keep the deciding evidence and its optional explanation in one calculation.
+    #[allow(clippy::too_many_lines)]
     fn resolve_item(
         &self,
         context: &ResolveContext<'_>,
@@ -323,6 +327,12 @@ impl Dai<'_> {
                 explained.push(self.explain_binding(context, &site, item.ip, *start, row, span)?);
             }
             Some(DaiExplanation {
+                active_answers: if matches!(kind, DaiSubjectKind::Ip | DaiSubjectKind::EvidenceGap)
+                {
+                    self.active_answers_at(snapshot, customer, &site, item.ip, to)?
+                } else {
+                    Vec::new()
+                },
                 bindings: explained,
                 gap_causes,
             })

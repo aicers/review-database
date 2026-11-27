@@ -9,7 +9,7 @@ use review_protocol::types::{DaiObservationKind, DaiSide, DaiSoftwareSource};
 use uuid::Uuid;
 
 use super::{
-    Dai, DaiIdentifier, DaiRead, DaiVerdict, KeyReader, Snapshot,
+    Dai, DaiIdentifier, DaiIpActiveQuery, DaiRead, DaiVerdict, KeyReader, Snapshot,
     apply::{side_number, software_source_number},
     cursor::DAY,
     customer_key,
@@ -331,6 +331,8 @@ pub struct DaiIpDeviceFilter {
 /// binding in effect at its last seen time.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DaiIpDeviceRow {
+    /// Display-only active query answers and progress at the read time.
+    pub active_query: DaiIpActiveQuery,
     pub site: String,
     pub ip: IpAddr,
     pub first_seen: i64,
@@ -474,6 +476,8 @@ pub enum DaiSearchMatchKind {
     DeviceId,
     OldDeviceId,
     Name,
+    /// A valid PTR, NBNS computer or mDNS host name of an IP device row.
+    ActiveQueryName,
 }
 
 /// What a search match names.
@@ -721,6 +725,7 @@ impl Dai<'_> {
     ) -> Result<DaiPage<DaiIpDeviceRow>> {
         let snapshot = self.db.snapshot();
         let oldest = now.saturating_sub(IP_DEVICE_DAYS);
+        let view = self.customer_view(&snapshot, customer)?;
         let mut rows = Vec::new();
         for (key, value) in Self::scan(&self.ip_activity, &snapshot, &customer_key(customer))? {
             let (_, site, ip) = decode_address_key(&key)?;
@@ -736,18 +741,29 @@ impl Dai<'_> {
             if self.bound_at(&snapshot, customer, &site, ip, activity.last_seen)? {
                 continue;
             }
-            rows.push((
-                (site.clone(), ip),
-                DaiIpDeviceRow {
+            rows.push(((site.clone(), ip), (site, ip, activity)));
+        }
+        rows.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+        let selected = page(rows, request);
+        // Answer histories are needed only for the rows returned on this page.
+        let rows = selected
+            .rows
+            .into_iter()
+            .map(|(site, ip, activity)| {
+                Ok(DaiIpDeviceRow {
+                    active_query: self.ip_active_query_in(&snapshot, &view, &site, ip, now)?,
                     site,
                     ip,
                     first_seen: activity.first_seen,
                     last_seen: activity.last_seen,
-                },
-            ));
-        }
-        rows.sort_unstable_by(|a, b| a.0.cmp(&b.0));
-        Ok(page(rows, request))
+                })
+            })
+            .collect::<Result<_>>()?;
+        Ok(DaiPage {
+            rows,
+            has_more: selected.has_more,
+            total: selected.total,
+        })
     }
 
     /// Returns whether a binding of (`customer`, `site`, `ip`) is in effect
@@ -1006,6 +1022,45 @@ impl Dai<'_> {
                 .any(|name| name.value.to_lowercase().contains(&needle))
             {
                 found.push(DaiSearchMatchKind::Name, DaiSearchTarget::Device(device));
+            }
+        }
+        for (key, value) in Self::scan(&self.ip_activity, &snapshot, &customer_key(customer))? {
+            let (_, site, ip) = decode_address_key(&key)?;
+            let activity: ActivityRow = super::super::deserialize(&value)?;
+            if !(now.saturating_sub(IP_DEVICE_DAYS)..=now).contains(&activity.last_seen)
+                || self.bound_at(&snapshot, customer, &site, ip, activity.last_seen)?
+            {
+                continue;
+            }
+            let answers = self.active_answers_at(&snapshot, customer, &site, ip, now)?;
+            if answers.iter().any(|answer| {
+                use super::{DaiActiveQueryResult, DaiActiveQueryValue};
+                let DaiActiveQueryResult::Value(value) = &answer.value else {
+                    return false;
+                };
+                match value {
+                    DaiActiveQueryValue::Ptr(names) => names
+                        .iter()
+                        .any(|name| name.to_lowercase().contains(&needle)),
+                    DaiActiveQueryValue::Nbns(value) => value
+                        .computer_name
+                        .as_ref()
+                        .is_some_and(|name| name.to_lowercase().contains(&needle)),
+                    DaiActiveQueryValue::Mdns(value) => value
+                        .host_name
+                        .as_ref()
+                        .is_some_and(|name| name.to_lowercase().contains(&needle)),
+                    DaiActiveQueryValue::Ssdp(_) => false,
+                }
+            }) {
+                found.push(
+                    DaiSearchMatchKind::ActiveQueryName,
+                    DaiSearchTarget::IpDevice {
+                        site,
+                        ip,
+                        last_seen: activity.last_seen,
+                    },
+                );
             }
         }
         Ok(found.finish())
