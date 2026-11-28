@@ -5,6 +5,12 @@ file is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), and
 this project adheres to [Semantic
 Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.76.0](https://github.com/aicers/review-database/compare/0.75.0...0.76.0) - 2026-11-28
+
+### Other
+
+- *(deps)* [**breaking**] move review-protocol to 0.37.0 ([#1191](https://github.com/aicers/review-database/pull/1191))
+
 ## [0.75.0](https://github.com/aicers/review-database/compare/0.74.0...0.75.0) - 2026-11-27
 
 ### Added
